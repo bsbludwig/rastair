@@ -9,6 +9,7 @@ use bio::utils::Text;
 
 const DEFAULT_STEP_SIZE: u64 = 100000;
 
+/// A segment of (DNA) sequence with the associated sequence included
 pub struct SequenceSegment {
     pub sequence: Text,
     pub contig: String,
@@ -17,6 +18,8 @@ pub struct SequenceSegment {
 }
 
 impl SequenceSegment {
+    /// Find the positions (relative to the contig coordinates) of all CpGs
+    /// in the current segment
     pub fn find_cpgs(&self) -> Option<Vec<u64>> {
         let mut positions: Vec<u64> = Vec::new();
         if self.sequence.len() == 0 {
@@ -33,6 +36,8 @@ impl SequenceSegment {
     }
 }
 
+/// An iterator over a fasta file that tokenises sequences
+/// into shorter, more manageable chunks
 pub struct SequenceSegmentIterator<R: Read + Seek> {
     reader: IndexedReader<R>,
     sequences: Vec<Sequence>,
@@ -42,6 +47,7 @@ pub struct SequenceSegmentIterator<R: Read + Seek> {
 }
 
 impl SequenceSegmentIterator<fs::File> {
+    /// Create a new iterator with a reference to a FASTA file
     pub fn with_file<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P) -> Result<Self> {
         let reader = IndexedReader::from_file(&fasta_path)?;
         // Get the first contig in the index. If there is none, return an Error
@@ -78,7 +84,7 @@ where
         Ok(new_seq_seg)
     }
 
-    pub fn reached_end(&self) -> bool {
+    fn reached_end(&self) -> bool {
         self.index_pos >= self.sequences.len()
     }
 }
@@ -142,9 +148,9 @@ where
     }
 }
 
-/***************************************************** 
- * Unit Tests
-*****************************************************/
+/*====================================================
+ = Unit Tests
+====================================================*/
 #[cfg(test)]
 mod tests {
     // For testing
