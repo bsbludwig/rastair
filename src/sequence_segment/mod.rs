@@ -16,6 +16,23 @@ pub struct SequenceSegment {
     pub stop: u64,
 }
 
+impl SequenceSegment {
+    pub fn find_cpgs(&self) -> Option<Vec<u64>> {
+        let mut positions: Vec<u64> = Vec::new();
+        if self.sequence.len() == 0 {
+            return None
+        }
+
+        for i in 1..(self.sequence.len()) {
+            let sub_seq = &self.sequence[(i-1)..(i+1)];
+            if sub_seq == b"CG" {
+                positions.push(self.start + (i as u64) -1);
+            }
+        }
+        Some(positions)
+    }
+}
+
 pub struct SequenceSegmentIterator<R: Read + Seek> {
     reader: IndexedReader<R>,
     sequences: Vec<Sequence>,
@@ -208,6 +225,23 @@ id2\t40\t71\t12\t13
 
         assert!(seg_iter.next().is_none());
 
+        Ok(())
+    }
+
+    #[test]
+    fn can_find_cpgs() -> Result<()> {
+        let mut seg_iter = new_seg_iter()?;
+        seg_iter.step_size = 12;
+        let seq_info = seg_iter.next().unwrap();
+
+        let cpg_pos = seq_info.find_cpgs().unwrap();
+        assert_eq!(cpg_pos.len(), 1);
+        assert_eq!(cpg_pos[0], 2);
+
+        let seq_info2 = seg_iter.next().unwrap();
+        let cpg_pos2 = seq_info2.find_cpgs().unwrap();
+        assert_eq!(cpg_pos2.len(), 1);
+        assert_eq!(cpg_pos2[0], 13);
         Ok(())
     }
 }
