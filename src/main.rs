@@ -56,7 +56,7 @@ fn main() {
     /* Step through all chromosomes, at a fixed step size, and 
      * identify the locations of all CpG positions
      */ 
-    let seq_iter = SequenceSegmentIterator::from_file_with_stepsize(fasta_path, 1000).expect("Error creating FASTA iterator");
+    let seq_iter = SequenceSegmentIterator::with_file_and_stepsize(fasta_path, 1000).expect("Error creating FASTA iterator");
     for segment in seq_iter {
         println!("{}\t{}\t{}\t{}", segment.contig, segment.start, segment.stop, std::str::from_utf8(&segment.sequence).unwrap() );
     }
