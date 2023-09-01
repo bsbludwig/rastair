@@ -1,10 +1,16 @@
 use rust_htslib::bam::pileup::Alignment;
 use rust_htslib::bam::{IndexedReader, Read};
-use std::{fmt, fs, path::Path};
-use log::{trace, debug, warn, error};
-use anyhow::Result;
+use std::collections::HashMap;
 
+use std::{fmt, fs, path::Path};
+use log::{debug, warn, error};
+use anyhow::Result;
+use hashers::fx_hash::FxHasher;
+
+// Faster hashing than built-in algo
 use crate::sequence_segment::SequenceSegmentIterator;
+use std::hash::BuildHasherDefault;
+
 const MAX_DEPTH: u32 = 500;
 struct Flags
 {
@@ -39,11 +45,11 @@ const FLAGS: Flags = Flags
 
 pub struct NucleotideCount
 {
-    pub a: u32,
-    pub c: u32,
-    pub g: u32,
-    pub t: u32,
-    pub n: u32,
+    pub a: i32,
+    pub c: i32,
+    pub g: i32,
+    pub t: i32,
+    pub n: i32,
 }
 
 impl fmt::Display for NucleotideCount
@@ -90,7 +96,8 @@ pub struct VariantCounterConfig<P>
     pub max_depth: u32,
     pub chunk_size: u64,
     pub required_flags: u16,
-    pub excluded_flags: u16
+    pub excluded_flags: u16,
+    pub keep_overlaps: bool
 }
 
 impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
@@ -107,6 +114,7 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
             chunk_size: 10000,
             required_flags: FLAGS.is_paired | FLAGS.is_properly_paired,
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
+            keep_overlaps: false,
         };
         Ok(v)
     }
@@ -176,7 +184,10 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
         let mut pileup_iterator = self.bam.pileup();
         pileup_iterator.set_max_depth(self.config.max_depth);
 
-        'pileuploop:
+        // Pre-create a hash to keep; pre-allocate memory to hold as many reads as the max read depth allows
+        let mut read_hash:HashMap<Vec<u8>, (u8, u8), BuildHasherDefault<FxHasher>> = HashMap::with_capacity_and_hasher(self.config.max_depth as usize, BuildHasherDefault::<FxHasher>::default());
+
+        'pileup_loop:
         for pileups in pileup_iterator
         {
             let pileup = match pileups
@@ -199,7 +210,7 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
                 None =>
                 {
                     debug!("Found all CpGs, next segment");
-                    break 'pileuploop
+                    break 'pileup_loop
                 }
             };
             if pileup_pos == this_position.pos_in_contig()
@@ -214,39 +225,44 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
 
                 let filter_closure = |alignment: &Alignment| -> bool
                 {
+                    let record = alignment.record();
                     let mut filter = !(alignment.is_del() || alignment.is_refskip());
-                    filter &= alignment.record().mapq() >= self.config.min_mapq;
+                    filter &= record.mapq() >= self.config.min_mapq;
                     // Require all "required" flags (properly paired/aligned)
-                    filter &= (alignment.record().flags() & self.config.required_flags) == self.config.required_flags;
+                    filter &= (record.flags() & self.config.required_flags) == self.config.required_flags;
                     // exclude reads matching _any_ excluded flag
-                    filter &= (alignment.record().flags() & self.config.excluded_flags) == 0;
+                    filter &= (record.flags() & self.config.excluded_flags) == 0;
                     filter
                 };
+
+                'alignment_loop:
                 for alignment in
                                                 pileup
                                                 .alignments()
                                                 .filter(filter_closure)
                 {
-                    let qual = match qual_at_position(&alignment)
-                    {
-                        Some(b) => b,
-                        None => continue
-                    };
+                    let pos = alignment.qpos()?;
+                    // This copies memory, so don't repeat
+                    let record = alignment.record();
+                    let seq = record.seq();
 
-                    if qual < self.config.min_baseq
+                    if seq.len() == 0
                     {
-                        continue;
+                        continue 'alignment_loop;
                     }
 
-                    let base = match base_at_position(&alignment)
+                    let qual = record.qual()[pos];
+                    if qual < self.config.min_baseq
                     {
-                        Some(b) => b,
-                        None => continue
-                    };
+                        continue 'alignment_loop;
+                    }
+
+                    let base = seq[pos];
+
                     let nuc_counts =
                     {
-                        if (alignment.record().flags() & (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == 0)
-                        || (alignment.record().flags() & (FLAGS.is_second_in_pair | FLAGS.is_reverse_strand) == 0)
+                        if (record.flags() & (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == 0)
+                        || (record.flags() & (FLAGS.is_second_in_pair | FLAGS.is_reverse_strand) == 0)
                         {
                             &mut var_count.top
                         }
@@ -256,25 +272,48 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
                         }
                     };
 
-                    match base
+                    // Check for overlapping reads if requested
+                    if !self.config.keep_overlaps
                     {
-                        b'a' => nuc_counts.a += 1,
-                        b'c' => nuc_counts.c += 1,
-                        b'g' => nuc_counts.g += 1,
-                        b't' => nuc_counts.t += 1,
-                        b'n' => nuc_counts.n += 1,
-                        b'A' => nuc_counts.a += 1,
-                        b'C' => nuc_counts.c += 1,
-                        b'G' => nuc_counts.g += 1,
-                        b'T' => nuc_counts.t += 1,
-                        b'N' => nuc_counts.n += 1,
-                        _   =>
+                        if let Some(pos_tuple) = read_hash.get(record.qname())
+                        {
+                            debug!("Found overlapping read pair {} at pos {} with bases {} vs {}", std::str::from_utf8(record.qname()).unwrap_or_default(), pos, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(pos_tuple.0 as u32).unwrap_or_default());
+                            //debug!("Found an overlapping read at pos {} in fragment {} ({} vs {})", this_position, String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), pos, pos_tuple.0);
+                            if pos_tuple.0 == base
+                            {
+                                // same sequence in each pair, do not double-count but keep previous
+                                continue 'alignment_loop;
+                            }
+                            else 
+                            {
+                                // Mismatch! Remove previously counted base and ignore this one
+                                // TODO: decide whether to follow the example of Methyldackel and
+                                // count the higher-quality base - however, unlike Methyldackel
+                                // I check for overlaps only _after_ baseq cutoff, so some overlaps
+                                // will have already been treated in that way. If there's two high-quality
+                                // disagreeing calls, I feel it's better to ignore the whole fragment
+                                increment_counter_by(nuc_counts, pos_tuple.0, -1);
+                                continue 'alignment_loop;
+                            }
+                        } else {
+                            // TODO I'm storing the qual here _in case_ I want to implement quality-based
+                            // decision on which read disagreeing base to keep in the future
+                            read_hash.insert(Vec::from(record.qname()), (base, qual));
+                        }
+                    }
+
+                    match increment_counter_by(nuc_counts, base, 1)
+                    {
+                        Some(()) => (),
+                        None => 
                         {
                             let char = char::from_u32(base as u32).unwrap_or_default();
                             warn!("Encountered unknown char {} at {}", char, this_position);
                         }
                     }
                 }
+                // Empty read hash
+                read_hash.clear();
                 debug!("{}", var_count);
                 output.push(var_count);
             }
@@ -284,29 +323,24 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
     }
 }
 
-fn qual_at_position(alignment: &Alignment) -> Option<u8>
+fn increment_counter_by(nuc_counts: &mut NucleotideCount, base: u8, amount: i32) -> Option<()>
 {
-    let pos = alignment.qpos()?;
-    if alignment.is_del()
+    match base
     {
-        return None;
-    }
-    let record = alignment.record();
-    Some(record.qual()[pos])
-}
-
-fn base_at_position(alignment: &Alignment) -> Option<u8>
-{
-    let pos = alignment.qpos()?;
-    if alignment.is_del()
-    {
-        return None;
-    }
-    let record = alignment.record();
-    let seq = record.seq();
-    if seq.len() == 0
-    {
-        return None;
-    }
-    Some(seq[pos])
+        b'a' => nuc_counts.a += amount,
+        b'c' => nuc_counts.c += amount,
+        b'g' => nuc_counts.g += amount,
+        b't' => nuc_counts.t += amount,
+        b'n' => nuc_counts.n += amount,
+        b'A' => nuc_counts.a += amount,
+        b'C' => nuc_counts.c += amount,
+        b'G' => nuc_counts.g += amount,
+        b'T' => nuc_counts.t += amount,
+        b'N' => nuc_counts.n += amount,
+        _   =>
+        {
+            return None;
+        }
+    };
+    Some(())
 }
