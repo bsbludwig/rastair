@@ -1,14 +1,15 @@
 // Externals
-use log::{info, debug, trace, warn};
+use log::{debug};
 use clap::{arg, command, value_parser};
-use rust_htslib::bam::IndexedReader;
-use std::path::PathBuf;
-use std::process;
 
-// Library imports
-use rastair::sequence_segment::SequenceSegmentIterator;
+use std::io::{stdout, Write};
+use std::path::PathBuf;
+
+use rastair::operations::{VariantCounterConfig, VariantCounter};
 
 fn main() {
+    reset_sigpipe();
+
     let matches = command!() // requires `cargo` feature
         .arg(
             arg!(<BAM_FILE> "Path to bam file")
@@ -43,26 +44,34 @@ fn main() {
     /* Read fasta index, and open fasta file for tokenising */ 
     let fasta_path = matches.get_one::<PathBuf>("fasta").expect("Argument missing");
     debug!("Reading fasta and index from {}", fasta_path.display());
-
     /* Open the bam file */
-    let bam = match matches.get_one::<PathBuf>("BAM_FILE") {
-        Some(bam_path) => IndexedReader::from_path(bam_path).expect("Error reading bam file"),
-        None    => {
-            warn!("Piping bam input not yet implemented");
-            process::exit(1);
+    let bam_path= matches.get_one::<PathBuf>("BAM_FILE").expect("Error getting BAMFILE param");
+    let config = VariantCounterConfig::with_paths(fasta_path, bam_path).unwrap();
+    let counter = VariantCounter::with_config(config).unwrap();
+    
+    let mut lock = stdout().lock();
+    for cpgs in counter {
+        for cpg in cpgs {
+            if cpg.ref_base == b'C' { // C
+                writeln!(lock, "{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.forward.c, cpg.forward.t).unwrap();
+            } else { // G
+                writeln!(lock, "{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.reverse.g, cpg.reverse.a).unwrap();
+            }
         }
-    };
-
-    /* Step through all chromosomes, at a fixed step size, and 
-     * identify the locations of all CpG positions
-     */ 
-    let seq_iter = SequenceSegmentIterator::with_file_and_stepsize(fasta_path, 1000).expect("Error creating FASTA iterator");
-    for segment in seq_iter {
-        println!("{}\t{}\t{}\t{}", segment.contig, segment.start, segment.stop, std::str::from_utf8(&segment.sequence).unwrap() );
     }
-    /* Fetch the pileup for the region from the bam file, and go
-     * through all CpG positions, performing whatever calculation
-     * needs to be performed. Stream the output to a writer that
-     * writes the results to STDOUT or some file.
-     */
+}
+
+/*
+ * some super-hacky sh*t to make this behave like a normal unix program and quit when the pipe ends
+ */
+#[cfg(unix)]
+fn reset_sigpipe() {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {
+    // no-op
 }

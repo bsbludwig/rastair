@@ -921,6 +921,7 @@ dependencies = [
  "anyhow",
  "bio",
  "clap",
+ "libc",
  "log",
  "rust-htslib",
  "stderrlog",

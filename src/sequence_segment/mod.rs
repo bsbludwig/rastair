@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::io::{Read, Seek};
 use std::fs;
@@ -8,6 +9,32 @@ use bio::io::fasta::{IndexedReader, Sequence};
 use bio::utils::Text;
 
 const DEFAULT_STEP_SIZE: u64 = 100000;
+
+/// A genomic position, represented by its base and position, and the position
+/// relative to the (arbitrary) segment slice it belongs to.
+pub struct ContigPosition<'a> {
+    pub pos_in_segment: usize,
+    segment: &'a SequenceSegment
+}
+
+impl<'a> ContigPosition<'a> {
+    /// The base at the represented position
+    pub fn base(& self) -> u8 {
+        self.segment.sequence[self.pos_in_segment]
+    }
+
+    /// The position of the represented position in the overall contig
+    pub fn pos_in_contig(& self) -> u64 {
+        (self.pos_in_segment as u64) + self.segment.start
+    }
+}
+
+impl <'a> Display for ContigPosition<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let char = char::from_u32(self.base() as u32).unwrap_or_default();
+        write!(f, "{}:{} ({})", self.segment.contig, self.pos_in_contig(), char)
+    }
+}
 
 /// A segment of (DNA) sequence with the associated sequence included
 pub struct SequenceSegment {
@@ -20,8 +47,8 @@ pub struct SequenceSegment {
 impl SequenceSegment {
     /// Find the positions (relative to the contig coordinates) of all CpGs
     /// in the current segment
-    pub fn find_cpgs(&self) -> Option<Vec<u64>> {
-        let mut positions: Vec<u64> = Vec::new();
+    pub fn find_cpgs(&self) -> Option<Vec<ContigPosition>> {
+        let mut positions: Vec<ContigPosition> = Vec::new();
         if self.sequence.len() == 0 {
             return None
         }
@@ -29,10 +56,20 @@ impl SequenceSegment {
         for i in 1..(self.sequence.len()) {
             let sub_seq = &self.sequence[(i-1)..(i+1)];
             if sub_seq == b"CG" {
-                positions.push(self.start + (i as u64) -1);
+
+                positions.push(ContigPosition{segment: self,
+                                              pos_in_segment: i-1});
+                positions.push(ContigPosition{segment: self,
+                                              pos_in_segment: i});
             }
         }
         Some(positions)
+    }
+}
+
+impl Display for SequenceSegment {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}-{}", self.contig, self.start, self.stop)
     }
 }
 
@@ -43,7 +80,8 @@ pub struct SequenceSegmentIterator<R: Read + Seek> {
     sequences: Vec<Sequence>,
     index_pos: usize,
     pos: u64,
-    step_size: u64
+    step_size: u64,
+    tiling: usize,
 }
 
 impl SequenceSegmentIterator<fs::File> {
@@ -54,7 +92,7 @@ impl SequenceSegmentIterator<fs::File> {
         Self::with_reader(reader)
     }
 
-    pub fn with_file_and_stepsize(fasta_path: &PathBuf, step_size: u64) -> Result<Self> {
+    pub fn with_file_and_stepsize<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P, step_size: u64) -> Result<Self> {
         let mut new_seq_seg = Self::with_file(fasta_path)?;
         new_seq_seg.step_size = step_size;
         Ok(new_seq_seg)
@@ -79,7 +117,8 @@ where
             sequences,
             index_pos: 0,
             pos: 0,
-            step_size: DEFAULT_STEP_SIZE
+            step_size: DEFAULT_STEP_SIZE,
+            tiling: 1
         };
         Ok(new_seq_seg)
     }
@@ -127,7 +166,7 @@ where
                 self.pos = 0;
             }
         } else {
-            self.pos = stop;
+            self.pos = stop - (self.tiling as u64);
         }
         // "Allocate" a sufficiently large chunk of memory
         let mut sequence: Text = vec![0 as u8; (stop-start) as usize];
@@ -241,13 +280,17 @@ id2\t40\t71\t12\t13
         let seq_info = seg_iter.next().unwrap();
 
         let cpg_pos = seq_info.find_cpgs().unwrap();
-        assert_eq!(cpg_pos.len(), 1);
-        assert_eq!(cpg_pos[0], 2);
+        assert_eq!(cpg_pos.len(), 2);
+        assert_eq!(cpg_pos[0].pos_in_contig(), 2);
+        assert_eq!(cpg_pos[1].pos_in_contig(), 3);
+        assert_eq!(cpg_pos[0].base(), b'C');
+        assert_eq!(cpg_pos[1].base(), b'G');
 
         let seq_info2 = seg_iter.next().unwrap();
         let cpg_pos2 = seq_info2.find_cpgs().unwrap();
-        assert_eq!(cpg_pos2.len(), 1);
-        assert_eq!(cpg_pos2[0], 13);
+        assert_eq!(cpg_pos2.len(), 2);
+        assert_eq!(cpg_pos2[0].pos_in_contig(), 13);
+        assert_eq!(cpg_pos2[0].pos_in_segment, 1);
         Ok(())
     }
 }
