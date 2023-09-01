@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use rastair::operations::{VariantCounterConfig, VariantCounter};
 
 #[derive(Parser)]
-#[command(author, version, about, long_about=None, arg_required_else_help = true)]
+#[command(author="Benjamin Schuster-Boeckler", version, about, long_about=None, arg_required_else_help = true)]
 struct Cli 
 {
     #[arg(short, long, action=clap::ArgAction::Count)]
@@ -21,24 +21,38 @@ struct Cli
 #[derive(Subcommand)]
 enum Commands 
 {
+    /// Call methylation on a bam file
     Call 
     {
+        /// A sorted and indexed bam file
         #[arg(value_name="BAM_FILE", value_parser=value_parser!(PathBuf))]
         bam_file: PathBuf,
 
+        /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
         #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(PathBuf))]
         fasta_file: PathBuf,
 
+        /// Minimum mapping quality per aligned read [default: 1]
         #[arg(short='q', long)]
         min_mapq: Option<u8>,
+        
+        /// Minimum base quality per base in a read [default: 10]
         #[arg(short='Q', long, value_parser = clap::value_parser!(u8).range(1..))]
         min_baseq: Option<u8>,
+        
+        /// Limit depth at highly covered positions to improve performance [default: 500]
         #[arg(short='x', long, value_parser = clap::value_parser!(u8).range(1..))]
         max_depth: Option<u32>,
+        
+        /// number of reference positions processed in-memory at once [default: 100000]
         #[arg(short='s', long, value_parser = clap::value_parser!(u8).range(1..))]
         chunk_size: Option<usize>,
+        
+        /// Include reads that match all of these bit-flags (as decimal) [default: 3]
         #[arg(short='f', long)]
         required_flags: Option<u16>,
+        
+        /// Exclude reads matching any of these bit-flags (as decimal) [default: 3852]
         #[arg(short='F', long)]
         excluded_flags: Option<u16>
     },
