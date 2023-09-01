@@ -94,7 +94,7 @@ pub struct VariantCounterConfig<P>
     pub min_mapq: u8,
     pub min_baseq: u8,
     pub max_depth: u32,
-    pub chunk_size: u64,
+    pub chunk_size: usize,
     pub required_flags: u16,
     pub excluded_flags: u16,
     pub keep_overlaps: bool
@@ -111,7 +111,7 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
             min_mapq: 1,
             min_baseq: 10,
             max_depth: MAX_DEPTH,
-            chunk_size: 10000,
+            chunk_size: 100000,
             required_flags: FLAGS.is_paired | FLAGS.is_properly_paired,
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
             keep_overlaps: false,

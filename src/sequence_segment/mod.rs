@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use bio::io::fasta::IndexedReader;
 use bio::utils::Text;
 
-const DEFAULT_STEP_SIZE: u64 = 100000;
+const DEFAULT_STEP_SIZE: usize = 100000;
 
 /// A genomic position, represented by its base and position, and the position
 /// relative to the (arbitrary) segment slice it belongs to.
@@ -94,7 +94,7 @@ pub struct SequenceSegmentIterator<R: Read + Seek>
     sequences: Vec<(String, u64, u64)>,
     index_pos: usize,
     pos: u64,
-    step_size: u64,
+    step_size: usize,
     tiling: usize,
 }
 
@@ -108,7 +108,7 @@ impl SequenceSegmentIterator<fs::File>
         Self::with_reader(reader)
     }
 
-    pub fn with_file_and_stepsize<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P, step_size: u64) -> Result<Self>
+    pub fn with_file_and_stepsize<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P, step_size: usize) -> Result<Self>
     {
         let mut new_seq_seg = Self::with_file(fasta_path)?;
         new_seq_seg.step_size = step_size;
@@ -202,14 +202,14 @@ where
         let seq_info = &self.sequences[self.index_pos];
         let stop =
         {
-            if start + self.step_size > seq_info.2
+            if start + (self.step_size as u64) > seq_info.2
             {
                 trace!("Reached end of {}, clipping to {}", &seq_info.0, seq_info.2);
                 seq_info.2
             }
             else
             {
-                start + self.step_size
+                start + (self.step_size as u64)
             }
         };
 
