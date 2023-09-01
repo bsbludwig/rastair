@@ -1,5 +1,5 @@
 use std::fmt::{Display, Formatter};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::io::{Read, Seek};
 use std::fs;
 use log::{trace, debug, error};
@@ -12,48 +12,59 @@ const DEFAULT_STEP_SIZE: u64 = 100000;
 
 /// A genomic position, represented by its base and position, and the position
 /// relative to the (arbitrary) segment slice it belongs to.
-pub struct ContigPosition<'a> {
+pub struct ContigPosition<'a>
+{
     pub pos_in_segment: usize,
     segment: &'a SequenceSegment
 }
 
-impl<'a> ContigPosition<'a> {
+impl<'a> ContigPosition<'a>
+{
     /// The base at the represented position
-    pub fn base(& self) -> u8 {
+    pub fn base(& self) -> u8
+    {
         self.segment.sequence[self.pos_in_segment]
     }
 
     /// The position of the represented position in the overall contig
-    pub fn pos_in_contig(& self) -> u64 {
+    pub fn pos_in_contig(& self) -> u64
+    {
         (self.pos_in_segment as u64) + self.segment.start
     }
 }
 
-impl <'a> Display for ContigPosition<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl <'a> Display for ContigPosition<'a>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    {
         let char = char::from_u32(self.base() as u32).unwrap_or_default();
         write!(f, "{}:{} ({})", self.segment.contig, self.pos_in_contig(), char)
     }
 }
 
 /// A segment of (DNA) sequence with the associated sequence included
-pub struct SequenceSegment {
+pub struct SequenceSegment
+{
     pub sequence: Text,
     pub contig: String,
     pub start:	u64,
     pub stop: u64,
 }
 
-impl SequenceSegment {
+impl SequenceSegment
+{
     /// Find the positions (relative to the contig coordinates) of all CpGs
     /// in the current segment
-    pub fn find_cpgs(&self) -> Option<Vec<ContigPosition>> {
+    pub fn find_cpgs(&self) -> Option<Vec<ContigPosition>>
+    {
         let mut positions: Vec<ContigPosition> = Vec::new();
-        if self.sequence.len() == 0 {
+        if self.sequence.len() == 0
+        {
             return None
         }
 
-        for i in 1..(self.sequence.len()) {
+        for i in 1..(self.sequence.len())
+        {
             let sub_seq = &self.sequence[(i-1)..(i+1)];
             if sub_seq == b"CG" {
 
@@ -67,15 +78,18 @@ impl SequenceSegment {
     }
 }
 
-impl Display for SequenceSegment {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl Display for SequenceSegment
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
+    {
         write!(f, "{}:{}-{}", self.contig, self.start, self.stop)
     }
 }
 
 /// An iterator over a fasta file that tokenises sequences
 /// into shorter, more manageable chunks
-pub struct SequenceSegmentIterator<R: Read + Seek> {
+pub struct SequenceSegmentIterator<R: Read + Seek>
+{
     reader: IndexedReader<R>,
     sequences: Vec<Sequence>,
     index_pos: usize,
@@ -84,35 +98,41 @@ pub struct SequenceSegmentIterator<R: Read + Seek> {
     tiling: usize,
 }
 
-impl SequenceSegmentIterator<fs::File> {
+impl SequenceSegmentIterator<fs::File>
+{
     /// Create a new iterator with a reference to a FASTA file
-    pub fn with_file<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P) -> Result<Self> {
+    pub fn with_file<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P) -> Result<Self>
+    {
         let reader = IndexedReader::from_file(&fasta_path)?;
         // Get the first contig in the index. If there is none, return an Error
         Self::with_reader(reader)
     }
 
-    pub fn with_file_and_stepsize<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P, step_size: u64) -> Result<Self> {
+    pub fn with_file_and_stepsize<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P, step_size: u64) -> Result<Self>
+    {
         let mut new_seq_seg = Self::with_file(fasta_path)?;
         new_seq_seg.step_size = step_size;
         Ok(new_seq_seg)
     }
 }
 
-impl <R> SequenceSegmentIterator<R> 
-where 
+impl <R> SequenceSegmentIterator<R>
+where
     R: Read + Seek
 {
-    pub fn with_reader(reader:IndexedReader<R>) -> Result<Self> {
+    pub fn with_reader(reader:IndexedReader<R>) -> Result<Self>
+    {
         let sequences = reader.index.sequences();
 
         debug!("Read index with {} sequences", sequences.len());
 
-        if sequences.is_empty() {
+        if sequences.is_empty()
+        {
             bail!("No sequences in FASTA file");
         }
-      
-        let new_seq_seg = SequenceSegmentIterator {
+
+        let new_seq_seg = SequenceSegmentIterator
+        {
             reader,
             sequences,
             index_pos: 0,
@@ -123,61 +143,79 @@ where
         Ok(new_seq_seg)
     }
 
-    fn reached_end(&self) -> bool {
+    fn reached_end(&self) -> bool
+    {
         self.index_pos >= self.sequences.len()
     }
 }
 
-impl <R> Iterator for SequenceSegmentIterator<R> 
-where 
+impl <R> Iterator for SequenceSegmentIterator<R>
+where
     R: Read + Seek
 {
     type Item = SequenceSegment;
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next(&mut self) -> Option<Self::Item>
+    {
         // Check if we've reached the end already
-        if self.reached_end() {
+        if self.reached_end()
+        {
             return None;
         }
 
         let start = self.pos;
         let seq_info = &self.sequences[self.index_pos];
-        let stop = {
-            if start + self.step_size > seq_info.len { 
+        let stop =
+        {
+            if start + self.step_size > seq_info.len
+            {
                 trace!("Reached end of {}, clipping to {}", &seq_info.name, seq_info.len);
                 seq_info.len
-            } else { 
-                start + self.step_size 
+            }
+            else
+            {
+                start + self.step_size
             }
         };
 
         trace!("Moving cursor in fasta file to {}:{}-{}", &seq_info.name, start, stop);
-        match self.reader.fetch(&seq_info.name, start, stop) {
-            Err(e) => {
+        match self.reader.fetch(&seq_info.name, start, stop)
+        {
+            Err(e) =>
+            {
                 error!("Error fetching sequence: {}", e);
                 return None;
             },
             Ok(_) => {},
         };
+
         // Increment internal pointer
-        if stop >= seq_info.len {
+        if stop >= seq_info.len
+        {
             trace!("Reached end of {}", &seq_info.name);
             self.index_pos = self.index_pos + 1;
-            if !self.reached_end() {
+            if !self.reached_end()
+            {
                 self.pos = 0;
             }
-        } else {
+        }
+        else
+        {
             self.pos = stop - (self.tiling as u64);
         }
+
         // "Allocate" a sufficiently large chunk of memory
         let mut sequence: Text = vec![0 as u8; (stop-start) as usize];
-        match self.reader.read(&mut sequence) {
-            Err(e) => {
+        match self.reader.read(&mut sequence)
+        {
+            Err(e) =>
+            {
                 error!("Error reading from fasta ({} from {} to {}): {}", &seq_info.name, start, stop, e);
                 return None;
             },
             Ok(_)   => {}
         };
-        let segment = SequenceSegment {
+        let segment = SequenceSegment
+        {
             sequence,
             contig: seq_info.name.clone(),
             start:  start,
@@ -212,23 +250,26 @@ GGGG
 id2\t40\t71\t12\t13
 ";
 
-    fn new_seg_iter() -> Result<SequenceSegmentIterator<Cursor<&'static[u8]>>> {
+    fn new_seg_iter() -> Result<SequenceSegmentIterator<Cursor<&'static[u8]>>>
+    {
         let reader = IndexedReader::new(Cursor::new(FASTA_FILE), FAI_FILE)?;
         let seg_iter = SequenceSegmentIterator::with_reader(reader)?;
         Ok(seg_iter)
     }
 
     #[test]
-    fn can_create_segment_iterator() -> Result<()> {
+    fn can_create_segment_iterator() -> Result<()>
+    {
         let seg_iter = new_seg_iter()?;
 
         assert_eq!(seg_iter.index_pos, 0);
         assert_eq!(seg_iter.pos, 0);
         Ok(())
     }
-    
+
     #[test]
-    fn can_check_end() -> Result<()>{
+    fn can_check_end() -> Result<()>
+    {
         let mut seg_iter = new_seg_iter()?;
 
         assert!(!seg_iter.reached_end());
@@ -238,7 +279,8 @@ id2\t40\t71\t12\t13
     }
 
     #[test]
-    fn can_iterate() -> Result<()> {
+    fn can_iterate() -> Result<()>
+    {
         let mut seg_iter = new_seg_iter()?;
         seg_iter.step_size = 30;
         let seq_info = seg_iter.next().unwrap();
@@ -274,7 +316,8 @@ id2\t40\t71\t12\t13
     }
 
     #[test]
-    fn can_find_cpgs() -> Result<()> {
+    fn can_find_cpgs() -> Result<()>
+    {
         let mut seg_iter = new_seg_iter()?;
         seg_iter.step_size = 12;
         let seq_info = seg_iter.next().unwrap();
