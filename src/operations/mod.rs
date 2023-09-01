@@ -184,7 +184,7 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
 
         if cpg_positions.len() == 0
         {
-            return None;
+            return Some(Vec::new());
         }
 
         // Allocate enough space for output

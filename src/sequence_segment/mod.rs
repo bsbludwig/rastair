@@ -5,7 +5,7 @@ use std::fs;
 use log::{trace, debug, error};
 use anyhow::{bail, Result};
 
-use bio::io::fasta::{IndexedReader};
+use bio::io::fasta::IndexedReader;
 use bio::utils::Text;
 
 const DEFAULT_STEP_SIZE: u64 = 100000;
