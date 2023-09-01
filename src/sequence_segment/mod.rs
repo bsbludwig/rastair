@@ -5,7 +5,7 @@ use std::fs;
 use log::{trace, debug, error};
 use anyhow::{bail, Result};
 
-use bio::io::fasta::{IndexedReader, Sequence};
+use bio::io::fasta::{IndexedReader};
 use bio::utils::Text;
 
 const DEFAULT_STEP_SIZE: u64 = 100000;
@@ -91,7 +91,7 @@ impl Display for SequenceSegment
 pub struct SequenceSegmentIterator<R: Read + Seek>
 {
     reader: IndexedReader<R>,
-    sequences: Vec<Sequence>,
+    sequences: Vec<(String, u64, u64)>,
     index_pos: usize,
     pos: u64,
     step_size: u64,
@@ -122,7 +122,7 @@ where
 {
     pub fn with_reader(reader:IndexedReader<R>) -> Result<Self>
     {
-        let sequences = reader.index.sequences();
+        let sequences: Vec<(String, u64, u64)> = reader.index.sequences().iter().map(|seq| (seq.name.clone(), 0, seq.len)).collect();
 
         debug!("Read index with {} sequences", sequences.len());
 
@@ -147,6 +147,42 @@ where
     {
         self.index_pos >= self.sequences.len()
     }
+
+    /// Intersect the sequences in the fasta file with sequences from e.g. the bam index.
+    /// This will reset the iterator, so the next call to `next()` will start form the leftmost interval
+    /// in the first sequence again.
+    pub fn subset_to_intervals(&mut self, intervals: &[(Vec<u8>, u64, u64)]) -> Option<()> 
+    {
+        let mut new_sequences: Vec<(String, u64, u64)> = Vec::with_capacity(self.sequences.len());
+        for interval in intervals
+        {
+            let interval_id = std::str::from_utf8(&interval.0).unwrap_or_default();
+            if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0 == &interval_id) 
+            {
+                new_sequences.push((sequence.0.clone(), std::cmp::max(sequence.1, interval.1), std::cmp::min(sequence.2, interval.2)));
+            }
+        }
+        if new_sequences.len() == 0
+        {
+            return None;
+        }
+        self.sequences = new_sequences;
+        self.rewind()
+    }
+
+    fn rewind(&mut self) -> Option<()> {
+        self.index_pos = 0;
+        if self.sequences.len() > 0 {
+            let seq = &self.sequences[self.index_pos];
+            self.pos = seq.1; // initialise as min start position
+            return Some(());
+        } 
+        else 
+        {
+            self.pos = 0;
+            return None;
+        }
+    }
 }
 
 impl <R> Iterator for SequenceSegmentIterator<R>
@@ -166,10 +202,10 @@ where
         let seq_info = &self.sequences[self.index_pos];
         let stop =
         {
-            if start + self.step_size > seq_info.len
+            if start + self.step_size > seq_info.2
             {
-                trace!("Reached end of {}, clipping to {}", &seq_info.name, seq_info.len);
-                seq_info.len
+                trace!("Reached end of {}, clipping to {}", &seq_info.0, seq_info.2);
+                seq_info.2
             }
             else
             {
@@ -177,8 +213,8 @@ where
             }
         };
 
-        trace!("Moving cursor in fasta file to {}:{}-{}", &seq_info.name, start, stop);
-        match self.reader.fetch(&seq_info.name, start, stop)
+        trace!("Moving cursor in fasta file to {}:{}-{}", &seq_info.0, start, stop);
+        match self.reader.fetch(&seq_info.0, start, stop)
         {
             Err(e) =>
             {
@@ -189,9 +225,9 @@ where
         };
 
         // Increment internal pointer
-        if stop >= seq_info.len
+        if stop >= seq_info.2
         {
-            trace!("Reached end of {}", &seq_info.name);
+            trace!("Reached end of {}", &seq_info.0);
             self.index_pos = self.index_pos + 1;
             if !self.reached_end()
             {
@@ -209,7 +245,7 @@ where
         {
             Err(e) =>
             {
-                error!("Error reading from fasta ({} from {} to {}): {}", &seq_info.name, start, stop, e);
+                error!("Error reading from fasta ({} from {} to {}): {}", &seq_info.0, start, stop, e);
                 return None;
             },
             Ok(_)   => {}
@@ -217,7 +253,7 @@ where
         let segment = SequenceSegment
         {
             sequence,
-            contig: seq_info.name.clone(),
+            contig: seq_info.0.clone(),
             start:  start,
             stop:   stop,
         };

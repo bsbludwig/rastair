@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use std::{fmt, fs, path::Path};
 use log::{debug, warn, error};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use hashers::fx_hash::FxHasher;
 
 // Faster hashing than built-in algo
@@ -131,17 +131,41 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
 {
     pub fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
     {
-        let bam = IndexedReader::from_path(&config.bam_path)?;
-        let fasta = SequenceSegmentIterator::with_file_and_stepsize(&config.fasta_path, config.chunk_size)?;
+        let mut bam = IndexedReader::from_path(&config.bam_path)?;
+        let mut fasta = SequenceSegmentIterator::with_file_and_stepsize(&config.fasta_path, config.chunk_size)?;
 
-        Ok(
-            VariantCounter
-            {
-                config,
-                bam,
-                fasta
-            }
-        )
+        // intersect the index files
+        let bam_index: Vec<(Vec<u8>, u64, u64)> = bam
+                        .index_stats()
+                        .unwrap()
+                        .iter()
+                        .filter(
+                            |idx| -> bool
+                            {
+                                // Exclude contigs with no mapped reads
+                                idx.2 > 0
+                            }
+                        )
+                        .map(
+                            |idx| -> (Vec<u8>, u64, u64)
+                            {
+                                let header = bam.header();
+                                let seq_id = header.tid2name(idx.0 as u32);
+                                (Vec::from(seq_id), 0, idx.1)
+                            }
+                        ).collect();
+        match fasta.subset_to_intervals(&bam_index)
+        {
+            Some(_) => Ok(
+                VariantCounter
+                {
+                    config,
+                    bam,
+                    fasta
+                }
+            ),
+            None    => bail!("No sequences intersect between fasta and bam")
+        }
     }
 }
 
