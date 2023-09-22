@@ -1,11 +1,9 @@
 // Externals
-use log::{debug, error};
+use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
-use std::error::Error;
-use std::io::{stdout, Write};
 use std::path::PathBuf;
 
-use rastair::operations::{VariantCounterConfig, VariantCounter};
+use rastair::operations::count_variants::run_caller;
 
 #[derive(Parser)]
 #[command(author="Benjamin Schuster-Boeckler", version, about, long_about=None, arg_required_else_help = true)]
@@ -104,57 +102,6 @@ fn main()
     }
 }
 
-fn run_caller(
-    bam_path: &PathBuf,
-    fasta_path: &PathBuf,
-    mapq_option: &Option<u8>,
-    baseq_option: &Option<u8>,
-    max_depth_option: &Option<u32>,
-    chunk_size_option: &Option<usize>,
-    req_flags_option: &Option<u16>,
-    excl_flags_option: &Option<u16>) -> Result<(), Box<dyn Error>> 
-{
-    /* Read fasta index, and open fasta file for tokenising */
-    debug!("Reading fasta and index from {}", fasta_path.display());
-    
-    let mut config = VariantCounterConfig::with_paths(fasta_path, bam_path).unwrap();
-    if let Some(min_mapq) = mapq_option {
-        config.min_mapq = *min_mapq;
-    }
-    if let Some(min_baseq) = baseq_option {
-        config.min_baseq = *min_baseq;
-    }
-    if let Some(max_depth) = max_depth_option {
-        config.max_depth = *max_depth;
-    }
-    if let Some(cs) = chunk_size_option {
-        config.chunk_size = *cs;
-    }
-    if let Some(flags) = req_flags_option {
-        config.required_flags = *flags;
-    }
-    if let Some(flags) = excl_flags_option {
-        config.excluded_flags = *flags;
-    }
-    let counter = VariantCounter::with_config(config).unwrap();
-
-    let mut lock = stdout().lock();
-    for cpgs in counter
-    {
-        for cpg in cpgs
-        {
-            if cpg.ref_base == b'C'
-            { // C
-                writeln!(lock, "{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.top.c, cpg.top.t).unwrap();
-            }
-            else
-            { // G
-                writeln!(lock, "{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.bottom.g, cpg.bottom.a).unwrap();
-            }
-        }
-    }
-    Ok(())
-}
 /*
  * some super-hacky sh*t to make this behave like a normal unix program and quit when the pipe ends
  */
