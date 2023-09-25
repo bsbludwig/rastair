@@ -186,6 +186,10 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
         // Pre-create a hash to keep; pre-allocate memory to hold as many reads as the max read depth allows
         let mut read_hash:HashMap<Vec<u8>, (u8, u8), BuildHasherDefault<FxHasher>> = HashMap::with_capacity_and_hasher(self.config.max_depth as usize, BuildHasherDefault::<FxHasher>::default());
 
+        // Find the next CpG position that is greater than or equal to the current pos
+        // If none exists, we've reached the end
+        let mut cpg_index = 0;
+        
         'pileup_loop:
         for pileups in pileup_iterator
         {
@@ -199,22 +203,12 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
                 }
             };
             let pileup_pos = pileup.pos() as u64;
-            // Find the next CpG position that is greater than or equal to the current pos
-            // If none exists, we've reached the end
-            let this_position = match cpg_positions
-            .iter()
-            .find(|pos| pos.pos_in_contig() >= pileup_pos)
-            {
-                Some(pos)   => pos,
-                None =>
-                {
-                    debug!("Found all CpGs, next segment");
-                    break 'pileup_loop
-                }
-            };
+            let this_position = &cpg_positions[cpg_index];
+
             if pileup_pos == this_position.pos_in_contig()
             {
                 debug!("Found a CpG site at {}", this_position);
+                cpg_index = cpg_index + 1;
 
                 // Count conversion vs non-conversion
                 let mut var_count = VariantCount::new();
@@ -317,6 +311,11 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
                 read_hash.clear();
                 debug!("{}", var_count);
                 output.push(var_count);
+                // Check if we're done
+                if cpg_index >= cpg_positions.len()
+                {
+                    break 'pileup_loop;
+                }
             }
         }
 
@@ -397,4 +396,13 @@ pub fn run_caller(
         }
     }
     Ok(())
+}
+
+/*====================================================
+ = Unit Tests
+====================================================*/
+#[cfg(test)]
+mod tests {
+    // For testing
+    use super::*;
 }
