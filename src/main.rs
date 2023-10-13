@@ -3,7 +3,7 @@ use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
 use std::path::PathBuf;
 
-use rastair::operations::count_variants::run_caller;
+use rastair::operations::{count_variants::run_caller};
 
 #[derive(Parser)]
 #[command(author="Benjamin Schuster-Boeckler", version, about, long_about=None, arg_required_else_help = true)]
@@ -15,6 +15,7 @@ struct Cli
     #[command(subcommand)]
     command: Option<Commands>,
 }
+
 
 #[derive(Subcommand)]
 enum Commands 
@@ -52,7 +53,15 @@ enum Commands
         
         /// Exclude reads matching any of these bit-flags (as decimal) [default: 3852]
         #[arg(short='F', long)]
-        excluded_flags: Option<u16>
+        excluded_flags: Option<u16>,
+
+        /// Soft-trim the OT by that many bases from either end
+        #[arg(long="nOT")]
+        n_ot: Option<String>,
+        
+        /// Soft-trim the OT by that many bases from either end
+        #[arg(long="nOB")]
+        n_ob: Option<String>
     },
 }
 
@@ -80,7 +89,9 @@ fn main()
             max_depth, 
             chunk_size, 
             required_flags, 
-            excluded_flags }) => 
+            excluded_flags,
+            n_ot,
+            n_ob }) => 
             {
                 match run_caller(bam_file, 
                     fasta_file, 
@@ -89,7 +100,9 @@ fn main()
                     max_depth, 
                     chunk_size, 
                     required_flags, 
-                    excluded_flags ) 
+                    excluded_flags,
+                    n_ot,
+                    n_ob ) 
                 {
                     Ok(()) => (),
                     Err(e)  => 

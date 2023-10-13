@@ -4,6 +4,7 @@ use rust_htslib::bam::{IndexedReader, Read};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::{fmt, fs};
+use std::str::FromStr;
 use std::error::Error;
 use std::io::{stdout, Write};
 use log::{debug, warn, error};
@@ -15,8 +16,7 @@ use crate::sequence_segment::SequenceSegmentIterator;
 use hashers::fx_hash::FxHasher;
 use std::hash::BuildHasherDefault;
 
-use super::MAX_DEPTH;
-use super::FLAGS;
+use super::{MAX_DEPTH, FLAGS, ReadMaskSetting, ReadMask};
 
 pub struct NucleotideCount
 {
@@ -72,7 +72,9 @@ pub struct VariantCounterConfig<P>
     pub chunk_size: usize,
     pub required_flags: u16,
     pub excluded_flags: u16,
-    pub keep_overlaps: bool
+    pub keep_overlaps: bool,
+    pub ot_mask: ReadMaskSetting,
+    pub ob_mask: ReadMaskSetting
 }
 
 impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
@@ -90,6 +92,8 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
             required_flags: FLAGS.is_paired | FLAGS.is_properly_paired,
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
             keep_overlaps: false,
+            ot_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
+            ob_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) }
         };
         Ok(v)
     }
@@ -218,19 +222,94 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
 
                 let filter_closure = |alignment: &Alignment| -> bool
                 {
+                    if alignment.is_del() || alignment.is_refskip() {
+                        return false;
+                    }
+                    let qpos = alignment.qpos().unwrap(); // safe cause we checked for deletions before
                     let record = alignment.record();
-                    let mut filter = !(alignment.is_del() || alignment.is_refskip());
-                    filter &= record.mapq() >= self.config.min_mapq;
+                    let seq_len = record.seq_len();
+                    
+                    if seq_len == 0
+                    {
+                        return false;
+                    }
+
+                    let mut filter = record.mapq() >= self.config.min_mapq;
                     // Require all "required" flags (properly paired/aligned)
                     filter &= (record.flags() & self.config.required_flags) == self.config.required_flags;
                     // exclude reads matching _any_ excluded flag
                     filter &= (record.flags() & self.config.excluded_flags) == 0;
-                    filter
+                    if filter == false
+                    {
+                        return false;
+                    }
+                    
+                    let qual = record.qual()[qpos];
+                    if qual < self.config.min_baseq
+                    {
+                        return false;
+                    }
+
+                    // first in pair
+                    if record.flags() & FLAGS.is_first_in_pair > 0
+                    {
+                        // F1R2
+                        if record.flags() & FLAGS.mate_is_reverse_strand > 0 {
+                            // Ensure that there's at least one base left after soft-trimming
+                            if seq_len < self.config.ot_mask.r1.0+self.config.ot_mask.r1.1 + 1 {
+                                return false;
+                            }
+
+                            if qpos < self.config.ot_mask.r1.0 || qpos > seq_len-self.config.ot_mask.r1.1-1
+                            {
+                                return false;
+                            }
+                        }
+                        else // F2R1
+                        {
+                            if seq_len < self.config.ob_mask.r1.0+self.config.ob_mask.r1.1 + 1 {
+                                return false;
+                            }
+
+                            // I'm flipping the start/end here, because the R1 of the OB is reversed but 
+                            // samtools reports it in ref direction, so if I want to remove 5 bases from the start
+                            // of the read, that's actually the "end" in the coordinate system that htslib provides
+                            if qpos < self.config.ob_mask.r1.1 || qpos > seq_len-self.config.ob_mask.r1.0-1
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                    else 
+                    {
+                        // F1R2
+                        if record.flags() & FLAGS.is_reverse_strand > 0 {
+                            if seq_len < self.config.ot_mask.r2.0+self.config.ot_mask.r2.1 + 1 {
+                                return false;
+                            }
+                            // also flipped the end/start mask, cause the read is mapped in reverse
+                            if qpos < self.config.ot_mask.r2.1 || qpos > seq_len-self.config.ot_mask.r2.0-1
+                            {
+                                return false;
+                            }
+                        }
+                        else // F2R1
+                        {
+                            if seq_len < self.config.ob_mask.r2.0+self.config.ob_mask.r2.1 + 1 {
+                                return false;
+                            }
+                            if qpos < self.config.ob_mask.r2.0 || qpos > seq_len-self.config.ob_mask.r2.1-1
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                    
+                    true
                 };
 
                 'alignment_loop:
-                for alignment in
-                                                pileup
+                for alignment in pileup
                                                 .alignments()
                                                 .filter(filter_closure)
                 {
@@ -239,18 +318,8 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
                     let record = alignment.record();
                     let seq = record.seq();
 
-                    if seq.len() == 0
-                    {
-                        continue 'alignment_loop;
-                    }
-
-                    let qual = record.qual()[pos];
-                    if qual < self.config.min_baseq
-                    {
-                        continue 'alignment_loop;
-                    }
-
                     let base = seq[pos];
+                    let qual = record.qual()[pos];
 
                     let nuc_counts =
                     {
@@ -354,7 +423,9 @@ pub fn run_caller(
     max_depth_option: &Option<u32>,
     chunk_size_option: &Option<usize>,
     req_flags_option: &Option<u16>,
-    excl_flags_option: &Option<u16>) -> Result<(), Box<dyn Error>> 
+    excl_flags_option: &Option<u16>,
+    nOT_option: &Option<String>,
+    nOB_option: &Option<String>) -> Result<(), Box<dyn Error>> 
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -378,6 +449,17 @@ pub fn run_caller(
     if let Some(flags) = excl_flags_option {
         config.excluded_flags = *flags;
     }
+    if let Some(nOT_s) = nOT_option {
+        if let Ok(ot_mask) = ReadMaskSetting::from_str(nOT_s) {
+            config.ot_mask = ot_mask;
+        }
+    }
+    if let Some(nOB_s) = nOB_option {
+        if let Ok(ob_mask) = ReadMaskSetting::from_str(nOB_s) {
+            config.ob_mask = ob_mask;
+        }
+    }
+
     let counter = VariantCounter::with_config(config).unwrap();
 
     let mut lock = stdout().lock();

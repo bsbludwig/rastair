@@ -1,8 +1,12 @@
+use std::str::FromStr;
+
 pub mod count_variants;
 pub mod count_reads;
 
 // Bundle some utility structs and constants in here for all operations
 const MAX_DEPTH: u32 = 500;
+
+/// Utility structure to encode sam flags by name
 struct Flags
 {
     is_paired: u16,
@@ -33,3 +37,36 @@ const FLAGS: Flags = Flags
     is_duplicate: 0x400,
     is_supplemental: 0x800
 };
+
+/// Represent a read softmask, to exclude certain portions of the read
+pub struct ReadMask(usize, usize);
+
+pub struct ReadMaskSetting {
+    r1: ReadMask,
+    r2: ReadMask
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseMaskError;
+
+impl FromStr for ReadMaskSetting { 
+    type Err = ParseMaskError;
+    
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let values = s
+            .trim()
+            .split(',')
+            .collect::<Vec<&str>>();
+        if values.len() != 4
+        {
+            return Err(ParseMaskError);
+        }
+
+        let r1_left = values[0].parse::<usize>().map_err(|_| ParseMaskError)?;
+        let r1_right = values[1].parse::<usize>().map_err(|_| ParseMaskError)?;
+        let r2_left = values[2].parse::<usize>().map_err(|_| ParseMaskError)?;
+        let r2_right = values[3].parse::<usize>().map_err(|_| ParseMaskError)?;
+
+        Ok(ReadMaskSetting { r1: ReadMask(r1_left, r1_right), r2: ReadMask(r2_left, r2_right) })
+    }
+}
