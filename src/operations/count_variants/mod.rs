@@ -566,5 +566,43 @@ mod tests {
         };
         
         Ok(())
-    }    
+    }
+
+    #[test]
+    fn can_filter_with_masking_1() -> Result<()>
+    {
+        let mut config = create_test_config()?;
+        config.ot_mask = ReadMaskSetting::from_str(&"1,0,0,1").unwrap();
+        config.ob_mask = ReadMaskSetting::from_str(&"0,1,1,0").unwrap();
+        let filter = VariantCounter::generate_alignemnt_filter(&config);
+        let mut bam = IndexedReader::from_path(&config.bam_path)?;
+
+        bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
+        if let Ok(pileup) = bam.pileup().nth(0).unwrap() {
+            let alignments: Vec<Alignment> = pileup.alignments().collect();
+            assert_eq!(alignments.len(), 7);
+            assert_eq!(alignments.into_iter().filter(filter).count(), 0);
+        };
+        
+        Ok(())
+    }
+
+    #[test]
+    fn can_filter_with_masking_2() -> Result<()>
+    {
+        let mut config = create_test_config()?;
+        config.ot_mask = ReadMaskSetting::from_str(&"1,0,0,1").unwrap();
+        config.ob_mask = ReadMaskSetting::from_str(&"1,0,0,1").unwrap();
+        let filter = VariantCounter::generate_alignemnt_filter(&config);
+        let mut bam = IndexedReader::from_path(&config.bam_path)?;
+
+        bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
+        if let Ok(pileup) = bam.pileup().nth(0).unwrap() {
+            let alignments: Vec<Alignment> = pileup.alignments().collect();
+            assert_eq!(alignments.len(), 7);
+            assert_eq!(alignments.into_iter().filter(filter).count(), 1);
+        };
+        
+        Ok(())
+    }
 }
