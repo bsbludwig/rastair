@@ -9,6 +9,7 @@ use bio::io::fasta::IndexedReader;
 use bio::utils::Text;
 
 const DEFAULT_STEP_SIZE: usize = 100000;
+const DEFAULT_TILING: usize = 1;
 
 /// A genomic position, represented by its base and position, and the position
 /// relative to the (arbitrary) segment slice it belongs to.
@@ -90,11 +91,18 @@ impl Display for SequenceSegment
 /// into shorter, more manageable chunks
 pub struct SequenceSegmentIterator<R: Read + Seek>
 {
+    /// FASTA reader
     reader: IndexedReader<R>,
+    /// Array of target regions to iterate over (contigId/from/to)
     sequences: Vec<(String, u64, u64)>,
+    /// current position in the `sequences`` index
     index_pos: usize,
+    /// position in current contig
     pos: u64,
+    /// size of the interval to process at each step
     step_size: usize,
+    /// overlap of the next window with the previous one. 
+    /// Defaults to 1, ie include the last base of the previous window in the same contig
     tiling: usize,
 }
 
@@ -138,7 +146,7 @@ where
             index_pos: 0,
             pos: 0,
             step_size: DEFAULT_STEP_SIZE,
-            tiling: 1
+            tiling: DEFAULT_TILING
         };
         Ok(new_seq_seg)
     }
@@ -328,9 +336,9 @@ id2\t40\t71\t12\t13
 
         let seq_info2 = seg_iter.next().unwrap();
         assert_eq!(&seq_info2.contig, "id");
-        assert_eq!(seq_info2.start, 30);
+        assert_eq!(seq_info2.start, 29);
         assert_eq!(seq_info2.stop, 52);
-        assert_eq!(&seq_info2.sequence, b"CTGAAAGTAGGCTGAAAACCCC");
+        assert_eq!(&seq_info2.sequence, b"GCTGAAAGTAGGCTGAAAACCCC");
 
         let seq_info3 = seg_iter.next().unwrap();
         assert_eq!(&seq_info3.contig, "id2");
@@ -340,9 +348,9 @@ id2\t40\t71\t12\t13
 
         let seq_info4 = seg_iter.next().unwrap();
         assert_eq!(&seq_info4.contig, "id2");
-        assert_eq!(seq_info4.start, 30);
+        assert_eq!(seq_info4.start, 29);
         assert_eq!(seq_info4.stop, 40);
-        assert_eq!(&seq_info4.sequence, b"GTTTTAGGGG");
+        assert_eq!(&seq_info4.sequence, b"TGTTTTAGGGG");
 
         assert!(seg_iter.reached_end());
 
@@ -369,7 +377,7 @@ id2\t40\t71\t12\t13
         let cpg_pos2 = seq_info2.find_cpgs().unwrap();
         assert_eq!(cpg_pos2.len(), 2);
         assert_eq!(cpg_pos2[0].pos_in_contig(), 13);
-        assert_eq!(cpg_pos2[0].pos_in_segment, 1);
+        assert_eq!(cpg_pos2[0].pos_in_segment, 2);
         Ok(())
     }
 }
