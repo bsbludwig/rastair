@@ -94,7 +94,9 @@ pub struct VariantCounterConfig<P>
     /// Mask out a certain number of bases from the left and right for OT reads
     pub ot_mask: ReadMaskSetting,
     /// Mask out a certain number of bases from the left and right for OB reads
-    pub ob_mask: ReadMaskSetting
+    pub ob_mask: ReadMaskSetting,
+    /// set the number of threads to use in htslib internally
+    pub htslib_threads: usize
 }
 
 impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
@@ -113,7 +115,8 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
             keep_overlaps: false,
             ot_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
-            ob_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) }
+            ob_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
+            htslib_threads: 0
         };
         Ok(v)
     }
@@ -133,6 +136,10 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
     pub fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
     {
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
+        if config.htslib_threads > 0
+        {
+            bam.set_threads(config.htslib_threads)?;
+        }
         let mut fasta = SequenceSegmentIterator::with_file_and_stepsize(&config.fasta_path, config.chunk_size)?;
 
         // intersect the index files
@@ -465,7 +472,8 @@ pub fn run_caller(
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
     nOT_option: &Option<String>,
-    nOB_option: &Option<String>) -> Result<(), Box<dyn Error>> 
+    nOB_option: &Option<String>,
+    read_threads_option: &Option<usize>) -> Result<(), Box<dyn Error>> 
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -488,6 +496,9 @@ pub fn run_caller(
     }
     if let Some(flags) = excl_flags_option {
         config.excluded_flags = *flags;
+    }
+    if let Some(threads) = read_threads_option {
+        config.htslib_threads = *threads;
     }
     #[allow(non_snake_case)]
     if let Some(nOT_s) = nOT_option {

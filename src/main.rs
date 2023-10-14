@@ -55,13 +55,18 @@ enum Commands
         #[arg(short='F', long)]
         excluded_flags: Option<u16>,
 
-        /// Soft-trim the OT by that many bases from either end
+        /// Soft-trim the OT by that many bases from either end [default: 0,0,0,0]
         #[arg(long="nOT")]
         n_ot: Option<String>,
         
-        /// Soft-trim the OT by that many bases from either end
+        /// Soft-trim the OT by that many bases from either end [default: 0,0,0,0]
         #[arg(long="nOB")]
-        n_ob: Option<String>
+        n_ob: Option<String>,
+
+        /// Number of threads to use inside htslib for decompression [default: 1]
+        #[arg(short='@', long)]
+        read_threads: Option<usize>,
+        
     },
 }
 
@@ -91,7 +96,8 @@ fn main()
             required_flags, 
             excluded_flags,
             n_ot,
-            n_ob }) => 
+            n_ob,
+            read_threads }) => 
             {
                 match run_caller(bam_file, 
                     fasta_file, 
@@ -102,7 +108,8 @@ fn main()
                     required_flags, 
                     excluded_flags,
                     n_ot,
-                    n_ob ) 
+                    n_ob,
+                    read_threads ) 
                 {
                     Ok(()) => (),
                     Err(e)  => 
