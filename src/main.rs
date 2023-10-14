@@ -64,7 +64,7 @@ enum Commands
         n_ob: Option<String>,
 
         /// Number of threads to use inside htslib for decompression [default: 1]
-        #[arg(short='@', long)]
+        #[arg(long)]
         read_threads: Option<usize>,
         
     },
