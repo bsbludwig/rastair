@@ -1,4 +1,4 @@
-use rust_htslib::bam::pileup::Alignment;
+use rust_htslib::bam::pileup::{Alignment, Pileups};
 use rust_htslib::bam::{IndexedReader, Read};
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use std::io::{stdout, Write};
 use log::{debug, warn, error};
 use anyhow::{Result, bail};
 
-use crate::sequence_segment::SequenceSegmentIterator;
+use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
 
 // Faster hashing than built-in algo
 use hashers::fx_hash::FxHasher;
@@ -146,17 +146,100 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
             None    => bail!("No sequences intersect between fasta and bam")
         }
     }
-}
 
-impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
-{
-    type Item = Vec<VariantCount>;
-
-    fn next(&mut self) -> Option<Self::Item>
+    fn generate_alignemnt_filter<'a>(config: &'a VariantCounterConfig<P>) -> impl Fn(&Alignment<'a>) -> bool
     {
-        let segment = self.fasta.next()?;
+        let filter_closure = |alignment: &Alignment| -> bool
+        {
+            if alignment.is_del() || alignment.is_refskip() {
+                return false;
+            }
+            let qpos = alignment.qpos().unwrap(); // safe cause we checked for deletions before
+            let record = alignment.record();
+            let seq_len = record.seq_len();
+            
+            if seq_len == 0
+            {
+                return false;
+            }
 
-        debug!("Process {}", &segment);
+            let mut filter = record.mapq() >= config.min_mapq;
+            // Require all "required" flags (properly paired/aligned)
+            filter &= (record.flags() & config.required_flags) == config.required_flags;
+            // exclude reads matching _any_ excluded flag
+            filter &= (record.flags() & config.excluded_flags) == 0;
+            if filter == false
+            {
+                return false;
+            }
+            
+            let qual = record.qual()[qpos];
+            if qual < config.min_baseq
+            {
+                return false;
+            }
+
+            // first in pair
+            if record.flags() & FLAGS.is_first_in_pair > 0
+            {
+                // F1R2
+                if record.flags() & FLAGS.mate_is_reverse_strand > 0 {
+                    // Ensure that there's at least one base left after soft-trimming
+                    if seq_len < config.ot_mask.r1.0+config.ot_mask.r1.1 + 1 {
+                        return false;
+                    }
+
+                    if qpos < config.ot_mask.r1.0 || qpos > seq_len-config.ot_mask.r1.1-1
+                    {
+                        return false;
+                    }
+                }
+                else // F2R1
+                {
+                    if seq_len < config.ob_mask.r1.0+config.ob_mask.r1.1 + 1 {
+                        return false;
+                    }
+
+                    // I'm flipping the start/end here, because the R1 of the OB is reversed but 
+                    // samtools reports it in ref direction, so if I want to remove 5 bases from the start
+                    // of the read, that's actually the "end" in the coordinate system that htslib provides
+                    if qpos < config.ob_mask.r1.1 || qpos > seq_len-config.ob_mask.r1.0-1
+                    {
+                        return false;
+                    }
+                }
+            }
+            else 
+            {
+                // F1R2
+                if record.flags() & FLAGS.is_reverse_strand > 0 {
+                    if seq_len < config.ot_mask.r2.0+config.ot_mask.r2.1 + 1 {
+                        return false;
+                    }
+                    // also flipped the end/start mask, cause the read is mapped in reverse
+                    if qpos < config.ot_mask.r2.1 || qpos > seq_len-config.ot_mask.r2.0-1
+                    {
+                        return false;
+                    }
+                }
+                else // F2R1
+                {
+                    if seq_len < config.ob_mask.r2.0+config.ob_mask.r2.1 + 1 {
+                        return false;
+                    }
+                    if qpos < config.ob_mask.r2.0 || qpos > seq_len-config.ob_mask.r2.1-1
+                    {
+                        return false;
+                    }
+                }
+            }
+            
+            true
+        };
+        filter_closure
+    }
+    fn count_variants_in_segment(&mut self, segment: SequenceSegment) -> Option<Vec<VariantCount>>
+    {
         //TODO this needs changing to make it more generic, ie allow different types of subsets
         // Search the string segment for all CpG positions
         let cpg_positions = segment.find_cpgs().unwrap_or(Vec::new());
@@ -165,27 +248,12 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
         {
             return Some(Vec::new());
         }
+        
+        let mut pileup_iterator = self.bam.pileup();
+        pileup_iterator.set_max_depth(self.config.max_depth);
 
         // Allocate enough space for output
         let mut output: Vec<VariantCount> = Vec::with_capacity(cpg_positions.len());
-
-        /* Fetch the pileup for the region from the bam file, and go
-        * through all CpG positions, performing whatever calculation
-        * needs to be performed. Stream the output to a writer that
-        * writes the results to STDOUT or some file.
-        */
-        match self.bam.fetch((&segment.contig[..], segment.start, segment.stop))
-        {
-            Ok(_) => (),
-            Err(e) =>
-            {
-                warn!("Error fetching sequence for {}: {}", &segment, e);
-                return None;
-            }
-        }
-
-        let mut pileup_iterator = self.bam.pileup();
-        pileup_iterator.set_max_depth(self.config.max_depth);
 
         // Pre-create a hash to keep; pre-allocate memory to hold as many reads as the max read depth allows
         let mut read_hash:HashMap<Vec<u8>, (u8, u8), BuildHasherDefault<FxHasher>> = HashMap::with_capacity_and_hasher(self.config.max_depth as usize, BuildHasherDefault::<FxHasher>::default());
@@ -209,6 +277,8 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
             let pileup_pos = pileup.pos() as u64;
             let this_position = &cpg_positions[cpg_index];
 
+            let filter_closure = VariantCounter::generate_alignemnt_filter(&self.config);
+            
             if pileup_pos == this_position.pos_in_contig()
             {
                 debug!("Found a CpG site at {}", this_position);
@@ -219,94 +289,6 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
                 var_count.contig = segment.contig.clone();
                 var_count.pos = this_position.pos_in_contig();
                 var_count.ref_base = this_position.base();
-
-                let filter_closure = |alignment: &Alignment| -> bool
-                {
-                    if alignment.is_del() || alignment.is_refskip() {
-                        return false;
-                    }
-                    let qpos = alignment.qpos().unwrap(); // safe cause we checked for deletions before
-                    let record = alignment.record();
-                    let seq_len = record.seq_len();
-                    
-                    if seq_len == 0
-                    {
-                        return false;
-                    }
-
-                    let mut filter = record.mapq() >= self.config.min_mapq;
-                    // Require all "required" flags (properly paired/aligned)
-                    filter &= (record.flags() & self.config.required_flags) == self.config.required_flags;
-                    // exclude reads matching _any_ excluded flag
-                    filter &= (record.flags() & self.config.excluded_flags) == 0;
-                    if filter == false
-                    {
-                        return false;
-                    }
-                    
-                    let qual = record.qual()[qpos];
-                    if qual < self.config.min_baseq
-                    {
-                        return false;
-                    }
-
-                    // first in pair
-                    if record.flags() & FLAGS.is_first_in_pair > 0
-                    {
-                        // F1R2
-                        if record.flags() & FLAGS.mate_is_reverse_strand > 0 {
-                            // Ensure that there's at least one base left after soft-trimming
-                            if seq_len < self.config.ot_mask.r1.0+self.config.ot_mask.r1.1 + 1 {
-                                return false;
-                            }
-
-                            if qpos < self.config.ot_mask.r1.0 || qpos > seq_len-self.config.ot_mask.r1.1-1
-                            {
-                                return false;
-                            }
-                        }
-                        else // F2R1
-                        {
-                            if seq_len < self.config.ob_mask.r1.0+self.config.ob_mask.r1.1 + 1 {
-                                return false;
-                            }
-
-                            // I'm flipping the start/end here, because the R1 of the OB is reversed but 
-                            // samtools reports it in ref direction, so if I want to remove 5 bases from the start
-                            // of the read, that's actually the "end" in the coordinate system that htslib provides
-                            if qpos < self.config.ob_mask.r1.1 || qpos > seq_len-self.config.ob_mask.r1.0-1
-                            {
-                                return false;
-                            }
-                        }
-                    }
-                    else 
-                    {
-                        // F1R2
-                        if record.flags() & FLAGS.is_reverse_strand > 0 {
-                            if seq_len < self.config.ot_mask.r2.0+self.config.ot_mask.r2.1 + 1 {
-                                return false;
-                            }
-                            // also flipped the end/start mask, cause the read is mapped in reverse
-                            if qpos < self.config.ot_mask.r2.1 || qpos > seq_len-self.config.ot_mask.r2.0-1
-                            {
-                                return false;
-                            }
-                        }
-                        else // F2R1
-                        {
-                            if seq_len < self.config.ob_mask.r2.0+self.config.ob_mask.r2.1 + 1 {
-                                return false;
-                            }
-                            if qpos < self.config.ob_mask.r2.0 || qpos > seq_len-self.config.ob_mask.r2.1-1
-                            {
-                                return false;
-                            }
-                        }
-                    }
-                    
-                    true
-                };
 
                 'alignment_loop:
                 for alignment in pileup
@@ -389,6 +371,34 @@ impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
         }
 
         Some(output)
+    }
+}
+
+impl <P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounter<P>
+{
+    type Item = Vec<VariantCount>;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        let segment = self.fasta.next()?;
+
+        debug!("Process {}", &segment);
+
+        /* Fetch the pileup for the region from the bam file, and go
+        * through all CpG positions, performing whatever calculation
+        * needs to be performed. Stream the output to a writer that
+        * writes the results to STDOUT or some file.
+        */
+        match self.bam.fetch((&segment.contig[..], segment.start, segment.stop))
+        {
+            Ok(_) => (),
+            Err(e) =>
+            {
+                warn!("Error fetching sequence for {}: {}", &segment, e);
+                return None;
+            }
+        }
+        self.count_variants_in_segment(segment)
     }
 }
 
