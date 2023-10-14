@@ -3,7 +3,7 @@ use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
 use std::path::PathBuf;
 
-use rastair::operations::{count_variants::run_caller};
+use rastair::operations::count_variants::run_caller;
 
 #[derive(Parser)]
 #[command(author="Benjamin Schuster-Boeckler", version, about, long_about=None, arg_required_else_help = true)]

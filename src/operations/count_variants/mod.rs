@@ -1,4 +1,4 @@
-use rust_htslib::bam::pileup::{Alignment, Pileups};
+use rust_htslib::bam::pileup::Alignment;
 use rust_htslib::bam::{IndexedReader, Read};
 
 use std::collections::HashMap;
@@ -18,6 +18,7 @@ use std::hash::BuildHasherDefault;
 
 use super::{MAX_DEPTH, FLAGS, ReadMaskSetting, ReadMask};
 
+/// A simple struct to represent counts of nucleotides
 pub struct NucleotideCount
 {
     pub a: i32,
@@ -34,12 +35,19 @@ impl fmt::Display for NucleotideCount
         write!(f, "A: {} C: {} G: {} T: {} N: {}", self.a, self.c, self.g, self.t, self.n)
     }
 }
+
+/// A representation of a variant position
 pub struct VariantCount
 {
+    /// ID of the sequence
     pub contig: String,
+    /// position in sequence coordinate space
     pub pos: u64,
+    /// Nucleotide in the reference sequence
     pub ref_base: u8,
+    /// Counts of nucleotides observed on the OB
     pub top: NucleotideCount,
+    /// Counts of nucleotides observed on the OT
     pub bottom: NucleotideCount,
 }
 
@@ -62,18 +70,30 @@ impl fmt::Display for VariantCount
     }
 }
 
+/// Configuration of a variant counter
 pub struct VariantCounterConfig<P>
 {
+    /// Path to reference file
     pub fasta_path: P,
+    /// Path to alignment file
     pub bam_path: P,
+    /// Min mapping quality
     pub min_mapq: u8,
+    /// Min base quality
     pub min_baseq: u8,
+    /// Max depth per alignment position
     pub max_depth: u32,
+    /// Step size for iteration
     pub chunk_size: usize,
+    /// Only reads that match all these flags will be considered
     pub required_flags: u16,
+    /// Any read that matches these flags will be ignored
     pub excluded_flags: u16,
+    /// Do not reconcile overlapping read pairs
     pub keep_overlaps: bool,
+    /// Mask out a certain number of bases from the left and right for OT reads
     pub ot_mask: ReadMaskSetting,
+    /// Mask out a certain number of bases from the left and right for OB reads
     pub ob_mask: ReadMaskSetting
 }
 
@@ -99,6 +119,7 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
     }
 }
 
+/// Count variants (ie modifications) in sequence chunks
 pub struct VariantCounter<P: AsRef<Path> + std::fmt::Debug>
 {
     config: VariantCounterConfig<P>,
@@ -108,6 +129,7 @@ pub struct VariantCounter<P: AsRef<Path> + std::fmt::Debug>
 
 impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
 {
+    /// Initiate a new reader from a configuration object
     pub fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
     {
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
@@ -147,6 +169,8 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
         }
     }
 
+    /// Generate a closure that can be used to filter alignments, given the configuration settings
+    /// This is implemented as a class and not a member function to avoid mutable/immutable ref issues
     fn generate_alignemnt_filter<'a>(config: &'a VariantCounterConfig<P>) -> impl Fn(&Alignment<'a>) -> bool
     {
         let filter_closure = |alignment: &Alignment| -> bool
@@ -174,6 +198,8 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
             }
             
             let qual = record.qual()[qpos];
+            
+            println!("qual: {}", qual);
             if qual < config.min_baseq
             {
                 return false;
@@ -238,6 +264,9 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
         };
         filter_closure
     }
+
+    /// For a given sequence segment, return the number of observed nucleotide counts at all covered
+    /// positions
     fn count_variants_in_segment(&mut self, segment: SequenceSegment) -> Option<Vec<VariantCount>>
     {
         //TODO this needs changing to make it more generic, ie allow different types of subsets
@@ -278,7 +307,7 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
             let this_position = &cpg_positions[cpg_index];
 
             let filter_closure = VariantCounter::generate_alignemnt_filter(&self.config);
-            
+
             if pileup_pos == this_position.pos_in_contig()
             {
                 debug!("Found a CpG site at {}", this_position);
@@ -425,6 +454,7 @@ fn increment_counter_by(nuc_counts: &mut NucleotideCount, base: u8, amount: i32)
 }
 
 
+#[allow(non_snake_case)]
 pub fn run_caller(
     bam_path: &PathBuf,
     fasta_path: &PathBuf,
@@ -459,11 +489,13 @@ pub fn run_caller(
     if let Some(flags) = excl_flags_option {
         config.excluded_flags = *flags;
     }
+    #[allow(non_snake_case)]
     if let Some(nOT_s) = nOT_option {
         if let Ok(ot_mask) = ReadMaskSetting::from_str(nOT_s) {
             config.ot_mask = ot_mask;
         }
     }
+    #[allow(non_snake_case)]
     if let Some(nOB_s) = nOB_option {
         if let Ok(ob_mask) = ReadMaskSetting::from_str(nOB_s) {
             config.ob_mask = ob_mask;
@@ -495,6 +527,44 @@ pub fn run_caller(
 ====================================================*/
 #[cfg(test)]
 mod tests {
+    
     // For testing
     use super::*;
+    
+
+    fn create_test_config() -> Result<VariantCounterConfig<PathBuf>>
+    {
+        let fasta_path = PathBuf::from(r"test_data/test.fasta");
+        let bam_path = PathBuf::from(r"test_data/test.bam");
+        let new_config = VariantCounterConfig::with_paths(fasta_path, bam_path)?;
+        Ok(new_config)
+    }
+
+    #[test]
+    fn can_create_config() -> Result<()>
+    {
+        let config = create_test_config()?;
+
+        assert_eq!(config.max_depth, MAX_DEPTH);
+        assert_eq!(config.required_flags, 3);
+        assert_eq!(config.excluded_flags, 3852);
+        Ok(())
+    }
+
+    #[test]
+    fn can_filter_alignments() -> Result<()>
+    {
+        let config = create_test_config()?;
+        let filter = VariantCounter::generate_alignemnt_filter(&config);
+        let mut bam = IndexedReader::from_path(&config.bam_path)?;
+
+        bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
+        if let Ok(pileup) = bam.pileup().nth(0).unwrap() {
+            let alignments: Vec<Alignment> = pileup.alignments().collect();
+            assert_eq!(alignments.len(), 7);
+            assert_eq!(alignments.into_iter().filter(filter).count(), 3);
+        };
+        
+        Ok(())
+    }    
 }
