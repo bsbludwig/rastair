@@ -673,9 +673,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.6.1"
+version = "2.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f478948fd84d9f8e86967bf432640e46adfb5a4bd4f14ef7e864ab38220534ae"
+checksum = "f665ee40bc4a3c5590afb1e9677db74a508659dfd71e126420da8274909a0167"
 
 [[package]]
 name = "multimap"
@@ -946,6 +946,7 @@ dependencies = [
  "hashers",
  "libc",
  "log",
+ "memchr",
  "rust-htslib",
  "stderrlog",
 ]

@@ -3,7 +3,10 @@ use std::path::Path;
 use std::io::{Read, Seek};
 use std::fs;
 use log::{trace, debug, error};
+
 use anyhow::{bail, Result};
+// Very fast substr search
+use memchr::memmem::find_iter;
 
 use bio::io::fasta::IndexedReader;
 use bio::utils::Text;
@@ -58,24 +61,18 @@ impl SequenceSegment
     /// in the current segment
     pub fn find_cpgs(&self) -> Option<Vec<ContigPosition>>
     {
-        let mut positions: Vec<ContigPosition> = Vec::new();
         if self.sequence.len() == 0
         {
             return None
         }
-
-        for i in 1..(self.sequence.len())
+        let start_positions: Vec<usize> = find_iter(&self.sequence, b"CG").collect();
+        let mut results: Vec<ContigPosition> = Vec::with_capacity(start_positions.len()*2);
+        for pos in start_positions
         {
-            let sub_seq = &self.sequence[(i-1)..(i+1)];
-            if sub_seq == b"CG" {
-
-                positions.push(ContigPosition{segment: self,
-                                              pos_in_segment: i-1});
-                positions.push(ContigPosition{segment: self,
-                                              pos_in_segment: i});
-            }
+            results.push(ContigPosition { pos_in_segment: pos, segment: self });
+            results.push(ContigPosition { pos_in_segment: pos+1, segment: self });
         }
-        Some(positions)
+        Some(results)
     }
 }
 
