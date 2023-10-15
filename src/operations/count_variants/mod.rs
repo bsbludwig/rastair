@@ -478,7 +478,7 @@ pub fn run_caller(
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
     
-    let mut config = VariantCounterConfig::with_paths(fasta_path, bam_path).unwrap();
+    let mut config = VariantCounterConfig::with_paths(fasta_path, bam_path)?;
     if let Some(min_mapq) = mapq_option {
         config.min_mapq = *min_mapq;
     }
@@ -513,7 +513,7 @@ pub fn run_caller(
         }
     }
 
-    let counter = VariantCounter::with_config(config).unwrap();
+    let counter = VariantCounter::with_config(config)?;
 
     let mut lock = stdout().lock();
     for cpgs in counter
