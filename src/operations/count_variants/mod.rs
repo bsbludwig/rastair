@@ -468,12 +468,12 @@ pub fn run_caller(
     mapq_option: &Option<u8>,
     baseq_option: &Option<u8>,
     max_depth_option: &Option<u32>,
-    chunk_size_option: &Option<usize>,
+    chunk_size_option: &Option<u32>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
     nOT_option: &Option<String>,
     nOB_option: &Option<String>,
-    read_threads_option: &Option<usize>) -> Result<(), Box<dyn Error>> 
+    read_threads_option: &Option<u8>) -> Result<(), Box<dyn Error>> 
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -489,7 +489,7 @@ pub fn run_caller(
         config.max_depth = *max_depth;
     }
     if let Some(cs) = chunk_size_option {
-        config.chunk_size = *cs;
+        config.chunk_size = *cs as usize;
     }
     if let Some(flags) = req_flags_option {
         config.required_flags = *flags;
@@ -498,7 +498,7 @@ pub fn run_caller(
         config.excluded_flags = *flags;
     }
     if let Some(threads) = read_threads_option {
-        config.htslib_threads = *threads;
+        config.htslib_threads = *threads as usize;
     }
     #[allow(non_snake_case)]
     if let Some(nOT_s) = nOT_option {

@@ -44,8 +44,8 @@ enum Commands
         max_depth: Option<u32>,
         
         /// number of reference positions processed in-memory at once [default: 100000]
-        #[arg(short='s', long, value_parser = clap::value_parser!(u8).range(1..))]
-        chunk_size: Option<usize>,
+        #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
+        chunk_size: Option<u32>,
         
         /// Include reads that match all of these bit-flags (as decimal) [default: 3]
         #[arg(short='f', long)]
@@ -64,8 +64,8 @@ enum Commands
         n_ob: Option<String>,
 
         /// Number of threads to use inside htslib for decompression [default: 1]
-        #[arg(long)]
-        read_threads: Option<usize>,
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
+        read_threads: Option<u8>,
         
     },
 }
