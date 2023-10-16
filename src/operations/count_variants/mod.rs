@@ -11,7 +11,7 @@ use log::debug;
 use thiserror::Error;
 use anyhow::Result;
 use r2d2::ManageConnection;
-use pariter::IteratorExt as _;
+//use pariter::{IteratorExt as _, scope};
 
 use crate::sequence_segment::SequenceSegmentIterator;
 
@@ -106,12 +106,12 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug + std::marker::Send + std::marker
         }
     }
 
-    fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+    fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error> {
         //TODO better check for valid connection?
         Ok(())
     }
 
-    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+    fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
         false
     }
 }
@@ -205,9 +205,13 @@ pub fn run_caller(
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
 
-    for segment in iterator
-    {
-        for cpg in counter.count_variants_in_segment(segment).iter().flatten()
+    iterator
+        .map(|segment|
+        {
+            counter.count_variants_in_segment(segment).unwrap()
+        })
+        .flatten()
+        .for_each(|cpg| 
         {
             if cpg.ref_base == b'C'
             { // C
@@ -217,7 +221,6 @@ pub fn run_caller(
             { // G
                 writeln!(lock, "{}\t{}\t{}\t.\t.\t-\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.bottom.g, cpg.bottom.a, cpg.top.g, cpg.top.a, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t).unwrap();
             }
-        }
-    }
+        });
     Ok(())
 }
