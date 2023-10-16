@@ -453,7 +453,7 @@ mod tests {
 
     fn create_test_config() -> Result<VariantCounterConfig<PathBuf>>
     {
-        let fasta_path = PathBuf::from(r"test_data/test.fasta");
+        //let fasta_path = PathBuf::from(r"test_data/test.fasta");
         let bam_path = PathBuf::from(r"test_data/test.bam");
         let new_config = VariantCounterConfig::with_path(bam_path)?;
         Ok(new_config)
