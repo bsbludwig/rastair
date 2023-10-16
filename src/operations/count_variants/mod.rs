@@ -228,7 +228,7 @@ pub fn run_caller(
         let segment = sp.segment;
         debug!("Will try to count variants in {}", segment);
         let mut counter = sp.pool.get().unwrap();
-        debug!("Counter address: {:p}", &counter);
+        
         counter.count_variants_in_segment(segment).unwrap()
     })
     .flatten()
