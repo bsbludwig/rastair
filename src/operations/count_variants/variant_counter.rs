@@ -121,7 +121,7 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
         Ok(iterator)
     }
     
-    fn index(&self) -> &Vec<(Vec<u8>, u64, u64)>
+    pub fn index(&self) -> &Vec<(Vec<u8>, u64, u64)>
     {
         &self.bam_index
     }
@@ -224,7 +224,7 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
 
     /// For a given sequence segment, return the number of observed nucleotide counts at all covered
     /// positions
-    fn count_variants_in_segment(&mut self, segment: SequenceSegment) -> Option<Vec<VariantCount>>
+    pub fn count_variants_in_segment(&mut self, segment: SequenceSegment) -> Option<Vec<VariantCount>>
     {
         //TODO this needs changing to make it more generic, ie allow different types of subsets
         // Search the string segment for all CpG positions

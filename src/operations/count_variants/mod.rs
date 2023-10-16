@@ -4,12 +4,16 @@ use std::str::FromStr;
 use std::fmt;
 use std::error::Error;
 use std::io::{stdout, Write};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use log::debug;
 
 use thiserror::Error;
 use anyhow::Result;
 use r2d2::ManageConnection;
+use pariter::IteratorExt as _;
+
+use crate::sequence_segment::SequenceSegmentIterator;
 
 pub use super::{ReadMaskSetting, ReadMask};
 use super::{FLAGS, MAX_DEPTH};
@@ -103,11 +107,12 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug + std::marker::Send + std::marker
     }
 
     fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
-        todo!()
+        //TODO better check for valid connection?
+        Ok(())
     }
 
     fn has_broken(&self, conn: &mut Self::Connection) -> bool {
-        todo!()
+        false
     }
 }
 
@@ -136,7 +141,7 @@ pub fn run_caller(
         0
     };
 
-    let mut config = VariantCounterConfig::with_path(bam_path)?;
+    let mut config = VariantCounterConfig::with_path(bam_path.clone())?;
     if let Some(min_mapq) = mapq_option {
         config.min_mapq = *min_mapq;
     }
@@ -169,7 +174,11 @@ pub fn run_caller(
         }
     }
 
-    let mut counter = VariantCounter::with_config(config)?;
+    let manager = VariantCounterConnectionManager::with_config(config)?;
+    let pool = r2d2::Pool::builder()
+        .max_size(6)
+        .build(manager)?;
+    //let mut counter = VariantCounter::with_config(config)?;
     
     /* TODO this needs refactoring to allow multi-threading:
      * 1a. Loop over genomic segments, and then inject the segment into the VariantCounter [x]
@@ -177,26 +186,28 @@ pub fn run_caller(
      * 2. Change the VariantCounter to not be an iterator, but create a separate VariantCounterIterator
      *    that calls a generic method to extract the nucleotide counts [x]
      * 3. Create a pool of VariantCounters, each with a fixed open bam file, and use one of them per thread,
-     *    using e.g. [R2D2](https://docs.rs/r2d2/latest/r2d2/trait.ManageConnection.html) 
+     *    using e.g. [R2D2](https://docs.rs/r2d2/latest/r2d2/trait.ManageConnection.html) [x]
      * 4. Use e.g. [pariter](https://lib.rs/crates/pariter) and fetch a VariantCounter (with attached bam handle)
      *    for each closure invokation
     */
-    let iterator = 
+    let mut iterator: SequenceSegmentIterator<File> = 
         if chunk_size == 0 
         { 
-            counter.count_from_file(fasta_path)? 
+            SequenceSegmentIterator::with_file(fasta_path)?
         } 
         else 
         { 
-            counter.count_from_file_with_step_size(fasta_path, chunk_size)?
+            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
         };
-    
+    let mut counter = pool.get()?;
+    iterator.subset_to_intervals(counter.index())?;
+    //drop(counter);
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
 
-    for cpgs in iterator
+    for segment in iterator
     {
-        for cpg in cpgs
+        for cpg in counter.count_variants_in_segment(segment).iter().flatten()
         {
             if cpg.ref_base == b'C'
             { // C
