@@ -127,7 +127,13 @@ where
 {
     pub fn with_reader(reader:IndexedReader<R>) -> Result<Self>
     {
-        let sequences: Vec<(String, u64, u64)> = reader.index.sequences().iter().map(|seq| (seq.name.clone(), 0, seq.len)).collect();
+        let sequences: Vec<(String, u64, u64)> = 
+            reader
+                .index
+                .sequences()
+                .iter()
+                .map(|seq| (seq.name.clone(), 0, seq.len))
+                .collect();
 
         debug!("Read index with {} sequences", sequences.len());
 
@@ -136,7 +142,7 @@ where
             bail!("No sequences in FASTA file");
         }
 
-        let new_seq_seg = SequenceSegmentIterator
+        let mut new_seq_seg = SequenceSegmentIterator
         {
             reader,
             sequences,
@@ -145,6 +151,7 @@ where
             step_size: DEFAULT_STEP_SIZE,
             tiling: DEFAULT_TILING
         };
+        
         Ok(new_seq_seg)
     }
 

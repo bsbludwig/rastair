@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io::{stdout, Write};
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use log::{debug, info, warn, error};
+use log::{debug, error};
 
 use thiserror::Error;
 use anyhow::Result;
@@ -209,9 +209,9 @@ pub fn run_caller(
         { 
             SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
         };
-    let counter = pool.get()?;
-    iterator.subset_to_intervals(counter.index())?;
-    drop(counter);
+    // let counter = pool.get()?;
+    // iterator.subset_to_intervals(counter.index())?;
+    // drop(counter);
 
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
@@ -227,9 +227,16 @@ pub fn run_caller(
     {
         let segment = sp.segment;
         debug!("Will try to count variants in {}", segment);
-        let mut counter = sp.pool.get().unwrap();
+        let Ok(mut counter) = sp.pool.get() else
+        {
+            panic!("Failed to get counter from pool, too many threads?");
+        };
         
-        counter.count_variants_in_segment(segment).unwrap()
+        match counter.count_variants_in_segment(segment)
+        {
+            Some(res) => res,
+            None => Vec::new()
+        }
     })
     .flatten()
     .for_each(|cpg| 
