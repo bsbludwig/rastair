@@ -4,9 +4,12 @@ use std::str::FromStr;
 use std::fmt;
 use std::error::Error;
 use std::io::{stdout, Write};
+use std::path::{Path, PathBuf};
 use log::debug;
+
+use thiserror::Error;
 use anyhow::Result;
-use std::path::PathBuf;
+use r2d2::ManageConnection;
 
 pub use super::{ReadMaskSetting, ReadMask};
 use super::{FLAGS, MAX_DEPTH};
@@ -61,6 +64,50 @@ impl fmt::Display for VariantCount
     {
         let char = char::from_u32(self.ref_base as u32).unwrap_or_default();
         write!(f, "{}:{} ({})\nFW\t{}\nRV\t{}", self.contig, self.pos, char, self.top, self.bottom)
+    }
+}
+
+struct VariantCounterConnectionManager<P>
+{
+    config: VariantCounterConfig<P>
+}
+
+impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterConnectionManager<P>
+{
+    fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
+    {
+        Ok(VariantCounterConnectionManager{
+            config
+        })
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum VariantCounterConnectionError {
+    #[error("Error connecting to the bam file")]
+    ConnectionError( #[from] anyhow::Error )
+}
+
+impl <P: AsRef<Path> + Clone + std::fmt::Debug + std::marker::Send + std::marker::Sync + 'static> ManageConnection for VariantCounterConnectionManager<P>
+{
+    type Connection = VariantCounter<P>;
+    // TODO create a proper custom error type
+    type Error = VariantCounterConnectionError;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        match VariantCounter::with_config(self.config.clone())
+        {
+            Ok(counter) => Ok(counter),
+            Err(e)  => Err(VariantCounterConnectionError::ConnectionError(e))
+        }
+    }
+
+    fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        todo!()
     }
 }
 

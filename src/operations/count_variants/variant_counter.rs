@@ -15,6 +15,7 @@ use std::hash::BuildHasherDefault;
 
 use super::{MAX_DEPTH, FLAGS, ReadMaskSetting, ReadMask, VariantCount, NucleotideCount};
 
+#[derive(Clone, Debug)]
 /// Configuration of a variant counter
 pub struct VariantCounterConfig<P>
 {
@@ -40,7 +41,7 @@ pub struct VariantCounterConfig<P>
     pub htslib_threads: usize
 }
 
-impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
+impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterConfig<P>
 {
     pub fn with_path(bam_path: P) -> Result<Self>
     {
@@ -62,14 +63,14 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounterConfig<P>
 }
 
 /// Count variants (ie modifications) in sequence chunks
-pub struct VariantCounter<P: AsRef<Path> + std::fmt::Debug>
+pub struct VariantCounter<P: AsRef<Path> + Clone + std::fmt::Debug>
 {
     config: VariantCounterConfig<P>,
     bam:	IndexedReader,
     bam_index: Vec<(Vec<u8>, u64, u64)>
 }
 
-impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
+impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
 {
     /// Initiate a new reader from a configuration object
     pub fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
@@ -374,13 +375,13 @@ impl <P: AsRef<Path> + std::fmt::Debug> VariantCounter<P>
     }
 }
 
-pub struct VariantCounterIterator<'a, P: AsRef<Path> + std::fmt::Debug> 
+pub struct VariantCounterIterator<'a, P: AsRef<Path> + Clone + std::fmt::Debug> 
 {
     counter: &'a mut VariantCounter<P>,
     fasta: SequenceSegmentIterator<fs::File>,
 }
 
-impl <'a, P: AsRef<Path> + std::fmt::Debug> VariantCounterIterator<'a, P>
+impl <'a, P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterIterator<'a, P>
 {
     pub fn with_file_and_counter(fasta_path: P, counter:&'a mut VariantCounter<P>) -> Result<Self>
     {
@@ -404,7 +405,7 @@ impl <'a, P: AsRef<Path> + std::fmt::Debug> VariantCounterIterator<'a, P>
         })
     }
 }
-impl <'a, P: AsRef<Path> + std::fmt::Debug> Iterator for VariantCounterIterator<'a, P>
+impl <'a, P: AsRef<Path> + Clone + std::fmt::Debug> Iterator for VariantCounterIterator<'a, P>
 {
     type Item = Vec<VariantCount>;
 

@@ -39,10 +39,10 @@ const FLAGS: Flags = Flags
 };
 
 /// Represent a read softmask, to exclude certain portions of the read
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ReadMask(usize, usize);
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ReadMaskSetting {
     r1: ReadMask,
     r2: ReadMask
