@@ -156,9 +156,14 @@ where
     /// Intersect the sequences in the fasta file with sequences from e.g. the bam index.
     /// This will reset the iterator, so the next call to `next()` will start form the leftmost interval
     /// in the first sequence again.
-    pub fn subset_to_intervals(&mut self, intervals: &[(Vec<u8>, u64, u64)]) -> Option<()> 
+    pub fn subset_to_intervals(&mut self, intervals: &[(Vec<u8>, u64, u64)]) -> Result<()> 
     {
-        let mut new_sequences: Vec<(String, u64, u64)> = Vec::with_capacity(self.sequences.len());
+        if intervals.len() == 0
+        {
+            bail!("Empty intervals provided");
+        }
+
+        let mut new_sequences: Vec<(String, u64, u64)> = Vec::with_capacity(intervals.len());
         for interval in intervals
         {
             let interval_id = std::str::from_utf8(&interval.0).unwrap_or_default();
@@ -169,24 +174,22 @@ where
         }
         if new_sequences.len() == 0
         {
-            return None;
+            bail!("No overlap between fasta and intervals");
         }
         self.sequences = new_sequences;
         self.rewind()
     }
-
-    fn rewind(&mut self) -> Option<()> {
+    fn rewind(&mut self) -> Result<()> {
         self.index_pos = 0;
         if self.sequences.len() > 0 {
             let seq = &self.sequences[self.index_pos];
             self.pos = seq.1; // initialise as min start position
-            return Some(());
         } 
         else 
         {
             self.pos = 0;
-            return None;
         }
+        Ok(())
     }
 }
 
