@@ -1,19 +1,19 @@
 pub mod variant_counter;
 
 use std::str::FromStr;
-use std::fmt;
+use std::fmt::{Debug, Display, Formatter};
 use std::error::Error;
 use std::io::{stdout, Write};
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use log::debug;
+use log::{debug, info, warn, error};
 
 use thiserror::Error;
 use anyhow::Result;
-use r2d2::ManageConnection;
-//use pariter::{IteratorExt as _, scope};
+use r2d2::{ManageConnection, Pool};
+use pariter::IteratorExt as _;
 
-use crate::sequence_segment::SequenceSegmentIterator;
+use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
 
 pub use super::{ReadMaskSetting, ReadMask};
 use super::{FLAGS, MAX_DEPTH};
@@ -29,9 +29,9 @@ pub struct NucleotideCount
     pub n: i32,
 }
 
-impl fmt::Display for NucleotideCount
+impl Display for NucleotideCount
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
         write!(f, "A: {} C: {} G: {} T: {} N: {}", self.a, self.c, self.g, self.t, self.n)
     }
@@ -62,9 +62,9 @@ impl VariantCount
     }
 }
 
-impl fmt::Display for VariantCount
+impl Display for VariantCount
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
         let char = char::from_u32(self.ref_base as u32).unwrap_or_default();
         write!(f, "{}:{} ({})\nFW\t{}\nRV\t{}", self.contig, self.pos, char, self.top, self.bottom)
@@ -76,7 +76,7 @@ struct VariantCounterConnectionManager<P>
     config: VariantCounterConfig<P>
 }
 
-impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterConnectionManager<P>
+impl <P: AsRef<Path> + Clone + Debug> VariantCounterConnectionManager<P>
 {
     fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
     {
@@ -92,7 +92,7 @@ pub enum VariantCounterConnectionError {
     ConnectionError( #[from] anyhow::Error )
 }
 
-impl <P: AsRef<Path> + Clone + std::fmt::Debug + std::marker::Send + std::marker::Sync + 'static> ManageConnection for VariantCounterConnectionManager<P>
+impl <P: AsRef<Path> + Clone + Debug + std::marker::Send + std::marker::Sync + 'static> ManageConnection for VariantCounterConnectionManager<P>
 {
     type Connection = VariantCounter<P>;
     // TODO create a proper custom error type
@@ -128,7 +128,8 @@ pub fn run_caller(
     excl_flags_option: &Option<u16>,
     nOT_option: &Option<String>,
     nOB_option: &Option<String>,
-    read_threads_option: &Option<u8>) -> Result<(), Box<dyn Error>> 
+    read_threads_option: &Option<u8>,
+    threads_option: &Option<u8>) -> Result<(), Box<dyn Error>> 
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -139,6 +140,14 @@ pub fn run_caller(
     else 
     {
         0
+    };
+
+    let threads = if let Some(t) = threads_option {
+        *t as usize
+    } 
+    else 
+    {
+        1
     };
 
     let mut config = VariantCounterConfig::with_path(bam_path.clone())?;
@@ -161,6 +170,7 @@ pub fn run_caller(
     if let Some(threads) = read_threads_option {
         config.htslib_threads = *threads as usize;
     }
+    
     #[allow(non_snake_case)]
     if let Some(nOT_s) = nOT_option {
         if let Ok(ot_mask) = ReadMaskSetting::from_str(nOT_s) {
@@ -176,7 +186,7 @@ pub fn run_caller(
 
     let manager = VariantCounterConnectionManager::with_config(config)?;
     let pool = r2d2::Pool::builder()
-        .max_size(6)
+        .max_size(threads as u32)
         .build(manager)?;
     //let mut counter = VariantCounter::with_config(config)?;
     
@@ -199,28 +209,45 @@ pub fn run_caller(
         { 
             SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
         };
-    let mut counter = pool.get()?;
+    let counter = pool.get()?;
     iterator.subset_to_intervals(counter.index())?;
-    //drop(counter);
+    drop(counter);
+
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
 
     iterator
-        .map(|segment|
-        {
-            counter.count_variants_in_segment(segment).unwrap()
-        })
-        .flatten()
-        .for_each(|cpg| 
-        {
-            if cpg.ref_base == b'C'
-            { // C
-                writeln!(lock, "{}\t{}\t{}\t.\t.\t+\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.top.c, cpg.top.t, cpg.bottom.c, cpg.bottom.t, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t).unwrap();
-            }
-            else
-            { // G
-                writeln!(lock, "{}\t{}\t{}\t.\t.\t-\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.bottom.g, cpg.bottom.a, cpg.top.g, cpg.top.a, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t).unwrap();
-            }
-        });
+    .map(move |segment| {
+        SegmentCounterPair {
+            segment,
+            pool: pool.clone()
+        }
+    })
+    .parallel_map_custom(|b| b.threads(threads), |sp|
+    {
+        let segment = sp.segment;
+        debug!("Will try to count variants in {}", segment);
+        let mut counter = sp.pool.get().unwrap();
+        debug!("Counter address: {:p}", &counter);
+        counter.count_variants_in_segment(segment).unwrap()
+    })
+    .flatten()
+    .for_each(|cpg| 
+    {
+        if cpg.ref_base == b'C'
+        { // C
+            writeln!(lock, "{}\t{}\t{}\t.\t.\t+\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.top.c, cpg.top.t, cpg.bottom.c, cpg.bottom.t, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t).unwrap();
+        }
+        else
+        { // G
+            writeln!(lock, "{}\t{}\t{}\t.\t.\t-\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.bottom.g, cpg.bottom.a, cpg.top.g, cpg.top.a, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t).unwrap();
+        }
+    });
+
     Ok(())
+}
+
+struct SegmentCounterPair {
+    segment: SequenceSegment,
+    pool: Pool<VariantCounterConnectionManager<PathBuf>>
 }

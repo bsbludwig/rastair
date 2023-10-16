@@ -4,7 +4,8 @@ use rust_htslib::bam::{IndexedReader, Read};
 use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
-use log::{debug, warn, error};
+use std::fmt::Debug;
+use log::{debug, info, warn, error};
 use anyhow::Result;
 
 use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
@@ -41,7 +42,7 @@ pub struct VariantCounterConfig<P>
     pub htslib_threads: usize
 }
 
-impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterConfig<P>
+impl <P: AsRef<Path> + Clone + Debug> VariantCounterConfig<P>
 {
     pub fn with_path(bam_path: P) -> Result<Self>
     {
@@ -63,14 +64,14 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterConfig<P>
 }
 
 /// Count variants (ie modifications) in sequence chunks
-pub struct VariantCounter<P: AsRef<Path> + Clone + std::fmt::Debug>
+pub struct VariantCounter<P: AsRef<Path> + Clone + Debug>
 {
     config: VariantCounterConfig<P>,
     bam:	IndexedReader,
     bam_index: Vec<(Vec<u8>, u64, u64)>
 }
 
-impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
+impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
 {
     /// Initiate a new reader from a configuration object
     pub fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
@@ -156,7 +157,6 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
             
             let qual = record.qual()[qpos];
             
-            println!("qual: {}", qual);
             if qual < config.min_baseq
             {
                 return false;
@@ -232,6 +232,7 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
 
         if cpg_positions.len() == 0
         {
+            info!("No CpGs in {}", segment);
             return Some(Vec::new());
         }
         
@@ -249,7 +250,7 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
                 return None;
             }
         }
-
+        debug!("Successfully fetched sequence");
         let mut pileup_iterator = self.bam.pileup();
         pileup_iterator.set_max_depth(self.config.max_depth);
 
@@ -290,7 +291,7 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
                 var_count.contig = segment.contig.clone();
                 var_count.pos = this_position.pos_in_contig();
                 var_count.ref_base = this_position.base();
-
+                debug!("Iterate over aligments");
                 'alignment_loop:
                 for alignment in pileup
                                                 .alignments()
@@ -300,7 +301,7 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
                     // This copies memory, so don't repeat
                     let record = alignment.record();
                     let seq = record.seq();
-
+                    
                     let base = seq[pos];
                     let qual = record.qual()[pos];
 
@@ -375,13 +376,13 @@ impl <P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounter<P>
     }
 }
 
-pub struct VariantCounterIterator<'a, P: AsRef<Path> + Clone + std::fmt::Debug> 
+pub struct VariantCounterIterator<'a, P: AsRef<Path> + Clone + Debug> 
 {
     counter: &'a mut VariantCounter<P>,
     fasta: SequenceSegmentIterator<fs::File>,
 }
 
-impl <'a, P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterIterator<'a, P>
+impl <'a, P: AsRef<Path> + Clone + Debug> VariantCounterIterator<'a, P>
 {
     pub fn with_file_and_counter(fasta_path: P, counter:&'a mut VariantCounter<P>) -> Result<Self>
     {
@@ -405,7 +406,7 @@ impl <'a, P: AsRef<Path> + Clone + std::fmt::Debug> VariantCounterIterator<'a, P
         })
     }
 }
-impl <'a, P: AsRef<Path> + Clone + std::fmt::Debug> Iterator for VariantCounterIterator<'a, P>
+impl <'a, P: AsRef<Path> + Clone + Debug> Iterator for VariantCounterIterator<'a, P>
 {
     type Item = Vec<VariantCount>;
 

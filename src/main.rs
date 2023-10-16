@@ -67,6 +67,9 @@ enum Commands
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
         read_threads: Option<u8>,
         
+        /// Number of threads to use inside htslib for decompression [default: 1]
+        #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
+        threads: Option<u8>,
     },
 }
 
@@ -97,7 +100,8 @@ fn main()
             excluded_flags,
             n_ot,
             n_ob,
-            read_threads }) => 
+            read_threads,
+            threads }) => 
             {
                 match run_caller(bam_file, 
                     fasta_file, 
@@ -109,7 +113,8 @@ fn main()
                     excluded_flags,
                     n_ot,
                     n_ob,
-                    read_threads ) 
+                    read_threads,
+                    threads ) 
                 {
                     Ok(()) => (),
                     Err(e)  => 
