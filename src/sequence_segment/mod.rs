@@ -65,14 +65,15 @@ impl SequenceSegment
         {
             return None
         }
-        let start_positions: Vec<usize> = find_iter(&self.sequence, b"CG").collect();
-        let mut results: Vec<ContigPosition> = Vec::with_capacity(start_positions.len()*2);
-        for pos in start_positions
-        {
-            results.push(ContigPosition { pos_in_segment: pos, segment: self });
-            results.push(ContigPosition { pos_in_segment: pos+1, segment: self });
-        }
-        Some(results)
+        let start_positions: Vec<ContigPosition> = 
+            find_iter(&self.sequence, b"CG")
+            .map(|pos| 
+                vec![ContigPosition { pos_in_segment: pos, segment: self }, 
+                     ContigPosition { pos_in_segment: pos+1, segment: self }])
+            .flatten()
+            .collect();
+        
+        Some(start_positions)
     }
 }
 
@@ -142,7 +143,7 @@ where
             bail!("No sequences in FASTA file");
         }
 
-        let mut new_seq_seg = SequenceSegmentIterator
+        let new_seq_seg = SequenceSegmentIterator
         {
             reader,
             sequences,
