@@ -209,9 +209,10 @@ pub fn run_caller(
         { 
             SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
         };
-    // let counter = pool.get()?;
-    // iterator.subset_to_intervals(counter.index())?;
-    // drop(counter);
+    // Subset to those sequences that are actually in the bam/fasta file
+    let counter = pool.get()?;
+    iterator.subset_to_intervals(counter.index())?;
+    drop(counter); // Ugly, but I need to free that counter up for later
 
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
