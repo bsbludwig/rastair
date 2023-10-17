@@ -58,7 +58,7 @@ pub struct SequenceSegment
 impl SequenceSegment
 {
     /// Find the positions (relative to the contig coordinates) of all CpGs
-    /// in the current segment
+    /// in the current segment. Return None if no CpGs are found
     pub fn find_cpgs(&self) -> Option<Vec<ContigPosition>>
     {
         if self.sequence.len() == 0
@@ -72,14 +72,17 @@ impl SequenceSegment
             .chain(find_iter(&self.sequence, b"cG"))
             .collect();
         start_positions.sort_unstable();
-        let results = start_positions
+        let results: Vec<ContigPosition> = start_positions
             .iter()
             .map(|pos| 
                 vec![ContigPosition { pos_in_segment: *pos, segment: self }, 
                      ContigPosition { pos_in_segment: *pos+1, segment: self }])
             .flatten()
             .collect();
-        Some(results)
+        match results.len() {
+            0   => None,
+            _   => Some(results)
+        }
     }
 }
 

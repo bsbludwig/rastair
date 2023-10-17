@@ -11,10 +11,10 @@ use log::{debug, error};
 use num_cpus;
 use thiserror::Error;
 use anyhow::Result;
-use r2d2::{ManageConnection, Pool};
+use r2d2::{ManageConnection};
 use pariter::IteratorExt as _;
 
-use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
+use crate::sequence_segment::{SequenceSegmentIterator};
 
 pub use super::{ReadMaskSetting, ReadMask};
 use super::{FLAGS, MAX_DEPTH};
