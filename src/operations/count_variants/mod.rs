@@ -209,16 +209,14 @@ pub fn run_caller(
 
     iterator
     .map(move |segment| {
-        SegmentCounterPair {
-            segment,
-            pool: pool.clone()
-        }
+        (segment, pool.clone())
     })
     .parallel_map_custom(|b| b.threads(threads), |sp|
     {
-        let segment = sp.segment;
+        let segment = sp.0;
+        let pool = sp.1;
         debug!("Will try to count variants in {}", segment);
-        let Ok(mut counter) = sp.pool.get() else
+        let Ok(mut counter) = pool.get() else
         {
             panic!("Failed to get counter from pool, too many threads?");
         };
@@ -243,9 +241,4 @@ pub fn run_caller(
     });
 
     Ok(())
-}
-
-struct SegmentCounterPair {
-    segment: SequenceSegment,
-    pool: Pool<VariantCounterConnectionManager<PathBuf>>
 }

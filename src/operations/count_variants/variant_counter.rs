@@ -228,13 +228,10 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
     {
         //TODO this needs changing to make it more generic, ie allow different types of subsets
         // Search the string segment for all CpG positions
-        let cpg_positions = segment.find_cpgs().unwrap_or(Vec::new());
-
-        if cpg_positions.len() == 0
-        {
+        let Some(cpg_positions) = segment.find_cpgs() else {
             info!("No CpGs in {}", segment);
             return Some(Vec::new());
-        }
+        };
         
         /* Fetch the pileup for the region from the bam file, and go
         * through all CpG positions, performing whatever calculation
@@ -250,7 +247,6 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
                 return None;
             }
         }
-        debug!("Successfully fetched sequence");
         let mut pileup_iterator = self.bam.pileup();
         pileup_iterator.set_max_depth(self.config.max_depth);
 
@@ -279,96 +275,96 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
             let pileup_pos = pileup.pos() as u64;
             let this_position = &cpg_positions[cpg_index];
 
+            if pileup_pos < this_position.pos_in_contig()
+            {
+                continue;
+            }
+
+            debug!("Found CpG site #{}: {}", cpg_index, this_position);
+            cpg_index = cpg_index + 1;
+
             let filter_closure = VariantCounter::generate_alignemnt_filter(&self.config);
 
-            if pileup_pos == this_position.pos_in_contig()
+            // Count conversion vs non-conversion
+            let mut var_count = VariantCount::new();
+            var_count.contig = segment.contig.clone();
+            var_count.pos = this_position.pos_in_contig();
+            var_count.ref_base = this_position.base();
+            'alignment_loop:
+            for alignment in pileup
+                                            .alignments()
+                                            .filter(filter_closure)
             {
-                debug!("Found a CpG site at {}", this_position);
-                cpg_index = cpg_index + 1;
+                let pos = alignment.qpos()?;
+                // This copies memory, so don't repeat
+                let record = alignment.record();
+                let seq = record.seq();
+                
+                let base = seq[pos];
+                let qual = record.qual()[pos];
 
-                // Count conversion vs non-conversion
-                let mut var_count = VariantCount::new();
-                var_count.contig = segment.contig.clone();
-                var_count.pos = this_position.pos_in_contig();
-                var_count.ref_base = this_position.base();
-                debug!("Iterate over aligments");
-                'alignment_loop:
-                for alignment in pileup
-                                                .alignments()
-                                                .filter(filter_closure)
+                let nuc_counts =
                 {
-                    let pos = alignment.qpos()?;
-                    // This copies memory, so don't repeat
-                    let record = alignment.record();
-                    let seq = record.seq();
-                    
-                    let base = seq[pos];
-                    let qual = record.qual()[pos];
-
-                    let nuc_counts =
+                    if (record.flags() & (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == 0)
+                    || (record.flags() & (FLAGS.is_second_in_pair | FLAGS.is_reverse_strand) == 0)
                     {
-                        if (record.flags() & (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == 0)
-                        || (record.flags() & (FLAGS.is_second_in_pair | FLAGS.is_reverse_strand) == 0)
-                        {
-                            &mut var_count.top
-                        }
-                        else
-                        {
-                            &mut var_count.bottom
-                        }
-                    };
-
-                    // Check for overlapping reads if requested
-                    if !self.config.keep_overlaps
+                        &mut var_count.top
+                    }
+                    else
                     {
-                        if let Some(pos_tuple) = read_hash.get(record.qname())
+                        &mut var_count.bottom
+                    }
+                };
+
+                // Check for overlapping reads if requested
+                if !self.config.keep_overlaps
+                {
+                    if let Some(pos_tuple) = read_hash.get(record.qname())
+                    {
+                        debug!("Found overlapping read pair {} at pos {} with bases {} vs {}", std::str::from_utf8(record.qname()).unwrap_or_default(), pos, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(pos_tuple.0 as u32).unwrap_or_default());
+                        //debug!("Found an overlapping read at pos {} in fragment {} ({} vs {})", this_position, String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), pos, pos_tuple.0);
+                        if pos_tuple.0 == base
                         {
-                            debug!("Found overlapping read pair {} at pos {} with bases {} vs {}", std::str::from_utf8(record.qname()).unwrap_or_default(), pos, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(pos_tuple.0 as u32).unwrap_or_default());
-                            //debug!("Found an overlapping read at pos {} in fragment {} ({} vs {})", this_position, String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), pos, pos_tuple.0);
-                            if pos_tuple.0 == base
-                            {
-                                // same sequence in each pair, do not double-count but keep previous
-                                continue 'alignment_loop;
-                            }
-                            else 
-                            {
-                                // Mismatch! Remove previously counted base and ignore this one
-                                // TODO: decide whether to follow the example of Methyldackel and
-                                // count the higher-quality base - however, unlike Methyldackel
-                                // I check for overlaps only _after_ baseq cutoff, so some overlaps
-                                // will have already been treated in that way. If there's two high-quality
-                                // disagreeing calls, I feel it's better to ignore the whole fragment
-                                increment_counter_by(nuc_counts, pos_tuple.0, -1);
-                                continue 'alignment_loop;
-                            }
-                        } 
+                            // same sequence in each pair, do not double-count but keep previous
+                            continue 'alignment_loop;
+                        }
                         else 
                         {
-                            // TODO I'm storing the qual here _in case_ I want to implement quality-based
-                            // decision on which read disagreeing base to keep in the future
-                            read_hash.insert(Vec::from(record.qname()), (base, qual));
+                            // Mismatch! Remove previously counted base and ignore this one
+                            // TODO: decide whether to follow the example of Methyldackel and
+                            // count the higher-quality base - however, unlike Methyldackel
+                            // I check for overlaps only _after_ baseq cutoff, so some overlaps
+                            // will have already been treated in that way. If there's two high-quality
+                            // disagreeing calls, I feel it's better to ignore the whole fragment
+                            increment_counter_by(nuc_counts, pos_tuple.0, -1);
+                            continue 'alignment_loop;
                         }
-                    }
-
-                    match increment_counter_by(nuc_counts, base, 1)
+                    } 
+                    else 
                     {
-                        Some(()) => (),
-                        None => 
-                        {
-                            let char = char::from_u32(base as u32).unwrap_or_default();
-                            warn!("Encountered unknown char {} at {}", char, this_position);
-                        }
+                        // TODO I'm storing the qual here _in case_ I want to implement quality-based
+                        // decision on which read disagreeing base to keep in the future
+                        read_hash.insert(Vec::from(record.qname()), (base, qual));
                     }
                 }
-                // Empty read hash
-                read_hash.clear();
-                debug!("{}", var_count);
-                output.push(var_count);
-                // Check if we're done
-                if cpg_index >= cpg_positions.len()
+
+                match increment_counter_by(nuc_counts, base, 1)
                 {
-                    break 'pileup_loop;
+                    Some(()) => (),
+                    None => 
+                    {
+                        let char = char::from_u32(base as u32).unwrap_or_default();
+                        warn!("Encountered unknown char {} at {}", char, this_position);
+                    }
                 }
+            }
+            // Empty read hash
+            read_hash.clear();
+            output.push(var_count);
+            // Check if we're done
+            if cpg_index >= cpg_positions.len()
+            {
+                break 'pileup_loop;
             }
         }
 
