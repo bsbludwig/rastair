@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
-use std::path::Path;
-use std::io::{Read, Seek};
+use std::path::{Path, PathBuf};
+use std::io::{stdout, Write, Read, Seek};
 use std::fs;
 use log::{trace, debug, error};
 
@@ -277,6 +277,32 @@ where
     }
 }
 
+pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
+{
+    let seg_iter = if step_size > 0
+    {
+        SequenceSegmentIterator::with_file_and_stepsize(file_path, step_size)?
+    } 
+    else 
+    {
+        SequenceSegmentIterator::with_file(file_path)?
+    };
+    let mut lock = stdout().lock();
+    for segment in seg_iter
+    {
+        segment
+            .find_cpgs()
+            .unwrap_or_default()
+            .iter()
+            .for_each(|position| 
+                {
+                    let char = char::from_u32(position.base() as u32).unwrap_or_default();
+                    let seg_id = &position.segment.contig;
+                    writeln!(lock, "{}\t{}\t{}", seg_id, position.pos_in_contig(), char).expect("Error writing to stdout");
+                });
+    }
+    Ok(())
+}
 /*====================================================
  = Unit Tests
 ====================================================*/

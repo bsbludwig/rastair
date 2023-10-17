@@ -4,6 +4,7 @@ use clap::{arg, command, value_parser, Parser, Subcommand};
 use std::path::PathBuf;
 
 use rastair::operations::count_variants::run_caller;
+use rastair::sequence_segment::run_finder;
 
 #[derive(Parser)]
 #[command(author="Benjamin Schuster-Boeckler", version, about, long_about=None, arg_required_else_help = true)]
@@ -71,6 +72,17 @@ enum Commands
         #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
         threads: Option<u8>,
     },
+    /// print a map of all CpGs in a fasta file
+    MapCpgs
+    {
+        /// A sorted and indexed bam file
+        #[arg(value_name="FASTA_FILE", value_parser=value_parser!(PathBuf))]
+        fasta_file: PathBuf,
+
+        /// number of reference positions processed in-memory at once [default: 100000]
+        #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
+        chunk_size: Option<u32>,
+    },
 }
 
 fn main()
@@ -103,6 +115,8 @@ fn main()
             read_threads,
             threads }) => 
             {
+                // TODO move the unboxing of Options to here
+                // instead of doing that inside run_caller
                 match run_caller(bam_file, 
                     fasta_file, 
                     min_mapq, 
@@ -123,6 +137,20 @@ fn main()
                     }
                 }
             },
+        Some(Commands::MapCpgs { 
+                fasta_file, 
+                chunk_size }) => 
+                {
+                    let step_size = chunk_size.unwrap_or_default();
+
+                    match run_finder(fasta_file, step_size as usize)
+                    {
+                        Ok(_) => (),
+                        Err(e) => {
+                            error!("Failed to run cpg_finder: {}", e)
+                        }
+                    }
+                }
         None => ()
     }
 }
