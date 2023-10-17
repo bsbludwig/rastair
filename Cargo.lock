@@ -1100,6 +1100,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
+ "num_cpus",
  "pariter",
  "r2d2",
  "rust-htslib",

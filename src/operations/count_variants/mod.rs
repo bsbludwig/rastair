@@ -8,6 +8,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use log::{debug, error};
 
+use num_cpus;
 use thiserror::Error;
 use anyhow::Result;
 use r2d2::{ManageConnection, Pool};
@@ -134,41 +135,30 @@ pub fn run_caller(
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
 
-    let chunk_size = if let Some(cs) = chunk_size_option {
-        *cs as usize
-    } 
-    else 
-    {
-        0
-    };
-
-    let threads = if let Some(t) = threads_option {
-        *t as usize
-    } 
-    else 
-    {
-        1
-    };
+    let chunk_size = chunk_size_option.unwrap_or_default();
+    
+    let max_threads = num_cpus::get();
+    let threads = std::cmp::min(threads_option.unwrap_or(1) as usize, max_threads);
 
     let mut config = VariantCounterConfig::with_path(bam_path.clone())?;
-    if let Some(min_mapq) = mapq_option {
-        config.min_mapq = *min_mapq;
+    if let Some(min_mapq) = *mapq_option {
+        config.min_mapq = min_mapq;
     }
-    if let Some(min_baseq) = baseq_option {
-        config.min_baseq = *min_baseq;
+    if let Some(min_baseq) = *baseq_option {
+        config.min_baseq = min_baseq;
     }
-    if let Some(max_depth) = max_depth_option {
-        config.max_depth = *max_depth;
+    if let Some(max_depth) = *max_depth_option {
+        config.max_depth = max_depth;
     }
     
-    if let Some(flags) = req_flags_option {
-        config.required_flags = *flags;
+    if let Some(flags) = *req_flags_option {
+        config.required_flags = flags;
     }
-    if let Some(flags) = excl_flags_option {
-        config.excluded_flags = *flags;
+    if let Some(flags) = *excl_flags_option {
+        config.excluded_flags = flags;
     }
-    if let Some(threads) = read_threads_option {
-        config.htslib_threads = *threads as usize;
+    if let Some(threads) = *read_threads_option {
+        config.htslib_threads = threads as usize;
     }
     
     #[allow(non_snake_case)]
@@ -207,7 +197,7 @@ pub fn run_caller(
         } 
         else 
         { 
-            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
+            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size as usize)?
         };
     // Subset to those sequences that are actually in the bam/fasta file
     let counter = pool.get()?;
