@@ -65,15 +65,21 @@ impl SequenceSegment
         {
             return None
         }
-        let start_positions: Vec<ContigPosition> = 
+        let mut start_positions: Vec<usize> = 
             find_iter(&self.sequence, b"CG")
+            .chain(find_iter(&self.sequence, b"cg"))
+            .chain(find_iter(&self.sequence, b"Cg"))
+            .chain(find_iter(&self.sequence, b"cG"))
+            .collect();
+        start_positions.sort_unstable();
+        let results = start_positions
+            .iter()
             .map(|pos| 
-                vec![ContigPosition { pos_in_segment: pos, segment: self }, 
-                     ContigPosition { pos_in_segment: pos+1, segment: self }])
+                vec![ContigPosition { pos_in_segment: *pos, segment: self }, 
+                     ContigPosition { pos_in_segment: *pos+1, segment: self }])
             .flatten()
             .collect();
-        
-        Some(start_positions)
+        Some(results)
     }
 }
 
@@ -323,9 +329,21 @@ ATTGTTGTTTTA
 ATTGTTGTTTTA
 ATTGTTGTTTTA
 GGGG
+>id3
+ATCGATCGATCG
+AATCGATCGATC
+GATCGATCGATC
+GGGGG
+>id4
+ATCGATCGATcG
+AATCGATCgATC
+gATCGATcGATc
+gGGcg
 ";
     const FAI_FILE: &[u8] = b"id\t52\t9\t12\t13
 id2\t40\t71\t12\t13
+id3\t41\t120\t12\t13
+id4\t41\t170\t12\t13
 ";
 
     fn new_seg_iter() -> Result<SequenceSegmentIterator<Cursor<&'static[u8]>>>
@@ -351,8 +369,9 @@ id2\t40\t71\t12\t13
         let mut seg_iter = new_seg_iter()?;
 
         assert!(!seg_iter.reached_end());
-        seg_iter.index_pos = 2;
+        seg_iter.index_pos = 4;
         assert!(seg_iter.reached_end());
+        assert!(seg_iter.next().is_none());
         Ok(())
     }
 
@@ -386,10 +405,6 @@ id2\t40\t71\t12\t13
         assert_eq!(seq_info4.stop, 40);
         assert_eq!(&seq_info4.sequence, b"TGTTTTAGGGG");
 
-        assert!(seg_iter.reached_end());
-
-        assert!(seg_iter.next().is_none());
-
         Ok(())
     }
 
@@ -412,6 +427,30 @@ id2\t40\t71\t12\t13
         assert_eq!(cpg_pos2.len(), 2);
         assert_eq!(cpg_pos2[0].pos_in_contig(), 13);
         assert_eq!(cpg_pos2[0].pos_in_segment, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn can_find_split_cpgs() -> Result<()>
+    {
+        let mut seg_iter = new_seg_iter()?;
+        seg_iter.step_size = 100000;
+        let seq_info: Vec<SequenceSegment> = seg_iter.collect();
+        assert_eq!(seq_info.len(), 4);
+        let cpg_pos = seq_info[2].find_cpgs().unwrap();
+        assert_eq!(cpg_pos.len(), 18);
+        Ok(())
+    }
+
+    #[test]
+    fn can_find_mixed_case() -> Result<()>
+    {
+        let mut seg_iter = new_seg_iter()?;
+        seg_iter.step_size = 100000;
+        let seq_info: Vec<SequenceSegment> = seg_iter.collect();
+        assert_eq!(seq_info.len(), 4);
+        let cpg_pos = seq_info[3].find_cpgs().unwrap();
+        assert_eq!(cpg_pos.len(), 20);
         Ok(())
     }
 }
