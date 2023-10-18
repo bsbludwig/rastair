@@ -11,7 +11,7 @@ use memchr::memmem::find_iter;
 use bio::io::fasta::IndexedReader;
 use bio::utils::Text;
 
-const DEFAULT_STEP_SIZE: usize = 100000;
+const DEFAULT_STEP_SIZE: usize = 10000;
 const DEFAULT_TILING: usize = 1;
 
 /// A genomic position, represented by its base and position, and the position
@@ -290,6 +290,7 @@ pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
 {
     let seg_iter = if step_size > 0
     {
+        debug!("Using step size {}", step_size);
         SequenceSegmentIterator::with_file_and_stepsize(file_path, step_size)?
     } 
     else 
@@ -389,18 +390,21 @@ id4\t41\t170\t12\t13
         assert_eq!(seq_info.start, 0);
         assert_eq!(seq_info.stop, 30);
         assert_eq!(&seq_info.sequence, b"ACCGTAGGCTGACCGTAGGCTGAACGTAGG");
-
+        assert_eq!(seq_info.stop, seq_info.start + seq_info.sequence.len() as u64);
+        
         let seq_info2 = seg_iter.next().unwrap();
         assert_eq!(&seq_info2.contig, "id");
         assert_eq!(seq_info2.start, 29);
         assert_eq!(seq_info2.stop, 52);
         assert_eq!(&seq_info2.sequence, b"GCTGAAAGTAGGCTGAAAACCCC");
+        assert_eq!(seq_info2.stop, seq_info2.start + seq_info2.sequence.len() as u64);
 
         let seq_info3 = seg_iter.next().unwrap();
         assert_eq!(&seq_info3.contig, "id2");
         assert_eq!(seq_info3.start, 0);
         assert_eq!(seq_info3.stop, 30);
         assert_eq!(&seq_info3.sequence, b"ATTGTTGTTTTAATTGTTGTTTTAATTGTT");
+        assert_eq!(seq_info3.stop, seq_info3.start + seq_info3.sequence.len() as u64);
 
         let seq_info4 = seg_iter.next().unwrap();
         assert_eq!(&seq_info4.contig, "id2");

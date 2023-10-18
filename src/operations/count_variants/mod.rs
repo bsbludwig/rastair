@@ -11,10 +11,10 @@ use log::{debug, error};
 use num_cpus;
 use thiserror::Error;
 use anyhow::Result;
-use r2d2::{ManageConnection};
+use r2d2::ManageConnection;
 use pariter::IteratorExt as _;
 
-use crate::sequence_segment::{SequenceSegmentIterator};
+use crate::sequence_segment::SequenceSegmentIterator;
 
 pub use super::{ReadMaskSetting, ReadMask};
 use super::{FLAGS, MAX_DEPTH};
@@ -30,6 +30,12 @@ pub struct NucleotideCount
     pub n: i32,
 }
 
+impl NucleotideCount {
+    pub fn total(&self) -> i32
+    {
+        return self.a + self.c + self.g + self.t + self.n;
+    }
+}
 impl Display for NucleotideCount
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
@@ -60,6 +66,11 @@ impl VariantCount
         let fw = NucleotideCount{a: 0, c: 0, g: 0, t: 0, n: 0};
         let rv = NucleotideCount{a: 0, c: 0, g: 0, t: 0, n: 0};
         VariantCount { contig: String::new(), pos: 0, ref_base: 0, top: fw, bottom: rv }
+    }
+
+    pub fn total_count(&self) -> i32
+    {
+        return self.top.total() + self.bottom.total();
     }
 }
 

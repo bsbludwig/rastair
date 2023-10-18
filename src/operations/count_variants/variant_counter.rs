@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
 use std::fmt::Debug;
-use log::{debug, info, warn, error};
+use log::{trace, debug, info, warn, error};
 use anyhow::Result;
 
 use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
@@ -226,11 +226,12 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
     /// positions
     pub fn count_variants_in_segment(&mut self, segment: SequenceSegment) -> Option<Vec<VariantCount>>
     {
+        debug!("Processing segment {}", &segment);
         //TODO this needs changing to make it more generic, ie allow different types of subsets
         // Search the string segment for all CpG positions
         let Some(cpg_positions) = segment.find_cpgs() else {
-            info!("No CpGs in {}", segment);
-            return Some(Vec::new());
+            info!("No CpGs in {}", &segment);
+            return None;
         };
         
         /* Fetch the pileup for the region from the bam file, and go
@@ -249,7 +250,7 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
         }
         let mut pileup_iterator = self.bam.pileup();
         pileup_iterator.set_max_depth(self.config.max_depth);
-
+        
         // Allocate enough space for output
         let mut output: Vec<VariantCount> = Vec::with_capacity(cpg_positions.len());
 
@@ -259,7 +260,7 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
         // Find the next CpG position that is greater than or equal to the current pos
         // If none exists, we've reached the end
         let mut cpg_index = 0;
-        
+        let mut last_pos = 0;
         'pileup_loop:
         for pileups in pileup_iterator
         {
@@ -272,24 +273,48 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
                     continue;
                 }
             };
+            
             let pileup_pos = pileup.pos() as u64;
-            let this_position = &cpg_positions[cpg_index];
+            last_pos = pileup_pos;
+            trace!("start: {} pileup_pos: {}", segment.start, pileup.pos());
+            let mut this_position = &cpg_positions[cpg_index];
 
             if pileup_pos < this_position.pos_in_contig()
             {
+                // Alignment behind
                 continue;
             }
+            else if pileup_pos > this_position.pos_in_contig() {
+                // Skipped some positions because there were no reads,
+                // ie cpg_pos behind
+                loop {
+                    cpg_index = cpg_index+1;
+                    if cpg_index >= cpg_positions.len()
+                    {
+                        break 'pileup_loop;
+                    }
+                    this_position = &cpg_positions[cpg_index];
+                    if this_position.pos_in_contig() == pileup_pos
+                    {
+                        break;
+                    }
+                    else if this_position.pos_in_contig() > pileup_pos
+                    {
+                        continue 'pileup_loop;
+                    }
+                }
+            }
 
-            debug!("Found CpG site #{}: {}", cpg_index, this_position);
+            debug!("Found CpG site {}, col: {}", this_position, pileup_pos);
             cpg_index = cpg_index + 1;
-
-            let filter_closure = VariantCounter::generate_alignemnt_filter(&self.config);
 
             // Count conversion vs non-conversion
             let mut var_count = VariantCount::new();
             var_count.contig = segment.contig.clone();
-            var_count.pos = this_position.pos_in_contig();
+            var_count.pos = pileup_pos;
             var_count.ref_base = this_position.base();
+            // Need to be done here so that the lifetime of pileup exceeds the lifetime of the closure
+            let filter_closure = VariantCounter::generate_alignemnt_filter(&self.config);
             'alignment_loop:
             for alignment in pileup
                                             .alignments()
@@ -302,7 +327,8 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
                 
                 let base = seq[pos];
                 let qual = record.qual()[pos];
-
+                debug!("Processing pos {} in read {} with base {} and qual {} at col {}", pos, std::str::from_utf8(record.qname()).unwrap_or_default(), char::from_u32(base as u32).unwrap_or_default(), qual, pileup_pos);
+                
                 let nuc_counts =
                 {
                     if (record.flags() & (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == 0)
@@ -321,7 +347,7 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
                 {
                     if let Some(pos_tuple) = read_hash.get(record.qname())
                     {
-                        debug!("Found overlapping read pair {} at pos {} with bases {} vs {}", std::str::from_utf8(record.qname()).unwrap_or_default(), pos, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(pos_tuple.0 as u32).unwrap_or_default());
+                        trace!("Found overlapping read pair {} at pos {} with bases {} vs {}", std::str::from_utf8(record.qname()).unwrap_or_default(), pos, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(pos_tuple.0 as u32).unwrap_or_default());
                         //debug!("Found an overlapping read at pos {} in fragment {} ({} vs {})", this_position, String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), pos, pos_tuple.0);
                         if pos_tuple.0 == base
                         {
@@ -360,14 +386,22 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
             }
             // Empty read hash
             read_hash.clear();
-            output.push(var_count);
+            // only report positions with at least _some_ coverage
+            if var_count.total_count() > 0
+            {
+                output.push(var_count);
+            }
             // Check if we're done
             if cpg_index >= cpg_positions.len()
             {
                 break 'pileup_loop;
             }
         }
-
+        if cpg_index < cpg_positions.len()
+        {
+            warn!("Not all CpG positions were processed! Should have fetched {}, but stopped at {}. {} CpGs skipped.", &segment, last_pos, cpg_positions.len()-cpg_index);
+            debug!("Next CpG in the list: {}", cpg_positions[cpg_index]);
+        }
         Some(output)
     }
 }

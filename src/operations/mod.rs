@@ -4,7 +4,7 @@ pub mod count_variants;
 pub mod count_reads;
 
 // Bundle some utility structs and constants in here for all operations
-const MAX_DEPTH: u32 = 500;
+const MAX_DEPTH: u32 = 10_000;
 
 /// Utility structure to encode sam flags by name
 struct Flags
