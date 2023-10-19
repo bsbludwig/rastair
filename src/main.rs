@@ -68,7 +68,7 @@ enum Commands
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
         read_threads: Option<u8>,
         
-        /// Number of threads to use inside htslib for decompression [default: 1]
+        /// Number of threads to use for variant calling
         #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
         threads: Option<u8>,
     },
