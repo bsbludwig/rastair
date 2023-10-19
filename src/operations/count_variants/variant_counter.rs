@@ -2,7 +2,7 @@ use rust_htslib::bam::pileup::Alignment;
 use rust_htslib::bam::{IndexedReader, Read};
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs;
 use std::fmt::Debug;
 use log::{trace, debug, info, warn, error};
@@ -18,10 +18,10 @@ use super::{MAX_DEPTH, FLAGS, ReadMaskSetting, ReadMask, VariantCount, Nucleotid
 
 #[derive(Clone, Debug)]
 /// Configuration of a variant counter
-pub struct VariantCounterConfig<P>
+pub struct VariantCounterConfig
 {
     /// Path to alignment file
-    pub bam_path: P,
+    pub bam_path: PathBuf,
     /// Min mapping quality
     pub min_mapq: u8,
     /// Min base quality
@@ -42,13 +42,13 @@ pub struct VariantCounterConfig<P>
     pub htslib_threads: usize
 }
 
-impl <P: AsRef<Path> + Clone + Debug> VariantCounterConfig<P>
+impl VariantCounterConfig
 {
-    pub fn with_path(bam_path: P) -> Result<Self>
+    pub fn with_path(bam_path: impl AsRef<Path> + Debug) -> Result<Self>
     {
         let v = VariantCounterConfig
         {
-            bam_path,
+            bam_path: bam_path.as_ref().to_owned(),
             min_mapq: 1,
             min_baseq: 10,
             max_depth: MAX_DEPTH,
@@ -64,17 +64,17 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounterConfig<P>
 }
 
 /// Count variants (ie modifications) in sequence chunks
-pub struct VariantCounter<P: AsRef<Path> + Clone + Debug>
+pub struct VariantCounter
 {
-    config: VariantCounterConfig<P>,
+    config: VariantCounterConfig,
     bam:	IndexedReader,
     bam_index: Vec<(Vec<u8>, u64, u64)>
 }
 
-impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
+impl VariantCounter
 {
     /// Initiate a new reader from a configuration object
-    pub fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
+    pub fn with_config(config: VariantCounterConfig) -> Result<Self>
     {
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
         if config.htslib_threads > 0
@@ -110,13 +110,13 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
         })
     }
 
-    pub fn count_from_file(&mut self, fasta_path: P) -> Result<VariantCounterIterator<P>>
+    pub fn count_from_file(&mut self, fasta_path: impl AsRef<Path> + Debug) -> Result<VariantCounterIterator>
     {
         let iterator = VariantCounterIterator::with_file_and_counter(fasta_path, self)?;
         Ok(iterator)
     }
 
-    pub fn count_from_file_with_step_size(&mut self, fasta_path: P, step_size: usize) -> Result<VariantCounterIterator<P>>
+    pub fn count_from_file_with_step_size(&mut self, fasta_path: impl AsRef<Path> + Debug, step_size: usize) -> Result<VariantCounterIterator>
     {
         let iterator = VariantCounterIterator::with_file_and_counter_and_size(fasta_path, self, step_size)?;
         Ok(iterator)
@@ -129,7 +129,7 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
 
     /// Generate a closure that can be used to filter alignments, given the configuration settings
     /// This is implemented as a class and not a member function to avoid mutable/immutable ref issues
-    fn generate_alignemnt_filter<'a>(config: &'a VariantCounterConfig<P>) -> impl Fn(&Alignment<'a>) -> bool
+    fn generate_alignemnt_filter<'a>(config: &'a VariantCounterConfig) -> impl Fn(&Alignment<'a>) -> bool
     {
         let filter_closure = |alignment: &Alignment| -> bool
         {
@@ -406,15 +406,15 @@ impl <P: AsRef<Path> + Clone + Debug> VariantCounter<P>
     }
 }
 
-pub struct VariantCounterIterator<'a, P: AsRef<Path> + Clone + Debug> 
+pub struct VariantCounterIterator<'a> 
 {
-    counter: &'a mut VariantCounter<P>,
+    counter: &'a mut VariantCounter,
     fasta: SequenceSegmentIterator<fs::File>,
 }
 
-impl <'a, P: AsRef<Path> + Clone + Debug> VariantCounterIterator<'a, P>
+impl <'a> VariantCounterIterator<'a>
 {
-    pub fn with_file_and_counter(fasta_path: P, counter:&'a mut VariantCounter<P>) -> Result<Self>
+    pub fn with_file_and_counter(fasta_path: impl AsRef<Path> + Debug, counter:&'a mut VariantCounter) -> Result<Self>
     {
         let mut fasta = SequenceSegmentIterator::with_file(&fasta_path)?;
         fasta.subset_to_intervals(counter.index())?;
@@ -425,7 +425,7 @@ impl <'a, P: AsRef<Path> + Clone + Debug> VariantCounterIterator<'a, P>
         })
     }
 
-    pub fn with_file_and_counter_and_size(fasta_path: P, counter: &'a mut VariantCounter<P>, chunk_size: usize) -> Result<Self>
+    pub fn with_file_and_counter_and_size(fasta_path: impl AsRef<Path> + Debug, counter: &'a mut VariantCounter, chunk_size: usize) -> Result<Self>
     {
         let mut fasta = SequenceSegmentIterator::with_file_and_stepsize(&fasta_path, chunk_size)?;
         fasta.subset_to_intervals(counter.index())?;
@@ -436,7 +436,7 @@ impl <'a, P: AsRef<Path> + Clone + Debug> VariantCounterIterator<'a, P>
         })
     }
 }
-impl <'a, P: AsRef<Path> + Clone + Debug> Iterator for VariantCounterIterator<'a, P>
+impl <'a> Iterator for VariantCounterIterator<'a>
 {
     type Item = Vec<VariantCount>;
 
@@ -483,7 +483,7 @@ mod tests {
     use std::str::FromStr;
     use std::path::PathBuf;
 
-    fn create_test_config() -> Result<VariantCounterConfig<PathBuf>>
+    fn create_test_config() -> Result<VariantCounterConfig>
     {
         //let fasta_path = PathBuf::from(r"test_data/test.fasta");
         let bam_path = PathBuf::from(r"test_data/test.bam");

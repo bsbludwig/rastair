@@ -5,7 +5,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::error::Error;
 use std::io::{stdout, Write};
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use log::{debug, error};
 
 use num_cpus;
@@ -83,14 +83,14 @@ impl Display for VariantCount
     }
 }
 
-struct VariantCounterConnectionManager<P>
+struct VariantCounterConnectionManager
 {
-    config: VariantCounterConfig<P>
+    config: VariantCounterConfig
 }
 
-impl <P: AsRef<Path> + Clone + Debug> VariantCounterConnectionManager<P>
+impl VariantCounterConnectionManager
 {
-    fn with_config(config: VariantCounterConfig<P>) -> Result<Self>
+    fn with_config(config: VariantCounterConfig) -> Result<Self>
     {
         Ok(VariantCounterConnectionManager{
             config
@@ -104,9 +104,9 @@ pub enum VariantCounterConnectionError {
     ConnectionError( #[from] anyhow::Error )
 }
 
-impl <P: AsRef<Path> + Clone + Debug + std::marker::Send + std::marker::Sync + 'static> ManageConnection for VariantCounterConnectionManager<P>
+impl ManageConnection for VariantCounterConnectionManager
 {
-    type Connection = VariantCounter<P>;
+    type Connection = VariantCounter;
     // TODO create a proper custom error type
     type Error = VariantCounterConnectionError;
 
