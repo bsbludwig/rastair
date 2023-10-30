@@ -35,6 +35,28 @@ impl NucleotideCount {
     {
         return self.a + self.c + self.g + self.t + self.n;
     }
+
+    fn increment_counter_by(&mut self, base: u8, amount: i32) -> Option<()>
+{
+    match base
+    {
+        b'a' => self.a += amount,
+        b'c' => self.c += amount,
+        b'g' => self.g += amount,
+        b't' => self.t += amount,
+        b'n' => self.n += amount,
+        b'A' => self.a += amount,
+        b'C' => self.c += amount,
+        b'G' => self.g += amount,
+        b'T' => self.t += amount,
+        b'N' => self.n += amount,
+        _   =>
+        {
+            return None;
+        }
+    };
+    Some(())
+}
 }
 impl Display for NucleotideCount
 {

@@ -59,19 +59,15 @@ impl SequenceSegment
 {
     /// Find the positions (relative to the contig coordinates) of all CpGs
     /// in the current segment. Return None if no CpGs are found
-    pub fn find_cpgs(&self) -> Option<Vec<ContigPosition>>
+    pub fn find_cpgs(&self) -> Option<Vec<ContigPosition<'_>>>
     {
         if self.sequence.len() == 0
         {
             return None
         }
-        let mut start_positions: Vec<usize> = 
+        let start_positions: Vec<usize> = 
             find_iter(&self.sequence, b"CG")
-            .chain(find_iter(&self.sequence, b"cg"))
-            .chain(find_iter(&self.sequence, b"Cg"))
-            .chain(find_iter(&self.sequence, b"cG"))
             .collect();
-        start_positions.sort_unstable();
         let results: Vec<ContigPosition> = start_positions
             .iter()
             .map(|pos| 
@@ -275,6 +271,8 @@ where
             },
             Ok(_)   => {}
         };
+        // Make sequence all uppercase
+        sequence = sequence.to_ascii_uppercase();
         let segment = SequenceSegment
         {
             sequence,

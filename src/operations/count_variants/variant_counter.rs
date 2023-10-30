@@ -1,5 +1,6 @@
 use rust_htslib::bam::pileup::Alignment;
 use rust_htslib::bam::{IndexedReader, Read};
+use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
 use hashers::fx_hash::FxHasher;
 use std::hash::BuildHasherDefault;
 
-use super::{MAX_DEPTH, FLAGS, ReadMaskSetting, ReadMask, VariantCount, NucleotideCount};
+use super::{MAX_DEPTH, FLAGS, ReadMaskSetting, ReadMask, VariantCount};
 
 #[derive(Clone, Debug)]
 /// Configuration of a variant counter
@@ -163,59 +164,67 @@ impl VariantCounter
             }
 
             // first in pair
-            if record.flags() & FLAGS.is_first_in_pair > 0
+            match record.read_pair_orientation() 
             {
-                // F1R2
-                if record.flags() & FLAGS.mate_is_reverse_strand > 0 {
-                    // Ensure that there's at least one base left after soft-trimming
-                    if seq_len < config.ot_mask.r1.0+config.ot_mask.r1.1 + 1 {
-                        return false;
-                    }
-
-                    if qpos < config.ot_mask.r1.0 || qpos > seq_len-config.ot_mask.r1.1-1
-                    {
-                        return false;
-                    }
-                }
-                else // F2R1
+                F1R2 => 
                 {
-                    if seq_len < config.ob_mask.r1.0+config.ob_mask.r1.1 + 1 {
-                        return false;
-                    }
+                    if record.is_first_in_template()
+                    {
+                        // Ensure that there's at least one base left after soft-trimming
+                        if seq_len < config.ot_mask.r1.0+config.ot_mask.r1.1 + 1 {
+                            return false;
+                        }
 
-                    // I'm flipping the start/end here, because the R1 of the OB is reversed but 
-                    // samtools reports it in ref direction, so if I want to remove 5 bases from the start
-                    // of the read, that's actually the "end" in the coordinate system that htslib provides
-                    if qpos < config.ob_mask.r1.1 || qpos > seq_len-config.ob_mask.r1.0-1
+                        if qpos < config.ot_mask.r1.0 || qpos > seq_len-config.ot_mask.r1.1-1
+                        {
+                            return false;
+                        }
+                    }
+                    else 
                     {
-                        return false;
+                        if seq_len < config.ot_mask.r2.0+config.ot_mask.r2.1 + 1 {
+                            return false;
+                        }
+                        // also flipped the end/start mask, cause the read is mapped in reverse
+                        if qpos < config.ot_mask.r2.1 || qpos > seq_len-config.ot_mask.r2.0-1
+                        {
+                            return false;
+                        }
                     }
-                }
-            }
-            else 
-            {
-                // F1R2
-                if record.flags() & FLAGS.is_reverse_strand > 0 {
-                    if seq_len < config.ot_mask.r2.0+config.ot_mask.r2.1 + 1 {
-                        return false;
-                    }
-                    // also flipped the end/start mask, cause the read is mapped in reverse
-                    if qpos < config.ot_mask.r2.1 || qpos > seq_len-config.ot_mask.r2.0-1
-                    {
-                        return false;
-                    }
-                }
-                else // F2R1
+                },
+                F2R1 => 
                 {
-                    if seq_len < config.ob_mask.r2.0+config.ob_mask.r2.1 + 1 {
-                        return false;
-                    }
-                    if qpos < config.ob_mask.r2.0 || qpos > seq_len-config.ob_mask.r2.1-1
+                    if record.is_first_in_template()
                     {
-                        return false;
+                        if seq_len < config.ob_mask.r1.0+config.ob_mask.r1.1 + 1 {
+                            return false;
+                        }
+    
+                        // I'm flipping the start/end here, because the R1 of the OB is reversed but 
+                        // samtools reports it in ref direction, so if I want to remove 5 bases from the start
+                        // of the read, that's actually the "end" in the coordinate system that htslib provides
+                        if qpos < config.ob_mask.r1.1 || qpos > seq_len-config.ob_mask.r1.0-1
+                        {
+                            return false;
+                        }
                     }
-                }
-            }
+                    else 
+                    {
+                        if seq_len < config.ob_mask.r2.0+config.ob_mask.r2.1 + 1 {
+                            return false;
+                        }
+                        if qpos < config.ob_mask.r2.0 || qpos > seq_len-config.ob_mask.r2.1-1
+                        {
+                            return false;
+                        }
+                    }
+                },
+                _   =>
+                {
+                    warn!("Unexpected read orientation or mates on different chromosomes for record {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
+                    return false;
+                },
+            };
             
             true
         };
@@ -362,7 +371,7 @@ impl VariantCounter
                             // I check for overlaps only _after_ baseq cutoff, so some overlaps
                             // will have already been treated in that way. If there's two high-quality
                             // disagreeing calls, I feel it's better to ignore the whole fragment
-                            increment_counter_by(nuc_counts, pos_tuple.0, -1);
+                            nuc_counts.increment_counter_by(pos_tuple.0, -1);
                             continue 'alignment_loop;
                         }
                     } 
@@ -374,7 +383,7 @@ impl VariantCounter
                     }
                 }
 
-                match increment_counter_by(nuc_counts, base, 1)
+                match nuc_counts.increment_counter_by(base, 1)
                 {
                     Some(()) => (),
                     None => 
@@ -448,28 +457,6 @@ impl <'a> Iterator for VariantCounterIterator<'a>
 
         self.counter.count_variants_in_segment(segment)
     }
-}
-
-fn increment_counter_by(nuc_counts: &mut NucleotideCount, base: u8, amount: i32) -> Option<()>
-{
-    match base
-    {
-        b'a' => nuc_counts.a += amount,
-        b'c' => nuc_counts.c += amount,
-        b'g' => nuc_counts.g += amount,
-        b't' => nuc_counts.t += amount,
-        b'n' => nuc_counts.n += amount,
-        b'A' => nuc_counts.a += amount,
-        b'C' => nuc_counts.c += amount,
-        b'G' => nuc_counts.g += amount,
-        b'T' => nuc_counts.t += amount,
-        b'N' => nuc_counts.n += amount,
-        _   =>
-        {
-            return None;
-        }
-    };
-    Some(())
 }
 
 /*====================================================
