@@ -5,11 +5,11 @@
 
 
 use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, error::Error, fs::File, io::{stdout, Write}};
-use log::{error, debug, info, trace};
+use log::{debug, info, trace};
 
 use anyhow::Result;
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
-use rust_htslib::bam::{IndexedReader, Record, Read, ext::BamRecordExtensions};
+use rust_htslib::bam::{IndexedReader, Record, Read, ext::BamRecordExtensions, record::{CigarStringView, CigarString}};
 
 use crate::sequence_segment::{SequenceSegment, SequenceSegmentIterator};
 
@@ -78,7 +78,9 @@ use super::FLAGS;
     // pre-allocated record
     next_read: Record,
     // config
-    config: &'a ReadCounterConfig
+    config: &'a ReadCounterConfig,
+    /// Start position of the first read encountered which extends beyond the end of the interval
+    pub right_margin: u64
  }
 
  impl <'a> ReadIterator <'a>
@@ -93,7 +95,7 @@ use super::FLAGS;
                                  .iter()
                                  .map(|p| p.pos_in_contig())
                                  .collect();
-        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config})
+        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config, right_margin: segment.stop})
     }
  }
 
@@ -114,14 +116,15 @@ use super::FLAGS;
             return None;
         }
 
-        // Fetch the next read into the pre-allocated struct
-        // if the read is malformed, skip
+        // Fetch the next suitable read into the pre-allocated struct
+        #[allow(unused_assignments)] // this is just a hack to set the alignment within the loop. There's probably a smarter way to program this...
+        let mut alignment = CigarStringView::new(CigarString::try_from(Vec::new()).unwrap(), 0);
         loop {
             match self.bam_reader.read(&mut self.next_read)? 
             {
                 Ok(_)  => (),
                 Err(e)  => {
-                    error!("An error ocurred fetching the next read: {}", e);
+                    info!("Failed to fetch next read: {}", e);
                     return None;
                 }
             }
@@ -131,7 +134,7 @@ use super::FLAGS;
                 F2R1    => (),
                 _       => {
                     debug!("Skipping incorrectly paired read. (flag {})", self.next_read.flags());
-                    continue
+                    continue;
                 }
             }
             // skip reads that lack required flags
@@ -146,10 +149,28 @@ use super::FLAGS;
                 debug!("Read has excluded flag: {} vs {}", self.next_read.flags(), self.config.excluded_flags);
                 continue;
             }
-            break;
+
+            // check if the current read started before the segment start, which means
+            // it was processed in a previous iteration. Skip
+            if (self.next_read.pos() as u64) < self.sequence.start
+            {
+                debug!("Skipping read that started in a previous segment");
+                continue;
+            }
+            // this is expensive, so try to do only once
+            alignment = self.next_read.cigar();
+            if (alignment.end_pos() as u64) > self.sequence.stop
+            {
+                debug!("Found a read that extends beyond the end of the current segment, will skip");
+                if self.right_margin == self.sequence.stop
+                {
+                    self.right_margin = self.next_read.pos() as u64;
+                }
+                continue;
+            }
+            break; 
         }
 
-        let alignment = self.next_read.cigar();
         let mut next_read_count = PerReadCount {
             contig: self.sequence.contig.clone(), // this is an allocation - can this be saved? prob not, as we can't predict the lifetime of PerReadCount object
             start: self.next_read.pos().abs() as u64,
@@ -385,15 +406,19 @@ pub fn run_caller(
             }
         ).collect();
     iterator.subset_to_intervals(&bam_index)?;
-
     let mut lock = stdout().lock();
     writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs")?;
-    for segment in iterator
+    while let Some(segment) = iterator.next()
     {
-        let read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
-        for read_info in read_iterator
+        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
+        while let Some(read_info) = read_iterator.next()
         {
             writeln!(lock, "{}", read_info)?;
+        }
+        if read_iterator.right_margin < segment.stop
+        {
+            info!("Will change iterator tiling to cover reads overlapping the boundary");
+            iterator.set_tiling((segment.stop - read_iterator.right_margin) as usize)?;
         }
     }
     Ok(())

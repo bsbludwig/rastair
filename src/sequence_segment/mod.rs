@@ -4,7 +4,7 @@ use std::io::{stdout, Write, Read, Seek};
 use std::fs;
 use log::{trace, debug, error};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Result, anyhow};
 // Very fast substr search
 use memchr::memmem::find_iter;
 
@@ -165,7 +165,15 @@ where
     {
         self.index_pos >= self.sequences.len()
     }
-
+    pub fn set_tiling(&mut self, new_tiling: usize) -> Result<()>
+    {
+        if new_tiling == 0 || new_tiling > self.step_size
+        {
+            return Err(anyhow!("Incorrect tiling setting"));
+        }
+        self.tiling = new_tiling;
+        Ok(())
+    }
     /// Intersect the sequences in the fasta file with sequences from e.g. the bam index.
     /// This will reset the iterator, so the next call to `next()` will start form the leftmost interval
     /// in the first sequence again.
@@ -219,7 +227,11 @@ where
             return None;
         }
 
-        let start = self.pos;
+        let mut start = self.pos;
+        if start > self.tiling as u64
+        {
+            start = start - self.tiling as u64;
+        }
         let seq_info = &self.sequences[self.index_pos];
         let stop =
         {
@@ -257,7 +269,7 @@ where
         }
         else
         {
-            self.pos = stop - (self.tiling as u64);
+            self.pos = stop;
         }
 
         // "Allocate" a sufficiently large chunk of memory
