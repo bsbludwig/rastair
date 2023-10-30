@@ -53,7 +53,7 @@ impl VariantCounterConfig
             min_mapq: 1,
             min_baseq: 10,
             max_depth: MAX_DEPTH,
-            required_flags: FLAGS.is_paired | FLAGS.is_properly_paired,
+            required_flags: FLAGS.is_paired & FLAGS.is_properly_paired,
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
             keep_overlaps: false,
             ot_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },

@@ -239,7 +239,7 @@ pub fn run_caller(
 
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
-
+    writeln!(lock, "#chr\tstart\tend\tname\tscore\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage")?;
     iterator
     .map(move |segment| {
         (segment, pool.clone())
