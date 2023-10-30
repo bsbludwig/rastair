@@ -48,3 +48,4 @@ Thumbs.db
 *.mov
 *.wmv
 profile.json
+.vscode/launch.json

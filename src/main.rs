@@ -3,7 +3,7 @@ use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
 use std::path::PathBuf;
 
-use rastair::operations::count_variants::run_caller;
+use rastair::operations::{count_variants, count_reads};
 use rastair::sequence_segment::run_finder;
 
 #[derive(Parser)]
@@ -72,6 +72,38 @@ enum Commands
         #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
         threads: Option<u8>,
     },
+    /// Call methylation per read. This will produce a bed file that list the methylation status of all CpGs
+    /// in every read that overlaps a CpG, plus some other metadata
+    PerRead
+    {
+        /// A sorted and indexed bam file
+        #[arg(value_name="BAM_FILE", value_parser=value_parser!(PathBuf))]
+        bam_file: PathBuf,
+
+        /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
+        #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(PathBuf))]
+        fasta_file: PathBuf,
+
+        /// Minimum mapping quality per aligned read [default: 1]
+        #[arg(short='q', long)]
+        min_mapq: Option<u8>,
+        
+        /// number of reference positions processed in-memory at once [default: 100000]
+        #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
+        chunk_size: Option<u32>,
+        
+        /// Include reads that match all of these bit-flags (as decimal) [default: 3]
+        #[arg(short='f', long)]
+        required_flags: Option<u16>,
+        
+        /// Exclude reads matching any of these bit-flags (as decimal) [default: 3852]
+        #[arg(short='F', long)]
+        excluded_flags: Option<u16>,
+
+        /// Number of threads to use inside htslib for decompression [default: 1]
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
+        read_threads: Option<u8>,
+    },
     /// print a map of all CpGs in a fasta file
     MapCpgs
     {
@@ -117,7 +149,7 @@ fn main()
             {
                 // TODO move the unboxing of Options to here
                 // instead of doing that inside run_caller
-                match run_caller(bam_file, 
+                match count_variants::run_caller(bam_file, 
                     fasta_file, 
                     min_mapq, 
                     min_baseq, 
@@ -148,6 +180,31 @@ fn main()
                         Ok(_) => (),
                         Err(e) => {
                             error!("Failed to run cpg_finder: {}", e)
+                        }
+                    }
+                }
+        Some(Commands::PerRead { 
+                bam_file, 
+                fasta_file, 
+                min_mapq, 
+                chunk_size, 
+                required_flags, 
+                excluded_flags, 
+                read_threads }) => 
+                {
+                    match count_reads::run_caller(
+                        bam_file, 
+                        fasta_file, 
+                        min_mapq, 
+                        chunk_size, 
+                        required_flags, 
+                        excluded_flags,
+                        read_threads,) 
+                    {
+                        Ok(()) => (),
+                        Err(e)  => 
+                        {
+                            error!("Error running caller: {}", e)
                         }
                     }
                 }
