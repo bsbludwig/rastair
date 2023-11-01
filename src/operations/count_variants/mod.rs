@@ -160,6 +160,7 @@ pub fn run_caller(
     chunk_size_option: &Option<u32>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
+    exclude_ambiguous_option: &Option<bool>,
     nOT_option: &Option<String>,
     nOB_option: &Option<String>,
     read_threads_option: &Option<u8>,
@@ -183,7 +184,9 @@ pub fn run_caller(
     if let Some(max_depth) = *max_depth_option {
         config.max_depth = max_depth;
     }
-    
+    if let Some(exclude_ambiguous) = *exclude_ambiguous_option {
+        config.exclude_ambiguous = exclude_ambiguous;
+    }
     if let Some(flags) = *req_flags_option {
         config.required_flags = flags;
     }

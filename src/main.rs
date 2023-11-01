@@ -56,6 +56,10 @@ enum Commands
         #[arg(short='F', long)]
         excluded_flags: Option<u16>,
 
+        /// Exclude reads where the orientation cannot be unambiguously determined [default: false]
+        #[arg(long)]
+        exclude_ambiguous: Option<bool>,
+
         /// Soft-trim the OT by that many bases from either end [default: 0,0,0,0]
         #[arg(long="nOT")]
         n_ot: Option<String>,
@@ -142,6 +146,7 @@ fn main()
             chunk_size, 
             required_flags, 
             excluded_flags,
+            exclude_ambiguous,
             n_ot,
             n_ob,
             read_threads,
@@ -157,6 +162,7 @@ fn main()
                     chunk_size, 
                     required_flags, 
                     excluded_flags,
+                    exclude_ambiguous,
                     n_ot,
                     n_ob,
                     read_threads,

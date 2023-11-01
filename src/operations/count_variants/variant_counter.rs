@@ -1,6 +1,6 @@
 use rust_htslib::bam::pileup::Alignment;
 use rust_htslib::bam::{IndexedReader, Read};
-use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
+use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1, self};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,12 +35,14 @@ pub struct VariantCounterConfig
     pub excluded_flags: u16,
     /// Do not reconcile overlapping read pairs
     pub keep_overlaps: bool,
+    /// Ignore read pairs that start/end at the same position
+    pub exclude_ambiguous: bool,
     /// Mask out a certain number of bases from the left and right for OT reads
     pub ot_mask: ReadMaskSetting,
     /// Mask out a certain number of bases from the left and right for OB reads
     pub ob_mask: ReadMaskSetting,
     /// set the number of threads to use in htslib internally
-    pub htslib_threads: usize
+    pub htslib_threads: usize,
 }
 
 impl VariantCounterConfig
@@ -56,6 +58,7 @@ impl VariantCounterConfig
             required_flags: FLAGS.is_paired | FLAGS.is_properly_paired,
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
             keep_overlaps: false,
+            exclude_ambiguous: false,
             ot_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
             ob_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
             htslib_threads: 0
@@ -163,8 +166,31 @@ impl VariantCounter
                 return false;
             }
 
-            // first in pair
-            match record.read_pair_orientation() 
+            let mut read_pair_orientation = record.read_pair_orientation();
+            if ! config.exclude_ambiguous && read_pair_orientation == SequenceReadPairOrientation::None
+            {
+                info!("Orientation of {} cannot be unambiguously determined", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
+                
+                // F1R2-ish
+                if record.is_first_in_template() && record.is_mate_reverse()
+                {
+                    read_pair_orientation = F1R2;
+                }
+                else if record.is_last_in_template() && record.is_reverse()
+                {
+                    read_pair_orientation = F1R2;
+                }
+                // F2R1
+                else if record.is_first_in_template() && record.is_reverse()
+                {
+                    read_pair_orientation = F2R1;
+                }
+                else if record.is_last_in_template() && record.is_mate_reverse()
+                {
+                    read_pair_orientation = F2R1;
+                }
+            }
+            match read_pair_orientation
             {
                 F1R2 => 
                 {
