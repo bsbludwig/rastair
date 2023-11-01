@@ -53,6 +53,7 @@ pub struct SequenceSegment
     pub contig: String,
     pub start:	u64,
     pub stop: u64,
+    pub is_last: bool,
 }
 
 impl SequenceSegment
@@ -228,7 +229,7 @@ where
         }
 
         let mut start = self.pos;
-        if start > self.tiling as u64
+        if start >= self.tiling as u64
         {
             start = start - self.tiling as u64;
         }
@@ -291,6 +292,7 @@ where
             contig: seq_info.0.clone(),
             start:  start,
             stop:   stop,
+            is_last: stop >= seq_info.2
         };
         Some(segment)
     }

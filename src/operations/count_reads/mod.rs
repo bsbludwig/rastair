@@ -9,7 +9,7 @@ use log::{debug, info, trace};
 
 use anyhow::Result;
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
-use rust_htslib::bam::{IndexedReader, Record, Read, ext::BamRecordExtensions, record::{CigarStringView, CigarString}};
+use rust_htslib::bam::{IndexedReader, Record, Read, ext::BamRecordExtensions};
 
 use crate::sequence_segment::{SequenceSegment, SequenceSegmentIterator};
 
@@ -80,13 +80,19 @@ use super::FLAGS;
     // config
     config: &'a ReadCounterConfig,
     /// Start position of the first read encountered which extends beyond the end of the interval
-    pub right_margin: u64
+    pub right_margin: u64,
+    /// Returns the first skipped read after the iterator finished, if there was a skipped read
+    pub first_skipped_read: Option<String>,
+    /// Name of first read to process, to avoid re-printing overhang from previous segment
+    pub skip_until_read: &'a String,
+    // no need to check for overhanging reads any more?
+    found_overhang: bool
  }
 
  impl <'a> ReadIterator <'a>
  {
     /// Constructor with region and readers
-    pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig) -> Result<ReadIterator<'a>>
+    pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig, last_read_name: &'a String) -> Result<ReadIterator<'a>>
     {
         // Fetch reads in region/set reader the correct subset
         reader.fetch((&segment.contig[..], segment.start, segment.stop))?;
@@ -95,7 +101,7 @@ use super::FLAGS;
                                  .iter()
                                  .map(|p| p.pos_in_contig())
                                  .collect();
-        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config, right_margin: segment.stop})
+        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config, right_margin: segment.stop, first_skipped_read: None, skip_until_read: last_read_name, found_overhang: last_read_name.len() == 0})
     }
  }
 
@@ -116,9 +122,6 @@ use super::FLAGS;
             return None;
         }
 
-        // Fetch the next suitable read into the pre-allocated struct
-        #[allow(unused_assignments)] // this is just a hack to set the alignment within the loop. There's probably a smarter way to program this...
-        let mut alignment = CigarStringView::new(CigarString::try_from(Vec::new()).unwrap(), 0);
         loop {
             match self.bam_reader.read(&mut self.next_read)? 
             {
@@ -152,23 +155,43 @@ use super::FLAGS;
 
             // check if the current read started before the segment start, which means
             // it was processed in a previous iteration. Skip
-            if (self.next_read.pos() as u64) < self.sequence.start
+            if self.next_read.pos() > 0 && (self.next_read.pos() as u64) <= self.sequence.start
             {
-                debug!("Skipping read that started in a previous segment");
+                debug!("Skipping read {} that started in a previous segment: {} <= {}", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), self.next_read.pos(), self.sequence.start);
                 continue;
-            }
-            // this is expensive, so try to do only once
-            alignment = self.next_read.cigar();
-            if (alignment.end_pos() as u64) > self.sequence.stop
+            } 
+            
+            if !self.found_overhang
             {
-                debug!("Found a read that extends beyond the end of the current segment, will skip");
-                if self.right_margin == self.sequence.stop
+                if self.next_read.qname() != self.skip_until_read.as_bytes()
                 {
-                    self.right_margin = self.next_read.pos() as u64;
+                    debug!("Skipping {} because it was already processed", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default());
+                    continue;
                 }
-                continue;
+                else
+                {
+                    debug!("Found read {}, will start to process", self.skip_until_read);
+                    self.found_overhang = true;
+                }
             }
-            break; 
+            
+            break;
+        };
+        
+        /* Check if the read extends to the end of the segment, in which case we'll process it,
+         * and all subsequent reads (which must have start pos >= this read), in the next segment.
+         * There could be a C at the end of this read, which is in fact a CpG, where the G is the
+         * beginning of the next segment. We would miss that, so let's push the whole read to the next
+         * round.
+         * Both end_pos and sequence.stop are "right open", so equality means the read touches the end.
+         */ 
+        let alignment = self.next_read.cigar();
+        if !self.sequence.is_last && (alignment.end_pos() as u64) >= self.sequence.stop
+        {
+            debug!("Read {} extends to the end of the current segment ({} >= {}), skip to next segment", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), alignment.end_pos(), self.sequence.stop);
+            self.right_margin = self.next_read.pos() as u64;
+            self.first_skipped_read = Some(String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default());
+            return None;
         }
 
         let mut next_read_count = PerReadCount {
@@ -236,6 +259,11 @@ use super::FLAGS;
                     {
                         break 'block_loop;
                     }
+                }
+                else if pos >= next_read_count.stop
+                {
+                    debug!("Next CpG ({}) is outside this read ({}-{}), end loop", pos, next_read_count.start, next_read_count.stop);
+                    break 'block_loop;
                 }
                 else
                 {
@@ -408,18 +436,27 @@ pub fn run_caller(
     iterator.subset_to_intervals(&bam_index)?;
     let mut lock = stdout().lock();
     writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs")?;
+    let mut last_read_name: String = String::new();
     while let Some(segment) = iterator.next()
     {
-        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
+        info!("Process reads in {}", segment);
+        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config, &last_read_name)?;
         while let Some(read_info) = read_iterator.next()
         {
             writeln!(lock, "{}", read_info)?;
         }
-        if read_iterator.right_margin < segment.stop
+
+        if let Some(read_name) = read_iterator.first_skipped_read
         {
-            info!("Will change iterator tiling to cover reads overlapping the boundary");
-            iterator.set_tiling((segment.stop - read_iterator.right_margin) as usize)?;
+            debug!("Will set iterator tiling to {} to cover reads overlapping the boundary", segment.stop - read_iterator.right_margin + 1);
+            iterator.set_tiling((segment.stop - read_iterator.right_margin + 1) as usize)?;
+            last_read_name = read_name;    
         }
+        else 
+        {
+            last_read_name = String::new();
+        }
+        
     }
     Ok(())
 }
