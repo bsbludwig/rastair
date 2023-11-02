@@ -57,7 +57,7 @@ enum Commands
         excluded_flags: Option<u16>,
 
         /// Exclude reads where the orientation cannot be unambiguously determined [default: false]
-        #[arg(long)]
+        #[arg(long, action=clap::ArgAction::SetTrue)]
         exclude_ambiguous: Option<bool>,
 
         /// Soft-trim the OT by that many bases from either end [default: 0,0,0,0]
