@@ -82,9 +82,9 @@ use super::FLAGS;
     /// Start position of the first read encountered which extends beyond the end of the interval
     pub right_margin: u64,
     /// Returns the first skipped read after the iterator finished, if there was a skipped read
-    pub first_skipped_read: Option<String>,
+    pub first_skipped_read: Option<(String, bool)>,
     /// Name of first read to process, to avoid re-printing overhang from previous segment
-    pub skip_until_read: &'a String,
+    pub skip_until_read: (&'a String, bool),
     // no need to check for overhanging reads any more?
     found_overhang: bool
  }
@@ -92,7 +92,7 @@ use super::FLAGS;
  impl <'a> ReadIterator <'a>
  {
     /// Constructor with region and readers
-    pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig, last_read_name: &'a String) -> Result<ReadIterator<'a>>
+    pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig, last_read: (&'a String, bool)) -> Result<ReadIterator<'a>>
     {
         // Fetch reads in region/set reader the correct subset
         reader.fetch((&segment.contig[..], segment.start, segment.stop))?;
@@ -101,7 +101,7 @@ use super::FLAGS;
                                  .iter()
                                  .map(|p| p.pos_in_contig())
                                  .collect();
-        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config, right_margin: segment.stop, first_skipped_read: None, skip_until_read: last_read_name, found_overhang: last_read_name.len() == 0})
+        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config, right_margin: segment.stop, first_skipped_read: None, skip_until_read: last_read, found_overhang: last_read.0.len() == 0})
     }
  }
 
@@ -163,14 +163,14 @@ use super::FLAGS;
             
             if !self.found_overhang
             {
-                if self.next_read.qname() != self.skip_until_read.as_bytes()
+                if self.next_read.qname() != self.skip_until_read.0.as_bytes() || self.next_read.is_first_in_template() != self.skip_until_read.1
                 {
                     debug!("Skipping {} because it was already processed", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default());
                     continue;
                 }
                 else
                 {
-                    debug!("Found read {}, will start to process", self.skip_until_read);
+                    debug!("Found read {}/{}, will start to process", self.skip_until_read.0, if self.skip_until_read.1 {1} else {2});
                     self.found_overhang = true;
                 }
             }
@@ -190,7 +190,7 @@ use super::FLAGS;
         {
             debug!("Read {} extends to the end of the current segment ({} >= {}), skip to next segment", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), alignment.end_pos(), self.sequence.stop);
             self.right_margin = self.next_read.pos() as u64;
-            self.first_skipped_read = Some(String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default());
+            self.first_skipped_read = Some((String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), self.next_read.is_first_in_template()));
             return None;
         }
 
@@ -436,21 +436,23 @@ pub fn run_caller(
     iterator.subset_to_intervals(&bam_index)?;
     let mut lock = stdout().lock();
     writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs")?;
-    let mut last_read_name: String = String::new();
+    let mut last_read_name = String::new();
+    let mut last_read_orientation: bool = false;
     while let Some(segment) = iterator.next()
     {
         info!("Process reads in {}", segment);
-        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config, &last_read_name)?;
+        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config, (&last_read_name, last_read_orientation))?;
         while let Some(read_info) = read_iterator.next()
         {
             writeln!(lock, "{}", read_info)?;
         }
 
-        if let Some(read_name) = read_iterator.first_skipped_read
+        if let Some(read_info) = read_iterator.first_skipped_read
         {
             debug!("Will set iterator tiling to {} to cover reads overlapping the boundary", segment.stop - read_iterator.right_margin + 1);
             iterator.set_tiling((segment.stop - read_iterator.right_margin + 1) as usize)?;
-            last_read_name = read_name;    
+            last_read_name = read_info.0;
+            last_read_orientation = read_info.1;
         }
         else 
         {
