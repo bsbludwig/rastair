@@ -104,6 +104,10 @@ enum Commands
         #[arg(short='F', long)]
         excluded_flags: Option<u16>,
 
+        /// Report reads with no CpGs in them
+        #[arg(short='A', long, action=clap::ArgAction::SetTrue)]
+        all_reads: Option<bool>,
+
         /// Number of threads to use inside htslib for decompression [default: 1]
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
         read_threads: Option<u8>,
@@ -189,14 +193,15 @@ fn main()
                         }
                     }
                 }
-        Some(Commands::PerRead { 
-                bam_file, 
-                fasta_file, 
-                min_mapq, 
-                chunk_size, 
-                required_flags, 
-                excluded_flags, 
-                read_threads }) => 
+        Some(Commands::PerRead {
+                bam_file,
+                fasta_file,
+                min_mapq,
+                chunk_size,
+                required_flags,
+                excluded_flags,
+                all_reads,
+                read_threads }) =>
                 {
                     match count_reads::run_caller(
                         bam_file, 
@@ -205,6 +210,7 @@ fn main()
                         chunk_size, 
                         required_flags, 
                         excluded_flags,
+                        all_reads,
                         read_threads,) 
                     {
                         Ok(()) => (),

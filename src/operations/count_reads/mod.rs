@@ -111,17 +111,6 @@ use super::FLAGS;
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        if self.cpgs.len() == 0
-        {
-            info!("No CpGs in segment {}", self.sequence);
-            return None;
-        }
-        else if self.cpg_offset >= self.cpgs.len()
-        {
-            debug!("All CpGs in segment {} were processed", self.sequence);
-            return None;
-        }
-
         loop {
             match self.bam_reader.read(&mut self.next_read)? 
             {
@@ -136,20 +125,20 @@ use super::FLAGS;
                 F1R2    => (),
                 F2R1    => (),
                 _       => {
-                    debug!("Skipping incorrectly paired read. (flag {})", self.next_read.flags());
+                    debug!("Skipping incorrectly paired read {}. (flag {})", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), self.next_read.flags());
                     continue;
                 }
             }
             // skip reads that lack required flags
             if self.next_read.flags() & self.config.required_flags != self.config.required_flags
             {
-                debug!("Read lacks required flag: {} vs {}", self.next_read.flags(), self.config.required_flags);
+                debug!("Read {} lacks required flag: {} vs {}", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), self.next_read.flags(), self.config.required_flags);
                 continue;
             }
             // skip reads that match an excluded flag
             else if self.next_read.flags() & self.config.excluded_flags > 0
             {
-                debug!("Read has excluded flag: {} vs {}", self.next_read.flags(), self.config.excluded_flags);
+                debug!("Read {} has excluded flag: {} vs {}", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), self.next_read.flags(), self.config.excluded_flags);
                 continue;
             }
 
@@ -163,15 +152,15 @@ use super::FLAGS;
             
             if !self.found_overhang
             {
-                if self.next_read.qname() != self.skip_until_read.0.as_bytes() || self.next_read.is_first_in_template() != self.skip_until_read.1
-                {
-                    debug!("Skipping {} because it was already processed", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default());
-                    continue;
-                }
-                else
+                if self.next_read.qname() == self.skip_until_read.0.as_bytes() && self.next_read.is_first_in_template() == self.skip_until_read.1
                 {
                     debug!("Found read {}/{}, will start to process", self.skip_until_read.0, if self.skip_until_read.1 {1} else {2});
                     self.found_overhang = true;
+                }
+                else
+                {
+                    debug!("Skipping {} because it was already processed", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default());
+                    continue;
                 }
             }
             
@@ -208,6 +197,15 @@ use super::FLAGS;
             unmod_cpgs: Vec::new()
         };
 
+        if self.cpgs.len() == 0 || self.cpg_offset >= self.cpgs.len()
+        {
+            debug!("No CpGs in segment or all CpGs already processed, return empty read count");
+            return Some(next_read_count);
+
+            // I can't abort here quite yet - there could be reads further down in this segment
+            // which extend beyond the end of the segment, and those then wouldn't get re-processed
+            // in the next segment.
+        }
         // find the first cpg position that could be in this read
         // since reads should arrive here in sorted order, we can
         // be sure that no future read will start to the left of the
@@ -234,7 +232,8 @@ use super::FLAGS;
             self.cpg_offset = self.cpg_offset+1;
             if self.cpg_offset >= self.cpgs.len()
             {
-                return None;
+                debug!("No more CpGs in segment {} after {}", self.sequence, next_read_count.read_id);
+                return Some(next_read_count);
             }
         }
         let mut offset=0;
@@ -347,7 +346,8 @@ pub struct ReadCounterConfig
     min_mapq: u8,
     required_flags: u16,
     excluded_flags: u16,
-    htslib_threads: u8
+    htslib_threads: u8,
+    all_reads: bool
 }
 
 impl ReadCounterConfig
@@ -360,7 +360,8 @@ impl ReadCounterConfig
             min_mapq: 1,
             required_flags: FLAGS.is_paired & FLAGS.is_properly_paired,
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
-            htslib_threads: 0
+            htslib_threads: 0,
+            all_reads: false
         };
         Ok(v)
     }
@@ -373,6 +374,7 @@ pub fn run_caller(
     chunk_size_option: &Option<u32>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
+    all_reads_option: &Option<bool>,
     read_threads_option: &Option<u8>) -> Result<(), Box<dyn Error>> 
 {
     /* Read fasta index, and open fasta file for tokenising */
@@ -393,6 +395,10 @@ pub fn run_caller(
         config.htslib_threads = threads;
     }
 
+    if let Some(all_reads) = *all_reads_option {
+        config.all_reads = all_reads;
+    }
+    
     // Create a sequence iterator
     let chunk_size = chunk_size_option.unwrap_or_default();
     let mut iterator: SequenceSegmentIterator<File> = 
@@ -444,6 +450,10 @@ pub fn run_caller(
         let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config, (&last_read_name, last_read_orientation))?;
         while let Some(read_info) = read_iterator.next()
         {
+            // Skip empty reads unless explicitly requested
+            if !config.all_reads && read_info.cpg_count == 0 {
+                continue;
+            }
             writeln!(lock, "{}", read_info)?;
         }
 
@@ -456,6 +466,7 @@ pub fn run_caller(
         }
         else 
         {
+            iterator.set_tiling(1)?;
             last_read_name = String::new();
         }
         
