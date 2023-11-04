@@ -129,6 +129,12 @@ fn main()
 {
     reset_sigpipe();
 
+    let exit_code = real_main();
+    std::process::exit(exit_code);
+}
+
+fn real_main() -> i32
+{
     let cli = Cli::parse();
 
     /* Initialise logging */
@@ -172,10 +178,11 @@ fn main()
                     read_threads,
                     threads ) 
                 {
-                    Ok(()) => (),
+                    Ok(()) => 0,
                     Err(e)  => 
                     {
-                        error!("Error running caller: {}", e)
+                        error!("Error running caller: {}", e);
+                        1
                     }
                 }
             },
@@ -187,9 +194,10 @@ fn main()
 
                     match run_finder(fasta_file, step_size as usize)
                     {
-                        Ok(_) => (),
+                        Ok(_) => 0,
                         Err(e) => {
-                            error!("Failed to run cpg_finder: {}", e)
+                            error!("Failed to run cpg_finder: {}", e);
+                            1
                         }
                     }
                 }
@@ -213,17 +221,17 @@ fn main()
                         all_reads,
                         read_threads,) 
                     {
-                        Ok(()) => (),
+                        Ok(()) => 0,
                         Err(e)  => 
                         {
-                            error!("Error running caller: {}", e)
+                            error!("Error running caller: {}", e);
+                            1
                         }
                     }
                 }
-        None => ()
+        None => 0
     }
 }
-
 /*
  * some super-hacky sh*t to make this behave like a normal unix program and quit when the pipe ends
  */
