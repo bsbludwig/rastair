@@ -41,7 +41,7 @@ enum Commands
         min_baseq: Option<u8>,
         
         /// Limit depth at highly covered positions to improve performance [default: 500]
-        #[arg(short='x', long, value_parser = clap::value_parser!(u8).range(1..))]
+        #[arg(short='x', long, value_parser = clap::value_parser!(u32).range(1..))]
         max_depth: Option<u32>,
         
         /// number of reference positions processed in-memory at once [default: 100000]
