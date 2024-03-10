@@ -2,7 +2,6 @@
 use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
 use clio::*;
-use std::path::PathBuf;
 
 use rastair::operations::{count_variants, count_reads};
 use rastair::sequence_segment::run_finder;
