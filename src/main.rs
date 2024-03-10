@@ -1,6 +1,7 @@
 // Externals
 use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
+use clio::*;
 use std::path::PathBuf;
 
 use rastair::operations::{count_variants, count_reads};
@@ -25,12 +26,12 @@ enum Commands
     Call
     {
         /// A sorted and indexed bam file
-        #[arg(value_name="BAM_FILE", value_parser=value_parser!(PathBuf))]
-        bam_file: PathBuf,
+        #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+        bam_file: ClioPath,
 
         /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
-        #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(PathBuf))]
-        fasta_file: PathBuf,
+        #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
+        fasta_file: ClioPath,
 
         /// Minimum mapping quality per aligned read [default: 1]
         #[arg(short='q', long)]
@@ -81,12 +82,12 @@ enum Commands
     PerRead
     {
         /// A sorted and indexed bam file
-        #[arg(value_name="BAM_FILE", value_parser=value_parser!(PathBuf))]
-        bam_file: PathBuf,
+        #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+        bam_file: ClioPath,
 
         /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
-        #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(PathBuf))]
-        fasta_file: PathBuf,
+        #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
+        fasta_file: ClioPath,
 
         /// Minimum mapping quality per aligned read [default: 1]
         #[arg(short='q', long)]
@@ -116,8 +117,8 @@ enum Commands
     MapCpgs
     {
         /// An indexed fasta file
-        #[arg(value_name="FASTA_FILE", value_parser=value_parser!(PathBuf))]
-        fasta_file: PathBuf,
+        #[arg(value_name="FASTA_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+        fasta_file: ClioPath,
 
         /// number of reference positions processed in-memory at once [default: 100000]
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -164,8 +165,8 @@ fn real_main() -> i32
             {
                 // TODO move the unboxing of Options to here
                 // instead of doing that inside run_caller
-                match count_variants::run_caller(bam_file,
-                    fasta_file,
+                match count_variants::run_caller(&bam_file.to_path_buf(),
+                    &fasta_file.to_path_buf(),
                     min_mapq,
                     min_baseq,
                     max_depth,
@@ -192,7 +193,7 @@ fn real_main() -> i32
                 {
                     let step_size = chunk_size.unwrap_or_default();
 
-                    match run_finder(fasta_file, step_size as usize)
+                    match run_finder(&fasta_file.to_path_buf(), step_size as usize)
                     {
                         Ok(_) => 0,
                         Err(e) => {
@@ -212,8 +213,8 @@ fn real_main() -> i32
                 read_threads }) =>
                 {
                     match count_reads::run_caller(
-                        bam_file,
-                        fasta_file,
+                        &bam_file.to_path_buf(),
+                        &fasta_file.to_path_buf(),
                         min_mapq,
                         chunk_size,
                         required_flags,
