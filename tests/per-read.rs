@@ -7,8 +7,8 @@ fn missing_bam() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-		cmd.args(["--fasta-file", "test_data/test.fasta"]);
-		cmd.arg("/path/to/nonexistent/file.bam");
+        cmd.args(["--fasta-file", "test_data/test.fasta"]);
+        cmd.arg("/path/to/nonexistent/file.bam");
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("No such file or directory"));
@@ -21,8 +21,8 @@ fn missing_fasta() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-		cmd.args(["--fasta-file", "test_data/test_which_doesnt_exist.fasta"]);
-		cmd.arg("test_data/test.bam");
+        cmd.args(["--fasta-file", "test_data/test_which_doesnt_exist.fasta"]);
+        cmd.arg("test_data/test.bam");
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("No such file or directory"));
@@ -35,16 +35,16 @@ fn default_settings() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-		cmd.args(["--fasta-file", "test_data/test.fasta"]);
-		cmd.arg("test_data/test.bam");
+        cmd.args(["--fasta-file", "test_data/test.fasta"]);
+        cmd.arg("test_data/test.bam");
     cmd.assert()
         .success();
-		let output = cmd.output().unwrap();
-		let output_str = String::from_utf8_lossy(&output.stdout);
-		assert_eq!(output_str.lines().count(), 6601); // Checked against methyldackel
-		// Check header row is there
-		let first_line = output_str.lines().next().unwrap();
-		assert!(predicate::str::contains("#chr").eval(first_line));
+        let output = cmd.output().unwrap();
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output_str.lines().count(), 6601); // Checked against methyldackel
+        // Check header row is there
+        let first_line = output_str.lines().next().unwrap();
+        assert!(predicate::str::contains("#chr").eval(first_line));
 
-		Ok(())
+        Ok(())
 }

@@ -1,6 +1,6 @@
 use rust_htslib::bam::pileup::Alignment;
 use rust_htslib::bam::{IndexedReader, Read};
-use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1, R1F2, R2F1, self};
+use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,6 +10,7 @@ use log::{trace, debug, info, warn, error};
 use anyhow::Result;
 
 use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
+use crate::utils::read_pair_orientation;
 
 // Faster hashing than built-in algo
 use hashers::fx_hash::FxHasher;
@@ -166,34 +167,7 @@ impl VariantCounter
                 return false;
             }
 
-            let mut read_pair_orientation = record.read_pair_orientation();
-            if ! config.exclude_ambiguous
-            {
-                read_pair_orientation = match read_pair_orientation
-                {
-                    F1R2 | R2F1 => F1R2,
-                    F2R1 | R1F2 => F2R1,
-                    SequenceReadPairOrientation::None => {
-                        warn!("Orientation of {} cannot be unambiguously determined", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
-
-                        if record.is_first_in_template() && record.is_mate_reverse() ||
-                        record.is_last_in_template() && record.is_reverse()
-                        {
-                            F1R2
-                        }
-                        // F2R1
-                        else if record.is_first_in_template() && record.is_reverse() ||
-                                record.is_last_in_template() && record.is_mate_reverse()
-                        {
-                            F2R1
-                        }
-                        else {
-                            SequenceReadPairOrientation::None
-                        }
-                    },
-                    _   =>  SequenceReadPairOrientation::None
-                };
-            }
+            let read_pair_orientation = read_pair_orientation(&record, config.exclude_ambiguous);
 
             match read_pair_orientation
             {
@@ -368,17 +342,17 @@ impl VariantCounter
                 let base = seq[pos];
                 let qual = record.qual()[pos];
                 debug!("Processing pos {} in read {} with base {} and qual {} at col {}", pos, std::str::from_utf8(record.qname()).unwrap_or_default(), char::from_u32(base as u32).unwrap_or_default(), qual, pileup_pos);
+                let read_pair_orientation = read_pair_orientation(&record, self.config.exclude_ambiguous);
 
                 let nuc_counts =
                 {
-                    if (record.flags() & (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == 0)
-                    || (record.flags() & (FLAGS.is_second_in_pair | FLAGS.is_reverse_strand) == 0)
-                    {
-                        &mut var_count.top
-                    }
-                    else
-                    {
-                        &mut var_count.bottom
+                    match read_pair_orientation {
+                        F1R2 => &mut var_count.top,
+                        F2R1 => &mut var_count.bottom,
+                        _   => {
+                            error!("Cannot process ambiguous read-pair, should have been filtered earlier!");
+                            continue 'alignment_loop;
+                        }
                     }
                 };
 

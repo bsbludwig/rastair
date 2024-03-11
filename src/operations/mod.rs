@@ -7,6 +7,7 @@ pub mod count_reads;
 const MAX_DEPTH: u32 = 10_000;
 
 /// Utility structure to encode sam flags by name
+#[allow(dead_code)]
 struct Flags
 {
     is_paired: u16,
@@ -51,9 +52,9 @@ pub struct ReadMaskSetting {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParseMaskError;
 
-impl FromStr for ReadMaskSetting { 
+impl FromStr for ReadMaskSetting {
     type Err = ParseMaskError;
-    
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let values = s
             .trim()
@@ -78,7 +79,7 @@ impl FromStr for ReadMaskSetting {
 ====================================================*/
 #[cfg(test)]
 mod tests {
-    
+
     // For testing
     use super::*;
     use anyhow::Result;
@@ -89,7 +90,7 @@ mod tests {
     {
         let input_string = "1,2,3,4";
         let test = ReadMaskSetting::from_str(input_string).unwrap();
-        
+
         assert_eq!(test.r1.0, 1);
         assert_eq!(test.r1.1, 2);
         assert_eq!(test.r2.0, 3);
@@ -102,7 +103,7 @@ mod tests {
     {
         let input_string = "1,0,0,1";
         let test = ReadMaskSetting::from_str(input_string).unwrap();
-        
+
         assert_eq!(test.r1.0, 1);
         assert_eq!(test.r1.1, 0);
         assert_eq!(test.r2.0, 0);

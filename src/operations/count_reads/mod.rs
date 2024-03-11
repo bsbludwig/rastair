@@ -5,13 +5,14 @@
 
 
 use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, error::Error, fs::File, io::{stdout, Write}};
-use log::{debug, info, trace, warn};
+use log::{debug, info, trace};
 
 use anyhow::Result;
-use bio::bio_types::sequence::SequenceReadPairOrientation::{self, F1R2, F2R1, R2F1, R1F2};
+use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 use rust_htslib::bam::{IndexedReader, Record, Read, ext::BamRecordExtensions};
 
 use crate::sequence_segment::{SequenceSegment, SequenceSegmentIterator};
+use crate::utils::read_pair_orientation;
 
 use super::FLAGS;
 
@@ -122,34 +123,7 @@ use super::FLAGS;
             }
             let record = &self.next_read;
 
-            let mut read_pair_orientation = record.read_pair_orientation();
-            if ! self.config.exclude_ambiguous
-            {
-                read_pair_orientation = match read_pair_orientation
-                {
-                    F1R2 | R2F1 => F1R2,
-                    F2R1 | R1F2 => F2R1,
-                    SequenceReadPairOrientation::None => {
-                        warn!("Orientation of {} cannot be unambiguously determined", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
-
-                        if record.is_first_in_template() && record.is_mate_reverse() ||
-                        record.is_last_in_template() && record.is_reverse()
-                        {
-                            F1R2
-                        }
-                        // F2R1
-                        else if record.is_first_in_template() && record.is_reverse() ||
-                                record.is_last_in_template() && record.is_mate_reverse()
-                        {
-                            F2R1
-                        }
-                        else {
-                            SequenceReadPairOrientation::None
-                        }
-                    },
-                    _   =>  SequenceReadPairOrientation::None
-                };
-            }
+            let read_pair_orientation = read_pair_orientation(record, self.config.exclude_ambiguous);
 
             match read_pair_orientation
             {
@@ -312,34 +286,7 @@ use super::FLAGS;
             debug!("Processing pos {} in read {}: {} vs {}, flag {}", cpg_pos, next_read_count.read_id, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(read_base as u32).unwrap_or_default(), self.next_read.flags());
             let record = &self.next_read;
 
-            let mut read_pair_orientation = record.read_pair_orientation();
-            if ! self.config.exclude_ambiguous
-            {
-                read_pair_orientation = match read_pair_orientation
-                {
-                    F1R2 | R2F1 => F1R2,
-                    F2R1 | R1F2 => F2R1,
-                    SequenceReadPairOrientation::None => {
-                        warn!("Orientation of {} cannot be unambiguously determined", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
-
-                        if record.is_first_in_template() && record.is_mate_reverse() ||
-                        record.is_last_in_template() && record.is_reverse()
-                        {
-                            F1R2
-                        }
-                        // F2R1
-                        else if record.is_first_in_template() && record.is_reverse() ||
-                                record.is_last_in_template() && record.is_mate_reverse()
-                        {
-                            F2R1
-                        }
-                        else {
-                            SequenceReadPairOrientation::None
-                        }
-                    },
-                    _   =>  SequenceReadPairOrientation::None
-                };
-            }
+            let read_pair_orientation = read_pair_orientation(record, self.config.exclude_ambiguous);
 
             match read_pair_orientation
             {

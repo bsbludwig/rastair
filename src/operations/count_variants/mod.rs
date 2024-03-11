@@ -164,13 +164,13 @@ pub fn run_caller(
     nOT_option: &Option<String>,
     nOB_option: &Option<String>,
     read_threads_option: &Option<u8>,
-    threads_option: &Option<u8>) -> Result<(), Box<dyn Error>> 
+    threads_option: &Option<u8>) -> Result<(), Box<dyn Error>>
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
 
     let chunk_size = chunk_size_option.unwrap_or_default();
-    
+
     let max_threads = num_cpus::get();
     let threads = std::cmp::min(threads_option.unwrap_or(1) as usize, max_threads);
 
@@ -196,7 +196,7 @@ pub fn run_caller(
     if let Some(threads) = *read_threads_option {
         config.htslib_threads = threads as usize;
     }
-    
+
     #[allow(non_snake_case)]
     if let Some(nOT_s) = nOT_option {
         if let Ok(ot_mask) = ReadMaskSetting::from_str(nOT_s) {
@@ -215,8 +215,8 @@ pub fn run_caller(
         .max_size(threads as u32)
         .build(manager)?;
     //let mut counter = VariantCounter::with_config(config)?;
-    
-    /* TODO this needs refactoring to allow multi-threading:
+
+    /*
      * 1a. Loop over genomic segments, and then inject the segment into the VariantCounter [x]
      * 1b. Ensure GenomicSegments are cloneable, so I can distribute them? Or will a thread scope suffice?
      * 2. Change the VariantCounter to not be an iterator, but create a separate VariantCounterIterator
@@ -226,13 +226,13 @@ pub fn run_caller(
      * 4. Use e.g. [pariter](https://lib.rs/crates/pariter) and fetch a VariantCounter (with attached bam handle)
      *    for each closure invokation
     */
-    let mut iterator: SequenceSegmentIterator<File> = 
-        if chunk_size == 0 
-        { 
+    let mut iterator: SequenceSegmentIterator<File> =
+        if chunk_size == 0
+        {
             SequenceSegmentIterator::with_file(fasta_path)?
-        } 
-        else 
-        { 
+        }
+        else
+        {
             SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size as usize)?
         };
     // Subset to those sequences that are actually in the bam/fasta file
@@ -256,7 +256,7 @@ pub fn run_caller(
         {
             panic!("Failed to get counter from pool, too many threads?");
         };
-        
+
         match counter.count_variants_in_segment(segment)
         {
             Some(res) => res,
@@ -264,7 +264,7 @@ pub fn run_caller(
         }
     })
     .flatten()
-    .for_each(|cpg| 
+    .for_each(|cpg|
     {
         if cpg.ref_base == b'C'
         { // C
