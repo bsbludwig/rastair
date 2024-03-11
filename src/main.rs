@@ -110,6 +110,10 @@ enum Commands
         #[arg(short='A', long, action=clap::ArgAction::SetTrue)]
         all_reads: Option<bool>,
 
+        /// Exclude reads where the orientation cannot be unambiguously determined [default: false]
+        #[arg(long, action=clap::ArgAction::SetTrue)]
+        exclude_ambiguous: Option<bool>,
+
         /// Number of threads to use inside htslib for decompression [default: 1]
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
         read_threads: Option<u8>,
@@ -211,6 +215,7 @@ fn real_main() -> i32
                 required_flags,
                 excluded_flags,
                 all_reads,
+                exclude_ambiguous,
                 read_threads }) =>
                 {
                     match count_reads::run_caller(
@@ -221,6 +226,7 @@ fn real_main() -> i32
                         required_flags,
                         excluded_flags,
                         all_reads,
+                        exclude_ambiguous,
                         read_threads,)
                     {
                         Ok(()) => 0,

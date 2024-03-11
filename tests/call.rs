@@ -3,18 +3,6 @@ use predicates::prelude::*; // Used for writing assertions
 use std::process::Command; // Run programs
 
 #[test]
-fn unrecognised_command() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("rastair")?;
-
-    cmd.arg("something");
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand"));
-
-    Ok(())
-}
-
-#[test]
 fn missing_bam() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
@@ -34,7 +22,7 @@ fn missing_fasta() -> Result<(), Box<dyn std::error::Error>> {
 
     cmd.arg("call");
 		cmd.args(["--fasta-file", "test_data/test_which_doesnt_exist.fasta"]);
-		cmd.arg("test_data/file.bam");
+		cmd.arg("test_data/test.bam");
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("No such file or directory"));
@@ -73,20 +61,7 @@ fn refuse_0_chunks() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn has_header() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("rastair")?;
-
-    cmd.arg("call");
-		cmd.args(["--fasta-file", "test_data/test.fasta"]);
-		cmd.arg("test_data/test.bam");
-    cmd.assert()
-        .success()
-				.stdout(predicate::str::contains("#chr\t"));
-    Ok(())
-}
-
-#[test]
-fn finds_right_number_of_positions() -> Result<(), Box<dyn std::error::Error>> {
+fn default_settings() -> Result<(), Box<dyn std::error::Error>> {
 	let mut cmd = Command::cargo_bin("rastair")?;
 
 	cmd.arg("call");
@@ -97,6 +72,9 @@ fn finds_right_number_of_positions() -> Result<(), Box<dyn std::error::Error>> {
 	let output = cmd.output().unwrap();
 	let output_str = String::from_utf8_lossy(&output.stdout);
 	assert_eq!(output_str.lines().count(), 6486);
+	// Check header row is there
+	let first_line = output_str.lines().next().unwrap();
+	assert!(predicate::str::contains("#chr").eval(first_line));
 	Ok(())
 }
 

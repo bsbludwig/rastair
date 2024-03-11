@@ -85,7 +85,7 @@ impl VariantCounter
         {
             bam.set_threads(config.htslib_threads)?;
         }
-        
+
         // intersect the index files
         let bam_index: Vec<(Vec<u8>, u64, u64)> = bam
                         .index_stats()
@@ -125,7 +125,7 @@ impl VariantCounter
         let iterator = VariantCounterIterator::with_file_and_counter_and_size(fasta_path, self, step_size)?;
         Ok(iterator)
     }
-    
+
     pub fn index(&self) -> &Vec<(Vec<u8>, u64, u64)>
     {
         &self.bam_index
@@ -143,7 +143,7 @@ impl VariantCounter
             let qpos = alignment.qpos().unwrap(); // safe cause we checked for deletions before
             let record = alignment.record();
             let seq_len = record.seq_len();
-            
+
             if seq_len == 0
             {
                 return false;
@@ -158,9 +158,9 @@ impl VariantCounter
             {
                 return false;
             }
-            
+
             let qual = record.qual()[qpos];
-            
+
             if qual < config.min_baseq
             {
                 return false;
@@ -169,12 +169,13 @@ impl VariantCounter
             let mut read_pair_orientation = record.read_pair_orientation();
             if ! config.exclude_ambiguous
             {
-                warn!("Orientation of {} cannot be unambiguously determined", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
                 read_pair_orientation = match read_pair_orientation
                 {
                     F1R2 | R2F1 => F1R2,
                     F2R1 | R1F2 => F2R1,
                     SequenceReadPairOrientation::None => {
+                        warn!("Orientation of {} cannot be unambiguously determined", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
+
                         if record.is_first_in_template() && record.is_mate_reverse() ||
                         record.is_last_in_template() && record.is_reverse()
                         {
@@ -196,7 +197,7 @@ impl VariantCounter
 
             match read_pair_orientation
             {
-                F1R2 => 
+                F1R2 =>
                 {
                     if record.is_first_in_template()
                     {
@@ -210,7 +211,7 @@ impl VariantCounter
                             return false;
                         }
                     }
-                    else 
+                    else
                     {
                         if seq_len < config.ot_mask.r2.0+config.ot_mask.r2.1 + 1 {
                             return false;
@@ -222,15 +223,15 @@ impl VariantCounter
                         }
                     }
                 },
-                F2R1 => 
+                F2R1 =>
                 {
                     if record.is_first_in_template()
                     {
                         if seq_len < config.ob_mask.r1.0+config.ob_mask.r1.1 + 1 {
                             return false;
                         }
-    
-                        // I'm flipping the start/end here, because the R1 of the OB is reversed but 
+
+                        // I'm flipping the start/end here, because the R1 of the OB is reversed but
                         // samtools reports it in ref direction, so if I want to remove 5 bases from the start
                         // of the read, that's actually the "end" in the coordinate system that htslib provides
                         if qpos < config.ob_mask.r1.1 || qpos > seq_len-config.ob_mask.r1.0-1
@@ -238,7 +239,7 @@ impl VariantCounter
                             return false;
                         }
                     }
-                    else 
+                    else
                     {
                         if seq_len < config.ob_mask.r2.0+config.ob_mask.r2.1 + 1 {
                             return false;
@@ -255,7 +256,7 @@ impl VariantCounter
                     return false;
                 },
             };
-            
+
             true
         };
         filter_closure
@@ -272,7 +273,7 @@ impl VariantCounter
             info!("No CpGs in {}", &segment);
             return None;
         };
-        
+
         /* Fetch the pileup for the region from the bam file, and go
         * through all CpG positions, performing whatever calculation
         * needs to be performed. Stream the output to a writer that
@@ -289,7 +290,7 @@ impl VariantCounter
         }
         let mut pileup_iterator = self.bam.pileup();
         pileup_iterator.set_max_depth(self.config.max_depth);
-        
+
         // Allocate enough space for output
         let mut output: Vec<VariantCount> = Vec::with_capacity(cpg_positions.len());
 
@@ -312,7 +313,7 @@ impl VariantCounter
                     continue;
                 }
             };
-            
+
             let pileup_pos = pileup.pos() as u64;
             last_pos = pileup_pos;
             trace!("start: {} pileup_pos: {}", segment.start, pileup.pos());
@@ -363,11 +364,11 @@ impl VariantCounter
                 // This copies memory, so don't repeat
                 let record = alignment.record();
                 let seq = record.seq();
-                
+
                 let base = seq[pos];
                 let qual = record.qual()[pos];
                 debug!("Processing pos {} in read {} with base {} and qual {} at col {}", pos, std::str::from_utf8(record.qname()).unwrap_or_default(), char::from_u32(base as u32).unwrap_or_default(), qual, pileup_pos);
-                
+
                 let nuc_counts =
                 {
                     if (record.flags() & (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == 0)
@@ -393,7 +394,7 @@ impl VariantCounter
                             // same sequence in each pair, do not double-count but keep previous
                             continue 'alignment_loop;
                         }
-                        else 
+                        else
                         {
                             // Mismatch! Remove previously counted base and ignore this one
                             // TODO: decide whether to follow the example of Methyldackel and
@@ -404,8 +405,8 @@ impl VariantCounter
                             nuc_counts.increment_counter_by(pos_tuple.0, -1);
                             continue 'alignment_loop;
                         }
-                    } 
-                    else 
+                    }
+                    else
                     {
                         // TODO I'm storing the qual here _in case_ I want to implement quality-based
                         // decision on which read disagreeing base to keep in the future
@@ -416,7 +417,7 @@ impl VariantCounter
                 match nuc_counts.increment_counter_by(base, 1)
                 {
                     Some(()) => (),
-                    None => 
+                    None =>
                     {
                         let char = char::from_u32(base as u32).unwrap_or_default();
                         warn!("Encountered unknown char {} at {}", char, this_position);
@@ -445,7 +446,7 @@ impl VariantCounter
     }
 }
 
-pub struct VariantCounterIterator<'a> 
+pub struct VariantCounterIterator<'a>
 {
     counter: &'a mut VariantCounter,
     fasta: SequenceSegmentIterator<fs::File>,
@@ -457,7 +458,7 @@ impl <'a> VariantCounterIterator<'a>
     {
         let mut fasta = SequenceSegmentIterator::with_file(&fasta_path)?;
         fasta.subset_to_intervals(counter.index())?;
-        
+
         Ok(VariantCounterIterator {
             counter,
             fasta
@@ -468,7 +469,7 @@ impl <'a> VariantCounterIterator<'a>
     {
         let mut fasta = SequenceSegmentIterator::with_file_and_stepsize(&fasta_path, chunk_size)?;
         fasta.subset_to_intervals(counter.index())?;
-        
+
         Ok(VariantCounterIterator {
             counter,
             fasta
@@ -494,7 +495,7 @@ impl <'a> Iterator for VariantCounterIterator<'a>
 ====================================================*/
 #[cfg(test)]
 mod tests {
-    
+
     // For testing
     use super::*;
     use std::str::FromStr;
@@ -532,7 +533,7 @@ mod tests {
             assert_eq!(alignments.len(), 7);
             assert_eq!(alignments.into_iter().filter(filter).count(), 3);
         };
-        
+
         Ok(())
     }
 
@@ -551,7 +552,7 @@ mod tests {
             assert_eq!(alignments.len(), 7);
             assert_eq!(alignments.into_iter().filter(filter).count(), 0);
         };
-        
+
         Ok(())
     }
 
@@ -570,7 +571,7 @@ mod tests {
             assert_eq!(alignments.len(), 7);
             assert_eq!(alignments.into_iter().filter(filter).count(), 1);
         };
-        
+
         Ok(())
     }
 }
