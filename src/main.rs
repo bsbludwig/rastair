@@ -60,19 +60,21 @@ enum Commands
         #[arg(long, action=clap::ArgAction::SetTrue)]
         exclude_ambiguous: Option<bool>,
 
-        /// Soft-trim the OT by that many bases from either end [default: 0,0,0,0]
+        /// For each read corresponding to the OT, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
+        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
         #[arg(long="nOT")]
         n_ot: Option<String>,
 
-        /// Soft-trim the OT by that many bases from either end [default: 0,0,0,0]
+        /// For each read corresponding to the OB, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
+        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
         #[arg(long="nOB")]
         n_ob: Option<String>,
 
-        /// Number of threads to use inside htslib for decompression [default: 1]
+        /// Number of threads to use inside htslib for decompression. Changing this rarely has a substantial performance effect. [default: 1]
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
         read_threads: Option<u8>,
 
-        /// Number of threads to use for variant calling
+        /// Number of threads to use for variant calling. Performance scales roughly linearly as long as the chunk-size is large enough. [default: 1]
         #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
         threads: Option<u8>,
     },
