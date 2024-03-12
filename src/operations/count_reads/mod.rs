@@ -11,8 +11,8 @@ use anyhow::Result;
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 use rust_htslib::bam::{IndexedReader, Record, Read, ext::BamRecordExtensions};
 
-use crate::sequence_segment::{SequenceSegment, SequenceSegmentIterator};
-use crate::utils::read_pair_orientation;
+use crate::{sequence_segment::{SequenceSegment, SequenceSegmentIterator}, utils::IndexedReaderExt};
+use crate::utils::RecordExt;
 
 use super::FLAGS;
 
@@ -104,13 +104,10 @@ use super::FLAGS;
                                  .collect();
         Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config, right_margin: segment.stop, first_skipped_read: None, skip_until_read: last_read, found_overhang: last_read.0.len() == 0})
     }
- }
 
- impl Iterator for ReadIterator<'_>
-{
-    type Item = PerReadCount;
-
-    fn next(&mut self) -> Option<Self::Item>
+    /// Progress the pointer in the bam file iterator to the next read that matches the criteria set in the config.
+    /// Return None if there's no more reads to find in the current segment.
+    fn find_next_read(&mut self) -> Option<()>
     {
         loop {
             match self.bam_reader.read(&mut self.next_read)?
@@ -123,14 +120,14 @@ use super::FLAGS;
             }
             let record = &self.next_read;
 
-            let read_pair_orientation = read_pair_orientation(record, self.config.exclude_ambiguous);
+            let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
 
             match read_pair_orientation
             {
                 F1R2    => (),
                 F2R1    => (),
                 _       => {
-                    debug!("Skipping incorrectly paired read {}. (flag {})", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), self.next_read.flags());
+                    debug!("Skipping incorrectly paired read {}. (flag {})", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.flags());
                     continue;
                 }
             }
@@ -171,6 +168,18 @@ use super::FLAGS;
 
             break;
         };
+    Some(())
+    }
+ }
+
+ impl Iterator for ReadIterator<'_>
+{
+    type Item = PerReadCount;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.find_next_read()?;
+        let record = &self.next_read;
 
         /* Check if the read extends to the end of the segment, in which case we'll process it,
          * and all subsequent reads (which must have start pos >= this read), in the next segment.
@@ -179,23 +188,23 @@ use super::FLAGS;
          * round.
          * Both end_pos and sequence.stop are "right open", so equality means the read touches the end.
          */
-        let alignment = self.next_read.cigar();
+        let alignment = record.cigar();
         if !self.sequence.is_last && (alignment.end_pos() as u64) >= self.sequence.stop
         {
-            debug!("Read {} extends to the end of the current segment ({} >= {}), skip to next segment", String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), alignment.end_pos(), self.sequence.stop);
-            self.right_margin = self.next_read.pos() as u64;
-            self.first_skipped_read = Some((String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(), self.next_read.is_first_in_template()));
+            debug!("Read {} extends to the end of the current segment ({} >= {}), skip to next segment", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), alignment.end_pos(), self.sequence.stop);
+            self.right_margin = record.pos() as u64;
+            self.first_skipped_read = Some((String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.is_first_in_template()));
             return None;
         }
 
         let mut next_read_count = PerReadCount {
             contig: self.sequence.contig.clone(), // this is an allocation - can this be saved? prob not, as we can't predict the lifetime of PerReadCount object
-            start: self.next_read.pos().abs() as u64,
+            start: record.pos().abs() as u64,
             stop: alignment.end_pos() as u64,
-            flag: self.next_read.flags(),
-            mapq: self.next_read.mapq(),
-            frag_length: self.next_read.insert_size().abs() as u32,
-            read_id: String::from_utf8(Vec::from(self.next_read.qname())).unwrap_or_default(),
+            flag: record.flags(),
+            mapq: record.mapq(),
+            frag_length: record.insert_size().abs() as u32,
+            read_id: String::from_utf8(Vec::from(record.qname())).unwrap_or_default(),
             cpg_count: 0,
             mod_count: 0,
             mod_cpgs: Vec::new(),
@@ -206,10 +215,6 @@ use super::FLAGS;
         {
             debug!("No CpGs in segment or all CpGs already processed, return empty read count");
             return Some(next_read_count);
-
-            // I can't abort here quite yet - there could be reads further down in this segment
-            // which extend beyond the end of the segment, and those then wouldn't get re-processed
-            // in the next segment.
         }
         // find the first cpg position that could be in this read
         // since reads should arrive here in sorted order, we can
@@ -244,7 +249,7 @@ use super::FLAGS;
         let mut offset=0;
         // Find all CpGs in the subset covered by the read
         'block_loop:
-        for block in self.next_read.aligned_pairs()
+        for block in record.aligned_pairs()
         {
             trace!("Processing block {}/{}", block[0], block[1]);
             if (self.cpg_offset + offset) >= self.cpgs.len()
@@ -281,12 +286,12 @@ use super::FLAGS;
             }
 
             let base = self.sequence.sequence[(cpg_pos - self.sequence.start) as usize];
-            let read_base = self.next_read.seq()[block[0] as usize].to_ascii_uppercase();
+            let read_base = record.seq()[block[0] as usize].to_ascii_uppercase();
             // check if the position in this read is meaningful
-            debug!("Processing pos {} in read {}: {} vs {}, flag {}", cpg_pos, next_read_count.read_id, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(read_base as u32).unwrap_or_default(), self.next_read.flags());
+            debug!("Processing pos {} in read {}: {} vs {}, flag {}", cpg_pos, next_read_count.read_id, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(read_base as u32).unwrap_or_default(), record.flags());
             let record = &self.next_read;
 
-            let read_pair_orientation = read_pair_orientation(record, self.config.exclude_ambiguous);
+            let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
 
             match read_pair_orientation
             {
@@ -434,28 +439,10 @@ pub fn run_caller(
     {
         bam.set_threads(config.htslib_threads as usize)?;
     }
-    let bam_index: Vec<(Vec<u8>, u64, u64)> =
-        bam
-        .index_stats()
-        .unwrap_or(Vec::new())
-        .iter()
-        .filter(
-            |idx| -> bool
-            {
-                // Exclude contigs with no mapped reads
-                idx.2 > 0
-            }
-        )
-        .map(
-            |idx| -> (Vec<u8>, u64, u64)
-            {
-                // This is just a lookup, so it's fine to do in a loop
-                let header = bam.header();
-                let seq_id = header.tid2name(idx.0 as u32);
-                (Vec::from(seq_id), 0, idx.1)
-            }
-        ).collect();
+    let bam_index = bam.expanded_index()?;
+    // only process regions that are actually in the bam file
     iterator.subset_to_intervals(&bam_index)?;
+
     let mut lock = stdout().lock();
     writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs")?;
     let mut last_read_name = String::new();
@@ -488,4 +475,59 @@ pub fn run_caller(
 
     }
     Ok(())
+}
+
+/*====================================================
+ = Unit Tests
+====================================================*/
+#[cfg(test)]
+mod tests {
+
+    // For testing
+    use super::*;
+    use anyhow::Result;
+
+    const BAMFILE: &'static str = r"test_data/test.bam";
+    const FASTAFILE: &'static str = r"test_data/test.fasta";
+
+    fn create_config() -> Result<ReadCounterConfig>
+    {
+        let bam_path = PathBuf::from(BAMFILE);
+        let rcc = ReadCounterConfig::with_path(bam_path)?;
+        Ok(rcc)
+    }
+
+    #[test]
+    fn can_create_config() -> Result<()>
+    {
+        let rcc = create_config()?;
+        assert_eq!(rcc.bam_path.to_str().unwrap(), BAMFILE);
+        Ok(())
+    }
+
+    #[test]
+    fn can_create_counter() -> Result<()>
+    {
+        let config = create_config()?;
+        let mut bam = IndexedReader::from_path(&config.bam_path)?;
+        bam.set_threads(1)?;
+        let bam_index = bam.expanded_index()?;
+
+        let mut iterator: SequenceSegmentIterator<File> = SequenceSegmentIterator::with_file(FASTAFILE)?;
+        iterator.subset_to_intervals(&bam_index)?;
+
+        let last_read_name = String::new();
+        let last_read_orientation: bool = false;
+        if let Some(segment) = iterator.next()
+        {
+            let counter = ReadIterator::with_region_and_reader(&segment, &mut bam, &config, (&last_read_name, last_read_orientation))?;
+            assert_eq!(counter.right_margin, segment.stop);
+            assert_eq!(counter.found_overhang, true);
+        }
+        else
+        {
+            assert!(false);
+        }
+        Ok(())
+    }
 }

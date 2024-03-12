@@ -10,7 +10,7 @@ use log::{trace, debug, info, warn, error};
 use anyhow::Result;
 
 use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
-use crate::utils::read_pair_orientation;
+use crate::utils::{IndexedReaderExt, RecordExt};
 
 // Faster hashing than built-in algo
 use hashers::fx_hash::FxHasher;
@@ -87,27 +87,8 @@ impl VariantCounter
             bam.set_threads(config.htslib_threads)?;
         }
 
-        // intersect the index files
-        let bam_index: Vec<(Vec<u8>, u64, u64)> = bam
-                        .index_stats()
-                        .unwrap_or(Vec::new())
-                        .iter()
-                        .filter(
-                            |idx| -> bool
-                            {
-                                // Exclude contigs with no mapped reads
-                                idx.2 > 0
-                            }
-                        )
-                        .map(
-                            |idx| -> (Vec<u8>, u64, u64)
-                            {
-                                // This is just a lookup, so it's fine to do in a loop
-                                let header = bam.header();
-                                let seq_id = header.tid2name(idx.0 as u32);
-                                (Vec::from(seq_id), 0, idx.1)
-                            }
-                        ).collect();
+        // cache the expanded index
+        let bam_index: Vec<(Vec<u8>, u64, u64)> = bam.expanded_index()?;
         Ok(VariantCounter {
             config,
             bam,
@@ -134,7 +115,7 @@ impl VariantCounter
 
     /// Generate a closure that can be used to filter alignments, given the configuration settings
     /// This is implemented as a class and not a member function to avoid mutable/immutable ref issues
-    fn generate_alignemnt_filter<'a>(config: &'a VariantCounterConfig) -> impl Fn(&Alignment<'a>) -> bool
+    fn generate_alignment_filter<'a>(config: &'a VariantCounterConfig) -> impl Fn(&Alignment<'a>) -> bool
     {
         let filter_closure = |alignment: &Alignment| -> bool
         {
@@ -167,7 +148,7 @@ impl VariantCounter
                 return false;
             }
 
-            let read_pair_orientation = read_pair_orientation(&record, config.exclude_ambiguous);
+            let read_pair_orientation = record.read_pair_orientation_lenient(config.exclude_ambiguous);
 
             match read_pair_orientation
             {
@@ -328,7 +309,7 @@ impl VariantCounter
             var_count.pos = pileup_pos;
             var_count.ref_base = this_position.base();
             // Need to be done here so that the lifetime of pileup exceeds the lifetime of the closure
-            let filter_closure = VariantCounter::generate_alignemnt_filter(&self.config);
+            let filter_closure = VariantCounter::generate_alignment_filter(&self.config);
             'alignment_loop:
             for alignment in pileup
                                             .alignments()
@@ -342,7 +323,7 @@ impl VariantCounter
                 let base = seq[pos];
                 let qual = record.qual()[pos];
                 debug!("Processing pos {} in read {} with base {} and qual {} at col {}", pos, std::str::from_utf8(record.qname()).unwrap_or_default(), char::from_u32(base as u32).unwrap_or_default(), qual, pileup_pos);
-                let read_pair_orientation = read_pair_orientation(&record, self.config.exclude_ambiguous);
+                let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
 
                 let nuc_counts =
                 {
@@ -498,7 +479,7 @@ mod tests {
     fn can_filter_alignments() -> Result<()>
     {
         let config = create_test_config()?;
-        let filter = VariantCounter::generate_alignemnt_filter(&config);
+        let filter = VariantCounter::generate_alignment_filter(&config);
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
 
         bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
@@ -517,7 +498,7 @@ mod tests {
         let mut config = create_test_config()?;
         config.ot_mask = ReadMaskSetting::from_str(&"1,0,0,1").unwrap();
         config.ob_mask = ReadMaskSetting::from_str(&"0,1,1,0").unwrap();
-        let filter = VariantCounter::generate_alignemnt_filter(&config);
+        let filter = VariantCounter::generate_alignment_filter(&config);
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
 
         bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
@@ -536,7 +517,7 @@ mod tests {
         let mut config = create_test_config()?;
         config.ot_mask = ReadMaskSetting::from_str(&"1,0,0,1").unwrap();
         config.ob_mask = ReadMaskSetting::from_str(&"1,0,0,1").unwrap();
-        let filter = VariantCounter::generate_alignemnt_filter(&config);
+        let filter = VariantCounter::generate_alignment_filter(&config);
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
 
         bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
