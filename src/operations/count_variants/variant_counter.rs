@@ -44,6 +44,8 @@ pub struct VariantCounterConfig
     pub ob_mask: ReadMaskSetting,
     /// set the number of threads to use in htslib internally
     pub htslib_threads: usize,
+    /// Optional region to fetch
+    pub region: Option<String>
 }
 
 impl VariantCounterConfig
@@ -62,7 +64,8 @@ impl VariantCounterConfig
             exclude_ambiguous: false,
             ot_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
             ob_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
-            htslib_threads: 0
+            htslib_threads: 0,
+            region: None
         };
         Ok(v)
     }
@@ -412,8 +415,13 @@ impl <'a> VariantCounterIterator<'a>
     pub fn with_file_and_counter(fasta_path: impl AsRef<Path> + Debug, counter:&'a mut VariantCounter) -> Result<Self>
     {
         let mut fasta = SequenceSegmentIterator::with_file(&fasta_path)?;
+        if let Some(region) = &counter.config.region
+        {
+            debug!("Subset to region {}", region);
+            fasta.subset_to_region(region)?;
+        }
+        // Ensure regions are in the bam index
         fasta.subset_to_intervals(counter.index())?;
-
         Ok(VariantCounterIterator {
             counter,
             fasta
@@ -423,6 +431,12 @@ impl <'a> VariantCounterIterator<'a>
     pub fn with_file_and_counter_and_size(fasta_path: impl AsRef<Path> + Debug, counter: &'a mut VariantCounter, chunk_size: usize) -> Result<Self>
     {
         let mut fasta = SequenceSegmentIterator::with_file_and_stepsize(&fasta_path, chunk_size)?;
+        if let Some(region) = &counter.config.region
+        {
+            debug!("Subset to region {}", region);
+            fasta.subset_to_region(region)?;
+        }
+        // Ensure regions are in the bam index
         fasta.subset_to_intervals(counter.index())?;
 
         Ok(VariantCounterIterator {

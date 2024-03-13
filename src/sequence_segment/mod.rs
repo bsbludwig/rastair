@@ -10,6 +10,9 @@ use memchr::memmem::find_iter;
 
 use bio::io::fasta::IndexedReader;
 use bio::utils::Text;
+use rust_htslib::bam::FetchDefinition;
+
+use crate::utils::FetchDefinitionExt;
 
 const DEFAULT_STEP_SIZE: usize = 10000;
 const DEFAULT_TILING: usize = 1;
@@ -66,13 +69,13 @@ impl SequenceSegment
         {
             return None
         }
-        let start_positions: Vec<usize> = 
+        let start_positions: Vec<usize> =
             find_iter(&self.sequence, b"CG")
             .collect();
         let results: Vec<ContigPosition> = start_positions
             .iter()
-            .map(|pos| 
-                vec![ContigPosition { pos_in_segment: *pos, segment: self }, 
+            .map(|pos|
+                vec![ContigPosition { pos_in_segment: *pos, segment: self },
                      ContigPosition { pos_in_segment: *pos+1, segment: self }])
             .flatten()
             .collect();
@@ -105,7 +108,7 @@ pub struct SequenceSegmentIterator<R: Read + Seek>
     pos: u64,
     /// size of the interval to process at each step
     step_size: usize,
-    /// overlap of the next window with the previous one. 
+    /// overlap of the next window with the previous one.
     /// Defaults to 1, ie include the last base of the previous window in the same contig
     tiling: usize,
 }
@@ -134,7 +137,7 @@ where
 {
     pub fn with_reader(reader:IndexedReader<R>) -> Result<Self>
     {
-        let sequences: Vec<(String, u64, u64)> = 
+        let sequences: Vec<(String, u64, u64)> =
             reader
                 .index
                 .sequences()
@@ -158,7 +161,7 @@ where
             step_size: DEFAULT_STEP_SIZE,
             tiling: DEFAULT_TILING
         };
-        
+
         Ok(new_seq_seg)
     }
 
@@ -175,10 +178,42 @@ where
         self.tiling = new_tiling;
         Ok(())
     }
+
+    pub fn subset_to_region(&mut self, region: &String) -> Result<()>
+    {
+        match FetchDefinition::from_region_string(region)? {
+            FetchDefinition::RegionString(chr_bytes, start, end) => {
+                let chr = std::str::from_utf8(chr_bytes)?;
+                if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0 == chr)
+                {
+                    self.sequences = Vec::from([(chr.to_owned(), std::cmp::max(sequence.1, start as u64), std::cmp::min(sequence.2, end as u64))]);
+                }
+                else
+                {
+                    bail!("Could not find {}", region);
+                }
+            },
+            FetchDefinition::String(chr_bytes) => {
+                let chr = std::str::from_utf8(chr_bytes)?;
+                if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0 == chr)
+                {
+                    self.sequences = Vec::from([sequence.clone()]);
+                }
+                else
+                {
+                    bail!("Could not find {}", region);
+                }
+            },
+            FetchDefinition::All => return Ok(()),
+            _   => bail!("Error subsetting to region: {}", region)
+        };
+        Ok(())
+    }
+
     /// Intersect the sequences in the fasta file with sequences from e.g. the bam index.
     /// This will reset the iterator, so the next call to `next()` will start form the leftmost interval
     /// in the first sequence again.
-    pub fn subset_to_intervals(&mut self, intervals: &[(Vec<u8>, u64, u64)]) -> Result<()> 
+    pub fn subset_to_intervals(&mut self, intervals: &[(Vec<u8>, u64, u64)]) -> Result<()>
     {
         if intervals.len() == 0
         {
@@ -189,7 +224,7 @@ where
         for interval in intervals
         {
             let interval_id = std::str::from_utf8(&interval.0).unwrap_or_default();
-            if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0 == &interval_id) 
+            if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0 == &interval_id)
             {
                 new_sequences.push((sequence.0.clone(), std::cmp::max(sequence.1, interval.1), std::cmp::min(sequence.2, interval.2)));
             }
@@ -206,8 +241,8 @@ where
         if self.sequences.len() > 0 {
             let seq = &self.sequences[self.index_pos];
             self.pos = seq.1; // initialise as min start position
-        } 
-        else 
+        }
+        else
         {
             self.pos = 0;
         }
@@ -304,8 +339,8 @@ pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
     {
         debug!("Using step size {}", step_size);
         SequenceSegmentIterator::with_file_and_stepsize(file_path, step_size)?
-    } 
-    else 
+    }
+    else
     {
         SequenceSegmentIterator::with_file(file_path)?
     };
@@ -316,7 +351,7 @@ pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
             .find_cpgs()
             .unwrap_or_default()
             .iter()
-            .for_each(|position| 
+            .for_each(|position|
                 {
                     let char = char::from_u32(position.base() as u32).unwrap_or_default();
                     let seg_id = &position.segment.contig;
@@ -403,7 +438,7 @@ id4\t41\t170\t12\t13
         assert_eq!(seq_info.stop, 30);
         assert_eq!(&seq_info.sequence, b"ACCGTAGGCTGACCGTAGGCTGAACGTAGG");
         assert_eq!(seq_info.stop, seq_info.start + seq_info.sequence.len() as u64);
-        
+
         let seq_info2 = seg_iter.next().unwrap();
         assert_eq!(&seq_info2.contig, "id");
         assert_eq!(seq_info2.start, 29);

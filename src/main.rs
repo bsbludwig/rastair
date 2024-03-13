@@ -32,6 +32,10 @@ enum Commands
         #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
 
+        /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end"
+        #[arg(short='l', long)]
+        region: Option<String>,
+
         /// Minimum mapping quality per aligned read [default: 1]
         #[arg(short='q', long)]
         min_mapq: Option<u8>,
@@ -156,6 +160,7 @@ fn real_main() -> i32
         Some(Commands::Call {
             bam_file,
             fasta_file,
+            region,
             min_mapq,
             min_baseq,
             max_depth,
@@ -172,6 +177,7 @@ fn real_main() -> i32
                 // instead of doing that inside run_caller
                 match count_variants::run_caller(&bam_file.to_path_buf(),
                     &fasta_file.to_path_buf(),
+                    region,
                     min_mapq,
                     min_baseq,
                     max_depth,

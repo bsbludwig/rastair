@@ -155,3 +155,37 @@ fn finds_right_number_of_positions_with_trimming() -> Result<(), Box<dyn std::er
     assert_eq!(total, 45811);
     Ok(())
 }
+
+#[test]
+fn allow_restriction_to_chromosome() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("call");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--region", "bacteriophage_lambda_CpG"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+            .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_str.lines().count(), 6146);
+
+    Ok(())
+}
+
+#[test]
+fn allow_restriction_to_region() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("call");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--region", "bacteriophage_lambda_CpG:1-1000"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+            .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_str.lines().count(), 139);
+
+    Ok(())
+}

@@ -154,6 +154,7 @@ impl ManageConnection for VariantCounterConnectionManager
 pub fn run_caller(
     bam_path: &PathBuf,
     fasta_path: &PathBuf,
+    region_option: &Option<String>,
     mapq_option: &Option<u8>,
     baseq_option: &Option<u8>,
     max_depth_option: &Option<u32>,
@@ -197,6 +198,9 @@ pub fn run_caller(
         config.htslib_threads = threads as usize;
     }
 
+    // pass this right into the config object, will de-parse when needed
+    config.region = region_option.to_owned();
+
     #[allow(non_snake_case)]
     if let Some(nOT_s) = nOT_option {
         if let Ok(ot_mask) = ReadMaskSetting::from_str(nOT_s) {
@@ -237,6 +241,11 @@ pub fn run_caller(
         };
     // Subset to those sequences that are actually in the bam/fasta file
     let counter = pool.get()?;
+    if let Some(region) = region_option
+    {
+        iterator.subset_to_region(region)?;
+    }
+    // also make sure the region actually exists in the bam file
     iterator.subset_to_intervals(counter.index())?;
     drop(counter); // Ugly, but I need to free that counter up for later
 
