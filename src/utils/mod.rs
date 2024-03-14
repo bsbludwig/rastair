@@ -79,6 +79,7 @@ impl IndexedReaderExt for IndexedReader {
 }
 
 pub trait FetchDefinitionExt {
+    /// Parse a region string in the form chr:start-end into a FetchDefinition
     fn from_region_string(region: &str) -> Result<FetchDefinition>;
 }
 
@@ -115,8 +116,12 @@ impl <'a>FetchDefinitionExt for FetchDefinition<'a> {
                 bail!("Unable to parse region string: {}", region);
             }
 
-            let start = parts[0].parse::<i64>().unwrap_or(0);
-            let end = parts[1].parse::<i64>().unwrap_or(0);
+            let mut start = parts[0].parse::<i64>().unwrap_or(1);
+            if start > 0
+            {
+                start = start - 1;
+            }
+            let end = parts[1].parse::<i64>().unwrap_or(1);
             if end < start
             {
                 bail!("Unable to parse region string: {}", region);
@@ -195,7 +200,7 @@ mod tests {
         {
             FetchDefinition::RegionString(a, b, c) => {
                 assert_eq!(std::str::from_utf8(a).unwrap_or_default(), "chr1");
-                assert_eq!(b, 1);
+                assert_eq!(b, 0);
                 assert_eq!(c, 22);
             },
             _   => assert!(false)
