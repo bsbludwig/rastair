@@ -386,6 +386,7 @@ impl ReadCounterConfig
 pub fn run_caller(
     bam_path: &PathBuf,
     fasta_path: &PathBuf,
+    region_option: &Option<String>,
     mapq_option: &Option<u8>,
     chunk_size_option: &Option<u32>,
     req_flags_option: &Option<u16>,
@@ -439,6 +440,11 @@ pub fn run_caller(
     {
         bam.set_threads(config.htslib_threads as usize)?;
     }
+    if let Some(region) = region_option
+    {
+        iterator.subset_to_region(region)?;
+    }
+
     let bam_index = bam.expanded_index()?;
     // only process regions that are actually in the bam file
     iterator.subset_to_intervals(&bam_index)?;

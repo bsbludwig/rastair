@@ -32,7 +32,7 @@ enum Commands
         #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
 
-        /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end"
+        /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end", where start is 1-based and end is inclusive
         #[arg(short='l', long)]
         region: Option<String>,
 
@@ -93,6 +93,10 @@ enum Commands
         /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
         #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
+
+        /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end", where start is 1-based and end is inclusive
+        #[arg(short='l', long)]
+        region: Option<String>,
 
         /// Minimum mapping quality per aligned read [default: 1]
         #[arg(short='q', long)]
@@ -216,6 +220,7 @@ fn real_main() -> i32
         Some(Commands::PerRead {
                 bam_file,
                 fasta_file,
+                region,
                 min_mapq,
                 chunk_size,
                 required_flags,
@@ -227,6 +232,7 @@ fn real_main() -> i32
                     match count_reads::run_caller(
                         &bam_file.to_path_buf(),
                         &fasta_file.to_path_buf(),
+                        region,
                         min_mapq,
                         chunk_size,
                         required_flags,
