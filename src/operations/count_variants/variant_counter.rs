@@ -237,7 +237,7 @@ impl VariantCounter
         * needs to be performed. Stream the output to a writer that
         * writes the results to STDOUT or some file.
         */
-        match self.bam.fetch((&segment.contig[..], segment.start, segment.stop))
+        match self.bam.fetch((segment.region.contig.as_bytes(), segment.region.start, segment.region.end))
         {
             Ok(_) => (),
             Err(e) =>
@@ -274,7 +274,7 @@ impl VariantCounter
 
             let pileup_pos = pileup.pos() as u64;
             last_pos = pileup_pos;
-            trace!("start: {} pileup_pos: {}", segment.start, pileup.pos());
+            trace!("start: {} pileup_pos: {}", segment.region.start, pileup.pos());
             let mut this_position = &cpg_positions[cpg_index];
 
             if pileup_pos < this_position.pos_in_contig()
@@ -308,7 +308,7 @@ impl VariantCounter
 
             // Count conversion vs non-conversion
             let mut var_count = VariantCount::new();
-            var_count.contig = segment.contig.clone();
+            var_count.contig = segment.region.contig.clone();
             var_count.pos = pileup_pos;
             var_count.ref_base = this_position.base();
             // Need to be done here so that the lifetime of pileup exceeds the lifetime of the closure

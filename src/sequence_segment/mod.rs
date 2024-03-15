@@ -17,6 +17,27 @@ use crate::utils::FetchDefinitionExt;
 const DEFAULT_STEP_SIZE: usize = 10000;
 const DEFAULT_TILING: usize = 1;
 
+/// A genomic region
+pub struct GenomicRegion
+{
+    /// Name of sequence
+    pub contig: String,
+    /// start coordinate (0-base)
+    pub start: u64,
+    /// end-coordinate (exclusive)
+    pub end: u64
+}
+impl Clone for GenomicRegion
+{
+    fn clone(&self) -> Self {
+        GenomicRegion {
+            contig: self.contig.clone(),
+            start: self.start,
+            end: self.end
+        }
+    }
+}
+
 /// A genomic position, represented by its base and position, and the position
 /// relative to the (arbitrary) segment slice it belongs to.
 pub struct ContigPosition<'a>
@@ -36,7 +57,7 @@ impl<'a> ContigPosition<'a>
     /// The position of the represented position in the overall contig
     pub fn pos_in_contig(& self) -> u64
     {
-        (self.pos_in_segment as u64) + self.segment.start
+        (self.pos_in_segment as u64) + self.segment.region.start
     }
 }
 
@@ -45,7 +66,7 @@ impl <'a> Display for ContigPosition<'a>
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
     {
         let char = char::from_u32(self.base() as u32).unwrap_or_default();
-        write!(f, "{}:{} ({})", self.segment.contig, self.pos_in_contig(), char)
+        write!(f, "{}:{} ({})", self.segment.region.contig, self.pos_in_contig(), char)
     }
 }
 
@@ -53,9 +74,7 @@ impl <'a> Display for ContigPosition<'a>
 pub struct SequenceSegment
 {
     pub sequence: Text,
-    pub contig: String,
-    pub start:	u64,
-    pub stop: u64,
+    pub region: GenomicRegion,
     pub is_last: bool,
 }
 
@@ -90,26 +109,10 @@ impl Display for SequenceSegment
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
-        write!(f, "{}:{}-{}", self.contig, self.start, self.stop)
+        write!(f, "{}:{}-{}", self.region.contig, self.region.start, self.region.end)
     }
 }
 
-pub struct GenomicRegion
-{
-    contig: String,
-    start: u64,
-    end: u64
-}
-impl Clone for GenomicRegion
-{
-    fn clone(&self) -> Self {
-        GenomicRegion {
-            contig: self.contig.clone(),
-            start: self.start,
-            end: self.end
-        }
-    }
-}
 /// An iterator over a fasta file that tokenises sequences
 /// into shorter, more manageable chunks
 pub struct SequenceSegmentIterator<R: Read + Seek>
@@ -185,6 +188,7 @@ where
     {
         self.index_pos >= self.sequences.len()
     }
+
     pub fn set_tiling(&mut self, new_tiling: usize) -> Result<()>
     {
         if new_tiling == 0 || new_tiling > self.step_size
@@ -348,9 +352,7 @@ where
         let segment = SequenceSegment
         {
             sequence,
-            contig: seq_info.contig.clone(),
-            start:  start,
-            stop:   stop,
+            region: GenomicRegion{contig: seq_info.contig.clone(), start, end: stop},
             is_last: stop >= seq_info.end
         };
         Some(segment)
@@ -378,7 +380,7 @@ pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
             .for_each(|position|
                 {
                     let char = char::from_u32(position.base() as u32).unwrap_or_default();
-                    let seg_id = &position.segment.contig;
+                    let seg_id = &position.segment.region.contig;
                     writeln!(lock, "{}\t{}\t{}", seg_id, position.pos_in_contig(), char).expect("Error writing to stdout");
                 });
     }
@@ -457,30 +459,30 @@ id4\t41\t170\t12\t13
         seg_iter.step_size = 30;
         let seq_info = seg_iter.next().unwrap();
 
-        assert_eq!(&seq_info.contig, "id");
-        assert_eq!(seq_info.start, 0);
-        assert_eq!(seq_info.stop, 30);
+        assert_eq!(&seq_info.region.contig, "id");
+        assert_eq!(seq_info.region.start, 0);
+        assert_eq!(seq_info.region.end, 30);
         assert_eq!(&seq_info.sequence, b"ACCGTAGGCTGACCGTAGGCTGAACGTAGG");
-        assert_eq!(seq_info.stop, seq_info.start + seq_info.sequence.len() as u64);
+        assert_eq!(seq_info.region.end, seq_info.region.start + seq_info.sequence.len() as u64);
 
         let seq_info2 = seg_iter.next().unwrap();
-        assert_eq!(&seq_info2.contig, "id");
-        assert_eq!(seq_info2.start, 29);
-        assert_eq!(seq_info2.stop, 52);
+        assert_eq!(&seq_info2.region.contig, "id");
+        assert_eq!(seq_info2.region.start, 29);
+        assert_eq!(seq_info2.region.end, 52);
         assert_eq!(&seq_info2.sequence, b"GCTGAAAGTAGGCTGAAAACCCC");
-        assert_eq!(seq_info2.stop, seq_info2.start + seq_info2.sequence.len() as u64);
+        assert_eq!(seq_info2.region.end, seq_info2.region.start + seq_info2.sequence.len() as u64);
 
         let seq_info3 = seg_iter.next().unwrap();
-        assert_eq!(&seq_info3.contig, "id2");
-        assert_eq!(seq_info3.start, 0);
-        assert_eq!(seq_info3.stop, 30);
+        assert_eq!(&seq_info3.region.contig, "id2");
+        assert_eq!(seq_info3.region.start, 0);
+        assert_eq!(seq_info3.region.end, 30);
         assert_eq!(&seq_info3.sequence, b"ATTGTTGTTTTAATTGTTGTTTTAATTGTT");
-        assert_eq!(seq_info3.stop, seq_info3.start + seq_info3.sequence.len() as u64);
+        assert_eq!(seq_info3.region.end, seq_info3.region.start + seq_info3.sequence.len() as u64);
 
         let seq_info4 = seg_iter.next().unwrap();
-        assert_eq!(&seq_info4.contig, "id2");
-        assert_eq!(seq_info4.start, 29);
-        assert_eq!(seq_info4.stop, 40);
+        assert_eq!(&seq_info4.region.contig, "id2");
+        assert_eq!(seq_info4.region.start, 29);
+        assert_eq!(seq_info4.region.end, 40);
         assert_eq!(&seq_info4.sequence, b"TGTTTTAGGGG");
 
         Ok(())

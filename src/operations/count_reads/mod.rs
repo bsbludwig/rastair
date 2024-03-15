@@ -4,7 +4,7 @@
  */
 
 
-use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, error::Error, fs::File, io::{stdout, Write}};
+use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, fs::File, io::{stdout, Write}};
 
 use log::{debug, info, trace, warn};
 
@@ -12,7 +12,7 @@ use anyhow::{bail, Result};
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 use rust_htslib::bam::{ext::BamRecordExtensions, FetchDefinition, IndexedReader, Read, Record};
 
-use crate::{sequence_segment::{SequenceSegment, SequenceSegmentIterator}, utils::{FetchDefinitionExt, IndexedReaderExt}};
+use crate::{sequence_segment::{GenomicRegion, SequenceSegment, SequenceSegmentIterator}, utils::{FetchDefinitionExt, IndexedReaderExt}};
 use crate::utils::RecordExt;
 
 use super::FLAGS;
@@ -21,11 +21,7 @@ use super::FLAGS;
  pub struct PerReadCount
  {
     /// ID of the sequence
-    pub contig: String,
-    /// start position in sequence coordinate space
-    pub start: u64,
-    // end position of alignment in seq coordinates
-    pub stop: u64,
+    pub region: GenomicRegion,
     /// Flag of read
     pub flag: u16,
     /// Mapq of read
@@ -49,9 +45,9 @@ use super::FLAGS;
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
         write!(f, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.contig,
-            self.start,
-            self.stop,
+            self.region.contig,
+            self.region.start,
+            self.region.end,
             self.read_id,
             self.mapq,
             if self.flag & 16 == 16 {"-"} else {"+"},
@@ -89,7 +85,7 @@ use super::FLAGS;
     pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig) -> Result<ReadIterator<'a>>
     {
         // Fetch reads in region/set reader the correct subset
-        reader.fetch((&segment.contig[..], segment.start, segment.stop))?;
+        reader.fetch((segment.region.contig.as_bytes(), segment.region.start, segment.region.end))?;
         let all_cpgs: Vec<u64> = segment.find_cpgs()
                                  .unwrap_or_default()
                                  .iter()
@@ -98,17 +94,17 @@ use super::FLAGS;
         let tiling_window = config.tiling_window_size;
         let right_margin = if segment.is_last
         {
-            segment.stop
+            segment.region.end
         }
-        else if segment.stop > (tiling_window as u64)
+        else if segment.region.end > (tiling_window as u64)
         {
-            segment.stop - (tiling_window as u64)
+            segment.region.end - (tiling_window as u64)
         }
         else
         {
             0
         };
-        if right_margin <= segment.start
+        if right_margin <= segment.region.start
         {
             bail!("Tiling window larger than segment, no reads will be processed!");
         }
@@ -139,9 +135,9 @@ use super::FLAGS;
 
             // check if the current read started before the segment start, which means
             // it was processed in a previous iteration. Skip
-            if record.pos() > 0 && (record.pos() as u64) <= self.sequence.start
+            if record.pos() > 0 && (record.pos() as u64) <= self.sequence.region.start
             {
-                debug!("Skipping read {} that started in a previous segment: {} <= {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.pos(), self.sequence.start);
+                debug!("Skipping read {} that started in a previous segment: {} <= {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.pos(), self.sequence.region.start);
                 continue;
             }
             // skip reads that lack required flags
@@ -186,15 +182,13 @@ use super::FLAGS;
         /* Check if the read extends beyond the end of the margin
          */
         let alignment = record.cigar();
-        if (alignment.end_pos() as u64) >= self.sequence.stop
+        if (alignment.end_pos() as u64) >= self.sequence.region.end
         {
             warn!("Read {} extends beyond end of segment {}, tiling window set too short: {}", std::str::from_utf8(record.qname()).unwrap_or_default(), self.sequence, self.config.tiling_window_size);
         }
 
         let mut next_read_count = PerReadCount {
-            contig: self.sequence.contig.clone(), // this is an allocation - can this be saved? prob not, as we can't predict the lifetime of PerReadCount object
-            start: record.pos().abs() as u64,
-            stop: alignment.end_pos() as u64,
+            region: GenomicRegion{contig: self.sequence.region.contig.clone(), start: record.pos().abs() as u64, end: alignment.end_pos() as u64},
             flag: record.flags(),
             mapq: record.mapq(),
             frag_length: record.insert_size().abs() as u32,
@@ -217,18 +211,18 @@ use super::FLAGS;
         loop
         {
             let next_cpg_pos = self.cpgs[self.cpg_offset];
-            if next_read_count.start <= next_cpg_pos
+            if next_read_count.region.start <= next_cpg_pos
             {
-                if next_read_count.stop <= next_cpg_pos
+                if next_read_count.region.end <= next_cpg_pos
                 {
-                    debug!("Next CpG pos beyond end of read: {} >= {} (#{} in list)", next_cpg_pos, next_read_count.stop, self.cpg_offset);
+                    debug!("Next CpG pos beyond end of read: {} >= {} (#{} in list)", next_cpg_pos, next_read_count.region.end, self.cpg_offset);
                     // we're further than the last element in the alignment
                     // get a new read that might align a bit further right
                     return Some(next_read_count);
                 }
                 else
                 {
-                    debug!("Found CpGs within read {} {}:{}-{} ({})", next_read_count.read_id, next_read_count.contig, next_read_count.start, next_read_count.stop, next_cpg_pos);
+                    debug!("Found CpGs within read {} {}:{}-{} ({})", next_read_count.read_id, next_read_count.region.contig, next_read_count.region.start, next_read_count.region.end, next_cpg_pos);
                     // There's something to process
                     break
                 }
@@ -263,9 +257,9 @@ use super::FLAGS;
                         break 'block_loop;
                     }
                 }
-                else if pos >= next_read_count.stop
+                else if pos >= next_read_count.region.end
                 {
-                    debug!("Next CpG ({}) is outside this read ({}-{}), end loop", pos, next_read_count.start, next_read_count.stop);
+                    debug!("Next CpG ({}) is outside this read ({}-{}), end loop", pos, next_read_count.region.start, next_read_count.region.end);
                     break 'block_loop;
                 }
                 else
@@ -279,7 +273,7 @@ use super::FLAGS;
                 continue;
             }
 
-            let base = self.sequence.sequence[(cpg_pos - self.sequence.start) as usize];
+            let base = self.sequence.sequence[(cpg_pos - self.sequence.region.start) as usize];
             let read_base = record.seq()[block[0] as usize].to_ascii_uppercase();
 
             // check if the position in this read is meaningful
@@ -298,12 +292,12 @@ use super::FLAGS;
                             {
                                 // mod
                                 next_read_count.mod_count = next_read_count.mod_count+1;
-                                next_read_count.mod_cpgs.push((block[1].abs_diff(next_read_count.start as i64)) as usize);
+                                next_read_count.mod_cpgs.push((block[1].abs_diff(next_read_count.region.start as i64)) as usize);
                             }
                             else if read_base == b'C'
                             {
                                 //unmod
-                                next_read_count.unmod_cpgs.push((block[1].abs_diff(next_read_count.start as i64)) as usize);
+                                next_read_count.unmod_cpgs.push((block[1].abs_diff(next_read_count.region.start as i64)) as usize);
                             }
                             else
                             {
@@ -533,7 +527,7 @@ mod tests {
         if let Some(segment) = iterator.next()
         {
             let counter = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
-            assert_eq!(counter.right_margin, segment.stop-(config.tiling_window_size as u64));
+            assert_eq!(counter.right_margin, segment.region.end-(config.tiling_window_size as u64));
         }
         else
         {
