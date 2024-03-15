@@ -5,13 +5,14 @@
 
 
 use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, error::Error, fs::File, io::{stdout, Write}};
-use log::{debug, info, trace};
 
-use anyhow::Result;
+use log::{debug, info, trace, warn};
+
+use anyhow::{bail, Result};
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
-use rust_htslib::bam::{IndexedReader, Record, Read, ext::BamRecordExtensions};
+use rust_htslib::bam::{ext::BamRecordExtensions, FetchDefinition, IndexedReader, Read, Record};
 
-use crate::{sequence_segment::{SequenceSegment, SequenceSegmentIterator}, utils::IndexedReaderExt};
+use crate::{sequence_segment::{SequenceSegment, SequenceSegmentIterator}, utils::{FetchDefinitionExt, IndexedReaderExt}};
 use crate::utils::RecordExt;
 
 use super::FLAGS;
@@ -76,24 +77,16 @@ use super::FLAGS;
     cpg_offset: usize,
     // An indexed bam reader
     bam_reader: &'a mut IndexedReader,
-    // pre-allocated record
-    next_read: Record,
     // config
     config: &'a ReadCounterConfig,
-    /// Start position of the first read encountered which extends beyond the end of the interval
+    // Ignore reads if they start beyond this position
     pub right_margin: u64,
-    /// Returns the first skipped read after the iterator finished, if there was a skipped read
-    pub first_skipped_read: Option<(String, bool)>,
-    /// Name of first read to process, to avoid re-printing overhang from previous segment
-    pub skip_until_read: (&'a String, bool),
-    // no need to check for overhanging reads any more?
-    found_overhang: bool
  }
 
  impl <'a> ReadIterator <'a>
  {
     /// Constructor with region and readers
-    pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig, last_read: (&'a String, bool)) -> Result<ReadIterator<'a>>
+    pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig) -> Result<ReadIterator<'a>>
     {
         // Fetch reads in region/set reader the correct subset
         reader.fetch((&segment.contig[..], segment.start, segment.stop))?;
@@ -102,15 +95,33 @@ use super::FLAGS;
                                  .iter()
                                  .map(|p| p.pos_in_contig())
                                  .collect();
-        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, next_read: Record::new(), config, right_margin: segment.stop, first_skipped_read: None, skip_until_read: last_read, found_overhang: last_read.0.len() == 0})
+        let tiling_window = config.tiling_window_size;
+        let right_margin = if segment.is_last
+        {
+            segment.stop
+        }
+        else if segment.stop > (tiling_window as u64)
+        {
+            segment.stop - (tiling_window as u64)
+        }
+        else
+        {
+            0
+        };
+        if right_margin <= segment.start
+        {
+            bail!("Tiling window larger than segment, no reads will be processed!");
+        }
+        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, config, right_margin})
     }
 
     /// Progress the pointer in the bam file iterator to the next read that matches the criteria set in the config.
     /// Return None if there's no more reads to find in the current segment.
-    fn find_next_read(&mut self) -> Option<()>
+    fn find_next_read(&mut self) -> Option<Record>
     {
+        let mut record: Record = Record::new();
         loop {
-            match self.bam_reader.read(&mut self.next_read)?
+            match self.bam_reader.read(&mut record)?
             {
                 Ok(_)  => (),
                 Err(e)  => {
@@ -118,18 +129,20 @@ use super::FLAGS;
                     return None;
                 }
             }
-            let record = &self.next_read;
 
-            let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
-
-            match read_pair_orientation
+            // if read starts beyond the right margin, terminate
+            if (record.pos() as u64) > self.right_margin
             {
-                F1R2    => (),
-                F2R1    => (),
-                _       => {
-                    debug!("Skipping incorrectly paired read {}. (flag {})", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.flags());
-                    continue;
-                }
+                debug!("Skipping read {} that starts beyond right margin: {} <= {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.pos(), self.right_margin);
+                return None;
+            }
+
+            // check if the current read started before the segment start, which means
+            // it was processed in a previous iteration. Skip
+            if record.pos() > 0 && (record.pos() as u64) <= self.sequence.start
+            {
+                debug!("Skipping read {} that started in a previous segment: {} <= {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.pos(), self.sequence.start);
+                continue;
             }
             // skip reads that lack required flags
             if record.flags() & self.config.required_flags != self.config.required_flags
@@ -144,31 +157,21 @@ use super::FLAGS;
                 continue;
             }
 
-            // check if the current read started before the segment start, which means
-            // it was processed in a previous iteration. Skip
-            if record.pos() > 0 && (record.pos() as u64) <= self.sequence.start
-            {
-                debug!("Skipping read {} that started in a previous segment: {} <= {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.pos(), self.sequence.start);
-                continue;
-            }
+            let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
 
-            if !self.found_overhang
+            match read_pair_orientation
             {
-                if record.qname() == self.skip_until_read.0.as_bytes() && record.is_first_in_template() == self.skip_until_read.1
-                {
-                    debug!("Found read {}/{}, will start to process", self.skip_until_read.0, if self.skip_until_read.1 {1} else {2});
-                    self.found_overhang = true;
-                }
-                else
-                {
-                    debug!("Skipping {} because it was already processed", String::from_utf8(Vec::from(record.qname())).unwrap_or_default());
+                F1R2    => (),
+                F2R1    => (),
+                _       => {
+                    debug!("Skipping incorrectly paired read {}. (flag {})", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.flags());
                     continue;
                 }
             }
 
             break;
         };
-    Some(())
+    Some(record)
     }
  }
 
@@ -178,23 +181,14 @@ use super::FLAGS;
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        self.find_next_read()?;
-        let record = &self.next_read;
+        let record = self.find_next_read()?;
 
-        /* Check if the read extends to the end of the segment, in which case we'll process it,
-         * and all subsequent reads (which must have start pos >= this read), in the next segment.
-         * There could be a C at the end of this read, which is in fact a CpG, where the G is the
-         * beginning of the next segment. We would miss that, so let's push the whole read to the next
-         * round.
-         * Both end_pos and sequence.stop are "right open", so equality means the read touches the end.
+        /* Check if the read extends beyond the end of the margin
          */
         let alignment = record.cigar();
-        if !self.sequence.is_last && (alignment.end_pos() as u64) >= self.sequence.stop
+        if (alignment.end_pos() as u64) >= self.sequence.stop
         {
-            debug!("Read {} extends to the end of the current segment ({} >= {}), skip to next segment", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), alignment.end_pos(), self.sequence.stop);
-            self.right_margin = record.pos() as u64;
-            self.first_skipped_read = Some((String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.is_first_in_template()));
-            return None;
+            warn!("Read {} extends beyond end of segment {}, tiling window set too short: {}", std::str::from_utf8(record.qname()).unwrap_or_default(), self.sequence, self.config.tiling_window_size);
         }
 
         let mut next_read_count = PerReadCount {
@@ -287,12 +281,10 @@ use super::FLAGS;
 
             let base = self.sequence.sequence[(cpg_pos - self.sequence.start) as usize];
             let read_base = record.seq()[block[0] as usize].to_ascii_uppercase();
+
             // check if the position in this read is meaningful
             debug!("Processing pos {} in read {}: {} vs {}, flag {}", cpg_pos, next_read_count.read_id, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(read_base as u32).unwrap_or_default(), record.flags());
-            let record = &self.next_read;
-
             let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
-
             match read_pair_orientation
             {
                 F1R2    =>
@@ -362,7 +354,8 @@ pub struct ReadCounterConfig
     excluded_flags: u16,
     htslib_threads: u8,
     all_reads: bool,
-    exclude_ambiguous: bool
+    exclude_ambiguous: bool,
+    tiling_window_size: usize
 }
 
 impl ReadCounterConfig
@@ -377,7 +370,8 @@ impl ReadCounterConfig
             excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
             htslib_threads: 0,
             all_reads: false,
-            exclude_ambiguous: false
+            exclude_ambiguous: false,
+            tiling_window_size: 200
         };
         Ok(v)
     }
@@ -388,12 +382,13 @@ pub fn run_caller(
     fasta_path: &PathBuf,
     region_option: &Option<String>,
     mapq_option: &Option<u8>,
-    chunk_size_option: &Option<u32>,
+    chunk_size_option: &Option<usize>,
+    read_length_option: &Option<usize>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
     all_reads_option: &Option<bool>,
     exclude_ambiguous_option: &Option<bool>,
-    read_threads_option: &Option<u8>) -> Result<(), Box<dyn Error>>
+    read_threads_option: &Option<u8>) -> Result<()>
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -430,8 +425,21 @@ pub fn run_caller(
         }
         else
         {
-            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size as usize)?
+            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
         };
+
+    if let Some(max_read_length) = read_length_option
+    {
+        config.tiling_window_size = *max_read_length;
+    }
+
+    if config.tiling_window_size == 0
+    {
+        warn!("Setting tiling window to 0 will cause missing data!");
+    }
+    // We only actually process reads that start up until segment_end-tiling_window.
+    // The overhang is needed to get the CpG loci info for reads that extend beyond the margin
+    iterator.set_tiling(config.tiling_window_size)?;
 
     // Create a bam reader
     // TODO this should probably all happen in some constructor somewhere
@@ -442,7 +450,21 @@ pub fn run_caller(
     }
     if let Some(region) = region_option
     {
-        iterator.subset_to_region(region)?;
+        let new_region =
+        // Need to de-parse region and extend by the read-length to include reads that extend beyond the end
+        match FetchDefinition::from_region_string(region)?
+        {
+            FetchDefinition::RegionString(chr, start, end) =>
+            {
+                format!("{}:{}-{}", std::str::from_utf8(chr).unwrap_or_default(), start, end+(config.tiling_window_size as i64)-1)
+            },
+            FetchDefinition::String(_) | FetchDefinition::All =>
+            {
+                region.to_owned()
+            },
+            _   => bail!("Failed to parse region string: {}", region)
+        };
+        iterator.subset_to_region(&new_region)?;
     }
 
     let bam_index = bam.expanded_index()?;
@@ -451,12 +473,11 @@ pub fn run_caller(
 
     let mut lock = stdout().lock();
     writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs")?;
-    let mut last_read_name = String::new();
-    let mut last_read_orientation: bool = false;
+
     while let Some(segment) = iterator.next()
     {
         info!("Process reads in {}", segment);
-        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config, (&last_read_name, last_read_orientation))?;
+        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
         while let Some(read_info) = read_iterator.next()
         {
             // Skip empty reads unless explicitly requested
@@ -465,20 +486,6 @@ pub fn run_caller(
             }
             writeln!(lock, "{}", read_info)?;
         }
-
-        if let Some(read_info) = read_iterator.first_skipped_read
-        {
-            debug!("Will set iterator tiling to {} to cover reads overlapping the boundary", segment.stop - read_iterator.right_margin + 1);
-            iterator.set_tiling((segment.stop - read_iterator.right_margin + 1) as usize)?;
-            last_read_name = read_info.0;
-            last_read_orientation = read_info.1;
-        }
-        else
-        {
-            iterator.set_tiling(1)?;
-            last_read_name = String::new();
-        }
-
     }
     Ok(())
 }
@@ -520,15 +527,13 @@ mod tests {
         let bam_index = bam.expanded_index()?;
 
         let mut iterator: SequenceSegmentIterator<File> = SequenceSegmentIterator::with_file(FASTAFILE)?;
+        iterator.subset_to_region(&"bacteriophage_lambda_CpG".to_string())?;
         iterator.subset_to_intervals(&bam_index)?;
 
-        let last_read_name = String::new();
-        let last_read_orientation: bool = false;
         if let Some(segment) = iterator.next()
         {
-            let counter = ReadIterator::with_region_and_reader(&segment, &mut bam, &config, (&last_read_name, last_read_orientation))?;
-            assert_eq!(counter.right_margin, segment.stop);
-            assert_eq!(counter.found_overhang, true);
+            let counter = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
+            assert_eq!(counter.right_margin, segment.stop-(config.tiling_window_size as u64));
         }
         else
         {

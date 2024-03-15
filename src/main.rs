@@ -104,7 +104,11 @@ enum Commands
 
         /// number of reference positions processed in-memory at once [default: 100000]
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
-        chunk_size: Option<u32>,
+        chunk_size: Option<usize>,
+
+        /// expected maximum read length. If set too short, some read positions might not get counted. Safest to set this a bit higher than the actual read length, to allow for indels in reads. [default: 200]
+        #[arg(short='w', long, value_parser = clap::value_parser!(u32).range(1..))]
+        max_read_length: Option<usize>,
 
         /// Include reads that match all of these bit-flags (as decimal) [default: 3]
         #[arg(short='f', long)]
@@ -223,6 +227,7 @@ fn real_main() -> i32
                 region,
                 min_mapq,
                 chunk_size,
+                max_read_length,
                 required_flags,
                 excluded_flags,
                 all_reads,
@@ -235,6 +240,7 @@ fn real_main() -> i32
                         region,
                         min_mapq,
                         chunk_size,
+                        max_read_length,
                         required_flags,
                         excluded_flags,
                         all_reads,
