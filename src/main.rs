@@ -129,6 +129,10 @@ enum Commands
         /// Number of threads to use inside htslib for decompression [default: 1]
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
         read_threads: Option<u8>,
+
+        /// Number of threads to use [default: 1]
+        #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
+        threads: Option<u8>,
     },
     /// print a map of all CpGs in a fasta file
     MapCpgs
@@ -232,7 +236,8 @@ fn real_main() -> i32
                 excluded_flags,
                 all_reads,
                 exclude_ambiguous,
-                read_threads }) =>
+                read_threads,
+                threads}) =>
                 {
                     match count_reads::run_caller(
                         &bam_file.to_path_buf(),
@@ -245,7 +250,8 @@ fn real_main() -> i32
                         excluded_flags,
                         all_reads,
                         exclude_ambiguous,
-                        read_threads,)
+                        read_threads,
+                        threads)
                     {
                         Ok(()) => 0,
                         Err(e)  =>

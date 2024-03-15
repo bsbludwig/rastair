@@ -7,7 +7,9 @@
 use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, fs::File, io::{stdout, Write}};
 
 use log::{debug, info, trace, warn};
-
+use r2d2::ManageConnection;
+use pariter::IteratorExt as _;
+use thiserror::Error;
 use anyhow::{bail, Result};
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 use rust_htslib::bam::{ext::BamRecordExtensions, FetchDefinition, IndexedReader, Read, Record};
@@ -340,16 +342,19 @@ use super::FLAGS;
     }
 }
 
+#[derive(Clone, Debug)]
+
+/// Configuration settings for per-read counter
 pub struct ReadCounterConfig
 {
     pub bam_path: PathBuf,
-    min_mapq: u8,
-    required_flags: u16,
-    excluded_flags: u16,
-    htslib_threads: u8,
-    all_reads: bool,
-    exclude_ambiguous: bool,
-    tiling_window_size: usize
+    pub min_mapq: u8,
+    pub required_flags: u16,
+    pub excluded_flags: u16,
+    pub htslib_threads: u8,
+    pub all_reads: bool,
+    pub exclude_ambiguous: bool,
+    pub tiling_window_size: usize
 }
 
 impl ReadCounterConfig
@@ -371,6 +376,88 @@ impl ReadCounterConfig
     }
 }
 
+struct ReadCounter
+{
+    config: ReadCounterConfig,
+    bam: IndexedReader,
+    bam_index: Vec<(Vec<u8>, u64, u64)>
+}
+
+impl ReadCounter
+{
+    /// Initiate a new reader from a configuration object
+    pub fn with_config(config: ReadCounterConfig) -> Result<Self>
+    {
+        let mut bam = IndexedReader::from_path(&config.bam_path)?;
+        if config.htslib_threads > 0
+        {
+            bam.set_threads(config.htslib_threads as usize)?;
+        }
+
+        // cache the expanded index
+        let bam_index: Vec<(Vec<u8>, u64, u64)> = bam.expanded_index()?;
+        Ok(ReadCounter {
+            config,
+            bam,
+            bam_index
+        })
+    }
+
+    pub fn index(&self) -> &Vec<(Vec<u8>, u64, u64)>
+    {
+        &self.bam_index
+    }
+}
+/**********************************
+ *
+ * Parallelisation helper functions
+ *
+ **********************************/
+struct ReadCounterConnectionManager
+{
+    config: ReadCounterConfig
+}
+
+impl ReadCounterConnectionManager
+{
+    fn with_config(config: ReadCounterConfig) -> Result<Self>
+    {
+        Ok(ReadCounterConnectionManager{
+            config
+        })
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum ReadCounterConnectionError {
+    #[error("Error connecting to the bam file")]
+    ConnectionError( #[from] anyhow::Error )
+}
+
+impl ManageConnection for ReadCounterConnectionManager
+{
+    type Connection = ReadCounter;
+    // TODO create a proper custom error type
+    type Error = ReadCounterConnectionError;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        match ReadCounter::with_config(self.config.clone())
+        {
+            Ok(counter) => Ok(counter),
+            Err(e)  => Err(ReadCounterConnectionError::ConnectionError(e))
+        }
+    }
+
+    fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        //TODO better check for valid connection?
+        Ok(())
+    }
+
+    fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
+        false
+    }
+}
+
 pub fn run_caller(
     bam_path: &PathBuf,
     fasta_path: &PathBuf,
@@ -382,30 +469,32 @@ pub fn run_caller(
     excl_flags_option: &Option<u16>,
     all_reads_option: &Option<bool>,
     exclude_ambiguous_option: &Option<bool>,
-    read_threads_option: &Option<u8>) -> Result<()>
+    read_threads_option: &Option<u8>,
+    threads_option: &Option<u8>) -> Result<()>
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
 
     let mut config = ReadCounterConfig::with_path(bam_path.clone())?;
+
+    let max_threads = num_cpus::get();
+    let threads = std::cmp::min(threads_option.unwrap_or(1) as usize, max_threads);
+
     if let Some(min_mapq) = *mapq_option {
         config.min_mapq = min_mapq;
     }
-
     if let Some(flags) = *req_flags_option {
         config.required_flags = flags;
     }
     if let Some(flags) = *excl_flags_option {
         config.excluded_flags = flags;
     }
-    if let Some(threads) = *read_threads_option {
-        config.htslib_threads = threads;
+    if let Some(read_threads) = *read_threads_option {
+        config.htslib_threads = read_threads;
     }
-
     if let Some(all_reads) = *all_reads_option {
         config.all_reads = all_reads;
     }
-
     if let Some(exclude_ambiguous) = *exclude_ambiguous_option {
         config.exclude_ambiguous = exclude_ambiguous;
     }
@@ -435,13 +524,6 @@ pub fn run_caller(
     // The overhang is needed to get the CpG loci info for reads that extend beyond the margin
     iterator.set_tiling(config.tiling_window_size)?;
 
-    // Create a bam reader
-    // TODO this should probably all happen in some constructor somewhere
-    let mut bam = IndexedReader::from_path(&config.bam_path)?;
-    if config.htslib_threads > 0
-    {
-        bam.set_threads(config.htslib_threads as usize)?;
-    }
     if let Some(region) = region_option
     {
         let new_region =
@@ -461,26 +543,47 @@ pub fn run_caller(
         iterator.subset_to_region(&new_region)?;
     }
 
-    let bam_index = bam.expanded_index()?;
-    // only process regions that are actually in the bam file
-    iterator.subset_to_intervals(&bam_index)?;
+    let manager = ReadCounterConnectionManager::with_config(config)?;
+    let pool = r2d2::Pool::builder()
+        .max_size(threads as u32)
+        .build(manager)?;
+    let counter = pool.get()?;
+    iterator.subset_to_intervals(counter.index())?;
+    drop(counter); // Ugly, but I need to free that counter up for later
 
     let mut lock = stdout().lock();
     writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs")?;
 
-    while let Some(segment) = iterator.next()
+    iterator
+    .map(move |segment| {
+        (segment, pool.clone())
+    })
+    .parallel_map_custom(|b| b.threads(threads as usize), |sp|
     {
-        info!("Process reads in {}", segment);
-        let mut read_iterator = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
-        while let Some(read_info) = read_iterator.next()
+        let segment = sp.0;
+        let pool = sp.1;
+        debug!("Will try to count variants in {}", segment);
+        let Ok(mut counter) = pool.get() else
         {
-            // Skip empty reads unless explicitly requested
-            if !config.all_reads && read_info.cpg_count == 0 {
-                continue;
-            }
-            writeln!(lock, "{}", read_info)?;
+            panic!("Failed to get counter from pool, too many threads?");
+        };
+        // There's probably a smarter way to do this, but it works and is lightweight, so who cares
+        let config = counter.config.clone();
+        match ReadIterator::with_region_and_reader(&segment, &mut counter.bam, &config)
+        {
+            Ok(iterator) => {
+                iterator.filter(|rc| config.all_reads || rc.cpg_count > 0).collect::<Vec<PerReadCount>>()
+            },
+            Err(e) => panic!("Failed to instantiate iterator: {}", e)
         }
-    }
+    })
+    .flatten()
+    .for_each(|read_info|
+    {
+        writeln!(lock, "{}", read_info).unwrap();
+    });
+
+
     Ok(())
 }
 

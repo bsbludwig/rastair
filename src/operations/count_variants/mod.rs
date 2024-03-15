@@ -239,13 +239,13 @@ pub fn run_caller(
         {
             SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size as usize)?
         };
-    // Subset to those sequences that are actually in the bam/fasta file
-    let counter = pool.get()?;
+    // Optionally restrict to region of interest
     if let Some(region) = region_option
     {
         iterator.subset_to_region(region)?;
     }
-    // also make sure the region actually exists in the bam file
+    // Subset to those sequences that are actually in the bam/fasta file
+    let counter = pool.get()?;
     iterator.subset_to_intervals(counter.index())?;
     drop(counter); // Ugly, but I need to free that counter up for later
 
