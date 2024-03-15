@@ -75,7 +75,7 @@ pub struct SequenceSegment
 {
     pub sequence: Text,
     pub region: GenomicRegion,
-    pub is_last: bool,
+    pub is_last_in_contig: bool,
 }
 
 impl SequenceSegment
@@ -113,6 +113,18 @@ impl Display for SequenceSegment
     }
 }
 
+struct GenomicSlice
+{
+    from: u64,
+    to: u64
+}
+
+impl Clone for GenomicSlice
+{
+    fn clone(&self) -> Self {
+        Self { from: self.from, to: self.to }
+    }
+}
 /// An iterator over a fasta file that tokenises sequences
 /// into shorter, more manageable chunks
 pub struct SequenceSegmentIterator<R: Read + Seek>
@@ -120,7 +132,7 @@ pub struct SequenceSegmentIterator<R: Read + Seek>
     /// FASTA reader
     reader: IndexedReader<R>,
     /// Array of target regions to iterate over (contigId/from/to)
-    sequences: Vec<GenomicRegion>,
+    sequences: Vec<(GenomicRegion, GenomicSlice)>,
     /// current position in the `sequences`` index
     index_pos: usize,
     /// position in current contig
@@ -156,12 +168,12 @@ where
 {
     pub fn with_reader(reader:IndexedReader<R>) -> Result<Self>
     {
-        let sequences: Vec<GenomicRegion> =
+        let sequences: Vec<(GenomicRegion, GenomicSlice)> =
             reader
                 .index
                 .sequences()
                 .iter()
-                .map(|seq| GenomicRegion {contig: seq.name.clone(), start: 0, end: seq.len})
+                .map(|seq| (GenomicRegion {contig: seq.name.clone(), start: 0, end: seq.len}, GenomicSlice{from: 0, to: seq.len}))
                 .collect();
 
         debug!("Read index with {} sequences", sequences.len());
@@ -204,13 +216,9 @@ where
         match FetchDefinition::from_region_string(region)? {
             FetchDefinition::RegionString(chr_bytes, start, end) => {
                 let chr = std::str::from_utf8(chr_bytes)?;
-                if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.contig == chr)
+                if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0.contig == chr)
                 {
-                    self.sequences = Vec::from([GenomicRegion{ contig: chr.to_owned(),
-                                                               start: std::cmp::max(sequence.start, start as u64),
-                                                               end: std::cmp::min(sequence.end, end as u64)
-                                                             }
-                                                ]);
+                    self.sequences = Vec::from([(sequence.0.to_owned(), GenomicSlice{from: std::cmp::max(sequence.0.start, start as u64), to: std::cmp::min(sequence.0.end, end as u64)})]);
                 }
                 else
                 {
@@ -219,7 +227,7 @@ where
             },
             FetchDefinition::String(chr_bytes) => {
                 let chr = std::str::from_utf8(chr_bytes)?;
-                if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.contig == chr)
+                if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0.contig == chr)
                 {
                     self.sequences = Vec::from([sequence.clone()]);
                 }
@@ -244,17 +252,13 @@ where
             bail!("Empty intervals provided");
         }
 
-        let mut new_sequences: Vec<GenomicRegion> = Vec::with_capacity(intervals.len());
+        let mut new_sequences: Vec<(GenomicRegion, GenomicSlice)> = Vec::with_capacity(intervals.len());
         for interval in intervals
         {
             let interval_id = std::str::from_utf8(&interval.0).unwrap_or_default();
-            if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.contig == &interval_id)
+            if let Some(sequence) = self.sequences.iter().find(|&seq| &seq.0.contig == &interval_id)
             {
-                new_sequences.push(GenomicRegion{
-                    contig: sequence.contig.clone(),
-                    start: std::cmp::max(sequence.start, interval.1),
-                    end: std::cmp::min(sequence.end, interval.2)
-                });
+                new_sequences.push((sequence.0.clone(), GenomicSlice{from: std::cmp::max(sequence.1.from, interval.1), to: std::cmp::min(sequence.1.to, interval.2)}));
             }
         }
         if new_sequences.len() == 0
@@ -268,7 +272,7 @@ where
         self.index_pos = 0;
         if self.sequences.len() > 0 {
             let seq = &self.sequences[self.index_pos];
-            self.pos = seq.start; // initialise as min start position
+            self.pos = seq.1.from; // initialise as min start position
         }
         else
         {
@@ -299,10 +303,10 @@ where
         let seq_info = &self.sequences[self.index_pos];
         let stop =
         {
-            if start + (self.step_size as u64) > seq_info.end
+            if start + (self.step_size as u64) > seq_info.1.to
             {
-                trace!("Reached end of {}, clipping to {}", &seq_info.contig, seq_info.end);
-                seq_info.end
+                trace!("Reached end of {}, clipping to {}", &seq_info.0.contig, seq_info.1.to);
+                seq_info.1.to
             }
             else
             {
@@ -310,8 +314,8 @@ where
             }
         };
 
-        trace!("Moving cursor in fasta file to {}:{}-{}", &seq_info.contig, start, stop);
-        match self.reader.fetch(&seq_info.contig, start, stop)
+        trace!("Moving cursor in fasta file to {}:{}-{}", &seq_info.0.contig, start, stop);
+        match self.reader.fetch(&seq_info.0.contig, start, stop)
         {
             Err(e) =>
             {
@@ -322,9 +326,9 @@ where
         };
 
         // Increment internal pointer
-        if stop >= seq_info.end
+        if stop >= seq_info.1.to
         {
-            trace!("Reached end of {}", &seq_info.contig);
+            trace!("Reached end of {}", &seq_info.0.contig);
             self.index_pos = self.index_pos + 1;
             if !self.reached_end()
             {
@@ -342,7 +346,7 @@ where
         {
             Err(e) =>
             {
-                error!("Error reading from fasta ({} from {} to {}): {}", &seq_info.contig, start, stop, e);
+                error!("Error reading from fasta ({} from {} to {}): {}", &seq_info.0.contig, start, stop, e);
                 return None;
             },
             Ok(_)   => {}
@@ -352,8 +356,8 @@ where
         let segment = SequenceSegment
         {
             sequence,
-            region: GenomicRegion{contig: seq_info.contig.clone(), start, end: stop},
-            is_last: stop >= seq_info.end
+            region: GenomicRegion{contig: seq_info.0.contig.clone(), start, end: stop},
+            is_last_in_contig: stop >= seq_info.0.end // TODO this is an ugly hack, should find a better solution to informing the read_counter that this is/isn't the end of the contig (as opposed to the end of the slice)
         };
         Some(segment)
     }

@@ -92,7 +92,7 @@ use super::FLAGS;
                                  .map(|p| p.pos_in_contig())
                                  .collect();
         let tiling_window = config.tiling_window_size;
-        let right_margin = if segment.is_last
+        let right_margin = if segment.is_last_in_contig
         {
             segment.region.end
         }
