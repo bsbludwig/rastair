@@ -294,12 +294,12 @@ use super::FLAGS;
                             {
                                 // mod
                                 next_read_count.mod_count = next_read_count.mod_count+1;
-                                next_read_count.mod_cpgs.push((block[1].abs_diff(next_read_count.region.start as i64)) as usize);
+                                next_read_count.mod_cpgs.push(block[0] as usize);
                             }
                             else if read_base == b'C'
                             {
                                 //unmod
-                                next_read_count.unmod_cpgs.push((block[1].abs_diff(next_read_count.region.start as i64)) as usize);
+                                next_read_count.unmod_cpgs.push(block[0] as usize);
                             }
                             else
                             {
