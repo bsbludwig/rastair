@@ -587,6 +587,241 @@ pub fn run_caller(
     Ok(())
 }
 
+struct MBiascounter
+{
+    ot_mod: Vec<(u32, u32)>,
+    ot_unmod: Vec<(u32, u32)>,
+    ob_mod: Vec<(u32, u32)>,
+    ob_unmod: Vec<(u32, u32)>,
+}
+
+impl MBiascounter {
+    fn new() -> Self
+    {
+        MBiascounter{
+            ot_mod: vec![(0 as u32, 0 as u32); 0],
+            ot_unmod: vec![(0 as u32, 0 as u32); 0],
+            ob_mod: vec![(0 as u32, 0 as u32); 0],
+            ob_unmod: vec![(0 as u32, 0 as u32); 0]}
+    }
+}
+
+pub fn run_mbias(
+    bam_path: &PathBuf,
+    fasta_path: &PathBuf,
+    region_option: &Option<String>,
+    mapq_option: &Option<u8>,
+    chunk_size_option: &Option<usize>,
+    read_length_option: &Option<usize>,
+    req_flags_option: &Option<u16>,
+    excl_flags_option: &Option<u16>,
+    read_threads_option: &Option<u8>,
+    threads_option: &Option<u8>) -> Result<()>
+{
+    /* Read fasta index, and open fasta file for tokenising */
+    debug!("Reading fasta and index from {}", fasta_path.display());
+
+    let mut config = ReadCounterConfig::with_path(bam_path.clone())?;
+
+    let max_threads = num_cpus::get();
+    let threads = std::cmp::min(threads_option.unwrap_or(1) as usize, max_threads);
+
+    if let Some(min_mapq) = *mapq_option {
+        config.min_mapq = min_mapq;
+    }
+    if let Some(flags) = *req_flags_option {
+        config.required_flags = flags;
+    }
+    if let Some(flags) = *excl_flags_option {
+        config.excluded_flags = flags;
+    }
+    if let Some(read_threads) = *read_threads_option {
+        config.htslib_threads = read_threads;
+    }
+
+    // Create a sequence iterator
+    let chunk_size = chunk_size_option.unwrap_or_default();
+    let mut iterator: SequenceSegmentIterator<File> =
+        if chunk_size == 0
+        {
+            SequenceSegmentIterator::with_file(fasta_path)?
+        }
+        else
+        {
+            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
+        };
+
+    if let Some(max_read_length) = read_length_option
+    {
+        config.tiling_window_size = *max_read_length;
+    }
+
+    if config.tiling_window_size == 0
+    {
+        warn!("Setting tiling window to 0 will cause missing data!");
+    }
+    // We only actually process reads that start up until segment_end-tiling_window.
+    // The overhang is needed to get the CpG loci info for reads that extend beyond the margin
+    iterator.set_tiling(config.tiling_window_size)?;
+
+    if let Some(region) = region_option
+    {
+        let new_region =
+        // Need to de-parse region and extend by the read-length to include reads that extend beyond the end
+        match FetchDefinition::from_region_string(region)?
+        {
+            FetchDefinition::RegionString(chr, start, end) =>
+            {
+                format!("{}:{}-{}", std::str::from_utf8(chr).unwrap_or_default(), start, end+(config.tiling_window_size as i64)-1)
+            },
+            FetchDefinition::String(_) | FetchDefinition::All =>
+            {
+                region.to_owned()
+            },
+            _   => bail!("Failed to parse region string: {}", region)
+        };
+        iterator.subset_to_region(&new_region)?;
+    }
+
+    let manager = ReadCounterConnectionManager::with_config(config)?;
+    let pool = r2d2::Pool::builder()
+        .max_size(threads as u32)
+        .build(manager)?;
+    let counter = pool.get()?;
+    iterator.subset_to_intervals(counter.index())?;
+    drop(counter); // Ugly, but I need to free that counter up for later
+
+    // initialise the counter
+    let mut mbc = MBiascounter::new();
+
+    iterator
+    .map(move |segment| {
+        (segment, pool.clone())
+    })
+    .parallel_map_custom(|b| b.threads(threads as usize), |sp|
+    {
+        let segment = sp.0;
+        let pool = sp.1;
+        debug!("Will try to count variants in {}", segment);
+        let Ok(mut counter) = pool.get() else
+        {
+            panic!("Failed to get counter from pool, too many threads?");
+        };
+        // There's probably a smarter way to do this, but it works and is lightweight, so who cares
+        let config = counter.config.clone();
+        match ReadIterator::with_region_and_reader(&segment, &mut counter.bam, &config)
+        {
+            Ok(iterator) => {
+                iterator.filter(|rc| rc.cpg_count > 0).collect::<Vec<PerReadCount>>()
+            },
+            Err(e) => panic!("Failed to instantiate iterator: {}", e)
+        }
+    })
+    .flatten()
+    .fold(&mut mbc,
+    |acc, rc| {
+        if rc.flag | (FLAGS.is_first_in_pair | FLAGS.mate_is_reverse_strand) == rc.flag // F1
+        {
+            for pos in rc.mod_cpgs
+            {
+                if pos >= acc.ot_mod.len()
+                {
+                    acc.ot_mod.resize(pos+1, (0, 0));
+                }
+                acc.ot_mod[pos].0 += 1;
+            }
+
+            for pos in rc.unmod_cpgs
+            {
+                if pos >= acc.ot_unmod.len()
+                {
+                    acc.ot_unmod.resize(pos+1, (0, 0));
+                }
+                acc.ot_unmod[pos].0 += 1;
+            }
+        }
+        else if rc.flag | (FLAGS.is_second_in_pair | FLAGS.is_reverse_strand) == rc.flag //R2
+        {
+            for pos in rc.mod_cpgs
+            {
+                if pos >= acc.ot_mod.len()
+                {
+                    acc.ot_mod.resize(pos+1, (0, 0));
+                }
+                acc.ot_mod[pos].1 += 1;
+            }
+
+            for pos in rc.unmod_cpgs
+            {
+                if pos >= acc.ot_unmod.len()
+                {
+                    acc.ot_unmod.resize(pos+1, (0, 0));
+                }
+                acc.ot_unmod[pos].1 += 1;
+            }
+        }
+        else if rc.flag | (FLAGS.is_first_in_pair | FLAGS.is_reverse_strand) == rc.flag //R1
+        {
+            for pos in rc.mod_cpgs
+            {
+                if pos >= acc.ob_mod.len()
+                {
+                    acc.ob_mod.resize(pos+1, (0, 0));
+                }
+                acc.ob_mod[pos].0 += 1;
+            }
+
+            for pos in rc.unmod_cpgs
+            {
+                if pos >= acc.ob_unmod.len()
+                {
+                    acc.ob_unmod.resize(pos+1, (0, 0));
+                }
+                acc.ob_unmod[pos].0 += 1;
+            }
+        }
+        else if rc.flag | (FLAGS.is_second_in_pair | FLAGS.mate_is_reverse_strand) == rc.flag //F2
+        {
+            for pos in rc.mod_cpgs
+            {
+                if pos >= acc.ob_mod.len()
+                {
+                    acc.ob_mod.resize(pos+1, (0, 0));
+                }
+                acc.ob_mod[pos].1 += 1;
+            }
+
+            for pos in rc.unmod_cpgs
+            {
+                if pos >= acc.ob_unmod.len()
+                {
+                    acc.ob_unmod.resize(pos+1, (0, 0));
+                }
+                acc.ob_unmod[pos].1 += 1;
+            }
+        }
+        acc
+    });
+
+    let mut lock = stdout().lock();
+    writeln!(lock, "#pos\ttype\tunmod\tmod\tbeta")?;
+    // Summarise and print mbias stats
+    let r_len = *[mbc.ob_mod.len(), mbc.ob_unmod.len(), mbc.ot_mod.len(), mbc.ot_unmod.len()].iter().max().unwrap();
+    for pos in 0..r_len
+    {
+        let def = (0 as u32, 0 as u32);
+        let ot_mod = mbc.ot_mod.get(pos).unwrap_or(&def);
+        let ob_mod = mbc.ob_mod.get(pos).unwrap_or(&def);
+        let ot_unmod = mbc.ot_unmod.get(pos).unwrap_or(&def);
+        let ob_unmod = mbc.ob_unmod.get(pos).unwrap_or(&def);
+        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OT/1", ot_unmod.0, ot_mod.0, (ot_mod.0 as f32)/(ot_mod.0+ot_unmod.0) as f32)?;
+        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OT/2", ot_unmod.1, ot_mod.1, (ot_mod.1 as f32)/(ot_mod.1+ot_unmod.1) as f32)?;
+        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OB/1", ob_unmod.0, ob_mod.0, (ob_mod.0 as f32)/(ob_mod.0+ob_unmod.0) as f32)?;
+        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OB/2", ob_unmod.1, ob_mod.1, (ob_mod.1 as f32)/(ob_mod.1+ob_unmod.1) as f32)?;
+    }
+
+    Ok(())
+}
 /*====================================================
  = Unit Tests
 ====================================================*/

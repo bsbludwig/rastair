@@ -134,6 +134,50 @@ enum Commands
         #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
         threads: Option<u8>,
     },
+    /// Calculate conversion per base position in read
+    #[allow(non_camel_case_types)]
+    mbias
+    {
+        /// A sorted and indexed bam file
+        #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+        bam_file: ClioPath,
+
+        /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
+        #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
+        fasta_file: ClioPath,
+
+        /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end", where start is 1-based and end is inclusive
+        #[arg(short='l', long)]
+        region: Option<String>,
+
+        /// Minimum mapping quality per aligned read [default: 1]
+        #[arg(short='q', long)]
+        min_mapq: Option<u8>,
+
+        /// number of reference positions processed in-memory at once [default: 100000]
+        #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
+        chunk_size: Option<usize>,
+
+        /// expected maximum read length. If set too short, some read positions might not get counted. Safest to set this a bit higher than the actual read length, to allow for indels in reads. [default: 200]
+        #[arg(short='w', long, value_parser = clap::value_parser!(u32).range(1..))]
+        max_read_length: Option<usize>,
+
+        /// Include reads that match all of these bit-flags (as decimal) [default: 3]
+        #[arg(short='f', long)]
+        required_flags: Option<u16>,
+
+        /// Exclude reads matching any of these bit-flags (as decimal) [default: 3852]
+        #[arg(short='F', long)]
+        excluded_flags: Option<u16>,
+
+        /// Number of threads to use inside htslib for decompression [default: 1]
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..))]
+        read_threads: Option<u8>,
+
+        /// Number of threads to use [default: 1]
+        #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
+        threads: Option<u8>,
+    },
     /// print a map of all CpGs in a fasta file
     MapCpgs
     {
@@ -224,7 +268,7 @@ fn real_main() -> i32
                             1
                         }
                     }
-                }
+                },
         Some(Commands::PerRead {
                 bam_file,
                 fasta_file,
@@ -260,7 +304,39 @@ fn real_main() -> i32
                             1
                         }
                     }
+                },
+        Some(Commands::mbias {
+            bam_file,
+            fasta_file,
+            region,
+            min_mapq,
+            chunk_size,
+            max_read_length,
+            required_flags,
+            excluded_flags,
+            read_threads,
+            threads}) =>
+            {
+                match count_reads::run_mbias(
+                    &bam_file.to_path_buf(),
+                    &fasta_file.to_path_buf(),
+                    region,
+                    min_mapq,
+                    chunk_size,
+                    max_read_length,
+                    required_flags,
+                    excluded_flags,
+                    read_threads,
+                    threads)
+                {
+                    Ok(()) => 0,
+                    Err(e)  =>
+                    {
+                        error!("Error running mbias: {}", e);
+                        1
+                    }
                 }
+            },
         None => 0
     }
 }
