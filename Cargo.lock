@@ -1138,6 +1138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "probability"
+version = "0.20.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42746b805e424b759d46c22c65dc66ccca057a2db96e9db4fda6c337a287e485"
+dependencies = [
+ "random",
+ "special",
+]
+
+[[package]]
 name = "proc-macro-error"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1237,8 +1247,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "random"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "474c42c904f04dfe2a595a02f71e1a0e5e92ffb5761cc9a4c02140b93b8dd504"
+
+[[package]]
 name = "rastair"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1252,6 +1268,7 @@ dependencies = [
  "num_cpus",
  "pariter",
  "predicates",
+ "probability",
  "r2d2",
  "rust-htslib",
  "stderrlog",
@@ -1440,6 +1457,15 @@ name = "smallvec"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "942b4a808e05215192e39f4ab80813e599068285906cc91aa64f923db842bd5a"
+
+[[package]]
+name = "special"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b89cf0d71ae639fdd8097350bfac415a41aabf1d5ddd356295fdc95f09760382"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "statrs"
