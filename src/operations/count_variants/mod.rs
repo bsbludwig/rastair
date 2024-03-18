@@ -419,6 +419,7 @@ impl EstimatedGenotype {
 
     let mut binom = Binomial::new((ref_count + alt_count) as usize, 0.5); // 0.5 because a het position
     let p_het = binom.mass(alt_count as usize);
+    let p_het_max = binom.mass(((alt_count+ref_count) as f32 / 2.0).round() as usize);
 
     // Then, I calculate the probability that this many or more alt_count/ref_count reads
     // are observed by error, assuming independence of reads and errors.
@@ -441,7 +442,7 @@ impl EstimatedGenotype {
             debug!("Assuming CT: ({} vs {}) -> ({:.5} >= {:.5})", ref_count, alt_count, p_het, p_hom);
             return Ok(EstimatedGenotype {
                 genotype: Genotype::CT,
-                likelihood: p_het,
+                likelihood: p_het / p_het_max,
                 confidence: (p_het - p_hom)/p_het
             });
         }
@@ -463,7 +464,7 @@ impl EstimatedGenotype {
             debug!("Assuming TC: ({} vs {}) -> ({:.5} >= {:.5})", ref_count, alt_count, p_het, p_hom);
             return Ok(EstimatedGenotype {
                 genotype: Genotype::CT,
-                likelihood: p_het,
+                likelihood: p_het / p_het_max,
                 confidence: (p_het - p_hom)/p_het
             });
         }
