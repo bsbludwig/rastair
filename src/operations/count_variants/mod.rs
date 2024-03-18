@@ -342,9 +342,9 @@ pub fn run_caller(
 fn prob_to_phred (prob: f64) -> u8
 {
     let phred = -10.0 * prob.log10();
-    if phred >= 255.0
+    if phred >= 99.0
     {
-        return 255;
+        return 99;
     }
     if phred <= f64::MIN_POSITIVE
     {
