@@ -16,7 +16,7 @@ use crate::utils::{IndexedReaderExt, RecordExt};
 use hashers::fx_hash::FxHasher;
 use std::hash::BuildHasherDefault;
 
-use super::{MAX_DEPTH, FLAGS, ReadMaskSetting, ReadMask, VariantCount};
+use super::{ErrorRate, ReadMask, ReadMaskSetting, VariantCount, ERRORRATES, FLAGS, MAX_DEPTH};
 
 #[derive(Clone, Debug)]
 /// Configuration of a variant counter
@@ -45,7 +45,9 @@ pub struct VariantCounterConfig
     /// set the number of threads to use in htslib internally
     pub htslib_threads: usize,
     /// Optional region to fetch
-    pub region: Option<String>
+    pub region: Option<String>,
+    /// Errormodel to use for genotyping
+    pub error_model: ErrorRate
 }
 
 impl VariantCounterConfig
@@ -65,7 +67,8 @@ impl VariantCounterConfig
             ot_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
             ob_mask: ReadMaskSetting { r1: ReadMask(0, 0), r2: ReadMask(0, 0) },
             htslib_threads: 0,
-            region: None
+            region: None,
+            error_model: ERRORRATES.novaseq_6000
         };
         Ok(v)
     }

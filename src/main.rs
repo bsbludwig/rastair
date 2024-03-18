@@ -3,7 +3,8 @@ use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
 use clio::*;
 
-use rastair::operations::{count_variants, count_reads};
+use rastair::operations::{count_variants, count_reads, count_variants::ErrorModel};
+
 use rastair::sequence_segment::run_finder;
 
 #[derive(Parser)]
@@ -17,11 +18,10 @@ struct Cli
     command: Option<Commands>,
 }
 
-
 #[derive(Subcommand)]
 enum Commands
 {
-    /// Call methylation on a bam file
+    /// Call methylation at CpG positions from a bam file
     Call
     {
         /// A sorted and indexed bam file
@@ -63,6 +63,10 @@ enum Commands
         /// Exclude reads where the orientation cannot be unambiguously determined [default: false]
         #[arg(long, action=clap::ArgAction::SetTrue)]
         exclude_ambiguous: Option<bool>,
+
+        /// Choose the error model to use. This should match the sequencing platform used to generate the data [default: novaseq6000]
+        #[arg(long, value_enum)]
+        error_model: Option<ErrorModel>,
 
         /// For each read corresponding to the OT, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
         /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
@@ -223,6 +227,7 @@ fn real_main() -> i32
             chunk_size,
             required_flags,
             excluded_flags,
+            error_model,
             exclude_ambiguous,
             n_ot,
             n_ob,
@@ -240,6 +245,7 @@ fn real_main() -> i32
                     chunk_size,
                     required_flags,
                     excluded_flags,
+                    error_model,
                     exclude_ambiguous,
                     n_ot,
                     n_ob,

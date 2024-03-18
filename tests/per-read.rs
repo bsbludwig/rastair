@@ -177,3 +177,26 @@ fn restrict_to_region() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG:6000-7000"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let roi = output_str
+        .lines()
+        .filter(|l| predicate::str::contains("A00711:92:HMH3WDSXX:3:2662:7328:10300").eval(l))
+        .filter(|l| predicate::str::contains("6048").eval(l))
+        .last()
+        .unwrap_or_default();
+    let elems = roi.split_ascii_whitespace().collect::<Vec<&str>>();
+    assert_eq!(elems[10], "11,16,29,59,67,79,95,108,122");
+    Ok(())
+}

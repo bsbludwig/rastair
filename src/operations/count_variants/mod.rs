@@ -6,19 +6,31 @@ use std::error::Error;
 use std::io::{stdout, Write};
 use std::fs::File;
 use std::path::PathBuf;
+use clap::ValueEnum;
 use log::{debug, error};
 
 use num_cpus;
 use thiserror::Error;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use r2d2::ManageConnection;
 use pariter::IteratorExt as _;
+use probability::prelude::*;
 
 use crate::sequence_segment::SequenceSegmentIterator;
-
 pub use super::{ReadMaskSetting, ReadMask};
 use super::{FLAGS, MAX_DEPTH};
 use variant_counter::{VariantCounter, VariantCounterConfig};
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum ErrorModel {
+    Miseq,
+    Miniseq,
+    Nextseq500,
+    Nextseq550,
+    Hiseq2500,
+    Novaseq6000,
+    HiseqXTen
+}
 
 /// A simple struct to represent counts of nucleotides
 pub struct NucleotideCount
@@ -161,6 +173,7 @@ pub fn run_caller(
     chunk_size_option: &Option<u32>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
+    error_model_option: &Option<ErrorModel>,
     exclude_ambiguous_option: &Option<bool>,
     nOT_option: &Option<String>,
     nOB_option: &Option<String>,
@@ -213,6 +226,19 @@ pub fn run_caller(
             config.ob_mask = ob_mask;
         }
     }
+    if let Some(error_model) = error_model_option {
+        match error_model {
+            ErrorModel::Miseq => config.error_model = ERRORRATES.miseq,
+            ErrorModel::Miniseq => config.error_model = ERRORRATES.miniseq,
+            ErrorModel::Nextseq500 => config.error_model = ERRORRATES.nextseq_500,
+            ErrorModel::Nextseq550 => config.error_model = ERRORRATES.nextseq_550,
+            ErrorModel::Hiseq2500 => config.error_model = ERRORRATES.hiseq_2500,
+            ErrorModel::Novaseq6000 => config.error_model = ERRORRATES.novaseq_6000,
+            ErrorModel::HiseqXTen => config.error_model = ERRORRATES.hiseq_x_ten,
+        }
+    }
+    // neet to do here, before move into manager
+    let error_model = config.error_model;
 
     let manager = VariantCounterConnectionManager::with_config(config)?;
     let pool = r2d2::Pool::builder()
@@ -249,9 +275,10 @@ pub fn run_caller(
     iterator.subset_to_intervals(counter.index())?;
     drop(counter); // Ugly, but I need to free that counter up for later
 
+
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
-    writeln!(lock, "#chr\tstart\tend\tname\tscore\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage")?;
+    writeln!(lock, "#chr\tstart\tend\tname\tbeta_est\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage\tgenotype\tgt_p_score\tgt_conf_score")?;
     iterator
     .map(move |segment| {
         (segment, pool.clone())
@@ -277,13 +304,168 @@ pub fn run_caller(
     {
         if cpg.ref_base == b'C'
         { // C
-            writeln!(lock, "{}\t{}\t{}\t.\t.\t+\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.top.c, cpg.top.t, cpg.bottom.c, cpg.bottom.t, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t).unwrap();
+            let gt = EstimatedGenotype::calculate(cpg.bottom.c, cpg.bottom.t, error_model).unwrap_or_default();
+            let beta: f32 = match gt.genotype {
+                Genotype::CC => (cpg.top.t as f32)/(cpg.top.t + cpg.top.c) as f32,
+                Genotype::CT => ((cpg.top.t as f32)/2.0)/(((cpg.top.t as f32)/2.0) + (cpg.top.c as f32)),
+                Genotype::TT => 0.0,
+            };
+            let gt_string = match gt.genotype {
+                Genotype::CC  => "C/C",
+                Genotype::CT  => "C/T",
+                Genotype::TT  => "T/T",
+            };
+            writeln!(lock, "{}\t{}\t{}\t{}\t{:.2}\t+\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, ".", beta, cpg.top.c, cpg.top.t, cpg.bottom.c, cpg.bottom.t, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t, gt_string, prob_to_phred(1.0-gt.likelihood), prob_to_phred(1.0-gt.confidence)).unwrap();
         }
         else
         { // G
-            writeln!(lock, "{}\t{}\t{}\t.\t.\t-\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, cpg.bottom.g, cpg.bottom.a, cpg.top.g, cpg.top.a, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t).unwrap();
+            let gt = EstimatedGenotype::calculate(cpg.top.g, cpg.top.a, error_model).unwrap_or_default();
+            let beta: f32 = match gt.genotype {
+                Genotype::CC => (cpg.bottom.a as f32)/(cpg.bottom.a + cpg.bottom.g) as f32,
+                Genotype::CT => ((cpg.bottom.a as f32)/2.0)/(((cpg.bottom.a as f32)/2.0) + (cpg.bottom.g as f32)),
+                Genotype::TT => 0.0,
+            };
+
+            let gt_string = match gt.genotype {
+                Genotype::CC  => "G/G",
+                Genotype::CT  => "G/A",
+                Genotype::TT  => "A/A",
+            };
+            writeln!(lock, "{}\t{}\t{}\t{}\t{:.2}\t+\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, ".", beta, cpg.bottom.g, cpg.bottom.a, cpg.top.g, cpg.top.a, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t, gt_string, prob_to_phred(1.0-gt.likelihood), prob_to_phred(1.0-gt.confidence)).unwrap();
         }
     });
 
     Ok(())
+}
+
+fn prob_to_phred (prob: f64) -> u8
+{
+    let phred = -10.0 * prob.log10();
+    if phred >= 255.0
+    {
+        return 255;
+    }
+    if phred <= f64::MIN_POSITIVE
+    {
+        return 0;
+    }
+    else
+    {
+        return phred.round() as u8;
+    }
+}
+
+/// Public only because it's exposed in ErrorRates
+pub type ErrorRate = f64;
+/// Empirically derived error rates as published here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8002175/
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub struct ErrorRates {
+    miseq: ErrorRate,
+    miniseq: ErrorRate,
+    nextseq_500: ErrorRate,
+    nextseq_550: ErrorRate,
+    hiseq_2500: ErrorRate,
+    novaseq_6000: ErrorRate,
+    hiseq_x_ten: ErrorRate
+}
+
+const ERRORRATES: ErrorRates = ErrorRates {
+    miseq: 0.00473,
+    miniseq: 0.00613,
+    nextseq_500: 0.00429,
+    nextseq_550: 0.00593,
+    hiseq_2500: 0.00112,
+    novaseq_6000: 0.00109,
+    hiseq_x_ten: 0.00087
+};
+
+enum Genotype {
+    CC,
+    CT,
+    TT
+}
+struct EstimatedGenotype {
+    genotype: Genotype,
+    likelihood: f64,
+    confidence: f64
+}
+impl Default for EstimatedGenotype {
+    fn default() -> Self {
+        Self { genotype: Genotype::CC, likelihood: 0.0, confidence: 0.0 }
+    }
+}
+
+impl EstimatedGenotype {
+    fn calculate(ref_count: i32, alt_count: i32, error_rate: ErrorRate) -> Result<Self>
+{
+    if ref_count == alt_count && alt_count == 0
+    {
+        bail!("No ref or alt read counts, cannot compute likelihood");
+    }
+    if error_rate <= f64::MIN
+    {
+        bail!("Error rate too small, cannot calculate likelihood");
+    }
+    // This is a simple estimate of genotype, based on the following consideration:
+    // A site is either het or hom, where hom could be CC or TT.
+    // If alt_count > ref_count, the latter is more likely, otherwise the former.
+
+    // First, I calculate the likelihood to observe this many alt_reads
+    // under the assumption that ref and alt are equally likely, ie this is a het position.
+    // TODO This assumes a simple diploid sample with no purity issues. For
+    // cancer samples, we could make this a setting to allow for different cancer fraction?
+
+    let mut binom = Binomial::new((ref_count + alt_count) as usize, 0.5); // 0.5 because a het position
+    let p_het = binom.mass(alt_count as usize);
+
+    // Then, I calculate the probability that this many or more alt_count/ref_count reads
+    // are observed by error, assuming independence of reads and errors.
+    binom = Binomial::new((ref_count + alt_count) as usize, error_rate);
+
+    if ref_count >= alt_count {
+        let p_hom = binom.mass(alt_count as usize) + (1.0 - binom.distribution(alt_count as f64));
+
+        if p_het < p_hom
+        {
+            debug!("Assuming CC: ({} vs {}) -> ({:.5} < {:.5})", ref_count, alt_count, p_het, p_hom);
+            return Ok(EstimatedGenotype {
+                genotype: Genotype::CC,
+                likelihood: p_hom,
+                confidence: (p_hom - p_het)/p_hom
+            });
+        }
+        else
+        {
+            debug!("Assuming CT: ({} vs {}) -> ({:.5} >= {:.5})", ref_count, alt_count, p_het, p_hom);
+            return Ok(EstimatedGenotype {
+                genotype: Genotype::CT,
+                likelihood: p_het,
+                confidence: (p_het - p_hom)/p_het
+            });
+        }
+    }
+    else
+    {
+        let p_hom = binom.mass(ref_count as usize) + (1.0-binom.distribution(ref_count as f64));
+        if p_het < p_hom
+        {
+            debug!("Assuming TT: ({} vs {}) -> ({:.5} < {:.5})", ref_count, alt_count, p_het, p_hom);
+            return Ok(EstimatedGenotype {
+                genotype: Genotype::TT,
+                likelihood: p_hom,
+                confidence: (p_hom - p_het)/p_hom
+            });
+        }
+        else
+        {
+            debug!("Assuming TC: ({} vs {}) -> ({:.5} >= {:.5})", ref_count, alt_count, p_het, p_hom);
+            return Ok(EstimatedGenotype {
+                genotype: Genotype::CT,
+                likelihood: p_het,
+                confidence: (p_het - p_hom)/p_het
+            });
+        }
+    }
+}
 }
