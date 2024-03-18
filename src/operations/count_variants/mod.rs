@@ -302,7 +302,7 @@ pub fn run_caller(
     .flatten()
     .for_each(|cpg|
     {
-        let (unmod_c, mod_c, snp, nosnp, strand) =
+        let (unmod_c, mod_c, nosnp, snp, strand) =
         if cpg.ref_base == b'C'
         {
             (cpg.top.c, cpg.top.t, cpg.bottom.c, cpg.bottom.t, "+")

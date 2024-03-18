@@ -120,6 +120,53 @@ fn finds_right_number_of_positions_with_threads() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn right_beta_with_threads() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("call");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG"]);
+    cmd.args(["-@", "2"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+            .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_str.lines().count(), 6110); // these values are empirical, ie more for detection of regressions. I checked them manually against MethylDackel and via IGV and they look right
+
+    let mut avg_beta = 0.0;
+    let mut beta_count = 0;
+    let mut total_mod = 0;
+    let mut total_unmod = 0;
+    for line in output_str.lines()
+    {
+        let elems : Vec<&str> = line.split_ascii_whitespace().collect();
+        if elems[1] == "start"
+        {
+            // skip header col
+            continue;
+        }
+        // sum total number of mod/unmod read pos
+        total_unmod += elems[6].parse::<i32>().unwrap();
+        total_mod += elems[7].parse::<i32>().unwrap();
+
+        if let Ok(beta) = elems[4].parse::<f32>()
+        {
+            if beta.is_finite()
+            {
+                avg_beta += beta;
+                beta_count += 1;
+            }
+        }
+    }
+    avg_beta = avg_beta/beta_count as f32;
+    assert!((avg_beta - (total_mod as f32)/((total_mod+total_unmod) as f32)).abs() < 0.01);
+    assert!(avg_beta > 0.9);
+
+    Ok(())
+}
+
+#[test]
 fn finds_right_number_of_positions_with_chunks() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
