@@ -6,6 +6,7 @@ use std::error::Error;
 use std::io::{stdout, Write};
 use std::fs::File;
 use std::path::PathBuf;
+use clap::ValueEnum;
 use log::{debug, error};
 
 use num_cpus;
@@ -16,10 +17,20 @@ use pariter::IteratorExt as _;
 use probability::prelude::*;
 
 use crate::sequence_segment::SequenceSegmentIterator;
-
 pub use super::{ReadMaskSetting, ReadMask};
 use super::{FLAGS, MAX_DEPTH};
 use variant_counter::{VariantCounter, VariantCounterConfig};
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum ErrorModel {
+    Miseq,
+    Miniseq,
+    Nextseq500,
+    Nextseq550,
+    Hiseq2500,
+    Novaseq6000,
+    HiseqXTen
+}
 
 /// A simple struct to represent counts of nucleotides
 pub struct NucleotideCount
@@ -162,6 +173,7 @@ pub fn run_caller(
     chunk_size_option: &Option<u32>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
+    error_model_option: &Option<ErrorModel>,
     exclude_ambiguous_option: &Option<bool>,
     nOT_option: &Option<String>,
     nOB_option: &Option<String>,
@@ -214,6 +226,19 @@ pub fn run_caller(
             config.ob_mask = ob_mask;
         }
     }
+    if let Some(error_model) = error_model_option {
+        match error_model {
+            ErrorModel::Miseq => config.error_model = ERRORRATES.miseq,
+            ErrorModel::Miniseq => config.error_model = ERRORRATES.miniseq,
+            ErrorModel::Nextseq500 => config.error_model = ERRORRATES.nextseq_500,
+            ErrorModel::Nextseq550 => config.error_model = ERRORRATES.nextseq_550,
+            ErrorModel::Hiseq2500 => config.error_model = ERRORRATES.hiseq_2500,
+            ErrorModel::Novaseq6000 => config.error_model = ERRORRATES.novaseq_6000,
+            ErrorModel::HiseqXTen => config.error_model = ERRORRATES.hiseq_x_ten,
+        }
+    }
+    // neet to do here, before move into manager
+    let error_model = config.error_model;
 
     let manager = VariantCounterConnectionManager::with_config(config)?;
     let pool = r2d2::Pool::builder()
@@ -250,6 +275,7 @@ pub fn run_caller(
     iterator.subset_to_intervals(counter.index())?;
     drop(counter); // Ugly, but I need to free that counter up for later
 
+
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
     writeln!(lock, "#chr\tstart\tend\tname\tbeta_est\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage\tgenotype\tgt_p_score\tgt_conf_score")?;
@@ -278,7 +304,7 @@ pub fn run_caller(
     {
         if cpg.ref_base == b'C'
         { // C
-            let gt = EstimatedGenotype::calculate(cpg.bottom.c, cpg.bottom.t, ERRORRATES.hiseq_2500).unwrap_or_default();
+            let gt = EstimatedGenotype::calculate(cpg.bottom.c, cpg.bottom.t, error_model).unwrap_or_default();
             let beta: f32 = match gt.genotype {
                 Genotype::CC => (cpg.top.t as f32)/(cpg.top.t + cpg.top.c) as f32,
                 Genotype::CT => ((cpg.top.t as f32)/2.0)/(((cpg.top.t as f32)/2.0) + (cpg.top.c as f32)),
@@ -293,7 +319,7 @@ pub fn run_caller(
         }
         else
         { // G
-            let gt = EstimatedGenotype::calculate(cpg.top.g, cpg.top.a, ERRORRATES.hiseq_2500).unwrap_or_default();
+            let gt = EstimatedGenotype::calculate(cpg.top.g, cpg.top.a, error_model).unwrap_or_default();
             let beta: f32 = match gt.genotype {
                 Genotype::CC => (cpg.bottom.a as f32)/(cpg.bottom.a + cpg.bottom.g) as f32,
                 Genotype::CT => ((cpg.bottom.a as f32)/2.0)/(((cpg.bottom.a as f32)/2.0) + (cpg.bottom.g as f32)),
@@ -329,9 +355,12 @@ fn prob_to_phred (prob: f64) -> u8
     }
 }
 
-type ErrorRate = f64;
+/// Public only because it's exposed in ErrorRates
+pub type ErrorRate = f64;
+/// Empirically derived error rates as published here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8002175/
+#[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-struct ErrorRates {
+pub struct ErrorRates {
     miseq: ErrorRate,
     miniseq: ErrorRate,
     nextseq_500: ErrorRate,
@@ -340,6 +369,7 @@ struct ErrorRates {
     novaseq_6000: ErrorRate,
     hiseq_x_ten: ErrorRate
 }
+
 const ERRORRATES: ErrorRates = ErrorRates {
     miseq: 0.00473,
     miniseq: 0.00613,
