@@ -49,3 +49,4 @@ Thumbs.db
 *.wmv
 profile.json
 .vscode/launch.json
+test_data/test.fasta

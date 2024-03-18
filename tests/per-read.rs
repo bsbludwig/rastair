@@ -178,6 +178,64 @@ fn restrict_to_region() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+
+#[test]
+fn filter_mq_0() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-q", "5"]);
+    cmd.args(["-l", "chr19"]);
+    cmd.args(["-@", "2"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let roi = output_str
+        .lines()
+        .filter(|l|!predicate::str::contains("mapq").eval(l))
+        .fold(0, |acc, line| {
+            let elems = line.split_whitespace().collect::<Vec<&str>>();
+            if elems[4].parse::<usize>().unwrap_or(255) < 5
+            {
+                acc + 1
+            }
+            else {
+                acc
+            }
+        });
+    assert_eq!(roi, 0);
+
+    cmd = Command::cargo_bin("rastair")?;
+    cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-q", "0"]);
+    cmd.args(["-@", "2"]);
+    cmd.args(["-l", "chr19"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let roi = output_str
+        .lines()
+        .filter(|l|!predicate::str::contains("mapq").eval(l))
+        .fold(0, |acc, line| {
+            let elems = line.split_whitespace().collect::<Vec<&str>>();
+            if elems[4].parse::<usize>().unwrap_or(255) < 5
+            {
+                acc + 1
+            }
+            else {
+                acc
+            }
+        });
+    assert!(roi > 0);
+    Ok(())
+}
+
 #[test]
 fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;

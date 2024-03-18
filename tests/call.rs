@@ -71,7 +71,7 @@ fn default_settings() -> Result<(), Box<dyn std::error::Error>> {
             .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6486);
+    assert_eq!(output_str.lines().count(), 7898);
     // Check header row is there
     let first_line = output_str.lines().next().unwrap();
     assert!(predicate::str::contains("#chr").eval(first_line));
@@ -84,29 +84,14 @@ fn finds_right_number_of_positions_with_threads() -> Result<(), Box<dyn std::err
 
     cmd.arg("call");
     cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG"]);
     cmd.args(["-@", "2"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
             .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6486);
-    Ok(())
-}
-
-#[test]
-fn finds_right_number_of_positions_with_chunks() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("rastair")?;
-
-    cmd.arg("call");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
-    cmd.args(["-s", "200"]);
-    cmd.arg("test_data/test.bam");
-    cmd.assert()
-            .success();
-    let output = cmd.output().unwrap();
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6486); // these values are empirical, ie more for detection of regressions. I checked them manually against MethylDackel and via IGV and they look right
+    assert_eq!(output_str.lines().count(), 6110); // these values are empirical, ie more for detection of regressions. I checked them manually against MethylDackel and via IGV and they look right
 
     let mut total = 0;
     for line in output_str.lines()
@@ -121,7 +106,40 @@ fn finds_right_number_of_positions_with_chunks() -> Result<(), Box<dyn std::erro
         total = total + elems[6].parse::<i32>().unwrap();
         total = total + elems[7].parse::<i32>().unwrap();
     }
-    assert_eq!(total, 48121); // these values are empirical, ie more for detection of regressions
+    assert_eq!(total, 35201); // these values are empirical, ie more for detection of regressions
+    Ok(())
+}
+
+#[test]
+fn finds_right_number_of_positions_with_chunks() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("call");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-s", "1000"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG"]);
+    cmd.args(["-@", "2"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+            .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_str.lines().count(), 6110); // these values are empirical, ie more for detection of regressions. I checked them manually against MethylDackel and via IGV and they look right
+
+    let mut total = 0;
+    for line in output_str.lines()
+    {
+        let elems : Vec<&str> = line.split_ascii_whitespace().collect();
+        if elems[1] == "start"
+        {
+            // skip header col
+            continue;
+        }
+        // sum total number of mod/unmod read pos
+        total = total + elems[6].parse::<i32>().unwrap();
+        total = total + elems[7].parse::<i32>().unwrap();
+    }
+    assert_eq!(total, 35201); // these values are empirical, ie more for detection of regressions
     Ok(())
 }
 
@@ -133,12 +151,14 @@ fn finds_right_number_of_positions_with_trimming() -> Result<(), Box<dyn std::er
     cmd.args(["--fasta-file", "test_data/test.fasta"]);
     cmd.args(["--nOT", "5,5,5,5"]);
     cmd.args(["--nOB", "5,5,5,5"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG"]);
+    cmd.args(["-@", "2"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
             .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6470);
+    assert_eq!(output_str.lines().count(), 6083);
     let mut total = 0;
     for line in output_str.lines()
     {
@@ -152,7 +172,7 @@ fn finds_right_number_of_positions_with_trimming() -> Result<(), Box<dyn std::er
         total = total + elems[6].parse::<i32>().unwrap();
         total = total + elems[7].parse::<i32>().unwrap();
     }
-    assert_eq!(total, 45811);
+    assert_eq!(total, 31604);
     Ok(())
 }
 
@@ -168,7 +188,7 @@ fn allow_restriction_to_chromosome() -> Result<(), Box<dyn std::error::Error>> {
             .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6146);
+    assert_eq!(output_str.lines().count(), 6110);
 
     Ok(())
 }
@@ -185,7 +205,7 @@ fn allow_restriction_to_region() -> Result<(), Box<dyn std::error::Error>> {
             .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 139);
+    assert_eq!(output_str.lines().count(), 143);
 
     Ok(())
 }

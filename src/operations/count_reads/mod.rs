@@ -155,6 +155,12 @@ use super::FLAGS;
                 continue;
             }
 
+            // skip reads with low mapq
+            if record.mapq() < self.config.min_mapq
+            {
+                debug!("Read {} has low quality: {} < {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.mapq(), self.config.min_mapq);
+                continue;
+            }
             let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
 
             match read_pair_orientation

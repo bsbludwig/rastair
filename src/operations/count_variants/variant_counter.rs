@@ -495,16 +495,24 @@ mod tests {
     #[test]
     fn can_filter_alignments() -> Result<()>
     {
-        let config = create_test_config()?;
-        let filter = VariantCounter::generate_alignment_filter(&config);
+        let mut config = create_test_config()?;
+        config.max_depth = 1000;
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
 
         bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
-        if let Ok(pileup) = bam.pileup().nth(0).unwrap() {
-            let alignments: Vec<Alignment> = pileup.alignments().collect();
-            assert_eq!(alignments.len(), 7);
-            assert_eq!(alignments.into_iter().filter(filter).count(), 3);
-        };
+        let mut count_all = 0;
+        let mut count_filt = 0;
+        for p in bam.pileup()
+        {
+            if let Ok(pileup) = p {
+                let filter = VariantCounter::generate_alignment_filter(&config);
+                let alignments: Vec<Alignment> = pileup.alignments().collect();
+                count_all += alignments.iter().count();
+                count_filt += alignments.into_iter().filter(&filter).count();
+            }
+        }
+        assert_eq!(count_all, 1227);
+        assert_eq!(count_filt, 1224);
 
         Ok(())
     }
@@ -521,7 +529,7 @@ mod tests {
         bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
         if let Ok(pileup) = bam.pileup().nth(0).unwrap() {
             let alignments: Vec<Alignment> = pileup.alignments().collect();
-            assert_eq!(alignments.len(), 7);
+            assert_eq!(alignments.len(), 6);
             assert_eq!(alignments.into_iter().filter(filter).count(), 0);
         };
 
@@ -537,11 +545,11 @@ mod tests {
         let filter = VariantCounter::generate_alignment_filter(&config);
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
 
-        bam.fetch(("bacteriophage_lambda_CpG", 0, 100))?;
-        if let Ok(pileup) = bam.pileup().nth(0).unwrap() {
+        bam.fetch(("bacteriophage_lambda_CpG", 1000, 1200))?;
+        if let Ok(pileup) = bam.pileup().nth(100).unwrap() {
             let alignments: Vec<Alignment> = pileup.alignments().collect();
-            assert_eq!(alignments.len(), 7);
-            assert_eq!(alignments.into_iter().filter(filter).count(), 1);
+            assert_eq!(alignments.len(), 10);
+            assert_eq!(alignments.into_iter().filter(filter).count(), 9);
         };
 
         Ok(())
