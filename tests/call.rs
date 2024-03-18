@@ -94,6 +94,8 @@ fn finds_right_number_of_positions_with_threads() -> Result<(), Box<dyn std::err
     assert_eq!(output_str.lines().count(), 6110); // these values are empirical, ie more for detection of regressions. I checked them manually against MethylDackel and via IGV and they look right
 
     let mut total = 0;
+    let mut total_plus = 0;
+    let mut total_minus = 0;
     for line in output_str.lines()
     {
         let elems : Vec<&str> = line.split_ascii_whitespace().collect();
@@ -105,8 +107,15 @@ fn finds_right_number_of_positions_with_threads() -> Result<(), Box<dyn std::err
         // sum total number of mod/unmod read pos
         total = total + elems[6].parse::<i32>().unwrap();
         total = total + elems[7].parse::<i32>().unwrap();
+        match elems[5]
+        {
+            "+" => total_plus += 1,
+            "-" => total_minus += 1,
+            _   => ()
+        };
     }
     assert_eq!(total, 35201); // these values are empirical, ie more for detection of regressions
+    assert_eq!(total_plus+1, total_minus); // there's one - strand pos that's not covered in this test dataset
     Ok(())
 }
 

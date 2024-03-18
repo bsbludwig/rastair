@@ -302,37 +302,38 @@ pub fn run_caller(
     .flatten()
     .for_each(|cpg|
     {
+        let (unmod_c, mod_c, snp, nosnp, strand) =
         if cpg.ref_base == b'C'
+        {
+            (cpg.top.c, cpg.top.t, cpg.bottom.c, cpg.bottom.t, "+")
+        }
+        else
+        {
+            (cpg.bottom.g, cpg.bottom.a, cpg.top.g, cpg.top.a, "-")
+        };
+        let gt = EstimatedGenotype::calculate(nosnp, snp, error_model).unwrap_or_default();
+        let beta: f32 = match gt.genotype {
+            Genotype::CC => (mod_c as f32)/(mod_c + unmod_c) as f32,
+            Genotype::CT => ((mod_c as f32)/2.0)/((mod_c as f32)/2.0 + unmod_c as f32),
+            Genotype::TT => 0.0,
+        };
+        let gt_string = if cpg.ref_base == b'C'
         { // C
-            let gt = EstimatedGenotype::calculate(cpg.bottom.c, cpg.bottom.t, error_model).unwrap_or_default();
-            let beta: f32 = match gt.genotype {
-                Genotype::CC => (cpg.top.t as f32)/(cpg.top.t + cpg.top.c) as f32,
-                Genotype::CT => ((cpg.top.t as f32)/2.0)/(((cpg.top.t as f32)/2.0) + (cpg.top.c as f32)),
-                Genotype::TT => 0.0,
-            };
-            let gt_string = match gt.genotype {
+            match gt.genotype {
                 Genotype::CC  => "C/C",
                 Genotype::CT  => "C/T",
                 Genotype::TT  => "T/T",
-            };
-            writeln!(lock, "{}\t{}\t{}\t{}\t{:.2}\t+\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, ".", beta, cpg.top.c, cpg.top.t, cpg.bottom.c, cpg.bottom.t, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t, gt_string, prob_to_phred(1.0-gt.likelihood), prob_to_phred(1.0-gt.confidence)).unwrap();
+            }
         }
         else
         { // G
-            let gt = EstimatedGenotype::calculate(cpg.top.g, cpg.top.a, error_model).unwrap_or_default();
-            let beta: f32 = match gt.genotype {
-                Genotype::CC => (cpg.bottom.a as f32)/(cpg.bottom.a + cpg.bottom.g) as f32,
-                Genotype::CT => ((cpg.bottom.a as f32)/2.0)/(((cpg.bottom.a as f32)/2.0) + (cpg.bottom.g as f32)),
-                Genotype::TT => 0.0,
-            };
-
-            let gt_string = match gt.genotype {
+            match gt.genotype {
                 Genotype::CC  => "G/G",
                 Genotype::CT  => "G/A",
                 Genotype::TT  => "A/A",
-            };
-            writeln!(lock, "{}\t{}\t{}\t{}\t{:.2}\t+\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, ".", beta, cpg.bottom.g, cpg.bottom.a, cpg.top.g, cpg.top.a, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t, gt_string, prob_to_phred(1.0-gt.likelihood), prob_to_phred(1.0-gt.confidence)).unwrap();
-        }
+            }
+        };
+        writeln!(lock, "{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", cpg.contig, cpg.pos, cpg.pos+1, ".", beta, strand, unmod_c, mod_c, nosnp, snp, cpg.top.a + cpg.top.c + cpg.top.g + cpg.top.t + cpg.bottom.a + cpg.bottom.c + cpg.bottom.g + cpg.bottom.t, gt_string, prob_to_phred(1.0-gt.likelihood), prob_to_phred(1.0-gt.confidence)).unwrap();
     });
 
     Ok(())

@@ -41,7 +41,7 @@ fn default_settings() -> Result<(), Box<dyn std::error::Error>> {
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6601); // Checked against methyldackel
+    assert_eq!(output_str.lines().count(), 18747); // Checked against methyldackel
     // Check header row is there
     let first_line = output_str.lines().next().unwrap();
     assert!(predicate::str::contains("#chr").eval(first_line));
@@ -61,7 +61,7 @@ fn threaded() -> Result<(), Box<dyn std::error::Error>> {
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6601); // Checked against methyldackel
+    assert_eq!(output_str.lines().count(), 18747); // Checked against methyldackel
     // Check header row is there
     let first_line = output_str.lines().next().unwrap();
     assert!(predicate::str::contains("#chr").eval(first_line));
@@ -81,11 +81,11 @@ fn report_all() -> Result<(), Box<dyn std::error::Error>> {
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6659); // Checked against methyldackel
+    assert_eq!(output_str.lines().count(), 24743); // Checked against methyldackel
     let total: u32 = output_str.lines()
         .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
         .sum();
-    assert_eq!(total, 53493);
+    assert_eq!(total, 65393);
     Ok(())
 }
 
@@ -102,11 +102,11 @@ fn report_all_threaded() -> Result<(), Box<dyn std::error::Error>> {
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 6659); // Checked against methyldackel
+    assert_eq!(output_str.lines().count(), 24743); // Checked against methyldackel
     let total: u32 = output_str.lines()
         .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
         .sum();
-    assert_eq!(total, 53493);
+    assert_eq!(total, 65393);
     Ok(())
 }
 
@@ -122,16 +122,16 @@ fn restrict_to_chromosome() -> Result<(), Box<dyn std::error::Error>> {
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 5213); // Checked against methyldackel
+    assert_eq!(output_str.lines().count(), 9646); // Checked against methyldackel
     let total: u32 = output_str.lines()
         .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
         .sum();
-    assert_eq!(total, 35339);
+    assert_eq!(total, 35655);
 
     let total_mod: usize = output_str.lines()
         .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[10].split(",").collect::<Vec<&str>>().len()})
         .sum();
-    assert_eq!(total_mod, 33910);
+    assert_eq!(total_mod, 34468);
     Ok(())
 }
 
@@ -148,16 +148,16 @@ fn restrict_to_chromosome_threaded() -> Result<(), Box<dyn std::error::Error>> {
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 5213); // Checked against methyldackel
+    assert_eq!(output_str.lines().count(), 9646); // Checked against methyldackel
     let total: u32 = output_str.lines()
         .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
         .sum();
-    assert_eq!(total, 35339);
+    assert_eq!(total, 35655);
 
     let total_mod: usize = output_str.lines()
         .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[10].split(",").collect::<Vec<&str>>().len()})
         .sum();
-    assert_eq!(total_mod, 33910);
+    assert_eq!(total_mod, 34468);
     Ok(())
 }
 
@@ -173,7 +173,7 @@ fn restrict_to_region() -> Result<(), Box<dyn std::error::Error>> {
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output_str.lines().count(), 47); // Checked against methyldackel
+    assert_eq!(output_str.lines().count(), 121); // Checked against methyldackel
 
     Ok(())
 }
@@ -250,11 +250,12 @@ fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>> {
     let output_str = String::from_utf8_lossy(&output.stdout);
     let roi = output_str
         .lines()
-        .filter(|l| predicate::str::contains("A00711:92:HMH3WDSXX:3:2662:7328:10300").eval(l))
-        .filter(|l| predicate::str::contains("6048").eval(l))
+        .filter(|l| predicate::str::contains("NB502094:69:HN2H2BGX5:2:22305:19777:14996").eval(l))
+        .filter(|l| predicate::str::contains("6359").eval(l))
         .last()
         .unwrap_or_default();
+
     let elems = roi.split_ascii_whitespace().collect::<Vec<&str>>();
-    assert_eq!(elems[10], "11,16,29,59,67,79,95,108,122");
+    assert_eq!(elems[10], "22,40,54,57,64");
     Ok(())
 }
