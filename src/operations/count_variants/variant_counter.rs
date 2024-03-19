@@ -262,6 +262,7 @@ impl VariantCounter
         // If none exists, we've reached the end
         let mut cpg_index = 0;
         let mut last_pos = 0;
+        let mut repeat_err_count: u8 = 0;
         'pileup_loop:
         for pileups in pileup_iterator
         {
@@ -270,10 +271,23 @@ impl VariantCounter
                 Ok(p) => p,
                 Err(e)  =>
                 {
-                    error!("Error reading pileup at {} {}", &segment, e);
-                    continue;
+                    // check if we're in a death-loop
+                    if repeat_err_count < 3
+                    {
+                        repeat_err_count += 1;
+                        warn!("Error reading pileup at {} {}", &segment, e);
+                        continue;
+                    }
+                    else
+                    {
+                        error!("Error reading pileup at {} {}", &segment, e);
+                        return None;
+                    }
+
                 }
             };
+            // reset error counter
+            repeat_err_count = 0;
 
             let pileup_pos = pileup.pos() as u64;
             last_pos = pileup_pos;
