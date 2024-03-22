@@ -381,11 +381,18 @@ pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
             .find_cpgs()
             .unwrap_or_default()
             .iter()
-            .for_each(|position|
+            .enumerate()
+            .for_each(|(index, position)|
                 {
                     let char = char::from_u32(position.base() as u32).unwrap_or_default();
                     let seg_id = &position.segment.region.contig;
-                    writeln!(lock, "{}\t{}\t{}", seg_id, position.pos_in_contig(), char).expect("Error writing to stdout");
+                    let strand = match char
+                        {
+                            'C' | 'c'   => "+",
+                            'G' | 'g'   => "-",
+                            _           => ""
+                        };
+                    writeln!(lock, "{}\t{}\t{}\t{}\t{}", seg_id, position.pos_in_contig(), position.pos_in_contig()+1, index, strand).expect("Error writing to stdout");
                 });
     }
     Ok(())
