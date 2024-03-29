@@ -13,8 +13,7 @@ use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
 use crate::utils::{IndexedReaderExt, RecordExt};
 
 // Faster hashing than built-in algo
-use hashers::fx_hash::FxHasher;
-use std::hash::BuildHasherDefault;
+use fxhash::FxBuildHasher;
 
 use super::{ErrorRate, ReadMask, ReadMaskSetting, VariantCount, ERRORRATES, FLAGS, MAX_DEPTH};
 
@@ -256,7 +255,7 @@ impl VariantCounter
         let mut output: Vec<VariantCount> = Vec::with_capacity(cpg_positions.len());
 
         // Pre-create a hash to keep; pre-allocate memory to hold as many reads as the max read depth allows
-        let mut read_hash:HashMap<Vec<u8>, (u8, u8), BuildHasherDefault<FxHasher>> = HashMap::with_capacity_and_hasher(self.config.max_depth as usize, BuildHasherDefault::<FxHasher>::default());
+        let mut read_hash:HashMap<Vec<u8>, (u8, u8), FxBuildHasher> = HashMap::with_capacity_and_hasher(self.config.max_depth as usize, FxBuildHasher::default());
 
         // Find the next CpG position that is greater than or equal to the current pos
         // If none exists, we've reached the end

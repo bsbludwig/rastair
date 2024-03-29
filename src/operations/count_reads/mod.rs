@@ -40,13 +40,15 @@ use super::FLAGS;
     pub mod_cpgs: Vec<usize>,
     /// Positions in read of unmodified CpGs
     pub unmod_cpgs: Vec<usize>,
+    /// Positions in read of CpGs that are mutated
+    pub snp_cpgs: Vec<usize>,
  }
 
  impl Display for PerReadCount
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
-        write!(f, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        write!(f, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.region.contig,
             self.region.start,
             self.region.end,
@@ -58,7 +60,8 @@ use super::FLAGS;
             self.cpg_count,
             self.mod_count,
             self.mod_cpgs.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(","),
-            self.unmod_cpgs.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(","))
+            self.unmod_cpgs.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(","),
+            self.snp_cpgs.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(","))
     }
 }
 
@@ -204,7 +207,8 @@ use super::FLAGS;
             cpg_count: 0,
             mod_count: 0,
             mod_cpgs: Vec::new(),
-            unmod_cpgs: Vec::new()
+            unmod_cpgs: Vec::new(),
+            snp_cpgs: Vec::new()
         };
 
         if self.cpgs.len() == 0 || self.cpg_offset >= self.cpgs.len()
@@ -310,6 +314,7 @@ use super::FLAGS;
                             else
                             {
                                 debug!("SNP or sequencing error");
+                                next_read_count.snp_cpgs.push(block[0] as usize);
                             }
                         },
                         _       => continue
@@ -336,6 +341,7 @@ use super::FLAGS;
                             else
                             {
                                 debug!("SNP or sequencing error");
+                                next_read_count.snp_cpgs.push(block[0] as usize);
                             }
                         },
                         _       => continue
@@ -558,7 +564,7 @@ pub fn run_caller(
     drop(counter); // Ugly, but I need to free that counter up for later
 
     let mut lock = stdout().lock();
-    writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs")?;
+    writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs\tsnp_cpgs")?;
 
     iterator
     .map(move |segment| {
