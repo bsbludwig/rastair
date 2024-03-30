@@ -375,14 +375,15 @@ pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
         SequenceSegmentIterator::with_file(file_path)?
     };
     let mut lock = stdout().lock();
+    let mut last_chr = String::new();
+    let mut counter: u64 = 0;
     for segment in seg_iter
     {
         segment
             .find_cpgs()
             .unwrap_or_default()
             .iter()
-            .enumerate()
-            .for_each(|(index, position)|
+            .for_each(|position|
                 {
                     let char = char::from_u32(position.base() as u32).unwrap_or_default();
                     let seg_id = &position.segment.region.contig;
@@ -392,7 +393,13 @@ pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
                             'G' | 'g'   => "-",
                             _           => ""
                         };
-                    writeln!(lock, "{}\t{}\t{}\t{}\t{}", seg_id, position.pos_in_contig(), position.pos_in_contig()+1, index, strand).expect("Error writing to stdout");
+                    if seg_id != &last_chr
+                    {
+                        counter = 0;
+                        last_chr = seg_id.clone();
+                    }
+                    writeln!(lock, "{}\t{}\t{}\t{}\t{}", seg_id, position.pos_in_contig(), position.pos_in_contig()+1, counter, strand).expect("Error writing to stdout");
+                    counter += 1;
                 });
     }
     Ok(())
