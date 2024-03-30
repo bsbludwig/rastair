@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 pub mod count_variants;
 pub mod count_reads;
+pub mod bed2pat;
 
 // Bundle some utility structs and constants in here for all operations
 const MAX_DEPTH: u32 = 10_000;

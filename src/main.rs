@@ -3,6 +3,7 @@ use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
 use clio::*;
 
+use rastair::operations::bed2pat;
 use rastair::operations::{count_variants, count_reads, count_variants::ErrorModel};
 
 use rastair::sequence_segment::run_finder;
@@ -182,7 +183,7 @@ enum Commands
         #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
         threads: Option<u8>,
     },
-    /// print a map of all CpGs in a fasta file
+    /// print a map of all CpGs in a fasta file and their indices as a bed file
     MapCpgs
     {
         /// An indexed fasta file
@@ -192,6 +193,16 @@ enum Commands
         /// number of reference positions processed in-memory at once [default: 100000]
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
         chunk_size: Option<u32>,
+    },
+    /// Utility function to convert per-read bed files to PAT files as defined by Loyfer et al.
+    Bed2pat
+    {
+        /// Coordinate bed output, as produced by the map-cpgs function
+        #[arg(value_name="COORD_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
+        coord_bed_file: ClioPath,
+        /// Read bed output, as produced by the per-read function
+        #[arg(value_name="READ_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
+        read_bed_file: ClioPath,
     },
 }
 
@@ -343,6 +354,19 @@ fn real_main() -> i32
                     }
                 }
             },
+        Some(Commands::Bed2pat {
+            coord_bed_file,
+            read_bed_file }) => {
+                match bed2pat::run_bed2pat(coord_bed_file.to_path_buf(), read_bed_file.to_path_buf())
+                {
+                    Ok(()) => 0,
+                    Err(e)  =>
+                    {
+                        error!("Error running bed2pat: {}", e);
+                        1
+                    }
+                }
+            }
         None => 0
     }
 }
