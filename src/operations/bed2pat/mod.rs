@@ -3,7 +3,7 @@ pub mod cpg_buffer;
 use bgzip::{index::BGZFIndex, read::IndexedBGZFReader, BGZFReader};
 use bio::io::bed::Reader;
 use bio::bio_types::strand::Strand;
-
+use std::str::FromStr;
 use fxhash::FxBuildHasher;
 //use log::{trace, debug, error};
 use anyhow::{anyhow, bail, Result};
@@ -22,6 +22,8 @@ enum MethylationState {
     Unknown
 }
 use MethylationState::*;
+
+use super::{ReadMask, ReadMaskSetting};
 
 struct ReadInfo
 {
@@ -51,18 +53,22 @@ impl ReadInfo
 
     fn strand_from_flag(flag: u16) -> Strand
     {
+        // F1
         if flag & 64 == 64 && flag & 16 == 0
         {
             Strand::Forward
         }
+        // R2
         else if flag & 144 == 144
         {
             Strand::Forward
         }
+        // R1
         else if flag & 80 == 80
         {
             Strand::Reverse
         }
+        // F2
         else if flag & 128 == 128 && flag & 16 == 0
         {
             Strand::Reverse
@@ -81,11 +87,13 @@ pub struct PatGenerator<R: Read + Seek>
     read_reader: Reader<R>,
     cpg_buffer: CpgBuffer<R>,
     current_chromosome: Vec<u8>,
-    output_buffer: VecDeque<(usize, Vec<(String, usize)>)>
+    output_buffer: VecDeque<(usize, Vec<(String, usize)>)>,
+    n_ot: ReadMaskSetting,
+    n_ob: ReadMaskSetting
 }
 
 impl <R: Read+Seek> PatGenerator<R> {
-    pub fn with_read_and_coord_file(bam_reader: Reader<R>, coord_reader: Reader<R>) -> Result<Self>
+    pub fn with_read_and_coord_file(bam_reader: Reader<R>, coord_reader: Reader<R>, n_ot: ReadMaskSetting, n_ob: ReadMaskSetting) -> Result<Self>
     {
         let read_hash: HashMap<String, ReadInfo, FxBuildHasher> = HashMap::with_capacity_and_hasher(INITIAL_HASH_SIZE, FxBuildHasher::default());
 
@@ -98,6 +106,8 @@ impl <R: Read+Seek> PatGenerator<R> {
                 cpg_buffer,
                 current_chromosome: Vec::new(),
                 output_buffer: VecDeque::new(),
+                n_ot,
+                n_ob
             }
         )
     }
@@ -155,7 +165,34 @@ impl <R: Read+Seek> PatGenerator<R> {
                 let snps = parse_mod_str(record.aux(12).unwrap_or(""));
                 // Convert in-read coordinates to absolute CpG indices
                 let cpg_slice = self.cpg_buffer.cpgs_in_range(chr.as_bytes().as_ref(), start, end).unwrap_or_default();
-                let all_mods = zip_mods(&mods, &unmods, &snps, ReadInfo::strand_from_flag(flag), cpg_slice);
+                let strand = ReadInfo::strand_from_flag(flag);
+                let read_mask = match strand
+                {
+                    Strand::Forward => {
+                        if flag & 64 == 64 // first in pair
+                        {
+                            self.n_ot.r1
+                        }
+                        else
+                        {
+                            self.n_ot.r2
+                        }
+                    },
+                    Strand::Reverse => {
+                        if flag & 64 == 64 // first in pair
+                        {
+                            self.n_ob.r1
+                        }
+                        else
+                        {
+                            self.n_ob.r2
+                        }
+                    },
+                    Strand::Unknown => {
+                        ReadMask(0, 0)
+                    },
+                };
+                let all_mods = zip_mods(&mods, &unmods, &snps, strand, cpg_slice, read_mask, (end-start) as usize);
                 let r2 = ReadInfo::new(this_chromosome, start, flag, all_mods);
 
                 // Check if the read pair is in the cache already, otherwise just put data in cache and continue
@@ -228,7 +265,7 @@ impl <R: Read+Seek> PatGenerator<R> {
 }
 impl PatGenerator<File>
 {
-    pub fn with_read_and_coord_path<P: AsRef<Path> + std::fmt::Debug>(read_bed: P, coord_bed: P) -> Result<Self>
+    pub fn with_read_and_coord_path<P: AsRef<Path> + std::fmt::Debug>(read_bed: P, coord_bed: P, n_ot: ReadMaskSetting, n_ob: ReadMaskSetting) -> Result<Self>
     {
         let read_hash: HashMap<String, ReadInfo, FxBuildHasher> = HashMap::with_capacity_and_hasher(INITIAL_HASH_SIZE, FxBuildHasher::default());
         let read_reader = Reader::from_file(read_bed)?;
@@ -241,7 +278,10 @@ impl PatGenerator<File>
                 read_reader,
                 cpg_buffer,
                 current_chromosome: Vec::new(),
-                output_buffer: VecDeque::new(),            }
+                output_buffer: VecDeque::new(),
+                n_ot,
+                n_ob
+            }
         )
     }
 }
@@ -403,7 +443,7 @@ fn parse_mod_str(mod_str: &str) -> Vec<u8>
         .collect()
 }
 
-fn zip_mods(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand, cpg_info: &[CpgInfo]) -> Vec<(usize, MethylationState)>
+fn zip_mods(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand, cpg_info: &[CpgInfo], read_mask: ReadMask, read_length: usize) -> Vec<(usize, MethylationState)>
 {
     let filtered_cpgs: Vec<&CpgInfo> = cpg_info.iter().filter(|f| f.strand() == strand).collect();
 
@@ -418,8 +458,34 @@ fn zip_mods(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand, cpg
         assert!(false, "Fewer CpGs in slice than in reads");
     }
 
-    let mut mod_pairs : Vec<(u8, MethylationState)> = mods.iter().map(|f| (*f, Methylated)).collect();
-    let mut unmod_pairs : Vec<(u8, MethylationState)> = unmod.iter().map(|f| (*f, Unmethylated)).collect();
+    let mut mod_pairs : Vec<(u8, MethylationState)> = mods.iter()
+        .map(|f|
+            {
+                let pos_in_read = *f;
+                if pos_in_read as usize <= read_mask.0 || pos_in_read as usize > read_length - read_mask.1
+                {
+                    (pos_in_read, Unknown)
+                }
+                else
+                {
+                    (pos_in_read, Methylated)
+                }
+            })
+        .collect();
+    let mut unmod_pairs : Vec<(u8, MethylationState)> = unmod.iter()
+        .map(|f|
+            {
+                let pos_in_read = *f;
+                if pos_in_read as usize <= read_mask.0 || pos_in_read as usize > read_length - read_mask.1
+                {
+                    (pos_in_read, Unknown)
+                }
+                else
+                {
+                    (pos_in_read, Unmethylated)
+                }
+            })
+        .collect();
     let mut snp_pairs : Vec<(u8, MethylationState)> = snps.iter().map(|f| (*f, Unknown)).collect();
     mod_pairs.append( &mut unmod_pairs );
     mod_pairs.append( &mut snp_pairs );
@@ -452,11 +518,24 @@ fn open_file<P: AsRef<Path> + Debug>(path: P) -> Result<Reader<Box<dyn ReadAndSe
         Ok(Reader::new(Box::new(in_file)))
     }
 }
-pub fn run_bed2pat<P: AsRef<Path> + std::fmt::Debug>(coord_bed: P, read_bed: P) -> Result<()>
+
+#[allow(non_snake_case)]
+pub fn run_bed2pat<P: AsRef<Path> + std::fmt::Debug>(
+    coord_bed: P,
+    read_bed: P,
+    nOT_option: &Option<String>,
+    nOB_option: &Option<String>) -> Result<()>
 {
     let read_file = open_file(read_bed)?;
     let coord_file = open_file(coord_bed)?;
-    let mut generator = PatGenerator::with_read_and_coord_file(read_file, coord_file)?;
+
+    #[allow(non_snake_case)]
+    let mut n_ot = ReadMaskSetting::from_str(nOT_option.as_ref().unwrap_or(&"0,0,0,0".to_string())).unwrap();
+    let mut n_ob = ReadMaskSetting::from_str(nOB_option.as_ref().unwrap_or(&"0,0,0,0".to_string())).unwrap();
+
+    n_ot.r2 = ReadMask(n_ot.r2.1, n_ot.r2.0); // R2 is mapped in reverse
+    n_ob.r1 = ReadMask(n_ob.r1.1, n_ob.r1.0); // F2 is mapped in reverse
+    let mut generator = PatGenerator::with_read_and_coord_file(read_file, coord_file, n_ot, n_ob)?;
     generator.process()
 }
 /*====================================================
@@ -521,12 +600,13 @@ chr2\t19\t20\t5\t-
         let mods: Vec<u8> = [1, 4].to_vec();
         let unmods: Vec<u8> = [2, 3].to_vec();
         let snps: Vec<u8> = Vec::new();
-        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Methylated)]);
+        let read_mask = ReadMask(0,0);
+        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info, read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Methylated)]);
 
         let mods: Vec<u8> = [1].to_vec();
         let unmods: Vec<u8> = [2, 3].to_vec();
         let snps: Vec<u8> = [4].to_vec();
-        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Unknown)]);
+        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info, read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Unknown)]);
         Ok(())
     }
 

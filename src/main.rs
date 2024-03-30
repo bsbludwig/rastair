@@ -70,12 +70,16 @@ enum Commands
         error_model: Option<ErrorModel>,
 
         /// For each read corresponding to the OT, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
-        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
+        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
+        /// alignment for a read that is mapped to the reverse strand.
+        /// Also note that the distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
         #[arg(long="nOT")]
         n_ot: Option<String>,
 
         /// For each read corresponding to the OB, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
-        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
+        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
+        /// alignment for a read that is mapped to the reverse strand.
+        /// Also not that the distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
         #[arg(long="nOB")]
         n_ob: Option<String>,
 
@@ -203,6 +207,19 @@ enum Commands
         /// Read bed output, as produced by the per-read function; Can be bgzip compressed, but requires a gzi index
         #[arg(value_name="READ_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
         read_bed_file: ClioPath,
+        /// For each read corresponding to the OT, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
+        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
+        /// alignment for a read that is mapped to the reverse strand.
+        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
+        #[arg(long="nOT")]
+        n_ot: Option<String>,
+
+        /// For each read corresponding to the OB, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
+        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
+        /// alignment for a read that is mapped to the reverse strand.
+        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
+        #[arg(long="nOB")]
+        n_ob: Option<String>,
     },
 }
 
@@ -356,8 +373,10 @@ fn real_main() -> i32
             },
         Some(Commands::Bed2pat {
             coord_bed_file,
-            read_bed_file }) => {
-                match bed2pat::run_bed2pat(coord_bed_file.to_path_buf(), read_bed_file.to_path_buf())
+            read_bed_file ,
+            n_ot,
+            n_ob,}) => {
+                match bed2pat::run_bed2pat(coord_bed_file.to_path_buf(), read_bed_file.to_path_buf(), n_ot, n_ob)
                 {
                     Ok(()) => 0,
                     Err(e)  =>
