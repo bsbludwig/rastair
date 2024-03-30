@@ -194,13 +194,13 @@ enum Commands
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
         chunk_size: Option<u32>,
     },
-    /// Utility function to convert per-read bed files to PAT files as defined by Loyfer et al.
+    /// Utility function to convert per-read bed files to PAT files compatible with wgbstools and UXMtools
     Bed2pat
     {
-        /// Coordinate bed output, as produced by the map-cpgs function
+        /// Coordinate bed output, as produced by the map-cpgs function. Can be bgzip compressed, but requires a gzi index
         #[arg(value_name="COORD_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
         coord_bed_file: ClioPath,
-        /// Read bed output, as produced by the per-read function
+        /// Read bed output, as produced by the per-read function; Can be bgzip compressed, but requires a gzi index
         #[arg(value_name="READ_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
         read_bed_file: ClioPath,
     },
