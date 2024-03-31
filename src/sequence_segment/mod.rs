@@ -18,6 +18,7 @@ const DEFAULT_STEP_SIZE: usize = 10000;
 const DEFAULT_TILING: usize = 1;
 
 /// A genomic region
+#[derive(Debug, Clone)]
 pub struct GenomicRegion
 {
     /// Name of sequence
@@ -26,16 +27,6 @@ pub struct GenomicRegion
     pub start: u64,
     /// end-coordinate (exclusive)
     pub end: u64
-}
-impl Clone for GenomicRegion
-{
-    fn clone(&self) -> Self {
-        GenomicRegion {
-            contig: self.contig.clone(),
-            start: self.start,
-            end: self.end
-        }
-    }
 }
 
 /// A genomic position, represented by its base and position, and the position
@@ -58,6 +49,11 @@ impl<'a> ContigPosition<'a>
     pub fn pos_in_contig(& self) -> u64
     {
         (self.pos_in_segment as u64) + self.segment.region.start
+    }
+
+    pub fn contig(&self) -> &[u8]
+    {
+        return self.segment.region.contig.as_bytes().as_ref();
     }
 }
 
@@ -196,9 +192,36 @@ where
         Ok(new_seq_seg)
     }
 
+    pub fn current_region(&self) -> GenomicRegion
+    {
+        let (mut cur_region, cur_slice) = self.sequences[self.index_pos].clone();
+        cur_region.start = self.pos;
+        cur_region.end = self.pos + self.step_size as u64;
+        if cur_region.end > cur_slice.to
+        {
+            cur_region.end = cur_slice.to;
+        }
+        cur_region
+    }
+
     fn reached_end(&self) -> bool
     {
         self.index_pos >= self.sequences.len()
+    }
+
+    pub fn move_to_contig(&mut self, chr: &[u8]) -> Result<()>
+    {
+        for (i, seq) in self.sequences.iter().enumerate()
+        {
+            if seq.0.contig.as_bytes() == chr
+            {
+                self.index_pos = i;
+                self.pos = 0;
+                return Ok(());
+            }
+        }
+
+        bail!("{} not found in fasta", std::str::from_utf8(chr).unwrap_or_default());
     }
 
     pub fn set_tiling(&mut self, new_tiling: usize) -> Result<()>

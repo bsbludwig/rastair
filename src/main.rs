@@ -201,9 +201,9 @@ enum Commands
     /// Utility function to convert per-read bed files to PAT files compatible with wgbstools and UXMtools
     Bed2pat
     {
-        /// Coordinate bed output, as produced by the map-cpgs function. Can be bgzip compressed, but requires a gzi index
-        #[arg(value_name="COORD_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
-        coord_bed_file: ClioPath,
+        /// Sequence fasta file, Can be bgzip compressed, but requires both a gzi index and a fai index!
+        #[arg(value_name="FASTA_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+        fasta_file: ClioPath,
         /// Read bed output, as produced by the per-read function; Can be bgzip compressed, but requires a gzi index
         #[arg(value_name="READ_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
         read_bed_file: ClioPath,
@@ -372,11 +372,11 @@ fn real_main() -> i32
                 }
             },
         Some(Commands::Bed2pat {
-            coord_bed_file,
+            fasta_file,
             read_bed_file ,
             n_ot,
             n_ob,}) => {
-                match bed2pat::run_bed2pat(coord_bed_file.to_path_buf(), read_bed_file.to_path_buf(), n_ot, n_ob)
+                match bed2pat::run_bed2pat(fasta_file.to_path_buf(), read_bed_file.to_path_buf(), n_ot, n_ob)
                 {
                     Ok(()) => 0,
                     Err(e)  =>
