@@ -207,7 +207,14 @@ impl <R: Read+Seek> PatGenerator<R> {
                 let all_mods: Vec<(usize, MethylationState)> =
                     if let Some(cpg_slice) = self.cpg_buffer.cpgs_in_range(chr.as_bytes().as_ref(), start, end)
                     {
-                        zip_mods(&mods, &unmods, &snps, strand, cpg_slice, read_mask, (end-start) as usize)
+                        match zip_mods(&mods, &unmods, &snps, strand, cpg_slice, read_mask, (end-start) as usize)
+                        {
+                            None    => {
+                                warn!("Skipping read {} due to parser error", qname);
+                                continue;
+                            }
+                            Some(mods)  => mods
+                        }
                     }
                     else
                     {
@@ -480,7 +487,7 @@ fn parse_mod_str(mod_str: &str) -> Vec<u8>
         .collect()
 }
 
-fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand, cpg_info: Vec<&'a CpgInfo>, read_mask: ReadMask, read_length: usize) -> Vec<(usize, MethylationState)>
+fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand, cpg_info: Vec<&'a CpgInfo>, read_mask: ReadMask, read_length: usize) -> Option<Vec<(usize, MethylationState)>>
 {
     let filtered_cpgs: Vec<&CpgInfo> = cpg_info.into_iter().filter(|f| f.strand() == strand).collect();
 
@@ -489,10 +496,12 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
     if filtered_cpgs.len() > mods.len()+unmod.len()+snps.len()
     {
         warn!("Likely indel covering a CpG, CpG count in read does not match CpG count in reference");
+        return None;
     }
     else if filtered_cpgs.len() < mods.len()+unmod.len()+snps.len()
     {
-        assert!(false, "Fewer CpGs in slice than in read");
+        warn!("Fewer CpGs in slice than in read: {} vs {}", filtered_cpgs.len(), mods.len()+unmod.len()+snps.len());
+        return None;
     }
 
     let mut mod_pairs : Vec<(u8, MethylationState)> = mods.iter()
@@ -528,7 +537,7 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
     mod_pairs.append( &mut snp_pairs );
     mod_pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
-    mod_pairs.iter().enumerate().map(|(i, m)| (filtered_cpgs[i].index/2+1, m.1)).collect()
+    Some(mod_pairs.iter().enumerate().map(|(i, m)| (filtered_cpgs[i].index/2+1, m.1)).collect())
 }
 
 trait ReadAndSeek: Read+Seek {}
@@ -651,12 +660,12 @@ chr2\t19\t20\t5\t-
         let unmods: Vec<u8> = [2, 3].to_vec();
         let snps: Vec<u8> = Vec::new();
         let read_mask = ReadMask(0,0);
-        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info.iter().collect(), read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Methylated)]);
+        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info.iter().collect(), read_mask, 6).expect("Failed to zip"), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Methylated)]);
 
         let mods: Vec<u8> = [1].to_vec();
         let unmods: Vec<u8> = [2, 3].to_vec();
         let snps: Vec<u8> = [4].to_vec();
-        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info.iter().collect(), read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Unknown)]);
+        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info.iter().collect(), read_mask, 6).expect("Failed to zip"), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Unknown)]);
         Ok(())
     }
 
