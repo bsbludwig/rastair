@@ -442,9 +442,15 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
         return None;
     }
 
-    let (min_index, max_index) = min_max_indices(read1, read2);
+    let (mut min_index, max_index) = min_max_indices(read1, read2);
 
     let site_count = max_index-min_index+1;
+
+    if site_count == 0
+    {
+        return None;
+    }
+
     // Create an empty string with no methlation info yet
     let mut output = vec!['.' as u8; site_count];
     // the first x1 CpGs are from r1, the last x2 CpGs are from r2
@@ -465,6 +471,46 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
             Unmethylated => 'T' as u8,
             Unknown      => '.' as u8
         }
+    }
+
+    loop
+    {
+        if output.len() > 0 && output[0] == '.' as u8
+        {
+            min_index += 1;
+            output.remove(0);
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if output.len() == 0
+    {
+        return None;
+    }
+
+    loop
+    {
+        if output.len() == 0
+        {
+            break;
+        }
+        let c = output.len()-1;
+        if output[c] == '.' as u8
+        {
+            output.remove(c);
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if output.len() == 0
+    {
+        return None;
     }
 
     Some((min_index, String::from_utf8(output).unwrap_or_default()))
