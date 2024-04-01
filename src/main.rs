@@ -220,6 +220,10 @@ enum Commands
         /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
         #[arg(long="nOB")]
         n_ob: Option<String>,
+
+        /// number of reference positions processed in-memory at once [default: 100000]
+        #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
+        chunk_size: Option<usize>,
     },
 }
 
@@ -375,8 +379,9 @@ fn real_main() -> i32
             fasta_file,
             read_bed_file ,
             n_ot,
-            n_ob,}) => {
-                match bed2pat::run_bed2pat(fasta_file.to_path_buf(), read_bed_file.to_path_buf(), n_ot, n_ob)
+            n_ob,
+            chunk_size,}) => {
+                match bed2pat::run_bed2pat(fasta_file.to_path_buf(), read_bed_file.to_path_buf(), n_ot, n_ob, chunk_size)
                 {
                     Ok(()) => 0,
                     Err(e)  =>

@@ -44,11 +44,19 @@ pub struct CpgBuffer<R: Read + Seek>
 impl <R> CpgBuffer<R>
 where R: Read+Seek
 {
-    #[allow(dead_code)] // Used for testing
     pub fn with_reader(fasta_reader: IndexedReader<R>) -> Result<Self>
     {
         let cpg_buffer = BTreeMap::new();
         let ssi = SequenceSegmentIterator::with_reader(fasta_reader)?;
+        Ok(
+            Self { cpg_buffer, fasta_reader: ssi, last_in_segment: false }
+        )
+    }
+
+    pub fn with_reader_and_stepsize(fasta_reader: IndexedReader<R>, step_size: usize) -> Result<Self>
+    {
+        let cpg_buffer = BTreeMap::new();
+        let ssi = SequenceSegmentIterator::with_reader_and_stepsize(fasta_reader, step_size)?;
         Ok(
             Self { cpg_buffer, fasta_reader: ssi, last_in_segment: false }
         )

@@ -14,7 +14,7 @@ use rust_htslib::bam::FetchDefinition;
 
 use crate::utils::FetchDefinitionExt;
 
-const DEFAULT_STEP_SIZE: usize = 10000;
+const DEFAULT_STEP_SIZE: usize = 100_000;
 const DEFAULT_TILING: usize = 1;
 
 /// A genomic region
@@ -164,6 +164,11 @@ where
 {
     pub fn with_reader(reader:IndexedReader<R>) -> Result<Self>
     {
+        Self::with_reader_and_stepsize(reader, DEFAULT_STEP_SIZE)
+    }
+
+    pub fn with_reader_and_stepsize(reader:IndexedReader<R>, step_size: usize) -> Result<Self>
+    {
         let sequences: Vec<(GenomicRegion, GenomicSlice)> =
             reader
                 .index
@@ -185,7 +190,7 @@ where
             sequences,
             index_pos: 0,
             pos: 0,
-            step_size: DEFAULT_STEP_SIZE,
+            step_size: step_size,
             tiling: DEFAULT_TILING
         };
 
