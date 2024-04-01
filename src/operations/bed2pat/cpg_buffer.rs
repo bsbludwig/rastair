@@ -118,7 +118,7 @@ where R: Read+Seek
 
         loop
         {
-            if self.last_in_segment || self.last_parsed_position >= end - 1
+            if self.last_in_segment || self.last_parsed_position >= end
             {
                 break;
             }

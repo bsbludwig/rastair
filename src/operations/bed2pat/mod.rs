@@ -490,7 +490,7 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
     }
     else if filtered_cpgs.len() < mods.len()+unmod.len()+snps.len()
     {
-        assert!(false, "Fewer CpGs in slice than in reads");
+        assert!(false, "Fewer CpGs in slice than in read");
     }
 
     let mut mod_pairs : Vec<(u8, MethylationState)> = mods.iter()
