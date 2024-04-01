@@ -9,15 +9,16 @@ use std::str::FromStr;
 use fxhash::FxBuildHasher;
 //use log::{trace, debug, error};
 use anyhow::{anyhow, bail, Result};
-use log::{debug, warn};
+use log::{debug, trace, warn};
 
 use std::{collections::{HashMap, BTreeMap}, fmt::Debug, fs::File, io::{stdout, Read, Seek, Write}, path::Path};
 
 use crate::operations::bed2pat::cpg_buffer::{CpgInfo, CpgBuffer};
 
-const INITIAL_HASH_SIZE: usize = 1000; // how many reads in between the average two matching pairs?
-const FLUSH_BUFFER_THRESHOLD: usize = 10000;
-const CPG_SEARCH_RANGE: u64 = 2000;
+const INITIAL_HASH_SIZE: usize = 1_000; // how many reads in between the average two matching pairs?
+const FLUSH_BUFFER_THRESHOLD: usize = 1_000;
+const CPG_SEARCH_RANGE: u64 = 2_000;
+const MAX_INSERT_SIZE: u64 = 10_000;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum MethylationState {
@@ -234,6 +235,28 @@ impl <R: Read+Seek> PatGenerator<R> {
                      */
                     if self.output_buffer.len() > FLUSH_BUFFER_THRESHOLD
                     {
+                        // remove orphaned single reads that are unreasonably far away from a pair
+                        // TODO make this configurable
+                        let keys_to_remove: Vec<String> = self.read_hash
+                            .iter()
+                            .filter(|(_, v)| {
+                                if (v.start + MAX_INSERT_SIZE) < start
+                                {
+                                    trace!("Read at {}:{} likely orphaned, more than {} from {}:{}", std::str::from_utf8(&v.contig).unwrap_or_default(), v.start, MAX_INSERT_SIZE, chr, start);
+                                    true
+                                }
+                                else {
+                                    false
+                                }
+                            })
+                            .map(|(k, _)| String::from(k))
+                            .collect();
+                        debug!("Will remove {} reads in cache that are too far before current position", keys_to_remove.len());
+                        for k in keys_to_remove
+                        {
+                            self.read_hash.remove(&k);
+                        }
+
                         let right_margin =
                             if let Some(leftmost_remaining_read) =
                                 self
@@ -241,20 +264,27 @@ impl <R: Read+Seek> PatGenerator<R> {
                                 .values()
                                 .min_by(|a, b| a.start.cmp(&b.start))
                             {
+                                debug!("Left-most read in read buffer: {}:{}", chr, leftmost_remaining_read.start);
                                 leftmost_remaining_read.start
                             }
                             else
                             {
+                                debug!("No reads left in hash, flush to {}", r2.start);
                                 r2.start
                             };
                         if let Some(cpgs) = self.cpg_buffer
                             .cpgs_in_range(&self.current_chromosome, right_margin - std::cmp::min(right_margin, CPG_SEARCH_RANGE), right_margin)
                         {
                             if let Some(last_cpg_before) = cpgs
-                                .iter()
-                                .max_by(|a, b| a.index.cmp(&b.index))
+                                .last()
                             {
-                                flush_write_buffer_until(&mut self.output_buffer, &self.current_chromosome, last_cpg_before.index)?;
+                                let len_before = self.output_buffer.len();
+                                flush_write_buffer_until(&mut self.output_buffer, &self.current_chromosome, last_cpg_before.index/2+1)?;
+                                debug!("Flushed {} positions from output buffer before {}:{}", len_before-self.output_buffer.len(), chr, last_cpg_before.index/2+1);
+                            }
+                            else
+                            {
+                                warn!("Could not find max index in previous {} bases before {}", CPG_SEARCH_RANGE, right_margin);
                             }
                         }
                         else {
@@ -299,10 +329,6 @@ fn flush_write_buffer_until(output_buffer: &mut BTreeMap<usize, Vec<(String, usi
             break;
         }
     }
-    // for (pos, patterns) in output_buffer.extract_if()
-    // {
-
-    // }
 
     Ok(())
 }
