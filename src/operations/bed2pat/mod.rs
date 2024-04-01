@@ -369,7 +369,7 @@ fn flush_write_buffer_until(output_buffer: &mut BTreeMap<usize, Vec<(String, usi
     let chr_string = std::str::from_utf8(current_chromosome).unwrap_or_default();
 
     loop {
-        if let Some((index, value)) = output_buffer.pop_first()
+        if let Some((index, mut value)) = output_buffer.pop_first()
         {
             if index >= end
             {
@@ -377,7 +377,9 @@ fn flush_write_buffer_until(output_buffer: &mut BTreeMap<usize, Vec<(String, usi
                 output_buffer.insert(index, value);
                 break;
             }
-
+            // pat documentation suggests they sort by pattern, which
+            // probably improves gzip compressed of the output file
+            value.sort_by(|a, b| a.0.cmp(&b.0));
             for (meth_string, count) in value.iter()
             {
                 writeln!(lock, "{}\t{}\t{}\t{}", chr_string, index, meth_string, count)?;
