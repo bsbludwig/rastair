@@ -38,6 +38,7 @@ pub struct CpgBuffer<R: Read + Seek>
     // buffer CpG positions and indices to get info on CpGs between read pairs
     cpg_buffer: BTreeMap<u64, CpgInfo>,
     fasta_reader: SequenceSegmentIterator<R>,
+    last_parsed_position: u64,
     last_in_segment: bool
 }
 
@@ -49,7 +50,7 @@ where R: Read+Seek
         let cpg_buffer = BTreeMap::new();
         let ssi = SequenceSegmentIterator::with_reader(fasta_reader)?;
         Ok(
-            Self { cpg_buffer, fasta_reader: ssi, last_in_segment: false }
+            Self { cpg_buffer, fasta_reader: ssi, last_parsed_position: 0, last_in_segment: false }
         )
     }
 
@@ -58,7 +59,7 @@ where R: Read+Seek
         let cpg_buffer = BTreeMap::new();
         let ssi = SequenceSegmentIterator::with_reader_and_stepsize(fasta_reader, step_size)?;
         Ok(
-            Self { cpg_buffer, fasta_reader: ssi, last_in_segment: false }
+            Self { cpg_buffer, fasta_reader: ssi, last_parsed_position: 0, last_in_segment: false }
         )
     }
 
@@ -84,10 +85,12 @@ where R: Read+Seek
         {
             self.last_in_segment = true;
         }
+        self.last_parsed_position = segment.region.end-1;
         let mut iter: usize = 0;
         for cpg in segment.find_cpgs().unwrap_or_default()
         {
-            self.cpg_buffer.insert(cpg.pos_in_contig(), CpgInfo::new(Vec::from(cpg.contig()), cpg.pos_in_contig(), last_index + iter));
+            let cpg_info = CpgInfo::new(Vec::from(cpg.contig()), cpg.pos_in_contig(), last_index + iter);
+            self.cpg_buffer.insert(cpg.pos_in_contig(), cpg_info);
             iter += 1;
         }
         Some(())
@@ -97,6 +100,7 @@ where R: Read+Seek
     {
         self.cpg_buffer.clear();
         self.last_in_segment = false;
+        self.last_parsed_position = 0;
         self.fasta_reader.move_to_contig(chr).ok()
     }
 
@@ -114,27 +118,11 @@ where R: Read+Seek
 
         loop
         {
-            if let Some((_, last_cpg)) = self.cpg_buffer.last_key_value()
+            if self.last_in_segment || self.last_parsed_position >= end - 1
             {
-                if last_cpg.position + 1 < end
-                {
-                    match self.parse_next_from_file() {
-                        None => break,
-                        _   => ()
-                    }
-                }
-                else
-                {
-                    break;
-                }
+                break;
             }
-            else
-            {
-                match self.parse_next_from_file() {
-                    None => break,
-                    _   => ()
-                }
-            }
+            self.parse_next_from_file()?;
         }
         let slice = self.cpg_buffer.range(start..end).map(|(_, v)| v);
         Some(slice.collect())
@@ -144,126 +132,70 @@ where R: Read+Seek
 /*====================================================
  = Unit Tests
 ====================================================*/
-//#[cfg(test)]
-// mod tests {
-//     use std::io::Cursor;
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
 
-//     use super::*;
-//     use anyhow::{Ok, Result};
+    use super::*;
+    use anyhow::{Ok, Result};
+    use bio::io::fasta::Index;
 
-//     const COORD_BED: &[u8] = b"chr1\t0\t1\t0\t+
-// chr1\t1\t2\t1\t-
-// chr1\t6\t7\t2\t+
-// chr1\t7\t8\t3\t-
-// chr1\t10\t11\t4\t+
-// chr1\t11\t12\t5\t-
-// chr1\t20\t21\t6\t+
-// chr1\t21\t22\t7\t-
-// chr1\t100\t101\t8\t+
-// chr1\t101\t102\t9\t-
-// chr1\t110\t111\t10\t+
-// chr1\t111\t112\t11\t-
-// chr2\t10\t11\t0\t+
-// chr2\t11\t12\t1\t-
-// chr2\t16\t17\t2\t+
-// chr2\t17\t18\t3\t-
-// chr2\t18\t19\t4\t+
-// chr2\t19\t20\t5\t-
-// ";
+    const FASTA_FILE: &[u8] = b">id desc
+ACCGTAGGCTGA
+CCGTAGGCTGAA
+CGTAGGCTGAAA
+GTAGGCTGAAAA
+CCCC
+>id2
+ATTGTTGTTTTA
+ATTGTTGTTTTA
+ATTGTTGTTTTA
+GGGG
+>id3
+ATCGATCGATCG
+AATCGATCGATC
+GATCGATCGATC
+GGGGG
+>id4
+ATCGATCGATcG
+AATCGATCgATC
+gATCGATcGATc
+gGGcg
+";
+const FAI_FILE: &[u8] = b"id\t52\t9\t12\t13
+id2\t40\t71\t12\t13
+id3\t41\t120\t12\t13
+id4\t41\t170\t12\t13
+";
 
-//     #[test]
-//     fn can_create_buffer() -> Result<()>
-//     {
-//         let mut buffer = CpgBuffer::with_file(Cursor::new(COORD_BED))?;
-//         let mut next_row = buffer.parse_next_from_file().expect("No next row");
-//         assert_eq!(next_row.contig, Vec::from("chr1".as_bytes()));
-//         assert_eq!(next_row.position, 0);
-//         assert_eq!(next_row.index, 0);
-//         next_row = buffer.parse_next_from_file().expect("No next row");
+    #[test]
+    fn can_create_buffer() -> Result<()>
+    {
+        let index = Index::new(Cursor::new(FAI_FILE))?;
+        let reader = IndexedReader::with_index(Cursor::new(FASTA_FILE), index);
+        let mut buffer = CpgBuffer::with_reader_and_stepsize(reader, 12)?;
 
-//         assert_eq!(next_row.contig, Vec::from("chr1".as_bytes()));
-//         assert_eq!(next_row.position, 1);
-//         assert_eq!(next_row.index, 1);
-//         Ok(())
-//     }
+        let mut rows = buffer.cpgs_in_range("id".as_bytes(), 0, 12).expect("Could not fetch");
+        let mut next_row = rows.first().expect("No CpGs found");
+        assert_eq!(next_row.contig, Vec::from("id".as_bytes()));
+        assert_eq!(next_row.position, 2);
+        assert_eq!(next_row.index, 0);
 
-//     #[test]
-//     fn can_empty_buffer() -> Result<()>
-//     {
-//         let mut buffer = CpgBuffer::with_file(Cursor::new(COORD_BED))?;
-//         for _i in 0..18
-//         {
-//             buffer.parse_next_from_file().expect("No next row");
-//         }
-//         assert!(buffer.parse_next_from_file().is_none(), "More data than expected");
-//         Ok(())
-//     }
+        rows = buffer.cpgs_in_range("id".as_bytes(), 24, 36).expect("Could not fetch");
+        next_row = rows.first().expect("No CpGs found");
 
-//     #[test]
-//     fn can_load_until() -> Result<()>
-//     {
-//         let mut buffer = CpgBuffer::with_file(Cursor::new(COORD_BED))?;
-//         buffer.load_data_until("chr1".as_bytes(), 50).expect("Failed to read slice");
-//         assert!(buffer.cpg_buffer.len() >= 8, "Buffer too short, must be missing data");
-//         Ok(())
-//     }
+        assert_eq!(next_row.contig, Vec::from("id".as_bytes()));
+        assert_eq!(next_row.position, 24);
+        assert_eq!(next_row.index, 4);
 
-//     #[test]
-//     fn can_get_slice() -> Result<()>
-//     {
-//         let mut buffer = CpgBuffer::with_file(Cursor::new(COORD_BED))?;
-//         let mut slice = buffer.cpgs_in_range("chr1".as_bytes().as_ref(), 0, 50).expect("Empty slice");
+        buffer.progress_to_contig("id4".as_bytes());
+        rows = buffer.cpgs_in_range("id4".as_bytes(), 0, 12).expect("Could not fetch");
+        next_row = rows.first().expect("No CpGs found");
 
-//         assert_eq!(slice.len(), 8, "Slice length not right");
-//         assert_eq!(slice[7].index, 7, "Element index doesn't match");
+        assert_eq!(next_row.contig, Vec::from("id4".as_bytes()));
+        assert_eq!(next_row.position, 2);
+        assert_eq!(next_row.index, 0);
 
-//         // Shorter slice from a middle start point
-//         slice = buffer.cpgs_in_range("chr1".as_bytes().as_ref(), 15, 50).expect("Empty slice");
-//         assert_eq!(slice.len(), 2, "Slice length not right");
-//         assert_eq!(slice[0].index, 6, "Element index doesn't match");
-//         assert_eq!(slice[1].index, 7, "Element index doesn't match");
-
-//         // Go back to the previous slice
-//         slice = buffer.cpgs_in_range("chr1".as_bytes().as_ref(), 0, 50).expect("Empty slice");
-//         assert_eq!(slice.len(), 8, "Slice length not right");
-//         assert_eq!(slice[7].index, 7, "Element index doesn't match");
-
-//         // End slice on position
-//         slice = buffer.cpgs_in_range("chr1".as_bytes().as_ref(), 7, 100).expect("Empty slice");
-//         assert_eq!(slice.len(), 5, "Slice length not right");
-//         assert_eq!(slice.first().expect("empty slice").index, 3, "First element index doesn't match");
-//         assert_eq!(slice.last().expect("empty slice").index, 7, "Last element index doesn't match");
-
-//         // Slice beyond max value
-//         slice = buffer.cpgs_in_range("chr1".as_bytes().as_ref(), 50, 1000).expect("Empty slice");
-//         assert_eq!(slice.len(), 4, "Slice length not right");
-//         assert_eq!(slice.first().expect("empty slice").index, 8, "First element index doesn't match");
-//         assert_eq!(slice.last().expect("empty slice").index, 11, "Last element index doesn't match");
-
-//         // Slice in second chrom
-//         slice = buffer.cpgs_in_range("chr2".as_bytes().as_ref(), 9, 13).expect("Empty slice");
-//         assert_eq!(slice.len(), 2, "Slice length not right");
-//         assert_eq!(slice.first().expect("empty slice").index, 0, "First element index doesn't match");
-//         assert_eq!(slice.last().expect("empty slice").index, 1, "Last element index doesn't match");
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn can_clean_buffer() -> Result<()>
-//     {
-//         let mut buffer = CpgBuffer::with_file(Cursor::new(COORD_BED))?;
-//         buffer.load_data_until("chr1".as_bytes(), 50).expect("Failed to read slice");
-//         assert!(buffer.cpg_buffer.back().expect("Empty buffer").index>=7,"Buffer too short, must be missing data");
-
-//         buffer.clear_buffer_until("chr1".as_bytes(), 10);
-//         let first_elem = buffer.cpg_buffer.front().expect("Buffer empty");
-//         assert_eq!(first_elem.index, 4);
-
-//         buffer.skip_to_contig("chr2".as_bytes());
-//         buffer.load_data_until("chr2".as_bytes(), 18).expect("Failed to read slice");
-//         assert_eq!(buffer.cpg_buffer.back().expect("Empty buffer").contig, "chr2".as_bytes().as_ref(),"Buffer too short, must be missing data");
-//         buffer.clear_buffer_until("chr2".as_bytes(), 15);
-//         assert_eq!(buffer.cpg_buffer.front().expect("Buffer empty").position, 16, "Cleaned to wrong element");
-//         Ok(())
-//     }
-// }
+        Ok(())
+    }
+}

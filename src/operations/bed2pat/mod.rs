@@ -265,32 +265,6 @@ impl <R: Read+Seek> PatGenerator<R> {
     }
 }
 
-/// Go through all reads in the buffer and find the smallest CpG index.
-/// Not efficient, but since the read buffer shouldn't be huge, this is
-/// probably acceptable.
-fn _min_index_in_read_buffer(read_buffer: &HashMap<String, ReadInfo, FxBuildHasher>) -> Option<usize>
-{
-    if read_buffer.len() > 0
-    {
-        let mut min_index = std::usize::MAX;
-        for read in read_buffer.values()
-        {
-            if let Some((min_in_read,_)) = read.cpg_info.first()
-            {
-                if *min_in_read < min_index
-                {
-                    min_index = *min_in_read;
-                }
-            }
-        }
-        Some(min_index)
-    }
-    else
-    {
-        None
-    }
-}
-
 fn flush_write_buffer_until(output_buffer: &mut VecDeque<(usize, Vec<(String, usize)>)>, current_chromosome: &[u8], end: usize) -> Result<()>
 {
     let mut lock = stdout().lock();
@@ -528,12 +502,13 @@ pub fn run_bed2pat<P: AsRef<Path> + std::fmt::Debug>(
 ====================================================*/
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    //use std::io::Cursor;
 
     use super::*;
     use anyhow::{Ok, Result};
 
-    const COORD_BED: &[u8] = b"chr1\t0\t1\t0\t+
+    // Need to write some tests that test the actual reading, but it's a hassle
+    const _COORD_BED: &[u8] = b"chr1\t0\t1\t0\t+
 chr1\t1\t2\t1\t-
 chr1\t6\t7\t2\t+
 chr1\t7\t8\t3\t-
@@ -577,23 +552,29 @@ chr2\t19\t20\t5\t-
         Ok(())
     }
 
-    // #[test]
-    // fn can_zip_mods() -> Result<()>
-    // {
-    //     let mut buffer = CpgBuffer::with_file(Cursor::new(COORD_BED))?;
-    //     let cpg_info = buffer.cpgs_in_range("chr1".as_ref(), 0, 90).expect("Cannot load cpg info");
-    //     let mods: Vec<u8> = [1, 4].to_vec();
-    //     let unmods: Vec<u8> = [2, 3].to_vec();
-    //     let snps: Vec<u8> = Vec::new();
-    //     let read_mask = ReadMask(0,0);
-    //     assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info, read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Methylated)]);
+    #[test]
+    fn can_zip_mods() -> Result<()>
+    {
+        let cpg_info = vec![CpgInfo::new(Vec::from("chr1".as_bytes()), 1, 0),
+                                          CpgInfo::new(Vec::from("chr1".as_bytes()), 2, 1),
+                                          CpgInfo::new(Vec::from("chr1".as_bytes()), 4, 2),
+                                          CpgInfo::new(Vec::from("chr1".as_bytes()), 5, 3),
+                                          CpgInfo::new(Vec::from("chr1".as_bytes()), 10, 4),
+                                          CpgInfo::new(Vec::from("chr1".as_bytes()), 11, 5),
+                                          CpgInfo::new(Vec::from("chr1".as_bytes()), 20, 6),
+                                          CpgInfo::new(Vec::from("chr1".as_bytes()), 21, 7)];
+        let mods: Vec<u8> = [1, 4].to_vec();
+        let unmods: Vec<u8> = [2, 3].to_vec();
+        let snps: Vec<u8> = Vec::new();
+        let read_mask = ReadMask(0,0);
+        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info.iter().collect(), read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Methylated)]);
 
-    //     let mods: Vec<u8> = [1].to_vec();
-    //     let unmods: Vec<u8> = [2, 3].to_vec();
-    //     let snps: Vec<u8> = [4].to_vec();
-    //     assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info, read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Unknown)]);
-    //     Ok(())
-    // }
+        let mods: Vec<u8> = [1].to_vec();
+        let unmods: Vec<u8> = [2, 3].to_vec();
+        let snps: Vec<u8> = [4].to_vec();
+        assert_eq!(zip_mods(&mods, &unmods, &snps, Strand::Forward, cpg_info.iter().collect(), read_mask, 6), [(1, Methylated), (2, Unmethylated), (3,Unmethylated), (4, Unknown)]);
+        Ok(())
+    }
 
 
     #[test]
