@@ -11,11 +11,13 @@ use fxhash::FxBuildHasher;
 use anyhow::{anyhow, bail, Result};
 use log::{debug, warn};
 
-use std::{collections::{HashMap, VecDeque}, fmt::Debug, fs::File, io::{stdout, Read, Seek, Write}, path::Path};
+use std::{collections::{HashMap, BTreeMap}, fmt::Debug, fs::File, io::{stdout, Read, Seek, Write}, path::Path};
 
 use crate::operations::bed2pat::cpg_buffer::{CpgInfo, CpgBuffer};
 
 const INITIAL_HASH_SIZE: usize = 1000; // how many reads in between the average two matching pairs?
+const FLUSH_BUFFER_THRESHOLD: usize = 10000;
+const CPG_SEARCH_RANGE: u64 = 2000;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum MethylationState {
@@ -89,7 +91,7 @@ pub struct PatGenerator<R: Read + Seek>
     read_reader: Reader<R>,
     cpg_buffer: CpgBuffer<R>,
     current_chromosome: Vec<u8>,
-    output_buffer: VecDeque<(usize, Vec<(String, usize)>)>,
+    output_buffer: BTreeMap<usize, Vec<(String, usize)>>,
     n_ot: ReadMaskSetting,
     n_ob: ReadMaskSetting
 }
@@ -115,7 +117,7 @@ impl <R: Read+Seek> PatGenerator<R> {
                 read_reader: bam_reader,
                 cpg_buffer,
                 current_chromosome: Vec::new(),
-                output_buffer: VecDeque::new(),
+                output_buffer: BTreeMap::new(),
                 n_ot,
                 n_ob
             }
@@ -225,33 +227,40 @@ impl <R: Read+Seek> PatGenerator<R> {
                         add_to_output_buffer(&mut self.output_buffer, (pos, meth_string));
                     }
 
-                    // TODO I can't seem to get this to work, let's just cache everything for now...
-                    // // The read cache has changed. Flush the output cache to the lowest CpG index in the
-                    // // remaining read cache
-                    // if let Some(min_index_in_cache) = min_index_in_read_buffer(&self.read_hash)
-                    // {
-                    //     debug!("Min index in cache: {}", min_index_in_cache);
-                    //     if last_index > min_index_in_cache
-                    //     {
-                    //         error!("Found read in cache that's before the earliest read supposedly already processed - how can this be?");
-                    //     }
-                    //     last_index = min_index_in_cache;
-                    //     flush_write_buffer_until(&mut self.output_buffer, &self.current_chromosome, min_index_in_cache)?;
-                    // }
-                    // else
-                    // {
-                    //     // Read cache empty. Flush all output to the last CpG in the current read
-                    //     let (_, max_index) = min_max_indices(&r1, &r2);
-                    //     flush_write_buffer_until(&mut self.output_buffer, &self.current_chromosome, max_index-1)?;
-                    // }
-                    // drop all CpGs before the beginning of the leftmost read still in the cache
-
-                    /* flush CpG buffer before leftmost read still in buffer. Inefficient to do a full search
-                    *  every time but it's not straightforward to keep track of the number of reads starting
-                    *  at specific positions within the buffer. I'd have to create a dedicated data structure
-                    *  for the read_buffer that has a separate table of start positions with counts, and do
-                    *  "double bookkeeping"
-                    */
+                    /* The read cache has changed. Flush the output cache to the lowest start pos
+                     * remaining in the read buffer.
+                     * This is an expensive operation, so we will only do this once the output buffer
+                     * has exceeded some size.
+                     */
+                    if self.output_buffer.len() > FLUSH_BUFFER_THRESHOLD
+                    {
+                        let right_margin =
+                            if let Some(leftmost_remaining_read) =
+                                self
+                                .read_hash
+                                .values()
+                                .min_by(|a, b| a.start.cmp(&b.start))
+                            {
+                                leftmost_remaining_read.start
+                            }
+                            else
+                            {
+                                r2.start
+                            };
+                        if let Some(cpgs) = self.cpg_buffer
+                            .cpgs_in_range(&self.current_chromosome, right_margin - std::cmp::min(right_margin, CPG_SEARCH_RANGE), right_margin)
+                        {
+                            if let Some(last_cpg_before) = cpgs
+                                .iter()
+                                .max_by(|a, b| a.index.cmp(&b.index))
+                            {
+                                flush_write_buffer_until(&mut self.output_buffer, &self.current_chromosome, last_cpg_before.index)?;
+                            }
+                        }
+                        else {
+                            warn!("No CpGs in the {} bases before {}:{}, can't flush buffer this time", CPG_SEARCH_RANGE, chr, right_margin);
+                        }
+                    }
                 }
                 else
                 {
@@ -265,72 +274,60 @@ impl <R: Read+Seek> PatGenerator<R> {
     }
 }
 
-fn flush_write_buffer_until(output_buffer: &mut VecDeque<(usize, Vec<(String, usize)>)>, current_chromosome: &[u8], end: usize) -> Result<()>
+fn flush_write_buffer_until(output_buffer: &mut BTreeMap<usize, Vec<(String, usize)>>, current_chromosome: &[u8], end: usize) -> Result<()>
 {
     let mut lock = stdout().lock();
-    let mut write_buffer: Vec<(usize, Vec<(String, usize)>)> = Vec::new();
-    output_buffer.make_contiguous();
-    loop
-    {
-        if let Some((index, meth_strings)) = output_buffer.pop_front()
+    let chr_string = std::str::from_utf8(current_chromosome).unwrap_or_default();
+
+    loop {
+        if let Some((index, value)) = output_buffer.pop_first()
         {
             if index >= end
             {
-                // put it back, end loop
-                output_buffer.push_front((index, meth_strings));
+                // re-insert
+                output_buffer.insert(index, value);
                 break;
             }
 
-            write_buffer.push((index, meth_strings));
+            for (meth_string, count) in value.iter()
+            {
+                writeln!(lock, "{}\t{}\t{}\t{}", chr_string, index, meth_string, count)?;
+            }
         }
         else
         {
-            // Empty, stop
             break;
         }
     }
-    if write_buffer.len() > 0
-    {
-        write_buffer.sort_by(|a, b| a.0.cmp(&b.0));
+    // for (pos, patterns) in output_buffer.extract_if()
+    // {
 
-        for (index, meth_strings) in write_buffer.iter()
-        {
-            for (meth_string, count) in meth_strings
-            {
-                writeln!(lock, "{}\t{}\t{}\t{}", std::str::from_utf8(current_chromosome).unwrap_or_default(), index, meth_string, count)?;
-            }
-        }
+    // }
 
-    }
     Ok(())
 }
 
-fn add_to_output_buffer(output_buffer: &mut VecDeque<(usize, Vec<(String, usize)>)>, search_pattern: (usize, String)) -> ()
+fn add_to_output_buffer(output_buffer: &mut BTreeMap<usize, Vec<(String, usize)>>, search_pattern: (usize, String)) -> ()
 {
-    if let Some(index_ref) = output_buffer
-    .iter_mut()
-    .find(|f| f.0 == search_pattern.0 )
+    if let Some(strings) = output_buffer.get_mut(&search_pattern.0)
     {
-        // found an entry with this first CpG index
-        // look for the same meth_string
-        if let Some((index_of_pattern, _)) = index_ref.1
-        .iter()
-        .enumerate()
-        .find(|(_i, f)| f.0 == search_pattern.1)
+        if let Some(index) =
+            strings
+            .iter()
+            .position(|(pattern, _)| pattern == &search_pattern.1 )
         {
-            index_ref.1[index_of_pattern].1 += 1;
+            strings[index].1 += 1;
         }
         else
         {
-            index_ref.1.push((search_pattern.1, 1));
+            // new pattern at this position, add to list
+            strings.push((search_pattern.1, 1));
         }
     }
     else
     {
-        output_buffer.push_back((search_pattern.0, vec![(search_pattern.1, 1)]));
+        output_buffer.insert(search_pattern.0, vec![(search_pattern.1, 1)]);
     }
-
-    ()
 }
 
 fn min_max_indices (read1: &ReadInfo, read2: &ReadInfo) -> (usize, usize)
