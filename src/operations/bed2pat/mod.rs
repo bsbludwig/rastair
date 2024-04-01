@@ -222,11 +222,7 @@ impl <R: Read+Seek> PatGenerator<R> {
                     debug!("Processing read pair {} from {}:{} to {}:{}", qname, chr, r1.start, chr, end);
 
                     // then combine the two pairs into an output string and put that into the output cache.
-                    if let Some((pos, meth_string)) = read_to_output_tuple(&r1, &r2)
-                    {
-                        debug!("Combined into pattern {} {}", pos, meth_string);
-                        add_to_output_buffer(&mut self.output_buffer, (pos, meth_string));
-                    }
+                    process_read_pair(&r1, &r2, &mut self.output_buffer);
 
                     /* The read cache has changed. Flush the output cache to the lowest start pos
                      * remaining in the read buffer.
@@ -251,10 +247,18 @@ impl <R: Read+Seek> PatGenerator<R> {
                             })
                             .map(|(k, _)| String::from(k))
                             .collect();
-                        debug!("Will remove {} reads in cache that are too far before current position", keys_to_remove.len());
+                        debug!("Will treat {} reads in cache that are too far before current position as singletons", keys_to_remove.len());
                         for k in keys_to_remove
                         {
-                            self.read_hash.remove(&k);
+                            // insert as singleton
+                            if let Some(singleton) = self.read_hash.remove(&k)
+                            {
+                                if let Some(new_flag) = get_mate_flag(singleton.flag)
+                                {
+                                    let fake_pair = ReadInfo::new(singleton.contig.clone(), singleton.start, new_flag, Vec::new());
+                                    process_read_pair(&singleton, &fake_pair, &mut self.output_buffer);
+                                }
+                            }
                         }
 
                         let right_margin =
@@ -298,12 +302,67 @@ impl <R: Read+Seek> PatGenerator<R> {
                 }
             }
         }
-        // Final flush
+        // Final flush. First dump all remaining unpaired reads as singletons
+        for singleton in self.read_hash.values()
+        {
+            if let Some(new_flag) = get_mate_flag(singleton.flag)
+            {
+                let fake_pair = ReadInfo::new(singleton.contig.clone(), singleton.start, new_flag, Vec::new());
+                process_read_pair(singleton, &fake_pair, &mut self.output_buffer);
+            }
+        }
         flush_write_buffer_until(&mut self.output_buffer, self.current_chromosome.as_slice(), std::usize::MAX)?; // flush the cache
         Ok(())
     }
 }
 
+fn get_mate_flag(flag: u16) -> Option<u16>
+{
+    if flag & 64 == 64
+    {
+        if flag & 16 == 16
+        {
+            // F2
+            Some((flag ^ 80) | 160)
+        }
+        else
+        {
+            // F1
+            Some((flag ^ 96) | 144)
+        }
+    }
+    else if flag & 128 == 128
+    {
+        if flag & 16 == 16
+        {
+            // R2
+            Some((flag ^ 144) | 96)
+        }
+        else
+        {
+            // R1
+            Some((flag ^ 160) | 80)
+        }
+    }
+    else
+    {
+        None
+    }
+}
+fn process_read_pair(r1: &ReadInfo, r2: &ReadInfo, output_buffer: &mut BTreeMap<usize, Vec<(String, usize)>>) -> ()
+{
+    if r1.cpg_info.len() == 0 && r2.cpg_info.len() == 0
+    {
+        debug!("Skipping fragment with no information at {}:{}", std::str::from_utf8(&r1.contig).unwrap_or_default(), r1.start);
+        return;
+    }
+
+    if let Some((pos, meth_string)) = read_to_output_tuple(r1, r2)
+    {
+        debug!("Combined into pattern {} {}", pos, meth_string);
+        add_to_output_buffer(output_buffer, (pos, meth_string));
+    }
+}
 fn flush_write_buffer_until(output_buffer: &mut BTreeMap<usize, Vec<(String, usize)>>, current_chromosome: &[u8], end: usize) -> Result<()>
 {
     let mut lock = stdout().lock();
