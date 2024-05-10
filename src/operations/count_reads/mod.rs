@@ -870,7 +870,7 @@ mod tests {
         bam.set_threads(1)?;
         let bam_index = bam.expanded_index()?;
 
-        let mut iterator: SequenceSegmentIterator<File> = SequenceSegmentIterator::with_file(FASTAFILE)?;
+        let mut iterator: SequenceSegmentIterator<File> = SequenceSegmentIterator::with_file_and_stepsize(FASTAFILE, 10_000)?;
         iterator.subset_to_region(&"bacteriophage_lambda_CpG".to_string())?;
         iterator.subset_to_intervals(&bam_index)?;
 
@@ -881,7 +881,7 @@ mod tests {
         }
         else
         {
-            assert!(false);
+            assert!(false, "No segments in sequence iterator");
         }
         Ok(())
     }
