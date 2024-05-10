@@ -60,6 +60,9 @@ This "F1R2" read represents the OT (ie R1 is the OT, and R2 is the reverse compl
 ## Performance considerations
 Most commands in `rastair` can be run in multi-threaded mode using the `-@ <ncores>` parameter. However, the performance increase has diminishing returns, as the threads have to eventually synchronise for writing to the output. We have found that increasing the number of BAM read threads to 2 (`--read-threads 2`) in combination with 4 to 6 processing threads (`-@ 4`) seems to perform best on a high-io-throughput system.
 
+## Integration tests
+For the moment (as of v5.7), some sub-commands cannot yet handle bgzip-compressed fasta files (due to a limitation in [`bio::io::fasta`](https://docs.rs/bio/latest/bio/io/fasta/struct.IndexedReader.html)). To reduce the size of the repository, we provide a compressed test.fasta.gz file which needs to be unzipped into the `test_data` directory to make the integration tests run through. It's on the TODO list to remove this limitation.
+
 # License
 
 This software is made available under the terms of the [GNU Affero General Public License v3](https://www.gnu.org/licenses/agpl-3.0.html). If you require a more restrictive license for commercial purposes, please contact the authors to discuss alternative arrangements.
