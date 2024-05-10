@@ -3,7 +3,7 @@ name = "rastair"
 description = "Fast and flexible extraction of methylation information from bam files"
 version = "0.5.7"
 edition = "2021"
-
+license = "AGPL v3"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
