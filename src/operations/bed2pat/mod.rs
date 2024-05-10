@@ -464,15 +464,22 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
         let cur_char = output[cpg.0-min_index];
         if  cur_char != methyl_char && cur_char != '.' as u8
         {
-            warn!("Non-matching methylation state at index {}", cpg.0);
+            // TODO: This should be configurable in some way.
+            // In cfDNA, this would lead to loss of methylation info due to the R2 being poorly converted
+            warn!("Non-matching methylation state at index {}, will set to Unknown", cpg.0);
+            output[cpg.0-min_index] = '.' as u8;
         }
-        output[cpg.0-min_index] = match cpg.1 {
-            Methylated   => 'C' as u8,
-            Unmethylated => 'T' as u8,
-            Unknown      => '.' as u8
+        else
+        {
+            output[cpg.0-min_index] = match cpg.1 {
+                Methylated   => 'C' as u8,
+                Unmethylated => 'T' as u8,
+                Unknown      => '.' as u8
+            };
         }
     }
 
+    // trim leading and trailing .'s
     loop
     {
         if output.len() > 0 && output[0] == '.' as u8
@@ -485,12 +492,10 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
             break;
         }
     }
-
     if output.len() == 0
     {
         return None;
     }
-
     loop
     {
         if output.len() == 0
@@ -507,7 +512,6 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
             break;
         }
     }
-
     if output.len() == 0
     {
         return None;
