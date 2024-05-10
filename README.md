@@ -52,7 +52,7 @@ However, we decided to simplify the argument and make it more consistent (in our
 R1: CG--------TG--------->
 R2:                         <AC-------------GC-
                              876543210987654321
-														 111111111000000000
+                             111111111000000000
 ```
 
 This "F1R2" read represents the OT (ie R1 is the OT, and R2 is the reverse complement of the OT). A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it ocurrs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
