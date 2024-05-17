@@ -2,13 +2,41 @@ _`rastair` provides a set of tools to process [TAPS sequencing data](https://www
 
 # Installation
 
-`rastair` is written in Rust. If the `cargo` command is available on your system, you can install it like this:
+`rastair` is written in Rust and can be built using `cargo` or `docker`.
+
+## Cargo
+
+First, ensure that the CLI tool `cargo` is installed. See [instructions](https://www.rust-lang.org/tools/install) to install. Then run the following command to install `rastair`:
 
 ```bash
 cargo install --git https://bitbucket.org/bsblabludwig/rastair.git
 ```
 
+Run the following command to verify your installation:
+
+```bash
+rastair --help
+```
+
 We are planning to release statically compiled binaries for different systems in the future.
+
+## Docker
+
+A `Dockerfile` is provided in the repository. To build the docker image, run:
+
+```bash
+git clone https://bitbucket.org/bsblabludwig/rastair.git
+cd rastair
+VERSION=$(git describe)
+docker build -t rastair:$VERSION .
+```
+
+`rastair` can now be run in a docker container. For example, to call methylation from a bam file, run:
+
+```bash
+# Assuming you have a bam file in /local/path/to/data/my.bam and a fasta file in /local/path/to/data/my.fasta, they can be volume-mounted into the container with the -v flag to be processed by rastair
+docker run -v /local/path/to/data:/data rastair:$VERSION rastair call --fasta-file /data/my.fasta /data/my.bam
+```
 
 # Available commands
 
