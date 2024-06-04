@@ -1,4 +1,4 @@
-image: rustlang/rust:latest
+image: rust/rust:latest
 
 pipelines:
   default:
