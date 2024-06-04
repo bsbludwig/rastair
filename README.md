@@ -1,5 +1,7 @@
 _`rastair` provides a set of tools to process [TAPS sequencing data](https://www.nature.com/articles/s41587-019-0041-2)._
 
+![Build status](https://img.shields.io/bitbucket/pipelines/bsblabludwig/rastair.svg "Build Status")
+
 # Installation
 
 `rastair` is written in Rust and can be built using `cargo` or `docker`.
