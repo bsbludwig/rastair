@@ -4,8 +4,7 @@ description = "Fast and flexible extraction of methylation information from bam 
 authors = ["Benjamin Schuster-Boeckler"]
 version = "0.5.7"
 edition = "2021"
-license = "AGPL v3"
-license-file = "LICENSE"
+license = "AGPL-3.0-only"
 readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
