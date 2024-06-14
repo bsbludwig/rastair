@@ -7,7 +7,7 @@ fn missing_bam() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.arg("/path/to/nonexistent/file.bam");
     cmd.assert()
         .failure()
@@ -35,6 +35,25 @@ fn default_settings() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_str.lines().count(), 18747); // Checked against methyldackel
+    // Check header row is there
+    let first_line = output_str.lines().next().unwrap();
+    assert!(predicate::str::contains("#chr").eval(first_line));
+
+    Ok(())
+}
+
+#[test]
+fn uncompressed_fasta() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("per-read");
     cmd.args(["--fasta-file", "test_data/test.fasta"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -54,7 +73,7 @@ fn threaded() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-@", "2"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -74,7 +93,7 @@ fn report_all() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-        cmd.args(["--fasta-file", "test_data/test.fasta"]);
+        cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
         cmd.arg("-A");
         cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -94,7 +113,7 @@ fn report_all_threaded() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-        cmd.args(["--fasta-file", "test_data/test.fasta"]);
+        cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
         cmd.arg("-A");
         cmd.args(["-@", "2"]);
         cmd.arg("test_data/test.bam");
@@ -115,7 +134,7 @@ fn restrict_to_chromosome() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -140,7 +159,7 @@ fn restrict_to_chromosome_threaded() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG"]);
     cmd.args(["-@", "2"]);
     cmd.arg("test_data/test.bam");
@@ -166,7 +185,7 @@ fn restrict_to_region() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG:1-1000"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -184,7 +203,7 @@ fn filter_mq_0() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-q", "5"]);
     cmd.args(["-l", "chr19"]);
     cmd.args(["-@", "2"]);
@@ -210,7 +229,7 @@ fn filter_mq_0() -> Result<(), Box<dyn std::error::Error>> {
 
     cmd = Command::cargo_bin("rastair")?;
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-q", "0"]);
     cmd.args(["-@", "2"]);
     cmd.args(["-l", "chr19"]);
@@ -241,7 +260,7 @@ fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG:6000-7000"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -265,7 +284,7 @@ fn correct_data_in_random_region_2() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG:6610-6738"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -290,7 +309,7 @@ fn reports_snps_at_cpg() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG:4962-5006"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -316,7 +335,7 @@ fn does_not_report_deleted_positions() -> Result<(), Box<dyn std::error::Error>>
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG:114-158"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()

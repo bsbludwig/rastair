@@ -17,6 +17,7 @@ use rust_htslib::bam::{ext::BamRecordExtensions, FetchDefinition, IndexedReader,
 use crate::sequence_segment::{GenomicRegion, SequenceSegment, SequenceSegmentIterator};
 use crate::utils::extensions::{RecordExt, FetchDefinitionExt, IndexedReaderExt};
 use crate::utils::constants::*;
+use crate::utils::file_helpers::open_file;
 
 
  /// Store methylation information for a single read
@@ -477,7 +478,7 @@ pub fn run_caller(
     fasta_path: &PathBuf,
     region_option: &Option<String>,
     mapq_option: &Option<u8>,
-    chunk_size_option: &Option<usize>,
+    chunk_size_option: &Option<u32>,
     read_length_option: &Option<usize>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
@@ -515,14 +516,22 @@ pub fn run_caller(
 
     // Create a sequence iterator
     let chunk_size = chunk_size_option.unwrap_or_default();
-    let mut iterator: SequenceSegmentIterator<File> =
+
+    // Load fasta file as an indexedreader
+    // need to do this manually to enable bgzip-compressed input
+    let fasta_file = open_file(&fasta_path)?;
+    let index_path = PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
+    let fasta_index = bio::io::fasta::Index::from_file(&index_path)?;
+    let indexed_reader = bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index);
+
+    let mut iterator =
         if chunk_size == 0
         {
-            SequenceSegmentIterator::with_file(fasta_path)?
+            SequenceSegmentIterator::with_reader(indexed_reader)?
         }
         else
         {
-            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
+            SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
         };
 
     if let Some(max_read_length) = read_length_option
@@ -636,7 +645,7 @@ pub fn run_mbias(
     fasta_path: &PathBuf,
     region_option: &Option<String>,
     mapq_option: &Option<u8>,
-    chunk_size_option: &Option<usize>,
+    chunk_size_option: &Option<u32>,
     read_length_option: &Option<usize>,
     req_flags_option: &Option<u16>,
     excl_flags_option: &Option<u16>,
@@ -666,14 +675,22 @@ pub fn run_mbias(
 
     // Create a sequence iterator
     let chunk_size = chunk_size_option.unwrap_or_default();
-    let mut iterator: SequenceSegmentIterator<File> =
+
+    // Load fasta file as an indexedreader
+    // need to do this manually to enable bgzip-compressed input
+    let fasta_file = open_file(&fasta_path)?;
+    let index_path = PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
+    let fasta_index = bio::io::fasta::Index::from_file(&index_path)?;
+    let indexed_reader = bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index);
+
+    let mut iterator =
         if chunk_size == 0
         {
-            SequenceSegmentIterator::with_file(fasta_path)?
+            SequenceSegmentIterator::with_reader(indexed_reader)?
         }
         else
         {
-            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size)?
+            SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
         };
 
     if let Some(max_read_length) = read_length_option

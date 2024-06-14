@@ -7,7 +7,7 @@ fn missing_bam() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-        cmd.args(["--fasta-file", "test_data/test.fasta"]);
+        cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
         cmd.arg("/path/to/nonexistent/file.bam");
     cmd.assert()
         .failure()
@@ -35,7 +35,7 @@ fn refuse_0_threads() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-        cmd.args(["--fasta-file", "test_data/test.fasta"]);
+        cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
         cmd.args(["--threads", "0"]);
         cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -50,7 +50,7 @@ fn refuse_0_chunks() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-        cmd.args(["--fasta-file", "test_data/test.fasta"]);
+        cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
         cmd.args(["--chunk-size", "0"]);
         cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -62,6 +62,24 @@ fn refuse_0_chunks() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn default_settings() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("call");
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+            .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_str.lines().count(), 7898);
+    // Check header row is there
+    let first_line = output_str.lines().next().unwrap();
+    assert!(predicate::str::contains("#chr").eval(first_line));
+    Ok(())
+}
+
+#[test]
+fn uncompressed_fasta() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
@@ -78,12 +96,13 @@ fn default_settings() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+
 #[test]
 fn finds_right_number_of_positions_with_threads() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG"]);
     cmd.args(["-@", "2"]);
     cmd.arg("test_data/test.bam");
@@ -124,7 +143,7 @@ fn right_beta_with_threads() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG"]);
     cmd.args(["-@", "2"]);
     cmd.arg("test_data/test.bam");
@@ -171,7 +190,7 @@ fn finds_right_number_of_positions_with_chunks() -> Result<(), Box<dyn std::erro
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-s", "1000"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG"]);
     cmd.args(["-@", "2"]);
@@ -204,7 +223,7 @@ fn finds_right_number_of_positions_with_trimming() -> Result<(), Box<dyn std::er
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["--nOT", "5,5,5,5"]);
     cmd.args(["--nOB", "5,5,5,5"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG"]);
@@ -237,7 +256,7 @@ fn allow_restriction_to_chromosome() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["--region", "bacteriophage_lambda_CpG"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
@@ -254,7 +273,7 @@ fn allow_restriction_to_region() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("call");
-    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["--region", "bacteriophage_lambda_CpG:1-1000"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()

@@ -1,7 +1,7 @@
 pub mod cpg_buffer;
 
-use bio::io::fasta::IndexedReader;
-use bio::io::{bed::Reader, fasta::Index};
+use bio::io::fasta::{IndexedReader, Index};
+use bio::io::bed::Reader;
 use bio::bio_types::strand::Strand;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -100,14 +100,14 @@ pub struct PatGenerator<R: Read + Seek>
 }
 
 impl <R: Read+Seek> PatGenerator<R> {
-    pub fn with_read_and_fasta(bam_reader: Reader<R>, fasta_reader: IndexedReader<R>, n_ot: ReadMaskSetting, n_ob: ReadMaskSetting, step_size_option: &Option<usize>) -> Result<Self>
+    pub fn with_read_and_fasta(bed_reader: Reader<R>, fasta_reader: IndexedReader<R>, n_ot: ReadMaskSetting, n_ob: ReadMaskSetting, step_size_option: &Option<u32>) -> Result<Self>
     {
         let read_hash: HashMap<String, ReadInfo, FxBuildHasher> = HashMap::with_capacity_and_hasher(INITIAL_HASH_SIZE, FxBuildHasher::default());
 
         let cpg_buffer =
             if let Some(step_size) = step_size_option
             {
-                CpgBuffer::with_reader_and_stepsize(fasta_reader, *step_size)?
+                CpgBuffer::with_reader_and_stepsize(fasta_reader, *step_size as usize)?
             }
             else
             {
@@ -117,7 +117,7 @@ impl <R: Read+Seek> PatGenerator<R> {
             Self
             {
                 read_hash,
-                read_reader: bam_reader,
+                read_reader: bed_reader,
                 cpg_buffer,
                 current_chromosome: Vec::new(),
                 output_buffer: BTreeMap::new(),
@@ -598,7 +598,7 @@ pub fn run_bed2pat<P: AsRef<Path> + std::fmt::Debug>(
     read_bed: P,
     nOT_option: &Option<String>,
     nOB_option: &Option<String>,
-    chunk_size_option: &Option<usize>) -> Result<()>
+    chunk_size_option: &Option<u32>) -> Result<()>
 {
     let read_file = open_file(&read_bed)?;
     let read_reader = Reader::new(read_file);

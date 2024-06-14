@@ -113,7 +113,7 @@ enum Commands
 
         /// number of reference positions processed in-memory at once [default: 100000]
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
-        chunk_size: Option<usize>,
+        chunk_size: Option<u32>,
 
         /// expected maximum read length. If set too short, some read positions might not get counted. Safest to set this a bit higher than the actual read length, to allow for indels in reads. [default: 200]
         #[arg(short='w', long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -165,7 +165,7 @@ enum Commands
 
         /// number of reference positions processed in-memory at once [default: 100000]
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
-        chunk_size: Option<usize>,
+        chunk_size: Option<u32>,
 
         /// expected maximum read length. If set too short, some read positions might not get counted. Safest to set this a bit higher than the actual read length, to allow for indels in reads. [default: 200]
         #[arg(short='w', long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -223,7 +223,7 @@ enum Commands
 
         /// number of reference positions processed in-memory at once [default: 100000]
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
-        chunk_size: Option<usize>,
+        chunk_size: Option<u32>,
     },
 }
 
@@ -381,7 +381,12 @@ fn real_main() -> i32
             n_ot,
             n_ob,
             chunk_size,}) => {
-                match bed2pat::run_bed2pat(fasta_file.to_path_buf(), read_bed_file.to_path_buf(), n_ot, n_ob, chunk_size)
+                match bed2pat::run_bed2pat(
+                    fasta_file.to_path_buf(),
+                    read_bed_file.to_path_buf(),
+                    n_ot,
+                    n_ob,
+                    chunk_size)
                 {
                     Ok(()) => 0,
                     Err(e)  =>

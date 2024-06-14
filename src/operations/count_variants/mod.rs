@@ -17,6 +17,7 @@ use pariter::IteratorExt as _;
 use probability::prelude::*;
 
 use crate::sequence_segment::SequenceSegmentIterator;
+use crate::utils::file_helpers::open_file;
 use super::{ReadMaskSetting, ReadMask};
 use crate::utils::constants::*;
 use variant_counter::{VariantCounter, VariantCounterConfig};
@@ -246,25 +247,23 @@ pub fn run_caller(
         .build(manager)?;
     //let mut counter = VariantCounter::with_config(config)?;
 
-    /*
-     * 1a. Loop over genomic segments, and then inject the segment into the VariantCounter [x]
-     * 1b. Ensure GenomicSegments are cloneable, so I can distribute them? Or will a thread scope suffice?
-     * 2. Change the VariantCounter to not be an iterator, but create a separate VariantCounterIterator
-     *    that calls a generic method to extract the nucleotide counts [x]
-     * 3. Create a pool of VariantCounters, each with a fixed open bam file, and use one of them per thread,
-     *    using e.g. [R2D2](https://docs.rs/r2d2/latest/r2d2/trait.ManageConnection.html) [x]
-     * 4. Use e.g. [pariter](https://lib.rs/crates/pariter) and fetch a VariantCounter (with attached bam handle)
-     *    for each closure invokation
-    */
-    let mut iterator: SequenceSegmentIterator<File> =
+    // Load fasta file as an indexedreader
+    // need to do this manually to enable bgzip-compressed input
+    let fasta_file = open_file(&fasta_path)?;
+    let index_path = PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
+    let fasta_index = bio::io::fasta::Index::from_file(&index_path)?;
+    let indexed_reader = bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index);
+
+    let mut iterator =
         if chunk_size == 0
         {
-            SequenceSegmentIterator::with_file(fasta_path)?
+            SequenceSegmentIterator::with_reader(indexed_reader)?
         }
         else
         {
-            SequenceSegmentIterator::with_file_and_stepsize(fasta_path, chunk_size as usize)?
+            SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
         };
+
     // Optionally restrict to region of interest
     if let Some(region) = region_option
     {
