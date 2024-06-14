@@ -17,8 +17,8 @@ use pariter::IteratorExt as _;
 use probability::prelude::*;
 
 use crate::sequence_segment::SequenceSegmentIterator;
-pub use super::{ReadMaskSetting, ReadMask};
-use super::{FLAGS, MAX_DEPTH};
+use super::{ReadMaskSetting, ReadMask};
+use crate::utils::constants::*;
 use variant_counter::{VariantCounter, VariantCounterConfig};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]

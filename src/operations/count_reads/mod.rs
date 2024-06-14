@@ -14,10 +14,10 @@ use anyhow::{bail, Result};
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 use rust_htslib::bam::{ext::BamRecordExtensions, FetchDefinition, IndexedReader, Read, Record};
 
-use crate::{sequence_segment::{GenomicRegion, SequenceSegment, SequenceSegmentIterator}, utils::{FetchDefinitionExt, IndexedReaderExt}};
-use crate::utils::RecordExt;
+use crate::sequence_segment::{GenomicRegion, SequenceSegment, SequenceSegmentIterator};
+use crate::utils::extensions::{RecordExt, FetchDefinitionExt, IndexedReaderExt};
+use crate::utils::constants::*;
 
-use super::FLAGS;
 
  /// Store methylation information for a single read
  pub struct PerReadCount

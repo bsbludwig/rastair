@@ -11,8 +11,8 @@ use memchr::memmem::find_iter;
 use bio::io::fasta::IndexedReader;
 use bio::utils::Text;
 use rust_htslib::bam::FetchDefinition;
-
-use crate::utils::FetchDefinitionExt;
+// category on FetchDefinitoon
+use crate::utils::extensions::FetchDefinitionExt;
 
 const DEFAULT_STEP_SIZE: usize = 100_000;
 const DEFAULT_TILING: usize = 1;

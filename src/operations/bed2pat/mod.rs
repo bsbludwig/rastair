@@ -1,6 +1,5 @@
 pub mod cpg_buffer;
 
-use bgzip::{index::BGZFIndex, read::IndexedBGZFReader, BGZFReader};
 use bio::io::fasta::IndexedReader;
 use bio::io::{bed::Reader, fasta::Index};
 use bio::bio_types::strand::Strand;
@@ -8,12 +7,16 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use fxhash::FxBuildHasher;
 //use log::{trace, debug, error};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use log::{debug, trace, warn};
 
-use std::{collections::{HashMap, BTreeMap}, fmt::Debug, fs::File, io::{stdout, Read, Seek, Write}, path::Path};
+use std::{collections::{HashMap, BTreeMap}, fmt::Debug, io::{stdout, Read, Seek, Write}, path::Path};
 
-use crate::operations::bed2pat::cpg_buffer::{CpgInfo, CpgBuffer};
+use cpg_buffer::{CpgInfo, CpgBuffer};
+use crate::utils::file_helpers::open_file;
+
+use super::{ReadMask, ReadMaskSetting};
+
 
 const INITIAL_HASH_SIZE: usize = 1_000; // how many reads in between the average two matching pairs?
 const FLUSH_BUFFER_THRESHOLD: usize = 1_000;
@@ -28,7 +31,6 @@ enum MethylationState {
 }
 use MethylationState::*;
 
-use super::{ReadMask, ReadMaskSetting};
 
 struct ReadInfo
 {
@@ -588,31 +590,6 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
     mod_pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
     Some(mod_pairs.iter().enumerate().map(|(i, m)| (filtered_cpgs[i].index/2+1, m.1)).collect())
-}
-
-trait ReadAndSeek: Read+Seek {}
-impl <R: Read+Seek> ReadAndSeek for R {}
-
-fn open_file<P: AsRef<Path> + Debug>(path: P) -> Result<Box<dyn ReadAndSeek>>
-{
-    if path.as_ref().extension().unwrap_or_default() == "gz"
-    {
-        let mut index_path = Path::new(path.as_ref()).to_owned();
-        index_path.set_extension("gz.gzi");
-        if !index_path.exists()
-        {
-            bail!("{} does not exist. bgzip input must be indexed (try bgzip -r {})", index_path.to_str().unwrap_or_default(), path.as_ref().to_str().unwrap_or_default());
-        }
-        let index = BGZFIndex::from_reader(File::open(index_path)?)?;
-        let gzreader = BGZFReader::new(File::open(path)?)?;
-        let in_file = IndexedBGZFReader::new(gzreader, index)?;
-        Ok(Box::new(in_file))
-    }
-    else
-    {
-        let in_file = File::open(path)?;
-        Ok(Box::new(in_file))
-    }
 }
 
 #[allow(non_snake_case)]

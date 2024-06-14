@@ -10,7 +10,7 @@ use log::{trace, debug, info, warn, error};
 use anyhow::Result;
 
 use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
-use crate::utils::{IndexedReaderExt, RecordExt};
+use crate::utils::extensions::{IndexedReaderExt, RecordExt};
 
 // Faster hashing than built-in algo
 use fxhash::FxBuildHasher;
