@@ -29,6 +29,21 @@ pub struct GenomicRegion
     pub end: u64
 }
 
+impl GenomicRegion {
+    pub fn overlaps(&self, other_region: &GenomicRegion) -> bool {
+        if self.contig != other_region.contig
+        {
+            false
+        }
+        else if self.end <= other_region.start || self.start >= other_region.end
+        {
+            false
+        }
+        else {
+            true
+        }
+    }
+}
 /// A genomic position, represented by its base and position, and the position
 /// relative to the (arbitrary) segment slice it belongs to.
 pub struct ContigPosition<'a>

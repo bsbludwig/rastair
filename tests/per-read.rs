@@ -259,3 +259,23 @@ fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(elems[10], "22,40,54,57,64");
     Ok(())
 }
+
+#[test]
+fn correct_data_in_random_region_1() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG:9405-9552"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let rows: Vec<&str> = output_str
+        .lines()
+        .collect();
+    assert_eq!(rows.len(), 9);
+    Ok(())
+}
+

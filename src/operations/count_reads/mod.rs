@@ -366,7 +366,8 @@ pub struct ReadCounterConfig
     pub htslib_threads: u8,
     pub all_reads: bool,
     pub exclude_ambiguous: bool,
-    pub tiling_window_size: usize
+    pub tiling_window_size: usize,
+    pub subset_region: Option<GenomicRegion>
 }
 
 impl ReadCounterConfig
@@ -382,7 +383,8 @@ impl ReadCounterConfig
             htslib_threads: 0,
             all_reads: false,
             exclude_ambiguous: false,
-            tiling_window_size: 200
+            tiling_window_size: 200,
+            subset_region: None
         };
         Ok(v)
     }
@@ -525,13 +527,13 @@ pub fn run_caller(
 
     if let Some(max_read_length) = read_length_option
     {
+        if *max_read_length == 0
+        {
+            warn!("Setting tiling window to 0 is likely to cause missing data!");
+        }
         config.tiling_window_size = *max_read_length;
     }
 
-    if config.tiling_window_size == 0
-    {
-        warn!("Setting tiling window to 0 will cause missing data!");
-    }
     // We only actually process reads that start up until segment_end-tiling_window.
     // The overhang is needed to get the CpG loci info for reads that extend beyond the margin
     iterator.set_tiling(config.tiling_window_size)?;
@@ -544,9 +546,12 @@ pub fn run_caller(
         {
             FetchDefinition::RegionString(chr, start, end) =>
             {
+                // Side-effect: save target region for later
+                config.subset_region = Some(GenomicRegion {contig: String::from_utf8(Vec::from(chr)).unwrap_or_default(),start: start as u64, end: end as u64});
+
                 format!("{}:{}-{}", std::str::from_utf8(chr).unwrap_or_default(), start, end+(config.tiling_window_size as i64)-1)
             },
-            FetchDefinition::String(_) | FetchDefinition::All =>
+            FetchDefinition::String(_) | FetchDefinition::All => // Full chromosome case, no need to manually adjust tiling window
             {
                 region.to_owned()
             },
@@ -555,6 +560,7 @@ pub fn run_caller(
         iterator.subset_to_region(&new_region)?;
     }
 
+    let subset_region = config.subset_region.clone();
     let manager = ReadCounterConnectionManager::with_config(config)?;
     let pool = r2d2::Pool::builder()
         .max_size(threads as u32)
@@ -592,6 +598,13 @@ pub fn run_caller(
     .flatten()
     .for_each(|read_info|
     {
+        if let Some(target_region) = &subset_region
+        {
+            if ! target_region.overlaps(&read_info.region)
+            {
+                return;
+            }
+        }
         writeln!(lock, "{}", read_info).unwrap();
     });
 
