@@ -255,27 +255,82 @@ fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>> {
         .last()
         .unwrap_or_default();
 
-    let elems = roi.split_ascii_whitespace().collect::<Vec<&str>>();
+    let elems = roi.split("\t").collect::<Vec<&str>>();
     assert_eq!(elems[10], "22,40,54,57,64");
     Ok(())
 }
 
 #[test]
-fn correct_data_in_random_region_1() -> Result<(), Box<dyn std::error::Error>> {
+fn correct_data_in_random_region_2() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("per-read");
     cmd.args(["--fasta-file", "test_data/test.fasta"]);
-    cmd.args(["-l", "bacteriophage_lambda_CpG:9405-9552"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG:6610-6738"]);
     cmd.arg("test_data/test.bam");
     cmd.assert()
         .success();
     let output = cmd.output().unwrap();
     let output_str = String::from_utf8_lossy(&output.stdout);
-    let rows: Vec<&str> = output_str
+    let some_row = output_str
         .lines()
-        .collect();
-    assert_eq!(rows.len(), 9);
+        .filter(|l| predicate::str::contains("NB502094:69:HN2H2BGX5:4:11501:13313:12598").eval(l))
+        .last()
+        .unwrap_or_default();
+    let elems = some_row.split("\t").collect::<Vec<&str>>();
+    assert_eq!(elems[8], "8");
+    assert_eq!(elems[9], "0");
+    assert_eq!(elems[10], ""); // these will all look like unmod, with no mod
+    assert_eq!(elems[11], "8,14,32,38,43,55,63,77"); // these will all look like unmod, with no mod
     Ok(())
 }
 
+#[test]
+fn reports_snps_at_cpg() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG:4962-5006"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let some_row = output_str
+    .lines()
+    .filter(|l| predicate::str::contains("NB502094:69:HN2H2BGX5:3:22406:24759:2699").eval(l))
+    .last()
+    .unwrap_or_default();
+let elems = some_row.split("\t").collect::<Vec<&str>>();
+assert_eq!(elems[8], "9");
+assert_eq!(elems[9], "8");
+assert_eq!(elems[10], "4,11,14,24,31,35,52,76");
+assert_eq!(elems[11], "");
+assert_eq!(elems[12], "49"); // one C>A SNP here
+    Ok(())
+}
+
+#[test]
+fn does_not_report_deleted_positions() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG:114-158"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let some_row = output_str
+    .lines()
+    .filter(|l| predicate::str::contains("NB502094:69:HN2H2BGX5:3:22506:13203:14643").eval(l))
+    .last()
+    .unwrap_or_default();
+let elems = some_row.split("\t").collect::<Vec<&str>>();
+assert_eq!(elems[8], "2");
+assert_eq!(elems[9], "2");
+assert_eq!(elems[10], "26,61");
+    Ok(())
+}

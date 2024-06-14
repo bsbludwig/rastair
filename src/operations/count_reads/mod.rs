@@ -130,11 +130,11 @@ use super::FLAGS;
                     return None;
                 }
             }
-
+            let qname = std::str::from_utf8(record.qname()).unwrap_or_default();
             // if read starts beyond the right margin, terminate
             if (record.pos() as u64) > self.right_margin
             {
-                debug!("Skipping read {} that starts beyond right margin: {} <= {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.pos(), self.right_margin);
+                debug!("Skipping read {} that starts beyond right margin: {} <= {}", qname, record.pos(), self.right_margin);
                 return None;
             }
 
@@ -142,26 +142,26 @@ use super::FLAGS;
             // it was processed in a previous iteration. Skip
             if record.pos() > 0 && (record.pos() as u64) <= self.sequence.region.start
             {
-                debug!("Skipping read {} that started in a previous segment: {} <= {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.pos(), self.sequence.region.start);
+                debug!("Skipping read {} that started in a previous segment: {} <= {}", qname, record.pos(), self.sequence.region.start);
                 continue;
             }
             // skip reads that lack required flags
             if record.flags() & self.config.required_flags != self.config.required_flags
             {
-                debug!("Read {} lacks required flag: {} vs {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.flags(), self.config.required_flags);
+                debug!("Read {} lacks required flag: {} vs {}", qname, record.flags(), self.config.required_flags);
                 continue;
             }
             // skip reads that match an excluded flag
             else if record.flags() & self.config.excluded_flags > 0
             {
-                debug!("Read {} has excluded flag: {} vs {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.flags(), self.config.excluded_flags);
+                debug!("Read {} has excluded flag: {} vs {}", qname, record.flags(), self.config.excluded_flags);
                 continue;
             }
 
             // skip reads with low mapq
             if record.mapq() < self.config.min_mapq
             {
-                debug!("Read {} has low quality: {} < {}", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.mapq(), self.config.min_mapq);
+                debug!("Read {} has low quality: {} < {}", qname, record.mapq(), self.config.min_mapq);
                 continue;
             }
             let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
@@ -171,7 +171,7 @@ use super::FLAGS;
                 F1R2    => (),
                 F2R1    => (),
                 _       => {
-                    debug!("Skipping incorrectly paired read {}. (flag {})", String::from_utf8(Vec::from(record.qname())).unwrap_or_default(), record.flags());
+                    debug!("Skipping incorrectly paired read {}. (flag {})", qname, record.flags());
                     continue;
                 }
             }
@@ -549,7 +549,7 @@ pub fn run_caller(
                 // Side-effect: save target region for later
                 config.subset_region = Some(GenomicRegion {contig: String::from_utf8(Vec::from(chr)).unwrap_or_default(),start: start as u64, end: end as u64});
 
-                format!("{}:{}-{}", std::str::from_utf8(chr).unwrap_or_default(), start, end+(config.tiling_window_size as i64)-1)
+                format!("{}:{}-{}", std::str::from_utf8(chr).unwrap_or_default(), std::cmp::max(0, start-(config.tiling_window_size as i64)), end+(config.tiling_window_size as i64)-1)
             },
             FetchDefinition::String(_) | FetchDefinition::All => // Full chromosome case, no need to manually adjust tiling window
             {
@@ -697,7 +697,7 @@ pub fn run_mbias(
         {
             FetchDefinition::RegionString(chr, start, end) =>
             {
-                format!("{}:{}-{}", std::str::from_utf8(chr).unwrap_or_default(), start, end+(config.tiling_window_size as i64)-1)
+                format!("{}:{}-{}", std::str::from_utf8(chr).unwrap_or_default(), std::cmp::max(0, start-(config.tiling_window_size as i64)), end+(config.tiling_window_size as i64)-1)
             },
             FetchDefinition::String(_) | FetchDefinition::All =>
             {
