@@ -4,7 +4,7 @@
  */
 
 
-use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, fs::File, io::{stdout, Write}};
+use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, io::{stdout, Write}};
 
 use log::{debug, info, trace, warn};
 use r2d2::ManageConnection;
@@ -873,6 +873,7 @@ mod tests {
     // For testing
     use super::*;
     use anyhow::Result;
+    use std::fs::File;
 
     const BAMFILE: &'static str = r"test_data/test.bam";
     const FASTAFILE: &'static str = r"test_data/test.fasta";

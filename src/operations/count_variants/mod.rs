@@ -4,7 +4,6 @@ use std::str::FromStr;
 use std::fmt::{Debug, Display, Formatter};
 use std::error::Error;
 use std::io::{stdout, Write};
-use std::fs::File;
 use std::path::PathBuf;
 use clap::ValueEnum;
 use log::{debug, error};
