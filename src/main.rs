@@ -29,7 +29,7 @@ enum Commands
         #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
         bam_file: ClioPath,
 
-        /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
+        /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
         #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
 
@@ -99,7 +99,7 @@ enum Commands
         #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
         bam_file: ClioPath,
 
-        /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
+        /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
         #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
 
@@ -151,7 +151,7 @@ enum Commands
         #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
         bam_file: ClioPath,
 
-        /// A sorted and indexed (via samtools faidx) fasta file. Note that bgzip compressed files are NOT currently supported
+        /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
         #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
 
@@ -201,7 +201,7 @@ enum Commands
     /// Utility function to convert per-read bed files to PAT files compatible with wgbstools and UXMtools
     Bed2pat
     {
-        /// Sequence fasta file, Can be bgzip compressed, but requires both a gzi index and a fai index!
+        /// Sequence fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
         #[arg(value_name="FASTA_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
         /// Read bed output, as produced by the per-read function; Can be bgzip compressed, but requires a gzi index
