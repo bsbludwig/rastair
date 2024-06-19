@@ -560,7 +560,7 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
         .map(|f|
             {
                 let pos_in_read = *f;
-                if pos_in_read as usize <= read_mask.0 || pos_in_read as usize > read_length - read_mask.1
+                if (pos_in_read as usize) < read_mask.0 || (pos_in_read as usize) > read_length - read_mask.1 - 1
                 {
                     (pos_in_read, Unknown)
                 }
@@ -574,7 +574,7 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
         .map(|f|
             {
                 let pos_in_read = *f;
-                if pos_in_read as usize <= read_mask.0 || pos_in_read as usize > read_length - read_mask.1
+                if (pos_in_read as usize) < read_mask.0 || (pos_in_read as usize) > read_length - read_mask.1 - 1
                 {
                     (pos_in_read, Unknown)
                 }
