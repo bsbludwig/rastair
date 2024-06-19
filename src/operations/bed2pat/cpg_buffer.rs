@@ -42,6 +42,8 @@ pub struct CpgBuffer<R: Read + Seek>
     last_in_segment: bool
 }
 
+/// A buffer that allows fast retrieval of CpGs by their index, ie their position
+/// in the ordered list of CpGs in a reference genome.
 impl <R> CpgBuffer<R>
 where R: Read+Seek
 {
@@ -63,6 +65,9 @@ where R: Read+Seek
         )
     }
 
+    /// Load CpG info from a segment into the internal cache.
+    /// Will read a fixed-size segment (default is a few kb)
+    /// and process all CpGs within.
     fn parse_next_from_file(&mut self) -> Option<()>
     {
         if self.last_in_segment
@@ -96,6 +101,7 @@ where R: Read+Seek
         Some(())
     }
 
+    /// Skip to a different chromosome, and flush the caches
     pub fn progress_to_contig(&mut self, chr: &[u8]) -> Option<()>
     {
         self.cpg_buffer.clear();
@@ -104,6 +110,7 @@ where R: Read+Seek
         self.fasta_reader.move_to_contig(chr).ok()
     }
 
+    /// Retrieve CpG info for all CpGs in a given range
     pub fn cpgs_in_range(&mut self, chr: &[u8], start: u64, end: u64) -> Option<Vec<&CpgInfo>>
     {
         assert!(end > start, "Inverted slice not allowed");
@@ -112,8 +119,16 @@ where R: Read+Seek
         {
             if last_cpg.contig != chr
             {
+                // we've reached a new chromosome, move to the new place in the fasta file
+                // and flush the cache
                 self.progress_to_contig(chr);
             }
+        }
+        else
+        {
+            // No CpGs in buffer for this slice, could be a different chromosome
+            // jump to the right place to start off from
+            self.progress_to_contig(chr);
         }
 
         loop
