@@ -1,18 +1,18 @@
 use std::fmt::{Display, Formatter};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::io::{stdout, Write, Read, Seek};
-use std::fs;
 use log::{trace, debug, error};
 
 use anyhow::{bail, Result, anyhow};
 // Very fast substr search
 use memchr::memmem::find_iter;
 
-use bio::io::fasta::IndexedReader;
+use bio::io::fasta::{Index, IndexedReader};
 use bio::utils::Text;
 use rust_htslib::bam::FetchDefinition;
 // category on FetchDefinitoon
 use crate::utils::extensions::FetchDefinitionExt;
+use crate::utils::file_helpers::open_file;
 
 const DEFAULT_STEP_SIZE: usize = 100_000;
 const DEFAULT_TILING: usize = 1;
@@ -153,24 +153,6 @@ pub struct SequenceSegmentIterator<R: Read + Seek>
     /// overlap of the next window with the previous one.
     /// Defaults to 1, ie include the last base of the previous window in the same contig
     tiling: usize,
-}
-
-impl SequenceSegmentIterator<fs::File>
-{
-    /// Create a new iterator with a reference to a FASTA file
-    pub fn with_file<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P) -> Result<Self>
-    {
-        let reader = IndexedReader::from_file(&fasta_path)?;
-        // Get the first contig in the index. If there is none, return an Error
-        Self::with_reader(reader)
-    }
-
-    pub fn with_file_and_stepsize<P: AsRef<Path> + std::fmt::Debug>(fasta_path: P, step_size: usize) -> Result<Self>
-    {
-        let mut new_seq_seg = Self::with_file(fasta_path)?;
-        new_seq_seg.step_size = step_size;
-        Ok(new_seq_seg)
-    }
 }
 
 impl <R> SequenceSegmentIterator<R>
@@ -408,14 +390,19 @@ where
 
 pub fn run_finder (file_path: &PathBuf, step_size: usize) -> Result<()>
 {
+    let fasta_file = open_file(&file_path)?;
+    let index_path = PathBuf::from(format!("{}.fai", file_path.to_str().unwrap_or_default()).as_str());
+    let fasta_index = Index::from_file(&index_path)?;
+    let indexed_reader = IndexedReader::with_index(fasta_file, fasta_index);
+
     let seg_iter = if step_size > 0
     {
         debug!("Using step size {}", step_size);
-        SequenceSegmentIterator::with_file_and_stepsize(file_path, step_size)?
+        SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, step_size)?
     }
     else
     {
-        SequenceSegmentIterator::with_file(file_path)?
+        SequenceSegmentIterator::with_reader(indexed_reader)?
     };
     let mut lock = stdout().lock();
     let mut last_chr = String::new();

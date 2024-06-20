@@ -4,12 +4,12 @@ use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::fs;
+//use std::fs;
 use std::fmt::Debug;
 use log::{trace, debug, info, warn, error};
 use anyhow::Result;
 
-use crate::sequence_segment::{SequenceSegmentIterator, SequenceSegment};
+use crate::sequence_segment::SequenceSegment;
 use crate::utils::extensions::{IndexedReaderExt, RecordExt};
 
 // Faster hashing than built-in algo
@@ -99,18 +99,6 @@ impl VariantCounter
             bam,
             bam_index
         })
-    }
-
-    pub fn count_from_file(&mut self, fasta_path: impl AsRef<Path> + Debug) -> Result<VariantCounterIterator>
-    {
-        let iterator = VariantCounterIterator::with_file_and_counter(fasta_path, self)?;
-        Ok(iterator)
-    }
-
-    pub fn count_from_file_with_step_size(&mut self, fasta_path: impl AsRef<Path> + Debug, step_size: usize) -> Result<VariantCounterIterator>
-    {
-        let iterator = VariantCounterIterator::with_file_and_counter_and_size(fasta_path, self, step_size)?;
-        Ok(iterator)
     }
 
     pub fn index(&self) -> &Vec<(Vec<u8>, u64, u64)>
@@ -417,61 +405,6 @@ impl VariantCounter
             debug!("Next CpG in the list: {}", cpg_positions[cpg_index]);
         }
         Some(output)
-    }
-}
-
-pub struct VariantCounterIterator<'a>
-{
-    counter: &'a mut VariantCounter,
-    fasta: SequenceSegmentIterator<fs::File>,
-}
-
-impl <'a> VariantCounterIterator<'a>
-{
-    pub fn with_file_and_counter(fasta_path: impl AsRef<Path> + Debug, counter:&'a mut VariantCounter) -> Result<Self>
-    {
-        let mut fasta = SequenceSegmentIterator::with_file(&fasta_path)?;
-        if let Some(region) = &counter.config.region
-        {
-            debug!("Subset to region {}", region);
-            fasta.subset_to_region(region)?;
-        }
-        // Ensure regions are in the bam index
-        fasta.subset_to_intervals(counter.index())?;
-        Ok(VariantCounterIterator {
-            counter,
-            fasta
-        })
-    }
-
-    pub fn with_file_and_counter_and_size(fasta_path: impl AsRef<Path> + Debug, counter: &'a mut VariantCounter, chunk_size: usize) -> Result<Self>
-    {
-        let mut fasta = SequenceSegmentIterator::with_file_and_stepsize(&fasta_path, chunk_size)?;
-        if let Some(region) = &counter.config.region
-        {
-            debug!("Subset to region {}", region);
-            fasta.subset_to_region(region)?;
-        }
-        // Ensure regions are in the bam index
-        fasta.subset_to_intervals(counter.index())?;
-
-        Ok(VariantCounterIterator {
-            counter,
-            fasta
-        })
-    }
-}
-impl <'a> Iterator for VariantCounterIterator<'a>
-{
-    type Item = Vec<VariantCount>;
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        let segment = self.fasta.next()?;
-
-        debug!("Process {}", &segment);
-
-        self.counter.count_variants_in_segment(segment)
     }
 }
 

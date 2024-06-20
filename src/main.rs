@@ -190,7 +190,7 @@ enum Commands
     /// print a map of all CpGs in a fasta file and their indices as a bed file
     MapCpgs
     {
-        /// An indexed fasta file
+        /// An indexed fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
         #[arg(value_name="FASTA_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
         fasta_file: ClioPath,
 
