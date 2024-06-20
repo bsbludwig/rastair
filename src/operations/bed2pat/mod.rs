@@ -458,25 +458,25 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
     // the first x1 CpGs are from r1, the last x2 CpGs are from r2
     for cpg in read1.cpg_info.iter().chain(read2.cpg_info.iter())
     {
-        let methyl_char = match cpg.1 {
-            Methylated   => 'C' as u8,
-            Unmethylated => 'T' as u8,
-            Unknown      => '.' as u8
+        let methyl_char: u8 = match cpg.1 {
+            Methylated   => b'C',
+            Unmethylated => b'T',
+            Unknown      => b'.'
         };
         let cur_char = output[cpg.0-min_index];
-        if  cur_char != methyl_char && cur_char != '.' as u8
+        if  cur_char != methyl_char && cur_char != b'.'
         {
             // TODO: This should be configurable in some way.
             // In cfDNA, this would lead to loss of methylation info due to the R2 being poorly converted
             warn!("Non-matching methylation state at index {}, will set to Unknown", cpg.0);
-            output[cpg.0-min_index] = '.' as u8;
+            output[cpg.0-min_index] = b'.';
         }
         else
         {
             output[cpg.0-min_index] = match cpg.1 {
-                Methylated   => 'C' as u8,
-                Unmethylated => 'T' as u8,
-                Unknown      => '.' as u8
+                Methylated   => b'C',
+                Unmethylated => b'T',
+                Unknown      => b'.'
             };
         }
     }
@@ -484,7 +484,7 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
     // trim leading and trailing .'s
     loop
     {
-        if output.len() > 0 && output[0] == '.' as u8
+        if output.len() > 0 && output[0] == b'.'
         {
             min_index += 1;
             output.remove(0);
@@ -505,7 +505,7 @@ fn read_to_output_tuple(read1: &ReadInfo, read2: &ReadInfo) -> Option<(usize, St
             break;
         }
         let c = output.len()-1;
-        if output[c] == '.' as u8
+        if output[c] == b'.'
         {
             output.remove(c);
         }
