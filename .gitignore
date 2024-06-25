@@ -50,3 +50,5 @@ Thumbs.db
 profile.json
 .vscode/launch.json
 test_data/test.fasta
+.Rproj.user
+scripts/scripts.Rproj
