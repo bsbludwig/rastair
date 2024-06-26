@@ -70,15 +70,15 @@ enum Commands
         error_model: Option<ErrorModel>,
 
         /// For each read corresponding to the OT, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
-        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
-        /// alignment for a read that is mapped to the reverse strand.
+        /// The coordinates are relative to the read, so start is the distance from the 5' of the read, the end is the distance to the 3',
+        /// irrespective of which way around the read aligns to the reference.
         /// Also note that the distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
         #[arg(long="nOT")]
         n_ot: Option<String>,
 
         /// For each read corresponding to the OB, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
-        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
-        /// alignment for a read that is mapped to the reverse strand.
+        /// The coordinates are relative to the read, so start is the distance from the 5' of the read, the end is the distance to the 3',
+        /// irrespective of which way around the read aligns to the reference.
         /// Also not that the distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
         #[arg(long="nOB")]
         n_ob: Option<String>,

@@ -147,7 +147,18 @@ impl VariantCounter
             {
                 F1R2 =>
                 {
-                    if record.is_first_in_template()
+                    if record.is_reverse() //R2
+                    {
+                        if seq_len < config.ot_mask.r2.0+config.ot_mask.r2.1 + 1 {
+                            return false;
+                        }
+                        // also flipped the end/start mask, cause the read is mapped in reverse
+                        if qpos < config.ot_mask.r2.1 || qpos > seq_len-config.ot_mask.r2.0-1
+                        {
+                            return false;
+                        }
+                    }
+                    else //F1
                     {
                         // Ensure that there's at least one base left after soft-trimming
                         if seq_len < config.ot_mask.r1.0+config.ot_mask.r1.1 + 1 {
@@ -159,21 +170,10 @@ impl VariantCounter
                             return false;
                         }
                     }
-                    else
-                    {
-                        if seq_len < config.ot_mask.r2.0+config.ot_mask.r2.1 + 1 {
-                            return false;
-                        }
-                        // also flipped the end/start mask, cause the read is mapped in reverse
-                        if qpos < config.ot_mask.r2.1 || qpos > seq_len-config.ot_mask.r2.0-1
-                        {
-                            return false;
-                        }
-                    }
                 },
                 F2R1 =>
                 {
-                    if record.is_first_in_template()
+                    if record.is_reverse() //R1
                     {
                         if seq_len < config.ob_mask.r1.0+config.ob_mask.r1.1 + 1 {
                             return false;
@@ -187,7 +187,7 @@ impl VariantCounter
                             return false;
                         }
                     }
-                    else
+                    else // F2
                     {
                         if seq_len < config.ob_mask.r2.0+config.ob_mask.r2.1 + 1 {
                             return false;
