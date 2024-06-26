@@ -848,7 +848,7 @@ pub fn run_mbias(
     let mut lock = stdout().lock();
     writeln!(lock, "#pos\ttype\tunmod\tmod\tbeta")?;
     // Summarise and print mbias stats
-    let r_len = *[mbc.ob_mod.len(), mbc.ob_unmod.len(), mbc.ot_mod.len(), mbc.ot_unmod.len()].iter().max().unwrap();
+    let r_len = [mbc.ob_mod.len(), mbc.ob_unmod.len(), mbc.ot_mod.len(), mbc.ot_unmod.len()].into_iter().max().unwrap();
     for pos in 0..r_len
     {
         let def = (0 as u32, 0 as u32);

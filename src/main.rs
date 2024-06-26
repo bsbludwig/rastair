@@ -143,7 +143,12 @@ enum Commands
         #[arg(short='@', long, value_parser = clap::value_parser!(u8).range(1..))]
         threads: Option<u8>,
     },
-    /// Calculate conversion per base position in read
+    /// Calculate conversion per base position in read.
+    /// This will produce a table of conversion counts relative to read position. In this case,
+    /// read position is reported in reference-strand orientation, so position 1 in a read that
+    /// is aligned as reverse-complement (e.g. OT/2) is actually the end of the read.
+    /// The output of mbias can be processed with plot_mbias.R to generate images and recommendations
+    /// for nOT/nOB settings.
     #[allow(non_camel_case_types)]
     mbias
     {
