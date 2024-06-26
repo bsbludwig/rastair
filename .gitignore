@@ -52,3 +52,5 @@ profile.json
 test_data/test.fasta
 .Rproj.user
 scripts/scripts.Rproj
+scripts/.Rhistory
+scripts/.RData
