@@ -71,6 +71,12 @@ Options:
 
 In general, you can use `--help` on all `rastair` sub-commands to get detailed instructions on the available options.
 
+## Utility scripts
+`rastair` is designed to process (relatively) raw files into a format that is useful for downstream analysis. Any plotting and summarising is meant to happen downstream of `rastair`. We provide a number of convenience R scripts in the `scripts` directory. Currently, these include:
+
+- plot_mbias.R : This takes the output of `rastair mbias` and generates a figure of OT/OB conversion per read position. It also calculates suggested cut-off parameters for `--nOT` and `--nOB` to use in `rastair call`. This script optionally depends on the [ggplot2](https://ggplot2.tidyverse.org/) library for making figures
+- calculate_conversion.R : Generate a summary statistic for the conversion rate in a genomic region
+
 # Notes
 ## Soft-clipping option syntax
 The correction of "m-bias", ie the loss of conversion around read ends, is an important aspect of several rastair sub-commands (e.g. `call`, `bed2pat`). The command-line argument for this was inspired by [MethylDackel](https://github.com/dpryan79/MethylDackel).
@@ -89,9 +95,6 @@ This "F1R2" read represents the OT (ie R1 is the OT, and R2 is the reverse compl
 
 ## Performance considerations
 Most commands in `rastair` can be run in multi-threaded mode using the `-@ <ncores>` parameter. However, the performance increase has diminishing returns, as the threads have to eventually synchronise for writing to the output. We have found that increasing the number of BAM read threads to 2 (`--read-threads 2`) in combination with 4 to 6 processing threads (`-@ 4`) seems to perform best on a high-io-throughput system.
-
-## Integration tests
-For the moment (as of v5.7), some sub-commands cannot yet handle bgzip-compressed fasta files (due to a limitation in [`bio::io::fasta`](https://docs.rs/bio/latest/bio/io/fasta/struct.IndexedReader.html)). To reduce the size of the repository, we provide a compressed test.fasta.gz file which needs to be unzipped into the `test_data` directory to make the integration tests run through. It's on the TODO list to remove this limitation.
 
 # License
 
