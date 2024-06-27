@@ -31,7 +31,7 @@ fn missing_bed() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("bed2pat");
-    cmd.args(["test_data/test.fasta.gz"]);
+    cmd.args(["-r", "test_data/test.fasta.gz"]);
     cmd.arg("/path/to/nonexistent/file.bed");
     cmd.assert()
        .failure()
@@ -47,7 +47,7 @@ fn missing_fasta() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("bed2pat");
-    cmd.args(["test_data/test_which_doesnt_exist.fasta"]);
+    cmd.args(["-r", "test_data/test_which_doesnt_exist.fasta"]);
     cmd.arg(file.path());
     cmd.assert()
        .failure()
@@ -63,7 +63,7 @@ fn can_create_pat() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("bed2pat");
-    cmd.args(["test_data/test.fasta.gz"]);
+    cmd.args(["-r", "test_data/test.fasta.gz"]);
     cmd.arg(file.path());
     cmd.assert()
        .success();
@@ -140,7 +140,7 @@ fn test_in_genomic_region() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("rastair")?;
 
     cmd.arg("bed2pat");
-    cmd.args(["test_data/test.fasta.gz"]);
+    cmd.args(["-r", "test_data/test.fasta.gz"]);
     cmd.arg(file.path());
     cmd.assert()
        .success();
