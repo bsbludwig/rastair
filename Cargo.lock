@@ -1271,7 +1271,7 @@ checksum = "474c42c904f04dfe2a595a02f71e1a0e5e92ffb5761cc9a4c02140b93b8dd504"
 
 [[package]]
 name = "rastair"
-version = "0.6.0-6"
+version = "0.6.0-7"
 dependencies = [
  "anyhow",
  "assert_cmd",
