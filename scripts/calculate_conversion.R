@@ -1,5 +1,4 @@
 #!/usr/bin/env Rscript
-args <- commandArgs(trailingOnly = TRUE)
 
 # Function to open a file given command-line args
 file_from_args <- function(args) {
@@ -58,8 +57,8 @@ calculate_summary <- function(methylation) {
   return(summary_beta)
 }
 
-main <- function() {
-  methylation <- read.delim(file_from_args(c("tests/data/lambda_calls.bed.gz")), stringsAsFactors=TRUE, na.strings = c("NA","NaN",".",""))
+main <- function(args) {
+  methylation <- read.delim(file_from_args(args), stringsAsFactors=TRUE, na.strings = c("NA","NaN",".",""))
   summary_beta <- calculate_summary(methylation)
   cat(paste(names(summary_beta), sep="\t"))
   cat(summary_beta, sep="\t")
@@ -67,5 +66,6 @@ main <- function() {
 
 # Run as script unless explicitly asked not to, for unit testing
 if (getOption('run.main', default=TRUE)) {
-  main()
+  args <- commandArgs(trailingOnly = TRUE)
+  main(args)
 }
