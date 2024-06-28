@@ -120,7 +120,11 @@ plot_context_stats <- function(context_table, args=c()) {
 
 calculate_summary <- function(methylation) {
   summary_beta <- summary(methylation$beta_est)
-  names(summary_beta) <- c("min", "q1", "median","mean", "q3", "max", "NAs")
+  if(length(summary_beta)==6) {
+    names(summary_beta) <- c("min", "q1", "median","mean", "q3", "max")
+  } else {
+    names(summary_beta) <- c("min", "q1", "median","mean", "q3", "max", "NAs")
+  }
   summary_beta["sd"] <- sd(methylation$beta_est, na.rm = TRUE)
   summary_beta["sum_mean"] <- sum(methylation$mod)/(sum(methylation$mod)+sum(methylation$unmod))
   return(summary_beta)

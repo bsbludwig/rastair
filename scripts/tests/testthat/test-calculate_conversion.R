@@ -15,4 +15,11 @@ test_that("beta calculation works", {
   expect_true(summary_table["mean"] == mean(test_table$beta_est, na.rm=TRUE))
   expect_true(summary_table["median"] == median(test_table$beta_est, na.rm=TRUE))
   expect_true(summary_table["sum_mean"] == sum(test_table$mod)/sum(test_table$mod+test_table$unmod))
+  
+  # try without NAs
+  test_table <- subset(test_table, !is.na(beta_est))
+  summary_table <- calculate_summary(test_table)
+  expect_true(summary_table["mean"] == mean(test_table$beta_est, na.rm=TRUE))
+  expect_true(summary_table["median"] == median(test_table$beta_est, na.rm=TRUE))
+  expect_true(summary_table["sum_mean"] == sum(test_table$mod)/sum(test_table$mod+test_table$unmod))
 })
