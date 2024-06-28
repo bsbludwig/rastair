@@ -90,7 +90,9 @@ summarise_by_context <- function(context_table) {
 
 plot_context_stats <- function(context_table, args=c()) {
   # Only load if necessary
-  suppressMessages(suppressWarnings(library("ggplot2", "gtable")))
+  suppressMessages(suppressWarnings(library("ggplot2")))
+  suppressMessages(suppressWarnings(library("gtable")))
+  suppressMessages(suppressWarnings(library("grid")))
 
   out_filename <- value_from_args(args, c("-o", "--output-file"), default = "conversion_context.png")
   fig_width=value_from_args(args, c("-x", "--width"), default = 1200, as.number = TRUE)

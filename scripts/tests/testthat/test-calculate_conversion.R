@@ -25,3 +25,21 @@ test_that("beta calculation works", {
   expect_true(summary_table["median"] == median(test_table$beta_est, na.rm=TRUE))
   expect_true(summary_table["sum_mean"] == sum(test_table$mod)/sum(test_table$mod+test_table$unmod))
 })
+
+test_that("context annotation works", {
+  test_table <- read.delim("../data/lambda_calls.bed.gz", stringsAsFactors=TRUE, na.strings = c("NA","NaN",".",""))
+  annotated_table <- annotate_with_context(test_table, "../../../test_data/test.fasta.gz")
+  expect_equal(dim(annotated_table)[1], 3052)
+  expect_gte(dim(annotated_table)[2], 5)
+  expect_true(all(substr(annotated_table$sequence, 2, 3) == "CG"))
+})
+
+test_that("plot generation works", {
+  test_table <- read.delim("../data/lambda_calls.bed.gz", stringsAsFactors=TRUE, na.strings = c("NA","NaN",".",""))
+  annotated_table <- annotate_with_context(test_table, "../../../test_data/test.fasta.gz")
+
+  tf <- tempfile(, fileext = ".png")
+  plot_context_stats(annotated_table, c("-o", tf))
+  expect_true(file.exists(tf))
+  expect_gt(file.size(tf), 0)
+})

@@ -2,7 +2,7 @@
 name = "rastair"
 description = "Fast and flexible extraction of methylation information from bam files"
 authors = ["Benjamin Schuster-Boeckler"]
-version = "0.6.0-8"
+version = "0.6.0-9"
 edition = "2021"
 license = "AGPL-3.0-only"
 readme = "README.md"
