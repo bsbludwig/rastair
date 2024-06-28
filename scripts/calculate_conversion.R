@@ -122,8 +122,9 @@ calculate_summary <- function(methylation) {
   summary_beta <- summary(methylation$beta_est)
   if(length(summary_beta)==6) {
     names(summary_beta) <- c("min", "q1", "median","mean", "q3", "max")
+    summary_beta["missing"] <- 0
   } else {
-    names(summary_beta) <- c("min", "q1", "median","mean", "q3", "max", "NAs")
+    names(summary_beta) <- c("min", "q1", "median","mean", "q3", "max", "missing")
   }
   summary_beta["sd"] <- sd(methylation$beta_est, na.rm = TRUE)
   summary_beta["sum_mean"] <- sum(methylation$mod)/(sum(methylation$mod)+sum(methylation$unmod))
@@ -160,8 +161,8 @@ main <- function(args) {
 
   # Calculate the summary over the input data and print
   summary_beta <- calculate_summary(methylation)
-  cat(paste(names(summary_beta), sep="\t"), "\n")
-  cat(paste(summary_beta, sep="\t"), "\n")
+  cat(names(summary_beta), sep="\t", "\n")
+  cat(summary_beta, sep="\t", "\n")
 
   # if requested, also generate a figure of per-context conversion
   if(value_from_args(args, c("-c", "--plot-context"), is.boolean = TRUE)) {
