@@ -90,7 +90,7 @@ summarise_by_context <- function(context_table) {
 
 plot_context_stats <- function(context_table, args=c()) {
   # Only load if necessary
-  suppressMessages(suppressWarnings(library("ggplot2")))
+  suppressMessages(suppressWarnings(library("ggplot2", "gtable")))
 
   out_filename <- value_from_args(args, c("-o", "--output-file"), default = "conversion_context.png")
   fig_width=value_from_args(args, c("-x", "--width"), default = 1200, as.number = TRUE)
@@ -109,12 +109,19 @@ plot_context_stats <- function(context_table, args=c()) {
     png(out_filename, width=fig_width, height=fig_height)
   }
 
-  g <- ggplot(subset(context_table, nchar(sequence)==4), aes(x=sequence, y=beta, color=substr(sequence,1,1))) + geom_boxplot(outlier.size = 1, outlier.alpha = 0.5)
-  g <- g + labs(color = "5' Context") +
-       xlab(NULL) +
-       theme_light()
-  print(g)
+  g_box <- ggplot(subset(context_table, nchar(sequence)==4), aes(x=sequence, y=beta, color=substr(sequence,1,1))) + geom_boxplot(outlier.size = 1, outlier.alpha = 0.5)
+  g_box <- g_box + labs(color = "5' Context") +
+           xlab(NULL) +
+           theme_light()
 
+  g_bar <- ggplot(subset(context_table, nchar(sequence)==4), aes(x=sequence, fill=substr(sequence,1,1))) + geom_bar()
+  g_bar <- g_bar + labs(fill = "5' Context") +
+           xlab(NULL) +
+           theme_light()
+
+  gtbl <- gtable_col(name="conversion", grobs=list(Coverage=ggplotGrob(g_bar), Conversion=ggplotGrob(g_box)), heights=unit(c(1,2)/3, "npc"), width=unit(1, "npc"))
+  grid.newpage()
+  grid.draw(gtbl)
   invisible(dev.off())
 }
 
