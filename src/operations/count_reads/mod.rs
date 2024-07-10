@@ -31,6 +31,8 @@ use crate::utils::file_helpers::open_file;
     pub mapq: u8,
     /// Absolute fragment length (non-directional)
     pub frag_length: u32,
+    /// Read length
+    pub read_length: u32,
     /// Name of read
     pub read_id: String,
     /// Number of CpGs in a read
@@ -49,7 +51,7 @@ use crate::utils::file_helpers::open_file;
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
-        write!(f, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        write!(f, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.region.contig,
             self.region.start,
             self.region.end,
@@ -57,6 +59,7 @@ use crate::utils::file_helpers::open_file;
             self.mapq,
             if self.flag & 16 == 16 {"-"} else {"+"},
             self.frag_length,
+            self.read_length,
             self.flag,
             self.cpg_count,
             self.mod_count,
@@ -204,6 +207,7 @@ use crate::utils::file_helpers::open_file;
             flag: record.flags(),
             mapq: record.mapq(),
             frag_length: record.insert_size().abs() as u32,
+            read_length: record.seq_len() as u32,
             read_id: String::from_utf8(Vec::from(record.qname())).unwrap_or_default(),
             cpg_count: 0,
             mod_count: 0,
@@ -579,7 +583,7 @@ pub fn run_caller(
     drop(counter); // Ugly, but I need to free that counter up for later
 
     let mut lock = stdout().lock();
-    writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs\tsnp_cpgs")?;
+    writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tread_length\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs\tsnp_cpgs")?;
 
     iterator
     .map(move |segment| {

@@ -102,7 +102,7 @@ fn report_all() -> Result<(), Box<dyn std::error::Error>> {
     let output_str = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output_str.lines().count(), 24743); // Checked against methyldackel
     let total: u32 = output_str.lines()
-        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
+        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[9].parse::<u32>().unwrap_or_default()})
         .sum();
     assert_eq!(total, 65393);
     Ok(())
@@ -123,7 +123,7 @@ fn report_all_threaded() -> Result<(), Box<dyn std::error::Error>> {
     let output_str = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output_str.lines().count(), 24743); // Checked against methyldackel
     let total: u32 = output_str.lines()
-        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
+        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[9].parse::<u32>().unwrap_or_default()})
         .sum();
     assert_eq!(total, 65393);
     Ok(())
@@ -143,12 +143,12 @@ fn restrict_to_chromosome() -> Result<(), Box<dyn std::error::Error>> {
     let output_str = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output_str.lines().count(), 9646); // Checked against methyldackel
     let total: u32 = output_str.lines()
-        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
+        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[9].parse::<u32>().unwrap_or_default()})
         .sum();
     assert_eq!(total, 35655);
 
     let total_mod: usize = output_str.lines()
-        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[10].split(",").collect::<Vec<&str>>().len()})
+        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[11].split(",").collect::<Vec<&str>>().len()})
         .sum();
     assert_eq!(total_mod, 34468);
     Ok(())
@@ -169,12 +169,12 @@ fn restrict_to_chromosome_threaded() -> Result<(), Box<dyn std::error::Error>> {
     let output_str = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output_str.lines().count(), 9646); // Checked against methyldackel
     let total: u32 = output_str.lines()
-        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[8].parse::<u32>().unwrap_or_default()})
+        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[9].parse::<u32>().unwrap_or_default()})
         .sum();
     assert_eq!(total, 35655);
 
     let total_mod: usize = output_str.lines()
-        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[10].split(",").collect::<Vec<&str>>().len()})
+        .map(|elem| {let row_elems: Vec<&str> = elem.split("\t").collect(); row_elems[11].split(",").collect::<Vec<&str>>().len()})
         .sum();
     assert_eq!(total_mod, 34468);
     Ok(())
@@ -275,7 +275,7 @@ fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
 
     let elems = roi.split("\t").collect::<Vec<&str>>();
-    assert_eq!(elems[10], "22,40,54,57,64");
+    assert_eq!(elems[11], "22,40,54,57,64");
     Ok(())
 }
 
@@ -297,10 +297,10 @@ fn correct_data_in_random_region_2() -> Result<(), Box<dyn std::error::Error>> {
         .last()
         .unwrap_or_default();
     let elems = some_row.split("\t").collect::<Vec<&str>>();
-    assert_eq!(elems[8], "8");
-    assert_eq!(elems[9], "0");
-    assert_eq!(elems[10], ""); // these will all look like unmod, with no mod
-    assert_eq!(elems[11], "8,14,32,38,43,55,63,77"); // these will all look like unmod, with no mod
+    assert_eq!(elems[9], "8");
+    assert_eq!(elems[10], "0");
+    assert_eq!(elems[11], ""); // these will all look like unmod, with no mod
+    assert_eq!(elems[12], "8,14,32,38,43,55,63,77"); // these will all look like unmod, with no mod
     Ok(())
 }
 
@@ -322,11 +322,11 @@ fn reports_snps_at_cpg() -> Result<(), Box<dyn std::error::Error>> {
     .last()
     .unwrap_or_default();
 let elems = some_row.split("\t").collect::<Vec<&str>>();
-assert_eq!(elems[8], "9");
-assert_eq!(elems[9], "8");
-assert_eq!(elems[10], "4,11,14,24,31,35,52,76");
-assert_eq!(elems[11], "");
-assert_eq!(elems[12], "49"); // one C>A SNP here
+assert_eq!(elems[9], "9");
+assert_eq!(elems[10], "8");
+assert_eq!(elems[11], "4,11,14,24,31,35,52,76");
+assert_eq!(elems[12], "");
+assert_eq!(elems[13], "49"); // one C>A SNP here
     Ok(())
 }
 
@@ -347,9 +347,42 @@ fn does_not_report_deleted_positions() -> Result<(), Box<dyn std::error::Error>>
     .filter(|l| predicate::str::contains("NB502094:69:HN2H2BGX5:3:22506:13203:14643").eval(l))
     .last()
     .unwrap_or_default();
-let elems = some_row.split("\t").collect::<Vec<&str>>();
-assert_eq!(elems[8], "2");
-assert_eq!(elems[9], "2");
-assert_eq!(elems[10], "26,61");
+    let elems = some_row.split("\t").collect::<Vec<&str>>();
+    assert_eq!(elems[9], "2");
+    assert_eq!(elems[10], "2");
+    assert_eq!(elems[11], "26,61");
+    Ok(())
+}
+
+#[test]
+fn correctly_reports_read_length() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("per-read");
+    cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
+    cmd.args(["-l", "bacteriophage_lambda_CpG:114-158"]);
+    cmd.arg("test_data/test.bam");
+    cmd.assert()
+        .success();
+    let output = cmd.output().unwrap();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let mut some_row = output_str
+    .lines()
+    .filter(|l| predicate::str::contains("NB502094:69:HN2H2BGX5:3:22506:13203:14643").eval(l))
+    .last()
+    .unwrap_or_default();
+    let mut elems = some_row.split("\t").collect::<Vec<&str>>();
+    assert_eq!(elems[6], "174");
+    assert_eq!(elems[7], "80");
+
+    some_row = output_str
+    .lines()
+    .filter(|l| predicate::str::contains("NB502094:69:HN2H2BGX5:4:22504:24050:9422").eval(l))
+    .last()
+    .unwrap_or_default();
+
+    elems = some_row.split("\t").collect::<Vec<&str>>();
+    assert_eq!(elems[6], "179");
+    assert_eq!(elems[7], "79");
     Ok(())
 }
