@@ -61,3 +61,19 @@ test_that("cutoff calculation works", {
   expect_equal(subset(cutoffs, strand=="OB" & read_pair == "2")$right, 0)
   expect_equal(subset(cutoffs, strand=="OT" & read_pair == "2")$right, 0)
 })
+
+test_that("it can deal with missing data", {
+  test_table <- generate_test_table()
+  test_table[2,"mod"] <- 0
+  test_table[2,"unmod"] <- 0
+  test_table[2,"beta"] <- NaN
+
+  test_table[6,"mod"] <- 0
+  test_table[6,"unmod"] <- 0
+  test_table[6,"beta"] <- NaN
+
+  test_table <- post_process_mbias_table(test_table)
+  test_table <- add_CI(test_table)
+  expect_contains(names(test_table), c("upper_ci", "lower_ci"))
+  expect_equal(dim(test_table), c(200, 9))
+})
