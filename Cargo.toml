@@ -22,7 +22,7 @@ num_cpus = "1.16.0"
 pariter = "0.5.1"
 probability = "0.20.3"
 r2d2 = "0.8.10"
-rust-htslib = {version = "0.47.0", features = ["libdeflate"]}
+rust-htslib = {version = "0.46.0", features = ["libdeflate"]}
 stderrlog = "0.6.0"
 thiserror = "1.0.49"
 
