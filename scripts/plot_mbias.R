@@ -164,7 +164,20 @@ post_process_mbias_table <- function(mbias_table) {
 }
 
 add_CI <- function(mbias_table) {
-  conf_ints <- as.data.frame(t(apply(subset(mbias_table, select=c("mod", "unmod")), 1, function(row){ binom.test(row[1], row[1]+row[2], conf.level = 0.999)$conf.int })))
+  conf_ints <- as.data.frame(
+                t(
+                  apply(
+                    subset(mbias_table, select=c("mod", "unmod")),
+                    1,
+                    function(row){
+                      if(row[1]+row[2] > 0) {
+                        return(binom.test(row[1], row[1]+row[2], conf.level = 0.999)$conf.int)
+                      } else {
+                        return(c(NA, NA))
+                      }
+                    })
+                  )
+                )
   colnames(conf_ints) <- c("lower_ci", "upper_ci")
   mbias_table <- cbind(mbias_table, conf_ints)
 
