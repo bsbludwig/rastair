@@ -19,7 +19,7 @@ use super::{ReadMask, ReadMaskSetting};
 
 
 const INITIAL_HASH_SIZE: usize = 1_000; // how many reads in between the average two matching pairs?
-const FLUSH_BUFFER_THRESHOLD: usize = 1_000;
+const FLUSH_BUFFER_THRESHOLD: usize = 5_000;
 const CPG_SEARCH_RANGE: u64 = 2_000;
 const MAX_INSERT_SIZE: u64 = 10_000;
 
@@ -129,22 +129,6 @@ impl <R: Read+Seek> PatGenerator<R> {
 
     pub fn process(&mut self) -> Result<()>
     {
-        /* Assume both bed files are coordinate sorted in the same way.
-        * In that case, we need to do the following:
-        * 1. Create a hash that contains the position, orientation and
-        *    CpG identities of each fragment
-        * 2. Go through the per-read bed file, and get the next read
-        * 3. Move forward in the CpG bed file until I reach the end
-        *    position of the current read, and save all CpG info in a
-        *    map (coord->index)
-        * 4. Drop coordinates before the current read start
-        * 5. Check if the current read is a pair of a previous read. If
-        *    so, combine them into a pair and store as a pattern.
-        * 6. If the pattern is different from the previous pattern, print the
-        *    previous pattern and its count. If it's the same, increment count
-        */
-        // This maps from read_name -> [chr, first_cpg_index, cpg_string]
-
         // Iterate over records
         for r in self.read_reader.records()
         {
@@ -162,21 +146,26 @@ impl <R: Read+Seek> PatGenerator<R> {
                     // Make sure we fast-forward in the bed file to the next chromosome
                     self.cpg_buffer.progress_to_contig(&this_chromosome);
                     // flush all buffers
+                    flush_singletons(&mut self.read_hash, &mut self.output_buffer);
                     self.read_hash.clear();
                     flush_write_buffer_until(&mut self.output_buffer, self.current_chromosome.as_slice(), std::usize::MAX)?; // flush the cache
                     self.current_chromosome = this_chromosome.clone();
                 }
+                let read_length: u32 = record
+                                .aux(7)
+                                .ok_or(anyhow!("No read length in record {}:{}-{}", chr, start, end))
+                                .unwrap()
+                                .parse()?;
 
                 let flag: u16 = record
-                                    .aux(7)
+                                    .aux(8)
                                     .ok_or(anyhow!("No flag in record {}:{}-{}", chr, start, end))
                                     .unwrap()
                                     .parse()?;
-
                 // create a single representation of CpGs in this read
-                let mods = parse_mod_str(record.aux(10).unwrap_or(""));
-                let unmods = parse_mod_str(record.aux(11).unwrap_or(""));
-                let snps = parse_mod_str(record.aux(12).unwrap_or(""));
+                let mods = parse_mod_str(record.aux(11).unwrap_or(""));
+                let unmods = parse_mod_str(record.aux(12).unwrap_or(""));
+                let snps = parse_mod_str(record.aux(13).unwrap_or(""));
                 // Convert in-read coordinates to absolute CpG indices
 
                 let strand = ReadInfo::strand_from_flag(flag);
@@ -209,13 +198,21 @@ impl <R: Read+Seek> PatGenerator<R> {
                 let all_mods: Vec<(usize, MethylationState)> =
                     if let Some(cpg_slice) = self.cpg_buffer.cpgs_in_range(chr.as_bytes().as_ref(), start, end)
                     {
-                        match zip_mods(&mods, &unmods, &snps, strand, cpg_slice, read_mask, (end-start) as usize)
+                        if start >= end
                         {
-                            None    => {
-                                warn!("Skipping read {} due to parser error", qname);
-                                continue;
+                            warn!("Empty sequence");
+                            Vec::new()
+                        }
+                        else
+                        {
+                            match zip_mods(&mods, &unmods, &snps, strand, cpg_slice, read_mask, read_length as usize)
+                            {
+                                None    => {
+                                    warn!("Skipping read {} due to parser error", qname);
+                                    continue;
+                                }
+                                Some(mods)  => mods
                             }
-                            Some(mods)  => mods
                         }
                     }
                     else
@@ -238,7 +235,7 @@ impl <R: Read+Seek> PatGenerator<R> {
                      * This is an expensive operation, so we will only do this once the output buffer
                      * has exceeded some size.
                      */
-                    if self.output_buffer.len() > FLUSH_BUFFER_THRESHOLD
+                    if self.output_buffer.len() > FLUSH_BUFFER_THRESHOLD || self.read_hash.len() > FLUSH_BUFFER_THRESHOLD
                     {
                         // remove orphaned single reads that are unreasonably far away from a pair
                         // TODO make this configurable
@@ -312,17 +309,24 @@ impl <R: Read+Seek> PatGenerator<R> {
             }
         }
         // Final flush. First dump all remaining unpaired reads as singletons
-        for singleton in self.read_hash.values()
-        {
-            if let Some(new_flag) = get_mate_flag(singleton.flag)
-            {
-                let fake_pair = ReadInfo::new(singleton.contig.clone(), singleton.start, new_flag, Vec::new());
-                process_read_pair(singleton, &fake_pair, &mut self.output_buffer);
-            }
-        }
+        flush_singletons(&mut self.read_hash, &mut self.output_buffer);
         flush_write_buffer_until(&mut self.output_buffer, self.current_chromosome.as_slice(), std::usize::MAX)?; // flush the cache
         Ok(())
     }
+}
+
+fn flush_singletons(read_hash: &mut HashMap<String, ReadInfo, FxBuildHasher>, output_buffer: &mut BTreeMap<usize, Vec<(String, usize)>>) -> ()
+{
+    // Final flush. First dump all remaining unpaired reads as singletons
+    for singleton in read_hash.values()
+    {
+        if let Some(new_flag) = get_mate_flag(singleton.flag)
+        {
+            let fake_pair = ReadInfo::new(singleton.contig.clone(), singleton.start, new_flag, Vec::new());
+            process_read_pair(singleton, &fake_pair, output_buffer);
+        }
+    }
+    ()
 }
 
 fn get_mate_flag(flag: u16) -> Option<u16>
@@ -560,7 +564,8 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
         .map(|f|
             {
                 let pos_in_read = *f;
-                if (pos_in_read as usize) < read_mask.0 || (pos_in_read as usize) > read_length - read_mask.1 - 1
+                assert!((pos_in_read as usize) < read_length, "Position {} outside read length {}", pos_in_read, read_length);
+                if (pos_in_read as usize) < read_mask.0 || (read_length - pos_in_read as usize - 1) < read_mask.1
                 {
                     (pos_in_read, Unknown)
                 }
@@ -574,7 +579,8 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
         .map(|f|
             {
                 let pos_in_read = *f;
-                if (pos_in_read as usize) < read_mask.0 || (pos_in_read as usize) > read_length - read_mask.1 - 1
+                assert!((pos_in_read as usize) < read_length, "Position {} outside read length {}", pos_in_read, read_length);
+                if (pos_in_read as usize) < read_mask.0 || (read_length - pos_in_read as usize - 1) < read_mask.1
                 {
                     (pos_in_read, Unknown)
                 }
@@ -587,8 +593,46 @@ fn zip_mods<'a>(mods: &Vec<u8>, unmod: &Vec<u8>, snps: &Vec<u8>, strand: Strand,
     let mut snp_pairs : Vec<(u8, MethylationState)> = snps.iter().map(|f| (*f, Unknown)).collect();
     mod_pairs.append( &mut unmod_pairs );
     mod_pairs.append( &mut snp_pairs );
+    // Sort methylated sutes by position
     mod_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-
+    // remove leading/trailing Unknowns
+    let mut found_value = false;
+    mod_pairs = mod_pairs.into_iter().filter(|entry|
+                                                if found_value {
+                                                    true
+                                                }
+                                                else
+                                                {
+                                                    if entry.1 == Unknown
+                                                    {
+                                                        false
+                                                    }
+                                                    else
+                                                    {
+                                                        found_value = true;
+                                                        true
+                                                    }
+                                                }).collect();
+    found_value = false;
+    mod_pairs = mod_pairs.into_iter().rev().filter(|entry|
+                                                    if found_value {
+                                                        true
+                                                    }
+                                                    else
+                                                    {
+                                                        if entry.1 == Unknown
+                                                        {
+                                                            false
+                                                        }
+                                                        else
+                                                        {
+                                                            found_value = true;
+                                                            true
+                                                        }
+                                                    })
+                                                    .rev()
+                                                    .collect();
+    // PAT format counts CpG positions as 1, rather than counting C and G separately, so I need to fix the coordinate system
     Some(mod_pairs.iter().enumerate().map(|(i, m)| (filtered_cpgs[i].index/2+1, m.1)).collect())
 }
 

@@ -173,3 +173,104 @@ fn test_in_genomic_region() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(output_str.to_string(), "chr19\t42369\tC\t8\nchr19\t42369\tT\t4\nchr19\t42370\tC\t8\nchr19\t42370\tT\t7\nchr19\t42371\tC\t2\nchr19\t42371\tT\t1\n");
     Ok(())
 }
+
+#[test]
+fn test_with_clipping() -> Result<(), Box<dyn std::error::Error>> {
+    let file = stage_read_bed("chr19")?;
+
+    let mut cmd = Command::cargo_bin("rastair")?;
+
+    cmd.arg("bed2pat");
+    cmd.args(["-r", "test_data/test.fasta.gz", "--nOT", "0,0,150,150", "--nOB", "0,0,150,150"]);
+    cmd.arg(file.path());
+    cmd.assert()
+       .success();
+
+    let mut output = cmd.output().unwrap();
+    let mut output_str = String::from_utf8_lossy(&output.stdout);
+    let mut line_count = output_str
+        .lines()
+        .count();
+    assert!(line_count > 0);
+
+    // there should be 30 reads reported in total
+    let mut read_count: i32 = output_str
+        .lines()
+        .map(|line| {
+            let elems: Vec<&str> = line.split("\t").collect();
+            // this is safe because I filtered for len>9 above
+            if elems.len() >= 4
+            {
+                elems[3].parse::<i32>().unwrap_or_default()
+            }
+            else {
+                0
+            }
+        })
+        .sum();
+    assert_eq!(read_count, 3475);
+
+    cmd.arg("bed2pat");
+    cmd.args(["-r", "test_data/test.fasta.gz", "--nOT", "0,0,150,0", "--nOB", "0,0,150,0"]);
+    cmd.arg(file.path());
+    cmd.assert()
+       .success();
+
+    output = cmd.output().unwrap();
+    output_str = String::from_utf8_lossy(&output.stdout);
+    line_count = output_str
+        .lines()
+        .count();
+    assert!(line_count > 0);
+
+    // there should be 30 reads reported in total
+    read_count = output_str
+        .lines()
+        .map(|line| {
+            let elems: Vec<&str> = line.split("\t").collect();
+            // this is safe because I filtered for len>9 above
+            if elems.len() >= 4
+            {
+                elems[3].parse::<i32>().unwrap_or_default()
+            }
+            else {
+                0
+            }
+        })
+        .sum();
+    assert_eq!(read_count, 3475);
+
+    cmd.arg("bed2pat");
+    cmd.args(["-r", "test_data/test.fasta.gz", "--nOT", "0,0,0,150", "--nOB", "0,0,0,150"]);
+    cmd.arg(file.path());
+    cmd.assert()
+       .success();
+
+    output = cmd.output().unwrap();
+    output_str = String::from_utf8_lossy(&output.stdout);
+    line_count = output_str
+        .lines()
+        .count();
+    assert!(line_count > 0);
+
+    // there should be 30 reads reported in total
+    read_count = output_str
+        .lines()
+        .map(|line| {
+            let elems: Vec<&str> = line.split("\t").collect();
+            // this is safe because I filtered for len>9 above
+            if elems.len() >= 4
+            {
+                elems[3].parse::<i32>().unwrap_or_default()
+            }
+            else {
+                0
+            }
+        })
+        .sum();
+    assert_eq!(read_count, 3475);
+
+    // just compare the whole thing:
+    //assert_eq!(output_str.to_string(), "chr19\t42369\tC\t8\nchr19\t42369\tT\t4\nchr19\t42370\tC\t8\nchr19\t42370\tT\t7\nchr19\t42371\tC\t2\nchr19\t42371\tT\t1\n");
+    Ok(())
+}
