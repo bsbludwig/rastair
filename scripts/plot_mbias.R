@@ -126,11 +126,16 @@ calculate_cutoff <- function(mbias_table) {
   # middle is outside the CI of the point, or it's more than 0.05 away
   # from the mean of the middle
   check_match <- function(row, mean_middle, lower_ci_min, upper_ci_max) {
+    if (is.na(mean_middle) || is.null(mean_middle) || is.na(row$beta) || is.null(row$beta) || is.na(lower_ci_min) || is.null(lower_ci_min) || is.na(upper_ci_max) || is.null(upper_ci_max)) {
+      return(FALSE)
+    }
+
     if (!row$beta %between% c(lower_ci_min, upper_ci_max)
         && abs(row$beta - mean_middle) > 0.05
         && !mean_middle %between% c(row$lower_ci, row$upper_ci)) {
       return(TRUE)
     }
+
     return(FALSE)
   }
 
@@ -173,7 +178,7 @@ add_CI <- function(mbias_table) {
                       if(row[1]+row[2] > 0) {
                         return(binom.test(row[1], row[1]+row[2], conf.level = 0.999)$conf.int)
                       } else {
-                        return(c(NA, NA))
+                        return(c(0, 0))
                       }
                     })
                   )
