@@ -318,6 +318,7 @@ impl <R: Read+Seek> PatGenerator<R> {
 fn flush_singletons(read_hash: &mut HashMap<String, ReadInfo, FxBuildHasher>, output_buffer: &mut BTreeMap<usize, Vec<(String, usize)>>) -> ()
 {
     // Final flush. First dump all remaining unpaired reads as singletons
+    debug!("\n{}", read_hash.keys().map(|f| format!("Dumping singleton {}", f)).collect::<Vec<String>>().join("\n"));
     for singleton in read_hash.values()
     {
         if let Some(new_flag) = get_mate_flag(singleton.flag)

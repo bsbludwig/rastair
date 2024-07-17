@@ -208,7 +208,12 @@ fn test_with_clipping() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .sum();
-    assert_eq!(read_count, 3475);
+    // I see that there are 3483 r1 reads on chr19:
+    // rastair per-read -f 67 -F 3980 -l chr19 -r test_data/test.fasta test_data/test.bam | tail -n +2 | wc -l
+    // I checked manually that 1 read is skipped because of indels
+    // 5 read contain only 1 CpG which is a SNP (neither C nor T observed)
+    // I therefore expect 3483 - 6 = 3477 reads reported
+    assert_eq!(read_count, 3477);
 
     cmd.arg("bed2pat");
     cmd.args(["-r", "test_data/test.fasta.gz", "--nOT", "0,0,150,0", "--nOB", "0,0,150,0"]);
@@ -238,7 +243,7 @@ fn test_with_clipping() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .sum();
-    assert_eq!(read_count, 3475);
+    assert_eq!(read_count, 3477);
 
     cmd.arg("bed2pat");
     cmd.args(["-r", "test_data/test.fasta.gz", "--nOT", "0,0,0,150", "--nOB", "0,0,0,150"]);
@@ -268,9 +273,7 @@ fn test_with_clipping() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .sum();
-    assert_eq!(read_count, 3475);
+    assert_eq!(read_count, 3477);
 
-    // just compare the whole thing:
-    //assert_eq!(output_str.to_string(), "chr19\t42369\tC\t8\nchr19\t42369\tT\t4\nchr19\t42370\tC\t8\nchr19\t42370\tT\t7\nchr19\t42371\tC\t2\nchr19\t42371\tT\t1\n");
     Ok(())
 }
