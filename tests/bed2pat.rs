@@ -215,6 +215,7 @@ fn test_with_clipping() -> Result<(), Box<dyn std::error::Error>> {
     // I therefore expect 3483 - 6 = 3477 reads reported
     assert_eq!(read_count, 3477);
 
+    cmd = Command::cargo_bin("rastair")?;
     cmd.arg("bed2pat");
     cmd.args(["-r", "test_data/test.fasta.gz", "--nOT", "0,0,150,0", "--nOB", "0,0,150,0"]);
     cmd.arg(file.path());
@@ -245,6 +246,7 @@ fn test_with_clipping() -> Result<(), Box<dyn std::error::Error>> {
         .sum();
     assert_eq!(read_count, 3477);
 
+    cmd = Command::cargo_bin("rastair")?;
     cmd.arg("bed2pat");
     cmd.args(["-r", "test_data/test.fasta.gz", "--nOT", "0,0,0,150", "--nOB", "0,0,0,150"]);
     cmd.arg(file.path());
