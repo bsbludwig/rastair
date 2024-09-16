@@ -1,35 +1,36 @@
 pub mod variant_counter;
 
-use std::str::FromStr;
-use std::fmt::{Debug, Display, Formatter};
-use std::error::Error;
-use std::io::{stdout, Write};
-use std::path::PathBuf;
 use clap::ValueEnum;
 use log::{debug, error};
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
+use std::io::{stdout, Write};
+use std::path::PathBuf;
+use std::str::FromStr;
 
-use num_cpus;
-use thiserror::Error;
 use anyhow::{bail, Result};
-use r2d2::ManageConnection;
+use num_cpus;
 use pariter::IteratorExt as _;
 use probability::prelude::*;
+use r2d2::ManageConnection;
+use thiserror::Error;
 
+use super::{ReadMask, ReadMaskSetting};
 use crate::sequence_segment::SequenceSegmentIterator;
-use crate::utils::file_helpers::open_file;
-use super::{ReadMaskSetting, ReadMask};
 use crate::utils::constants::*;
+use crate::utils::file_helpers::open_file;
 use variant_counter::{VariantCounter, VariantCounterConfig};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum ErrorModel {
+pub enum ErrorModel
+{
     Miseq,
     Miniseq,
     Nextseq500,
     Nextseq550,
     Hiseq2500,
     Novaseq6000,
-    HiseqXTen
+    HiseqXTen,
 }
 
 /// A simple struct to represent counts of nucleotides
@@ -42,39 +43,40 @@ pub struct NucleotideCount
     pub n: i32,
 }
 
-impl NucleotideCount {
+impl NucleotideCount
+{
     pub fn total(&self) -> i32
     {
         return self.a + self.c + self.g + self.t + self.n;
     }
 
     fn increment_counter_by(&mut self, base: u8, amount: i32) -> Option<()>
-{
-    match base
     {
-        b'a' => self.a += amount,
-        b'c' => self.c += amount,
-        b'g' => self.g += amount,
-        b't' => self.t += amount,
-        b'n' => self.n += amount,
-        b'A' => self.a += amount,
-        b'C' => self.c += amount,
-        b'G' => self.g += amount,
-        b'T' => self.t += amount,
-        b'N' => self.n += amount,
-        _   =>
-        {
-            return None;
-        }
-    };
-    Some(())
-}
+        match base {
+            b'a' => self.a += amount,
+            b'c' => self.c += amount,
+            b'g' => self.g += amount,
+            b't' => self.t += amount,
+            b'n' => self.n += amount,
+            b'A' => self.a += amount,
+            b'C' => self.c += amount,
+            b'G' => self.g += amount,
+            b'T' => self.t += amount,
+            b'N' => self.n += amount,
+            _ => {
+                return None;
+            }
+        };
+        Some(())
+    }
 }
 impl Display for NucleotideCount
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
-        write!(f, "A: {} C: {} G: {} T: {} N: {}", self.a, self.c, self.g, self.t, self.n)
+        write!(f,
+               "A: {} C: {} G: {} T: {} N: {}",
+               self.a, self.c, self.g, self.t, self.n)
     }
 }
 
@@ -97,9 +99,21 @@ impl VariantCount
 {
     pub fn new() -> Self
     {
-        let fw = NucleotideCount{a: 0, c: 0, g: 0, t: 0, n: 0};
-        let rv = NucleotideCount{a: 0, c: 0, g: 0, t: 0, n: 0};
-        VariantCount { contig: String::new(), pos: 0, ref_base: 0, top: fw, bottom: rv }
+        let fw = NucleotideCount { a: 0,
+                                   c: 0,
+                                   g: 0,
+                                   t: 0,
+                                   n: 0 };
+        let rv = NucleotideCount { a: 0,
+                                   c: 0,
+                                   g: 0,
+                                   t: 0,
+                                   n: 0 };
+        VariantCount { contig: String::new(),
+                       pos: 0,
+                       ref_base: 0,
+                       top: fw,
+                       bottom: rv }
     }
 
     pub fn total_count(&self) -> i32
@@ -113,29 +127,30 @@ impl Display for VariantCount
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
         let char = char::from_u32(self.ref_base as u32).unwrap_or_default();
-        write!(f, "{}:{} ({})\nFW\t{}\nRV\t{}", self.contig, self.pos, char, self.top, self.bottom)
+        write!(f,
+               "{}:{} ({})\nFW\t{}\nRV\t{}",
+               self.contig, self.pos, char, self.top, self.bottom)
     }
 }
 
 struct VariantCounterConnectionManager
 {
-    config: VariantCounterConfig
+    config: VariantCounterConfig,
 }
 
 impl VariantCounterConnectionManager
 {
     fn with_config(config: VariantCounterConfig) -> Result<Self>
     {
-        Ok(VariantCounterConnectionManager{
-            config
-        })
+        Ok(VariantCounterConnectionManager { config })
     }
 }
 
 #[derive(Error, Debug)]
-pub enum VariantCounterConnectionError {
+pub enum VariantCounterConnectionError
+{
     #[error("Error connecting to the bam file")]
-    ConnectionError( #[from] anyhow::Error )
+    ConnectionError(#[from] anyhow::Error),
 }
 
 impl ManageConnection for VariantCounterConnectionManager
@@ -144,41 +159,43 @@ impl ManageConnection for VariantCounterConnectionManager
     // TODO create a proper custom error type
     type Error = VariantCounterConnectionError;
 
-    fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        match VariantCounter::with_config(self.config.clone())
-        {
+    fn connect(&self) -> Result<Self::Connection, Self::Error>
+    {
+        match VariantCounter::with_config(self.config.clone()) {
             Ok(counter) => Ok(counter),
-            Err(e)  => Err(VariantCounterConnectionError::ConnectionError(e))
+            Err(e) => Err(VariantCounterConnectionError::ConnectionError(e)),
         }
     }
 
-    fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error> {
+    fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error>
+    {
         //TODO better check for valid connection?
         Ok(())
     }
 
-    fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
+    fn has_broken(&self, _conn: &mut Self::Connection) -> bool
+    {
         false
     }
 }
 
 #[allow(non_snake_case)]
-pub fn run_caller(
-    bam_path: &PathBuf,
-    fasta_path: &PathBuf,
-    region_option: &Option<String>,
-    mapq_option: &Option<u8>,
-    baseq_option: &Option<u8>,
-    max_depth_option: &Option<u32>,
-    chunk_size_option: &Option<u32>,
-    req_flags_option: &Option<u16>,
-    excl_flags_option: &Option<u16>,
-    error_model_option: &Option<ErrorModel>,
-    exclude_ambiguous_option: &Option<bool>,
-    nOT_option: &Option<String>,
-    nOB_option: &Option<String>,
-    read_threads_option: &Option<u8>,
-    threads_option: &Option<u8>) -> Result<(), Box<dyn Error>>
+pub fn run_caller(bam_path: &PathBuf,
+                  fasta_path: &PathBuf,
+                  region_option: &Option<String>,
+                  mapq_option: &Option<u8>,
+                  baseq_option: &Option<u8>,
+                  max_depth_option: &Option<u32>,
+                  chunk_size_option: &Option<u32>,
+                  req_flags_option: &Option<u16>,
+                  excl_flags_option: &Option<u16>,
+                  error_model_option: &Option<ErrorModel>,
+                  exclude_ambiguous_option: &Option<bool>,
+                  nOT_option: &Option<String>,
+                  nOB_option: &Option<String>,
+                  read_threads_option: &Option<u8>,
+                  threads_option: &Option<u8>)
+                  -> Result<(), Box<dyn Error>>
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -241,38 +258,32 @@ pub fn run_caller(
     let error_model = config.error_model;
 
     let manager = VariantCounterConnectionManager::with_config(config)?;
-    let pool = r2d2::Pool::builder()
-        .max_size(threads as u32)
-        .build(manager)?;
+    let pool = r2d2::Pool::builder().max_size(threads as u32)
+                                    .build(manager)?;
     //let mut counter = VariantCounter::with_config(config)?;
 
     // Load fasta file as an indexedreader
     // need to do this manually to enable bgzip-compressed input
     let fasta_file = open_file(&fasta_path)?;
-    let index_path = PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
+    let index_path =
+        PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
     let fasta_index = bio::io::fasta::Index::from_file(&index_path)?;
     let indexed_reader = bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index);
 
-    let mut iterator =
-        if chunk_size == 0
-        {
-            SequenceSegmentIterator::with_reader(indexed_reader)?
-        }
-        else
-        {
-            SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
-        };
+    let mut iterator = if chunk_size == 0 {
+        SequenceSegmentIterator::with_reader(indexed_reader)?
+    } else {
+        SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
+    };
 
     // Optionally restrict to region of interest
-    if let Some(region) = region_option
-    {
+    if let Some(region) = region_option {
         iterator.subset_to_region(region)?;
     }
     // Subset to those sequences that are actually in the bam/fasta file
     let counter = pool.get()?;
     iterator.subset_to_intervals(counter.index())?;
     drop(counter); // Ugly, but I need to free that counter up for later
-
 
     // Get a write lock on STDOUT
     let mut lock = stdout().lock();
@@ -337,19 +348,15 @@ pub fn run_caller(
     Ok(())
 }
 
-fn prob_to_phred (prob: f64) -> u8
+fn prob_to_phred(prob: f64) -> u8
 {
     let phred = -10.0 * prob.log10();
-    if phred >= 99.0
-    {
+    if phred >= 99.0 {
         return 99;
     }
-    if phred <= f64::MIN_POSITIVE
-    {
+    if phred <= f64::MIN_POSITIVE {
         return 0;
-    }
-    else
-    {
+    } else {
         return phred.round() as u8;
     }
 }
@@ -359,113 +366,107 @@ pub type ErrorRate = f64;
 /// Empirically derived error rates as published here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8002175/
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-pub struct ErrorRates {
+pub struct ErrorRates
+{
     miseq: ErrorRate,
     miniseq: ErrorRate,
     nextseq_500: ErrorRate,
     nextseq_550: ErrorRate,
     hiseq_2500: ErrorRate,
     novaseq_6000: ErrorRate,
-    hiseq_x_ten: ErrorRate
+    hiseq_x_ten: ErrorRate,
 }
 
-const ERRORRATES: ErrorRates = ErrorRates {
-    miseq: 0.00473,
-    miniseq: 0.00613,
-    nextseq_500: 0.00429,
-    nextseq_550: 0.00593,
-    hiseq_2500: 0.00112,
-    novaseq_6000: 0.00109,
-    hiseq_x_ten: 0.00087
-};
+const ERRORRATES: ErrorRates = ErrorRates { miseq: 0.00473,
+                                            miniseq: 0.00613,
+                                            nextseq_500: 0.00429,
+                                            nextseq_550: 0.00593,
+                                            hiseq_2500: 0.00112,
+                                            novaseq_6000: 0.00109,
+                                            hiseq_x_ten: 0.00087 };
 
-enum Genotype {
+enum Genotype
+{
     CC,
     CT,
-    TT
+    TT,
 }
-struct EstimatedGenotype {
+struct EstimatedGenotype
+{
     genotype: Genotype,
     likelihood: f64,
-    confidence: f64
+    confidence: f64,
 }
-impl Default for EstimatedGenotype {
-    fn default() -> Self {
-        Self { genotype: Genotype::CC, likelihood: 0.0, confidence: 0.0 }
-    }
-}
-
-impl EstimatedGenotype {
-    fn calculate(ref_count: i32, alt_count: i32, error_rate: ErrorRate) -> Result<Self>
+impl Default for EstimatedGenotype
 {
-    if ref_count == alt_count && alt_count == 0
+    fn default() -> Self
     {
-        bail!("No ref or alt read counts, cannot compute likelihood");
-    }
-    if error_rate <= f64::MIN
-    {
-        bail!("Error rate too small, cannot calculate likelihood");
-    }
-    // This is a simple estimate of genotype, based on the following consideration:
-    // A site is either het or hom, where hom could be CC or TT.
-    // If alt_count > ref_count, the latter is more likely, otherwise the former.
-
-    // First, I calculate the likelihood to observe this many alt_reads
-    // under the assumption that ref and alt are equally likely, ie this is a het position.
-    // TODO This assumes a simple diploid sample with no purity issues. For
-    // cancer samples, we could make this a setting to allow for different cancer fraction?
-
-    let mut binom = Binomial::new((ref_count + alt_count) as usize, 0.5); // 0.5 because a het position
-    let p_het = binom.mass(alt_count as usize);
-    let p_het_max = binom.mass(((alt_count+ref_count) as f32 / 2.0).round() as usize);
-
-    // Then, I calculate the probability that this many or more alt_count/ref_count reads
-    // are observed by error, assuming independence of reads and errors.
-    binom = Binomial::new((ref_count + alt_count) as usize, error_rate);
-
-    if ref_count >= alt_count {
-        let p_hom = binom.mass(alt_count as usize) + (1.0 - binom.distribution(alt_count as f64));
-
-        if p_het < p_hom
-        {
-            debug!("Assuming CC: ({} vs {}) -> ({:.5} < {:.5})", ref_count, alt_count, p_het, p_hom);
-            return Ok(EstimatedGenotype {
-                genotype: Genotype::CC,
-                likelihood: p_hom,
-                confidence: (p_hom - p_het)/p_hom
-            });
-        }
-        else
-        {
-            debug!("Assuming CT: ({} vs {}) -> ({:.5} >= {:.5})", ref_count, alt_count, p_het, p_hom);
-            return Ok(EstimatedGenotype {
-                genotype: Genotype::CT,
-                likelihood: p_het / p_het_max,
-                confidence: (p_het - p_hom)/p_het
-            });
-        }
-    }
-    else
-    {
-        let p_hom = binom.mass(ref_count as usize) + (1.0-binom.distribution(ref_count as f64));
-        if p_het < p_hom
-        {
-            debug!("Assuming TT: ({} vs {}) -> ({:.5} < {:.5})", ref_count, alt_count, p_het, p_hom);
-            return Ok(EstimatedGenotype {
-                genotype: Genotype::TT,
-                likelihood: p_hom,
-                confidence: (p_hom - p_het)/p_hom
-            });
-        }
-        else
-        {
-            debug!("Assuming TC: ({} vs {}) -> ({:.5} >= {:.5})", ref_count, alt_count, p_het, p_hom);
-            return Ok(EstimatedGenotype {
-                genotype: Genotype::CT,
-                likelihood: p_het / p_het_max,
-                confidence: (p_het - p_hom)/p_het
-            });
-        }
+        Self { genotype: Genotype::CC,
+               likelihood: 0.0,
+               confidence: 0.0 }
     }
 }
+
+impl EstimatedGenotype
+{
+    fn calculate(ref_count: i32, alt_count: i32, error_rate: ErrorRate) -> Result<Self>
+    {
+        if ref_count == alt_count && alt_count == 0 {
+            bail!("No ref or alt read counts, cannot compute likelihood");
+        }
+        if error_rate <= f64::MIN {
+            bail!("Error rate too small, cannot calculate likelihood");
+        }
+        // This is a simple estimate of genotype, based on the following consideration:
+        // A site is either het or hom, where hom could be CC or TT.
+        // If alt_count > ref_count, the latter is more likely, otherwise the former.
+
+        // First, I calculate the likelihood to observe this many alt_reads
+        // under the assumption that ref and alt are equally likely, ie this is a het position.
+        // TODO This assumes a simple diploid sample with no purity issues. For
+        // cancer samples, we could make this a setting to allow for different cancer fraction?
+
+        let mut binom = Binomial::new((ref_count + alt_count) as usize, 0.5); // 0.5 because a het position
+        let p_het = binom.mass(alt_count as usize);
+        let p_het_max = binom.mass(((alt_count + ref_count) as f32 / 2.0).round() as usize);
+
+        // Then, I calculate the probability that this many or more alt_count/ref_count reads
+        // are observed by error, assuming independence of reads and errors.
+        binom = Binomial::new((ref_count + alt_count) as usize, error_rate);
+
+        if ref_count >= alt_count {
+            let p_hom =
+                binom.mass(alt_count as usize) + (1.0 - binom.distribution(alt_count as f64));
+
+            if p_het < p_hom {
+                debug!("Assuming CC: ({} vs {}) -> ({:.5} < {:.5})",
+                       ref_count, alt_count, p_het, p_hom);
+                return Ok(EstimatedGenotype { genotype: Genotype::CC,
+                                              likelihood: p_hom,
+                                              confidence: (p_hom - p_het) / p_hom });
+            } else {
+                debug!("Assuming CT: ({} vs {}) -> ({:.5} >= {:.5})",
+                       ref_count, alt_count, p_het, p_hom);
+                return Ok(EstimatedGenotype { genotype: Genotype::CT,
+                                              likelihood: p_het / p_het_max,
+                                              confidence: (p_het - p_hom) / p_het });
+            }
+        } else {
+            let p_hom =
+                binom.mass(ref_count as usize) + (1.0 - binom.distribution(ref_count as f64));
+            if p_het < p_hom {
+                debug!("Assuming TT: ({} vs {}) -> ({:.5} < {:.5})",
+                       ref_count, alt_count, p_het, p_hom);
+                return Ok(EstimatedGenotype { genotype: Genotype::TT,
+                                              likelihood: p_hom,
+                                              confidence: (p_hom - p_het) / p_hom });
+            } else {
+                debug!("Assuming TC: ({} vs {}) -> ({:.5} >= {:.5})",
+                       ref_count, alt_count, p_het, p_hom);
+                return Ok(EstimatedGenotype { genotype: Genotype::CT,
+                                              likelihood: p_het / p_het_max,
+                                              confidence: (p_het - p_hom) / p_het });
+            }
+        }
+    }
 }
