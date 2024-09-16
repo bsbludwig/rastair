@@ -184,7 +184,7 @@ impl<R: Read + Seek> PatGenerator<R>
                     }
                     Strand::Unknown => ReadMask(0, 0),
                 };
-                let all_mods: Vec<(usize, MethylationState)> = if start >= end {
+                let all_mods: Vec<(usize, MethylationState)> = if start < end {
                     if let Some(cpg_slice) = self.cpg_buffer
                                                  .cpgs_in_range(chr.as_bytes().as_ref(), start, end)
                     {
