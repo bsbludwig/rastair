@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-pub mod bed2pat;
 pub mod count_reads;
 pub mod count_variants;
 
@@ -11,8 +10,8 @@ pub struct ReadMask(usize, usize);
 #[derive(Clone, Copy, Debug)]
 pub struct ReadMaskSetting
 {
-    r1: ReadMask,
-    r2: ReadMask,
+    pub r1: ReadMask,
+    pub r2: ReadMask,
 }
 
 #[derive(Debug, PartialEq, Eq)]
