@@ -3,26 +3,28 @@
  * flag, number of CpGs, number of modified C/Gs, positions of CpGs, mod status of CpGs
  */
 
+use std::{
+    fmt::{Debug, Display, Formatter},
+    io::{stdout, Write},
+    path::{Path, PathBuf},
+};
 
-use std::{fmt::{Formatter, Display, Debug}, path::{PathBuf, Path}, io::{stdout, Write}};
-
-use log::{debug, info, trace, warn};
-use r2d2::ManageConnection;
-use pariter::IteratorExt as _;
-use thiserror::Error;
 use anyhow::{bail, Result};
 use bio::bio_types::sequence::SequenceReadPairOrientation::{F1R2, F2R1};
+use log::{debug, info, trace, warn};
+use pariter::IteratorExt as _;
+use r2d2::ManageConnection;
 use rust_htslib::bam::{ext::BamRecordExtensions, FetchDefinition, IndexedReader, Read, Record};
+use thiserror::Error;
 
 use crate::sequence_segment::{GenomicRegion, SequenceSegment, SequenceSegmentIterator};
-use crate::utils::extensions::{RecordExt, FetchDefinitionExt, IndexedReaderExt};
 use crate::utils::constants::*;
+use crate::utils::extensions::{FetchDefinitionExt, IndexedReaderExt, RecordExt};
 use crate::utils::file_helpers::open_file;
 
-
- /// Store methylation information for a single read
- pub struct PerReadCount
- {
+/// Store methylation information for a single read
+pub struct PerReadCount
+{
     /// ID of the sequence
     pub region: GenomicRegion,
     /// Flag of read
@@ -31,6 +33,8 @@ use crate::utils::file_helpers::open_file;
     pub mapq: u8,
     /// Absolute fragment length (non-directional)
     pub frag_length: u32,
+    /// Read length
+    pub read_length: u32,
     /// Name of read
     pub read_id: String,
     /// Number of CpGs in a read
@@ -43,34 +47,47 @@ use crate::utils::file_helpers::open_file;
     pub unmod_cpgs: Vec<usize>,
     /// Positions in read of CpGs that are mutated
     pub snp_cpgs: Vec<usize>,
- }
+}
 
- impl Display for PerReadCount
+impl Display for PerReadCount
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result
     {
-        write!(f, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.region.contig,
-            self.region.start,
-            self.region.end,
-            self.read_id,
-            self.mapq,
-            if self.flag & 16 == 16 {"-"} else {"+"},
-            self.frag_length,
-            self.flag,
-            self.cpg_count,
-            self.mod_count,
-            self.mod_cpgs.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(","),
-            self.unmod_cpgs.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(","),
-            self.snp_cpgs.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(","))
+        write!(f,
+               "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+               self.region.contig,
+               self.region.start,
+               self.region.end,
+               self.read_id,
+               self.mapq,
+               if self.flag & 16 == 16 { "-" } else { "+" },
+               self.frag_length,
+               self.read_length,
+               self.flag,
+               self.cpg_count,
+               self.mod_count,
+               self.mod_cpgs
+                   .iter()
+                   .map(|f| f.to_string())
+                   .collect::<Vec<String>>()
+                   .join(","),
+               self.unmod_cpgs
+                   .iter()
+                   .map(|f| f.to_string())
+                   .collect::<Vec<String>>()
+                   .join(","),
+               self.snp_cpgs
+                   .iter()
+                   .map(|f| f.to_string())
+                   .collect::<Vec<String>>()
+                   .join(","))
     }
 }
 
-
- /// Iterator over reads in a region, returning an object that
- /// can be easily printed and parsed in e.g. R
- pub struct ReadIterator<'a>
- {
+/// Iterator over reads in a region, returning an object that
+/// can be easily printed and parsed in e.g. R
+pub struct ReadIterator<'a>
+{
     // A sequence object of that region
     sequence: &'a SequenceSegment,
     // all CpGs in the region
@@ -83,38 +100,40 @@ use crate::utils::file_helpers::open_file;
     config: &'a ReadCounterConfig,
     // Ignore reads if they start beyond this position
     pub right_margin: u64,
- }
+}
 
- impl <'a> ReadIterator <'a>
- {
+impl<'a> ReadIterator<'a>
+{
     /// Constructor with region and readers
-    pub fn with_region_and_reader(segment: &'a SequenceSegment, reader: &'a mut IndexedReader, config: &'a ReadCounterConfig) -> Result<ReadIterator<'a>>
+    pub fn with_region_and_reader(segment: &'a SequenceSegment,
+                                  reader: &'a mut IndexedReader,
+                                  config: &'a ReadCounterConfig)
+                                  -> Result<ReadIterator<'a>>
     {
         // Fetch reads in region/set reader the correct subset
         reader.fetch((segment.region.contig.as_bytes(), segment.region.start, segment.region.end))?;
         let all_cpgs: Vec<u64> = segment.find_cpgs()
-                                 .unwrap_or_default()
-                                 .iter()
-                                 .map(|p| p.pos_in_contig())
-                                 .collect();
+                                        .unwrap_or_default()
+                                        .iter()
+                                        .map(|p| p.pos_in_contig())
+                                        .collect();
         let tiling_window = config.tiling_window_size;
-        let right_margin = if segment.is_last_in_contig
-        {
+        let right_margin = if segment.is_last_in_contig {
             segment.region.end
-        }
-        else if segment.region.end > (tiling_window as u64)
-        {
+        } else if segment.region.end > (tiling_window as u64) {
             segment.region.end - (tiling_window as u64)
-        }
-        else
-        {
+        } else {
             0
         };
-        if right_margin <= segment.region.start
-        {
+        if right_margin <= segment.region.start {
             bail!("Tiling window larger than segment, no reads will be processed!");
         }
-        Ok(Self { sequence: segment, cpgs: all_cpgs, cpg_offset: 0, bam_reader: reader, config, right_margin})
+        Ok(Self { sequence: segment,
+                  cpgs: all_cpgs,
+                  cpg_offset: 0,
+                  bam_reader: reader,
+                  config,
+                  right_margin })
     }
 
     /// Progress the pointer in the bam file iterator to the next read that matches the criteria set in the config.
@@ -123,67 +142,78 @@ use crate::utils::file_helpers::open_file;
     {
         let mut record: Record = Record::new();
         loop {
-            match self.bam_reader.read(&mut record)?
-            {
-                Ok(_)  => (),
-                Err(e)  => {
+            match self.bam_reader.read(&mut record)? {
+                Ok(_) => (),
+                Err(e) => {
                     info!("Failed to fetch next read: {}", e);
                     return None;
                 }
             }
             let qname = std::str::from_utf8(record.qname()).unwrap_or_default();
             // if read starts beyond the right margin, terminate
-            if (record.pos() as u64) > self.right_margin
-            {
-                debug!("Skipping read {} that starts beyond right margin: {} <= {}", qname, record.pos(), self.right_margin);
+            if (record.pos() as u64) > self.right_margin {
+                debug!("Skipping read {} that starts beyond right margin: {} <= {}",
+                       qname,
+                       record.pos(),
+                       self.right_margin);
                 return None;
             }
 
             // check if the current read started before the segment start, which means
             // it was processed in a previous iteration. Skip
-            if record.pos() > 0 && (record.pos() as u64) <= self.sequence.region.start
-            {
-                debug!("Skipping read {} that started in a previous segment: {} <= {}", qname, record.pos(), self.sequence.region.start);
+            if record.pos() > 0 && (record.pos() as u64) <= self.sequence.region.start {
+                debug!("Skipping read {} that started in a previous segment: {} <= {}",
+                       qname,
+                       record.pos(),
+                       self.sequence.region.start);
                 continue;
             }
             // skip reads that lack required flags
-            if record.flags() & self.config.required_flags != self.config.required_flags
-            {
-                debug!("Read {} lacks required flag: {} vs {}", qname, record.flags(), self.config.required_flags);
+            if record.flags() & self.config.required_flags != self.config.required_flags {
+                debug!("Read {} lacks required flag: {} vs {}",
+                       qname,
+                       record.flags(),
+                       self.config.required_flags);
                 continue;
             }
             // skip reads that match an excluded flag
-            else if record.flags() & self.config.excluded_flags > 0
-            {
-                debug!("Read {} has excluded flag: {} vs {}", qname, record.flags(), self.config.excluded_flags);
+            else if record.flags() & self.config.excluded_flags > 0 {
+                debug!("Read {} has excluded flag: {} vs {}",
+                       qname,
+                       record.flags(),
+                       self.config.excluded_flags);
                 continue;
             }
 
             // skip reads with low mapq
-            if record.mapq() < self.config.min_mapq
-            {
-                debug!("Read {} has low quality: {} < {}", qname, record.mapq(), self.config.min_mapq);
+            if record.mapq() < self.config.min_mapq {
+                debug!("Read {} has low quality: {} < {}",
+                       qname,
+                       record.mapq(),
+                       self.config.min_mapq);
                 continue;
             }
-            let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
+            let read_pair_orientation =
+                record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
 
-            match read_pair_orientation
-            {
-                F1R2    => (),
-                F2R1    => (),
-                _       => {
-                    debug!("Skipping incorrectly paired read {}. (flag {})", qname, record.flags());
+            match read_pair_orientation {
+                F1R2 => (),
+                F2R1 => (),
+                _ => {
+                    debug!("Skipping incorrectly paired read {}. (flag {})",
+                           qname,
+                           record.flags());
                     continue;
                 }
             }
 
             break;
-        };
-    Some(record)
+        }
+        Some(record)
     }
- }
+}
 
- impl Iterator for ReadIterator<'_>
+impl Iterator for ReadIterator<'_>
 {
     type Item = PerReadCount;
 
@@ -194,26 +224,33 @@ use crate::utils::file_helpers::open_file;
         /* Check if the read extends beyond the end of the margin
          */
         let alignment = record.cigar();
-        if (alignment.end_pos() as u64) >= self.sequence.region.end
-        {
-            warn!("Read {} extends beyond end of segment {}, tiling window set too short: {}", std::str::from_utf8(record.qname()).unwrap_or_default(), self.sequence, self.config.tiling_window_size);
+        if (alignment.end_pos() as u64) >= self.sequence.region.end {
+            warn!("Read {} extends beyond end of segment {}, tiling window set too short: {}",
+                  std::str::from_utf8(record.qname()).unwrap_or_default(),
+                  self.sequence,
+                  self.config.tiling_window_size);
         }
 
-        let mut next_read_count = PerReadCount {
-            region: GenomicRegion{contig: self.sequence.region.contig.clone(), start: record.pos().abs() as u64, end: alignment.end_pos() as u64},
-            flag: record.flags(),
-            mapq: record.mapq(),
-            frag_length: record.insert_size().abs() as u32,
-            read_id: String::from_utf8(Vec::from(record.qname())).unwrap_or_default(),
-            cpg_count: 0,
-            mod_count: 0,
-            mod_cpgs: Vec::new(),
-            unmod_cpgs: Vec::new(),
-            snp_cpgs: Vec::new()
-        };
+        let mut next_read_count =
+            PerReadCount { region: GenomicRegion { contig: self.sequence
+                                                               .region
+                                                               .contig
+                                                               .clone(),
+                                                   start: record.pos().abs() as u64,
+                                                   end: alignment.end_pos() as u64 },
+                           flag: record.flags(),
+                           mapq: record.mapq(),
+                           frag_length: record.insert_size().abs() as u32,
+                           read_length: record.seq_len() as u32,
+                           read_id:
+                               String::from_utf8(Vec::from(record.qname())).unwrap_or_default(),
+                           cpg_count: 0,
+                           mod_count: 0,
+                           mod_cpgs: Vec::new(),
+                           unmod_cpgs: Vec::new(),
+                           snp_cpgs: Vec::new() };
 
-        if self.cpgs.len() == 0 || self.cpg_offset >= self.cpgs.len()
-        {
+        if self.cpgs.len() == 0 || self.cpg_offset >= self.cpgs.len() {
             debug!("No CpGs in segment or all CpGs already processed, return empty read count");
             return Some(next_read_count);
         }
@@ -221,68 +258,60 @@ use crate::utils::file_helpers::open_file;
         // since reads should arrive here in sorted order, we can
         // be sure that no future read will start to the left of the
         // current position
-        loop
-        {
+        loop {
             let next_cpg_pos = self.cpgs[self.cpg_offset];
-            if next_read_count.region.start <= next_cpg_pos
-            {
-                if next_read_count.region.end <= next_cpg_pos
-                {
-                    debug!("Next CpG pos beyond end of read: {} >= {} (#{} in list)", next_cpg_pos, next_read_count.region.end, self.cpg_offset);
+            if next_read_count.region.start <= next_cpg_pos {
+                if next_read_count.region.end <= next_cpg_pos {
+                    debug!("Next CpG pos beyond end of read: {} >= {} (#{} in list)",
+                           next_cpg_pos, next_read_count.region.end, self.cpg_offset);
                     // we're further than the last element in the alignment
                     // get a new read that might align a bit further right
                     return Some(next_read_count);
-                }
-                else
-                {
-                    debug!("Found CpGs within read {} {}:{}-{} ({})", next_read_count.read_id, next_read_count.region.contig, next_read_count.region.start, next_read_count.region.end, next_cpg_pos);
+                } else {
+                    debug!("Found CpGs within read {} {}:{}-{} ({})",
+                           next_read_count.read_id,
+                           next_read_count.region.contig,
+                           next_read_count.region.start,
+                           next_read_count.region.end,
+                           next_cpg_pos);
                     // There's something to process
-                    break
+                    break;
                 }
             }
-            self.cpg_offset = self.cpg_offset+1;
-            if self.cpg_offset >= self.cpgs.len()
-            {
-                debug!("No more CpGs in segment {} after {}", self.sequence, next_read_count.read_id);
+            self.cpg_offset = self.cpg_offset + 1;
+            if self.cpg_offset >= self.cpgs.len() {
+                debug!("No more CpGs in segment {} after {}",
+                       self.sequence, next_read_count.read_id);
                 return Some(next_read_count);
             }
         }
-        let mut offset=0;
+        let mut offset = 0;
         // Find all CpGs in the subset covered by the read
-        'block_loop:
-        for block in record.aligned_pairs()
-        {
+        'block_loop: for block in record.aligned_pairs() {
             trace!("Processing block {}/{}", block[0], block[1]);
-            if (self.cpg_offset + offset) >= self.cpgs.len()
-            {
+            if (self.cpg_offset + offset) >= self.cpgs.len() {
                 debug!("Found all CpGs in segment, stop");
                 break;
             }
 
             loop {
                 let pos = self.cpgs[self.cpg_offset + offset];
-                if pos < block[1] as u64
-                {
+                if pos < block[1] as u64 {
                     debug!("CpG pos behind current read pos, need to catch up");
-                    offset = offset+1;
-                    if self.cpg_offset + offset >= self.cpgs.len()
-                    {
+                    offset = offset + 1;
+                    if self.cpg_offset + offset >= self.cpgs.len() {
                         break 'block_loop;
                     }
-                }
-                else if pos >= next_read_count.region.end
-                {
-                    debug!("Next CpG ({}) is outside this read ({}-{}), end loop", pos, next_read_count.region.start, next_read_count.region.end);
+                } else if pos >= next_read_count.region.end {
+                    debug!("Next CpG ({}) is outside this read ({}-{}), end loop",
+                           pos, next_read_count.region.start, next_read_count.region.end);
                     break 'block_loop;
-                }
-                else
-                {
+                } else {
                     break;
                 }
             }
             let cpg_pos = self.cpgs[self.cpg_offset + offset];
-            if cpg_pos > block[1] as u64
-            {
+            if cpg_pos > block[1] as u64 {
                 continue;
             }
 
@@ -290,65 +319,54 @@ use crate::utils::file_helpers::open_file;
             let read_base = record.seq()[block[0] as usize].to_ascii_uppercase();
 
             // check if the position in this read is meaningful
-            debug!("Processing pos {} in read {}: {} vs {}, flag {}", cpg_pos, next_read_count.read_id, char::from_u32(base as u32).unwrap_or_default(), char::from_u32(read_base as u32).unwrap_or_default(), record.flags());
-            let read_pair_orientation = record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
-            match read_pair_orientation
-            {
-                F1R2    =>
-                {
-                    match base
-                    {
-                        b'C' =>
-                        {
+            debug!("Processing pos {} in read {}: {} vs {}, flag {}",
+                   cpg_pos,
+                   next_read_count.read_id,
+                   char::from_u32(base as u32).unwrap_or_default(),
+                   char::from_u32(read_base as u32).unwrap_or_default(),
+                   record.flags());
+            let read_pair_orientation =
+                record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
+            match read_pair_orientation {
+                F1R2 => {
+                    match base {
+                        b'C' => {
                             next_read_count.cpg_count = next_read_count.cpg_count + 1;
-                            if read_base == b'T'
-                            {
+                            if read_base == b'T' {
                                 // mod
-                                next_read_count.mod_count = next_read_count.mod_count+1;
+                                next_read_count.mod_count = next_read_count.mod_count + 1;
                                 next_read_count.mod_cpgs.push(block[0] as usize);
-                            }
-                            else if read_base == b'C'
-                            {
+                            } else if read_base == b'C' {
                                 //unmod
                                 next_read_count.unmod_cpgs.push(block[0] as usize);
-                            }
-                            else
-                            {
+                            } else {
                                 debug!("SNP or sequencing error");
                                 next_read_count.snp_cpgs.push(block[0] as usize);
                             }
-                        },
-                        _       => continue
+                        }
+                        _ => continue,
                     }
-                },
-                F2R1    =>
-                {
-                    match base
-                    {
-                        b'G' =>
-                        {
+                }
+                F2R1 => {
+                    match base {
+                        b'G' => {
                             next_read_count.cpg_count = next_read_count.cpg_count + 1;
-                            if read_base == b'A'
-                            {
+                            if read_base == b'A' {
                                 // mod
-                                next_read_count.mod_count = next_read_count.mod_count+1;
+                                next_read_count.mod_count = next_read_count.mod_count + 1;
                                 next_read_count.mod_cpgs.push(block[0] as usize);
-                            }
-                            else if read_base == b'G'
-                            {
+                            } else if read_base == b'G' {
                                 //unmod
                                 next_read_count.unmod_cpgs.push(block[0] as usize);
-                            }
-                            else
-                            {
+                            } else {
                                 debug!("SNP or sequencing error");
                                 next_read_count.snp_cpgs.push(block[0] as usize);
                             }
-                        },
-                        _       => continue
+                        }
+                        _ => continue,
                     }
-                },
-                _       => continue
+                }
+                _ => continue,
             };
         }
         Some(next_read_count)
@@ -368,25 +386,27 @@ pub struct ReadCounterConfig
     pub all_reads: bool,
     pub exclude_ambiguous: bool,
     pub tiling_window_size: usize,
-    pub subset_region: Option<GenomicRegion>
+    pub subset_region: Option<GenomicRegion>,
 }
 
 impl ReadCounterConfig
 {
     pub fn with_path(bam_path: impl AsRef<Path> + Debug) -> Result<Self>
     {
-        let v = ReadCounterConfig
-        {
-            bam_path: bam_path.as_ref().to_owned(),
-            min_mapq: 1,
-            required_flags: FLAGS.is_paired | FLAGS.is_properly_paired,
-            excluded_flags: FLAGS.is_failed | FLAGS.is_not_primary | FLAGS.is_unmapped | FLAGS.mate_is_unmapped | FLAGS.is_duplicate | FLAGS.is_supplemental,
-            htslib_threads: 0,
-            all_reads: false,
-            exclude_ambiguous: false,
-            tiling_window_size: 200,
-            subset_region: None
-        };
+        let v = ReadCounterConfig { bam_path: bam_path.as_ref().to_owned(),
+                                    min_mapq: 1,
+                                    required_flags: FLAGS.is_paired | FLAGS.is_properly_paired,
+                                    excluded_flags: FLAGS.is_failed
+                                                    | FLAGS.is_not_primary
+                                                    | FLAGS.is_unmapped
+                                                    | FLAGS.mate_is_unmapped
+                                                    | FLAGS.is_duplicate
+                                                    | FLAGS.is_supplemental,
+                                    htslib_threads: 0,
+                                    all_reads: false,
+                                    exclude_ambiguous: false,
+                                    tiling_window_size: 200,
+                                    subset_region: None };
         Ok(v)
     }
 }
@@ -395,7 +415,7 @@ struct ReadCounter
 {
     config: ReadCounterConfig,
     bam: IndexedReader,
-    bam_index: Vec<(Vec<u8>, u64, u64)>
+    bam_index: Vec<(Vec<u8>, u64, u64)>,
 }
 
 impl ReadCounter
@@ -404,18 +424,15 @@ impl ReadCounter
     pub fn with_config(config: ReadCounterConfig) -> Result<Self>
     {
         let mut bam = IndexedReader::from_path(&config.bam_path)?;
-        if config.htslib_threads > 0
-        {
+        if config.htslib_threads > 0 {
             bam.set_threads(config.htslib_threads as usize)?;
         }
 
         // cache the expanded index
         let bam_index: Vec<(Vec<u8>, u64, u64)> = bam.expanded_index()?;
-        Ok(ReadCounter {
-            config,
-            bam,
-            bam_index
-        })
+        Ok(ReadCounter { config,
+                         bam,
+                         bam_index })
     }
 
     pub fn index(&self) -> &Vec<(Vec<u8>, u64, u64)>
@@ -430,23 +447,22 @@ impl ReadCounter
  **********************************/
 struct ReadCounterConnectionManager
 {
-    config: ReadCounterConfig
+    config: ReadCounterConfig,
 }
 
 impl ReadCounterConnectionManager
 {
     fn with_config(config: ReadCounterConfig) -> Result<Self>
     {
-        Ok(ReadCounterConnectionManager{
-            config
-        })
+        Ok(ReadCounterConnectionManager { config })
     }
 }
 
 #[derive(Error, Debug)]
-pub enum ReadCounterConnectionError {
+pub enum ReadCounterConnectionError
+{
     #[error("Error connecting to the bam file")]
-    ConnectionError( #[from] anyhow::Error )
+    ConnectionError(#[from] anyhow::Error),
 }
 
 impl ManageConnection for ReadCounterConnectionManager
@@ -455,37 +471,39 @@ impl ManageConnection for ReadCounterConnectionManager
     // TODO create a proper custom error type
     type Error = ReadCounterConnectionError;
 
-    fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        match ReadCounter::with_config(self.config.clone())
-        {
+    fn connect(&self) -> Result<Self::Connection, Self::Error>
+    {
+        match ReadCounter::with_config(self.config.clone()) {
             Ok(counter) => Ok(counter),
-            Err(e)  => Err(ReadCounterConnectionError::ConnectionError(e))
+            Err(e) => Err(ReadCounterConnectionError::ConnectionError(e)),
         }
     }
 
-    fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error> {
+    fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error>
+    {
         //TODO better check for valid connection?
         Ok(())
     }
 
-    fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
+    fn has_broken(&self, _conn: &mut Self::Connection) -> bool
+    {
         false
     }
 }
 
-pub fn run_caller(
-    bam_path: &PathBuf,
-    fasta_path: &PathBuf,
-    region_option: &Option<String>,
-    mapq_option: &Option<u8>,
-    chunk_size_option: &Option<u32>,
-    read_length_option: &Option<usize>,
-    req_flags_option: &Option<u16>,
-    excl_flags_option: &Option<u16>,
-    all_reads_option: &Option<bool>,
-    exclude_ambiguous_option: &Option<bool>,
-    read_threads_option: &Option<u8>,
-    threads_option: &Option<u8>) -> Result<()>
+pub fn run_caller(bam_path: &PathBuf,
+                  fasta_path: &PathBuf,
+                  region_option: &Option<String>,
+                  mapq_option: &Option<u8>,
+                  chunk_size_option: &Option<u32>,
+                  read_length_option: &Option<usize>,
+                  req_flags_option: &Option<u16>,
+                  excl_flags_option: &Option<u16>,
+                  all_reads_option: &Option<bool>,
+                  exclude_ambiguous_option: &Option<bool>,
+                  read_threads_option: &Option<u8>,
+                  threads_option: &Option<u8>)
+                  -> Result<()>
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -520,24 +538,19 @@ pub fn run_caller(
     // Load fasta file as an indexedreader
     // need to do this manually to enable bgzip-compressed input
     let fasta_file = open_file(&fasta_path)?;
-    let index_path = PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
+    let index_path =
+        PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
     let fasta_index = bio::io::fasta::Index::from_file(&index_path)?;
     let indexed_reader = bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index);
 
-    let mut iterator =
-        if chunk_size == 0
-        {
-            SequenceSegmentIterator::with_reader(indexed_reader)?
-        }
-        else
-        {
-            SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
-        };
+    let mut iterator = if chunk_size == 0 {
+        SequenceSegmentIterator::with_reader(indexed_reader)?
+    } else {
+        SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
+    };
 
-    if let Some(max_read_length) = read_length_option
-    {
-        if *max_read_length == 0
-        {
+    if let Some(max_read_length) = read_length_option {
+        if *max_read_length == 0 {
             warn!("Setting tiling window to 0 is likely to cause missing data!");
         }
         config.tiling_window_size = *max_read_length;
@@ -547,8 +560,7 @@ pub fn run_caller(
     // The overhang is needed to get the CpG loci info for reads that extend beyond the margin
     iterator.set_tiling(config.tiling_window_size)?;
 
-    if let Some(region) = region_option
-    {
+    if let Some(region) = region_option {
         let new_region =
         // Need to de-parse region and extend by the read-length to include reads that extend beyond the end
         match FetchDefinition::from_region_string(region)?
@@ -571,15 +583,14 @@ pub fn run_caller(
 
     let subset_region = config.subset_region.clone();
     let manager = ReadCounterConnectionManager::with_config(config)?;
-    let pool = r2d2::Pool::builder()
-        .max_size(threads as u32)
-        .build(manager)?;
+    let pool = r2d2::Pool::builder().max_size(threads as u32)
+                                    .build(manager)?;
     let counter = pool.get()?;
     iterator.subset_to_intervals(counter.index())?;
     drop(counter); // Ugly, but I need to free that counter up for later
 
     let mut lock = stdout().lock();
-    writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tflag\tnum_cpg\tnum_mod\tmod_cps\tunmod_cpgs\tsnp_cpgs")?;
+    writeln!(lock, "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tread_length\tflag\tnum_cpg\tnum_mod\tmod_cpgs\tunmod_cpgs\tsnp_cpgs")?;
 
     iterator
     .map(move |segment| {
@@ -617,7 +628,6 @@ pub fn run_caller(
         writeln!(lock, "{}", read_info).unwrap();
     });
 
-
     Ok(())
 }
 
@@ -629,28 +639,28 @@ struct MBiascounter
     ob_unmod: Vec<(u32, u32)>,
 }
 
-impl MBiascounter {
+impl MBiascounter
+{
     fn new() -> Self
     {
-        MBiascounter{
-            ot_mod: vec![(0 as u32, 0 as u32); 0],
-            ot_unmod: vec![(0 as u32, 0 as u32); 0],
-            ob_mod: vec![(0 as u32, 0 as u32); 0],
-            ob_unmod: vec![(0 as u32, 0 as u32); 0]}
+        MBiascounter { ot_mod: vec![(0 as u32, 0 as u32); 0],
+                       ot_unmod: vec![(0 as u32, 0 as u32); 0],
+                       ob_mod: vec![(0 as u32, 0 as u32); 0],
+                       ob_unmod: vec![(0 as u32, 0 as u32); 0] }
     }
 }
 
-pub fn run_mbias(
-    bam_path: &PathBuf,
-    fasta_path: &PathBuf,
-    region_option: &Option<String>,
-    mapq_option: &Option<u8>,
-    chunk_size_option: &Option<u32>,
-    read_length_option: &Option<usize>,
-    req_flags_option: &Option<u16>,
-    excl_flags_option: &Option<u16>,
-    read_threads_option: &Option<u8>,
-    threads_option: &Option<u8>) -> Result<()>
+pub fn run_mbias(bam_path: &PathBuf,
+                 fasta_path: &PathBuf,
+                 region_option: &Option<String>,
+                 mapq_option: &Option<u8>,
+                 chunk_size_option: &Option<u32>,
+                 read_length_option: &Option<usize>,
+                 req_flags_option: &Option<u16>,
+                 excl_flags_option: &Option<u16>,
+                 read_threads_option: &Option<u8>,
+                 threads_option: &Option<u8>)
+                 -> Result<()>
 {
     /* Read fasta index, and open fasta file for tokenising */
     debug!("Reading fasta and index from {}", fasta_path.display());
@@ -679,35 +689,29 @@ pub fn run_mbias(
     // Load fasta file as an indexedreader
     // need to do this manually to enable bgzip-compressed input
     let fasta_file = open_file(&fasta_path)?;
-    let index_path = PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
+    let index_path =
+        PathBuf::from(format!("{}.fai", fasta_path.to_str().unwrap_or_default()).as_str());
     let fasta_index = bio::io::fasta::Index::from_file(&index_path)?;
     let indexed_reader = bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index);
 
-    let mut iterator =
-        if chunk_size == 0
-        {
-            SequenceSegmentIterator::with_reader(indexed_reader)?
-        }
-        else
-        {
-            SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
-        };
+    let mut iterator = if chunk_size == 0 {
+        SequenceSegmentIterator::with_reader(indexed_reader)?
+    } else {
+        SequenceSegmentIterator::with_reader_and_stepsize(indexed_reader, chunk_size as usize)?
+    };
 
-    if let Some(max_read_length) = read_length_option
-    {
+    if let Some(max_read_length) = read_length_option {
         config.tiling_window_size = *max_read_length;
     }
 
-    if config.tiling_window_size == 0
-    {
+    if config.tiling_window_size == 0 {
         warn!("Setting tiling window to 0 will cause missing data!");
     }
     // We only actually process reads that start up until segment_end-tiling_window.
     // The overhang is needed to get the CpG loci info for reads that extend beyond the margin
     iterator.set_tiling(config.tiling_window_size)?;
 
-    if let Some(region) = region_option
-    {
+    if let Some(region) = region_option {
         let new_region =
         // Need to de-parse region and extend by the read-length to include reads that extend beyond the end
         match FetchDefinition::from_region_string(region)?
@@ -726,9 +730,8 @@ pub fn run_mbias(
     }
 
     let manager = ReadCounterConnectionManager::with_config(config)?;
-    let pool = r2d2::Pool::builder()
-        .max_size(threads as u32)
-        .build(manager)?;
+    let pool = r2d2::Pool::builder().max_size(threads as u32)
+                                    .build(manager)?;
     let counter = pool.get()?;
     iterator.subset_to_intervals(counter.index())?;
     drop(counter); // Ugly, but I need to free that counter up for later
@@ -848,18 +851,46 @@ pub fn run_mbias(
     let mut lock = stdout().lock();
     writeln!(lock, "#pos\ttype\tunmod\tmod\tbeta")?;
     // Summarise and print mbias stats
-    let r_len = [mbc.ob_mod.len(), mbc.ob_unmod.len(), mbc.ot_mod.len(), mbc.ot_unmod.len()].into_iter().max().unwrap();
-    for pos in 0..r_len
-    {
+    let r_len = [mbc.ob_mod.len(),
+                 mbc.ob_unmod.len(),
+                 mbc.ot_mod.len(),
+                 mbc.ot_unmod.len()].into_iter()
+                                    .max()
+                                    .unwrap();
+    for pos in 0..r_len {
         let def = (0 as u32, 0 as u32);
         let ot_mod = mbc.ot_mod.get(pos).unwrap_or(&def);
         let ob_mod = mbc.ob_mod.get(pos).unwrap_or(&def);
         let ot_unmod = mbc.ot_unmod.get(pos).unwrap_or(&def);
         let ob_unmod = mbc.ob_unmod.get(pos).unwrap_or(&def);
-        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OT/1", ot_unmod.0, ot_mod.0, (ot_mod.0 as f32)/(ot_mod.0+ot_unmod.0) as f32)?;
-        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OT/2", ot_unmod.1, ot_mod.1, (ot_mod.1 as f32)/(ot_mod.1+ot_unmod.1) as f32)?;
-        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OB/1", ob_unmod.0, ob_mod.0, (ob_mod.0 as f32)/(ob_mod.0+ob_unmod.0) as f32)?;
-        writeln!(lock, "{}\t{}\t{}\t{}\t{:.5}", pos, "OB/2", ob_unmod.1, ob_mod.1, (ob_mod.1 as f32)/(ob_mod.1+ob_unmod.1) as f32)?;
+        writeln!(lock,
+                 "{}\t{}\t{}\t{}\t{:.5}",
+                 pos,
+                 "OT/1",
+                 ot_unmod.0,
+                 ot_mod.0,
+                 (ot_mod.0 as f32) / (ot_mod.0 + ot_unmod.0) as f32)?;
+        writeln!(lock,
+                 "{}\t{}\t{}\t{}\t{:.5}",
+                 pos,
+                 "OT/2",
+                 ot_unmod.1,
+                 ot_mod.1,
+                 (ot_mod.1 as f32) / (ot_mod.1 + ot_unmod.1) as f32)?;
+        writeln!(lock,
+                 "{}\t{}\t{}\t{}\t{:.5}",
+                 pos,
+                 "OB/1",
+                 ob_unmod.0,
+                 ob_mod.0,
+                 (ob_mod.0 as f32) / (ob_mod.0 + ob_unmod.0) as f32)?;
+        writeln!(lock,
+                 "{}\t{}\t{}\t{}\t{:.5}",
+                 pos,
+                 "OB/2",
+                 ob_unmod.1,
+                 ob_mod.1,
+                 (ob_mod.1 as f32) / (ob_mod.1 + ob_unmod.1) as f32)?;
     }
 
     Ok(())
@@ -868,7 +899,8 @@ pub fn run_mbias(
  = Unit Tests
 ====================================================*/
 #[cfg(test)]
-mod tests {
+mod tests
+{
 
     // For testing
     use super::*;
@@ -902,17 +934,16 @@ mod tests {
         let bam_index = bam.expanded_index()?;
 
         let reader = bio::io::fasta::IndexedReader::from_file(&FASTAFILE)?;
-        let mut iterator: SequenceSegmentIterator<File> = SequenceSegmentIterator::with_reader_and_stepsize(reader, 10_000)?;
+        let mut iterator: SequenceSegmentIterator<File> =
+            SequenceSegmentIterator::with_reader_and_stepsize(reader, 10_000)?;
         iterator.subset_to_region(&"bacteriophage_lambda_CpG".to_string())?;
         iterator.subset_to_intervals(&bam_index)?;
 
-        if let Some(segment) = iterator.next()
-        {
+        if let Some(segment) = iterator.next() {
             let counter = ReadIterator::with_region_and_reader(&segment, &mut bam, &config)?;
-            assert_eq!(counter.right_margin, segment.region.end-(config.tiling_window_size as u64));
-        }
-        else
-        {
+            assert_eq!(counter.right_margin,
+                       segment.region.end - (config.tiling_window_size as u64));
+        } else {
             assert!(false, "No segments in sequence iterator");
         }
         Ok(())

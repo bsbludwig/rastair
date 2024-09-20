@@ -1,10 +1,9 @@
 // Externals
-use log::error;
 use clap::{arg, command, value_parser, Parser, Subcommand};
 use clio::*;
+use log::error;
 
-use rastair::operations::bed2pat;
-use rastair::operations::{count_variants, count_reads, count_variants::ErrorModel};
+use rastair::operations::{count_reads, count_variants, count_variants::ErrorModel};
 
 use rastair::sequence_segment::run_finder;
 
@@ -34,11 +33,11 @@ enum Commands
         fasta_file: ClioPath,
 
         /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end", where start is 1-based and end is inclusive
-        #[arg(short='l', long)]
+        #[arg(short = 'l', long)]
         region: Option<String>,
 
         /// Minimum mapping quality per aligned read [default: 1]
-        #[arg(short='q', long)]
+        #[arg(short = 'q', long)]
         min_mapq: Option<u8>,
 
         /// Minimum base quality per base in a read [default: 10]
@@ -54,11 +53,11 @@ enum Commands
         chunk_size: Option<u32>,
 
         /// Include reads that match all of these bit-flags (as decimal) [default: 3]
-        #[arg(short='f', long)]
+        #[arg(short = 'f', long)]
         required_flags: Option<u16>,
 
         /// Exclude reads matching any of these bit-flags (as decimal) [default: 3852]
-        #[arg(short='F', long)]
+        #[arg(short = 'F', long)]
         excluded_flags: Option<u16>,
 
         /// Exclude reads where the orientation cannot be unambiguously determined [default: false]
@@ -73,14 +72,14 @@ enum Commands
         /// The coordinates are relative to the read, so start is the distance from the 5' of the read, the end is the distance to the 3',
         /// irrespective of which way around the read aligns to the reference.
         /// Also note that the distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
-        #[arg(long="nOT")]
+        #[arg(long = "nOT")]
         n_ot: Option<String>,
 
         /// For each read corresponding to the OB, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
         /// The coordinates are relative to the read, so start is the distance from the 5' of the read, the end is the distance to the 3',
         /// irrespective of which way around the read aligns to the reference.
         /// Also not that the distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
-        #[arg(long="nOB")]
+        #[arg(long = "nOB")]
         n_ob: Option<String>,
 
         /// Number of threads to use inside htslib for decompression. Changing this rarely has a substantial performance effect. [default: 1]
@@ -104,11 +103,11 @@ enum Commands
         fasta_file: ClioPath,
 
         /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end", where start is 1-based and end is inclusive
-        #[arg(short='l', long)]
+        #[arg(short = 'l', long)]
         region: Option<String>,
 
         /// Minimum mapping quality per aligned read [default: 1]
-        #[arg(short='q', long)]
+        #[arg(short = 'q', long)]
         min_mapq: Option<u8>,
 
         /// number of reference positions processed in-memory at once [default: 100000]
@@ -120,11 +119,11 @@ enum Commands
         max_read_length: Option<usize>,
 
         /// Include reads that match all of these bit-flags (as decimal) [default: 3]
-        #[arg(short='f', long)]
+        #[arg(short = 'f', long)]
         required_flags: Option<u16>,
 
         /// Exclude reads matching any of these bit-flags (as decimal) [default: 3852]
-        #[arg(short='F', long)]
+        #[arg(short = 'F', long)]
         excluded_flags: Option<u16>,
 
         /// Report reads with no CpGs in them
@@ -161,11 +160,11 @@ enum Commands
         fasta_file: ClioPath,
 
         /// Restrict to a specific chromosome or region of a chromosome. Format is "chr" or "chr:start-end", where start is 1-based and end is inclusive
-        #[arg(short='l', long)]
+        #[arg(short = 'l', long)]
         region: Option<String>,
 
         /// Minimum mapping quality per aligned read [default: 1]
-        #[arg(short='q', long)]
+        #[arg(short = 'q', long)]
         min_mapq: Option<u8>,
 
         /// number of reference positions processed in-memory at once [default: 100000]
@@ -177,11 +176,11 @@ enum Commands
         max_read_length: Option<usize>,
 
         /// Include reads that match all of these bit-flags (as decimal) [default: 3]
-        #[arg(short='f', long)]
+        #[arg(short = 'f', long)]
         required_flags: Option<u16>,
 
         /// Exclude reads matching any of these bit-flags (as decimal) [default: 3852]
-        #[arg(short='F', long)]
+        #[arg(short = 'F', long)]
         excluded_flags: Option<u16>,
 
         /// Number of threads to use inside htslib for decompression [default: 1]
@@ -203,35 +202,6 @@ enum Commands
         #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
         chunk_size: Option<u32>,
     },
-    /// Utility function to convert per-read bed files to PAT files compatible with wgbstools and UXMtools
-    Bed2pat
-    {
-        /// Read bed output, as produced by the per-read function; Can be bgzip compressed, but requires a gzi index
-        #[arg(value_name="READ_BED", value_parser=value_parser!(ClioPath).exists().is_file())]
-        read_bed_file: ClioPath,
-
-        /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
-        #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
-        fasta_file: ClioPath,
-
-        /// For each read corresponding to the OT, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
-        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
-        /// alignment for a read that is mapped to the reverse strand.
-        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
-        #[arg(long="nOT")]
-        n_ot: Option<String>,
-
-        /// For each read corresponding to the OB, exclude [r1_start, r1_end, r2_start, r2_end] bases from counting.
-        /// The coordinates are relative to the read, not the aligmment, so start is the distance from the end of the
-        /// alignment for a read that is mapped to the reverse strand.
-        /// The distance is relative to read length, not alignment length, so soft-clipped bases count, too! [default: 0,0,0,0]
-        #[arg(long="nOB")]
-        n_ob: Option<String>,
-
-        /// number of reference positions processed in-memory at once [default: 100000]
-        #[arg(short='s', long, value_parser = clap::value_parser!(u32).range(1..))]
-        chunk_size: Option<u32>,
-    },
 }
 
 fn main()
@@ -247,163 +217,126 @@ fn real_main() -> i32
     let cli = Cli::parse();
 
     /* Initialise logging */
-    stderrlog::new()
-        .module(module_path!())
-        .verbosity(cli.verbosity as usize)
-        .timestamp(stderrlog::Timestamp::Second)
-        .init()
-        .unwrap();
+    stderrlog::new().module(module_path!())
+                    .verbosity(cli.verbosity as usize)
+                    .timestamp(stderrlog::Timestamp::Second)
+                    .init()
+                    .unwrap();
 
-    match &cli.command
-    {
-        Some(Commands::Call {
-            bam_file,
-            fasta_file,
-            region,
-            min_mapq,
-            min_baseq,
-            max_depth,
-            chunk_size,
-            required_flags,
-            excluded_flags,
-            error_model,
-            exclude_ambiguous,
-            n_ot,
-            n_ob,
-            read_threads,
-            threads }) =>
+    match &cli.command {
+        Some(Commands::Call { bam_file,
+                              fasta_file,
+                              region,
+                              min_mapq,
+                              min_baseq,
+                              max_depth,
+                              chunk_size,
+                              required_flags,
+                              excluded_flags,
+                              error_model,
+                              exclude_ambiguous,
+                              n_ot,
+                              n_ob,
+                              read_threads,
+                              threads, }) => {
+            // TODO move the unboxing of Options to here
+            // instead of doing that inside run_caller
+            match count_variants::run_caller(&bam_file.to_path_buf(),
+                                             &fasta_file.to_path_buf(),
+                                             region,
+                                             min_mapq,
+                                             min_baseq,
+                                             max_depth,
+                                             chunk_size,
+                                             required_flags,
+                                             excluded_flags,
+                                             error_model,
+                                             exclude_ambiguous,
+                                             n_ot,
+                                             n_ob,
+                                             read_threads,
+                                             threads)
             {
-                // TODO move the unboxing of Options to here
-                // instead of doing that inside run_caller
-                match count_variants::run_caller(&bam_file.to_path_buf(),
-                    &fasta_file.to_path_buf(),
-                    region,
-                    min_mapq,
-                    min_baseq,
-                    max_depth,
-                    chunk_size,
-                    required_flags,
-                    excluded_flags,
-                    error_model,
-                    exclude_ambiguous,
-                    n_ot,
-                    n_ob,
-                    read_threads,
-                    threads )
-                {
-                    Ok(()) => 0,
-                    Err(e)  =>
-                    {
-                        error!("Error running caller: {}", e);
-                        1
-                    }
-                }
-            },
-        Some(Commands::MapCpgs {
-                fasta_file,
-                chunk_size }) =>
-                {
-                    let step_size = chunk_size.unwrap_or_default();
-
-                    match run_finder(&fasta_file.to_path_buf(), step_size as usize)
-                    {
-                        Ok(_) => 0,
-                        Err(e) => {
-                            error!("Failed to run cpg_finder: {}", e);
-                            1
-                        }
-                    }
-                },
-        Some(Commands::PerRead {
-                bam_file,
-                fasta_file,
-                region,
-                min_mapq,
-                chunk_size,
-                max_read_length,
-                required_flags,
-                excluded_flags,
-                all_reads,
-                exclude_ambiguous,
-                read_threads,
-                threads}) =>
-                {
-                    match count_reads::run_caller(
-                        &bam_file.to_path_buf(),
-                        &fasta_file.to_path_buf(),
-                        region,
-                        min_mapq,
-                        chunk_size,
-                        max_read_length,
-                        required_flags,
-                        excluded_flags,
-                        all_reads,
-                        exclude_ambiguous,
-                        read_threads,
-                        threads)
-                    {
-                        Ok(()) => 0,
-                        Err(e)  =>
-                        {
-                            error!("Error running caller: {}", e);
-                            1
-                        }
-                    }
-                },
-        Some(Commands::mbias {
-            bam_file,
-            fasta_file,
-            region,
-            min_mapq,
-            chunk_size,
-            max_read_length,
-            required_flags,
-            excluded_flags,
-            read_threads,
-            threads}) =>
-            {
-                match count_reads::run_mbias(
-                    &bam_file.to_path_buf(),
-                    &fasta_file.to_path_buf(),
-                    region,
-                    min_mapq,
-                    chunk_size,
-                    max_read_length,
-                    required_flags,
-                    excluded_flags,
-                    read_threads,
-                    threads)
-                {
-                    Ok(()) => 0,
-                    Err(e)  =>
-                    {
-                        error!("Error running mbias: {}", e);
-                        1
-                    }
-                }
-            },
-        Some(Commands::Bed2pat {
-            fasta_file,
-            read_bed_file ,
-            n_ot,
-            n_ob,
-            chunk_size,}) => {
-                match bed2pat::run_bed2pat(
-                    fasta_file.to_path_buf(),
-                    read_bed_file.to_path_buf(),
-                    n_ot,
-                    n_ob,
-                    chunk_size)
-                {
-                    Ok(()) => 0,
-                    Err(e)  =>
-                    {
-                        error!("Error running bed2pat: {}", e);
-                        1
-                    }
+                Ok(()) => 0,
+                Err(e) => {
+                    error!("Error running caller: {}", e);
+                    1
                 }
             }
-        None => 0
+        }
+        Some(Commands::MapCpgs { fasta_file,
+                                 chunk_size, }) => {
+            let step_size = chunk_size.unwrap_or_default();
+
+            match run_finder(&fasta_file.to_path_buf(), step_size as usize) {
+                Ok(_) => 0,
+                Err(e) => {
+                    error!("Failed to run cpg_finder: {}", e);
+                    1
+                }
+            }
+        }
+        Some(Commands::PerRead { bam_file,
+                                 fasta_file,
+                                 region,
+                                 min_mapq,
+                                 chunk_size,
+                                 max_read_length,
+                                 required_flags,
+                                 excluded_flags,
+                                 all_reads,
+                                 exclude_ambiguous,
+                                 read_threads,
+                                 threads, }) => {
+            match count_reads::run_caller(&bam_file.to_path_buf(),
+                                          &fasta_file.to_path_buf(),
+                                          region,
+                                          min_mapq,
+                                          chunk_size,
+                                          max_read_length,
+                                          required_flags,
+                                          excluded_flags,
+                                          all_reads,
+                                          exclude_ambiguous,
+                                          read_threads,
+                                          threads)
+            {
+                Ok(()) => 0,
+                Err(e) => {
+                    error!("Error running caller: {}", e);
+                    1
+                }
+            }
+        }
+        Some(Commands::mbias { bam_file,
+                               fasta_file,
+                               region,
+                               min_mapq,
+                               chunk_size,
+                               max_read_length,
+                               required_flags,
+                               excluded_flags,
+                               read_threads,
+                               threads, }) => {
+            match count_reads::run_mbias(&bam_file.to_path_buf(),
+                                         &fasta_file.to_path_buf(),
+                                         region,
+                                         min_mapq,
+                                         chunk_size,
+                                         max_read_length,
+                                         required_flags,
+                                         excluded_flags,
+                                         read_threads,
+                                         threads)
+            {
+                Ok(()) => 0,
+                Err(e) => {
+                    error!("Error running mbias: {}", e);
+                    1
+                }
+            }
+        }
+        None => 0,
     }
 }
 /*

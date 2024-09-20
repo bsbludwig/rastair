@@ -2,29 +2,29 @@
 name = "rastair"
 description = "Fast and flexible extraction of methylation information from bam files"
 authors = ["Benjamin Schuster-Boeckler"]
-version = "0.6.1"
+version = "0.8.0-1"
 edition = "2021"
 license = "AGPL-3.0-only"
 readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow = "1.0.89"
 bgzip = "0.3.1"
-bio = "2.0.0"
-clap = {version = "4.3.21", features = ["derive"]}
+bio = "2.0.3"
+clap = {version = "4.5.17", features = ["derive"]}
 clio = { version = "0.3.5", features = ["clap-parse", "clap"] }
 fxhash = "0.2.1"
-libc = "0.2.147"
-log = "0.4.20"
-memchr = "2.6.4"
+libc = "0.2.158"
+log = "0.4.22"
+memchr = "2.7.4"
 num_cpus = "1.16.0"
 pariter = "0.5.1"
 probability = "0.20.3"
 r2d2 = "0.8.10"
 rust-htslib = {version = "0.46.0", features = ["libdeflate"]}
 stderrlog = "0.6.0"
-thiserror = "1.0.49"
+thiserror = "1.0.63"
 
 [profile.profiling]
 inherits = "release"
