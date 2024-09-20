@@ -5,7 +5,7 @@ pub mod count_variants;
 
 /// Represent a read softmask, to exclude certain portions of the read
 #[derive(Clone, Copy, Debug)]
-pub struct ReadMask(usize, usize);
+pub struct ReadMask(pub usize, pub usize);
 
 #[derive(Clone, Copy, Debug)]
 pub struct ReadMaskSetting
