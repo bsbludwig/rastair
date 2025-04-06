@@ -1,6 +1,6 @@
 use bgzip::{BGZFReader, index::BGZFIndex, read::IndexedBGZFReader};
 use bio::io::fasta::IndexedReader;
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, eyre};
 use std::{
     fs::File,
     io::{Read, Seek},

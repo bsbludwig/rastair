@@ -1,6 +1,6 @@
 use clap::value_parser;
 use clio::ClioPath;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::Result;
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smallvec::SmallVec;
 use tracing::{info, instrument, warn};
