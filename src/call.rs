@@ -153,15 +153,7 @@ impl SeenBases {
     }
 
     fn is_variant_candidate(&self) -> bool {
-        let mut counter = Counter::default();
-        for b in &self.0 {
-            match b.base {
-                Base::A => counter.a += 1,
-                Base::C => counter.c += 1,
-                Base::G => counter.g += 1,
-                Base::T => counter.t += 1,
-            }
-        }
+        let counter: Counter = self.0.iter().map(|x| x.base).collect();
         counter.interesting()
     }
 }
@@ -194,16 +186,15 @@ impl Counter {
     }
 }
 
-impl FromIterator<u8> for Counter {
-    fn from_iter<I: IntoIterator<Item = u8>>(iter: I) -> Self {
+impl FromIterator<Base> for Counter {
+    fn from_iter<I: IntoIterator<Item = Base>>(iter: I) -> Self {
         let mut counter = Counter { c: 0, t: 0, a: 0, g: 0 };
         for c in iter {
             match c {
-                b'C' => counter.c += 1,
-                b'T' => counter.t += 1,
-                b'A' => counter.a += 1,
-                b'G' => counter.g += 1,
-                _ => {}
+                Base::C => counter.c += 1,
+                Base::T => counter.t += 1,
+                Base::A => counter.a += 1,
+                Base::G => counter.g += 1,
             }
         }
         counter
