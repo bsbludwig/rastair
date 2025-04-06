@@ -1,8 +1,9 @@
 use assert_cmd::Command;
+use color_eyre::Result;
 use predicates::prelude::*;
 
 #[test]
-fn random_call() -> anyhow::Result<()> {
+fn random_call() -> Result<()> {
     let mut cmd = Command::cargo_bin("rastair2")?;
     cmd.args([
         "call",
@@ -18,7 +19,7 @@ fn random_call() -> anyhow::Result<()> {
 }
 
 #[test]
-fn missing_bam() -> anyhow::Result<()> {
+fn missing_bam() -> Result<()> {
     let mut cmd = Command::cargo_bin("rastair2")?;
 
     cmd.arg("call");
