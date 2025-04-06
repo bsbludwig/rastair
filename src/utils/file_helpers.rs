@@ -40,6 +40,105 @@ pub enum OpenFastaError {
     OpenFastaIndex { index_path: PathBuf, source: color_eyre::Report },
 }
 
+#[cfg(test)]
+mod fasta_tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_open_fasta_success() -> Result<()> {
+        let dir = TempDir::new()?;
+        let fasta_path = dir.path().join("test.fa");
+        let index_path = dir.path().join("test.fai");
+
+        // Create a simple FASTA file
+        let mut fasta_file = File::create(&fasta_path)?;
+        fasta_file.write_all(b">seq1\nACGT\n>seq2\nGTCA\n")?;
+
+        // Create a simple FAI index
+        let mut index_file = File::create(&index_path)?;
+        // Format: name, length, offset, line_bases, line_width
+        index_file.write_all(b"seq1\t4\t6\t4\t5\nseq2\t4\t16\t4\t5\n")?;
+
+        open_fasta(&fasta_path)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_open_fasta_missing_file() {
+        let non_existent_path = PathBuf::from("/path/that/does/not/exist.fa");
+        let result = open_fasta(&non_existent_path);
+
+        assert!(matches!(result, Err(OpenFastaError::OpenFile { .. })));
+    }
+
+    #[test]
+    fn test_open_fasta_missing_index() -> Result<()> {
+        let dir = TempDir::new()?;
+        let fasta_path = dir.path().join("test.fa");
+
+        // Create FASTA file without index
+        let mut fasta_file = File::create(&fasta_path)?;
+        fasta_file.write_all(b">seq1\nACGT\n")?;
+
+        let result = open_fasta(&fasta_path);
+
+        assert!(matches!(result, Err(OpenFastaError::OpenFastaIndex { .. })));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_open_fasta_with_bgzip() -> Result<()> {
+        let dir = TempDir::new()?;
+        let fasta_path = dir.path().join("test.fa.gz");
+        let fasta_index_path = dir.path().join("test.fa.fai");
+        let bgzip_index_path = dir.path().join("test.fa.gz.gzi");
+
+        // Create a bgzipped FASTA file with gzi index
+        let mut gz = bgzip::BGZFWriter::with_compress_unit_size(
+            File::create(&fasta_path)?,
+            bgzip::Compression::fast(),
+            16, // extra small chunk size so we get index entries!
+            true,
+        )?;
+        gz.write_all(b">seq1\nACGT\n>seq2\nGTCA\n")?;
+        let index = gz.close()?.expect("index");
+        index.write(&mut File::create(&bgzip_index_path)?)?;
+
+        // Create FAI index
+        let mut index_file = File::create(&fasta_index_path)?;
+        index_file.write_all(b"seq1\t4\t6\t4\t5\nseq2\t4\t16\t4\t5\n")?;
+
+        open_fasta(&fasta_path)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_open_fasta_corrupt_index() -> Result<()> {
+        let dir = TempDir::new()?;
+        let fasta_path = dir.path().join("test.fa");
+        let index_path = dir.path().join("test.fa.fai");
+
+        // Create FASTA file
+        let mut fasta_file = File::create(&fasta_path)?;
+        fasta_file.write_all(b">seq1\nACGT\n")?;
+
+        // Create corrupt FAI index
+        let mut index_file = File::create(&index_path)?;
+        index_file.write_all(b"corrupted_content")?;
+
+        let result = open_fasta(&fasta_path);
+
+        assert!(matches!(result, Err(OpenFastaError::OpenFastaIndex { .. })));
+
+        Ok(())
+    }
+}
+
 /// Open the file at the path. If the file has a `.gz` extension, it is assumed
 /// to be a bgzip-compressed file and that there is a corresponding `.gz.gzi`
 /// index file.
@@ -81,7 +180,7 @@ fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-enum OpenMaybeBgzipError {
+pub(crate) enum OpenMaybeBgzipError {
     #[error("Failed to open file `{path}`: {source}")]
     OpenFile { path: PathBuf, source: std::io::Error },
     #[error("{index_path:?} does not exist. bgzip input must be indexed (try bgzip -r {path:?})")]
@@ -95,7 +194,7 @@ enum OpenMaybeBgzipError {
 }
 
 #[cfg(test)]
-mod tests {
+mod open_maybe_bgzip {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
