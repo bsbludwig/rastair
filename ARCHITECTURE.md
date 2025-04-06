@@ -12,7 +12,11 @@ Additionally, `cargo clippy` is used to check for common mistakes and code style
 
 ### Test Coverage
 
-The code is tested using `cargo tarpaulin`.
+The code is tested using `cargo tarpaulin`:
+
+```bash
+cargo tarpaulin -o html --output-dir tmp/coverage
+```
 
 ## Code Style
 
