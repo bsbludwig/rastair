@@ -252,7 +252,7 @@ mod tests {
             assert_eq!(parsed.chromosome, chrom);
             assert_eq!(parsed.start, NonZeroU32::new(start));
             assert_eq!(parsed.end, NonZeroU32::new(end));
-            assert_eq!(parsed.to_string(), region_str);
+            assert_eq!(parsed.to_string(), region_str.trim());
             let _ = FetchDefinition::from(&parsed);
         }
 
@@ -266,7 +266,7 @@ mod tests {
                 return Ok(());
             };
             // parsed string is same as the original
-            assert_eq!(parsed.to_string(), random_str);
+            assert_eq!(parsed.to_string(), random_str.trim());
             // can be used as a FetchDefinition for bam
             let _ = FetchDefinition::from(&parsed);
         }
