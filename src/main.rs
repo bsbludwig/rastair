@@ -1,35 +1,18 @@
-use bitflags::bitflags;
-use clap::value_parser;
-use clio::ClioPath;
-use color_eyre::eyre::{Result, eyre};
-use rastair2::{read, utils::RegionString};
-use rust_htslib::bam::{self, Read as _, record::Cigar};
-use smallvec::SmallVec;
-use std::path::Path;
-use tracing::{debug, info, instrument, trace, warn};
+use clap::Parser as _;
+use color_eyre::eyre::Result;
+use rastair2::call::{CallParams, read};
+use tracing::info;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[derive(Debug, clap::Parser)]
-struct Cli {}
+struct Cli {
+    #[clap(subcommand)]
+    command: Subcommand,
+}
 
 #[derive(Debug, clap::Subcommand)]
 enum Subcommand {
     Call(CallParams),
-}
-
-#[derive(Debug, clap::Args)]
-struct CallParams {
-    /// A sorted and indexed bam file
-    #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
-    bam_file: ClioPath,
-
-    /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
-    #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
-    fasta_file: ClioPath,
-
-    /// Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive.
-    #[arg(short = 'l', long)]
-    region: Option<RegionString>,
 }
 
 fn main() -> Result<()> {
@@ -37,10 +20,16 @@ fn main() -> Result<()> {
     let subscriber = tracing_subscriber::Registry::default()
         .with(tracing_error::ErrorLayer::default())
         .with(tracing_subscriber::fmt::Layer::default());
-
     tracing::subscriber::set_global_default(subscriber)?;
 
-    read("test_data/test.bam".as_ref())?;
+    let args = Cli::parse();
+
+    match args.command {
+        Subcommand::Call(params) => {
+            info!(?params, "Running call command");
+            read(&params)?;
+        }
+    }
 
     Ok(())
 }

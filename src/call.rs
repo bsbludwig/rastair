@@ -2,36 +2,53 @@ use bitflags::bitflags;
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::eyre::{Result, eyre};
-use rust_htslib::bam::{self, Read as _, record::Cigar};
+use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smallvec::SmallVec;
-use std::path::Path;
-use tracing::{debug, info, instrument, trace, warn};
-use tracing_subscriber::layer::SubscriberExt as _;
+use tracing::{info, instrument, warn};
 
-use crate::utils::{Base, TryAsBase as _, file_helpers::open_maybe_bgzip};
+use crate::utils::{Base, RegionString, TryAsBase as _, file_helpers::open_maybe_bgzip};
 
-#[instrument(skip(path))]
-pub fn read(path: &Path) -> Result<()> {
-    let fetch_range = 6_105_700..6_105_800;
+#[derive(Debug, clap::Args)]
+pub struct CallParams {
+    /// A sorted and indexed bam file
+    #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+    bam_file: ClioPath,
 
+    /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
+    #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
+    fasta_file: ClioPath,
+
+    /// Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive.
+    #[arg(short = 'l', long)]
+    region: Option<RegionString>,
+}
+
+#[instrument(skip(params))]
+pub fn read(params: &CallParams) -> Result<()> {
     let mut fasta = {
-        let fasta_file = open_maybe_bgzip("test_data/test.fasta.gz")?;
-        let fasta_index = bio::io::fasta::Index::from_file(&path.with_extension("fasta.fai"))
+        let path = params.fasta_file.path();
+        let fasta_file = open_maybe_bgzip(path)?;
+        let fasta_index = bio::io::fasta::Index::from_file(&path.with_extension("fai"))
             .map_err(|err| eyre!(Box::new(err)))?;
         bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index)
     };
     // indexed_reader.fetch("chr19", fetch_range.start, fetch_range.end + 1)?;
 
-    let mut bam = bam::IndexedReader::from_path(path)?;
+    let mut bam = bam::IndexedReader::from_path(params.bam_file.path())?;
     bam.set_threads(8)?;
-    bam.fetch(("chr19", fetch_range.start, fetch_range.end + 1))?;
+    if let Some(region) = &params.region {
+        bam.fetch(region)?;
+    } else {
+        bam.fetch(FetchDefinition::All)?;
+    }
+    // bam.fetch(("chr19", fetch_range.start, fetch_range.end + 1))?;
 
     let mut seq = Vec::new();
 
     for pile in bam
         .pileup()
         .filter_map(|p| p.ok())
-        .filter(|p| fetch_range.contains(&(p.pos() as u64)))
+        // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
         .take(100)
     {
         fasta.fetch("chr19", pile.pos() as u64, pile.pos() as u64 + 2)?;
@@ -65,10 +82,11 @@ pub fn read(path: &Path) -> Result<()> {
         );
         let reference_base = seq[0].as_base()?;
         let next_base = seq.get(1).and_then(|x| x.as_base().ok());
-        if bases.interesting() {
+        if bases.is_variant_candidate() {
             // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
-            let pileup = InterestingPileup { pos: pile.pos(), bases, reference_base, next_base };
-            info!(?pileup, "interesting pileup");
+            let pileup =
+                VariantCandidatePileup { pos: pile.pos(), bases, reference_base, next_base };
+            info!(?pileup, "variant candidate");
         } else if bases.matches(reference_base) {
             // Matches reference base
             // boring.
@@ -88,7 +106,7 @@ pub fn read(path: &Path) -> Result<()> {
 }
 
 #[derive(Debug)]
-struct InterestingPileup {
+struct VariantCandidatePileup {
     pos: u32,
     bases: SeenBases,
     reference_base: Base,
@@ -135,7 +153,7 @@ impl SeenBases {
         self.0.iter().all(|b| b.base == base)
     }
 
-    fn interesting(&self) -> bool {
+    fn is_variant_candidate(&self) -> bool {
         let mut counter = Counter::default();
         for b in &self.0 {
             match b.base {
