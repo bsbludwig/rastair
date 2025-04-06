@@ -57,6 +57,20 @@ impl std::str::FromStr for Base {
     }
 }
 
+impl TryFrom<u8> for Base {
+    type Error = BaseError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            b'A' => Ok(Base::A),
+            b'C' => Ok(Base::C),
+            b'G' => Ok(Base::G),
+            b'T' => Ok(Base::T),
+            _ => Err(BaseError::InvalidBaseError(value)),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum BaseError {
     #[error("Empty")]
@@ -71,12 +85,50 @@ pub trait TryAsBase {
 
 impl TryAsBase for u8 {
     fn as_base(&self) -> Result<Base, BaseError> {
-        match self {
-            b'A' => Ok(Base::A),
-            b'C' => Ok(Base::C),
-            b'G' => Ok(Base::G),
-            b'T' => Ok(Base::T),
-            _ => Err(BaseError::InvalidBaseError(*self)),
+        (*self).try_into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_roundtrip(input: u8) {
+            let Ok(base) = input.as_base() else {
+                // We're just checking that there is no panic, but errors are fine!
+                return Ok(());
+            };
+            assert_eq!(*base, input);
+        }
+
+        #[test]
+        fn proptest_roundtrip_str(input in r"\PC{0,10}" ) {
+            let Ok(base) = Base::from_str(&input) else {
+                // We're just checking that there is no panic, but errors are fine!
+                return Ok(());
+            };
+            assert_eq!(*base, input.as_bytes()[0]);
+        }
+    }
+
+    #[test]
+    fn test_u8_to_base_valid() {
+        let valid_bases = [b'A', b'C', b'G', b'T'];
+        for &base in &valid_bases {
+            let parsed = base.as_base().unwrap();
+            assert_eq!(*parsed, base);
+            // display
+            assert_eq!(parsed.to_string(), (base as char).to_string());
+            // debug -- same, actually
+            assert_eq!(format!("{parsed:?}"), (base as char).to_string());
+            // display in color
+            let colored = parsed.display_colored();
+            // skip initial ANSI color codes
+            let x = colored.chars().nth(5).unwrap();
+            assert_eq!(x, base as char);
         }
     }
 }
