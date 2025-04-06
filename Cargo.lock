@@ -1535,6 +1535,7 @@ dependencies = [
  "rust-htslib",
  "smallvec 2.0.0-alpha.11",
  "smol_str",
+ "tempfile",
  "thiserror 2.0.12",
  "tracing",
  "tracing-error",

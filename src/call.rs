@@ -5,7 +5,7 @@ use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smallvec::SmallVec;
 use tracing::{info, instrument, warn};
 
-use crate::utils::{Base, RegionString, TryAsBase as _, file_helpers::open_maybe_bgzip};
+use crate::utils::{Base, RegionString, TryAsBase as _, file_helpers::open_fasta};
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
@@ -24,13 +24,7 @@ pub struct CallParams {
 
 #[instrument(skip(params))]
 pub fn read(params: &CallParams) -> Result<()> {
-    let mut fasta = {
-        let path = params.fasta_file.path();
-        let fasta_file = open_maybe_bgzip(path)?;
-        let fasta_index = bio::io::fasta::Index::from_file(&path.with_extension("fai"))
-            .map_err(|err| eyre!(Box::new(err)))?;
-        bio::io::fasta::IndexedReader::with_index(fasta_file, fasta_index)
-    };
+    let mut fasta = open_fasta(&params.fasta_file)?;
     // indexed_reader.fetch("chr19", fetch_range.start, fetch_range.end + 1)?;
 
     let mut bam = bam::IndexedReader::from_path(params.bam_file.path())?;
