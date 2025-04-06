@@ -180,7 +180,7 @@ fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub(crate) enum OpenMaybeBgzipError {
+pub enum OpenMaybeBgzipError {
     #[error("Failed to open file `{path}`: {source}")]
     OpenFile { path: PathBuf, source: std::io::Error },
     #[error("{index_path:?} does not exist. bgzip input must be indexed (try bgzip -r {path:?})")]
