@@ -3,6 +3,7 @@ name = "rastair2"
 description = "Fast and flexible extraction of methylation information from BAM files"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.86.0"
 license = "AGPL-3.0-only"
 authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"
