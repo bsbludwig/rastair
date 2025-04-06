@@ -50,7 +50,7 @@ impl std::str::FromStr for Base {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
-        let Some(first) = s.as_bytes().get(0) else {
+        let Some(first) = s.as_bytes().first() else {
             return Err(BaseError::Empty);
         };
         first.as_base()
@@ -61,7 +61,7 @@ impl std::str::FromStr for Base {
 pub enum BaseError {
     #[error("Empty")]
     Empty,
-    #[error("Invalid base `{0}`")]
+    #[error("Invalid base {base:?}", base=(0 as char))]
     InvalidBaseError(u8),
 }
 
