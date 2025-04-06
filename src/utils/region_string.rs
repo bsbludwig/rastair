@@ -1,5 +1,6 @@
 use std::num::{NonZeroU32, ParseIntError};
 
+use rust_htslib::bam::FetchDefinition;
 use smol_str::SmolStr;
 
 /// A struct representing a genomic region string.
@@ -52,12 +53,12 @@ impl std::str::FromStr for RegionString {
             .next()
             .expect("split always returns given string")
             .parse()
-            .map_err(|e| RegionStringError::InvalidStartPosition(e))?;
+            .map_err(RegionStringError::InvalidStartPosition)?;
 
         let Some(end) = range_parts.next() else {
             return Ok(Self { chromosome, start: Some(start), end: None });
         };
-        let end: NonZeroU32 = end.parse().map_err(|e| RegionStringError::InvalidEndPosition(e))?;
+        let end: NonZeroU32 = end.parse().map_err(RegionStringError::InvalidEndPosition)?;
         if start.get() > end.get() {
             return Err(RegionStringError::StartGreaterThanEnd);
         }
@@ -74,9 +75,9 @@ pub enum RegionStringError {
     InvalidAscii,
     #[error("Invalid chromosome name")]
     InvalidChromosome,
-    #[error("Invalid start position")]
+    #[error("Invalid start position ({0})")]
     InvalidStartPosition(ParseIntError),
-    #[error("Invalid end position")]
+    #[error("Invalid end position ({0})")]
     InvalidEndPosition(ParseIntError),
     #[error("Start position cannot be greater than end position")]
     StartGreaterThanEnd,
@@ -92,6 +93,22 @@ impl std::fmt::Display for RegionString {
             write!(f, "-{}", end)?;
         }
         Ok(())
+    }
+}
+
+impl<'a> From<&'a RegionString> for FetchDefinition<'a> {
+    fn from(region: &'a RegionString) -> Self {
+        let chromosome = region.chromosome.as_bytes();
+        match (region.start, region.end) {
+            (Some(start), Some(end)) => {
+                FetchDefinition::from((chromosome, start.get() - 1, end.get()))
+            }
+            (Some(start), None) => FetchDefinition::from((chromosome, start.get() - 1, i64::MAX)),
+            (None, None) => FetchDefinition::from(chromosome),
+            (None, Some(_)) => {
+                unreachable!("End position cannot be specified without a start position")
+            }
+        }
     }
 }
 
@@ -210,43 +227,47 @@ mod tests {
         ) {
             let end = start + end_offset;
 
-            // Test chromosome only
+            // chromosome only
             let region_str = chrom.clone();
             let parsed = RegionString::from_str(&region_str)?;
             assert_eq!(parsed.chromosome, chrom);
             assert_eq!(parsed.start, None);
             assert_eq!(parsed.end, None);
             assert_eq!(parsed.to_string(), region_str);
+            let _ = FetchDefinition::from(&parsed);
 
-            // Test chromosome with start
+            // chromosome with start
             let region_str = format!("{}:{}", chrom, start);
             let parsed = RegionString::from_str(&region_str)?;
             assert_eq!(parsed.chromosome, chrom);
             assert_eq!(parsed.start, NonZeroU32::new(start));
             assert_eq!(parsed.end, None);
             assert_eq!(parsed.to_string(), region_str);
+            let _ = FetchDefinition::from(&parsed);
 
-            // Test chromosome with start and end
+            // chromosome with start and end
             let region_str = format!("{}:{}-{}", chrom, start, end);
             let parsed = RegionString::from_str(&region_str)?;
             assert_eq!(parsed.chromosome, chrom);
             assert_eq!(parsed.start, NonZeroU32::new(start));
             assert_eq!(parsed.end, NonZeroU32::new(end));
             assert_eq!(parsed.to_string(), region_str);
+            let _ = FetchDefinition::from(&parsed);
         }
 
         #[test]
         fn proptest_roundtrip_random_string(
-            // Generate random strings with alphanumeric characters
+            // Generate random strings with up to 100 printable characters
             random_str in r"\PC{0,100}"
         ) {
             let Ok(parsed) = RegionString::from_str(&random_str) else {
                 // We're just checking that there is no panic, but errors are fine!
                 return Ok(());
             };
-            // Check that the parsed string is the same as the original
+            // parsed string is same as the original
             assert_eq!(parsed.to_string(), random_str);
+            // can be used as a FetchDefinition for bam
+            let _ = FetchDefinition::from(&parsed);
         }
-
     }
 }
