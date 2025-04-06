@@ -1,4 +1,3 @@
-use bitflags::bitflags;
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::eyre::{Result, eyre};

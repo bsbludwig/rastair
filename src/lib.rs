@@ -1,2 +1,8 @@
 pub mod call;
-pub mod utils;
+pub mod utils {
+    mod base;
+    pub use base::{Base, TryAsBase};
+    pub mod file_helpers;
+    mod region_string;
+    pub use region_string::RegionString;
+}
