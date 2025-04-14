@@ -108,6 +108,7 @@ struct VariantCandidatePileup {
 
 struct SeenBases(SmallVec<SeenBase, 20>);
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for SeenBases {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.0.iter()).finish()

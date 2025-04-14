@@ -9,6 +9,7 @@ pub enum Base {
     T = b'T',
 }
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Display for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", (*self) as u8 as char)
@@ -16,6 +17,7 @@ impl std::fmt::Display for Base {
 }
 
 impl Base {
+    #[cfg(not(tarpaulin_include))]
     pub fn display_colored(&self) -> &str {
         match self {
             Base::A => "\x1b[32mA\x1b[0m", // green
@@ -39,6 +41,7 @@ impl std::ops::Deref for Base {
     }
 }
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self)
