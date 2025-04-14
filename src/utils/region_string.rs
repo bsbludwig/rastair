@@ -45,8 +45,10 @@ impl std::str::FromStr for RegionString {
             .ok_or(RegionStringError::InvalidChromosome)?
             .into();
 
-        let Some(range) = parts.next().filter(|r| !r.trim().is_empty()) else {
-            return Ok(Self { chromosome, start: None, end: None });
+        let range = match parts.next().map(|r| r.trim()) {
+            Some("") => return Err(RegionStringError::EmptyRange),
+            Some(r) => r,
+            None => return Ok(Self { chromosome, start: None, end: None }),
         };
 
         let mut range_parts = range.split('-');
@@ -76,6 +78,8 @@ pub enum RegionStringError {
     InvalidAscii,
     #[error("Invalid chromosome name")]
     InvalidChromosome,
+    #[error("Range is empty")]
+    EmptyRange,
     #[error("Invalid start position ({0})")]
     InvalidStartPosition(ParseIntError),
     #[error("Invalid end position ({0})")]
@@ -175,10 +179,8 @@ mod tests {
         assert!(matches!(err, RegionStringError::InvalidChromosome));
 
         // empty range part
-        let region = RegionString::from_str("chr1:  ").unwrap();
-        assert_eq!(region.chromosome, "chr1");
-        assert_eq!(region.start, None);
-        assert_eq!(region.end, None);
+        let err = RegionString::from_str("chr1:  ").unwrap_err();
+        assert!(matches!(err, RegionStringError::EmptyRange));
 
         // invalid characters in start
         let err = RegionString::from_str("chr1:xxx").unwrap_err();
