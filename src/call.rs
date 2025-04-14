@@ -5,6 +5,8 @@ use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smallvec::SmallVec;
 use tracing::{info, instrument, warn};
 
+mod scores;
+
 use crate::utils::{Base, RegionString, TryAsBase as _, file_helpers::open_fasta};
 
 #[derive(Debug, clap::Args)]
@@ -80,6 +82,7 @@ pub fn read(params: &CallParams) -> Result<()> {
             let pileup =
                 VariantCandidatePileup { pos: pile.pos(), bases, reference_base, next_base };
             info!(?pileup, "variant candidate");
+            pileup.metrics();
         } else if bases.matches(reference_base) {
             // Matches reference base
             // boring.
@@ -104,6 +107,38 @@ struct VariantCandidatePileup {
     bases: SeenBases,
     reference_base: Base,
     next_base: Option<Base>,
+}
+
+impl VariantCandidatePileup {
+    fn metrics(&self) {
+        let reference_bases = self.bases.0.iter().filter(|b| b.base == self.reference_base);
+        let reference_count = reference_bases.clone().count();
+        let alt_bases = self.bases.0.iter().filter(|b| b.base != self.reference_base);
+        let alt_count = alt_bases.clone().count();
+
+        let vaf = scores::VariantAlleleFrequency {
+            reference_count: reference_count as u64,
+            alt_count: alt_count as u64,
+        };
+        info!(val = vaf.calculate(), "vaf");
+
+        let binomial = scores::BinomialTest {
+            reference_count: reference_count as u64,
+            alt_count: alt_count as u64,
+            error_rate: 0.01,
+        };
+        info!(val = binomial.calculate(), "binomial");
+
+        let mapq = scores::MappingQuality {
+            reference_mapq: SmallVec::from_iter(reference_bases.clone().map(|b| b.mapq)),
+            alt_mapq: SmallVec::from_iter(alt_bases.clone().map(|b| b.mapq)),
+        };
+        info!(val = ?mapq.calculate(), "mapq");
+
+        //
+        // BinomialTest
+        // MappingQuality
+    }
 }
 
 struct SeenBases(SmallVec<SeenBase, 20>);
