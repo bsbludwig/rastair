@@ -148,13 +148,6 @@ fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(
 ) -> Result<Box<dyn ReadAndSeek>, OpenMaybeBgzipError> {
     let path = path.as_ref();
 
-    fn open(path: &Path) -> Result<Box<dyn ReadAndSeek>, OpenMaybeBgzipError> {
-        let file = File::open(path)
-            .map_err(|source| OpenMaybeBgzipError::OpenFile { path: path.to_owned(), source })?;
-        let buffered = std::io::BufReader::new(file);
-        Ok(Box::new(buffered))
-    }
-
     if path.extension().unwrap_or_default() == "gz" {
         let mut index_path = Path::new(path).to_owned();
         index_path.set_extension("gz.gzi");
@@ -176,6 +169,13 @@ fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(
         debug!("Opened uncompressed file");
         Ok(Box::new(in_file))
     }
+}
+
+fn open(path: &Path) -> Result<Box<dyn ReadAndSeek>, OpenMaybeBgzipError> {
+    let file = File::open(path)
+        .map_err(|source| OpenMaybeBgzipError::OpenFile { path: path.to_owned(), source })?;
+    let buffered = std::io::BufReader::new(file);
+    Ok(Box::new(buffered))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -250,6 +250,106 @@ mod open_maybe_bgzip {
 
         let result = open_maybe_bgzip(&file_path);
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_open_file_error() {
+        let path = PathBuf::from("/nonexistent/file.txt");
+        let result = open_maybe_bgzip(&path);
+
+        assert!(matches!(result, Err(OpenMaybeBgzipError::OpenFile { path: p, .. }) if p == path));
+    }
+
+    #[test]
+    fn test_no_index_file_error() -> Result<()> {
+        let dir = TempDir::new()?;
+        let file_path = dir.path().join("test.gz");
+
+        // Create a file with .gz extension but no index
+        let mut file = File::create(&file_path)?;
+        file.write_all(b"some content")?;
+
+        let result = open_maybe_bgzip(&file_path);
+
+        assert!(matches!(
+            result,
+            Err(OpenMaybeBgzipError::NoIndexFile { path, index_path })
+            if path == file_path && index_path == file_path.with_extension("gz.gzi")
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_index_error() -> Result<()> {
+        let dir = TempDir::new()?;
+        let file_path = dir.path().join("test.gz");
+        let index_path = dir.path().join("test.gz.gzi");
+
+        // Create the main file
+        let mut file = File::create(&file_path)?;
+        file.write_all(b"some content")?;
+
+        // Create a corrupted/invalid index file
+        let mut index_file = File::create(&index_path)?;
+        index_file.write_all(b"this is not a valid bgzip index")?;
+
+        let result = open_maybe_bgzip(&file_path);
+
+        assert!(matches!(
+            result,
+            Err(OpenMaybeBgzipError::ReadIndex { path, .. })
+            if path == index_path
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_bgzip_error() -> Result<()> {
+        let dir = TempDir::new()?;
+        let file_path = dir.path().join("test.gz");
+        let index_path = dir.path().join("test.gz.gzi");
+
+        // Create a file that's not a valid BGZIP file
+        let mut file = File::create(&file_path)?;
+        file.write_all(b"this is not a valid bgzip file")?;
+
+        // Create a dummy index file so we get past the index check
+        let index = BGZFIndex::default();
+        index.write(&mut File::create(&index_path)?)?;
+
+        let result = open_maybe_bgzip(&file_path);
+
+        assert!(matches!(
+            result,
+            Err(OpenMaybeBgzipError::ReadBgzip { path, .. })
+            if path == file_path
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_indexed_bgzip_reader_error() -> Result<()> {
+        let dir = TempDir::new()?;
+        let file_path = dir.path().join("test.gz");
+        let index_path = dir.path().join("test.gz.gzi");
+
+        // Create a valid BGZIP file
+        let mut gz = bgzip::BGZFWriter::new(File::create(&file_path)?, bgzip::Compression::fast());
+        gz.write_all(b"content")?;
+        gz.close()?;
+
+        // Create an index that doesn't match the file
+        let mut index = File::create(&index_path)?;
+        write!(&mut index, "no thanks")?;
+
+        let result = open_maybe_bgzip(&file_path);
+
+        assert!(matches!(result, Err(OpenMaybeBgzipError::ReadIndex { .. })));
+
         Ok(())
     }
 }
