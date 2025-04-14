@@ -88,6 +88,7 @@ pub enum RegionStringError {
     StartGreaterThanEnd,
 }
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Display for RegionString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.chromosome)?;

@@ -123,6 +123,7 @@ struct SeenBase {
     at_fringe: bool,
 }
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for SeenBase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.alternate() {
