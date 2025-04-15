@@ -11,10 +11,30 @@
 // - Repeat/homopolymer length of region for @indel:pl
 // - Realignment score/hamming-distance difference for reads covering @variant#mark[assumes realignment]
 
+use std::fmt;
+
 use probability::{distribution::Binomial, prelude::Discrete};
 use smallvec::SmallVec;
 
 use crate::utils::RootMeanSquare;
+
+pub struct RefVsAlt<T> {
+    reference: T,
+    alt: T,
+}
+
+impl<T> RefVsAlt<T> {
+    pub fn new(reference: T, alt: T) -> Self {
+        RefVsAlt { reference, alt }
+    }
+}
+
+#[cfg(not(tarpaulin_include))]
+impl<T: fmt::Debug> fmt::Debug for RefVsAlt<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(ref: {:?}, alt: {:?})", self.reference, self.alt)
+    }
+}
 
 pub trait Calc {
     type Output;
@@ -69,12 +89,12 @@ pub struct MappingQuality {
 }
 
 impl Calc for MappingQuality {
-    type Output = (RootMeanSquare, RootMeanSquare);
+    type Output = RefVsAlt<RootMeanSquare>;
 
     fn calculate(&self) -> Self::Output {
         let reference_rms = RootMeanSquare::new(&self.reference_mapq);
         let alt_rms = RootMeanSquare::new(&self.alt_mapq);
-        (reference_rms, alt_rms)
+        RefVsAlt::new(reference_rms, alt_rms)
     }
 }
 
@@ -85,11 +105,38 @@ pub struct BaseQuality {
 }
 
 impl Calc for BaseQuality {
-    type Output = (RootMeanSquare, RootMeanSquare);
+    type Output = RefVsAlt<RootMeanSquare>;
 
     fn calculate(&self) -> Self::Output {
         let reference_rms = RootMeanSquare::new(&self.reference_baseq);
         let alt_rms = RootMeanSquare::new(&self.alt_baseq);
-        (reference_rms, alt_rms)
+        RefVsAlt::new(reference_rms, alt_rms)
+    }
+}
+
+// Strand bias between OT and OB for reference allele and alternative-allele
+pub struct StrandBias {
+    pub reference_ot: u64,
+    pub reference_ob: u64,
+    pub alt_ot: u64,
+    pub alt_ob: u64,
+}
+
+impl Calc for StrandBias {
+    type Output = RefVsAlt<f64>;
+
+    fn calculate(&self) -> Self::Output {
+        let reference_total = self.reference_ot + self.reference_ob;
+        let alt_total = self.alt_ot + self.alt_ob;
+
+        let reference_bias = if reference_total == 0 {
+            0.0
+        } else {
+            self.reference_ot as f64 / reference_total as f64
+        };
+
+        let alt_bias = if alt_total == 0 { 0.0 } else { self.alt_ot as f64 / alt_total as f64 };
+
+        RefVsAlt::new(reference_bias, alt_bias)
     }
 }

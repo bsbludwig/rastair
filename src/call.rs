@@ -2,7 +2,7 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::eyre::Result;
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
-use scores::Calc as _;
+use scores::{Calc as _, RefVsAlt, StrandBias};
 use smallvec::SmallVec;
 use std::ops::Deref;
 use tracing::{info, instrument, warn};
@@ -110,14 +110,20 @@ struct VariantCandidatePileup {
     next_base: Option<Base>,
 }
 
+/// Metrics for a variant candidate based on its pileup
 #[derive(Debug)]
 struct VariantCandidatePileupMetrics {
     reference_count: usize,
     alt_count: usize,
     vaf: f64,
+    /// probability of "false positive" given read error rate
     binomial: f64,
-    mapq: (RootMeanSquare, RootMeanSquare),
-    baseq: (RootMeanSquare, RootMeanSquare),
+    /// RMS of mapping quality for (reference allele, alternative allele)
+    mapq: RefVsAlt<RootMeanSquare>,
+    /// RMS of base quality (baseQ) for (reference allele, alternative allele)
+    baseq: RefVsAlt<RootMeanSquare>,
+    /// Strand bias between OT and OB for (reference allele, alternative-allele)
+    strand_bias: RefVsAlt<f64>,
 }
 
 impl VariantCandidatePileup {
@@ -155,6 +161,13 @@ impl VariantCandidatePileup {
             binomial: binomial.calculate(),
             mapq: mapq.calculate(),
             baseq: baseq.calculate(),
+            strand_bias: StrandBias {
+                reference_ot: reference_bases.clone().filter(|b| !b.reverse).count() as u64,
+                reference_ob: reference_bases.clone().filter(|b| b.reverse).count() as u64,
+                alt_ot: alt_bases.clone().filter(|b| !b.reverse).count() as u64,
+                alt_ob: alt_bases.clone().filter(|b| b.reverse).count() as u64,
+            }
+            .calculate(),
         }
     }
 }
