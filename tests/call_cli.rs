@@ -41,3 +41,33 @@ fn missing_fasta() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn validates_region_arg() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rastair2")?;
+
+    cmd.args([
+        "call",
+        "-r",
+        "tests/data/test.fasta.gz",
+        "tests/data/test.bam",
+        "-l",
+        "chr19:6105700-xxx",
+    ]);
+    cmd.assert().failure();
+
+    insta::assert_snapshot!(str(cmd.output()?.stderr), @r"
+    error: invalid value 'chr19:6105700-xxx' for '--region <REGION>': Invalid region string:
+    chr19:6105700-xxx
+                 ^
+
+
+    For more information, try '--help'.
+    ");
+
+    Ok(())
+}
+
+fn str(vec: Vec<u8>) -> String {
+    String::from_utf8(vec).unwrap()
+}

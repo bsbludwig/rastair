@@ -1,7 +1,13 @@
-use std::num::{NonZeroU32, ParseIntError};
-
 use rust_htslib::bam::FetchDefinition;
 use smol_str::SmolStr;
+use std::{fmt, num::NonZeroU32};
+use winnow::{
+    ModalResult, Parser,
+    ascii::{alphanumeric1, dec_uint},
+    combinator::{cut_err, opt, preceded},
+    error::{ContextError, StrContext, StrContextValue},
+    token::literal,
+};
 
 /// A struct representing a genomic region string.
 ///
@@ -26,6 +32,20 @@ pub struct RegionString {
     pub end: Option<NonZeroU32>,
 }
 
+#[cfg(not(tarpaulin_include))]
+impl fmt::Display for RegionString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.chromosome)?;
+        if let Some(start) = self.start {
+            write!(f, ":{}", start)?;
+        }
+        if let Some(end) = self.end {
+            write!(f, "-{}", end)?;
+        }
+        Ok(())
+    }
+}
+
 impl std::str::FromStr for RegionString {
     type Err = RegionStringError;
 
@@ -37,79 +57,59 @@ impl std::str::FromStr for RegionString {
         if !s.is_ascii() {
             return Err(RegionStringError::InvalidAscii);
         }
-        if s.contains(|c: char| c.is_whitespace()) {
-            return Err(RegionStringError::Malformed);
+        let res = parser.parse(s).map_err(|e| RegionStringError::Malformed(e.to_string()))?;
+        if let RegionString { start: Some(start), end: Some(end), .. } = res {
+            if start > end {
+                return Err(RegionStringError::StartGreaterThanEnd);
+            }
         }
 
-        let mut parts = s.splitn(2, ':');
-        let chromosome = parts
-            .next()
-            .filter(|c| !c.trim().is_empty())
-            .ok_or(RegionStringError::InvalidChromosome)?
-            .into();
-
-        let range = match parts.next().map(|r| r.trim()) {
-            Some("") => return Err(RegionStringError::EmptyRange),
-            Some(r) => r,
-            None => return Ok(Self { chromosome, start: None, end: None }),
-        };
-
-        let mut range_parts = range.split('-');
-        let start = range_parts
-            .next()
-            .expect("split always returns given string")
-            .parse()
-            .map_err(RegionStringError::InvalidStartPosition)?;
-
-        let Some(end) = range_parts.next() else {
-            return Ok(Self { chromosome, start: Some(start), end: None });
-        };
-        let end: NonZeroU32 = end.parse().map_err(RegionStringError::InvalidEndPosition)?;
-        if start.get() > end.get() {
-            return Err(RegionStringError::StartGreaterThanEnd);
-        }
-
-        if parts.next().is_some() {
-            return Err(RegionStringError::Malformed);
-        }
-
-        Ok(Self { chromosome, start: Some(start), end: Some(end) })
+        Ok(res)
     }
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
+fn parser(input: &mut &str) -> winnow::Result<RegionString> {
+    fn index(input: &mut &str) -> winnow::Result<NonZeroU32> {
+        dec_uint::<&str, u32, _>
+            .try_map(NonZeroU32::try_from)
+            .context(StrContext::Expected(StrContextValue::Description("number greater than 0")))
+            .parse_next(input)
+    }
+
+    (
+        alphanumeric1.context(StrContext::Label("chromosome name")),
+        opt((
+            preceded(literal(":"), index.context(StrContext::Label("start")))
+                .context(StrContext::Label("start2")),
+            opt(preceded(literal("-"), index.context(StrContext::Label("end")))
+                .context(StrContext::Label("end2"))),
+        )
+            .context(StrContext::Label("range"))),
+    )
+        .context(StrContext::Label("entire"))
+        .map(|(token, slice): (&str, Option<(NonZeroU32, Option<NonZeroU32>)>)| match slice {
+            None => RegionString { chromosome: token.into(), start: None, end: None },
+            Some((start, None)) => {
+                RegionString { chromosome: token.into(), start: Some(start), end: None }
+            }
+            Some((start, end)) => {
+                RegionString { chromosome: token.into(), start: Some(start), end }
+            }
+        })
+        .parse_next(input)
+}
+
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RegionStringError {
     #[error("Empty region string")]
     EmptyInput,
-    #[error("Invalid region string")]
-    Malformed,
     #[error("Invalid ASCII string")]
     InvalidAscii,
-    #[error("Invalid chromosome name")]
-    InvalidChromosome,
-    #[error("Range is empty")]
-    EmptyRange,
-    #[error("Invalid start position ({0})")]
-    InvalidStartPosition(ParseIntError),
-    #[error("Invalid end position ({0})")]
-    InvalidEndPosition(ParseIntError),
+    #[error("Invalid region string:\n{0}")]
+    Malformed(String),
     #[error("Start position cannot be greater than end position")]
     StartGreaterThanEnd,
-}
-
-#[cfg(not(tarpaulin_include))]
-impl std::fmt::Display for RegionString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.chromosome)?;
-        if let Some(start) = self.start {
-            write!(f, ":{}", start)?;
-        }
-        if let Some(end) = self.end {
-            write!(f, "-{}", end)?;
-        }
-        Ok(())
-    }
 }
 
 impl<'a> From<&'a RegionString> for FetchDefinition<'a> {
@@ -137,21 +137,29 @@ mod tests {
     fn test_valid_region_strings() {
         // full chromosome
         let region = RegionString::from_str("chr1").unwrap();
-        assert_eq!(region.chromosome, "chr1");
-        assert_eq!(region.start, None);
-        assert_eq!(region.end, None);
+        assert_eq!(region, RegionString { chromosome: "chr1".into(), start: None, end: None });
 
         // chromosome with start position
         let region = RegionString::from_str("chr2:100").unwrap();
-        assert_eq!(region.chromosome, "chr2");
-        assert_eq!(region.start, Some(NonZeroU32::new(100).unwrap()));
-        assert_eq!(region.end, None);
+        assert_eq!(
+            region,
+            RegionString {
+                chromosome: "chr2".into(),
+                start: Some(NonZeroU32::new(100).unwrap()),
+                end: None
+            }
+        );
 
         // chromosome with start and end positions
         let region = RegionString::from_str("chr3:100-200").unwrap();
-        assert_eq!(region.chromosome, "chr3");
-        assert_eq!(region.start, Some(NonZeroU32::new(100).unwrap()));
-        assert_eq!(region.end, Some(NonZeroU32::new(200).unwrap()));
+        assert_eq!(
+            region,
+            RegionString {
+                chromosome: "chr3".into(),
+                start: Some(NonZeroU32::new(100).unwrap()),
+                end: Some(NonZeroU32::new(200).unwrap())
+            }
+        );
     }
 
     #[test]
@@ -162,15 +170,28 @@ mod tests {
 
         // invalid chromosome
         let err = RegionString::from_str(":100").unwrap_err();
-        assert!(matches!(err, RegionStringError::InvalidChromosome));
+        insta::assert_snapshot!(err, @r"
+        Invalid region string:
+        :100
+        ^
+        invalid chromosome name
+        ");
 
         // invalid start position
         let err = RegionString::from_str("chr1:invalid").unwrap_err();
-        assert!(matches!(err, RegionStringError::InvalidStartPosition(_)));
+        insta::assert_snapshot!(err, @r"
+        Invalid region string:
+        chr1:invalid
+            ^
+        ");
 
         // invalid end position
         let err = RegionString::from_str("chr1:100-invalid").unwrap_err();
-        assert!(matches!(err, RegionStringError::InvalidEndPosition(_)));
+        insta::assert_snapshot!(err, @r"
+        Invalid region string:
+        chr1:100-invalid
+                ^
+        ");
 
         // start greater than end
         let err = RegionString::from_str("chr1:200-100").unwrap_err();
@@ -181,25 +202,47 @@ mod tests {
     fn test_edge_cases() {
         // with whitespace
         let region = RegionString::from_str(" chr4:150-250 ").unwrap();
-        assert_eq!(region.chromosome, "chr4");
-        assert_eq!(region.start, Some(NonZeroU32::new(150).unwrap()));
-        assert_eq!(region.end, Some(NonZeroU32::new(250).unwrap()));
+        assert_eq!(
+            region,
+            RegionString {
+                chromosome: "chr4".into(),
+                start: Some(NonZeroU32::new(150).unwrap()),
+                end: Some(NonZeroU32::new(250).unwrap())
+            }
+        );
 
         // only whitespace in chromosome part
         let err = RegionString::from_str("  :100").unwrap_err();
-        assert!(matches!(err, RegionStringError::InvalidChromosome));
+        insta::assert_snapshot!(err, @r"
+        Invalid region string:
+        :100
+        ^
+        invalid chromosome name
+        ");
 
         // empty range part
         let err = RegionString::from_str("chr1:  ").unwrap_err();
-        assert!(matches!(err, RegionStringError::EmptyRange));
+        insta::assert_snapshot!(err, @r"
+        Invalid region string:
+        chr1:
+            ^
+        ");
 
         // invalid characters in start
         let err = RegionString::from_str("chr1:xxx").unwrap_err();
-        assert!(matches!(err, RegionStringError::InvalidStartPosition(_)));
+        insta::assert_snapshot!(err, @r"
+        Invalid region string:
+        chr1:xxx
+            ^
+        ");
 
         // invalid characters in end
         let err = RegionString::from_str("chr1:100-xxx").unwrap_err();
-        assert!(matches!(err, RegionStringError::InvalidEndPosition(_)));
+        insta::assert_snapshot!(err, @r"
+        Invalid region string:
+        chr1:100-xxx
+                ^
+        ");
 
         // non-ascii characters
         let err = RegionString::from_str("chrü1:100-200").unwrap_err();
@@ -210,7 +253,7 @@ mod tests {
     fn test_display() {
         // Test full chromosome
         let region = RegionString { chromosome: "chr1".into(), start: None, end: None };
-        assert_eq!(region.to_string(), "chr1");
+        insta::assert_snapshot!(region, @"chr1");
 
         // Test chromosome with start position
         let region = RegionString {
@@ -218,7 +261,7 @@ mod tests {
             start: Some(NonZeroU32::new(100).unwrap()),
             end: None,
         };
-        assert_eq!(region.to_string(), "chr2:100");
+        insta::assert_snapshot!(region, @"chr2:100");
 
         // Test chromosome with start and end positions
         let region = RegionString {
@@ -226,7 +269,7 @@ mod tests {
             start: Some(NonZeroU32::new(100).unwrap()),
             end: Some(NonZeroU32::new(200).unwrap()),
         };
-        assert_eq!(region.to_string(), "chr3:100-200");
+        insta::assert_snapshot!(region, @"chr3:100-200");
     }
 
     proptest::proptest! {
