@@ -113,7 +113,7 @@ mod tests {
                 // We're just checking that there is no panic, but errors are fine!
                 return Ok(());
             };
-            assert_eq!(*base, input.as_bytes()[0]);
+            assert_eq!(*base, input.trim().as_bytes()[0]);
         }
     }
 
