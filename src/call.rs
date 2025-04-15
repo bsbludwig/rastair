@@ -2,12 +2,14 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::eyre::Result;
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
+use scores::Calc as _;
 use smallvec::SmallVec;
+use std::ops::Deref;
 use tracing::{info, instrument, warn};
 
 mod scores;
 
-use crate::utils::{Base, RegionString, TryAsBase as _, file_helpers::open_fasta};
+use crate::utils::{Base, RegionString, RootMeanSquare, TryAsBase as _, file_helpers::open_fasta};
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
@@ -81,8 +83,7 @@ pub fn read(params: &CallParams) -> Result<()> {
             // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
             let pileup =
                 VariantCandidatePileup { pos: pile.pos(), bases, reference_base, next_base };
-            info!(?pileup, "variant candidate");
-            pileup.metrics();
+            info!(?pileup, metrics=?pileup.metrics(), "variant candidate");
         } else if bases.matches(reference_base) {
             // Matches reference base
             // boring.
@@ -109,35 +110,52 @@ struct VariantCandidatePileup {
     next_base: Option<Base>,
 }
 
+#[derive(Debug)]
+struct VariantCandidatePileupMetrics {
+    reference_count: usize,
+    alt_count: usize,
+    vaf: f64,
+    binomial: f64,
+    mapq: (RootMeanSquare, RootMeanSquare),
+    baseq: (RootMeanSquare, RootMeanSquare),
+}
+
 impl VariantCandidatePileup {
-    fn metrics(&self) {
-        let reference_bases = self.bases.0.iter().filter(|b| b.base == self.reference_base);
+    fn metrics(&self) -> VariantCandidatePileupMetrics {
+        let reference_bases = self.bases.iter().filter(|b| b.base == self.reference_base);
         let reference_count = reference_bases.clone().count();
-        let alt_bases = self.bases.0.iter().filter(|b| b.base != self.reference_base);
+        let alt_bases = self.bases.iter().filter(|b| b.base != self.reference_base);
         let alt_count = alt_bases.clone().count();
 
         let vaf = scores::VariantAlleleFrequency {
             reference_count: reference_count as u64,
             alt_count: alt_count as u64,
         };
-        info!(val = vaf.calculate(), "vaf");
 
         let binomial = scores::BinomialTest {
             reference_count: reference_count as u64,
             alt_count: alt_count as u64,
             error_rate: 0.01,
         };
-        info!(val = binomial.calculate(), "binomial");
 
         let mapq = scores::MappingQuality {
             reference_mapq: SmallVec::from_iter(reference_bases.clone().map(|b| b.mapq)),
             alt_mapq: SmallVec::from_iter(alt_bases.clone().map(|b| b.mapq)),
         };
-        info!(val = ?mapq.calculate(), "mapq");
 
-        //
-        // BinomialTest
-        // MappingQuality
+        let baseq = scores::BaseQuality {
+            reference_baseq: SmallVec::from_iter(reference_bases.clone().map(|b| b.qual)),
+            alt_baseq: SmallVec::from_iter(alt_bases.clone().map(|b| b.qual)),
+        };
+
+        VariantCandidatePileupMetrics {
+            reference_count,
+            alt_count,
+            vaf: vaf.calculate(),
+            binomial: binomial.calculate(),
+            mapq: mapq.calculate(),
+            baseq: baseq.calculate(),
+        }
     }
 }
 
@@ -147,6 +165,14 @@ struct SeenBases(SmallVec<SeenBase, 20>);
 impl std::fmt::Debug for SeenBases {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.0.iter()).finish()
+    }
+}
+
+impl Deref for SeenBases {
+    type Target = [SeenBase];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

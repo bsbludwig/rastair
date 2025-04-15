@@ -14,13 +14,22 @@
 use probability::{distribution::Binomial, prelude::Discrete};
 use smallvec::SmallVec;
 
+use crate::utils::RootMeanSquare;
+
+pub trait Calc {
+    type Output;
+    fn calculate(&self) -> Self::Output;
+}
+
 pub struct VariantAlleleFrequency {
     pub reference_count: u64,
     pub alt_count: u64,
 }
 
-impl VariantAlleleFrequency {
-    pub fn calculate(&self) -> f64 {
+impl Calc for VariantAlleleFrequency {
+    type Output = f64;
+
+    fn calculate(&self) -> f64 {
         let total = self.reference_count + self.alt_count;
         if total == 0 {
             return 0.0;
@@ -35,8 +44,10 @@ pub struct BinomialTest {
     pub error_rate: f64,
 }
 
-impl BinomialTest {
-    pub fn calculate(&self) -> f64 {
+impl Calc for BinomialTest {
+    type Output = f64;
+
+    fn calculate(&self) -> f64 {
         let total = self.reference_count + self.alt_count;
         if total == 0 {
             return 0.0;
@@ -57,18 +68,28 @@ pub struct MappingQuality {
     pub alt_mapq: SmallVec<u8, 16>,
 }
 
-impl MappingQuality {
-    pub fn calculate(&self) -> (f64, f64) {
-        let reference_rms = rms(&self.reference_mapq);
-        let alt_rms = rms(&self.alt_mapq);
+impl Calc for MappingQuality {
+    type Output = (RootMeanSquare, RootMeanSquare);
+
+    fn calculate(&self) -> Self::Output {
+        let reference_rms = RootMeanSquare::new(&self.reference_mapq);
+        let alt_rms = RootMeanSquare::new(&self.alt_mapq);
         (reference_rms, alt_rms)
     }
 }
 
-fn rms(mapq: &[u8]) -> f64 {
-    if mapq.is_empty() {
-        return 0.0;
+// RMS of base quality (baseQ) for reference allele/alternative allele
+pub struct BaseQuality {
+    pub reference_baseq: SmallVec<u8, 16>,
+    pub alt_baseq: SmallVec<u8, 16>,
+}
+
+impl Calc for BaseQuality {
+    type Output = (RootMeanSquare, RootMeanSquare);
+
+    fn calculate(&self) -> Self::Output {
+        let reference_rms = RootMeanSquare::new(&self.reference_baseq);
+        let alt_rms = RootMeanSquare::new(&self.alt_baseq);
+        (reference_rms, alt_rms)
     }
-    let sum_of_squares: f64 = mapq.iter().map(|&x| (x as f64).powi(2)).sum();
-    (sum_of_squares / mapq.len() as f64).sqrt()
 }
