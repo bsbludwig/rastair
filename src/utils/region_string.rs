@@ -37,8 +37,11 @@ impl std::str::FromStr for RegionString {
         if !s.is_ascii() {
             return Err(RegionStringError::InvalidAscii);
         }
+        if s.contains(|c: char| c.is_whitespace()) {
+            return Err(RegionStringError::Malformed);
+        }
 
-        let mut parts = s.split(':');
+        let mut parts = s.splitn(2, ':');
         let chromosome = parts
             .next()
             .filter(|c| !c.trim().is_empty())
@@ -65,6 +68,11 @@ impl std::str::FromStr for RegionString {
         if start.get() > end.get() {
             return Err(RegionStringError::StartGreaterThanEnd);
         }
+
+        if parts.next().is_some() {
+            return Err(RegionStringError::Malformed);
+        }
+
         Ok(Self { chromosome, start: Some(start), end: Some(end) })
     }
 }
@@ -74,6 +82,8 @@ impl std::str::FromStr for RegionString {
 pub enum RegionStringError {
     #[error("Empty region string")]
     EmptyInput,
+    #[error("Invalid region string")]
+    Malformed,
     #[error("Invalid ASCII string")]
     InvalidAscii,
     #[error("Invalid chromosome name")]

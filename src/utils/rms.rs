@@ -53,7 +53,7 @@ impl fmt::Display for RootMeanSquare {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
+    use proptest::{collection::vec, prelude::*};
 
     proptest! {
         #[test]
@@ -80,18 +80,14 @@ mod tests {
         }
 
         #[test]
-        fn test_rms_greater_than_or_equal_to_mean(data: Vec<u8>) {
-            prop_assume!(data.len() > 1);
-
+        fn test_rms_greater_than_or_equal_to_mean(data in vec(any::<u8>(), 1..300)) {
             let mean = data.iter().map(|&x| x as f64).sum::<f64>() / data.len() as f64;
             let rms = RootMeanSquare::new(&data);
             prop_assert!(*rms >= mean);
         }
 
         #[test]
-        fn test_rms_less_than_or_equal_to_max(data: Vec<u8>) {
-            prop_assume!(data.len() > 1);
-
+        fn test_rms_less_than_or_equal_to_max(data in vec(any::<u8>(), 1..300)) {
             let max = *data.iter().max().unwrap() as f64;
             let rms = RootMeanSquare::new(&data);
             prop_assert!(*rms <= max);
