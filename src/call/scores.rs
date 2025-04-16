@@ -1,5 +1,4 @@
 // Calculate the following scores:
-// - Variant Allele Frequency
 // - binomial test probability of "false positive", given background error likelihoods
 // - Root Mean Square (RMS) of mapping quality (mapQ) of reads evidence for reference allele/alternative allele
 // - RMS of base quality (baseQ) for reference allele/alternative allele
@@ -11,13 +10,29 @@
 // - Repeat/homopolymer length of region for @indel:pl
 // - Realignment score/hamming-distance difference for reads covering @variant#mark[assumes realignment]
 
-use std::fmt;
-
+use crate::utils::RootMeanSquare;
 use probability::{distribution::Binomial, prelude::Discrete};
 use smallvec::SmallVec;
+use std::fmt;
 
-use crate::utils::RootMeanSquare;
+/// Metrics for a variant candidate based on its pileup
+#[derive(Debug)]
+pub(crate) struct VariantCandidatePileupMetrics {
+    pub reference_count: usize,
+    pub alt_count: usize,
+    /// Variant Allele Frequency
+    pub vaf: f64,
+    /// probability of "false positive" given read error rate
+    pub binomial: f64,
+    /// RMS of mapping quality for (reference allele, alternative allele)
+    pub mapq: RefVsAlt<RootMeanSquare>,
+    /// RMS of base quality (baseQ) for (reference allele, alternative allele)
+    pub baseq: RefVsAlt<RootMeanSquare>,
+    /// Strand bias between OT and OB for (reference allele, alternative-allele)
+    pub strand_bias: RefVsAlt<f64>,
+}
 
+/// Simple wrapper for metrics for reference and alternative alleles
 pub struct RefVsAlt<T> {
     reference: T,
     alt: T,

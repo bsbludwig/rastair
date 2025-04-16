@@ -1,15 +1,13 @@
+use crate::utils::{RegionString, TryAsBase as _, file_helpers::open_fasta};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::eyre::Result;
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
-use scores::{Calc as _, RefVsAlt, StrandBias};
-use smallvec::SmallVec;
-use std::ops::Deref;
 use tracing::{info, instrument, warn};
 
 mod scores;
-
-use crate::utils::{Base, RegionString, RootMeanSquare, TryAsBase as _, file_helpers::open_fasta};
+mod variants;
+use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
@@ -17,11 +15,14 @@ pub struct CallParams {
     #[arg(value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
     bam_file: ClioPath,
 
-    /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip compressed, but requires both a gzi index and a fai index
+    /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip
+    /// compressed, but requires both a gzi index and a fai index
     #[arg(short='r', long, value_name="FASTA_FILE", required=true, value_parser=value_parser!(ClioPath).exists().is_file())]
     fasta_file: ClioPath,
 
-    /// Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive.
+    /// Restrict to a specific chromosome or region of a chromosome. Format is
+    /// "chr", "chr:start" or "chr:start-end", where start is 1-based and end is
+    /// inclusive.
     #[arg(short = 'l', long)]
     region: Option<RegionString>,
 }
@@ -42,231 +43,57 @@ pub fn read(params: &CallParams) -> Result<()> {
 
     let mut seq = Vec::new();
 
-    for pile in bam
-        .pileup()
+    bam.pileup()
         .filter_map(|p| p.ok())
         // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
         .take(100)
-    {
-        fasta.fetch("chr19", pile.pos() as u64, pile.pos() as u64 + 2)?;
-        fasta.read(&mut seq)?;
-        let bases = SeenBases(
-            pile.alignments()
-                .filter_map(|a| {
-                    let pos = a.qpos()?;
-                    let record = a.record();
-                    if !record.is_proper_pair() {
-                        // fixme: maybe be more lenient here
-                        return None;
-                    }
-                    if record.is_quality_check_failed() {
-                        return None;
-                    }
-                    // fixme: understand this better:
-                    // if record.cigar().iter().any(|c| matches!(c, Cigar::SoftClip(_))) {
-                    //     return None;
-                    // }
-
-                    Some(SeenBase {
-                        base: record.seq()[pos].as_base().unwrap(),
-                        qual: record.qual()[pos],
-                        mapq: record.mapq(),
-                        reverse: record.is_reverse(),
-                        at_fringe: pos == 0 || pos == record.seq().len() - 1,
-                    })
-                })
-                .collect(),
-        );
-        let reference_base = seq[0].as_base()?;
-        let next_base = seq.get(1).and_then(|x| x.as_base().ok());
-        if bases.is_variant_candidate() {
-            // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
-            let pileup =
-                VariantCandidatePileup { pos: pile.pos(), bases, reference_base, next_base };
-            info!(?pileup, metrics=?pileup.metrics(), "variant candidate");
-        } else if bases.matches(reference_base) {
-            // Matches reference base
-            // boring.
-            // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
-        } else {
-            warn!(
-                ?bases,
-                pos = pile.pos(),
-                ?reference_base,
-                ?next_base,
-                "pile does not match reference but is also not interesting"
-            );
-        }
-    }
+        .map(|pile| -> Result<Option<VariantCandidatePileup>> {
+            fasta.fetch("chr19", pile.pos() as u64, pile.pos() as u64 + 2)?;
+            fasta.read(&mut seq)?;
+            let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
+            let reference_base = seq[0].as_base()?;
+            let next_base = seq.get(1).and_then(|x| x.as_base().ok());
+            if bases.is_variant_candidate() {
+                // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
+                Ok(Some(VariantCandidatePileup {
+                    pos: pile.pos(),
+                    bases,
+                    reference_base,
+                    next_base,
+                }))
+                // info!(?pileup, metrics=?pileup.metrics(), "variant candidate");
+            } else if bases.matches(reference_base) {
+                // Matches reference base
+                // boring.
+                // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
+                Ok(None)
+            } else {
+                warn!(
+                    ?bases,
+                    pos = pile.pos(),
+                    ?reference_base,
+                    ?next_base,
+                    "pile does not match reference but is also not interesting"
+                );
+                Ok(None)
+            }
+        })
+        .flat_map(
+            |x| -> Option<Result<(VariantCandidatePileup, scores::VariantCandidatePileupMetrics)>> {
+                let x = x.transpose()?;
+                Some(x.map(|pile| {
+                    let metrics = pile.metrics();
+                    (pile, metrics)
+                }))
+            },
+        )
+        .for_each(|x| {
+            if let Ok((pile, metrics)) = x {
+                info!(?pile, metrics=?metrics, "variant candidate");
+            } else {
+                warn!("failed to get pileup");
+            }
+        });
 
     return Ok(());
-}
-
-#[derive(Debug)]
-struct VariantCandidatePileup {
-    pos: u32,
-    bases: SeenBases,
-    reference_base: Base,
-    next_base: Option<Base>,
-}
-
-/// Metrics for a variant candidate based on its pileup
-#[derive(Debug)]
-struct VariantCandidatePileupMetrics {
-    reference_count: usize,
-    alt_count: usize,
-    vaf: f64,
-    /// probability of "false positive" given read error rate
-    binomial: f64,
-    /// RMS of mapping quality for (reference allele, alternative allele)
-    mapq: RefVsAlt<RootMeanSquare>,
-    /// RMS of base quality (baseQ) for (reference allele, alternative allele)
-    baseq: RefVsAlt<RootMeanSquare>,
-    /// Strand bias between OT and OB for (reference allele, alternative-allele)
-    strand_bias: RefVsAlt<f64>,
-}
-
-impl VariantCandidatePileup {
-    fn metrics(&self) -> VariantCandidatePileupMetrics {
-        let reference_bases = self.bases.iter().filter(|b| b.base == self.reference_base);
-        let reference_count = reference_bases.clone().count();
-        let alt_bases = self.bases.iter().filter(|b| b.base != self.reference_base);
-        let alt_count = alt_bases.clone().count();
-
-        let vaf = scores::VariantAlleleFrequency {
-            reference_count: reference_count as u64,
-            alt_count: alt_count as u64,
-        };
-
-        let binomial = scores::BinomialTest {
-            reference_count: reference_count as u64,
-            alt_count: alt_count as u64,
-            error_rate: 0.01,
-        };
-
-        let mapq = scores::MappingQuality {
-            reference_mapq: SmallVec::from_iter(reference_bases.clone().map(|b| b.mapq)),
-            alt_mapq: SmallVec::from_iter(alt_bases.clone().map(|b| b.mapq)),
-        };
-
-        let baseq = scores::BaseQuality {
-            reference_baseq: SmallVec::from_iter(reference_bases.clone().map(|b| b.qual)),
-            alt_baseq: SmallVec::from_iter(alt_bases.clone().map(|b| b.qual)),
-        };
-
-        VariantCandidatePileupMetrics {
-            reference_count,
-            alt_count,
-            vaf: vaf.calculate(),
-            binomial: binomial.calculate(),
-            mapq: mapq.calculate(),
-            baseq: baseq.calculate(),
-            strand_bias: StrandBias {
-                reference_ot: reference_bases.clone().filter(|b| !b.reverse).count() as u64,
-                reference_ob: reference_bases.clone().filter(|b| b.reverse).count() as u64,
-                alt_ot: alt_bases.clone().filter(|b| !b.reverse).count() as u64,
-                alt_ob: alt_bases.clone().filter(|b| b.reverse).count() as u64,
-            }
-            .calculate(),
-        }
-    }
-}
-
-struct SeenBases(SmallVec<SeenBase, 20>);
-
-#[cfg(not(tarpaulin_include))]
-impl std::fmt::Debug for SeenBases {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.0.iter()).finish()
-    }
-}
-
-impl Deref for SeenBases {
-    type Target = [SeenBase];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-struct SeenBase {
-    base: Base,
-    qual: u8,
-    mapq: u8,
-    reverse: bool,
-    at_fringe: bool,
-}
-
-#[cfg(not(tarpaulin_include))]
-impl std::fmt::Debug for SeenBase {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() {
-            // use the alternate format with `{:#?}` for no color
-            write!(f, "{}", self.base)?;
-        } else {
-            write!(f, "{}", self.base.display_colored())?;
-        }
-        write!(
-            f,
-            " {}{} {}/{}",
-            if self.reverse { "rev" } else { "fwd" },
-            if self.at_fringe { " fr" } else { "" },
-            self.qual,
-            self.mapq,
-        )
-    }
-}
-
-impl SeenBases {
-    fn matches(&self, base: Base) -> bool {
-        self.0.iter().all(|b| b.base == base)
-    }
-
-    fn is_variant_candidate(&self) -> bool {
-        let counter: Counter = self.0.iter().map(|x| x.base).collect();
-        counter.interesting()
-    }
-}
-
-#[derive(Debug, Default)]
-struct Counter {
-    c: usize,
-    t: usize,
-    a: usize,
-    g: usize,
-}
-
-impl Counter {
-    /// Interesting if there are multiple different bases seen
-    fn interesting(&self) -> bool {
-        let mut count = 0;
-        if self.c > 0 {
-            count += 1;
-        }
-        if self.t > 0 {
-            count += 1;
-        }
-        if self.a > 0 {
-            count += 1;
-        }
-        if self.g > 0 {
-            count += 1;
-        }
-        count > 1
-    }
-}
-
-impl FromIterator<Base> for Counter {
-    fn from_iter<I: IntoIterator<Item = Base>>(iter: I) -> Self {
-        let mut counter = Counter { c: 0, t: 0, a: 0, g: 0 };
-        for c in iter {
-            match c {
-                Base::C => counter.c += 1,
-                Base::T => counter.t += 1,
-                Base::A => counter.a += 1,
-                Base::G => counter.g += 1,
-            }
-        }
-        counter
-    }
 }
