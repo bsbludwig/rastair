@@ -36,3 +36,9 @@ tempfile = "3.19.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+
+[profile.dev.package]
+rand_chacha.opt-level = 3
+proptest.opt-level = 3
+insta.opt-level = 3
+similar.opt-level = 3
