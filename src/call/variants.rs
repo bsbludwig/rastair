@@ -20,6 +20,7 @@ pub fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
     // }
 
     Some(SeenBase {
+        qname: SmallVec::from(record.qname()),
         base: record.seq()[pos].as_base().unwrap(),
         qual: record.qual()[pos],
         mapq: record.mapq(),
@@ -105,6 +106,7 @@ pub struct SeenBase {
     mapq: u8,
     reverse: bool,
     at_fringe: bool,
+    qname: SmallVec<u8, 48>,
 }
 
 #[cfg(not(tarpaulin_include))]
