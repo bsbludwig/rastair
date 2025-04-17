@@ -8,3 +8,4 @@ pub mod utils {
     mod rms;
     pub use rms::RootMeanSquare;
 }
+pub mod sequence;

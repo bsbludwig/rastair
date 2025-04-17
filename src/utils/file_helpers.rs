@@ -8,6 +8,8 @@ use std::{
 };
 use tracing::{debug, instrument};
 
+pub type FastaReader = IndexedReader<Box<dyn ReadAndSeek>>;
+
 /// Combines `Read` and `Seek` traits.
 pub trait ReadAndSeek: Read + Seek {}
 
