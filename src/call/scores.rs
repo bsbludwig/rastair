@@ -87,12 +87,13 @@ impl Calc for BinomialTest {
         if total == 0 {
             return 0.0;
         }
-        let binomial = Binomial::new(total as usize, self.error_rate);
+        let binomial =
+            Binomial::new(usize::try_from(total).expect("total > usize"), self.error_rate);
 
         if self.reference_count <= self.alt_count {
-            binomial.mass(self.reference_count as usize)
+            binomial.mass(usize::try_from(self.reference_count).expect("reference_count > usize"))
         } else {
-            binomial.mass(self.alt_count as usize)
+            binomial.mass(usize::try_from(self.alt_count).expect("alt_count > usize"))
         }
     }
 }

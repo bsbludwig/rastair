@@ -38,6 +38,41 @@ tempfile = "3.19.1"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
 
+# While developing
+dead_code = { level = "allow" }
+
+[lints.clippy]
+# Only output useful program output to stdout not forgotten debug code :)
+print_stdout = { level = "warn" }
+
+# Pascal is bad with numbers
+cast_lossless = { level = "warn" }
+cast_possible_truncation = { level = "warn" }
+cast_possible_wrap = { level = "warn" }
+comparison_chain = { level = "warn" }
+range_minus_one = { level = "warn" }
+range_plus_one = { level = "warn" }
+
+# Some pedantic lints we like
+doc_link_with_quotes = { level = "warn" }
+doc_markdown = { level = "warn" }
+explicit_into_iter_loop = { level = "warn" }
+format_collect = { level = "warn" }
+format_push_string = { level = "warn" }
+index_refutable_slice = { level = "warn" }
+default_trait_access = { level = "warn" }
+rc_buffer = { level = "warn" }
+return_and_then = { level = "warn" }
+same_name_method = { level = "warn" }
+string_to_string = { level = "warn" }
+inefficient_to_string = { level = "warn" }
+manual_let_else = { level = "warn" }
+manual_is_variant_and = { level = "warn" }
+manual_assert = { level = "warn" }
+manual_string_new = { level = "warn" }
+option_option = { level = "warn" }
+equatable_if_let = { level = "warn" }
+
 [profile.dev.package]
 rand_chacha.opt-level = 3
 proptest.opt-level = 3

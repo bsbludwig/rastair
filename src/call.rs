@@ -1,11 +1,9 @@
 use crate::{
     sequence::SegmentsParams,
-    utils::{RegionString, TryAsBase as _, file_helpers::open_fasta},
+    utils::TryAsBase as _,
 };
-use clap::value_parser;
-use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
-use rust_htslib::bam::{self, FetchDefinition, Read as _};
+use rust_htslib::bam::{Read as _};
 use tracing::{info, instrument, warn};
 
 mod scores;
@@ -30,7 +28,7 @@ pub fn read(params: &CallParams) -> Result<()> {
         // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
         .take(100)
         .map(|pile| -> Result<Option<VariantCandidatePileup>> {
-            segments.fasta.fetch("chr19", pile.pos() as u64, pile.pos() as u64 + 2)?;
+            segments.fasta.fetch("chr19", u64::from(pile.pos()), u64::from(pile.pos()) + 2)?;
             segments.fasta.read(&mut seq)?;
             let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
             let reference_base = seq[0].as_base()?;

@@ -2,10 +2,10 @@ use rust_htslib::bam::FetchDefinition;
 use smol_str::SmolStr;
 use std::{fmt, num::NonZeroU32};
 use winnow::{
-    ModalResult, Parser,
+    Parser,
     ascii::{alphanumeric1, dec_uint},
-    combinator::{cut_err, opt, preceded},
-    error::{ContextError, StrContext, StrContextValue},
+    combinator::{opt, preceded},
+    error::{StrContext, StrContextValue},
     token::literal,
 };
 

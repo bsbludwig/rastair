@@ -22,7 +22,7 @@ impl RootMeanSquare {
         if data.is_empty() {
             return RootMeanSquare(0.0);
         }
-        let sum_of_squares: f64 = data.iter().map(|&x| (x as f64).powi(2)).sum();
+        let sum_of_squares: f64 = data.iter().map(|&x| f64::from(x).powi(2)).sum();
         let average_of_squares = sum_of_squares / data.len() as f64;
         RootMeanSquare(average_of_squares.sqrt())
     }
@@ -60,7 +60,7 @@ mod tests {
         fn test_rms_constant_value(value: u8) {
             let data = vec![value; 100];
             let rms = RootMeanSquare::new(&data);
-            prop_assert_eq!(*rms, value as f64);
+            prop_assert_eq!(*rms, f64::from(value));
         }
 
         #[test]
@@ -81,14 +81,14 @@ mod tests {
 
         #[test]
         fn test_rms_greater_than_or_equal_to_mean(data in vec(any::<u8>(), 1..300)) {
-            let mean = data.iter().map(|&x| x as f64).sum::<f64>() / data.len() as f64;
+            let mean = data.iter().map(|&x| f64::from(x)).sum::<f64>() / data.len() as f64;
             let rms = RootMeanSquare::new(&data);
             prop_assert!(*rms >= mean);
         }
 
         #[test]
         fn test_rms_less_than_or_equal_to_max(data in vec(any::<u8>(), 1..300)) {
-            let max = *data.iter().max().unwrap() as f64;
+            let max = f64::from(*data.iter().max().unwrap());
             let rms = RootMeanSquare::new(&data);
             prop_assert!(*rms <= max);
         }
