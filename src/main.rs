@@ -2,7 +2,7 @@ use clap::Parser as _;
 use color_eyre::eyre::Result;
 use rastair2::call::{CallParams, call};
 use tracing::info;
-use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt as _};
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
@@ -17,9 +17,13 @@ enum Subcommand {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    let subscriber = tracing_subscriber::Registry::default()
-        .with(tracing_error::ErrorLayer::default())
-        .with(tracing_subscriber::fmt::Layer::default());
+    let subscriber =
+        tracing_subscriber::Registry::default().with(tracing_error::ErrorLayer::default()).with(
+            tracing_subscriber::fmt::Layer::default()
+                .with_target(true)
+                .with_span_events(FmtSpan::CLOSE)
+                .with_writer(std::io::stderr),
+        );
     tracing::subscriber::set_global_default(subscriber)?;
 
     let args = Cli::parse();
