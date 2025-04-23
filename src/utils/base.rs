@@ -44,7 +44,11 @@ impl std::ops::Deref for Base {
 #[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+        if f.alternate() {
+            write!(f, "{}", (*self) as u8 as char)
+        } else {
+            write!(f, "{}", self.display_colored())
+        }
     }
 }
 
@@ -65,6 +69,10 @@ impl TryFrom<u8> for Base {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
+            b'a' => Ok(Base::A),
+            b'c' => Ok(Base::C),
+            b'g' => Ok(Base::G),
+            b't' => Ok(Base::T),
             b'A' => Ok(Base::A),
             b'C' => Ok(Base::C),
             b'G' => Ok(Base::G),
@@ -78,7 +86,7 @@ impl TryFrom<u8> for Base {
 pub enum BaseError {
     #[error("Empty")]
     Empty,
-    #[error("Invalid base {base:?}", base=(0 as char))]
+    #[error("Invalid base {base}", base=(0 as char))]
     InvalidBaseError(u8),
 }
 

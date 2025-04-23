@@ -75,12 +75,7 @@ pub struct SeenBase {
 #[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for SeenBase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() {
-            // use the alternate format with `{:#?}` for no color
-            write!(f, "{}", self.base)?;
-        } else {
-            write!(f, "{}", self.base.display_colored())?;
-        }
+        write!(f, "{:?}", self.base)?;
         write!(
             f,
             " {}{} {}/{}",
