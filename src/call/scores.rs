@@ -84,8 +84,8 @@ pub(crate) struct VariantCandidatePileupMetrics {
 
 /// Simple wrapper for metrics for reference and alternative alleles
 pub struct RefVsAlt<T> {
-    reference: T,
-    alt: T,
+    pub reference: T,
+    pub alt: T,
 }
 
 impl<T> RefVsAlt<T> {
@@ -182,9 +182,13 @@ impl Calc for BaseQuality {
 
 // Strand bias between OT and OB for reference allele and alternative-allele
 pub struct StrandBias {
+    /// Counts of bases matching the reference base on the forward strand
     pub reference_ot: u64,
+    /// Counts of bases matching the reference base on the reverse strand
     pub reference_ob: u64,
+    /// Counts of bases matching the alternative base on the forward strand
     pub alt_ot: u64,
+    /// Counts of bases matching the alternative base on the reverse strand
     pub alt_ob: u64,
 }
 
