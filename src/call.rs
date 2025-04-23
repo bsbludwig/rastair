@@ -1,11 +1,12 @@
-use crate::{
-    sequence::SegmentsParams,
-    utils::TryAsBase as _,
-};
+use crate::{sequence::SegmentsParams, utils::TryAsBase as _};
+use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
-use rust_htslib::bam::{Read as _};
-use tracing::{info, instrument, warn};
+use rust_htslib::bam::Read as _;
+use scores::VariantCandidatePileupMetrics;
+use std::io::{self, BufWriter};
+use tracing::{instrument, warn};
 
+mod methylation;
 mod scores;
 mod variants;
 use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
@@ -14,6 +15,9 @@ use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
 pub struct CallParams {
     #[command(flatten)]
     segments: SegmentsParams,
+
+    #[arg(short = 'o', long)]
+    vcf_output: ClioPath,
 }
 
 #[instrument(skip(params))]
@@ -21,12 +25,17 @@ pub fn call(params: &CallParams) -> Result<()> {
     let mut segments = params.segments.segments().wrap_err("failed to fetch segments")?;
     let mut seq = Vec::new();
 
+    let mut output = BufWriter::new(
+        params.vcf_output.clone().create().wrap_err("failed to create output file/stream")?,
+    );
+    MethylationEventWriter::write_header(&mut output)?;
+
     segments
         .bam
         .pileup()
         .filter_map(|p| p.ok())
         // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
-        .take(100)
+        // .take(100)
         .map(|pile| -> Result<Option<VariantCandidatePileup>> {
             segments.fasta.fetch("chr19", u64::from(pile.pos()), u64::from(pile.pos()) + 2)?;
             segments.fasta.read(&mut seq)?;
@@ -58,22 +67,66 @@ pub fn call(params: &CallParams) -> Result<()> {
                 Ok(None)
             }
         })
-        .flat_map(
-            |x| -> Option<Result<(VariantCandidatePileup, scores::VariantCandidatePileupMetrics)>> {
-                let x = x.transpose()?;
-                Some(x.map(|pile| {
-                    let metrics = pile.metrics();
-                    (pile, metrics)
-                }))
-            },
-        )
-        .for_each(|x| {
-            if let Ok((pile, metrics)) = x {
-                info!(?pile, metrics=?metrics, "variant candidate");
-            } else {
-                warn!("failed to get pileup");
+        .flat_map(Result::transpose)
+        .map(|x| {
+            x.map(|pile| {
+                let metrics = pile.metrics();
+                (pile, metrics)
+            })
+        })
+        .try_for_each(|x| -> Result<()> {
+            match x {
+                Ok((pile, metrics)) => {
+                    // trace!(?pile, ?metrics, "found variant candidate");
+                    if pile.likely_methylation_event(&metrics) {
+                        // let bases = pile.bases.iter().fold(String::new(), |mut acc, b| {
+                        //     write!(&mut acc, "{}", b.base.display_colored()).unwrap();
+                        //     acc
+                        // });
+                        // info!(
+                        //     pos=pile.pos,
+                        //     ref=%pile.reference_base.display_colored(),
+                        //     %bases,
+                        //     ?metrics,
+                        //     "found methylation event"
+                        // );
+                        MethylationEventWriter(pile, metrics).write(&mut output)?;
+                    }
+                }
+                Err(_error) => {
+                    // warn!(%error, "failed to get pileup");
+                    // Err(error)
+                }
             }
-        });
+            Ok(())
+        })?;
 
     return Ok(());
+}
+
+struct MethylationEventWriter(VariantCandidatePileup, VariantCandidatePileupMetrics);
+
+impl MethylationEventWriter {
+    fn write_header(mut w: impl io::Write) -> Result<()> {
+        write!(w, "#")?;
+        ["CHROM", "POS", "REF", "ALT", "VAF", "BINOM", "BETA"]
+            .iter()
+            .try_for_each(|x| write!(w, "{}\t", x))?;
+        writeln!(w)?;
+        Ok(())
+    }
+
+    fn write(&self, mut w: impl io::Write) -> Result<()> {
+        let chrom = "chr19";
+        let pos = self.0.pos;
+        let r#ref = self.1.reference_count;
+        let alt = self.1.alt_count;
+        let vaf = self.1.vaf;
+        let binom = self.1.binomial;
+        let beta = self.0.beta();
+
+        writeln!(w, "{}\t{}\t{}\t{}\t{}\t{}\t{}", chrom, pos, r#ref, alt, vaf, binom, beta)?;
+
+        Ok(())
+    }
 }

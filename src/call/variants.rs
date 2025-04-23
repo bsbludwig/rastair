@@ -1,4 +1,3 @@
-use super::scores::{self, Calc as _, StrandBias, VariantCandidatePileupMetrics};
 use crate::utils::{Base, TryAsBase as _};
 use rust_htslib::bam::pileup::Alignment;
 use smallvec::SmallVec;

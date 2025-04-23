@@ -32,7 +32,7 @@ impl VariantCandidatePileup {
         let binomial = BinomialTest {
             reference_count: reference_count as u64,
             alt_count: alt_count as u64,
-            error_rate: 0.01,
+            error_rate: 0.01, // fixme: use real error rates
         };
 
         let mapq = MappingQuality {
@@ -148,7 +148,7 @@ impl Calc for BinomialTest {
     }
 }
 
-// - Root Mean Square (RMS) of mapping quality (mapQ) of reads evidence for reference allele/alternative allele
+// Root Mean Square (RMS) of mapping quality (mapQ) of reads evidence for reference allele/alternative allele
 pub struct MappingQuality {
     pub reference_mapq: SmallVec<u8, 16>,
     pub alt_mapq: SmallVec<u8, 16>,
