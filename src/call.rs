@@ -17,7 +17,7 @@ pub struct CallParams {
 }
 
 #[instrument(skip(params))]
-pub fn read(params: &CallParams) -> Result<()> {
+pub fn call(params: &CallParams) -> Result<()> {
     let mut segments = params.segments.segments().wrap_err("failed to fetch segments")?;
     let mut seq = Vec::new();
 

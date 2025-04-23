@@ -1,6 +1,6 @@
 use clap::Parser as _;
 use color_eyre::eyre::Result;
-use rastair2::call::{CallParams, read};
+use rastair2::call::{CallParams, call};
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     match args.command {
         Subcommand::Call(params) => {
             info!(?params, "Running call command");
-            read(&params)?;
+            call(&params)?;
         }
     }
 
