@@ -38,51 +38,13 @@ pub(crate) struct VariantCandidatePileup {
 }
 
 impl VariantCandidatePileup {
-    pub fn metrics(&self) -> VariantCandidatePileupMetrics {
-        let reference_bases = self.bases.iter().filter(|b| b.base == self.reference_base);
-        let reference_count = reference_bases.clone().count();
-        let alt_bases = self.bases.iter().filter(|b| b.base != self.reference_base);
-        let alt_count = alt_bases.clone().count();
-
-        let vaf = scores::VariantAlleleFrequency {
-            reference_count: reference_count as u64,
-            alt_count: alt_count as u64,
-        };
-
-        let binomial = scores::BinomialTest {
-            reference_count: reference_count as u64,
-            alt_count: alt_count as u64,
-            error_rate: 0.01,
-        };
-
-        let mapq = scores::MappingQuality {
-            reference_mapq: SmallVec::from_iter(reference_bases.clone().map(|b| b.mapq)),
-            alt_mapq: SmallVec::from_iter(alt_bases.clone().map(|b| b.mapq)),
-        };
-
-        let baseq = scores::BaseQuality {
-            reference_baseq: SmallVec::from_iter(reference_bases.clone().map(|b| b.qual)),
-            alt_baseq: SmallVec::from_iter(alt_bases.clone().map(|b| b.qual)),
-        };
-
-        VariantCandidatePileupMetrics {
-            reference_count,
-            alt_count,
-            vaf: vaf.calculate(),
-            binomial: binomial.calculate(),
-            mapq: mapq.calculate(),
-            baseq: baseq.calculate(),
-            strand_bias: StrandBias {
-                reference_ot: reference_bases.clone().filter(|b| !b.reverse).count() as u64,
-                reference_ob: reference_bases.clone().filter(|b| b.reverse).count() as u64,
-                alt_ot: alt_bases.clone().filter(|b| !b.reverse).count() as u64,
-                alt_ob: alt_bases.clone().filter(|b| b.reverse).count() as u64,
-            }
-            .calculate(),
-        }
+    /// Is this a C->G variant candidate?
+    pub fn is_cpg(&self) -> bool {
+        self.reference_base == Base::C && self.next_base == Some(Base::G)
     }
 }
 
+/// A collection of bases seen in a pileup
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
 #[cfg(not(tarpaulin_include))]
@@ -100,13 +62,14 @@ impl Deref for SeenBases {
     }
 }
 
+/// A base seen in a pileup
 pub struct SeenBase {
-    base: Base,
-    qual: u8,
-    mapq: u8,
-    reverse: bool,
-    at_fringe: bool,
-    qname: SmallVec<u8, 48>,
+    pub(crate) base: Base,
+    pub(crate) qual: u8,
+    pub(crate) mapq: u8,
+    pub(crate) reverse: bool,
+    pub(crate) at_fringe: bool,
+    pub(crate) qname: SmallVec<u8, 16>,
 }
 
 #[cfg(not(tarpaulin_include))]

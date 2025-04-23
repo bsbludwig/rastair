@@ -15,6 +15,54 @@ use probability::{distribution::Binomial, prelude::Discrete};
 use smallvec::SmallVec;
 use std::fmt;
 
+use super::variants::VariantCandidatePileup;
+
+impl VariantCandidatePileup {
+    pub fn metrics(&self) -> VariantCandidatePileupMetrics {
+        let reference_bases = self.bases.iter().filter(|b| b.base == self.reference_base);
+        let reference_count = reference_bases.clone().count();
+        let alt_bases = self.bases.iter().filter(|b| b.base != self.reference_base);
+        let alt_count = alt_bases.clone().count();
+
+        let vaf = VariantAlleleFrequency {
+            reference_count: reference_count as u64,
+            alt_count: alt_count as u64,
+        };
+
+        let binomial = BinomialTest {
+            reference_count: reference_count as u64,
+            alt_count: alt_count as u64,
+            error_rate: 0.01,
+        };
+
+        let mapq = MappingQuality {
+            reference_mapq: SmallVec::from_iter(reference_bases.clone().map(|b| b.mapq)),
+            alt_mapq: SmallVec::from_iter(alt_bases.clone().map(|b| b.mapq)),
+        };
+
+        let baseq = BaseQuality {
+            reference_baseq: SmallVec::from_iter(reference_bases.clone().map(|b| b.qual)),
+            alt_baseq: SmallVec::from_iter(alt_bases.clone().map(|b| b.qual)),
+        };
+
+        VariantCandidatePileupMetrics {
+            reference_count,
+            alt_count,
+            vaf: vaf.calculate(),
+            binomial: binomial.calculate(),
+            mapq: mapq.calculate(),
+            baseq: baseq.calculate(),
+            strand_bias: StrandBias {
+                reference_ot: reference_bases.clone().filter(|b| !b.reverse).count() as u64,
+                reference_ob: reference_bases.clone().filter(|b| b.reverse).count() as u64,
+                alt_ot: alt_bases.clone().filter(|b| !b.reverse).count() as u64,
+                alt_ob: alt_bases.clone().filter(|b| b.reverse).count() as u64,
+            }
+            .calculate(),
+        }
+    }
+}
+
 /// Metrics for a variant candidate based on its pileup
 #[derive(Debug)]
 pub(crate) struct VariantCandidatePileupMetrics {
