@@ -99,11 +99,11 @@ impl SeenBases {
 }
 
 #[derive(Debug, Default)]
-struct Counter {
-    c: usize,
-    t: usize,
-    a: usize,
-    g: usize,
+pub struct Counter {
+    pub c: usize,
+    pub t: usize,
+    pub a: usize,
+    pub g: usize,
 }
 
 impl Counter {

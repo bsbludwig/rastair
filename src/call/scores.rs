@@ -68,9 +68,11 @@ impl VariantCandidatePileup {
 pub(crate) struct VariantCandidatePileupMetrics {
     pub reference_count: usize,
     pub alt_count: usize,
-    /// Variant Allele Frequency
+    /// Variant Allele Frequency, ratio of alternative allele to total alleles
     pub vaf: f64,
-    /// probability of "false positive" given read error rate
+    /// Probability of "false positive" given a specified read error rate.
+    /// Values close to 1 indicate a high probability of false positive.
+    /// Typically seen values are between 0.0001 and 0.2.
     pub binomial: f64,
     /// RMS of mapping quality for (reference allele, alternative allele)
     pub mapq: RefVsAlt<RootMeanSquare>,
