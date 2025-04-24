@@ -12,6 +12,8 @@ fn random_call() -> Result<()> {
         "tests/data/test.bam",
         "-l",
         "chr19:6105700-6105800",
+        "-o",
+        "-",
     ]);
     cmd.assert().success();
 
