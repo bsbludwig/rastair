@@ -9,6 +9,9 @@ use tracing::{instrument, warn};
 mod methylation;
 mod scores;
 mod variants;
+mod filtering {
+    mod threshold;
+}
 use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
 
 #[derive(Debug, clap::Args)]

@@ -28,8 +28,8 @@ pub fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
     })
 }
 
-#[derive(Debug)]
-pub(crate) struct VariantCandidatePileup {
+#[derive(Debug, Clone)]
+pub struct VariantCandidatePileup {
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,
@@ -44,6 +44,7 @@ impl VariantCandidatePileup {
 }
 
 /// A collection of bases seen in a pileup
+#[derive(Clone)]
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
 #[cfg(not(tarpaulin_include))]
@@ -62,6 +63,7 @@ impl Deref for SeenBases {
 }
 
 /// A base seen in a pileup
+#[derive(Clone)]
 pub struct SeenBase {
     pub(crate) base: Base,
     pub(crate) qual: u8,
