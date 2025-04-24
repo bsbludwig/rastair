@@ -123,7 +123,7 @@ impl Counter {
         if self.g > 0 {
             count += 1;
         }
-        count > 1
+        count >= 1
     }
 }
 

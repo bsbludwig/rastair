@@ -25,18 +25,18 @@ use smol_str::SmolStr;
 pub struct SegmentsParams {
     /// A sorted and indexed bam file
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
-    bam_file: ClioPath,
+    pub bam_file: ClioPath,
 
     /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip
     /// compressed, but requires both a gzi index and a fai index
     #[arg(short='r', long, value_parser=value_parser!(ClioPath).exists().is_file())]
-    fasta_file: ClioPath,
+    pub fasta_file: ClioPath,
 
     /// Restrict to a specific chromosome or region of a chromosome. Format is
     /// "chr", "chr:start" or "chr:start-end", where start is 1-based and end is
     /// inclusive.
     #[arg(short = 'l', long)]
-    region: Option<RegionString>,
+    pub region: Option<RegionString>,
 }
 
 impl SegmentsParams {

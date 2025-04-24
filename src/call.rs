@@ -26,8 +26,9 @@ pub struct CallParams {
     vcf_output: ClioPath,
 }
 
-#[instrument(skip(params))]
+#[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
+    let chr = "chr19";
     let mut segments = params.segments.segments().wrap_err("failed to fetch segments")?;
     let mut seq = Vec::new();
 
@@ -43,7 +44,7 @@ pub fn call(params: &CallParams) -> Result<()> {
         // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
         // .take(100)
         .map(|pile| -> Result<Option<VariantCandidatePileup>> {
-            segments.fasta.fetch("chr19", u64::from(pile.pos()), u64::from(pile.pos()) + 2)?;
+            segments.fasta.fetch(chr, u64::from(pile.pos()), u64::from(pile.pos()) + 2)?;
             segments.fasta.read(&mut seq)?;
             let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
             let reference_base = seq[0].as_base()?;
@@ -96,7 +97,7 @@ pub fn call(params: &CallParams) -> Result<()> {
                         //     ?metrics,
                         //     "found methylation event"
                         // );
-                        MethylationEventWriter(pile, metrics).write(&mut output)?;
+                        MethylationEventWriter(pile, metrics).write(chr, &mut output)?;
                     }
                 }
                 Err(_error) => {
@@ -122,8 +123,7 @@ impl MethylationEventWriter {
         Ok(())
     }
 
-    fn write(&self, mut w: impl io::Write) -> Result<()> {
-        let chrom = "chr19";
+    fn write(&self, chrom: &str, mut w: impl io::Write) -> Result<()> {
         let pos = self.0.pos;
         let r#ref = self.1.reference_count;
         let alt = self.1.alt_count;
