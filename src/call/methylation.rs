@@ -11,6 +11,7 @@ impl VariantCandidatePileup {
         self.is_cpg() && self.bases.iter().any(|b| b.base == Base::T)
     }
 
+    /// arbitrary filters
     pub fn likely_methylation_event(&self, metrics: &VariantCandidatePileupMetrics) -> bool {
         if !self.could_be_methylation_event() {
             return false;

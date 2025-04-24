@@ -112,7 +112,7 @@ mod tests {
                 // We're just checking that there is no panic, but errors are fine!
                 return Ok(());
             };
-            assert_eq!(*base, input);
+            assert_eq!(*base, (input as char).to_ascii_uppercase() as u8);
         }
 
         #[test]
@@ -121,7 +121,7 @@ mod tests {
                 // We're just checking that there is no panic, but errors are fine!
                 return Ok(());
             };
-            assert_eq!(*base, input.trim().as_bytes()[0]);
+            assert_eq!(*base, input.trim().to_ascii_uppercase().as_bytes()[0]);
         }
     }
 
@@ -134,7 +134,7 @@ mod tests {
             // display
             assert_eq!(parsed.to_string(), (base as char).to_string());
             // debug -- same, actually
-            assert_eq!(format!("{parsed:?}"), (base as char).to_string());
+            assert_eq!(format!("{parsed:#?}"), (base as char).to_string());
             // display in color
             let colored = parsed.display_colored();
             // skip initial ANSI color codes
