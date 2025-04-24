@@ -10,7 +10,7 @@ mod methylation;
 mod scores;
 mod variants;
 mod filtering {
-    mod threshold;
+    pub mod threshold;
 }
 use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
 
@@ -18,6 +18,9 @@ use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
 pub struct CallParams {
     #[command(flatten)]
     segments: SegmentsParams,
+
+    #[command(flatten)]
+    thresholds: filtering::threshold::ThresholdConfig,
 
     #[arg(short = 'o', long)]
     vcf_output: ClioPath,
@@ -81,7 +84,7 @@ pub fn call(params: &CallParams) -> Result<()> {
             match x {
                 Ok((pile, metrics)) => {
                     // trace!(?pile, ?metrics, "found variant candidate");
-                    if pile.likely_methylation_event(&metrics) {
+                    if pile.likely_methylation_event(&metrics, &params.thresholds) {
                         // let bases = pile.bases.iter().fold(String::new(), |mut acc, b| {
                         //     write!(&mut acc, "{}", b.base.display_colored()).unwrap();
                         //     acc
