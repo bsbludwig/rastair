@@ -74,10 +74,14 @@ enum SmallByteVecInner {
     Static(&'static [u8]),
 }
 
-// Compile-time assertion that SmallByteVec is at most 24 bytes
+/// Compile-time assertion that SmallByteVec is at most 24 bytes
 const _: [(); 1] = [(); (std::mem::size_of::<SmallByteVec>() <= 24) as usize];
 
 impl Clone for SmallByteVec {
+    /// Clones the `SmallByteVec`, creating a new instance with the same data
+    /// or, if stored on the heap, a new reference to the same data.
+    ///
+    /// This is a very cheap operation.
     fn clone(&self) -> Self {
         Self {
             inner: match &self.inner {
@@ -106,7 +110,28 @@ impl Deref for SmallByteVec {
 }
 
 impl SmallByteVec {
+    /// Construct a new `SmallByteVec` with no data.
+    ///
+    /// Since `SmallByteVec` is immutable, this is mainly for using it as a
+    /// placeholder.
+    pub fn new() -> Self {
+        SmallByteVec::new_static(&[])
+    }
+
     /// Construct a new `SmallByteVec` from a static slice of bytes.
+    ///
+    /// ```rust
+    /// # use smallarcvec::SmallByteVec;
+    /// let data: &'static [u8] = &[1, 2, 3, 4, 5];
+    /// let static_vec = SmallByteVec::new_static(data);
+    /// assert_eq!(static_vec.len(), 5);
+    /// ```
+    ///
+    /// ```compile_fail
+    /// # use smallarcvec::SmallByteVec;
+    /// let data = vec![1, 2, 3, 4, 5];
+    /// let static_vec = SmallByteVec::new_static(&data); // This will not compile
+    /// ```
     pub fn new_static(data: &'static [u8]) -> Self {
         Self { inner: SmallByteVecInner::Static(data) }
     }
@@ -128,6 +153,12 @@ impl SmallByteVec {
     /// True if the byte vector is using inline storage.
     pub fn is_inline(&self) -> bool {
         matches!(self.inner, SmallByteVecInner::Inline { .. })
+    }
+}
+
+impl Default for SmallByteVec {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
