@@ -16,10 +16,7 @@ use crate::utils::{
 };
 use clap::value_parser;
 use clio::ClioPath;
-use color_eyre::{
-    Result,
-    eyre::{Context as _, ContextCompat as _},
-};
+use color_eyre::Result;
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smallarcvec::SmallByteVec;
 use smol_str::SmolStr;
@@ -157,4 +154,161 @@ fn chunk_up(full_regions: &[Region], params: &SegmentsParams) -> Vec<Region> {
         }
     }
     chunked_regions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::path::PathBuf;
+
+    fn test_data_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("data")
+    }
+
+    fn get_test_bam() -> ClioPath {
+        ClioPath::new(test_data_dir().join("test.bam")).expect("test bam path should be valid")
+    }
+
+    fn get_test_fasta() -> ClioPath {
+        ClioPath::new(test_data_dir().join("test.fasta.gz"))
+            .expect("test fasta path should be valid")
+    }
+
+    proptest! {
+        #[test]
+        fn test_chunk_up_properties(
+            // Generate chromosome names
+            chrom in "[A-Za-z0-9]{1,10}",
+            // Generate reasonable region lengths
+            start in 1u64..100_000u64,
+            length in 1u64..100_000u64,
+            // Generate reasonable chunk parameters
+            max_length in 10_000u64..100_000u64,
+            overlap in 1u64..1000u64
+        ) {
+            let end = start.saturating_add(length);
+            let region = Region {
+                chromosome: chrom.into(),
+                start,
+                end,
+            };
+
+            let params = SegmentsParams {
+                bam_file: get_test_bam(),
+                fasta_file: get_test_fasta(),
+                region: None,
+                max_segment_length: max_length,
+                segment_overlap: overlap,
+            };
+
+            let chunks = chunk_up(&[region.clone()], &params);
+
+            // Properties that should hold for all chunk configurations:
+            prop_assert!(!chunks.is_empty(), "Chunks should not be empty");
+
+            // First chunk should start at original start
+            prop_assert_eq!(chunks[0].start, region.start, "First chunk should start at region start");
+
+            // Last chunk should end at original end
+            prop_assert_eq!(chunks.last().unwrap().end, region.end, "Last chunk should end at region end");
+
+            // All chunks should have same chromosome
+            prop_assert!(chunks.iter().all(|c| c.chromosome == region.chromosome), "All chunks should have same chromosome");
+
+            // No chunk should exceed max length
+            prop_assert!(chunks.iter().all(|c| c.end - c.start <= max_length), "No chunk should exceed max length");
+
+            // All chunks except last should be max_length
+            prop_assert!(chunks[..chunks.len()-1].iter().all(|c| c.end - c.start == max_length),
+                        "All chunks except last should be max_length");
+
+            // Adjacent chunks should overlap by segment_overlap (if not the last chunk)
+            prop_assert!(chunks.windows(2).all(|w| {
+                w[1].start == w[0].end.saturating_sub(overlap)
+            }), "Adjacent chunks should have correct overlap");
+
+            // Chunks should cover entire region
+            for (i, chunk) in chunks.windows(2).enumerate() {
+                prop_assert!(chunk[0].end >= chunk[1].start,
+                    "Gap between chunks {} and {}", i, i+1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_segment_reading() -> Result<()> {
+        // Create a test region and params
+        let region = Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 };
+
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: None,
+            max_segment_length: 1000,
+            segment_overlap: 100,
+        };
+
+        // Initialize readers
+        let mut readers = params.segments()?;
+
+        // Test reading a single segment
+        let segment = readers.segment(&region)?;
+
+        // Verify segment properties
+        assert_eq!(segment.range, region);
+        assert!(!segment.sequence.is_empty(), "Sequence should not be empty");
+        let expected_len =
+            usize::try_from(region.end - region.start).expect("region length should fit in usize");
+        assert_eq!(segment.sequence.len(), expected_len);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_full_regions() -> Result<()> {
+        // Initialize BAM reader to get header
+        let bam = bam::IndexedReader::from_path(get_test_bam().path())?;
+        let regions = get_full_regions(bam.header());
+
+        // Verify regions
+        assert!(!regions.is_empty(), "Should have at least one region");
+
+        // Check that all regions are valid
+        for region in &regions {
+            assert!(!region.chromosome.is_empty(), "Chromosome name should not be empty");
+            assert!(region.start > 0, "Start should be 1-based");
+            assert!(region.end >= region.start, "End should be >= start");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_calculate_segments() -> Result<()> {
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: Some("chr19:6105700-6105800".parse().unwrap()),
+            max_segment_length: 1000,
+            segment_overlap: 100,
+        };
+
+        let mut readers = params.segments()?;
+        let segments = readers.calculate_segments(&params)?;
+
+        assert!(!segments.is_empty(), "Should have at least one segment");
+
+        // Check segment properties
+        for segment in segments {
+            assert_eq!(segment.range.chromosome, "chr19");
+            assert!(segment.range.start >= 6105700);
+            assert!(segment.range.end <= 6105800);
+            let expected_len = usize::try_from(segment.range.end - segment.range.start)
+                .expect("segment length should fit in usize");
+            assert_eq!(segment.sequence.len(), expected_len);
+        }
+
+        Ok(())
+    }
 }
