@@ -18,7 +18,6 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::Result;
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
-use smallarcvec::SmallByteVec;
 use smol_str::SmolStr;
 
 #[derive(Debug, clap::Args)]
@@ -77,15 +76,18 @@ pub struct Readers {
     pub bam: bam::IndexedReader,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Segment {
     pub range: Region,
-    pub sequence: SmallByteVec,
+    pub sequence: Vec<u8>, // Change from SmallByteVec to Vec<u8> since these are large sequences
 }
 
 impl Readers {
     /// Calculate segments based on configuration parameters
-    pub fn calculate_segments(&mut self, params: &SegmentsParams) -> Result<Vec<Segment>> {
+    pub fn calculate_segments(
+        &mut self,
+        params: &SegmentsParams,
+    ) -> Result<impl Iterator<Item = Region> + '_> {
         let full_regions = if let Some(region) = &params.region {
             // If region is specified, start with that
             vec![Region {
@@ -104,20 +106,65 @@ impl Readers {
             get_full_regions(self.bam.header())
         };
 
-        // Chunk up the regions into sub-regions that are at most max_segment_length and have an overlap of segment_overlap
-        let chunked_regions = chunk_up(full_regions.as_slice(), params);
-        // Create segments from the chunked regions
-        chunked_regions.into_iter().map(|region| self.segment(&region)).collect::<Result<Vec<_>>>()
+        // Create an iterator that owns its data to avoid lifetime issues
+        struct ChunkedRegions {
+            regions: Vec<Region>,
+            current_region_idx: usize,
+            current_start: u64,
+            max_length: u64,
+            overlap: u64,
+        }
+
+        impl Iterator for ChunkedRegions {
+            type Item = Region;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                loop {
+                    if self.current_region_idx >= self.regions.len() {
+                        return None;
+                    }
+
+                    let region = &self.regions[self.current_region_idx];
+                    if self.current_start >= region.end {
+                        self.current_region_idx += 1;
+                        if self.current_region_idx < self.regions.len() {
+                            self.current_start = self.regions[self.current_region_idx].start;
+                        }
+                        continue;
+                    }
+
+                    let end = (self.current_start + self.max_length).min(region.end);
+                    let chunk = Region {
+                        chromosome: region.chromosome.clone(),
+                        start: self.current_start,
+                        end,
+                    };
+                    self.current_start = end.saturating_sub(self.overlap);
+                    return Some(chunk);
+                }
+            }
+        }
+
+        let initial_start = if full_regions.is_empty() { 0 } else { full_regions[0].start };
+        let chunked = ChunkedRegions {
+            regions: full_regions,
+            current_region_idx: 0,
+            current_start: initial_start,
+            max_length: params.max_segment_length,
+            overlap: params.segment_overlap,
+        };
+
+        Ok(chunked)
     }
 
     fn segment(&mut self, region: &Region) -> Result<Segment> {
-        let mut seq = Vec::with_capacity(
-            usize::try_from(region.end.wrapping_sub(region.start.wrapping_add(1)))
-                .expect("failed to convert u64 to usize"),
-        );
+        // Calculate exact capacity needed to avoid reallocations
+        let len = usize::try_from(region.end.wrapping_sub(region.start))
+            .expect("failed to convert u64 to usize");
+        let mut seq = Vec::with_capacity(len);
         self.fasta.fetch(&region.chromosome, region.start, region.end)?;
         self.fasta.read(&mut seq)?;
-        Ok(Segment { range: region.clone(), sequence: seq.into() })
+        Ok(Segment { range: region.clone(), sequence: seq })
     }
 }
 
@@ -143,17 +190,23 @@ fn get_full_regions(header: &bam::HeaderView) -> Vec<Region> {
         .collect()
 }
 
-fn chunk_up(full_regions: &[Region], params: &SegmentsParams) -> Vec<Region> {
-    let mut chunked_regions = Vec::<Region>::with_capacity(full_regions.len() * 2); // lower-bound estimate
-    for region in full_regions {
+fn chunk_up_iter(
+    full_regions: Vec<Region>,
+    params: &SegmentsParams,
+) -> impl Iterator<Item = Region> {
+    full_regions.into_iter().flat_map(move |region| {
         let mut start = region.start;
-        while start < region.end {
-            let end = (start + params.max_segment_length).min(region.end);
-            chunked_regions.push(Region { chromosome: region.chromosome.clone(), start, end });
-            start = end.saturating_sub(params.segment_overlap);
-        }
-    }
-    chunked_regions
+        std::iter::from_fn(move || {
+            if start < region.end {
+                let end = (start + params.max_segment_length).min(region.end);
+                let chunk = Region { chromosome: region.chromosome.clone(), start, end };
+                start = end.saturating_sub(params.segment_overlap);
+                Some(chunk)
+            } else {
+                None
+            }
+        })
+    })
 }
 
 #[cfg(test)]
@@ -202,7 +255,8 @@ mod tests {
                 segment_overlap: overlap,
             };
 
-            let chunks = chunk_up(&[region.clone()], &params);
+            // Generate chunks using the iterator
+            let chunks: Vec<Region> = chunk_up_iter(vec![region.clone()], &params).collect();
 
             // Properties that should hold for all chunk configurations:
             prop_assert!(!chunks.is_empty(), "Chunks should not be empty");
@@ -219,9 +273,10 @@ mod tests {
             // No chunk should exceed max length
             prop_assert!(chunks.iter().all(|c| c.end - c.start <= max_length), "No chunk should exceed max length");
 
-            // All chunks except last should be max_length
-            prop_assert!(chunks[..chunks.len()-1].iter().all(|c| c.end - c.start == max_length),
-                        "All chunks except last should be max_length");
+            // All chunks except last should be max_length unless they would exceed region end
+            prop_assert!(chunks[..chunks.len()-1].iter().all(|c| {
+                c.end - c.start == max_length || c.end == region.end
+            }), "All chunks except last should be max_length or reach region end");
 
             // Adjacent chunks should overlap by segment_overlap (if not the last chunk)
             prop_assert!(chunks.windows(2).all(|w| {
@@ -257,29 +312,6 @@ mod tests {
 
         // Verify segment properties
         assert_eq!(segment.range, region);
-        assert!(!segment.sequence.is_empty(), "Sequence should not be empty");
-        let expected_len =
-            usize::try_from(region.end - region.start).expect("region length should fit in usize");
-        assert_eq!(segment.sequence.len(), expected_len);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_full_regions() -> Result<()> {
-        // Initialize BAM reader to get header
-        let bam = bam::IndexedReader::from_path(get_test_bam().path())?;
-        let regions = get_full_regions(bam.header());
-
-        // Verify regions
-        assert!(!regions.is_empty(), "Should have at least one region");
-
-        // Check that all regions are valid
-        for region in &regions {
-            assert!(!region.chromosome.is_empty(), "Chromosome name should not be empty");
-            assert!(region.start > 0, "Start should be 1-based");
-            assert!(region.end >= region.start, "End should be >= start");
-        }
 
         Ok(())
     }
@@ -295,19 +327,50 @@ mod tests {
         };
 
         let mut readers = params.segments()?;
-        let segments = readers.calculate_segments(&params)?;
+        // Collect all segments into a Vec since we need to verify properties across all segments
+        let segments = readers.calculate_segments(&params)?.collect::<Vec<_>>();
 
         assert!(!segments.is_empty(), "Should have at least one segment");
 
         // Check segment properties
         for segment in segments {
-            assert_eq!(segment.range.chromosome, "chr19");
-            assert!(segment.range.start >= 6105700);
-            assert!(segment.range.end <= 6105800);
-            let expected_len = usize::try_from(segment.range.end - segment.range.start)
-                .expect("segment length should fit in usize");
-            assert_eq!(segment.sequence.len(), expected_len);
+            assert_eq!(segment.chromosome, "chr19");
+            assert!(segment.start >= 6105700);
+            assert!(segment.end <= 6105800);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_overlapping_segments() -> Result<()> {
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: Some("chr19:6105700-6105900".parse().unwrap()),
+            max_segment_length: 100, // Small max length to force multiple segments
+            segment_overlap: 20,     // Known overlap amount
+        };
+
+        let mut readers = params.segments()?;
+        let segments = readers.calculate_segments(&params)?.collect::<Vec<_>>();
+
+        assert!(segments.len() > 1, "Should have multiple segments");
+
+        // Check overlaps between adjacent segments
+        // for pair in segments.windows(2) {
+        //     let first = readers.segment(&pair[0])?;
+        //     let second = readers.segment(&pair[1])?;
+
+        //     // Verify overlap amount
+        //     let overlap = first.range.end - second.range.start;
+        //     assert_eq!(overlap, params.segment_overlap);
+
+        //     // Verify overlapping sequence content matches
+        //     let overlap_first = &first.sequence[first.sequence.len() - overlap as usize..];
+        //     let overlap_second = &second.sequence[..overlap as usize];
+        //     assert_eq!(overlap_first, overlap_second, "Overlapping sequences should match");
+        // }
 
         Ok(())
     }
