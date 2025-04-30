@@ -104,39 +104,11 @@ impl Readers {
             }]
         } else {
             // If no region specified, create regions for all chromosomes
-            let header = self.bam.header();
-            header
-                .target_names()
-                .iter()
-                .enumerate()
-                .filter(|(_, name)| !name.is_empty())
-                .map(|(tid, name)| {
-                    let chr = SmolStr::new(
-                        std::str::from_utf8(name).wrap_err("bam target name is not valid UTF-8")?,
-                    );
-                    let length = header
-                        .target_len(u32::try_from(tid).expect("get tid"))
-                        .wrap_err("Failed to get target length for target we just read")?;
-
-                    Ok(Region {
-                        chromosome: chr,
-                        start: 1, // 1-based coordinates
-                        end: length,
-                    })
-                })
-                .collect::<Result<Vec<Region>>>()?
+            get_full_regions(self.bam.header())
         };
 
         // Chunk up the regions into sub-regions that are at most max_segment_length and have an overlap of segment_overlap
-        let mut chunked_regions = Vec::<Region>::with_capacity(full_regions.len() * 2); // lower-bound estimate
-        for region in full_regions {
-            let mut start = region.start;
-            while start < region.end {
-                let end = (start + params.max_segment_length).min(region.end);
-                chunked_regions.push(Region { chromosome: region.chromosome.clone(), start, end });
-                start = end.saturating_sub(params.segment_overlap);
-            }
-        }
+        let chunked_regions = chunk_up(full_regions.as_slice(), params);
         // Create segments from the chunked regions
         chunked_regions.into_iter().map(|region| self.segment(&region)).collect::<Result<Vec<_>>>()
     }
@@ -150,4 +122,39 @@ impl Readers {
         self.fasta.read(&mut seq)?;
         Ok(Segment { range: region.clone(), sequence: seq.into() })
     }
+}
+
+fn get_full_regions(header: &bam::HeaderView) -> Vec<Region> {
+    header
+        .target_names()
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| !name.is_empty())
+        .map(|(tid, name)| {
+            let chr = SmolStr::new(
+                std::str::from_utf8(name).expect("bam target name always valid UTF-8"),
+            );
+            let length =
+                header.target_len(u32::try_from(tid).expect("get tid")).expect("get target length");
+
+            Region {
+                chromosome: chr,
+                start: 1, // 1-based coordinates
+                end: length,
+            }
+        })
+        .collect()
+}
+
+fn chunk_up(full_regions: &[Region], params: &SegmentsParams) -> Vec<Region> {
+    let mut chunked_regions = Vec::<Region>::with_capacity(full_regions.len() * 2); // lower-bound estimate
+    for region in full_regions {
+        let mut start = region.start;
+        while start < region.end {
+            let end = (start + params.max_segment_length).min(region.end);
+            chunked_regions.push(Region { chromosome: region.chromosome.clone(), start, end });
+            start = end.saturating_sub(params.segment_overlap);
+        }
+    }
+    chunked_regions
 }
