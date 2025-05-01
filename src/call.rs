@@ -4,7 +4,7 @@ use color_eyre::eyre::{Context, Result};
 use rust_htslib::bam::Read as _;
 use scores::VariantCandidatePileupMetrics;
 use std::io::{self, BufWriter};
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 mod methylation;
 mod scores;
@@ -29,84 +29,96 @@ pub struct CallParams {
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
     let chr = "chr19";
-    let mut segments = params.segments.segments().wrap_err("failed to fetch segments")?;
-    let mut seq = Vec::new();
+    let mut readers = params.segments.readers().wrap_err("failed to fetch segments")?;
 
     let mut output = BufWriter::new(
         params.vcf_output.clone().create().wrap_err("failed to create output file/stream")?,
     );
     MethylationEventWriter::write_header(&mut output)?;
 
-    segments
-        .bam
-        .pileup()
-        .filter_map(|p| p.ok())
-        // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
-        // .take(100)
-        .map(|pile| -> Result<Option<VariantCandidatePileup>> {
-            segments.fasta.fetch(chr, u64::from(pile.pos()), u64::from(pile.pos()) + 2)?;
-            segments.fasta.read(&mut seq)?;
-            let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
-            let reference_base = seq[0].as_base()?;
-            let next_base = seq.get(1).and_then(|x| x.as_base().ok());
-            if bases.is_variant_candidate() {
-                // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
-                Ok(Some(VariantCandidatePileup {
-                    pos: pile.pos(),
-                    bases,
-                    reference_base,
-                    next_base,
-                }))
-                // info!(?pileup, metrics=?pileup.metrics(), "variant candidate");
-            } else if bases.matches(reference_base) {
-                // Matches reference base
-                // boring.
-                // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
-                Ok(None)
-            } else {
-                warn!(
-                    ?bases,
-                    pos = pile.pos(),
-                    ?reference_base,
-                    ?next_base,
-                    "pile does not match reference but is also not interesting"
-                );
-                Ok(None)
-            }
-        })
-        .flat_map(Result::transpose)
-        .map(|x| {
-            x.map(|pile| {
-                let metrics = pile.metrics();
-                (pile, metrics)
+    let regions = readers.calculate_segments(&params.segments)?;
+    for region in regions {
+        let segment = readers.segment(&region)?;
+
+        readers.bam.fetch(&segment)?;
+        readers
+            .bam
+            .pileup()
+            .filter_map(|p| p.ok())
+            .filter(|p| {
+                // Filter out pileups that are not in the region of interest
+                let fetch_range = region.start..=region.end;
+                let inside_range = fetch_range.contains(&u64::from(p.pos()));
+                // debug!(?fetch_range, pos=?p.pos(), %inside_range, "pileup");
+                inside_range
             })
-        })
-        .try_for_each(|x| -> Result<()> {
-            match x {
-                Ok((pile, metrics)) => {
-                    // trace!(?pile, ?metrics, "found variant candidate");
-                    if pile.likely_methylation_event(&metrics, &params.thresholds) {
-                        // let bases = pile.bases.iter().fold(String::new(), |mut acc, b| {
-                        //     write!(&mut acc, "{}", b.base.display_colored()).unwrap();
-                        //     acc
-                        // });
-                        // info!(
-                        //     pos=pile.pos,
-                        //     ref=%pile.reference_base.display_colored(),
-                        //     %bases,
-                        //     ?metrics,
-                        //     "found methylation event"
-                        // );
-                        MethylationEventWriter(pile, metrics).write(chr, &mut output)?;
+            // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
+            // .take(100)
+            .map(|pile| -> Result<Option<VariantCandidatePileup>> {
+                let idx = usize::try_from(u64::from(pile.pos()).wrapping_sub(segment.range.start))
+                    .expect("pos fits in usize");
+                let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
+                let reference_base = segment.sequence[idx].as_base()?;
+                let next_base = segment.sequence.get(idx + 1).and_then(|x| x.as_base().ok());
+                if bases.is_variant_candidate() {
+                    // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
+                    Ok(Some(VariantCandidatePileup {
+                        pos: pile.pos(),
+                        bases,
+                        reference_base,
+                        next_base,
+                    }))
+                    // info!(?pileup, metrics=?pileup.metrics(), "variant candidate");
+                } else if bases.matches(reference_base) {
+                    // Matches reference base
+                    // boring.
+                    // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
+                    Ok(None)
+                } else {
+                    warn!(
+                        ?bases,
+                        pos = pile.pos(),
+                        ?reference_base,
+                        ?next_base,
+                        "pile does not match reference but is also not interesting"
+                    );
+                    Ok(None)
+                }
+            })
+            .flat_map(Result::transpose)
+            .map(|x| {
+                x.map(|pile| {
+                    let metrics = pile.metrics();
+                    (pile, metrics)
+                })
+            })
+            .try_for_each(|x| -> Result<()> {
+                match x {
+                    Ok((pile, metrics)) => {
+                        // trace!(?pile, ?metrics, "found variant candidate");
+                        if pile.likely_methylation_event(&metrics, &params.thresholds) {
+                            // let bases = pile.bases.iter().fold(String::new(), |mut acc, b| {
+                            //     write!(&mut acc, "{}", b.base.display_colored()).unwrap();
+                            //     acc
+                            // });
+                            // info!(
+                            //     pos=pile.pos,
+                            //     ref=%pile.reference_base.display_colored(),
+                            //     %bases,
+                            //     ?metrics,
+                            //     "found methylation event"
+                            // );
+                            MethylationEventWriter(pile, metrics).write(chr, &mut output)?;
+                        }
+                    }
+                    Err(_error) => {
+                        // warn!(%error, "failed to get pileup");
+                        // Err(error)
                     }
                 }
-                Err(_error) => {
-                    // warn!(%error, "failed to get pileup");
-                    // Err(error)
-                }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
+    }
 
     return Ok(());
 }
