@@ -16,11 +16,10 @@ use crate::utils::{
 };
 use clap::value_parser;
 use clio::ClioPath;
-use color_eyre::Result;
+use color_eyre::{Result, eyre::bail};
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smol_str::SmolStr;
 use tracing::{debug, instrument, trace};
-use tracing_subscriber::{field::debug, fmt::format::Full};
 
 #[derive(Debug, clap::Args)]
 pub struct SegmentsParams {
@@ -46,21 +45,18 @@ pub struct SegmentsParams {
     /// Number of bases to overlap between segments
     #[arg(long, default_value_t = 100)]
     pub segment_overlap: u64,
+
+    /// Number of threads to use for reading the bam file
+    #[arg(long, default_value_t = 4)]
+    pub threads: usize,
 }
 
 impl SegmentsParams {
     pub fn readers(&self) -> Result<Readers> {
         let fasta = open_fasta(&self.fasta_file)?;
-        // indexed_reader.fetch("chr19", fetch_range.start, fetch_range.end + 1)?;
 
         let mut bam = bam::IndexedReader::from_path(self.bam_file.path())?;
-        bam.set_threads(8)?;
-        if let Some(region) = &self.region {
-            bam.fetch(region)?;
-        } else {
-            bam.fetch(FetchDefinition::All)?;
-        }
-        // bam.fetch(("chr19", fetch_range.start, fetch_range.end + 1))?;
+        bam.set_threads(self.threads)?;
 
         Ok(Readers { fasta, bam })
     }
@@ -88,6 +84,12 @@ pub struct ChunkRegion {
     pub last_position: u64,
 }
 
+impl ChunkRegion {
+    pub fn contains(&self, pos: u64) -> bool {
+        (self.start..self.end).contains(&pos)
+    }
+}
+
 pub struct Readers {
     pub fasta: FastaReader,
     pub bam: bam::IndexedReader,
@@ -96,15 +98,15 @@ pub struct Readers {
 #[derive(Debug)]
 pub struct Segment {
     pub range: ChunkRegion,
-    pub sequence: Vec<u8>, // Change from SmallByteVec to Vec<u8> since these are large sequences
+    pub sequence: Vec<u8>,
 }
 
 impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
     fn from(segment: &'seg Segment) -> Self {
         FetchDefinition::RegionString(
             segment.range.chromosome.as_bytes(),
-            segment.range.start as i64,
-            (segment.range.end) as i64,
+            i64::try_from(segment.range.start).expect("start is valid i64"),
+            i64::try_from(segment.range.end).expect("end is valid i64"),
         )
     }
 }
@@ -112,7 +114,7 @@ impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
 impl Readers {
     /// Calculate segments based on configuration parameters
     #[instrument(level = "debug", skip_all)]
-    pub fn calculate_segments(
+    pub fn segments(
         &self,
         params: &SegmentsParams,
     ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
@@ -127,13 +129,19 @@ impl Readers {
                     .expect("fetch header length")
             };
             let end = region.end.map(|x| x.get().into()).unwrap_or(last_position);
+
+            // Since the user specified a region, let's go with only that
             vec![FullRegion { chromosome: region.chromosome.clone(), start, end }]
         } else {
             debug!("fetching all regions");
             get_full_regions(self.bam.header())
         };
 
-        let initial_start = if full_regions.is_empty() { 0 } else { full_regions[0].start };
+        if full_regions.is_empty() {
+            bail!("No regions found");
+        }
+
+        let initial_start = full_regions[0].start;
         let chunked = ChunkedRegions {
             full_regions,
             current_region_idx: 0,
@@ -230,30 +238,10 @@ fn get_full_regions(header: &bam::HeaderView) -> Vec<FullRegion> {
         .collect()
 }
 
-// fn chunk_up_iter(
-//     full_regions: Vec<Region>,
-//     params: &SegmentsParams,
-// ) -> impl Iterator<Item = Region> {
-//     full_regions.into_iter().flat_map(move |region| {
-//         let mut start = region.start;
-//         std::iter::from_fn(move || {
-//             if start < region.end {
-//                 let end = (start + params.max_segment_length).min(region.end);
-//                 let chunk = Region { chromosome: region.chromosome.clone(), start, end };
-//                 start = end.saturating_sub(params.segment_overlap);
-//                 debug!(?chunk, ?region, "chunking up region",);
-//                 Some(chunk)
-//             } else {
-//                 None
-//             }
-//         })
-//     })
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
+
     use std::path::PathBuf;
 
     fn test_data_dir() -> PathBuf {
@@ -348,6 +336,7 @@ mod tests {
             region: None,
             max_segment_length: 1000,
             segment_overlap: 100,
+            threads: 4,
         };
 
         // Initialize readers
@@ -370,11 +359,12 @@ mod tests {
             region: Some("chr19:6105700-6105800".parse().unwrap()),
             max_segment_length: 1000,
             segment_overlap: 100,
+            threads: 4,
         };
 
-        let mut readers = params.readers()?;
+        let readers = params.readers()?;
         // Collect all segments into a Vec since we need to verify properties across all segments
-        let segments = readers.calculate_segments(&params)?.collect::<Vec<_>>();
+        let segments = readers.segments(&params)?.collect::<Vec<_>>();
 
         assert!(!segments.is_empty(), "Should have at least one segment");
 
@@ -396,10 +386,11 @@ mod tests {
             region: Some("chr19:6105700-6105900".parse().unwrap()),
             max_segment_length: 100, // Small max length to force multiple segments
             segment_overlap: 20,     // Known overlap amount
+            threads: 4,
         };
 
-        let mut readers = params.readers()?;
-        let segments = readers.calculate_segments(&params)?.collect::<Vec<_>>();
+        let readers = params.readers()?;
+        let segments = readers.segments(&params)?.collect::<Vec<_>>();
 
         assert!(segments.len() > 1, "Should have multiple segments");
 

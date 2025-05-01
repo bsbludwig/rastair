@@ -4,7 +4,7 @@ use color_eyre::eyre::{Context, Result};
 use rust_htslib::bam::Read as _;
 use scores::VariantCandidatePileupMetrics;
 use std::io::{self, BufWriter};
-use tracing::{debug, instrument, warn};
+use tracing::{instrument, warn};
 
 mod methylation;
 mod scores;
@@ -36,7 +36,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     );
     MethylationEventWriter::write_header(&mut output)?;
 
-    let regions = readers.calculate_segments(&params.segments)?;
+    let regions = readers.segments(&params.segments)?;
     for region in regions {
         let segment = readers.segment(&region)?;
 
@@ -47,16 +47,11 @@ pub fn call(params: &CallParams) -> Result<()> {
             .filter_map(|p| p.ok())
             .filter(|p| {
                 // Filter out pileups that are not in the region of interest
-                let fetch_range = region.start..=region.end;
-                let inside_range = fetch_range.contains(&u64::from(p.pos()));
-                // debug!(?fetch_range, pos=?p.pos(), %inside_range, "pileup");
-                inside_range
+                region.contains(u64::from(p.pos()))
             })
-            // .filter(|p| fetch_range.contains(&(p.pos() as u64)))
-            // .take(100)
             .map(|pile| -> Result<Option<VariantCandidatePileup>> {
-                let idx = usize::try_from(u64::from(pile.pos()).wrapping_sub(segment.range.start))
-                    .expect("pos fits in usize");
+                let idx = pile.pos() as usize
+                    - usize::try_from(segment.range.start).expect("segment range fits in usize");
                 let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
                 let reference_base = segment.sequence[idx].as_base()?;
                 let next_base = segment.sequence.get(idx + 1).and_then(|x| x.as_base().ok());
