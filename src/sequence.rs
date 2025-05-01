@@ -19,7 +19,8 @@ use clio::ClioPath;
 use color_eyre::Result;
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smol_str::SmolStr;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, trace};
+use tracing_subscriber::{field::debug, fmt::format::Full};
 
 #[derive(Debug, clap::Args)]
 pub struct SegmentsParams {
@@ -66,10 +67,25 @@ impl SegmentsParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Region {
+pub struct FullRegion {
+    /// The chromosome name, e.g. "chr19"
     pub chromosome: SmolStr,
+    /// The start position of the region, inclusive
     pub start: u64,
+    /// The end position of the region, exclusive
     pub end: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ChunkRegion {
+    /// The chromosome name, e.g. "chr19"
+    pub chromosome: SmolStr,
+    /// The start position of the region, inclusive
+    pub start: u64,
+    /// The end position of the region, exclusive
+    pub end: u64,
+    /// The last base of the region, exclusive
+    pub last_position: u64,
 }
 
 pub struct Readers {
@@ -79,7 +95,7 @@ pub struct Readers {
 
 #[derive(Debug)]
 pub struct Segment {
-    pub range: Region,
+    pub range: ChunkRegion,
     pub sequence: Vec<u8>, // Change from SmallByteVec to Vec<u8> since these are large sequences
 }
 
@@ -95,75 +111,27 @@ impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
 
 impl Readers {
     /// Calculate segments based on configuration parameters
+    #[instrument(level = "debug", skip_all)]
     pub fn calculate_segments(
         &self,
         params: &SegmentsParams,
-    ) -> Result<impl Iterator<Item = Region> + use<>> {
+    ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
         let full_regions = if let Some(region) = &params.region {
-            // If region is specified, start with that
-            vec![Region {
-                chromosome: region.chromosome.clone(),
-                start: region.start.map(|s| u64::from(s.get())).unwrap_or(1),
-                end: region.end.map(|e| u64::from(e.get())).unwrap_or_else(|| {
-                    // If no end specified, use chromosome length from BAM header
-                    let header = self.bam.header();
-                    header
-                        .target_len(header.tid(region.chromosome.as_bytes()).expect("get tid"))
-                        .expect("fetch header length")
-                }),
-            }]
+            debug!(?region, "fetching specified region");
+            let start = region.start.map(|x| x.get().into()).unwrap_or(1);
+            let last_position = {
+                // If no end specified, use chromosome length from BAM header
+                let header = self.bam.header();
+                header
+                    .target_len(header.tid(region.chromosome.as_bytes()).expect("get tid"))
+                    .expect("fetch header length")
+            };
+            let end = region.end.map(|x| x.get().into()).unwrap_or(last_position);
+            vec![FullRegion { chromosome: region.chromosome.clone(), start, end }]
         } else {
-            // If no region specified, create regions for all chromosomes
+            debug!("fetching all regions");
             get_full_regions(self.bam.header())
         };
-
-        // Create an iterator that owns its data to avoid lifetime issues
-        struct ChunkedRegions {
-            full_regions: Vec<Region>,
-            current_region_idx: usize,
-            current_start: u64,
-            max_length: u64,
-            overlap: u64,
-        }
-
-        impl Iterator for ChunkedRegions {
-            type Item = Region;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                loop {
-                    if self.current_region_idx >= self.full_regions.len() {
-                        return None;
-                    }
-
-                    let full_region = &self.full_regions[self.current_region_idx];
-                    if self.current_start >= full_region.end {
-                        // Move to next region when we've finished the current one
-                        self.current_region_idx += 1;
-                        if self.current_region_idx < self.full_regions.len() {
-                            self.current_start = self.full_regions[self.current_region_idx].start;
-                        }
-                        continue;
-                    }
-
-                    let end =
-                        self.current_start.saturating_add(self.max_length).min(full_region.end);
-                    let chunk = Region {
-                        chromosome: full_region.chromosome.clone(),
-                        start: self.current_start,
-                        end,
-                    };
-
-                    // Important: Move start position for next chunk
-                    self.current_start = end;
-                    if self.current_start < full_region.end {
-                        self.current_start = self.current_start.saturating_sub(self.overlap);
-                    }
-
-                    debug!(?chunk, ?full_region, "chunking up region");
-                    return Some(chunk);
-                }
-            }
-        }
 
         let initial_start = if full_regions.is_empty() { 0 } else { full_regions[0].start };
         let chunked = ChunkedRegions {
@@ -177,21 +145,70 @@ impl Readers {
         Ok(chunked)
     }
 
-    #[instrument(level = "debug", skip_all)]
-    pub fn segment(&mut self, region: &Region) -> Result<Segment> {
+    pub fn segment(&mut self, region: &ChunkRegion) -> Result<Segment> {
+        let fetch_some_more = 2;
+        let last_position_to_fetch =
+            region.end.wrapping_add(fetch_some_more).min(region.last_position);
+
         // Calculate exact capacity needed to avoid reallocations
-        let len = usize::try_from(region.end.wrapping_sub(region.start).wrapping_add(2))
-            .expect("failed to convert u64 to usize");
-        debug!(?region, len, "fetching segment");
+        let len = usize::try_from(last_position_to_fetch.wrapping_sub(region.start))
+            .expect("failed to convert segment length to usize");
+
+        trace!(?region, len, "fetching segment");
         let mut seq = Vec::with_capacity(len);
-        self.fasta.fetch(&region.chromosome, region.start, region.end + 2)?;
+        self.fasta.fetch(&region.chromosome, region.start, last_position_to_fetch)?;
         self.fasta.read(&mut seq)?;
         Ok(Segment { range: region.clone(), sequence: seq })
     }
 }
 
+struct ChunkedRegions {
+    full_regions: Vec<FullRegion>,
+    current_region_idx: usize,
+    current_start: u64,
+    max_length: u64,
+    overlap: u64,
+}
+
+impl Iterator for ChunkedRegions {
+    type Item = ChunkRegion;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.current_region_idx >= self.full_regions.len() {
+                return None;
+            }
+
+            let full_region = &self.full_regions[self.current_region_idx];
+            if self.current_start >= full_region.end {
+                // Move to next region when we've finished the current one
+                self.current_region_idx += 1;
+                if self.current_region_idx < self.full_regions.len() {
+                    self.current_start = self.full_regions[self.current_region_idx].start;
+                }
+                continue;
+            }
+
+            let end = self.current_start.saturating_add(self.max_length).min(full_region.end);
+            let chunk = ChunkRegion {
+                chromosome: full_region.chromosome.clone(),
+                start: self.current_start,
+                end,
+                last_position: full_region.end,
+            };
+
+            self.current_start = end;
+            if self.current_start < full_region.end {
+                self.current_start = self.current_start.saturating_sub(self.overlap);
+            }
+
+            return Some(chunk);
+        }
+    }
+}
+
 #[instrument(level = "debug", skip(header))]
-fn get_full_regions(header: &bam::HeaderView) -> Vec<Region> {
+fn get_full_regions(header: &bam::HeaderView) -> Vec<FullRegion> {
     header
         .target_names()
         .iter()
@@ -204,7 +221,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Vec<Region> {
             let length =
                 header.target_len(u32::try_from(tid).expect("get tid")).expect("get target length");
 
-            Region {
+            FullRegion {
                 chromosome: chr,
                 start: 1, // 1-based coordinates
                 end: length,
@@ -318,7 +335,12 @@ mod tests {
     #[test]
     fn test_segment_reading() -> Result<()> {
         // Create a test region and params
-        let region = Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 };
+        let region = ChunkRegion {
+            chromosome: "chr19".into(),
+            start: 6105700,
+            end: 6105800,
+            last_position: 6105900,
+        };
 
         let params = SegmentsParams {
             bam_file: get_test_bam(),
