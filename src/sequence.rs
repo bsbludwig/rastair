@@ -17,9 +17,13 @@ use crate::utils::{
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::bail};
+use regions::{ChunkRegion, FullRegion, Region};
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smol_str::SmolStr;
 use tracing::{debug, instrument, trace};
+
+mod chunked;
+mod regions;
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct SegmentsParams {
@@ -38,6 +42,16 @@ pub struct SegmentsParams {
     #[arg(short = 'l', long)]
     pub region: Option<RegionString>,
 
+    /// Number of threads to use for reading the bam file
+    #[arg(long, default_value_t = 4)]
+    pub threads: usize,
+
+    #[command(flatten)]
+    pub segmentation: SegmentationParams,
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub struct SegmentationParams {
     /// Maximum length of a segment in bases
     #[arg(long, default_value_t = 1_000_000)]
     pub max_segment_length: u64,
@@ -45,10 +59,6 @@ pub struct SegmentsParams {
     /// Number of bases to overlap between segments
     #[arg(long, default_value_t = 100)]
     pub segment_overlap: u64,
-
-    /// Number of threads to use for reading the bam file
-    #[arg(long, default_value_t = 4)]
-    pub threads: usize,
 }
 
 impl SegmentsParams {
@@ -62,71 +72,10 @@ impl SegmentsParams {
     }
 }
 
-/// A genomic region with chromosome and coordinates
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Region {
-    pub chromosome: SmolStr,
-    /// 1-based start position (inclusive)
-    pub start: u64,
-    /// 1-based end position (inclusive)
-    pub end: u64,
-}
-
-impl Region {
-    /// Returns true if the given position falls within this region's bounds
-    pub fn contains(&self, pos: u64) -> bool {
-        (self.start..self.end).contains(&pos)
-    }
-}
-
-/// A complete genomic region that represents a full chromosome or a user-specified region
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FullRegion(Region);
-
-impl std::ops::Deref for FullRegion {
-    type Target = Region;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// A chunk of a larger genomic region used for processing data in segments
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ChunkRegion {
-    region: Region,
-    /// The last valid position in the full region this chunk belongs to
-    last_position: u64,
-}
-
-impl std::ops::Deref for ChunkRegion {
-    type Target = Region;
-
-    fn deref(&self) -> &Self::Target {
-        &self.region
-    }
-}
-
 pub struct Readers {
     pub fasta: FastaReader,
     pub bam: bam::IndexedReader,
     params: SegmentsParams,
-}
-
-#[derive(Debug)]
-pub struct Segment {
-    pub range: ChunkRegion,
-    pub sequence: Vec<u8>,
-}
-
-impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
-    fn from(segment: &'seg Segment) -> Self {
-        FetchDefinition::RegionString(
-            segment.range.region.chromosome.as_bytes(),
-            i64::try_from(segment.range.region.start).expect("start is valid i64"),
-            i64::try_from(segment.range.region.end).expect("end is valid i64"),
-        )
-    }
 }
 
 impl Readers {
@@ -157,12 +106,12 @@ impl Readers {
         }
 
         let initial_start = full_regions[0].0.start;
-        let chunked = ChunkedRegions {
+        let chunked = chunked::ChunkedRegions {
             full_regions,
             current_region_idx: 0,
             current_start: initial_start,
-            max_length: self.params.max_segment_length,
-            overlap: self.params.segment_overlap,
+            max_length: self.params.segmentation.max_segment_length,
+            overlap: self.params.segmentation.segment_overlap,
         };
 
         Ok(chunked)
@@ -185,50 +134,19 @@ impl Readers {
     }
 }
 
-struct ChunkedRegions {
-    full_regions: Vec<FullRegion>,
-    current_region_idx: usize,
-    current_start: u64,
-    max_length: u64,
-    overlap: u64,
+#[derive(Debug)]
+pub struct Segment {
+    pub range: ChunkRegion,
+    pub sequence: Vec<u8>,
 }
 
-impl Iterator for ChunkedRegions {
-    type Item = ChunkRegion;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if self.current_region_idx >= self.full_regions.len() {
-                return None;
-            }
-
-            let full_region = &self.full_regions[self.current_region_idx];
-            if self.current_start >= full_region.0.end {
-                // Move to next region when we've finished the current one
-                self.current_region_idx += 1;
-                if self.current_region_idx < self.full_regions.len() {
-                    self.current_start = self.full_regions[self.current_region_idx].0.start;
-                }
-                continue;
-            }
-
-            let end = self.current_start.saturating_add(self.max_length).min(full_region.0.end);
-            let chunk = ChunkRegion {
-                region: Region {
-                    chromosome: full_region.0.chromosome.clone(),
-                    start: self.current_start,
-                    end,
-                },
-                last_position: full_region.0.end,
-            };
-
-            self.current_start = end;
-            if self.current_start < full_region.0.end {
-                self.current_start = self.current_start.saturating_sub(self.overlap);
-            }
-
-            return Some(chunk);
-        }
+impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
+    fn from(segment: &'seg Segment) -> Self {
+        FetchDefinition::RegionString(
+            segment.range.region.chromosome.as_bytes(),
+            i64::try_from(segment.range.region.start).expect("start is valid i64"),
+            i64::try_from(segment.range.region.end).expect("end is valid i64"),
+        )
     }
 }
 
