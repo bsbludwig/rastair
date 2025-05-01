@@ -144,7 +144,7 @@ mod fasta_tests {
 /// Open the file at the path. If the file has a `.gz` extension, it is assumed
 /// to be a bgzip-compressed file and that there is a corresponding `.gz.gzi`
 /// index file.
-#[instrument(level = "debug")]
+#[instrument(level = "debug", skip_all)]
 fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(
     path: P,
 ) -> Result<Box<dyn ReadAndSeek>, OpenMaybeBgzipError> {
