@@ -36,7 +36,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     );
     MethylationEventWriter::write_header(&mut output)?;
 
-    let regions = readers.segments(&params.segments)?;
+    let regions = readers.segments()?;
     for region in regions {
         let segment = readers.segment(&region)?;
 

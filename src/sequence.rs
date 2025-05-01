@@ -21,7 +21,7 @@ use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smol_str::SmolStr;
 use tracing::{debug, instrument, trace};
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, clap::Args, Clone)]
 pub struct SegmentsParams {
     /// A sorted and indexed bam file
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
@@ -58,7 +58,7 @@ impl SegmentsParams {
         let mut bam = bam::IndexedReader::from_path(self.bam_file.path())?;
         bam.set_threads(self.threads)?;
 
-        Ok(Readers { fasta, bam })
+        Ok(Readers { fasta, bam, params: self.clone() })
     }
 }
 
@@ -110,6 +110,7 @@ impl std::ops::Deref for ChunkRegion {
 pub struct Readers {
     pub fasta: FastaReader,
     pub bam: bam::IndexedReader,
+    params: SegmentsParams,
 }
 
 #[derive(Debug)]
@@ -131,11 +132,8 @@ impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
 impl Readers {
     /// Calculate segments based on configuration parameters
     #[instrument(level = "debug", skip_all)]
-    pub fn segments(
-        &self,
-        params: &SegmentsParams,
-    ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
-        let full_regions = if let Some(region) = &params.region {
+    pub fn segments(&self) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
+        let full_regions = if let Some(region) = &self.params.region {
             debug!(?region, "fetching specified region");
             let start = region.start.map(|x| x.get().into()).unwrap_or(1);
             let last_position = {
@@ -163,8 +161,8 @@ impl Readers {
             full_regions,
             current_region_idx: 0,
             current_start: initial_start,
-            max_length: params.max_segment_length,
-            overlap: params.segment_overlap,
+            max_length: self.params.max_segment_length,
+            overlap: self.params.segment_overlap,
         };
 
         Ok(chunked)
@@ -318,7 +316,7 @@ mod tests {
 
         let readers = params.readers()?;
         // Collect all segments into a Vec since we need to verify properties across all segments
-        let segments = readers.segments(&params)?.collect::<Vec<_>>();
+        let segments = readers.segments()?.collect::<Vec<_>>();
 
         assert!(!segments.is_empty(), "Should have at least one segment");
 
@@ -344,7 +342,7 @@ mod tests {
         };
 
         let readers = params.readers()?;
-        let segments = readers.segments(&params)?.collect::<Vec<_>>();
+        let segments = readers.segments()?.collect::<Vec<_>>();
 
         assert!(segments.len() > 1, "Should have multiple segments");
 
