@@ -8,7 +8,7 @@
 //      - include context of bases before/after
 //      - calculate metrics
 //
-// segements are optional in the beginning
+// segments are optional in the beginning
 
 use crate::utils::{
     RegionString,
@@ -62,31 +62,48 @@ impl SegmentsParams {
     }
 }
 
+/// A genomic region with chromosome and coordinates
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FullRegion {
-    /// The chromosome name, e.g. "chr19"
+pub struct Region {
     pub chromosome: SmolStr,
-    /// The start position of the region, inclusive
+    /// 1-based start position (inclusive)
     pub start: u64,
-    /// The end position of the region, exclusive
+    /// 1-based end position (inclusive)
     pub end: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ChunkRegion {
-    /// The chromosome name, e.g. "chr19"
-    pub chromosome: SmolStr,
-    /// The start position of the region, inclusive
-    pub start: u64,
-    /// The end position of the region, exclusive
-    pub end: u64,
-    /// The last base of the region, exclusive
-    pub last_position: u64,
-}
-
-impl ChunkRegion {
+impl Region {
+    /// Returns true if the given position falls within this region's bounds
     pub fn contains(&self, pos: u64) -> bool {
         (self.start..self.end).contains(&pos)
+    }
+}
+
+/// A complete genomic region that represents a full chromosome or a user-specified region
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FullRegion(Region);
+
+impl std::ops::Deref for FullRegion {
+    type Target = Region;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// A chunk of a larger genomic region used for processing data in segments
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ChunkRegion {
+    region: Region,
+    /// The last valid position in the full region this chunk belongs to
+    last_position: u64,
+}
+
+impl std::ops::Deref for ChunkRegion {
+    type Target = Region;
+
+    fn deref(&self) -> &Self::Target {
+        &self.region
     }
 }
 
@@ -104,9 +121,9 @@ pub struct Segment {
 impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
     fn from(segment: &'seg Segment) -> Self {
         FetchDefinition::RegionString(
-            segment.range.chromosome.as_bytes(),
-            i64::try_from(segment.range.start).expect("start is valid i64"),
-            i64::try_from(segment.range.end).expect("end is valid i64"),
+            segment.range.region.chromosome.as_bytes(),
+            i64::try_from(segment.range.region.start).expect("start is valid i64"),
+            i64::try_from(segment.range.region.end).expect("end is valid i64"),
         )
     }
 }
@@ -131,7 +148,7 @@ impl Readers {
             let end = region.end.map(|x| x.get().into()).unwrap_or(last_position);
 
             // Since the user specified a region, let's go with only that
-            vec![FullRegion { chromosome: region.chromosome.clone(), start, end }]
+            vec![FullRegion(Region { chromosome: region.chromosome.clone(), start, end })]
         } else {
             debug!("fetching all regions");
             get_full_regions(self.bam.header())
@@ -141,7 +158,7 @@ impl Readers {
             bail!("No regions found");
         }
 
-        let initial_start = full_regions[0].start;
+        let initial_start = full_regions[0].0.start;
         let chunked = ChunkedRegions {
             full_regions,
             current_region_idx: 0,
@@ -188,25 +205,27 @@ impl Iterator for ChunkedRegions {
             }
 
             let full_region = &self.full_regions[self.current_region_idx];
-            if self.current_start >= full_region.end {
+            if self.current_start >= full_region.0.end {
                 // Move to next region when we've finished the current one
                 self.current_region_idx += 1;
                 if self.current_region_idx < self.full_regions.len() {
-                    self.current_start = self.full_regions[self.current_region_idx].start;
+                    self.current_start = self.full_regions[self.current_region_idx].0.start;
                 }
                 continue;
             }
 
-            let end = self.current_start.saturating_add(self.max_length).min(full_region.end);
+            let end = self.current_start.saturating_add(self.max_length).min(full_region.0.end);
             let chunk = ChunkRegion {
-                chromosome: full_region.chromosome.clone(),
-                start: self.current_start,
-                end,
-                last_position: full_region.end,
+                region: Region {
+                    chromosome: full_region.0.chromosome.clone(),
+                    start: self.current_start,
+                    end,
+                },
+                last_position: full_region.0.end,
             };
 
             self.current_start = end;
-            if self.current_start < full_region.end {
+            if self.current_start < full_region.0.end {
                 self.current_start = self.current_start.saturating_sub(self.overlap);
             }
 
@@ -229,11 +248,11 @@ fn get_full_regions(header: &bam::HeaderView) -> Vec<FullRegion> {
             let length =
                 header.target_len(u32::try_from(tid).expect("get tid")).expect("get target length");
 
-            FullRegion {
+            FullRegion(Region {
                 chromosome: chr,
                 start: 1, // 1-based coordinates
                 end: length,
-            }
+            })
         })
         .collect()
 }
@@ -257,76 +276,11 @@ mod tests {
             .expect("test fasta path should be valid")
     }
 
-    // proptest! {
-    //     #[test]
-    //     fn test_chunk_up_properties(
-    //         // Generate chromosome names
-    //         chrom in "[A-Za-z0-9]{1,10}",
-    //         // Generate reasonable region lengths
-    //         start in 1u64..100_000u64,
-    //         length in 1u64..100_000u64,
-    //         // Generate reasonable chunk parameters
-    //         max_length in 10_000u64..100_000u64,
-    //         overlap in 1u64..1000u64
-    //     ) {
-    //         let end = start.saturating_add(length);
-    //         let region = Region {
-    //             chromosome: chrom.into(),
-    //             start,
-    //             end,
-    //         };
-
-    //         let params = SegmentsParams {
-    //             bam_file: get_test_bam(),
-    //             fasta_file: get_test_fasta(),
-    //             region: None,
-    //             max_segment_length: max_length,
-    //             segment_overlap: overlap,
-    //         };
-
-    //         // Generate chunks using the iterator
-    //         let chunks: Vec<Region> = chunk_up_iter(vec![region.clone()], &params).collect();
-
-    //         // Properties that should hold for all chunk configurations:
-    //         prop_assert!(!chunks.is_empty(), "Chunks should not be empty");
-
-    //         // First chunk should start at original start
-    //         prop_assert_eq!(chunks[0].start, region.start, "First chunk should start at region start");
-
-    //         // Last chunk should end at original end
-    //         prop_assert_eq!(chunks.last().unwrap().end, region.end, "Last chunk should end at region end");
-
-    //         // All chunks should have same chromosome
-    //         prop_assert!(chunks.iter().all(|c| c.chromosome == region.chromosome), "All chunks should have same chromosome");
-
-    //         // No chunk should exceed max length
-    //         prop_assert!(chunks.iter().all(|c| c.end - c.start <= max_length), "No chunk should exceed max length");
-
-    //         // All chunks except last should be max_length unless they would exceed region end
-    //         prop_assert!(chunks[..chunks.len()-1].iter().all(|c| {
-    //             c.end - c.start == max_length || c.end == region.end
-    //         }), "All chunks except last should be max_length or reach region end");
-
-    //         // Adjacent chunks should overlap by segment_overlap (if not the last chunk)
-    //         prop_assert!(chunks.windows(2).all(|w| {
-    //             w[1].start == w[0].end.saturating_sub(overlap)
-    //         }), "Adjacent chunks should have correct overlap");
-
-    //         // Chunks should cover entire region
-    //         for (i, chunk) in chunks.windows(2).enumerate() {
-    //             prop_assert!(chunk[0].end >= chunk[1].start,
-    //                 "Gap between chunks {} and {}", i, i+1);
-    //         }
-    //     }
-    // }
-
     #[test]
     fn test_segment_reading() -> Result<()> {
         // Create a test region and params
         let region = ChunkRegion {
-            chromosome: "chr19".into(),
-            start: 6105700,
-            end: 6105800,
+            region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
             last_position: 6105900,
         };
 
@@ -370,9 +324,9 @@ mod tests {
 
         // Check segment properties
         for segment in segments {
-            assert_eq!(segment.chromosome, "chr19");
-            assert!(segment.start >= 6105700);
-            assert!(segment.end <= 6105800);
+            assert_eq!(segment.region.chromosome, "chr19");
+            assert!(segment.region.start >= 6105700);
+            assert!(segment.region.end <= 6105800);
         }
 
         Ok(())
@@ -400,7 +354,7 @@ mod tests {
         //     let second = readers.segment(&pair[1])?;
 
         //     // Verify overlap amount
-        //     let overlap = first.range.end - second.range.start;
+        //     let overlap = first.range.region.end - second.range.region.start;
         //     assert_eq!(overlap, params.segment_overlap);
 
         //     // Verify overlapping sequence content matches
