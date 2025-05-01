@@ -204,9 +204,8 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
-            max_segment_length: 1000,
-            segment_overlap: 100,
             threads: 4,
+            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
         };
 
         // Initialize readers
@@ -227,9 +226,8 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105800".parse().unwrap()),
-            max_segment_length: 1000,
-            segment_overlap: 100,
             threads: 4,
+            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
         };
 
         let readers = params.readers()?;
@@ -254,30 +252,42 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105900".parse().unwrap()),
-            max_segment_length: 100, // Small max length to force multiple segments
-            segment_overlap: 20,     // Known overlap amount
             threads: 4,
+            segmentation: SegmentationParams {
+                max_segment_length: 100, // Small max length to force multiple segments
+                segment_overlap: 20,     // Known overlap amount
+            },
         };
 
-        let readers = params.readers()?;
+        let mut readers = params.readers()?;
         let segments = readers.segments()?.collect::<Vec<_>>();
 
         assert!(segments.len() > 1, "Should have multiple segments");
 
         // Check overlaps between adjacent segments
-        // for pair in segments.windows(2) {
-        //     let first = readers.segment(&pair[0])?;
-        //     let second = readers.segment(&pair[1])?;
+        for pair in segments.windows(2) {
+            let first = readers.segment(&pair[0])?;
+            let second = readers.segment(&pair[1])?;
 
-        //     // Verify overlap amount
-        //     let overlap = first.range.region.end - second.range.region.start;
-        //     assert_eq!(overlap, params.segment_overlap);
+            // Verify overlap amount
+            let overlap = first.range.region.end - second.range.region.start;
+            assert_eq!(
+                overlap, params.segmentation.segment_overlap,
+                "Overlap amount should match configured value"
+            );
 
-        //     // Verify overlapping sequence content matches
-        //     let overlap_first = &first.sequence[first.sequence.len() - overlap as usize..];
-        //     let overlap_second = &second.sequence[..overlap as usize];
-        //     assert_eq!(overlap_first, overlap_second, "Overlapping sequences should match");
-        // }
+            // Calculate overlap regions accounting for 0-based sequence indexing
+            let first_start_idx =
+                (first.range.region.end - overlap - first.range.region.start) as usize;
+            let first_end_idx = (first.range.region.end - first.range.region.start) as usize;
+            let second_start_idx = 0;
+            let second_end_idx = overlap as usize;
+
+            // Verify overlapping sequence content matches
+            let overlap_first = &first.sequence[first_start_idx..first_end_idx];
+            let overlap_second = &second.sequence[second_start_idx..second_end_idx];
+            assert_eq!(overlap_first, overlap_second, "Overlapping sequences should match");
+        }
 
         Ok(())
     }
