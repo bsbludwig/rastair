@@ -1,11 +1,16 @@
 use super::Base;
+use bio::alignment::distance;
 use color_eyre::eyre::{Context, Result};
+use itertools::Itertools;
 use rust_htslib::bam::{Record, record::Aux};
 use smallvec::SmallVec;
 use std::fmt::Write;
 
+/// A struct representing a list of methylated positions in a sequence
 pub struct MethylatedPositions {
+    /// Unmodified "fundamental" base (on top strand)
     pub base: Base,
+    /// List of positions (0-based) of the base in the sequence
     pub positions: SmallVec<u32, 10>,
 }
 
@@ -26,12 +31,14 @@ impl MethylatedPositions {
         // 5-Methylcytosine
         mod_string.push_str("m,");
 
-        // list modified bases as skip list
-        let mut last_pos = 0;
+        let mut prev_pos = None;
         for pos in &self.positions {
-            let index = pos - last_pos - 1;
-            last_pos = *pos;
-            write!(&mut mod_string, "{index},").unwrap();
+            let steps_between_prev_and_this = match prev_pos {
+                Some(prev) => pos.saturating_sub(prev).saturating_sub(1),
+                None => *pos,
+            };
+            let _ = prev_pos.insert(*pos);
+            write!(&mut mod_string, "{steps_between_prev_and_this},").unwrap();
         }
 
         // replace last comma
@@ -44,32 +51,34 @@ impl MethylatedPositions {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
     fn test_positive_strand_multiple_positions() {
-        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([6, 19, 20]) };
+        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5, 18, 19]) };
         let expected = "C+m,5,12,0;";
         assert_eq!(expected, input.to_mod_string("+"));
     }
 
     #[test]
     fn test_negative_strand_multiple_positions() {
-        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([6, 19, 20]) };
+        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5, 18, 19]) };
         let expected = "C-m,5,12,0;";
         assert_eq!(expected, input.to_mod_string("-"));
     }
 
     #[test]
     fn test_single_position() {
-        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5]) };
+        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([4]) };
         let expected = "C+m,4;";
         assert_eq!(expected, input.to_mod_string("+"));
     }
 
     #[test]
     fn test_consecutive_positions() {
-        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([1, 2, 3]) };
+        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([0, 1, 2]) };
         let expected = "C+m,0,0,0;";
         assert_eq!(expected, input.to_mod_string("+"));
     }
@@ -79,5 +88,26 @@ mod tests {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::new() };
         let expected = "C+m;";
         assert_eq!(expected, input.to_mod_string("+"));
+    }
+
+    proptest! {
+        #[test]
+        fn test_mod_string_roundtrip(
+            base in prop_oneof![Just(Base::A), Just(Base::C), Just(Base::G), Just(Base::T)],
+            mut positions in prop::collection::vec(0..100u32, 0..10),
+            strand in prop_oneof![Just("+"), Just("-")]
+        ) {
+            positions.sort();
+            let input = MethylatedPositions { base, positions: SmallVec::from(positions) };
+            let mod_string = input.to_mod_string(strand);
+            assert!(mod_string.starts_with(&format!("{}{}", base.as_char(), strand)));
+            assert!(mod_string.ends_with(";"));
+            // assert right number of positions
+            let positions_in_str = mod_string.trim_end_matches(';')
+                .split(',')
+                .skip(1)
+                .count();
+            assert_eq!(input.positions.len(), positions_in_str);
+        }
     }
 }
