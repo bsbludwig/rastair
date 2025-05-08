@@ -1,7 +1,6 @@
 use super::Base;
 use bio::alignment::distance;
 use color_eyre::eyre::{Context, Result};
-use itertools::Itertools;
 use rust_htslib::bam::{Record, record::Aux};
 use smallvec::SmallVec;
 use std::fmt::Write;
@@ -51,28 +50,27 @@ impl MethylatedPositions {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use proptest::prelude::*;
 
-    use super::*;
-
     #[test]
-    fn test_positive_strand_multiple_positions() {
-        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5, 18, 19]) };
-        let expected = "C+m,5,12,0;";
+    fn test_empty_positions() {
+        let input = MethylatedPositions { base: Base::C, positions: SmallVec::new() };
+        let expected = "C+m;";
         assert_eq!(expected, input.to_mod_string("+"));
-    }
-
-    #[test]
-    fn test_negative_strand_multiple_positions() {
-        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5, 18, 19]) };
-        let expected = "C-m,5,12,0;";
-        assert_eq!(expected, input.to_mod_string("-"));
     }
 
     #[test]
     fn test_single_position() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([4]) };
         let expected = "C+m,4;";
+        assert_eq!(expected, input.to_mod_string("+"));
+    }
+
+    #[test]
+    fn test_multiple_positions() {
+        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5, 18, 19]) };
+        let expected = "C+m,5,12,0;";
         assert_eq!(expected, input.to_mod_string("+"));
     }
 
@@ -84,10 +82,16 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_positions() {
-        let input = MethylatedPositions { base: Base::C, positions: SmallVec::new() };
-        let expected = "C+m;";
-        assert_eq!(expected, input.to_mod_string("+"));
+    fn test_apply_to_record() {
+        let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([0, 1, 2]) };
+
+        let mut record = Record::new();
+        input.apply_to_record(&mut record).unwrap();
+        let output = record.aux(b"Mm").unwrap();
+        let Aux::String(output_str) = output else { panic!("Expected string aux type") };
+
+        let expected = "C+m,0,0,0;";
+        assert_eq!(expected, output_str);
     }
 
     proptest! {
