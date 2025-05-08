@@ -26,6 +26,10 @@ impl Base {
             Base::T => "\x1b[31mT\x1b[0m", // red
         }
     }
+
+    pub fn as_char(&self) -> char {
+        (*self) as u8 as char
+    }
 }
 
 impl std::ops::Deref for Base {

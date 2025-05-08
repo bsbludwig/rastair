@@ -7,5 +7,7 @@ pub mod utils {
     pub use region_string::RegionString;
     mod rms;
     pub use rms::RootMeanSquare;
+    mod base_modification;
+    pub use base_modification::MethylatedPositions;
 }
 pub mod sequence;
