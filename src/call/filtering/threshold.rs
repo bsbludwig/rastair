@@ -130,7 +130,7 @@ mod tests {
         ) {
             let mut bases = vec![Base::T; t_count];
             bases.extend(vec![Base::C; c_count]);
-            
+
             let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, 5);
             let metrics = pileup.metrics();
             let config = ThresholdConfig {

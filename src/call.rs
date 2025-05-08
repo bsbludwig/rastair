@@ -87,6 +87,7 @@ pub fn call(params: &CallParams) -> Result<()> {
                     (pile, metrics)
                 })
             })
+            // TODO: also peek next pile,metrics if available
             .try_for_each(|x| -> Result<()> {
                 match x {
                     Ok((pile, metrics)) => {
