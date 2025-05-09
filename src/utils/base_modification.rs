@@ -1,5 +1,4 @@
 use super::Base;
-use bio::alignment::distance;
 use color_eyre::eyre::{Context, Result};
 use rust_htslib::bam::{Record, record::Aux};
 use smallvec::SmallVec;

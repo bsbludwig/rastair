@@ -1,0 +1,63 @@
+image: rust:1.70-slim
+
+definitions:
+  caches:
+    # Cache Cargo registry and index for faster dependency downloads
+    cargo-registry: ~/.cargo/registry/
+    cargo-git: ~/.cargo/git/
+    # Cache only dependency compilation artifacts, not our own code
+    cargo-target-deps: target/release/deps/
+    cargo-target-build: target/release/build/
+
+pipelines:
+  default:
+    - step:
+        name: Build and Test
+        caches:
+          - cargo-registry
+          - cargo-git
+          - cargo-target-deps
+          - cargo-target-build
+        script:
+          - rustup component add clippy rustfmt
+          # Ensure code style
+          - cargo fmt -- --check
+          # Run lints
+          - cargo clippy -- -D warnings
+          # Build and test in release mode
+          - cargo build --release
+          - cargo test --all --release
+
+  pull-requests:
+    "**":
+      - step:
+          name: PR Checks
+          caches:
+            - cargo-registry
+            - cargo-git
+            - cargo-target-deps
+            - cargo-target-build
+          script:
+            - rustup component add clippy rustfmt
+            - cargo fmt -- --check
+            - cargo clippy -- -D warnings
+            - cargo build --release
+            - cargo test --all --release
+
+  tags:
+    "*":
+      - step:
+          name: Release Build
+          caches:
+            - cargo-registry
+            - cargo-git
+            - cargo-target-deps
+            - cargo-target-build
+          script:
+            - cargo build --release
+            - cargo test --all --release
+          artifacts:
+            - target/release/rastair2
+
+options:
+  max-time: 30
