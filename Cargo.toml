@@ -18,7 +18,10 @@ clap = { version = "4.5.35", features = ["derive", "env"] }
 clio = { version = "0.3.5", features = ["clap", "clap-parse", "pipe"] }
 color-eyre = "0.6.3"
 probability = "0.20.3"
-rust-htslib = "0.49.0"
+rust-htslib = { version = "0.49.0", default-features = false, features = [
+    "bzip2",
+    "lzma",
+] }
 smallarcvec = { version = "0.1.0", path = "crates/smallarcvec" }
 smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
 smol_str = "0.3.2"
