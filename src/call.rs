@@ -1,5 +1,6 @@
 use crate::{sequence::SegmentsParams, utils::TryAsBase as _};
 use clio::ClioPath;
+use color_eyre::eyre;
 use color_eyre::eyre::{Context, Result};
 use rust_htslib::bam::Read as _;
 use scores::VariantCandidatePileupMetrics;

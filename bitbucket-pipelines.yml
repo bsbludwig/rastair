@@ -1,4 +1,4 @@
-image: rust:1.70-slim
+image: rust:1.86 # keep in sync with `rust-toolchain.yml`
 
 definitions:
   caches:
@@ -8,6 +8,8 @@ definitions:
     # Cache only dependency compilation artifacts, not our own code
     cargo-target-deps: target/release/deps/
     cargo-target-build: target/release/build/
+    # Cache Deno modules for scripts
+    deno-modules: ~/.cache/deno/
 
 pipelines:
   default:
@@ -18,31 +20,20 @@ pipelines:
           - cargo-git
           - cargo-target-deps
           - cargo-target-build
+          - deno-modules
         script:
+          # Dependencies
           - rustup component add clippy rustfmt
+          - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
+          # Install Deno for scripts
+          - curl -fsSL https://deno.land/x/install/install.sh | sh
+          - export DENO_INSTALL="/root/.deno"
+          - export PATH="$DENO_INSTALL/bin:$PATH"
           # Ensure code style
           - cargo fmt -- --check
-          # Run lints
-          - cargo clippy -- -D warnings
-          # Build and test in release mode
-          - cargo build --release
-          - cargo test --all --release
-
-  pull-requests:
-    "**":
-      - step:
-          name: PR Checks
-          caches:
-            - cargo-registry
-            - cargo-git
-            - cargo-target-deps
-            - cargo-target-build
-          script:
-            - rustup component add clippy rustfmt
-            - cargo fmt -- --check
-            - cargo clippy -- -D warnings
-            - cargo build --release
-            - cargo test --all --release
+          # Run checks and generate reports
+          - deno run --allow-all ci/clippy_report.ts
+          - deno run --allow-all ci/test_report.ts
 
   tags:
     "*":
@@ -54,8 +45,11 @@ pipelines:
             - cargo-target-deps
             - cargo-target-build
           script:
+            # Dependencies
+            - rustup component add clippy rustfmt
+            - apt-get update && apt-get install -y --no-install-recommends libclang-dev
+            # Build artifacts
             - cargo build --release
-            - cargo test --all --release
           artifacts:
             - target/release/rastair2
 
