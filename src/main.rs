@@ -1,4 +1,4 @@
-use clap::Parser as _;
+use clap::{CommandFactory as _, Parser as _};
 use color_eyre::eyre::Result;
 use rastair2::call::{CallParams, call};
 use tracing::debug;
@@ -13,6 +13,12 @@ struct Cli {
 #[derive(Debug, clap::Subcommand)]
 enum Subcommand {
     Call(CallParams),
+    #[command(hide = true)]
+    GenerateShellCompletions {
+        /// The shell to generate the completions for
+        #[arg(value_enum)]
+        shell: clap_complete_command::Shell,
+    },
 }
 
 fn main() -> Result<()> {
@@ -32,6 +38,9 @@ fn main() -> Result<()> {
         Subcommand::Call(params) => {
             debug!(?params, "Running call command");
             call(&params)?;
+        }
+        Subcommand::GenerateShellCompletions { shell } => {
+            shell.generate(&mut Cli::command(), &mut std::io::stdout());
         }
     }
 
