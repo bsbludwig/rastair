@@ -1,6 +1,7 @@
 use crate::utils::{Base, TryAsBase as _};
 use rust_htslib::bam::pileup::Alignment;
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 use std::ops::Deref;
 
 pub fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
@@ -30,6 +31,7 @@ pub fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
 
 #[derive(Debug, Clone)]
 pub struct VariantCandidatePileup {
+    pub chrom: SmolStr,
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,

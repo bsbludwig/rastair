@@ -20,7 +20,7 @@ use color_eyre::{
     Result,
     eyre::{Context, ContextCompat, bail},
 };
-use regions::{ChunkRegion, FullRegion, Region};
+pub use regions::{ChunkRegion, FullRegion, Region};
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smol_str::SmolStr;
 use tracing::{debug, instrument, trace};

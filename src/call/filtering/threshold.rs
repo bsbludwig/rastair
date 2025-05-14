@@ -58,6 +58,7 @@ mod tests {
 
     use proptest::prelude::*;
     use smallvec::SmallVec;
+    use smol_str::SmolStr;
 
     fn make_pileup(
         pos: u32,
@@ -79,6 +80,7 @@ mod tests {
             .collect();
 
         VariantCandidatePileup {
+            chrom: SmolStr::new_inline("chr66"),
             pos,
             reference_base,
             next_base,
