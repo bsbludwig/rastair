@@ -11,6 +11,7 @@
 // - Realignment score/hamming-distance difference for reads covering @variant#mark[assumes realignment]
 
 use crate::utils::RootMeanSquare;
+use color_eyre::eyre::{Context, Result};
 use probability::{distribution::Binomial, prelude::Discrete};
 use smallvec::SmallVec;
 use std::fmt;
@@ -18,7 +19,7 @@ use std::fmt;
 use super::variants::VariantCandidatePileup;
 
 impl VariantCandidatePileup {
-    pub fn metrics(&self) -> VariantCandidatePileupMetrics {
+    pub fn metrics(&self) -> Result<VariantCandidatePileupMetrics> {
         let reference_bases = self.bases.iter().filter(|b| b.base == self.reference_base);
         let reference_count = reference_bases.clone().count();
         let alt_bases = self.bases.iter().filter(|b| b.base != self.reference_base);
@@ -45,21 +46,22 @@ impl VariantCandidatePileup {
             alt_baseq: SmallVec::from_iter(alt_bases.clone().map(|b| b.qual)),
         };
 
-        VariantCandidatePileupMetrics {
+        Ok(VariantCandidatePileupMetrics {
             reference_count,
             alt_count,
-            vaf: vaf.calculate(),
-            binomial: binomial.calculate(),
-            mapq: mapq.calculate(),
-            baseq: baseq.calculate(),
+            vaf: vaf.calculate().wrap_err("vaf")?,
+            binomial: binomial.calculate().wrap_err("binomial")?,
+            mapq: mapq.calculate().wrap_err("mapq")?,
+            baseq: baseq.calculate().wrap_err("baseq")?,
             strand_bias: StrandBias {
                 reference_ot: reference_bases.clone().filter(|b| !b.reverse).count() as u64,
                 reference_ob: reference_bases.clone().filter(|b| b.reverse).count() as u64,
                 alt_ot: alt_bases.clone().filter(|b| !b.reverse).count() as u64,
                 alt_ob: alt_bases.clone().filter(|b| b.reverse).count() as u64,
             }
-            .calculate(),
-        }
+            .calculate()
+            .wrap_err("strand bias")?,
+        })
     }
 }
 
@@ -103,7 +105,7 @@ impl<T: fmt::Debug> fmt::Debug for RefVsAlt<T> {
 
 pub trait Calc {
     type Output;
-    fn calculate(&self) -> Self::Output;
+    fn calculate(&self) -> Result<Self::Output>;
 }
 
 pub struct VariantAlleleFrequency {
@@ -114,12 +116,12 @@ pub struct VariantAlleleFrequency {
 impl Calc for VariantAlleleFrequency {
     type Output = f64;
 
-    fn calculate(&self) -> f64 {
+    fn calculate(&self) -> Result<f64> {
         let total = self.reference_count + self.alt_count;
         if total == 0 {
-            return 0.0;
+            return Ok(0.0);
         }
-        self.alt_count as f64 / total as f64
+        Ok(self.alt_count as f64 / total as f64)
     }
 }
 
@@ -132,18 +134,19 @@ pub struct BinomialTest {
 impl Calc for BinomialTest {
     type Output = f64;
 
-    fn calculate(&self) -> f64 {
+    fn calculate(&self) -> Result<f64> {
         let total = self.reference_count + self.alt_count;
         if total == 0 {
-            return 0.0;
+            return Ok(0.0);
         }
         let binomial =
-            Binomial::new(usize::try_from(total).expect("total > usize"), self.error_rate);
+            Binomial::new(usize::try_from(total).wrap_err("total > usize")?, self.error_rate);
 
         if self.reference_count <= self.alt_count {
-            binomial.mass(usize::try_from(self.reference_count).expect("reference_count > usize"))
+            Ok(binomial
+                .mass(usize::try_from(self.reference_count).wrap_err("reference_count > usize")?))
         } else {
-            binomial.mass(usize::try_from(self.alt_count).expect("alt_count > usize"))
+            Ok(binomial.mass(usize::try_from(self.alt_count).wrap_err("alt_count > usize")?))
         }
     }
 }
@@ -157,10 +160,10 @@ pub struct MappingQuality {
 impl Calc for MappingQuality {
     type Output = RefVsAlt<RootMeanSquare>;
 
-    fn calculate(&self) -> Self::Output {
+    fn calculate(&self) -> Result<Self::Output> {
         let reference_rms = RootMeanSquare::new(&self.reference_mapq);
         let alt_rms = RootMeanSquare::new(&self.alt_mapq);
-        RefVsAlt::new(reference_rms, alt_rms)
+        Ok(RefVsAlt::new(reference_rms, alt_rms))
     }
 }
 
@@ -173,10 +176,10 @@ pub struct BaseQuality {
 impl Calc for BaseQuality {
     type Output = RefVsAlt<RootMeanSquare>;
 
-    fn calculate(&self) -> Self::Output {
+    fn calculate(&self) -> Result<Self::Output> {
         let reference_rms = RootMeanSquare::new(&self.reference_baseq);
         let alt_rms = RootMeanSquare::new(&self.alt_baseq);
-        RefVsAlt::new(reference_rms, alt_rms)
+        Ok(RefVsAlt::new(reference_rms, alt_rms))
     }
 }
 
@@ -195,7 +198,7 @@ pub struct StrandBias {
 impl Calc for StrandBias {
     type Output = RefVsAlt<f64>;
 
-    fn calculate(&self) -> Self::Output {
+    fn calculate(&self) -> Result<Self::Output> {
         let reference_total = self.reference_ot + self.reference_ob;
         let alt_total = self.alt_ot + self.alt_ob;
 
@@ -207,6 +210,6 @@ impl Calc for StrandBias {
 
         let alt_bias = if alt_total == 0 { 0.0 } else { self.alt_ot as f64 / alt_total as f64 };
 
-        RefVsAlt::new(reference_bias, alt_bias)
+        Ok(RefVsAlt::new(reference_bias, alt_bias))
     }
 }

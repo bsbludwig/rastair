@@ -70,6 +70,7 @@ fn validates_region_arg() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[allow(clippy::unwrap_used)]
 fn str(vec: Vec<u8>) -> String {
     String::from_utf8(vec).unwrap()
 }

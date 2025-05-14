@@ -14,6 +14,13 @@ definitions:
 pipelines:
   default:
     - step:
+        name: Formatting
+        fail-fast: false
+        script:
+          - rustup component add rustfmt
+          # Ensure code style
+          - cargo fmt -- --check
+    - step:
         name: Build and Test
         caches:
           - cargo-registry
@@ -23,14 +30,12 @@ pipelines:
           - deno-modules
         script:
           # Dependencies
-          - rustup component add clippy rustfmt
+          - rustup component add clippy
           - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
           # Install Deno for scripts
           - curl -fsSL https://deno.land/x/install/install.sh | sh
           - export DENO_INSTALL="/root/.deno"
           - export PATH="$DENO_INSTALL/bin:$PATH"
-          # Ensure code style
-          - cargo fmt -- --check
           # Run checks and generate reports
           - deno run --allow-all ci/clippy_report.ts
           - deno run --allow-all ci/test_report.ts

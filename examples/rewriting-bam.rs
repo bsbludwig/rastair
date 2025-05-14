@@ -1,6 +1,6 @@
 use color_eyre::eyre::{Context, ContextCompat, Result};
 use rastair2::utils::{Base, MethylatedPositions};
-use rust_htslib::bam::{self, Header, Read, Record, Writer, header::HeaderRecord, record::Aux};
+use rust_htslib::bam::{self, Header, Read, Record, Writer, header::HeaderRecord};
 use smallvec::SmallVec;
 use tracing_subscriber::layer::SubscriberExt as _;
 

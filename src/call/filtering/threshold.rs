@@ -55,6 +55,7 @@ impl VariantCandidatePileup {
 mod tests {
     use super::*;
     use crate::utils::Base;
+
     use proptest::prelude::*;
     use smallvec::SmallVec;
 
@@ -112,7 +113,7 @@ mod tests {
             )
         ) {
             let pileup = make_pileup(pos, reference_base, next_base, bases, 5);
-            let metrics = pileup.metrics();
+            let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 min_vaf: 0.1,
                 max_binomial: 0.08,
@@ -132,7 +133,7 @@ mod tests {
             bases.extend(vec![Base::C; c_count]);
 
             let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, 5);
-            let metrics = pileup.metrics();
+            let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 min_vaf: 0.1,
                 max_binomial: 0.1,  // Increased slightly to accommodate test case
@@ -156,7 +157,7 @@ mod tests {
         ) {
             let bases = vec![Base::T; count];
             let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, min_reads);
-            let metrics = pileup.metrics();
+            let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 min_vaf: 0.1,
                 max_binomial: 0.08,
@@ -182,7 +183,7 @@ mod tests {
             bases.extend(vec![Base::G; g_count]);
 
             let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, 5);
-            let metrics = pileup.metrics();
+            let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 min_vaf: 0.1,
                 max_binomial: 0.08,

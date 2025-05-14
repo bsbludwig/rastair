@@ -1,8 +1,7 @@
 use crate::{sequence::SegmentsParams, utils::TryAsBase as _};
 use clio::ClioPath;
-use color_eyre::eyre;
-use color_eyre::eyre::{Context, Result};
-use rust_htslib::bam::Read as _;
+use color_eyre::eyre::{Context, ContextCompat, Result};
+use rust_htslib::bam::{FetchDefinition, Read as _};
 use scores::VariantCandidatePileupMetrics;
 use std::io::{self, BufWriter};
 use tracing::{instrument, warn};
@@ -41,7 +40,10 @@ pub fn call(params: &CallParams) -> Result<()> {
     for region in regions {
         let segment = readers.segment(&region)?;
 
-        readers.bam.fetch(&segment)?;
+        readers.bam.fetch(
+            FetchDefinition::try_from(&segment)
+                .wrap_err("convert region string to fetch definition")?,
+        )?;
         readers
             .bam
             .pileup()
@@ -52,9 +54,14 @@ pub fn call(params: &CallParams) -> Result<()> {
             })
             .map(|pile| -> Result<Option<VariantCandidatePileup>> {
                 let idx = pile.pos() as usize
-                    - usize::try_from(segment.range.start).expect("segment range fits in usize");
+                    - usize::try_from(segment.range.start)
+                        .wrap_err("segment range fits in usize")?;
                 let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
-                let reference_base = segment.sequence[idx].as_base()?;
+                let reference_base = segment
+                    .sequence
+                    .get(idx)
+                    .wrap_err("failed to get reference base")?
+                    .as_base()?;
                 let next_base = segment.sequence.get(idx + 1).and_then(|x| x.as_base().ok());
                 if bases.is_variant_candidate() {
                     // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
@@ -82,11 +89,10 @@ pub fn call(params: &CallParams) -> Result<()> {
                 }
             })
             .flat_map(Result::transpose)
-            .map(|x| {
-                x.map(|pile| {
-                    let metrics = pile.metrics();
-                    (pile, metrics)
-                })
+            .map(|pile| -> Result<_> {
+                let pile = pile?;
+                let metrics = pile.metrics().wrap_err("calculate metrics")?;
+                Ok((pile, metrics))
             })
             // TODO: also peek next pile,metrics if available
             .try_for_each(|x| -> Result<()> {

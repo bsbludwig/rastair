@@ -46,6 +46,14 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
 dead_code = { level = "allow" }
 
 [lints.clippy]
+unwrap_used = { level = "deny" }
+panic = { level = "deny" }
+# indexing_slicing = { level = "deny" }
+unhandled_errors = { level = "deny" }
+undocumented_unsafe_blocks = { level = "deny" }
+unwrap_in_result = { level = "deny" }
+ok_expect = { level = "deny" }
+
 # Only output useful program output to stdout not forgotten debug code :)
 print_stdout = { level = "warn" }
 

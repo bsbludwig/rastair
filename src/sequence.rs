@@ -16,7 +16,10 @@ use crate::utils::{
 };
 use clap::value_parser;
 use clio::ClioPath;
-use color_eyre::{Result, eyre::bail};
+use color_eyre::{
+    Result,
+    eyre::{Context, ContextCompat, bail},
+};
 use regions::{ChunkRegion, FullRegion, Region};
 use rust_htslib::bam::{self, FetchDefinition, Read as _};
 use smol_str::SmolStr;
@@ -89,8 +92,10 @@ impl Readers {
                 // If no end specified, use chromosome length from BAM header
                 let header = self.bam.header();
                 header
-                    .target_len(header.tid(region.chromosome.as_bytes()).expect("get tid"))
-                    .expect("fetch header length")
+                    .target_len(
+                        header.tid(region.chromosome.as_bytes()).wrap_err("failed to fetch tid")?,
+                    )
+                    .wrap_err("failed to fetch header length")?
             };
             let end = region.end.map(|x| x.get().into()).unwrap_or(last_position);
 
@@ -98,7 +103,7 @@ impl Readers {
             vec![FullRegion(Region { chromosome: region.chromosome.clone(), start, end })]
         } else {
             debug!("fetching all regions");
-            get_full_regions(self.bam.header())
+            get_full_regions(self.bam.header()).wrap_err("failed to get full region")?
         };
 
         if full_regions.is_empty() {
@@ -124,7 +129,7 @@ impl Readers {
 
         // Calculate exact capacity needed to avoid reallocations
         let len = usize::try_from(last_position_to_fetch.wrapping_sub(region.start))
-            .expect("failed to convert segment length to usize");
+            .wrap_err("failed to convert segment length to usize")?;
 
         trace!(?region, len, "fetching segment");
         let mut seq = Vec::with_capacity(len);
@@ -140,35 +145,38 @@ pub struct Segment {
     pub sequence: Vec<u8>,
 }
 
-impl<'seg> From<&'seg Segment> for FetchDefinition<'seg> {
-    fn from(segment: &'seg Segment) -> Self {
-        FetchDefinition::RegionString(
+impl<'seg> TryFrom<&'seg Segment> for FetchDefinition<'seg> {
+    type Error = color_eyre::Report;
+
+    fn try_from(segment: &'seg Segment) -> Result<Self> {
+        Ok(FetchDefinition::RegionString(
             segment.range.region.chromosome.as_bytes(),
-            i64::try_from(segment.range.region.start).expect("start is valid i64"),
-            i64::try_from(segment.range.region.end).expect("end is valid i64"),
-        )
+            i64::try_from(segment.range.region.start).wrap_err("start is invalid i64")?,
+            i64::try_from(segment.range.region.end).wrap_err("end is invalid i64")?,
+        ))
     }
 }
 
 #[instrument(level = "debug", skip(header))]
-fn get_full_regions(header: &bam::HeaderView) -> Vec<FullRegion> {
+fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
     header
         .target_names()
         .iter()
         .enumerate()
         .filter(|(_, name)| !name.is_empty())
-        .map(|(tid, name)| {
+        .map(|(tid, name)| -> Result<FullRegion> {
             let chr = SmolStr::new(
-                std::str::from_utf8(name).expect("bam target name always valid UTF-8"),
+                std::str::from_utf8(name).wrap_err("bam target name not valid UTF-8")?,
             );
-            let length =
-                header.target_len(u32::try_from(tid).expect("get tid")).expect("get target length");
+            let length = header
+                .target_len(u32::try_from(tid).wrap_err("faield to get tid")?)
+                .wrap_err("failed to get target length")?;
 
-            FullRegion(Region {
+            Ok(FullRegion(Region {
                 chromosome: chr,
                 start: 1, // 1-based coordinates
                 end: length,
-            })
+            }))
         })
         .collect()
 }
