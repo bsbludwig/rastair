@@ -80,7 +80,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     return Ok(());
 }
 
-#[instrument(level = "debug", skip_all)]
+#[instrument(level = "trace", skip_all)]
 fn collect_candidate(
     pile: Pileup,
     segment: &Segment,
