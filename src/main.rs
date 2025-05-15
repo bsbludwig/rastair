@@ -23,13 +23,15 @@ enum Subcommand {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    let subscriber =
-        tracing_subscriber::Registry::default().with(tracing_error::ErrorLayer::default()).with(
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(tracing_error::ErrorLayer::default())
+        .with(
             tracing_subscriber::fmt::Layer::default()
                 .with_target(true)
                 .with_span_events(FmtSpan::CLOSE)
                 .with_writer(std::io::stderr),
-        );
+        )
+        .with(tracing_subscriber::EnvFilter::from_default_env());
     tracing::subscriber::set_global_default(subscriber)?;
 
     let args = Cli::parse();
@@ -41,7 +43,7 @@ fn main() -> Result<()> {
             debug!(?params, "Running call command");
             call(&params)?;
             let duration = start.elapsed();
-            info!(?duration, "Call command completed");
+            info!(?duration, "Call finished");
         }
         Subcommand::GenerateShellCompletions { shell } => {
             shell.generate(&mut Cli::command(), &mut std::io::stdout());
