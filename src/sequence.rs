@@ -10,6 +10,8 @@
 //
 // segments are optional in the beginning
 
+use std::num::NonZeroU32;
+
 use crate::utils::{
     RegionString,
     file_helpers::{FastaReader, open_fasta},
@@ -17,11 +19,11 @@ use crate::utils::{
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
-    Result,
-    eyre::{Context, ContextCompat, bail},
+    Result, Section,
+    eyre::{Context, ContextCompat, ensure},
 };
 pub use regions::{ChunkRegion, FullRegion, Region};
-use rust_htslib::bam::{self, FetchDefinition, Read as _};
+use rust_htslib::bam::{self, FetchDefinition, HeaderView, Read as _};
 use smol_str::SmolStr;
 use tracing::{debug, instrument, trace};
 
@@ -86,29 +88,16 @@ impl Readers {
     #[instrument(level = "debug", skip_all)]
     pub fn segments(&self) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
         let full_regions = if let Some(region) = &self.params.region {
-            debug!(?region, "fetching specified region");
-            let start = region.start.map(|x| x.get().into()).unwrap_or(1);
-            let last_position = {
-                // If no end specified, use chromosome length from BAM header
-                let header = self.bam.header();
-                header
-                    .target_len(
-                        header.tid(region.chromosome.as_bytes()).wrap_err("failed to fetch tid")?,
-                    )
-                    .wrap_err("failed to fetch header length")?
-            };
-            let end = region.end.map(|x| x.get().into()).unwrap_or(last_position);
-
-            // Since the user specified a region, let's go with only that
-            vec![FullRegion(Region { chromosome: region.chromosome.clone(), start, end })]
+            vec![
+                get_selected_region(region, self.bam.header())
+                    .wrap_err("Failed to get selected region from BAM file")?,
+            ]
         } else {
             debug!("fetching all regions");
-            get_full_regions(self.bam.header()).wrap_err("failed to get full region")?
+            get_full_regions(self.bam.header())
+                .wrap_err("Failed to get all regions from BAM file")?
         };
-
-        if full_regions.is_empty() {
-            bail!("No regions found");
-        }
+        ensure!(!full_regions.is_empty(), "No regions found");
 
         let initial_start = full_regions[0].0.start;
         let chunked = chunked::ChunkedRegions {
@@ -122,6 +111,7 @@ impl Readers {
         Ok(chunked)
     }
 
+    #[instrument(level = "debug", skip_all)]
     pub fn segment(&mut self, region: &ChunkRegion) -> Result<Segment> {
         let fetch_some_more = 2;
         let last_position_to_fetch =
@@ -129,12 +119,17 @@ impl Readers {
 
         // Calculate exact capacity needed to avoid reallocations
         let len = usize::try_from(last_position_to_fetch.wrapping_sub(region.start))
-            .wrap_err("failed to convert segment length to usize")?;
+            .wrap_err("Failed to convert segment length to usize")?;
 
         trace!(?region, len, "fetching segment");
         let mut seq = Vec::with_capacity(len);
-        self.fasta.fetch(&region.chromosome, region.start, last_position_to_fetch)?;
-        self.fasta.read(&mut seq)?;
+        self.fasta
+            .fetch(&region.chromosome, region.start, last_position_to_fetch)
+            .wrap_err("Failed to fetch region")
+            .and_then(|_| self.fasta.read(&mut seq).wrap_err("Failed to read sequence from region"))
+            // chain the calls so we can add this nice error:
+            .wrap_err_with(|| format!("Failed to get region {} from FASTA file", region.region))?;
+
         Ok(Segment { range: region.clone(), sequence: seq })
     }
 }
@@ -157,6 +152,45 @@ impl<'seg> TryFrom<&'seg Segment> for FetchDefinition<'seg> {
     }
 }
 
+#[instrument(level = "debug", skip(bam_header))]
+fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result<FullRegion> {
+    let chromosome = region.chromosome.as_str();
+    // If no start position is specified, default to beginning of chromosome
+    let start = region.start.map(to_u64).unwrap_or(1);
+
+    let target_id = bam_header
+        .tid(region.chromosome.as_bytes())
+        .wrap_err_with(|| {
+            format!("Failed to fetch target ID for chromosome {} from header", region.chromosome)
+        })
+        .with_note(|| {
+            format!(
+                "This usually means the specified chromosome {} is not in the input BAM file",
+                region.chromosome
+            )
+        })?;
+    let last_position =
+        bam_header.target_len(target_id).wrap_err("Failed to fetch header length")?;
+    // If no end specified, use chromosome length from BAM header
+    let end = region.end.map(to_u64).unwrap_or(last_position);
+
+    ensure!(
+        start <= last_position,
+        "Specified start position {end} past the end of chromosome {chromosome}"
+    );
+    ensure!(
+        end <= last_position,
+        "Specified end position {end} past the end of chromosome {chromosome}"
+    );
+
+    // Since the user specified this region, we're only returning that one
+    Ok(FullRegion(Region { chromosome: region.chromosome.clone(), start, end }))
+}
+
+fn to_u64(value: NonZeroU32) -> u64 {
+    value.get().into()
+}
+
 #[instrument(level = "debug", skip(header))]
 fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
     header
@@ -166,11 +200,13 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
         .filter(|(_, name)| !name.is_empty())
         .map(|(tid, name)| -> Result<FullRegion> {
             let chr = SmolStr::new(
-                std::str::from_utf8(name).wrap_err("bam target name not valid UTF-8")?,
+                std::str::from_utf8(name).wrap_err("BAM target name not valid UTF-8")
+                    .note("This is against the BAM specification, please check with the tool that created this file")?,
             );
             let length = header
-                .target_len(u32::try_from(tid).wrap_err("faield to get tid")?)
-                .wrap_err("failed to get target length")?;
+                .target_len(u32::try_from(tid).wrap_err("Failed to get a target ID that was part of the BAM header")
+                    .note("The BAM header might be corrupt")?)
+                .wrap_err("Failed to get target length")?;
 
             Ok(FullRegion(Region {
                 chromosome: chr,

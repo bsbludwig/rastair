@@ -7,7 +7,7 @@ use color_eyre::eyre::{Context, ContextCompat, Result};
 use rust_htslib::bam::{FetchDefinition, Read as _, pileup::Pileup};
 use scores::VariantCandidatePileupMetrics;
 use std::io::{self, BufWriter};
-use tracing::{instrument, warn};
+use tracing::{info, instrument, warn};
 
 mod methylation;
 mod scores;
@@ -38,14 +38,18 @@ pub fn call(params: &CallParams) -> Result<()> {
     );
     MethylationEventWriter::write_header(&mut output)?;
 
-    let regions = readers.segments().wrap_err("could not fetch segments")?;
+    let mut regions_seen = 0;
+    let regions = readers.segments().wrap_err("Could not fetch segments from BAM file")?;
     for region in regions {
+        regions_seen += 1;
         let segment = readers.segment(&region)?;
 
-        readers.bam.fetch(
-            FetchDefinition::try_from(&segment)
-                .wrap_err("convert region string to fetch definition")?,
-        )?;
+        FetchDefinition::try_from(&segment)
+            .wrap_err("Could not convert region string")
+            .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
+            .wrap_err_with(|| {
+                format!("Could not fetch region `{}` from BAM file", region.region)
+            })?;
         readers
             .bam
             .pileup()
@@ -57,7 +61,7 @@ pub fn call(params: &CallParams) -> Result<()> {
             .flat_map(|pile| collect_candidate(pile, &segment, &region).transpose())
             .map(|pile| -> Result<_> {
                 let pile = pile?;
-                let metrics = pile.metrics().wrap_err("calculate metrics")?;
+                let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
                 Ok((pile, metrics))
             })
             .peekable()
@@ -70,12 +74,14 @@ pub fn call(params: &CallParams) -> Result<()> {
                         }
                     }
                     Err(error) => {
-                        warn!(%error, "failed to get pileup");
+                        warn!(%error, region=%region.region, "Failed to get pileup, skipping");
                     }
                 }
                 Ok(())
             })?;
     }
+
+    info!("Processed {regions_seen} segments");
 
     return Ok(());
 }

@@ -1,4 +1,5 @@
 use smol_str::SmolStr;
+use std::fmt;
 
 /// A genomic region with chromosome and coordinates
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,6 +15,12 @@ impl Region {
     /// Returns true if the given position falls within this region's bounds
     pub fn contains(&self, pos: u64) -> bool {
         (self.start..self.end).contains(&pos)
+    }
+}
+
+impl fmt::Display for Region {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}-{}", self.chromosome, self.start, self.end)
     }
 }
 
