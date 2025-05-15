@@ -330,4 +330,189 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_segment_to_fetch_definition() -> Result<()> {
+        // Create a test segment
+        let region = ChunkRegion {
+            region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
+            last_position: 6105900,
+        };
+        let segment = Segment { range: region.clone(), sequence: vec![65, 66, 67] }; // "ABC"
+
+        // Convert to FetchDefinition
+        let fetch_def = FetchDefinition::try_from(&segment)?;
+
+        // Verify conversion worked correctly
+        if let FetchDefinition::RegionString(chr, start, end) = fetch_def {
+            assert_eq!(chr, b"chr19");
+            assert_eq!(start, 6105700);
+            assert_eq!(end, 6105800);
+        } else {
+            panic!("Unexpected FetchDefinition variant");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_selected_region_variations() -> Result<()> {
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: None,
+            threads: 4,
+            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+        };
+
+        let readers = params.readers()?;
+        let header = readers.bam.header();
+
+        // Test chromosome-only region
+        let region_chr_only: RegionString = "chr19".parse().unwrap();
+        let full_region = get_selected_region(&region_chr_only, header)?;
+
+        assert_eq!(full_region.0.chromosome, "chr19");
+        assert_eq!(full_region.0.start, 1); // Should default to 1
+
+        // The end should be the chromosome length from the header
+        let chr19_tid = header.tid(b"chr19").unwrap();
+        let chr19_len = header.target_len(chr19_tid).unwrap();
+        assert_eq!(full_region.0.end, chr19_len);
+
+        // Test chromosome with start but no end
+        let region_with_start: RegionString = "chr19:100".parse().unwrap();
+        let full_region = get_selected_region(&region_with_start, header)?;
+
+        assert_eq!(full_region.0.chromosome, "chr19");
+        assert_eq!(full_region.0.start, 100);
+        assert_eq!(full_region.0.end, chr19_len); // Should default to chromosome length
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_selected_region_errors() -> Result<()> {
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: None,
+            threads: 4,
+            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+        };
+
+        let readers = params.readers()?;
+        let header = readers.bam.header();
+
+        // Test non-existent chromosome
+        let region_invalid_chr: RegionString = "nonexistent".parse().unwrap();
+        let result = get_selected_region(&region_invalid_chr, header);
+        assert!(result.is_err());
+
+        // Get valid chromosome length
+        let chr19_tid = header.tid(b"chr19").unwrap();
+        let chr19_len = header.target_len(chr19_tid).unwrap();
+
+        // Test start position beyond chromosome length
+        let invalid_start = chr19_len + 100;
+        let region_invalid_start: RegionString =
+            format!("chr19:{}", invalid_start).parse().unwrap();
+        let result = get_selected_region(&region_invalid_start, header);
+        assert!(result.is_err());
+
+        // Test end position beyond chromosome length
+        let invalid_end = chr19_len + 100;
+        let region_invalid_end: RegionString =
+            format!("chr19:100-{}", invalid_end).parse().unwrap();
+        let result = get_selected_region(&region_invalid_end, header);
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_full_regions() -> Result<()> {
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: None,
+            threads: 4,
+            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+        };
+
+        let readers = params.readers()?;
+        let header = readers.bam.header();
+
+        let full_regions = get_full_regions(header)?;
+
+        // Should have at least one region
+        assert!(!full_regions.is_empty());
+
+        // Verify that chromosome names match what's in the BAM header
+        for (i, region) in full_regions.iter().enumerate() {
+            let target_name = std::str::from_utf8(header.target_names()[i]).unwrap();
+            assert_eq!(region.0.chromosome, target_name);
+
+            // Start should be 1 (1-based)
+            assert_eq!(region.0.start, 1);
+
+            // End should match the chromosome length
+            let tid = u32::try_from(i).unwrap();
+            let chr_len = header.target_len(tid).unwrap();
+            assert_eq!(region.0.end, chr_len);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_segment_error_handling() -> Result<()> {
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: None,
+            threads: 4,
+            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+        };
+
+        let mut readers = params.readers()?;
+
+        // Test with an invalid region (non-existent chromosome)
+        let invalid_region = ChunkRegion {
+            region: Region { chromosome: "nonexistent".into(), start: 100, end: 200 },
+            last_position: 300,
+        };
+
+        let result = readers.segment(&invalid_region);
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_overlapping_segments() -> Result<()> {
+        let params = SegmentsParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            region: Some("chr19:6105700-6105900".parse().unwrap()),
+            threads: 4,
+            segmentation: SegmentationParams {
+                max_segment_length: 50, // Small max length to force multiple segments
+                segment_overlap: 0,     // No overlap
+            },
+        };
+
+        let readers = params.readers()?;
+        let segments = readers.segments()?.collect::<Vec<_>>();
+
+        assert!(segments.len() > 1, "Should have multiple segments");
+
+        // Check no overlaps between adjacent segments
+        for pair in segments.windows(2) {
+            // The first segment should end exactly where the next one starts
+            assert_eq!(pair[0].region.end, pair[1].region.start);
+        }
+
+        Ok(())
+    }
 }
