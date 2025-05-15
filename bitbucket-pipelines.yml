@@ -26,7 +26,7 @@ pipelines:
                 # Ensure code style
                 - cargo fmt -- --check
           - step:
-              name: Build and Test
+              name: Lint
               caches:
                 - cargo-registry
                 - cargo-git
@@ -43,7 +43,20 @@ pipelines:
                 - export PATH="$DENO_INSTALL/bin:$PATH"
                 # Run checks and generate reports
                 - deno run --allow-all ci/clippy_report.ts
-                - deno run --allow-all ci/test_report.ts
+          - step:
+              name: Test
+              caches:
+                - cargo-registry
+                - cargo-git
+                - cargo-target-deps
+                - cargo-target-build
+              script:
+                # Dependencies
+                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
+                - curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+                # Run checks and generate reports
+                - cargo nextest run --profile ci
+                - mkdir -pv test-results; mv target/nextest/ci/junit.xml test-results/junit.xml
 
   tags:
     "*":
