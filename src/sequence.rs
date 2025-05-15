@@ -6,8 +6,6 @@
 //! - Accessing aligned reads from BAM files
 //! - Processing segments with configurable overlap between chunks
 
-use std::num::NonZeroU32;
-
 use crate::utils::{
     RegionString,
     file_helpers::{FastaReader, open_fasta},
@@ -21,6 +19,7 @@ use color_eyre::{
 pub use regions::{ChunkRegion, FullRegion, Region};
 use rust_htslib::bam::{self, FetchDefinition, HeaderView, Read as _};
 use smol_str::SmolStr;
+use std::num::NonZeroU32;
 use tracing::{debug, instrument, trace};
 
 mod chunked;
@@ -217,7 +216,6 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
 #[allow(clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
-
     use std::path::PathBuf;
 
     fn test_data_dir() -> PathBuf {
