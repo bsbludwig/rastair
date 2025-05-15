@@ -1,5 +1,8 @@
 image: rust:1.86 # keep in sync with `rust-toolchain.yml`
 
+options:
+  max-time: 30
+
 definitions:
   caches:
     # Cache Cargo registry and index for faster dependency downloads
@@ -13,32 +16,34 @@ definitions:
 
 pipelines:
   default:
-    - step:
-        name: Formatting
-        fail-fast: false
-        script:
-          - rustup component add rustfmt
-          # Ensure code style
-          - cargo fmt -- --check
-    - step:
-        name: Build and Test
-        caches:
-          - cargo-registry
-          - cargo-git
-          - cargo-target-deps
-          - cargo-target-build
-          - deno-modules
-        script:
-          # Dependencies
-          - rustup component add clippy
-          - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
-          # Install Deno for scripts
-          - curl -fsSL https://deno.land/x/install/install.sh | sh
-          - export DENO_INSTALL="/root/.deno"
-          - export PATH="$DENO_INSTALL/bin:$PATH"
-          # Run checks and generate reports
-          - deno run --allow-all ci/clippy_report.ts
-          - deno run --allow-all ci/test_report.ts
+    - parallel:
+        steps:
+          - step:
+              name: Formatting
+              fail-fast: false
+              script:
+                - rustup component add rustfmt
+                # Ensure code style
+                - cargo fmt -- --check
+          - step:
+              name: Build and Test
+              caches:
+                - cargo-registry
+                - cargo-git
+                - cargo-target-deps
+                - cargo-target-build
+                - deno-modules
+              script:
+                # Dependencies
+                - rustup component add clippy
+                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
+                # Install Deno for scripts
+                - curl -fsSL https://deno.land/x/install/install.sh | sh
+                - export DENO_INSTALL="/root/.deno"
+                - export PATH="$DENO_INSTALL/bin:$PATH"
+                # Run checks and generate reports
+                - deno run --allow-all ci/clippy_report.ts
+                - deno run --allow-all ci/test_report.ts
 
   tags:
     "*":
@@ -57,6 +62,3 @@ pipelines:
             - cargo build --release
           artifacts:
             - target/release/rastair2
-
-options:
-  max-time: 30
