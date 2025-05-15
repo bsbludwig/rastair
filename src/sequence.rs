@@ -1,14 +1,10 @@
-// given a region to scan
-// - split into segments based on indexes
-//   -  can i know the length of the region from fastq?
-// - for each segment
-//   - read the reference sequence from fastq
-//   - for each position
-//      - read the pileup
-//      - include context of bases before/after
-//      - calculate metrics
-//
-// segments are optional in the beginning
+//! Segment processing for genomic analysis.
+//!
+//! This module provides functionality for:
+//! - Dividing genomic regions into manageable segments
+//! - Reading reference sequences from FASTA files
+//! - Accessing aligned reads from BAM files
+//! - Processing segments with configurable overlap between chunks
 
 use std::num::NonZeroU32;
 
