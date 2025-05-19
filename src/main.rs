@@ -10,9 +10,15 @@ struct Cli {
     command: Subcommand,
 }
 
+/// Rastair2
+///
+/// Process TAPS-sequenced BAM files for methylation calling
 #[derive(Debug, clap::Subcommand)]
+#[command(version, about)]
 enum Subcommand {
+    /// Call methylated positions
     Call(CallParams),
+    /// Write shell completions
     #[command(hide = true)]
     GenerateShellCompletions {
         /// The shell to generate the completions for

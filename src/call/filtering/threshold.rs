@@ -7,15 +7,15 @@ use crate::call::{
 pub struct ThresholdConfig {
     /// The minimum VAF to call a variant
     #[clap(long, default_value_t = 0.1)]
-    pub min_vaf: f64,
+    pub vaf_min: f64,
 
     /// The maximum binomial p-value to call a variant
     #[clap(long, default_value_t = 0.08)]
-    pub max_binomial: f64,
+    pub binomial_max: f64,
 
     /// The minimum number of reads to call a variant
     #[clap(long, default_value_t = 5)]
-    pub min_reads: usize,
+    pub reads_min: usize,
 }
 
 impl VariantCandidatePileup {
@@ -28,14 +28,14 @@ impl VariantCandidatePileup {
         if !self.could_be_methylation_event() {
             return false;
         }
-        if metrics.binomial > config.max_binomial {
+        if metrics.binomial > config.binomial_max {
             return false;
         }
-        if metrics.vaf < config.min_vaf {
+        if metrics.vaf < config.vaf_min {
             return false;
         }
         let num_reads = self.bases.len();
-        if num_reads < config.min_reads {
+        if num_reads < config.reads_min {
             return false;
         }
 
@@ -117,9 +117,9 @@ mod tests {
             let pileup = make_pileup(pos, reference_base, next_base, bases, 5);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
-                min_vaf: 0.1,
-                max_binomial: 0.08,
-                min_reads: 5,
+                vaf_min: 0.1,
+                binomial_max: 0.08,
+                reads_min: 5,
             };
 
             prop_assert!(!pileup.likely_methylation_event(&metrics, &config));
@@ -137,9 +137,9 @@ mod tests {
             let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, 5);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
-                min_vaf: 0.1,
-                max_binomial: 0.1,  // Increased slightly to accommodate test case
-                min_reads: 5,
+                vaf_min: 0.1,
+                binomial_max: 0.1,  // Increased slightly to accommodate test case
+                reads_min: 5,
             };
 
             // Should be possible methylation since we have:
@@ -155,15 +155,15 @@ mod tests {
         fn respects_min_reads_threshold(
             pos in 1u32..1000u32,
             count in 1usize..4usize,
-            min_reads in 5usize..10usize
+            reads_min in 5usize..10usize
         ) {
             let bases = vec![Base::T; count];
-            let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, min_reads);
+            let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, reads_min);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
-                min_vaf: 0.1,
-                max_binomial: 0.08,
-                min_reads,
+                vaf_min: 0.1,
+                binomial_max: 0.08,
+                reads_min,
             };
 
             // Should not be methylation since below min_reads threshold
@@ -187,9 +187,9 @@ mod tests {
             let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, 5);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
-                min_vaf: 0.1,
-                max_binomial: 0.08,
-                min_reads: 5,
+                vaf_min: 0.1,
+                binomial_max: 0.08,
+                reads_min: 5,
             };
 
             // Should not be methylation since more A+G than C+T

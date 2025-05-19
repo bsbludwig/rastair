@@ -27,11 +27,11 @@ mod regions;
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct SegmentsParams {
-    /// A sorted and indexed bam file
+    /// Path to sorted and indexed BAM file
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
     pub bam_file: ClioPath,
 
-    /// A sorted and indexed (via samtools faidx) fasta file. Can be bgzip
+    /// Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip
     /// compressed, but requires both a gzi index and a fai index
     #[arg(short='r', long, value_parser=value_parser!(ClioPath).exists().is_file())]
     pub fasta_file: ClioPath,
@@ -42,7 +42,7 @@ pub struct SegmentsParams {
     #[arg(short = 'l', long)]
     pub region: Option<RegionString>,
 
-    /// Number of threads to use for reading the bam file
+    /// Number of threads to use for reading the BAM file
     #[arg(long, default_value_t = 4)]
     pub threads: usize,
 
@@ -54,7 +54,7 @@ pub struct SegmentsParams {
 pub struct SegmentationParams {
     /// Maximum length of a segment in bases
     #[arg(long, default_value_t = 1_000_000)]
-    pub max_segment_length: u64,
+    pub segment_max_length: u64,
 
     /// Number of bases to overlap between segments
     #[arg(long, default_value_t = 100)]
@@ -99,7 +99,7 @@ impl Readers {
             full_regions,
             current_region_idx: 0,
             current_start: initial_start,
-            max_length: self.params.segmentation.max_segment_length,
+            max_length: self.params.segmentation.segment_max_length,
             overlap: self.params.segmentation.segment_overlap,
         };
 
@@ -244,7 +244,7 @@ mod tests {
             fasta_file: get_test_fasta(),
             region: None,
             threads: 4,
-            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
         // Initialize readers
@@ -266,7 +266,7 @@ mod tests {
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105800".parse().unwrap()),
             threads: 4,
-            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
         let readers = params.readers()?;
@@ -293,7 +293,7 @@ mod tests {
             region: Some("chr19:6105700-6105900".parse().unwrap()),
             threads: 4,
             segmentation: SegmentationParams {
-                max_segment_length: 100, // Small max length to force multiple segments
+                segment_max_length: 100, // Small max length to force multiple segments
                 segment_overlap: 20,     // Known overlap amount
             },
         };
@@ -362,7 +362,7 @@ mod tests {
             fasta_file: get_test_fasta(),
             region: None,
             threads: 4,
-            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
         let readers = params.readers()?;
@@ -398,7 +398,7 @@ mod tests {
             fasta_file: get_test_fasta(),
             region: None,
             threads: 4,
-            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
         let readers = params.readers()?;
@@ -437,7 +437,7 @@ mod tests {
             fasta_file: get_test_fasta(),
             region: None,
             threads: 4,
-            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
         let readers = params.readers()?;
@@ -472,7 +472,7 @@ mod tests {
             fasta_file: get_test_fasta(),
             region: None,
             threads: 4,
-            segmentation: SegmentationParams { max_segment_length: 1000, segment_overlap: 100 },
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
         let mut readers = params.readers()?;
@@ -497,7 +497,7 @@ mod tests {
             region: Some("chr19:6105700-6105900".parse().unwrap()),
             threads: 4,
             segmentation: SegmentationParams {
-                max_segment_length: 50, // Small max length to force multiple segments
+                segment_max_length: 50, // Small max length to force multiple segments
                 segment_overlap: 0,     // No overlap
             },
         };

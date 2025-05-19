@@ -26,6 +26,7 @@ pub struct CallParams {
     #[command(flatten)]
     thresholds: filtering::threshold::ThresholdConfig,
 
+    /// VCF output file path (use - to write to stdout)
     #[arg(short = 'o', long)]
     vcf_output: ClioPath,
 }
