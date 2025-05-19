@@ -25,6 +25,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let subscriber = tracing_subscriber::Registry::default()
         .with(tracing_error::ErrorLayer::default())
+        .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(
             tracing_subscriber::fmt::Layer::default()
                 .with_target(true)
