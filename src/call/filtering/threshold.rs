@@ -3,7 +3,7 @@ use crate::call::{
     variants::{Counter, VariantCandidatePileup},
 };
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ThresholdConfig {
     /// The minimum VAF to call a variant
     #[clap(long, default_value_t = 0.1)]

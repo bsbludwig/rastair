@@ -1,12 +1,13 @@
 use crate::{
-    sequence::{ChunkRegion, Segment, SegmentsParams},
+    sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
     utils::TryAsBase as _,
 };
 use clio::ClioPath;
 use color_eyre::eyre::{Context, ContextCompat, Result};
+use filtering::threshold::ThresholdConfig;
 use rust_htslib::bam::{FetchDefinition, Read as _, pileup::Pileup};
 use scores::VariantCandidatePileupMetrics;
-use std::io::{self, BufWriter};
+use std::io::{self, BufWriter, Write};
 use tracing::{info, instrument, warn};
 
 mod methylation;
@@ -40,50 +41,69 @@ pub fn call(params: &CallParams) -> Result<()> {
 
     let mut regions_seen = 0;
     let regions = readers.segments().wrap_err("Could not fetch segments from BAM file")?;
-    for region in regions {
+    regions.into_iter().try_for_each(|region| {
         regions_seen += 1;
-        let segment = readers.segment(&region)?;
-
-        FetchDefinition::try_from(&segment)
-            .wrap_err("Could not convert region string")
-            .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
-            .wrap_err_with(|| {
-                format!("Could not fetch region `{}` from BAM file", region.region)
-            })?;
-        readers
-            .bam
-            .pileup()
-            .filter_map(|p| p.ok())
-            .filter(|p| {
-                // Filter out pileups that are not in the region of interest
-                region.contains(u64::from(p.pos()))
-            })
-            .flat_map(|pile| collect_candidate(pile, &segment, &region).transpose())
-            .map(|pile| -> Result<_> {
-                let pile = pile?;
-                let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
-                Ok((pile, metrics))
-            })
-            .peekable()
-            // TODO: also peek next pile,metrics if available
-            .try_for_each(|x| -> Result<()> {
-                match x {
-                    Ok((pile, metrics)) => {
-                        if pile.likely_methylation_event(&metrics, &params.thresholds) {
-                            MethylationEventWriter(&pile, &metrics).write(&mut output)?;
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, region=%region.region, "Failed to get pileup, skipping");
-                    }
-                }
-                Ok(())
-            })?;
-    }
+        process_region(&region, &mut readers, &params.thresholds, &mut output)
+            .wrap_err_with(|| format!("failed to process region {}", region.region))
+    })?;
 
     info!("Processed {regions_seen} segments");
 
     return Ok(());
+}
+
+#[instrument(level = "info", skip_all, fields(region=%region.region))]
+fn process_region(
+    region: &ChunkRegion,
+    readers: &mut Readers,
+    thresholds: &ThresholdConfig,
+    mut output: &mut dyn Write,
+) -> Result<()> {
+    let segment = readers.segment(region).wrap_err("failed to fetch segment")?;
+
+    FetchDefinition::try_from(&segment)
+        .wrap_err("Could not convert region string")
+        .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
+        .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
+    let mut iterator = readers
+        .bam
+        .pileup()
+        .filter_map(|p| p.ok())
+        .filter(|p| {
+            // Filter out pileups that are not in the region of interest
+            region.contains(u64::from(p.pos()))
+        })
+        .flat_map(|pile| collect_candidate(pile, &segment, &segment.range).transpose())
+        .map(|pile| -> Result<_> {
+            let pile = pile?;
+            let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
+            Ok((pile, metrics))
+        })
+        .peekable();
+
+    loop {
+        let Some(this) = iterator.next() else {
+            // last item in iter
+            break;
+        };
+        // This returns a reference, so it's easist to do a `loop` here instead
+        // of writing a fancy adaptor
+        let _next = iterator.peek();
+
+        match this {
+            Ok((pile, metrics)) => {
+                // TODO: Use `next` here
+                if pile.likely_methylation_event(&metrics, thresholds) {
+                    MethylationEventWriter(&pile, &metrics).write(&mut output)?;
+                }
+            }
+            Err(error) => {
+                warn!(%error, "Failed to get pileup, skipping");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[instrument(level = "trace", skip_all)]
