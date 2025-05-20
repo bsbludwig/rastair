@@ -7,8 +7,16 @@ It is structured as a library with a binary crate that serves as the entry point
 
 ## Testing
 
-The code is tested using `cargo test`.
-Additionally, `cargo clippy` is used to check for common mistakes and code style issues.
+NOTE: `cargo clippy` is used to check for common mistakes and code style issues beyond default compiler warnings.
+
+Run the tests with `cargo test`.
+- Unit tests are added as test modules in the same file as the code they test.
+- Integration tests for the CLI are in the `tests` directory.
+
+### Tools
+
+- [`proptest`](https://github.com/proptest-rs/proptest) is used for property-based testing.
+- [`cargo insta`](https://insta.rs/) is used for snapshot testing in various places.
 
 ### Test Coverage
 
