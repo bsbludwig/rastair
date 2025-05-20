@@ -27,7 +27,7 @@ smallarcvec = { version = "0.1.0", path = "crates/smallarcvec" }
 smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
 smol_str = "0.3.2"
 thiserror = "2.0.12"
-tracing = { version = "0.1.41", features = ["release_max_level_info"] }
+tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
 tracing-error = "0.2.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 winnow = { version = "0.7.6", features = ["simd"] }
