@@ -7,6 +7,7 @@ impl VariantCandidatePileup {
         self.is_cpg() && self.bases.iter().any(|b| b.base == Base::T)
     }
 
+    // FIXME: is this same as vaf?
     pub fn beta(&self) -> f64 {
         let total_evidence = self.bases.len();
         if total_evidence == 0 {
