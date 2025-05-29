@@ -67,14 +67,19 @@ mod tests {
         bases: Vec<Base>,
         _min_reads: usize,
     ) -> VariantCandidatePileup {
+        let read_length = u32::try_from(bases.len()).expect("bases length should fit in u32");
         let seen_bases = bases
             .into_iter()
-            .map(|b| crate::call::variants::SeenBase {
+            .enumerate()
+            .map(|(idx, b)| crate::call::variants::SeenBase {
                 base: b,
                 qual: 30,
                 mapq: 30,
                 reverse: false,
-                at_fringe: false,
+                position: crate::call::variants::PositionInRead {
+                    pos: u32::try_from(idx).expect("pos should fit into u32"),
+                    read_length,
+                },
                 qname: SmallVec::from_slice(b"test"),
             })
             .collect();

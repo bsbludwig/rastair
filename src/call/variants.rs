@@ -50,8 +50,8 @@ impl VariantCandidatePileup {
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
 #[cfg(not(tarpaulin_include))]
-impl std::fmt::Debug for SeenBases {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SeenBases {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.0.iter()).finish()
     }
 }
@@ -67,23 +67,47 @@ impl Deref for SeenBases {
 /// A base seen in a pileup
 #[derive(Clone)]
 pub struct SeenBase {
-    pub(crate) base: Base,
-    pub(crate) qual: u8,
-    pub(crate) mapq: u8,
-    pub(crate) reverse: bool,
-    pub(crate) at_fringe: bool,
-    pub(crate) qname: SmallVec<u8, 16>,
+    pub base: Base,
+    pub qual: u8,
+    pub mapq: u8,
+    pub reverse: bool,
+    pub position: PositionInRead,
+    /// Query Name of the read this base belongs to
+    ///
+    /// <!-- LLM explanation -->
+    /// The `qname` field is the first mandatory field in each alignment record in a BAM/SAM file. It contains:
+    ///
+    /// - **Read identifier**: A unique string that identifies the sequencing read
+    /// - **Paired-end reads**: For paired-end sequencing, both reads in a pair typically share the same `qname` base
+    /// - **Format**: Usually follows the format from the sequencing instrument
+    ///
+    /// For example, in a SAM file (the text version of BAM), you might see:
+    /// ```
+    /// SRR123456.1     99      chr1    1000    60      50M     =       1200    250     AGCTTAGCTAGCTACCTATATCTTGGTCTTGGCCG    *
+    /// SRR123456.2     147     chr1    1200    60      50M     =       1000    -250    TGCAGGCCTATGCAGCTGACTGCATAGCGTCAGCT    *
+    /// ```
+    ///
+    /// In this example:
+    /// - `SRR123456.1` and `SRR123456.2` are the `qname` values
+    /// - These represent a paired-end read pair (same base name, different suffixes)
+    ///
+    /// The `qname` is essential for:
+    /// - Tracking reads through analysis pipelines
+    /// - Identifying paired reads
+    /// - Debugging alignment issues
+    /// - Linking back to original FASTQ files
+    pub qname: SmallVec<u8, 16>,
 }
 
 #[cfg(not(tarpaulin_include))]
-impl std::fmt::Debug for SeenBase {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SeenBase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.base)?;
         write!(
             f,
             " {}{} {}/{}",
             if self.reverse { "rev" } else { "fwd" },
-            if self.at_fringe { " fr" } else { "" },
+            self.position,
             self.qual,
             self.mapq,
         )
@@ -98,6 +122,20 @@ impl SeenBases {
     pub fn is_variant_candidate(&self) -> bool {
         let counter: Counter = self.0.iter().map(|x| x.base).collect();
         counter.interesting()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PositionInRead {
+    /// Position in the read, 0-based
+    pub pos: u32,
+    /// Length of the read
+    pub read_length: u32,
+}
+
+impl fmt::Display for PositionInRead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} / {}", self.pos, self.read_length)
     }
 }
 
