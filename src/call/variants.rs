@@ -1,33 +1,7 @@
-use crate::utils::{Base, TryAsBase as _};
-use rust_htslib::bam::pileup::Alignment;
+use crate::utils::Base;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::ops::Deref;
-
-pub fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
-    let pos = a.qpos()?;
-    let record = a.record();
-    if !record.is_proper_pair() {
-        // fixme: maybe be more lenient here
-        return None;
-    }
-    if record.is_quality_check_failed() {
-        return None;
-    }
-    // fixme: understand this better:
-    // if record.cigar().iter().any(|c| matches!(c, Cigar::SoftClip(_))) {
-    //     return None;
-    // }
-
-    Some(SeenBase {
-        qname: SmallVec::from(record.qname()),
-        base: record.seq()[pos].as_base().ok()?, // fixme: handle error or at least check usual error modes
-        qual: *record.qual().get(pos)?,
-        mapq: record.mapq(),
-        reverse: record.is_reverse(),
-        at_fringe: pos == 0 || pos == record.seq().len() - 1,
-    })
-}
+use std::{fmt, ops::Deref};
 
 #[derive(Debug, Clone)]
 pub struct VariantCandidatePileup {

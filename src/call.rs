@@ -5,9 +5,13 @@ use crate::{
 use clio::ClioPath;
 use color_eyre::eyre::{Context, ContextCompat, Result};
 use filtering::threshold::ThresholdConfig;
-use rust_htslib::bam::{FetchDefinition, Read as _, pileup::Pileup};
+use rust_htslib::bam::{
+    FetchDefinition, Read as _,
+    pileup::{Alignment, Pileup},
+};
+use smallvec::SmallVec;
 use std::io::{BufWriter, Write};
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 mod methylation;
 mod methylation_event_writer;
@@ -19,7 +23,7 @@ mod filtering {
 
 use methylation_event_writer::MethylationEventWriter;
 use scores::VariantCandidatePileupMetrics;
-use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
+use variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup};
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
@@ -64,12 +68,13 @@ fn process_region(
     mut output: &mut dyn Write,
 ) -> Result<()> {
     let segment = readers.segment(region).wrap_err("failed to fetch segment")?;
+    trace!(len = segment.sequence.len(), "Processing region");
 
     FetchDefinition::try_from(&segment)
         .wrap_err("Could not convert region string")
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
-    let mut iterator = readers
+    let piles = readers
         .bam
         .pileup()
         .filter_map(|p| p.ok())
@@ -77,20 +82,48 @@ fn process_region(
             // Filter out pileups that are not in the region of interest
             region.contains(u64::from(p.pos()))
         })
-        .flat_map(|pile| collect_candidate(pile, &segment, &segment.range).transpose())
+        .flat_map(|pile| {
+            collect_candidate(&pile, &segment, &segment.range)
+                .wrap_err_with(|| {
+                    format!("Failed to get candidate from pileup at position {}", pile.pos())
+                })
+                .transpose()
+        })
         .map(|pile| -> Result<(VariantCandidatePileup, VariantCandidatePileupMetrics)> {
             let pile = pile?;
             let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
             Ok((pile, metrics))
         })
-        .peekable();
+        .filter_map(|res| match res {
+            Ok(x) => Some(x),
+            Err(error) => {
+                warn!(%error, "Failed to get pileup, skipping");
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if piles.is_empty() {
+        trace!("No candidate piles found in region, skipping");
+        return Ok(());
+    } else {
+        let count = readable::num::Unsigned::from(piles.len());
+        let bytes = readable::byte::Byte::from(
+            piles.len()
+                * std::mem::size_of::<(VariantCandidatePileup, VariantCandidatePileupMetrics)>(),
+        );
+        debug!(%count, %bytes, "Collected candidates");
+    }
 
     // At this point we have both the pileup and the metrics for each pileup.
+    // We can now gather metrics for each of the reads that were used to create the pileup.
+
     // TODO: Emit variant candidates here if user asked for it
 
     // Now we can analyze possible methylation events
+    let mut iterator = piles.into_iter().peekable();
     loop {
-        let Some(this) = iterator.next() else {
+        let Some((pile, metrics)) = iterator.next() else {
             // last item in iter
             break;
         };
@@ -98,16 +131,9 @@ fn process_region(
         // of writing a fancy adaptor
         let _next = iterator.peek();
 
-        match this {
-            Ok((pile, metrics)) => {
-                // TODO: Use `next` here
-                if pile.likely_methylation_event(&metrics, thresholds) {
-                    MethylationEventWriter(&pile, &metrics).write(&mut output)?;
-                }
-            }
-            Err(error) => {
-                warn!(%error, "Failed to get pileup, skipping");
-            }
+        // TODO: Use `next` here
+        if pile.likely_methylation_event(&metrics, thresholds) {
+            MethylationEventWriter(&pile, &metrics).write(&mut output)?;
         }
     }
 
@@ -116,12 +142,23 @@ fn process_region(
 
 #[instrument(level = "trace", skip_all)]
 fn collect_candidate(
-    pile: Pileup,
+    pile: &Pileup,
     segment: &Segment,
     region: &ChunkRegion,
 ) -> Result<Option<VariantCandidatePileup>> {
-    let idx = pile.pos() as usize
-        - usize::try_from(segment.range.start).wrap_err("segment range fits in usize")?;
+    let segment_start_pos =
+        usize::try_from(segment.range.start).expect("segment range fits in usize");
+    let idx = usize::try_from(pile.pos())
+        .expect("position fits in usize")
+        .checked_sub(segment_start_pos)
+        .wrap_err_with(|| {
+            format!(
+                "pile position {} is not in segment range {}..{}",
+                pile.pos(),
+                segment.range.start,
+                segment.range.end
+            )
+        })?;
     let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
     let reference_base =
         segment.sequence.get(idx).wrap_err("failed to get reference base")?.as_base()?;
@@ -151,4 +188,32 @@ fn collect_candidate(
         );
         Ok(None)
     }
+}
+
+fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
+    let pos = a.qpos()?;
+    let record = a.record();
+    if !record.is_proper_pair() {
+        // fixme: maybe be more lenient here
+        return None;
+    }
+    if record.is_quality_check_failed() {
+        return None;
+    }
+    // fixme: understand this better:
+    // if record.cigar().iter().any(|c| matches!(c, Cigar::SoftClip(_))) {
+    //     return None;
+    // }
+
+    Some(SeenBase {
+        qname: SmallVec::from(record.qname()),
+        base: record.seq()[pos].as_base().ok()?, // fixme: handle error or at least check usual error modes
+        qual: *record.qual().get(pos)?,
+        mapq: record.mapq(),
+        reverse: record.is_reverse(),
+        position: PositionInRead {
+            pos: u32::try_from(pos).expect("position fits in u32"),
+            read_length: u32::try_from(record.seq().len()).expect("read length fits in u32"),
+        },
+    })
 }
