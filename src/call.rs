@@ -6,16 +6,19 @@ use clio::ClioPath;
 use color_eyre::eyre::{Context, ContextCompat, Result};
 use filtering::threshold::ThresholdConfig;
 use rust_htslib::bam::{FetchDefinition, Read as _, pileup::Pileup};
-use scores::VariantCandidatePileupMetrics;
-use std::io::{self, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use tracing::{info, instrument, warn};
 
 mod methylation;
+mod methylation_event_writer;
 mod scores;
 mod variants;
 mod filtering {
     pub mod threshold;
 }
+
+use methylation_event_writer::MethylationEventWriter;
+use scores::VariantCandidatePileupMetrics;
 use variants::{SeenBases, VariantCandidatePileup, pileup_mapper};
 
 #[derive(Debug, clap::Args)]
@@ -147,35 +150,5 @@ fn collect_candidate(
             "pile does not match reference but is also not interesting"
         );
         Ok(None)
-    }
-}
-
-struct MethylationEventWriter<'p, 'm>(
-    &'p VariantCandidatePileup,
-    &'m VariantCandidatePileupMetrics,
-);
-
-impl MethylationEventWriter<'_, '_> {
-    fn write_header(mut w: impl io::Write) -> Result<()> {
-        write!(w, "#")?;
-        ["CHROM", "POS", "REF", "ALT", "VAF", "BINOM", "BETA"]
-            .iter()
-            .try_for_each(|x| write!(w, "{}\t", x))?;
-        writeln!(w)?;
-        Ok(())
-    }
-
-    fn write(&self, mut w: impl io::Write) -> Result<()> {
-        let chrom = self.0.chrom.as_str();
-        let pos = self.0.pos;
-        let r#ref = self.1.reference_count;
-        let alt = self.1.alt_count;
-        let vaf = self.1.vaf;
-        let binom = self.1.binomial;
-        let beta = self.0.beta();
-
-        writeln!(w, "{}\t{}\t{}\t{}\t{}\t{}\t{}", chrom, pos, r#ref, alt, vaf, binom, beta)?;
-
-        Ok(())
     }
 }
