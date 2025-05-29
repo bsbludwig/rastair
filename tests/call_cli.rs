@@ -36,7 +36,6 @@ fn random_call() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    [TIME] INFO process_region{region=chr19:6105700-6105800}: rastair2::call [CLOSE]
     [TIME] INFO rastair2::call: Processed 1 segments
     [TIME] INFO rastair2: Call finished [DURATION]
     ");

@@ -5,7 +5,7 @@ use color_eyre::{
 };
 use rastair2::call::{CallParams, call};
 use tracing::{debug, info, warn};
-use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan, layer::SubscriberExt as _};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
             .with(
                 tracing_subscriber::fmt::Layer::default()
                     .with_target(true)
-                    .with_span_events(FmtSpan::CLOSE)
+                    // .with_span_events(FmtSpan::CLOSE) // maybe enable with flag
                     .with_writer(std::io::stderr),
             )
     };
