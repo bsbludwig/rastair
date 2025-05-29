@@ -75,13 +75,17 @@ fn process_region(
             region.contains(u64::from(p.pos()))
         })
         .flat_map(|pile| collect_candidate(pile, &segment, &segment.range).transpose())
-        .map(|pile| -> Result<_> {
+        .map(|pile| -> Result<(VariantCandidatePileup, VariantCandidatePileupMetrics)> {
             let pile = pile?;
             let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
             Ok((pile, metrics))
         })
         .peekable();
 
+    // At this point we have both the pileup and the metrics for each pileup.
+    // TODO: Emit variant candidates here if user asked for it
+
+    // Now we can analyze possible methylation events
     loop {
         let Some(this) = iterator.next() else {
             // last item in iter
