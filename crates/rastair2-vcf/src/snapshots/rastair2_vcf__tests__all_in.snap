@@ -1,0 +1,13 @@
+---
+source: crates/rastair2-vcf/src/lib.rs
+expression: result
+---
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##FILTER=<ID=q10,Description="Quality below 10">
+##FILTER=<ID=s50,Description="Less than 50% of samples have data">
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">
+##FORMAT=<ID=Ex,Number=1,Type=String,Description="Genotype">
+##contig=<ID=1,length=0>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
+1	8	rs123	A	C,G	50	q10;s50	AF=0.5,0.75	Ex	0/11/1

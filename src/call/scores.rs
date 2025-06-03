@@ -67,7 +67,7 @@ impl VariantCandidatePileup {
 
 /// Metrics for a variant candidate based on its pileup
 #[derive(Debug)]
-pub(crate) struct VariantCandidatePileupMetrics {
+pub struct VariantCandidatePileupMetrics {
     pub reference_count: usize,
     pub alt_count: usize,
     /// Variant Allele Frequency, ratio of alternative allele to total alleles

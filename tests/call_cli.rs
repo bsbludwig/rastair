@@ -37,6 +37,7 @@ fn random_call() -> Result<()> {
 
     ----- stderr -----
     [TIME] INFO rastair2::call: Processed 1 segments
+    [TIME] INFO rastair2::call: Wrote output to /dev/null
     [TIME] INFO rastair2: Call finished [DURATION]
     ");
 

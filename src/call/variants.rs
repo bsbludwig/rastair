@@ -23,6 +23,17 @@ impl VariantCandidatePileup {
 #[derive(Clone)]
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
+impl SeenBases {
+    pub fn alts(&self) -> SmallVec<SmolStr, 4> {
+        self.iter().map(|b| b.base.into()).fold(smallvec::SmallVec::new(), |mut acc, b| {
+            if !acc.contains(&b) {
+                acc.push(b);
+            }
+            acc
+        })
+    }
+}
+
 #[cfg(not(tarpaulin_include))]
 impl fmt::Debug for SeenBases {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -56,7 +67,7 @@ pub struct SeenBase {
     /// - **Format**: Usually follows the format from the sequencing instrument
     ///
     /// For example, in a SAM file (the text version of BAM), you might see:
-    /// ```
+    /// ```text
     /// SRR123456.1     99      chr1    1000    60      50M     =       1200    250     AGCTTAGCTAGCTACCTATATCTTGGTCTTGGCCG    *
     /// SRR123456.2     147     chr1    1200    60      50M     =       1000    -250    TGCAGGCCTATGCAGCTGACTGCATAGCGTCAGCT    *
     /// ```

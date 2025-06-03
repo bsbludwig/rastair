@@ -55,7 +55,7 @@ pipelines:
                 - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
                 - curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
                 # Run checks and generate reports
-                - cargo nextest run --profile ci
+                - cargo nextest run --profile ci --workspace
                 - mkdir -pv test-results; mv target/nextest/ci/junit.xml test-results/junit.xml
 
   tags:

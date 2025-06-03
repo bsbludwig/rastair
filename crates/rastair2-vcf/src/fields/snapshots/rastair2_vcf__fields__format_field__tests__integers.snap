@@ -1,0 +1,14 @@
+---
+source: crates/rastair2-vcf/src/fields/format_field.rs
+expression: result
+---
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##contig=<ID=1,length=10>
+##FORMAT=<ID=U32,Number=A,Type=Integer,Description="Test u32">
+##FORMAT=<ID=U64,Number=A,Type=Integer,Description="Test u64">
+##FORMAT=<ID=I32,Number=A,Type=Integer,Description="Test i32">
+##FORMAT=<ID=I64,Number=A,Type=Integer,Description="Test i64">
+##FORMAT=<ID=Usize,Number=A,Type=Integer,Description="Test usize">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	one
+1	1	.	.	.	0	.	.	U32:I32:U64:I64:Usize	1,2:42:42:1,2:42

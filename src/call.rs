@@ -2,28 +2,32 @@ use crate::{
     sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
     utils::TryAsBase as _,
 };
-use clio::ClioPath;
 use color_eyre::eyre::{Context, ContextCompat, Result};
-use filtering::threshold::ThresholdConfig;
+use rastair2_vcf::Vcf;
 use rust_htslib::bam::{
     FetchDefinition, Read as _,
     pileup::{Alignment, Pileup},
 };
 use smallvec::SmallVec;
-use std::io::{BufWriter, Write};
 use tracing::{debug, info, instrument, trace, warn};
+
+use filtering::threshold::ThresholdConfig;
+use methylation_event_writer::MethylationEventWriter;
+use variants::{PositionInRead, SeenBase, SeenBases};
 
 mod methylation;
 mod methylation_event_writer;
-mod scores;
-mod variants;
+pub mod scores;
+pub mod variants;
 mod filtering {
     pub mod threshold;
 }
+pub mod vcf;
+pub mod vcf_writer;
 
-use methylation_event_writer::MethylationEventWriter;
-use scores::VariantCandidatePileupMetrics;
-use variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup};
+// Re-exports for VCF writer
+pub use scores::VariantCandidatePileupMetrics;
+pub use variants::VariantCandidatePileup;
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
@@ -33,29 +37,33 @@ pub struct CallParams {
     #[command(flatten)]
     thresholds: filtering::threshold::ThresholdConfig,
 
-    /// VCF output file path (use - to write to stdout)
-    #[arg(short = 'o', long)]
-    vcf_output: ClioPath,
+    #[command(flatten)]
+    vcf: vcf_writer::Params,
 }
 
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
     let mut readers = params.segments.readers().wrap_err("failed to fetch segments")?;
 
-    let mut output = BufWriter::new(
-        params.vcf_output.clone().create().wrap_err("failed to create output file/stream")?,
-    );
-    MethylationEventWriter::write_header(&mut output)?;
-
     let mut regions_seen = 0;
-    let regions = readers.segments().wrap_err("Could not fetch segments from BAM file")?;
+    let regions: Vec<ChunkRegion> =
+        readers.segments().wrap_err("Could not fetch segments from BAM file")?.collect();
+    if regions.is_empty() {
+        warn!("No segments found in BAM file, nothing to do");
+        return Ok(());
+    }
+    debug!("Going to process {} segments", regions.len());
+
+    let mut vcf_writer = params.vcf.vcf_writer(&regions).wrap_err("failed to create VCF writer")?;
+
     regions.into_iter().try_for_each(|region| {
         regions_seen += 1;
-        process_region(&region, &mut readers, &params.thresholds, &mut output)
+        process_region(&region, &mut readers, &params.thresholds, &mut vcf_writer)
             .wrap_err_with(|| format!("failed to process region {}", region.region))
     })?;
 
     info!("Processed {regions_seen} segments");
+    info!("Wrote output to {}", params.vcf.vcf_output.display());
 
     return Ok(());
 }
@@ -65,7 +73,7 @@ fn process_region(
     region: &ChunkRegion,
     readers: &mut Readers,
     thresholds: &ThresholdConfig,
-    mut output: &mut dyn Write,
+    output: &mut Vcf<vcf::Record>,
 ) -> Result<()> {
     let segment = readers.segment(region).wrap_err("failed to fetch segment")?;
     trace!(len = segment.sequence.len(), "Processing region");
@@ -133,7 +141,9 @@ fn process_region(
 
         // TODO: Use `next` here
         if pile.likely_methylation_event(&metrics, thresholds) {
-            MethylationEventWriter(&pile, &metrics).write(&mut output)?;
+            MethylationEventWriter(&pile, &metrics)
+                .write(output)
+                .wrap_err("Failed to write methylation event to VCF")?;
         }
     }
 

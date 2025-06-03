@@ -1,3 +1,4 @@
+use smol_str::SmolStr;
 use thiserror::Error;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,12 @@ impl TryFrom<u8> for Base {
             b'T' => Ok(Base::T),
             _ => Err(BaseError::InvalidBaseError(value)),
         }
+    }
+}
+
+impl From<Base> for SmolStr {
+    fn from(val: Base) -> Self {
+        SmolStr::new(val.as_char().to_string())
     }
 }
 
