@@ -1,11 +1,17 @@
 use rastair2_vcf::{standard_fields::*, *};
 
-// filter!(q10, "Quality below 10");
-// filter!(s50, "Less than 50% of samples have data");
+// TODO: Ideas for filters
+// - from VCF spec
+//   filter!(q10, "Quality below 10");
+//   filter!(s50, "Less than 50% of samples have data");
+// - custom filters
+//   filter!(strand_bias, "Significant strand bias detected");
+//   filter!(low_coverage, "Low coverage detected");
+//   filter!(read_pos, "Variants clustered at read ends");
 
 vcf_record!(
     // pass or why not
-    filters: [],
+    filters: [PASS],
     // general info
     info: [
         ReadDepthPerAllel,

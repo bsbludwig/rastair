@@ -254,7 +254,6 @@ impl InfoFieldValue for String {
 macro_rules! info_field {
     ($name:ident($type:tt), $id:expr, $desc:expr, $number:expr) => {
         #[doc = $desc]
-        #[doc = "info field for VCF output"]
         #[derive(Debug, Clone)]
         pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
 

@@ -42,11 +42,15 @@ macro_rules! vcf_record {
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
                 use color_eyre::eyre::WrapErr;
 
-                self.0.iter().try_for_each(|filter| {
-                    record.push_filter(filter.as_bytes()).wrap_err_with(|| {
-                        format!("Failed to push filter {filter}")
-                    })
-                })?;
+                if self.0.is_empty() {
+                    record.set_filters::<[u8]>(&[]).wrap_err("Failed to clear filters")?;
+                } else {
+                    self.0.iter().try_for_each(|filter| {
+                        record.push_filter(filter.as_bytes()).wrap_err_with(|| {
+                            format!("Failed to push filter {filter}")
+                        })
+                    })?;
+                }
 
                 Ok(())
             }

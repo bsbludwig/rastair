@@ -1,6 +1,6 @@
 //! Standard VCF INFO and FORMAT fields
 
-use crate::{FormatFieldNumber, InfoFieldNumber, format_field, info_field};
+use crate::{FormatFieldNumber, InfoFieldNumber, filter, format_field, info_field};
 
 info_field!(
     ReadDepthPerAllel(usize),
@@ -15,6 +15,8 @@ info_field!(MappingQuality0(usize), "MQ0", "Number of MAPQ == 0 reads", InfoFiel
 info_field!(SamplesWithData(usize), "NS", "Number of samples with data", InfoFieldNumber::Num(1));
 
 format_field!(SampleReadDepth(usize), "DP", "Read depth", FormatFieldNumber::Num(1));
+
+filter!(PASS, "All filters pass");
 
 mod strand_bias;
 pub use strand_bias::StrandBias;

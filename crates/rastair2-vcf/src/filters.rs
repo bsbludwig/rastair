@@ -32,7 +32,7 @@ macro_rules! filter {
         #[doc = $description]
         #[doc = "info field for VCF output"]
         #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-        struct $name;
+        pub struct $name;
 
         impl $crate::VcfFilter for $name {
             const NAME: &'static str = stringify!($name);

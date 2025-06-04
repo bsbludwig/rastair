@@ -20,6 +20,8 @@ pub struct MethylationEventWriter<'p, 'm>(
 impl MethylationEventWriter<'_, '_> {
     #[instrument(level = "trace", skip_all)]
     pub fn write(&self, w: &mut Vcf<vcf::Record>) -> Result<()> {
+        let filters = vcf::Filters::new().add(PASS);
+
         let record = vcf::Record {
             fixed_fields: rastair2_vcf::VcfFixedFields {
                 chrom: self.0.chrom.clone(),
@@ -36,7 +38,7 @@ impl MethylationEventWriter<'_, '_> {
                 qual: self.qual(),
             },
             // TODO: Add filters
-            filters: vcf::Filters::new(),
+            filters,
             info: vcf::Info {
                 ReadDepthPerAllel: ReadDepthPerAllel(self.read_depth_per_allele()),
                 StrandBias: self.strand_bias(),
