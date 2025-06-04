@@ -9,5 +9,7 @@ pub mod utils {
     pub use rms::RootMeanSquare;
     mod base_modification;
     pub use base_modification::MethylatedPositions;
+    mod phred;
+    pub use phred::Phred;
 }
 pub mod sequence;
