@@ -24,14 +24,41 @@ impl VariantCandidatePileup {
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
 impl SeenBases {
-    pub fn alts(&self) -> SmallVec<SmolStr, 4> {
-        self.iter().map(|b| b.base.into()).fold(smallvec::SmallVec::new(), |mut acc, b| {
-            if !acc.contains(&b) {
-                acc.push(b);
-            }
-            acc
-        })
+    pub fn alts(&self, reference: Base) -> SmallVec<SmolStr, 4> {
+        self.iter().map(|b| b.base).filter(|base| reference != *base).fold(
+            smallvec::SmallVec::new(),
+            |mut acc, base| {
+                let b = base.into();
+                if !acc.contains(&b) {
+                    acc.push(b);
+                }
+                acc
+            },
+        )
     }
+}
+
+#[test]
+fn test_seen_bases_alts() {
+    let bases = SeenBases(smallvec::smallvec![
+        SeenBase {
+            base: Base::A,
+            qual: 30,
+            mapq: 20,
+            reverse: false,
+            position: PositionInRead { pos: 0, read_length: 100 },
+            qname: SmallVec::from(&b"read1"[..]),
+        },
+        SeenBase {
+            base: Base::C,
+            qual: 30,
+            mapq: 20,
+            reverse: false,
+            position: PositionInRead { pos: 1, read_length: 100 },
+            qname: SmallVec::from(&b"read1"[..]),
+        },
+    ]);
+    assert_eq!(bases.alts(Base::A).as_slice(), &[SmolStr::new("C")]);
 }
 
 #[cfg(not(tarpaulin_include))]

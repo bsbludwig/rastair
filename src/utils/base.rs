@@ -89,7 +89,12 @@ impl TryFrom<u8> for Base {
 
 impl From<Base> for SmolStr {
     fn from(val: Base) -> Self {
-        SmolStr::new(val.as_char().to_string())
+        SmolStr::new_inline(match val {
+            Base::A => "A",
+            Base::C => "C",
+            Base::G => "G",
+            Base::T => "T",
+        })
     }
 }
 
