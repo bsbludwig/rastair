@@ -1,0 +1,76 @@
+use std::ops::Deref;
+
+use color_eyre::{Result, eyre::bail};
+
+/// Phred-scaled quality score
+///
+/// # Definition
+///
+/// Source: [Wikipedia](https://en.wikipedia.org/wiki/Phred_quality_score)
+///
+/// > Phred quality scores `Q` are logarithmically related to the base-calling error probabilities `P` and defined as
+/// > `Q = -10 log_10 P`.
+/// >
+/// > This relation can also be written as
+/// > `P = 10^(-Q / 10)`.
+/// >
+/// > For example, if Phred assigns a quality score of 30 to a base, the chances that this base is called incorrectly are 1 in 1000.
+/// >
+/// > | Phred Quality Score | Probability of incorrect base call | Base call accuracy |
+/// > | --- | --- | --- |
+/// > | 10 | 1 in 10 | 90% |
+/// > | 20 | 1 in 100 | 99% |
+/// > | 30 | 1 in 1000 | 99.9% |
+/// > | 40 | 1 in 10,000 | 99.99% |
+/// > | 50 | 1 in 100,000 | 99.999% |
+/// > | 60 | 1 in 1,000,000 | 99.9999% |
+/// >
+/// > The phred quality score is the negative ratio of the error probability to the reference level of `P=1` expressed in [Decibel (dB)](https://en.wikipedia.org/wiki/20_log_rule "20 log rule").
+pub struct Phred(f64);
+
+impl Phred {
+    /// Create a new Phred quality score
+    pub fn new(probability: f64) -> Result<Self> {
+        if probability.is_nan() || probability.is_infinite() {
+            bail!("Phred quality score must be a finite number");
+        }
+        let phred = -10.0 * probability.log10();
+        Ok(Self(phred))
+    }
+}
+
+impl Deref for Phred {
+    type Target = f64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wikipedia_examples() {
+        assert_eq!(10., Phred::new(0.1).unwrap().0);
+        assert_eq!(20., Phred::new(0.01).unwrap().0);
+        assert_eq!(30., Phred::new(0.001).unwrap().0);
+        assert_eq!(40., Phred::new(0.0001).unwrap().0);
+        assert_eq!(50., Phred::new(0.00001).unwrap().0);
+        assert_eq!(60., Phred::new(0.000001).unwrap().0);
+    }
+
+    #[test]
+    fn test_invalid_phred() {
+        assert!(Phred::new(f64::NAN).is_err());
+        assert!(Phred::new(f64::INFINITY).is_err());
+        assert!(Phred::new(f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_phred_zero() {
+        // A probability of 1 (100% certainty) should yield a Phred score of 0
+        assert_eq!(0., Phred::new(1.0).unwrap().0);
+    }
+}
