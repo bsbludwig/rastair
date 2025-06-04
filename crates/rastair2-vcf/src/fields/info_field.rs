@@ -1,3 +1,5 @@
+use std::fmt;
+
 use color_eyre::{Result, eyre::Context as _};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
@@ -6,6 +8,9 @@ use smallvec::SmallVec;
 pub trait InfoField: super::VcfField {
     /// The type of values that this field can hold.
     type Type: InfoFieldValue;
+
+    /// The number of values that can be included with the field.
+    const NUMBER: InfoFieldNumber;
 
     /// The definition of the field for the VCF header.
     fn header() -> String {
@@ -20,6 +25,35 @@ pub trait InfoField: super::VcfField {
 
     /// Write the field values to the VCF record.
     fn write(&self, record: &mut Record) -> Result<()>;
+}
+
+/// The number of values that can be included with the INFO field
+pub enum InfoFieldNumber {
+    /// A flag, no values. Written as "0" in the header.
+    Flag,
+    /// A fixed number of values, must be non-zero. Written as a number in the header.
+    Num(u32),
+    /// One value per alternative allele. Written as "A" in the header.
+    OneValPerAlt,
+    /// One value per alternative allele and reference allele. Written as "R" in the header.
+    OnePerAltAndRef,
+    /// One value per genotype. Written as "G" in the header.
+    OnePerGenotype,
+    /// Variable number of values or unknown or unbounded. Written as "." in the header.
+    Dot,
+}
+
+impl fmt::Display for InfoFieldNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InfoFieldNumber::Flag => write!(f, "0"),
+            InfoFieldNumber::Num(n) => write!(f, "{n}"),
+            InfoFieldNumber::OneValPerAlt => write!(f, "A"),
+            InfoFieldNumber::OnePerAltAndRef => write!(f, "R"),
+            InfoFieldNumber::OnePerGenotype => write!(f, "G"),
+            InfoFieldNumber::Dot => write!(f, "."),
+        }
+    }
 }
 
 /// Types that can be used as values in INFO fields.
@@ -191,15 +225,15 @@ impl InfoFieldValue for String {
 /// # Syntax
 ///
 /// ```rust
-/// use rastair2_vcf::{info_field, FieldNumber};
+/// use rastair2_vcf::{info_field, InfoFieldNumber};
 /// # type Type = u32; // or any other type that implements InfoFieldValue
 ///
-/// info_field!(Name(Type), "ID", "Description", FieldNumber::OneValPerAlt);
+/// info_field!(Name(Type), "ID", "Description", InfoFieldNumber::OneValPerAlt);
 /// ```
 ///
 /// This will define a struct `Name` that implements the [`InfoField`] trait (as well as [`crate::VcfField`] and [`crate::HeaderField`]).
 ///
-/// The last parameter must be a variant of [`crate::FieldNumber`].
+/// The last parameter must be a variant of [`crate::InfoFieldNumber`].
 #[macro_export]
 macro_rules! info_field {
     ($name:ident($type:tt), $id:expr, $desc:expr, $number:expr) => {
@@ -210,7 +244,6 @@ macro_rules! info_field {
 
         impl $crate::VcfField for $name {
             const ID: &'static str = $id;
-            const NUMBER: $crate::FieldNumber = $number;
         }
 
         impl $crate::HeaderField for $name {
@@ -219,6 +252,7 @@ macro_rules! info_field {
 
         impl $crate::InfoField for $name {
             type Type = $type;
+            const NUMBER: $crate::InfoFieldNumber = $number;
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
                 use $crate::VcfField as _;
@@ -228,7 +262,7 @@ macro_rules! info_field {
         }
     };
 
-    ($name:ident, $id:expr, $desc:expr, $number:expr) => {
+    ($name:ident, $id:expr, $desc:expr) => {
         #[doc = $desc]
         #[doc = "info flag for VCF output"]
         #[derive(Debug, Clone)]
@@ -236,7 +270,6 @@ macro_rules! info_field {
 
         impl $crate::VcfField for $name {
             const ID: &'static str = $id;
-            const NUMBER: $crate::FieldNumber = $number;
         }
 
         impl $crate::HeaderField for $name {
@@ -245,6 +278,7 @@ macro_rules! info_field {
 
         impl $crate::InfoField for $name {
             type Type = ();
+            const NUMBER: $crate::InfoFieldNumber = $crate::InfoFieldNumber::Flag;
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
                 use $crate::VcfField as _;
@@ -257,7 +291,7 @@ macro_rules! info_field {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{FieldNumber, VcfField};
+    use super::super::{InfoFieldNumber, VcfField};
     use super::*;
     use color_eyre::{Result, eyre::ContextCompat};
     use insta::assert_snapshot;
@@ -266,7 +300,7 @@ mod tests {
 
     #[test]
     fn info_header() {
-        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", FieldNumber::OneValPerAlt);
+        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OneValPerAlt);
 
         assert_snapshot!(
             AlleleFrequency::header(),
@@ -276,9 +310,9 @@ mod tests {
 
     #[test]
     fn flags() -> Result<()> {
-        info_field!(Flag, "Flag", "Test flag 1", FieldNumber::Flag);
-        info_field!(Glag, "Glag", "Test flag 2", FieldNumber::Flag);
-        info_field!(Klag, "Klag", "Test flag 3", FieldNumber::Flag);
+        info_field!(Flag, "Flag", "Test flag 1");
+        info_field!(Glag, "Glag", "Test flag 2");
+        info_field!(Klag, "Klag", "Test flag 3");
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");
@@ -312,11 +346,11 @@ mod tests {
 
     #[test]
     fn integers() -> Result<()> {
-        info_field!(FieldU32(u32), "U32", "Test u32", FieldNumber::OneValPerAlt);
-        info_field!(FieldU64(u64), "U64", "Test u64", FieldNumber::OneValPerAlt);
-        info_field!(FieldI32(i32), "I32", "Test i32", FieldNumber::OneValPerAlt);
-        info_field!(FieldI64(i64), "I64", "Test i64", FieldNumber::OneValPerAlt);
-        info_field!(FieldUsize(usize), "Usize", "Test usize", FieldNumber::OneValPerAlt);
+        info_field!(FieldU32(u32), "U32", "Test u32", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldU64(u64), "U64", "Test u64", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldI32(i32), "I32", "Test i32", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldI64(i64), "I64", "Test i64", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldUsize(usize), "Usize", "Test usize", InfoFieldNumber::OneValPerAlt);
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");
@@ -372,8 +406,8 @@ mod tests {
 
     #[test]
     fn floats() -> Result<()> {
-        info_field!(FieldF32(f32), "F32", "Test f32", FieldNumber::OneValPerAlt);
-        info_field!(FieldF64(f64), "F64", "Test f64", FieldNumber::OneValPerAlt);
+        info_field!(FieldF32(f32), "F32", "Test f32", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldF64(f64), "F64", "Test f64", InfoFieldNumber::OneValPerAlt);
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");
@@ -404,7 +438,7 @@ mod tests {
 
     #[test]
     fn strings() -> Result<()> {
-        info_field!(FieldString(String), "STR", "Test string", FieldNumber::OneValPerAlt);
+        info_field!(FieldString(String), "STR", "Test string", InfoFieldNumber::OneValPerAlt);
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");

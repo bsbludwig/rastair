@@ -14,8 +14,8 @@
 //! # use tempfile::TempDir;
 //! use rastair2_vcf::*;
 //!
-//! info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", FieldNumber::OneValPerAlt);
-//! format_field!(ReadDepth(u32), "RD", "Read Depth", FieldNumber::Num(1));
+//! info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OneValPerAlt);
+//! format_field!(ReadDepth(u32), "RD", "Read Depth", InfoFieldNumber::Num(1));
 //! filter!(q10, "Quality below 10");
 //! filter!(s50, "Less than 50% of samples have data");
 //!
@@ -74,7 +74,8 @@ use std::{
 };
 
 pub use crate::fields::{
-    FieldNumber, FormatField, FormatFieldValue, HeaderField, InfoField, InfoFieldValue, VcfField,
+    FormatField, FormatFieldNumber, FormatFieldValue, HeaderField, InfoField, InfoFieldNumber,
+    InfoFieldValue, VcfField,
 };
 pub use filters::VcfFilter;
 pub use fixed_fields::VcfFixedFields;
@@ -170,7 +171,7 @@ mod tests {
     use super::*;
     use crate::{fixed_fields::VcfFixedFields, vcf_record};
     use color_eyre::{Result, eyre::Context};
-    use fields::FieldNumber;
+    use fields::InfoFieldNumber;
     use insta::assert_snapshot;
     use smallvec::SmallVec;
     use std::collections::BTreeSet;
@@ -178,8 +179,8 @@ mod tests {
 
     #[test]
     fn all_in() -> Result<()> {
-        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", FieldNumber::OneValPerAlt);
-        format_field!(Example(String), "Ex", "Genotype", FieldNumber::Num(1));
+        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OneValPerAlt);
+        format_field!(Example(String), "Ex", "Genotype", FormatFieldNumber::Num(1));
         filter!(q10, "Quality below 10");
         filter!(s50, "Less than 50% of samples have data");
 

@@ -1,12 +1,15 @@
 use color_eyre::{Result, eyre::Context as _};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 
 /// A field that can be used in the INFO section.
 pub trait FormatField: super::VcfField {
     /// The type of values that this field can hold.
     type Type: FormatFieldValue + Display;
+
+    /// The number of values that can be included with the field.
+    const NUMBER: FormatFieldNumber;
 
     /// The definition of the field for the VCF header.
     fn header() -> String {
@@ -23,10 +26,60 @@ pub trait FormatField: super::VcfField {
     fn write(&self, record: &mut Record) -> Result<()>;
 }
 
+/// The number of values that can be included with the FORMAT field
+///
+/// Very simular to [`crate::InfoFieldNumber`], but with additional variants.
+pub enum FormatFieldNumber {
+    /// A flag, no values. Written as "0" in the header.
+    Flag,
+    /// A fixed number of values, must be non-zero. Written as a number in the header.
+    Num(u32),
+    /// One value per alternative allele. Written as "A" in the header.
+    OneValPerAlt,
+    /// One value per alternative allele and reference allele. Written as "R" in the header.
+    OnePerAltAndRef,
+    /// One value per genotype. Written as "G" in the header.
+    OnePerGenotype,
+    /// Variable number of values or unknown or unbounded. Written as "." in the header.
+    Dot,
+    /// Identical to A except the only alternate alleles defined in the `LAA` field are considered present.
+    /// Written as "LA" in the header.
+    OnePerLocalAllele,
+    /// Identical to R except the only alternate alleles defined in the `LAA` field are considered present.
+    /// Written as "LR" in the header.
+    OnePerLocalAlleleAndRef,
+    /// Identical to G except the only alternate alleles defined in the `LAA` field are considered present.
+    /// Written as "LG" in the header.
+    OnePerLocalAlleleAndGenotype,
+    /// One value for each allele value defined in `GT`.
+    /// Written as "P" in the header.
+    OnePerAlleleAndGenotype,
+    /// One value for each possible base modification for the corresponding ChEBI ID.
+    /// Written as "M" in the header.
+    OnePerPossibleBaseModification,
+}
+
+impl fmt::Display for FormatFieldNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FormatFieldNumber::Flag => write!(f, "0"),
+            FormatFieldNumber::Num(n) => write!(f, "{n}"),
+            FormatFieldNumber::OneValPerAlt => write!(f, "A"),
+            FormatFieldNumber::OnePerAltAndRef => write!(f, "R"),
+            FormatFieldNumber::OnePerGenotype => write!(f, "G"),
+            FormatFieldNumber::Dot => write!(f, "."),
+            FormatFieldNumber::OnePerLocalAllele => write!(f, "LA"),
+            FormatFieldNumber::OnePerLocalAlleleAndRef => write!(f, "LR"),
+            FormatFieldNumber::OnePerLocalAlleleAndGenotype => write!(f, "LG"),
+            FormatFieldNumber::OnePerAlleleAndGenotype => write!(f, "P"),
+            FormatFieldNumber::OnePerPossibleBaseModification => write!(f, "M"),
+        }
+    }
+}
+
 /// Types that can be used as values in FORMAT fields.
 pub trait FormatFieldValue: Sized {
-    /// Possible Types for FORMAT fields are
-    // TODO: fill in
+    /// Possible Types for FORMAT fields are Integer, Float, Character, and String
     const TYPE_NAME: &'static str;
 
     /// Write the values to the VCF record under the given tag.
@@ -161,15 +214,15 @@ impl FormatFieldValue for String {
 /// # Syntax
 ///
 /// ```rust
-/// use rastair2_vcf::{format_field, FieldNumber};
+/// use rastair2_vcf::{format_field, InfoFieldNumber};
 /// type Type = u32; // or any other type that implements FormatFieldValue
 ///
-/// format_field!(Name(Type), "ID", "Description", FieldNumber::OneValPerAlt);
+/// format_field!(Name(Type), "ID", "Description", InfoFieldNumber::OneValPerAlt);
 /// ```
 ///
 /// This will define a struct `Name` that implements the [`FormatField`] trait (as well as [`crate::VcfField`] and [`crate::HeaderField`]).
 ///
-/// The last parameter must be a variant of [`crate::FieldNumber`].
+/// The last parameter must be a variant of [`crate::InfoFieldNumber`].
 #[macro_export]
 macro_rules! format_field {
     ($name:ident($type:ty), $id:expr, $desc:expr, $number:expr) => {
@@ -180,7 +233,6 @@ macro_rules! format_field {
 
         impl $crate::VcfField for $name {
             const ID: &'static str = $id;
-            const NUMBER: $crate::FieldNumber = $number;
         }
 
         impl $crate::HeaderField for $name {
@@ -189,6 +241,33 @@ macro_rules! format_field {
 
         impl $crate::FormatField for $name {
             type Type = $type;
+            const NUMBER: $crate::FormatFieldNumber = $number;
+
+            fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
+                use $crate::VcfField as _;
+
+                <$type as $crate::FormatFieldValue>::write(record, Self::ID, &self.0)
+            }
+        }
+    };
+
+    ($name:ident, $id:expr, $desc:expr) => {
+        #[doc = $desc]
+        #[doc = "format flag for VCF output"]
+        #[derive(Debug, Clone)]
+        pub struct $name(pub Vec<$type>);
+
+        impl $crate::VcfField for $name {
+            const ID: &'static str = $id;
+        }
+
+        impl $crate::HeaderField for $name {
+            const DESCRIPTION: &'static str = $desc;
+        }
+
+        impl $crate::FormatField for $name {
+            type Type = $type;
+            const NUMBER: $crate::FormatFieldNumber = $crate::FormatFieldNumber::Flag;
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
                 use $crate::VcfField as _;
@@ -201,7 +280,7 @@ macro_rules! format_field {
 
 #[cfg(test)]
 mod tests {
-    use super::super::FieldNumber;
+    use super::super::FormatFieldNumber;
     use super::*;
     use insta::assert_snapshot;
     use rust_htslib::bcf::{Format, Header, Writer};
@@ -209,7 +288,7 @@ mod tests {
 
     #[test]
     fn format_header() {
-        format_field!(Foo(String), "GT", "Foo", FieldNumber::OnePerGenotype);
+        format_field!(Foo(String), "GT", "Foo", FormatFieldNumber::OnePerGenotype);
 
         assert_snapshot!(
             Foo::header(),
@@ -219,11 +298,11 @@ mod tests {
 
     #[test]
     fn integers() -> Result<()> {
-        format_field!(FieldU32(u32), "U32", "Test u32", FieldNumber::OneValPerAlt);
-        format_field!(FieldU64(u64), "U64", "Test u64", FieldNumber::OneValPerAlt);
-        format_field!(FieldI32(i32), "I32", "Test i32", FieldNumber::OneValPerAlt);
-        format_field!(FieldI64(i64), "I64", "Test i64", FieldNumber::OneValPerAlt);
-        format_field!(FieldUsize(usize), "Usize", "Test usize", FieldNumber::OneValPerAlt);
+        format_field!(FieldU32(u32), "U32", "Test u32", FormatFieldNumber::OneValPerAlt);
+        format_field!(FieldU64(u64), "U64", "Test u64", FormatFieldNumber::OneValPerAlt);
+        format_field!(FieldI32(i32), "I32", "Test i32", FormatFieldNumber::OneValPerAlt);
+        format_field!(FieldI64(i64), "I64", "Test i64", FormatFieldNumber::OneValPerAlt);
+        format_field!(FieldUsize(usize), "Usize", "Test usize", FormatFieldNumber::OneValPerAlt);
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");
