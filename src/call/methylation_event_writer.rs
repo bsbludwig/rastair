@@ -2,12 +2,12 @@ use std::collections::BTreeSet;
 
 use super::{scores::VariantCandidatePileupMetrics, variants::VariantCandidatePileup};
 use crate::{
-    call::vcf::{self, ReadDepth},
+    call::vcf::{self, MappingQuality0, ReadDepth, SampleReadDepth, SamplesWithData},
     utils::{Phred, RootMeanSquare},
 };
 use color_eyre::eyre::Result;
 use rastair2_vcf::Vcf;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec, smallvec_inline};
 use tracing::instrument;
 
 /// TODO: Make this a proper VCF writer
@@ -32,15 +32,21 @@ impl MethylationEventWriter<'_, '_> {
             // TODO: Add filters
             filters: vcf::Filters::new(),
             info: vcf::Info {
-                BaseQuality: vcf::BaseQuality(vec![*RootMeanSquare::new(
+                BaseQuality: vcf::BaseQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>(),
                 )]),
-                MappingQuality: vcf::MappingQuality(vec![*RootMeanSquare::new(
+                MappingQuality: vcf::MappingQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.mapq).collect::<SmallVec<u8, 20>>(),
                 )]),
+                ReadDepth: ReadDepth(smallvec![self.0.bases.len()]),
+                MappingQuality0: MappingQuality0(smallvec![
+                    self.0.bases.iter().filter(|b| b.mapq == 0).count()
+                ]),
+                // by construction, we arrived here because we have at least one base
+                SamplesWithData: SamplesWithData(smallvec_inline![1]),
             },
             samples: smallvec::smallvec![vcf::Format {
-                ReadDepth: ReadDepth(vec![self.0.bases.len()])
+                SampleReadDepth: SampleReadDepth(smallvec![self.0.bases.len()])
             }],
         };
         w.add(record)?;
