@@ -26,12 +26,22 @@ impl MethylationEventWriter<'_, '_> {
                 pos: self.0.pos,
                 id: BTreeSet::default(),
                 r#ref: self.0.reference_base.into(),
-                alt: self.0.bases.alts(self.0.reference_base),
+                alt: self
+                    .0
+                    .bases
+                    .alts(self.0.reference_base)
+                    .into_iter()
+                    .map(|b| b.into())
+                    .collect(),
                 qual: self.qual(),
             },
             // TODO: Add filters
             filters: vcf::Filters::new(),
             info: vcf::Info {
+                ReadDepthPerAllel: vcf::ReadDepthPerAllel(self.0.read_depth_per_allele()),
+                StrandBias: vcf::StrandBias(smallvec![
+                    0, 0, 0, 0 // TODO: Calculate strand bias
+                ]),
                 BaseQuality: vcf::BaseQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>(),
                 )]),
@@ -65,7 +75,8 @@ impl MethylationEventWriter<'_, '_> {
     /// NOTE: we are in the case where we have a variant
     #[allow(clippy::cast_possible_truncation)]
     fn qual(&self) -> f32 {
-        let probability_call_wrong = 0.001; // TODO: Calculate this properly based on the pileup
+        // TODO: Calculate this properly based on the pileup
+        let probability_call_wrong = 0.001;
         // self.0.bases.iter().fold(1.0, |acc, b| acc * (f64::from(b.qual) / 10.0).powf(-1.0));
         *Phred::new(probability_call_wrong).expect("probability must be finite") as f32
     }

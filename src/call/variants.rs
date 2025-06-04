@@ -17,6 +17,19 @@ impl VariantCandidatePileup {
     pub fn is_cpg(&self) -> bool {
         self.reference_base == Base::C && self.next_base == Some(Base::G)
     }
+
+    pub fn read_depth_per_allele(&self) -> SmallVec<usize, 4> {
+        fn count_bases(bases: &SeenBases, base: Base) -> usize {
+            bases.iter().filter(|b| b.base == base).count()
+        }
+
+        let mut depth = SmallVec::new();
+        depth.push(count_bases(&self.bases, self.reference_base));
+        for alt in self.bases.alts(self.reference_base) {
+            depth.push(count_bases(&self.bases, alt));
+        }
+        depth
+    }
 }
 
 /// A collection of bases seen in a pileup
@@ -24,13 +37,12 @@ impl VariantCandidatePileup {
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
 impl SeenBases {
-    pub fn alts(&self, reference: Base) -> SmallVec<SmolStr, 4> {
+    pub fn alts(&self, reference: Base) -> SmallVec<Base, 4> {
         self.iter().map(|b| b.base).filter(|base| reference != *base).fold(
             smallvec::SmallVec::new(),
             |mut acc, base| {
-                let b = base.into();
-                if !acc.contains(&b) {
-                    acc.push(b);
+                if !acc.contains(&base) {
+                    acc.push(base);
                 }
                 acc
             },
@@ -58,7 +70,7 @@ fn test_seen_bases_alts() {
             qname: SmallVec::from(&b"read1"[..]),
         },
     ]);
-    assert_eq!(bases.alts(Base::A).as_slice(), &[SmolStr::new("C")]);
+    assert_eq!(bases.alts(Base::A).as_slice(), &[Base::C]);
 }
 
 #[cfg(not(tarpaulin_include))]

@@ -52,7 +52,7 @@ impl InfoFieldNumber {
             InfoFieldNumber::Flag => 0,
             InfoFieldNumber::Num(n) => *n as usize,
             InfoFieldNumber::OneValPerAlt => 1,
-            InfoFieldNumber::OnePerAltAndRef => 2,
+            InfoFieldNumber::OnePerAltAndRef => 4,
             InfoFieldNumber::OnePerGenotype => 1, // This is per genotype, not per sample
             InfoFieldNumber::Dot => 1,            // Represents variable or unknown number of values
         }
