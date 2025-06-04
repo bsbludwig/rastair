@@ -17,19 +17,6 @@ impl VariantCandidatePileup {
     pub fn is_cpg(&self) -> bool {
         self.reference_base == Base::C && self.next_base == Some(Base::G)
     }
-
-    pub fn read_depth_per_allele(&self) -> SmallVec<usize, 4> {
-        fn count_bases(bases: &SeenBases, base: Base) -> usize {
-            bases.iter().filter(|b| b.base == base).count()
-        }
-
-        let mut depth = SmallVec::new();
-        depth.push(count_bases(&self.bases, self.reference_base));
-        for alt in self.bases.alts(self.reference_base) {
-            depth.push(count_bases(&self.bases, alt));
-        }
-        depth
-    }
 }
 
 /// A collection of bases seen in a pileup

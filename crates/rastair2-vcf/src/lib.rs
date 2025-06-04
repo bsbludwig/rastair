@@ -67,6 +67,8 @@ pub(crate) mod filters;
 pub(crate) mod fixed_fields;
 pub(crate) mod record;
 
+pub mod standard_fields;
+
 use color_eyre::{Result, eyre::Context};
 pub use rust_htslib::bcf::Format as VcfFormat;
 use rust_htslib::bcf::{Header, Writer};

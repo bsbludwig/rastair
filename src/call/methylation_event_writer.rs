@@ -2,11 +2,14 @@ use std::collections::BTreeSet;
 
 use super::{scores::VariantCandidatePileupMetrics, variants::VariantCandidatePileup};
 use crate::{
-    call::vcf::{self, MappingQuality0, ReadDepth, SampleReadDepth, SamplesWithData},
-    utils::{Phred, RootMeanSquare},
+    call::{
+        variants::SeenBases,
+        vcf::{self, MappingQuality0, ReadDepth, SampleReadDepth, SamplesWithData},
+    },
+    utils::{Base, Phred, RootMeanSquare},
 };
 use color_eyre::eyre::Result;
-use rastair2_vcf::Vcf;
+use rastair2_vcf::{Vcf, standard_fields::StrandBias};
 use smallvec::{SmallVec, smallvec, smallvec_inline};
 use tracing::instrument;
 
@@ -38,10 +41,8 @@ impl MethylationEventWriter<'_, '_> {
             // TODO: Add filters
             filters: vcf::Filters::new(),
             info: vcf::Info {
-                ReadDepthPerAllel: vcf::ReadDepthPerAllel(self.0.read_depth_per_allele()),
-                StrandBias: vcf::StrandBias(smallvec![
-                    0, 0, 0, 0 // TODO: Calculate strand bias
-                ]),
+                ReadDepthPerAllel: vcf::ReadDepthPerAllel(self.read_depth_per_allele()),
+                StrandBias: self.strand_bias(),
                 BaseQuality: vcf::BaseQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>(),
                 )]),
@@ -79,5 +80,27 @@ impl MethylationEventWriter<'_, '_> {
         let probability_call_wrong = 0.001;
         // self.0.bases.iter().fold(1.0, |acc, b| acc * (f64::from(b.qual) / 10.0).powf(-1.0));
         *Phred::new(probability_call_wrong).expect("probability must be finite") as f32
+    }
+
+    fn read_depth_per_allele(&self) -> SmallVec<usize, 4> {
+        fn count_bases(bases: &SeenBases, base: Base) -> usize {
+            bases.iter().filter(|b| b.base == base).count()
+        }
+
+        let mut depth = SmallVec::new();
+        depth.push(count_bases(&self.0.bases, self.0.reference_base));
+        for alt in self.0.bases.alts(self.0.reference_base) {
+            depth.push(count_bases(&self.0.bases, alt));
+        }
+        depth
+    }
+
+    fn strand_bias(&self) -> StrandBias {
+        StrandBias {
+            reads_ref_fwd: self.1.strand_bias.reference_ot,
+            reads_ref_rev: self.1.strand_bias.reference_ob,
+            reads_alt_fwd: self.1.strand_bias.alt_ot,
+            reads_alt_rev: self.1.strand_bias.alt_ob,
+        }
     }
 }

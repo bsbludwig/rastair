@@ -1,4 +1,4 @@
-use rastair2_vcf::*;
+use rastair2_vcf::{standard_fields::StrandBias, *};
 
 info_field!(
     ReadDepthPerAllel(usize),
@@ -11,7 +11,7 @@ info_field!(ReadDepth(usize), "DP", "Combined depth across samples", InfoFieldNu
 info_field!(MappingQuality(f64), "MQ", "RMS mapping quality", InfoFieldNumber::Num(1));
 info_field!(MappingQuality0(usize), "MQ0", "Number of MAPQ == 0 reads", InfoFieldNumber::Num(1));
 info_field!(SamplesWithData(usize), "NS", "Number of samples with data", InfoFieldNumber::Num(1));
-info_field!(StrandBias(usize), "SB", "Strand bias", InfoFieldNumber::Num(4));
+// info_field!(StrandBias(usize), "SB", "Strand bias", InfoFieldNumber::Num(4));
 
 format_field!(SampleReadDepth(usize), "DP", "Read depth", FormatFieldNumber::Num(1));
 

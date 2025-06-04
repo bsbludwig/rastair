@@ -54,13 +54,11 @@ impl VariantCandidatePileup {
             mapq: mapq.calculate().wrap_err("mapq")?,
             baseq: baseq.calculate().wrap_err("baseq")?,
             strand_bias: StrandBias {
-                reference_ot: reference_bases.clone().filter(|b| !b.reverse).count() as u64,
-                reference_ob: reference_bases.clone().filter(|b| b.reverse).count() as u64,
-                alt_ot: alt_bases.clone().filter(|b| !b.reverse).count() as u64,
-                alt_ob: alt_bases.clone().filter(|b| b.reverse).count() as u64,
-            }
-            .calculate()
-            .wrap_err("strand bias")?,
+                reference_ot: reference_bases.clone().filter(|b| !b.reverse).count(),
+                reference_ob: reference_bases.clone().filter(|b| b.reverse).count(),
+                alt_ot: alt_bases.clone().filter(|b| !b.reverse).count(),
+                alt_ob: alt_bases.clone().filter(|b| b.reverse).count(),
+            },
         })
     }
 }
@@ -81,7 +79,7 @@ pub struct VariantCandidatePileupMetrics {
     /// RMS of base quality (baseQ) for (reference allele, alternative allele)
     pub baseq: RefVsAlt<RootMeanSquare>,
     /// Strand bias between OT and OB for (reference allele, alternative-allele)
-    pub strand_bias: RefVsAlt<f64>,
+    pub strand_bias: StrandBias,
 }
 
 /// Simple wrapper for metrics for reference and alternative alleles
@@ -183,16 +181,17 @@ impl Calc for BaseQuality {
     }
 }
 
-// Strand bias between OT and OB for reference allele and alternative-allele
+/// Strand bias between OT and OB for reference allele and alternative-allele
+#[derive(Debug, Clone, Copy)]
 pub struct StrandBias {
     /// Counts of bases matching the reference base on the forward strand
-    pub reference_ot: u64,
+    pub reference_ot: usize,
     /// Counts of bases matching the reference base on the reverse strand
-    pub reference_ob: u64,
+    pub reference_ob: usize,
     /// Counts of bases matching the alternative base on the forward strand
-    pub alt_ot: u64,
+    pub alt_ot: usize,
     /// Counts of bases matching the alternative base on the reverse strand
-    pub alt_ob: u64,
+    pub alt_ob: usize,
 }
 
 impl Calc for StrandBias {
