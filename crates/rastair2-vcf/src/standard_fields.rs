@@ -1,71 +1,20 @@
 //! Standard VCF INFO and FORMAT fields
 
-use color_eyre::eyre::Context as _;
+use crate::{FormatFieldNumber, InfoFieldNumber, format_field, info_field};
 
-use crate::{
-    FormatField, FormatFieldNumber, HeaderField, InfoField, InfoFieldNumber, InfoFieldValue as _,
-    VcfField,
-};
+info_field!(
+    ReadDepthPerAllel(usize),
+    "AD",
+    "Total read depth for each allele",
+    InfoFieldNumber::OnePerAltAndRef
+);
+info_field!(BaseQuality(f64), "BQ", "RMS base quality", InfoFieldNumber::Num(1));
+info_field!(ReadDepth(usize), "DP", "Combined depth across samples", InfoFieldNumber::Num(1));
+info_field!(MappingQuality(f64), "MQ", "RMS mapping quality", InfoFieldNumber::Num(1));
+info_field!(MappingQuality0(usize), "MQ0", "Number of MAPQ == 0 reads", InfoFieldNumber::Num(1));
+info_field!(SamplesWithData(usize), "NS", "Number of samples with data", InfoFieldNumber::Num(1));
 
-/// Strand bias information for a variant
-pub struct StrandBias {
-    /// Number of reads supporting the reference allele on the forward strand
-    pub reads_ref_fwd: usize,
-    /// Number of reads supporting the reference allele on the reverse strand
-    pub reads_ref_rev: usize,
-    /// Number of reads supporting the alternative allele on the forward strand
-    pub reads_alt_fwd: usize,
-    /// Number of reads supporting the alternative allele on the reverse strand
-    pub reads_alt_rev: usize,
-}
+format_field!(SampleReadDepth(usize), "DP", "Read depth", FormatFieldNumber::Num(1));
 
-impl VcfField for StrandBias {
-    const ID: &'static str = "SB";
-}
-
-impl HeaderField for StrandBias {
-    const DESCRIPTION: &'static str = "Strand bias";
-}
-
-impl InfoField for StrandBias {
-    const NUMBER: InfoFieldNumber = InfoFieldNumber::Num(4);
-    type Type = usize;
-
-    fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::eyre::Result<()> {
-        let tag = Self::ID;
-        record.clear_info_integer(tag.as_bytes()).wrap_err_with(|| {
-            format!("Failed to clear info field {tag} ({})", Self::Type::TYPE_NAME)
-        })?;
-        record
-            .push_info_integer(
-                tag.as_bytes(),
-                &[
-                    self.reads_ref_fwd as i32,
-                    self.reads_ref_rev as i32,
-                    self.reads_alt_fwd as i32,
-                    self.reads_alt_rev as i32,
-                ],
-            )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::Type::TYPE_NAME))
-    }
-}
-
-impl FormatField for StrandBias {
-    const NUMBER: FormatFieldNumber = FormatFieldNumber::Num(4);
-    type Type = usize;
-
-    fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::eyre::Result<()> {
-        let tag = Self::ID;
-        record
-            .push_format_integer(
-                tag.as_bytes(),
-                &[
-                    self.reads_ref_fwd as i32,
-                    self.reads_ref_rev as i32,
-                    self.reads_alt_fwd as i32,
-                    self.reads_alt_rev as i32,
-                ],
-            )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::Type::TYPE_NAME))
-    }
-}
+mod strand_bias;
+pub use strand_bias::StrandBias;

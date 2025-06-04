@@ -2,14 +2,11 @@ use std::collections::BTreeSet;
 
 use super::{scores::VariantCandidatePileupMetrics, variants::VariantCandidatePileup};
 use crate::{
-    call::{
-        variants::SeenBases,
-        vcf::{self, MappingQuality0, ReadDepth, SampleReadDepth, SamplesWithData},
-    },
+    call::{variants::SeenBases, vcf},
     utils::{Base, Phred, RootMeanSquare},
 };
 use color_eyre::eyre::Result;
-use rastair2_vcf::{Vcf, standard_fields::StrandBias};
+use rastair2_vcf::{Vcf, standard_fields::*};
 use smallvec::{SmallVec, smallvec, smallvec_inline};
 use tracing::instrument;
 
@@ -41,12 +38,12 @@ impl MethylationEventWriter<'_, '_> {
             // TODO: Add filters
             filters: vcf::Filters::new(),
             info: vcf::Info {
-                ReadDepthPerAllel: vcf::ReadDepthPerAllel(self.read_depth_per_allele()),
+                ReadDepthPerAllel: ReadDepthPerAllel(self.read_depth_per_allele()),
                 StrandBias: self.strand_bias(),
-                BaseQuality: vcf::BaseQuality(smallvec![*RootMeanSquare::new(
+                BaseQuality: BaseQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>(),
                 )]),
-                MappingQuality: vcf::MappingQuality(smallvec![*RootMeanSquare::new(
+                MappingQuality: MappingQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.mapq).collect::<SmallVec<u8, 20>>(),
                 )]),
                 ReadDepth: ReadDepth(smallvec![self.0.bases.len()]),
