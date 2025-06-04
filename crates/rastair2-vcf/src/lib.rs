@@ -8,14 +8,14 @@
 //! ```rust
 //! # fn main() -> color_eyre::Result<()> {
 //! # use color_eyre::eyre::WrapErr;
-//! # use smallvec::SmallVec;
+//! # use smallvec::{SmallVec, smallvec};
 //! # use std::collections::BTreeSet;
 //! # use smol_str::SmolStr;
 //! # use tempfile::TempDir;
 //! use rastair2_vcf::*;
 //!
 //! info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OneValPerAlt);
-//! format_field!(ReadDepth(u32), "RD", "Read Depth", InfoFieldNumber::Num(1));
+//! format_field!(ReadDepth(u32), "RD", "Read Depth", FormatFieldNumber::Num(1));
 //! filter!(q10, "Quality below 10");
 //! filter!(s50, "Less than 50% of samples have data");
 //!
@@ -41,14 +41,18 @@
 //!             pos: 7,
 //!             id: BTreeSet::from(["rs123".into()]),
 //!             r#ref: "A".into(),
-//!             alt: SmallVec::from(["C".into(), "G".into()]),
+//!             alt: smallvec!["C".into(), "G".into()],
 //!             qual: 50.0,
 //!         },
 //!         filters: Filters::new().add(q10).add(s50),
-//!         info: Info { AlleleFrequency: AlleleFrequency(vec![0.5, 0.75]) },
-//!         samples: smallvec::smallvec![Format {
-//!             ReadDepth: ReadDepth(vec![4])
-//!         }],
+//!         info: Info {
+//!             AlleleFrequency: AlleleFrequency(smallvec![0.5, 0.75]),
+//!         },
+//!         samples: smallvec![
+//!             Format {
+//!                 ReadDepth: ReadDepth(smallvec![4])
+//!             }
+//!         ],
 //!     };
 //!
 //!     vcf.add(data)?;
@@ -173,7 +177,7 @@ mod tests {
     use color_eyre::{Result, eyre::Context};
     use fields::InfoFieldNumber;
     use insta::assert_snapshot;
-    use smallvec::SmallVec;
+    use smallvec::{SmallVec, smallvec};
     use std::collections::BTreeSet;
     use tempfile::TempDir;
 
@@ -210,9 +214,9 @@ mod tests {
                     qual: 50.0,
                 },
                 filters: Filters::new().add(q10).add(s50),
-                info: Info { AlleleFrequency: AlleleFrequency(vec![0.5, 0.75]) },
-                samples: smallvec::smallvec![Format {
-                    Example: Example(vec!["0/1".into(), "1/1".into()])
+                info: Info { AlleleFrequency: AlleleFrequency(smallvec![0.5, 0.75]) },
+                samples: smallvec![Format {
+                    Example: Example(smallvec!["0/1".into(), "1/1".into()])
                 }],
             };
 

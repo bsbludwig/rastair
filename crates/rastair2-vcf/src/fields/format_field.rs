@@ -59,6 +59,27 @@ pub enum FormatFieldNumber {
     OnePerPossibleBaseModification,
 }
 
+impl FormatFieldNumber {
+    /// Guess the number of values that this field can hold.
+    ///
+    /// Used for smallvec capacity allocation.
+    pub const fn guess_num_values(&self) -> usize {
+        match self {
+            FormatFieldNumber::Flag => 0,
+            FormatFieldNumber::Num(n) => *n as usize,
+            FormatFieldNumber::OneValPerAlt => 1,
+            FormatFieldNumber::OnePerAltAndRef => 2,
+            FormatFieldNumber::OnePerGenotype => 1,
+            FormatFieldNumber::Dot => 1,
+            FormatFieldNumber::OnePerLocalAllele => 1,
+            FormatFieldNumber::OnePerLocalAlleleAndRef => 2,
+            FormatFieldNumber::OnePerLocalAlleleAndGenotype => 1,
+            FormatFieldNumber::OnePerAlleleAndGenotype => 1,
+            FormatFieldNumber::OnePerPossibleBaseModification => 1,
+        }
+    }
+}
+
 impl fmt::Display for FormatFieldNumber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -214,22 +235,22 @@ impl FormatFieldValue for String {
 /// # Syntax
 ///
 /// ```rust
-/// use rastair2_vcf::{format_field, InfoFieldNumber};
+/// use rastair2_vcf::{format_field, FormatFieldNumber};
 /// type Type = u32; // or any other type that implements FormatFieldValue
 ///
-/// format_field!(Name(Type), "ID", "Description", InfoFieldNumber::OneValPerAlt);
+/// format_field!(Name(Type), "ID", "Description", FormatFieldNumber::OneValPerAlt);
 /// ```
 ///
 /// This will define a struct `Name` that implements the [`FormatField`] trait (as well as [`crate::VcfField`] and [`crate::HeaderField`]).
 ///
-/// The last parameter must be a variant of [`crate::InfoFieldNumber`].
+/// The last parameter must be a variant of [`crate::FormatFieldNumber`].
 #[macro_export]
 macro_rules! format_field {
     ($name:ident($type:ty), $id:expr, $desc:expr, $number:expr) => {
         #[doc = $desc]
         #[doc = "format field for VCF output"]
         #[derive(Debug, Clone)]
-        pub struct $name(pub Vec<$type>);
+        pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
 
         impl $crate::VcfField for $name {
             const ID: &'static str = $id;
@@ -284,6 +305,7 @@ mod tests {
     use super::*;
     use insta::assert_snapshot;
     use rust_htslib::bcf::{Format, Header, Writer};
+    use smallvec::smallvec;
     use tempfile::TempDir;
 
     #[test]
@@ -320,26 +342,26 @@ mod tests {
         let mut record = vcf.empty_record();
 
         // different types
-        FieldU32(vec![1]).write(&mut record)?;
+        FieldU32(smallvec![1]).write(&mut record)?;
         assert_eq!((*record.format(b"U32").integer()?)[0], &[1i32]);
 
-        FieldI32(vec![42]).write(&mut record)?;
+        FieldI32(smallvec![42]).write(&mut record)?;
         assert_eq!((*record.format(b"I32").integer()?)[0], &[42i32]);
 
-        FieldU64(vec![42]).write(&mut record)?;
+        FieldU64(smallvec![42]).write(&mut record)?;
         assert_eq!((*record.format(b"U64").integer()?)[0], &[42i32]);
 
-        FieldI64(vec![42]).write(&mut record)?;
+        FieldI64(smallvec![42]).write(&mut record)?;
         assert_eq!((*record.format(b"I64").integer()?)[0], &[42i32]);
 
-        FieldUsize(vec![42]).write(&mut record)?;
+        FieldUsize(smallvec![42]).write(&mut record)?;
         assert_eq!((*record.format(b"Usize").integer()?)[0], &[42i32]);
 
         // lists
-        FieldU32(vec![1, 2]).write(&mut record)?;
+        FieldU32(smallvec![1, 2]).write(&mut record)?;
         assert_eq!((*record.format(b"U32").integer()?)[0], &[1i32, 2]);
 
-        FieldI64(vec![1, 2]).write(&mut record)?;
+        FieldI64(smallvec![1, 2]).write(&mut record)?;
         assert_eq!((*record.format(b"I64").integer()?)[0], &[1i32, 2]);
 
         vcf.write(&record).wrap_err("Failed to write record")?;
@@ -348,11 +370,11 @@ mod tests {
         assert_snapshot!(result);
 
         // test that we catch overflow
-        assert!(FieldU32(vec![u32::MAX]).write(&mut record).is_err());
-        assert!(FieldU64(vec![u64::MAX]).write(&mut record).is_err());
-        assert!(FieldI64(vec![i64::MAX]).write(&mut record).is_err());
+        assert!(FieldU32(smallvec![u32::MAX]).write(&mut record).is_err());
+        assert!(FieldU64(smallvec![u64::MAX]).write(&mut record).is_err());
+        assert!(FieldI64(smallvec![i64::MAX]).write(&mut record).is_err());
         // but i32 is base type so it's fine
-        assert!(FieldI32(vec![i32::MAX]).write(&mut record).is_ok());
+        assert!(FieldI32(smallvec![i32::MAX]).write(&mut record).is_ok());
 
         Ok(())
     }

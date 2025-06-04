@@ -43,6 +43,22 @@ pub enum InfoFieldNumber {
     Dot,
 }
 
+impl InfoFieldNumber {
+    /// Guess the number of values that this field can hold.
+    ///
+    /// Used for smallvec capacity allocation.
+    pub const fn guess_num_values(&self) -> usize {
+        match self {
+            InfoFieldNumber::Flag => 0,
+            InfoFieldNumber::Num(n) => *n as usize,
+            InfoFieldNumber::OneValPerAlt => 1,
+            InfoFieldNumber::OnePerAltAndRef => 2,
+            InfoFieldNumber::OnePerGenotype => 1, // This is per genotype, not per sample
+            InfoFieldNumber::Dot => 1,            // Represents variable or unknown number of values
+        }
+    }
+}
+
 impl fmt::Display for InfoFieldNumber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -240,7 +256,7 @@ macro_rules! info_field {
         #[doc = $desc]
         #[doc = "info field for VCF output"]
         #[derive(Debug, Clone)]
-        pub struct $name(pub Vec<$type>);
+        pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
 
         impl $crate::VcfField for $name {
             const ID: &'static str = $id;
@@ -296,6 +312,7 @@ mod tests {
     use color_eyre::{Result, eyre::ContextCompat};
     use insta::assert_snapshot;
     use rust_htslib::bcf::{Format, Header, Writer};
+    use smallvec::smallvec;
     use tempfile::TempDir;
 
     #[test]
@@ -367,26 +384,26 @@ mod tests {
         let mut record = vcf.empty_record();
 
         // different types
-        FieldU32(vec![1]).write(&mut record)?;
+        FieldU32(smallvec![1]).write(&mut record)?;
         assert_eq!(*record.info(b"U32").integer()?.wrap_err("none")?, &[1i32]);
 
-        FieldI32(vec![42]).write(&mut record)?;
+        FieldI32(smallvec![42]).write(&mut record)?;
         assert_eq!(*record.info(b"I32").integer()?.wrap_err("none")?, &[42i32]);
 
-        FieldU64(vec![42]).write(&mut record)?;
+        FieldU64(smallvec![42]).write(&mut record)?;
         assert_eq!(*record.info(b"U64").integer()?.wrap_err("none")?, &[42i32]);
 
-        FieldI64(vec![42]).write(&mut record)?;
+        FieldI64(smallvec![42]).write(&mut record)?;
         assert_eq!(*record.info(b"I64").integer()?.wrap_err("none")?, &[42i32]);
 
-        FieldUsize(vec![42]).write(&mut record)?;
+        FieldUsize(smallvec![42]).write(&mut record)?;
         assert_eq!(*record.info(b"Usize").integer()?.wrap_err("none")?, &[42i32]);
 
         // lists
-        FieldU32(vec![1, 2]).write(&mut record)?;
+        FieldU32(smallvec![1, 2]).write(&mut record)?;
         assert_eq!(*record.info(b"U32").integer()?.wrap_err("none")?, &[1i32, 2]);
 
-        FieldI64(vec![1, 2]).write(&mut record)?;
+        FieldI64(smallvec![1, 2]).write(&mut record)?;
         assert_eq!(*record.info(b"I64").integer()?.wrap_err("none")?, &[1i32, 2]);
 
         vcf.write(&record).wrap_err("Failed to write record")?;
@@ -395,11 +412,11 @@ mod tests {
         assert_snapshot!(result);
 
         // test that we catch overflow
-        assert!(FieldU32(vec![u32::MAX]).write(&mut record).is_err());
-        assert!(FieldU64(vec![u64::MAX]).write(&mut record).is_err());
-        assert!(FieldI64(vec![i64::MAX]).write(&mut record).is_err());
+        assert!(FieldU32(smallvec![u32::MAX]).write(&mut record).is_err());
+        assert!(FieldU64(smallvec![u64::MAX]).write(&mut record).is_err());
+        assert!(FieldI64(smallvec![i64::MAX]).write(&mut record).is_err());
         // but i32 is base type so it's fine
-        assert!(FieldI32(vec![i32::MAX]).write(&mut record).is_ok());
+        assert!(FieldI32(smallvec![i32::MAX]).write(&mut record).is_ok());
 
         Ok(())
     }
@@ -420,12 +437,12 @@ mod tests {
         let mut vcf = Writer::from_path(&temp_file, &header, true, Format::Vcf)?;
         let mut record = vcf.empty_record();
 
-        FieldF32(vec![1.4]).write(&mut record)?;
+        FieldF32(smallvec![1.4]).write(&mut record)?;
         assert_eq!(*record.info(b"F32").float()?.wrap_err("none")?, &[1.4f32]);
-        FieldF32(vec![1.1, 2.2]).write(&mut record)?;
+        FieldF32(smallvec![1.1, 2.2]).write(&mut record)?;
         assert_eq!(*record.info(b"F32").float()?.wrap_err("none")?, &[1.1f32, 2.2]);
 
-        FieldF64(vec![42.42]).write(&mut record)?;
+        FieldF64(smallvec![42.42]).write(&mut record)?;
         assert_eq!(*record.info(b"F64").float()?.wrap_err("none")?, &[42.42f32]);
 
         vcf.write(&record).wrap_err("Failed to write record")?;
@@ -450,10 +467,10 @@ mod tests {
         let mut vcf = Writer::from_path(&temp_file, &header, true, Format::Vcf)?;
         let mut record = vcf.empty_record();
 
-        FieldString(vec!["test".into()]).write(&mut record)?;
+        FieldString(smallvec!["test".into()]).write(&mut record)?;
         assert_eq!(*record.info(b"STR").string()?.wrap_err("none")?, &[b"test"]);
 
-        FieldString(vec!["test1".into(), "test2".into()]).write(&mut record)?;
+        FieldString(smallvec!["test1".into(), "test2".into()]).write(&mut record)?;
         assert_eq!(*record.info(b"STR").string()?.wrap_err("none")?, &[b"test1", b"test2"]);
 
         vcf.write(&record).wrap_err("Failed to write record")?;
