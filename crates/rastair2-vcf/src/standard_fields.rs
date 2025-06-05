@@ -21,6 +21,24 @@ info_field!(MappingQuality0(usize), "MQ0", "Number of MAPQ == 0 reads", InfoFiel
 info_field!(SamplesWithData(usize), "NS", "Number of samples with data", InfoFieldNumber::Num(1));
 
 format_field!(SampleReadDepth(usize), "DP", "Read depth", FormatFieldNumber::Num(1));
+format_field!(
+    M5mC(f64),
+    "M5mC",
+    "Fraction of bases with 5-methylcytosine modification",
+    FormatFieldNumber::OnePerPossibleBaseModification
+);
+format_field!(
+    DPM5mC(usize),
+    "DPM5mC",
+    "Total read depth for 5-methylcytosine detection",
+    FormatFieldNumber::OnePerPossibleBaseModification
+);
+format_field!(
+    ADM5mC(usize),
+    "ADM5mC",
+    "Read depth supporting 5-methylcytosine modification",
+    FormatFieldNumber::OnePerPossibleBaseModification
+);
 
 filter!(PASS, "All filters pass");
 
