@@ -42,7 +42,7 @@
 //!             id: BTreeSet::from(["rs123".into()]),
 //!             r#ref: "A".into(),
 //!             alt: smallvec!["C".into(), "G".into()],
-//!             qual: 50.0,
+//!             qual: Some(50.0),
 //!         },
 //!         filters: Filters::new().add(q10).add(s50),
 //!         info: Info {
@@ -213,7 +213,7 @@ mod tests {
                     id: BTreeSet::from(["rs123".into()]),
                     r#ref: "A".into(),
                     alt: SmallVec::from(["C".into(), "G".into()]),
-                    qual: 50.0,
+                    qual: Some(50.0),
                 },
                 filters: Filters::new().add(q10).add(s50),
                 info: Info { allele_frequency: AlleleFrequency(smallvec![0.5, 0.75]) },

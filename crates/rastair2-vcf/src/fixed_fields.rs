@@ -83,7 +83,7 @@ pub struct VcfFixedFields {
     /// log10` prob (call in ALT is wrong). If ALT is ‘.’ (no variant) then this
     /// is `−10 log10` prob (variant), and if ALT is not ‘.’ this is `−10 log10`
     /// prob (no variant). If unknown, the MISSING value must be specified.
-    pub qual: f32,
+    pub qual: Option<f32>,
     // Following fields are application-specific:
     // - FILTER
     // - INFO
@@ -114,7 +114,9 @@ impl VcfFixedFields {
             .collect();
         record.set_alleles(alleles.as_slice()).wrap_err("Failed to set alleles")?;
 
-        record.set_qual(self.qual);
+        if let Some(qual) = self.qual {
+            record.set_qual(qual);
+        }
 
         Ok(())
     }
@@ -144,7 +146,7 @@ mod tests {
             id: BTreeSet::from(["rs123".into()]),
             r#ref: "A".into(),
             alt: SmallVec::from(["C".into(), "G".into()]),
-            qual: 50.0,
+            qual: Some(50.0),
         };
 
         let mut record = vcf.empty_record();
