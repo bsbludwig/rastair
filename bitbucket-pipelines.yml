@@ -56,6 +56,7 @@ pipelines:
                 - curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
                 # Run checks and generate reports
                 - cargo nextest run --profile ci --workspace
+                - cargo test --doc --workspace --all-features
                 - mkdir -pv test-results; mv target/nextest/ci/junit.xml test-results/junit.xml
 
   tags:
