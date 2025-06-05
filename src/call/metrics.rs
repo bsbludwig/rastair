@@ -9,6 +9,7 @@ use color_eyre::Result;
 use rastair2_vcf::standard_fields::*;
 use smallvec::{SmallVec, smallvec, smallvec_inline};
 use smol_str::{SmolStr, SmolStrBuilder};
+use std::collections::BTreeSet;
 use tracing::warn;
 
 impl VariantCandidatePileup {
@@ -16,9 +17,11 @@ impl VariantCandidatePileup {
         rastair2_vcf::VcfFixedFields {
             chrom: self.chrom.clone(),
             pos: self.pos,
-            id: Default::default(),
+            id: BTreeSet::default(),
             r#ref: self.reference_base.into(),
             alt: self.bases.alts(self.reference_base).iter().map(|b| (*b).into()).collect(),
+            // TODO: Figure out how to handle this. When do we have the data for
+            // this? Should we start with `None`?
             qual: self.qual(),
         }
     }
