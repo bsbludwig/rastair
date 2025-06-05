@@ -35,7 +35,7 @@ pub enum InfoFieldNumber {
     /// A fixed number of values, must be non-zero. Written as a number in the header.
     Num(u32),
     /// One value per alternative allele. Written as "A" in the header.
-    OneValPerAlt,
+    OnePerAlt,
     /// One value per alternative allele and reference allele. Written as "R" in the header.
     OnePerAltAndRef,
     /// One value per genotype. Written as "G" in the header.
@@ -55,7 +55,7 @@ impl InfoFieldNumber {
                 let n = *n as usize;
                 if n > 3 { 3 } else { n }
             }
-            InfoFieldNumber::OneValPerAlt => 1,
+            InfoFieldNumber::OnePerAlt => 1,
             InfoFieldNumber::OnePerAltAndRef => 3,
             InfoFieldNumber::OnePerGenotype => 2, // This is per genotype, not per sample
             InfoFieldNumber::Dot => 1,            // Represents variable or unknown number of values
@@ -68,7 +68,7 @@ impl fmt::Display for InfoFieldNumber {
         match self {
             InfoFieldNumber::Flag => write!(f, "0"),
             InfoFieldNumber::Num(n) => write!(f, "{n}"),
-            InfoFieldNumber::OneValPerAlt => write!(f, "A"),
+            InfoFieldNumber::OnePerAlt => write!(f, "A"),
             InfoFieldNumber::OnePerAltAndRef => write!(f, "R"),
             InfoFieldNumber::OnePerGenotype => write!(f, "G"),
             InfoFieldNumber::Dot => write!(f, "."),
@@ -261,7 +261,7 @@ impl InfoFieldValue for SmolStr {
 /// use rastair2_vcf::{info_field, InfoFieldNumber};
 /// # type Type = u32; // or any other type that implements InfoFieldValue
 ///
-/// info_field!(Name(Type), "ID", "Description", InfoFieldNumber::OneValPerAlt);
+/// info_field!(Name(Type), "ID", "Description", InfoFieldNumber::OnePerAlt);
 /// ```
 ///
 /// This will define a struct `Name` that implements the [`InfoField`] trait (as
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn info_header() {
-        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OneValPerAlt);
+        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OnePerAlt);
 
         assert_snapshot!(
             AlleleFrequency::header(),
@@ -386,11 +386,11 @@ mod tests {
 
     #[test]
     fn integers() -> Result<()> {
-        info_field!(FieldU32(u32), "U32", "Test u32", InfoFieldNumber::OneValPerAlt);
-        info_field!(FieldU64(u64), "U64", "Test u64", InfoFieldNumber::OneValPerAlt);
-        info_field!(FieldI32(i32), "I32", "Test i32", InfoFieldNumber::OneValPerAlt);
-        info_field!(FieldI64(i64), "I64", "Test i64", InfoFieldNumber::OneValPerAlt);
-        info_field!(FieldUsize(usize), "Usize", "Test usize", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldU32(u32), "U32", "Test u32", InfoFieldNumber::OnePerAlt);
+        info_field!(FieldU64(u64), "U64", "Test u64", InfoFieldNumber::OnePerAlt);
+        info_field!(FieldI32(i32), "I32", "Test i32", InfoFieldNumber::OnePerAlt);
+        info_field!(FieldI64(i64), "I64", "Test i64", InfoFieldNumber::OnePerAlt);
+        info_field!(FieldUsize(usize), "Usize", "Test usize", InfoFieldNumber::OnePerAlt);
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");
@@ -446,8 +446,8 @@ mod tests {
 
     #[test]
     fn floats() -> Result<()> {
-        info_field!(FieldF32(f32), "F32", "Test f32", InfoFieldNumber::OneValPerAlt);
-        info_field!(FieldF64(f64), "F64", "Test f64", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldF32(f32), "F32", "Test f32", InfoFieldNumber::OnePerAlt);
+        info_field!(FieldF64(f64), "F64", "Test f64", InfoFieldNumber::OnePerAlt);
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn strings() -> Result<()> {
-        info_field!(FieldString(String), "STR", "Test string", InfoFieldNumber::OneValPerAlt);
+        info_field!(FieldString(String), "STR", "Test string", InfoFieldNumber::OnePerAlt);
 
         let mut header = Header::new();
         header.push_record(b"##fileformat=VCFv4.2");
