@@ -1,4 +1,5 @@
 use crate::{
+    call::{variants::VariantCandidatePileup, vcf::Filters},
     sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
     utils::TryAsBase as _,
 };
@@ -9,25 +10,19 @@ use rust_htslib::bam::{
     pileup::{Alignment, Pileup},
 };
 use smallvec::SmallVec;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{Level, debug, info, instrument, trace, warn};
 
 use filtering::threshold::ThresholdConfig;
-use methylation_event_writer::MethylationEventWriter;
 use variants::{PositionInRead, SeenBase, SeenBases};
 
-mod methylation;
-mod methylation_event_writer;
-pub mod scores;
+mod variant_calling;
 pub mod variants;
 mod filtering {
     pub mod threshold;
 }
+mod metrics;
 pub mod vcf;
 pub mod vcf_writer;
-
-// Re-exports for VCF writer
-pub use scores::VariantCandidatePileupMetrics;
-pub use variants::VariantCandidatePileup;
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
@@ -41,10 +36,13 @@ pub struct CallParams {
     vcf: vcf_writer::Params,
 }
 
+/// Read BAM + FASTA and call variants and methylation events
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
+    // Initialize readers for BAM and FASTA files
     let mut readers = params.segments.readers().wrap_err("failed to fetch segments")?;
 
+    // Get segments that are small enough to process in RAM
     let mut regions_seen = 0;
     let regions: Vec<ChunkRegion> =
         readers.segments().wrap_err("Could not fetch segments from BAM file")?.collect();
@@ -54,11 +52,21 @@ pub fn call(params: &CallParams) -> Result<()> {
     }
     debug!("Going to process {} segments", regions.len());
 
+    // Create a VCF writer for the output
     let mut vcf_writer = params.vcf.vcf_writer(&regions).wrap_err("failed to create VCF writer")?;
 
+    // Process each region and write results to the VCF
+    // TODO: For multithreaded processing, collect data in order and write in main thread
     regions.into_iter().try_for_each(|region| {
         regions_seen += 1;
-        process_region(&region, &mut readers, &params.thresholds, &mut vcf_writer)
+        process_region(&region, &mut readers, &params.thresholds)
+            .and_then(|piles| {
+                piles.into_iter().try_for_each(|pile| {
+                    write_pileup(&pile, &mut vcf_writer).wrap_err_with(|| {
+                        format!("Failed to write pileup for {}:{}", pile.chrom, pile.pos)
+                    })
+                })
+            })
             .wrap_err_with(|| format!("failed to process region {}", region.region))
     })?;
 
@@ -72,16 +80,18 @@ pub fn call(params: &CallParams) -> Result<()> {
 fn process_region(
     region: &ChunkRegion,
     readers: &mut Readers,
-    thresholds: &ThresholdConfig,
-    output: &mut Vcf<vcf::Record>,
-) -> Result<()> {
+    _thresholds: &ThresholdConfig,
+) -> Result<Vec<VariantCandidatePileup>> {
     let segment = readers.segment(region).wrap_err("failed to fetch segment")?;
     trace!(len = segment.sequence.len(), "Processing region");
 
+    // Fetch the pileups for the segment
     FetchDefinition::try_from(&segment)
         .wrap_err("Could not convert region string")
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
+
+    // Go over each column in the pileup and collect variant candidates
     let piles = readers
         .bam
         .pileup()
@@ -97,11 +107,6 @@ fn process_region(
                 })
                 .transpose()
         })
-        .map(|pile| -> Result<(VariantCandidatePileup, VariantCandidatePileupMetrics)> {
-            let pile = pile?;
-            let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
-            Ok((pile, metrics))
-        })
         .filter_map(|res| match res {
             Ok(x) => Some(x),
             Err(error) => {
@@ -111,45 +116,25 @@ fn process_region(
         })
         .collect::<Vec<_>>();
 
-    if piles.is_empty() {
-        trace!("No candidate piles found in region, skipping");
-        return Ok(());
-    } else {
-        let count = readable::num::Unsigned::from(piles.len());
-        let bytes = readable::byte::Byte::from(
-            piles.len()
-                * std::mem::size_of::<(VariantCandidatePileup, VariantCandidatePileupMetrics)>(),
-        );
-        debug!(%count, %bytes, "Collected candidates");
-    }
-
-    // At this point we have both the pileup and the metrics for each pileup.
-    // We can now gather metrics for each of the reads that were used to create the pileup.
-
-    // TODO: Emit variant candidates here if user asked for it
-
-    // Now we can analyze possible methylation events
-    let mut iterator = piles.into_iter().peekable();
-    loop {
-        let Some((pile, metrics)) = iterator.next() else {
-            // last item in iter
-            break;
-        };
-        // This returns a reference, so it's easist to do a `loop` here instead
-        // of writing a fancy adaptor
-        let _next = iterator.peek();
-
-        // TODO: Use `next` here
-        if pile.likely_methylation_event(&metrics, thresholds) {
-            MethylationEventWriter(&pile, &metrics)
-                .write(output)
-                .wrap_err("Failed to write methylation event to VCF")?;
+    if tracing::enabled!(Level::DEBUG) {
+        if piles.is_empty() {
+            trace!("No candidate piles found in region, skipping");
+            return Ok(piles);
+        } else {
+            let count = readable::num::Unsigned::from(piles.len());
+            let bytes = readable::byte::Byte::from(
+                piles.len() * std::mem::size_of::<VariantCandidatePileup>(),
+            );
+            debug!(%count, %bytes, "Collected candidates");
         }
     }
 
-    Ok(())
+    // TODO: Add at least threshold filtering for methylation calling :)
+
+    Ok(piles)
 }
 
+/// Is this pileup a candidate for a variant?
 #[instrument(level = "trace", skip_all)]
 fn collect_candidate(
     pile: &Pileup,
@@ -174,8 +159,7 @@ fn collect_candidate(
         segment.sequence.get(idx).wrap_err("failed to get reference base")?.as_base()?;
 
     if bases.matches(reference_base) {
-        // Matches reference base
-        // boring.
+        // Matches reference base, boring.
         // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
         Ok(None)
     } else {
@@ -194,6 +178,7 @@ fn collect_candidate(
     }
 }
 
+/// Collect info from a pileup alignment
 fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
     let pos = a.qpos()?;
     let record = a.record();
@@ -220,4 +205,21 @@ fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
             read_length: u32::try_from(record.seq().len()).expect("read length fits in u32"),
         },
     })
+}
+
+/// Write a pileup to the VCF output
+#[instrument(level = "trace", skip_all)]
+fn write_pileup(pile: &VariantCandidatePileup, output: &mut Vcf<vcf::Record>) -> Result<()> {
+    // TODO: Maybe pull out the metrics
+    let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
+    let calling_metrics = pile.calling_metrics().wrap_err("Failed to calculate calling metrics")?;
+
+    let record = vcf::Record {
+        fixed_fields: pile.fixed_fields(),
+        // FIXME: Add filters based on thresholds
+        filters: Filters::new().add(rastair2_vcf::standard_fields::PASS),
+        info: metrics,
+        samples: smallvec::smallvec![calling_metrics],
+    };
+    output.add(record).wrap_err("Failed to add record")
 }

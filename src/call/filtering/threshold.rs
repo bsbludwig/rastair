@@ -1,6 +1,9 @@
-use crate::call::{
-    scores::VariantCandidatePileupMetrics,
-    variants::{Counter, VariantCandidatePileup},
+use crate::{
+    call::{
+        variants::{Counter, VariantCandidatePileup},
+        vcf::{Format, Info},
+    },
+    utils::Base,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -19,31 +22,53 @@ pub struct ThresholdConfig {
 }
 
 impl VariantCandidatePileup {
-    /// arbitrary filters
+    /// Is this a C->G variant candidate?
+    pub fn is_cpg(&self) -> bool {
+        self.reference_base == Base::C && self.sequence_after.first() == Some(&Base::G)
+    }
+
+    /// With TAPS, methylation is detected by observing a C->T transition
+    pub fn could_be_methylation_event(&self) -> bool {
+        self.is_cpg() && self.bases.iter().any(|b| b.base == Base::T)
+    }
+
+    /// TODO: These are just arbitrary filters
     pub fn likely_methylation_event(
         &self,
-        metrics: &VariantCandidatePileupMetrics,
+        info_metrics: &Info,
+        _calling_metrics: &Format,
         config: &ThresholdConfig,
     ) -> bool {
         if !self.could_be_methylation_event() {
             return false;
         }
-        if metrics.binomial > config.binomial_max {
-            return false;
-        }
-        if metrics.vaf < config.vaf_min {
-            return false;
-        }
-        let num_reads = self.bases.len();
-        if num_reads < config.reads_min {
+
+        if self.bases.len() < config.reads_min {
+            // Not enough evidence for methylation
             return false;
         }
 
-        // if the methylation evidence is less than half of the total evidence, we don't call it
+        // Check if the VAF is above the minimum threshold
+        let t_alt_idx = self.bases.alts(Base::C).iter().position(|b| *b == Base::T);
+        if let Some(t_alt_idx) = t_alt_idx {
+            let vaf = info_metrics
+                .allel_frequency
+                .0
+                .get(t_alt_idx)
+                .expect("T base should be present in alts");
+            if *vaf < config.vaf_min {
+                // VAF is below the minimum threshold
+                return false;
+            }
+        } else {
+            // No T base found in alts
+            return false;
+        }
+
+        // Check if more A and G bases than C and T
         let counter = Counter::from_iter(self.bases.iter().map(|b| b.base));
-        let methylation_evidence = counter.t + counter.c;
-        // there are more A and G than C and T
-        if methylation_evidence < (num_reads - methylation_evidence) {
+        if counter.a + counter.g >= counter.c + counter.t {
+            // More A and G bases than C and T, not likely methylation
             return false;
         }
 
@@ -134,13 +159,14 @@ mod tests {
         ) {
             let pileup = make_pileup(pos, reference_base, sequence_before, sequence_after, bases, 5);
             let metrics = pileup.metrics().unwrap();
+            let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
                 binomial_max: 0.08,
                 reads_min: 5,
             };
 
-            prop_assert!(!pileup.likely_methylation_event(&metrics, &config));
+            prop_assert!(!pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
         }
 
         #[test]
@@ -154,6 +180,7 @@ mod tests {
 
             let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, 5);
             let metrics = pileup.metrics().unwrap();
+            let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
                 binomial_max: 0.1,  // Increased slightly to accommodate test case
@@ -166,7 +193,7 @@ mod tests {
             // 3. More T bases than other bases
             // 4. Above min read threshold
             // 5. A mix of C and T bases to keep binomial test reasonable
-            prop_assert!(pileup.likely_methylation_event(&metrics, &config));
+            prop_assert!(pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
         }
 
         #[test]
@@ -178,6 +205,7 @@ mod tests {
             let bases = vec![Base::T; count];
             let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, reads_min);
             let metrics = pileup.metrics().unwrap();
+            let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
                 binomial_max: 0.08,
@@ -185,7 +213,7 @@ mod tests {
             };
 
             // Should not be methylation since below min_reads threshold
-            prop_assert!(!pileup.likely_methylation_event(&metrics, &config));
+            prop_assert!(!pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
         }
 
         #[test]
@@ -204,6 +232,7 @@ mod tests {
 
             let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, 5);
             let metrics = pileup.metrics().unwrap();
+            let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
                 binomial_max: 0.08,
@@ -211,7 +240,7 @@ mod tests {
             };
 
             // Should not be methylation since more A+G than C+T
-            prop_assert!(!pileup.likely_methylation_event(&metrics, &config));
+            prop_assert!(!pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
         }
     }
 }

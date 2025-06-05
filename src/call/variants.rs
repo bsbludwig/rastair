@@ -13,13 +13,6 @@ pub struct VariantCandidatePileup {
     pub sequence_after: SmallVec<Base, 2>,
 }
 
-impl VariantCandidatePileup {
-    /// Is this a C->G variant candidate?
-    pub fn is_cpg(&self) -> bool {
-        self.reference_base == Base::C && self.sequence_after.first() == Some(&Base::G)
-    }
-}
-
 /// A collection of bases seen in a pileup
 #[derive(Clone)]
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
