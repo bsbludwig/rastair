@@ -281,6 +281,14 @@ macro_rules! info_field {
         #[derive(Debug, Clone)]
         pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
 
+        impl std::ops::Deref for $name {
+            type Target = [$type];
+
+            fn deref(&self) -> &Self::Target {
+                &self.0.as_slice()
+            }
+        }
+
         impl $crate::VcfField for $name {
             const ID: &'static str = $id;
         }

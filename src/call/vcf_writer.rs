@@ -1,10 +1,9 @@
-use std::ffi::OsStr;
-
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr};
 use rastair2_vcf::{Vcf, VcfBuilder, VcfFormat};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
+use std::ffi::OsStr;
 use tracing::{debug, warn};
 
 use crate::{call::vcf::Record, sequence::ChunkRegion};

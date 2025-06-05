@@ -53,7 +53,6 @@ impl VariantCandidatePileup {
         if let Some(t_alt_idx) = t_alt_idx {
             let vaf = info_metrics
                 .allel_frequency
-                .0
                 .get(t_alt_idx)
                 .expect("T base should be present in alts");
             if *vaf < config.vaf_min {
