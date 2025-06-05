@@ -16,6 +16,19 @@ info_field!(
     "5-base sequence context centered on the variant position",
     InfoFieldNumber::Num(1)
 );
+// TODO: Add base/mapping quality per allele
+info_field!(
+    AllelBaseQuality(f64),
+    "ABQ",
+    "RMS Base quality per allele",
+    InfoFieldNumber::OnePerAltAndRef
+);
+info_field!(
+    AllelMapQuality(f64),
+    "AMQ",
+    "RMS Map quality per allele",
+    InfoFieldNumber::OnePerAltAndRef
+);
 
 vcf_record!(
     // pass or why not
@@ -31,6 +44,8 @@ vcf_record!(
         StrandBias,
         SequenceContext,
         AllelFrequency,
+        AllelBaseQuality,
+        AllelMapQuality
     ],
     // Call data
     //

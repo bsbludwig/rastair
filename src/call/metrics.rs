@@ -1,7 +1,7 @@
 use crate::{
     call::{
         variants::{SeenBases, VariantCandidatePileup},
-        vcf::{Info, SequenceContext},
+        vcf::{AllelBaseQuality, AllelMapQuality, Info, SequenceContext},
     },
     utils::{Base, Phred, RootMeanSquare},
 };
@@ -50,6 +50,38 @@ impl VariantCandidatePileup {
                     .map(|alt| {
                         let count = self.bases.iter().filter(|b| b.base == *alt).count();
                         count as f64 / self.bases.len() as f64
+                    })
+                    .collect(),
+            ),
+            allel_base_quality: AllelBaseQuality(
+                self.bases
+                    .alleles()
+                    .iter()
+                    .map(|alt| {
+                        *RootMeanSquare::new(
+                            &self
+                                .bases
+                                .iter()
+                                .filter(|b| b.base == *alt)
+                                .map(|b| b.qual)
+                                .collect::<SmallVec<u8, 20>>(),
+                        )
+                    })
+                    .collect(),
+            ),
+            allel_map_quality: AllelMapQuality(
+                self.bases
+                    .alleles()
+                    .iter()
+                    .map(|alt| {
+                        *RootMeanSquare::new(
+                            &self
+                                .bases
+                                .iter()
+                                .filter(|b| b.base == *alt)
+                                .map(|b| b.mapq)
+                                .collect::<SmallVec<u8, 20>>(),
+                        )
                     })
                     .collect(),
             ),
