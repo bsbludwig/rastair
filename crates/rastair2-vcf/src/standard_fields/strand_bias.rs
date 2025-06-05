@@ -21,7 +21,8 @@ impl VcfField for StrandBias {
 }
 
 impl HeaderField for StrandBias {
-    const DESCRIPTION: &'static str = "Strand bias";
+    const DESCRIPTION: &'static str =
+        "Strand bias: counts of [reads_ref_fwd, reads_ref_rev, reads_alt_fwd, reads_alt_rev]";
 }
 
 impl InfoField for StrandBias {
