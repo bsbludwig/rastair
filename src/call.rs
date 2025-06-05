@@ -12,17 +12,15 @@ use rust_htslib::bam::{
 use smallvec::SmallVec;
 use tracing::{Level, debug, info, instrument, trace, warn};
 
-use filtering::threshold::ThresholdConfig;
-use variants::{PositionInRead, SeenBase, SeenBases};
-
+mod methylation;
+mod metrics;
 mod variant_calling;
 pub mod variants;
-mod filtering {
-    pub mod threshold;
-}
-mod metrics;
 pub mod vcf;
 pub mod vcf_writer;
+
+use methylation::threshold::ThresholdConfig;
+use variants::{PositionInRead, SeenBase, SeenBases};
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
@@ -30,7 +28,7 @@ pub struct CallParams {
     segments: SegmentsParams,
 
     #[command(flatten)]
-    thresholds: filtering::threshold::ThresholdConfig,
+    thresholds: ThresholdConfig,
 
     #[command(flatten)]
     vcf: vcf_writer::Params,
