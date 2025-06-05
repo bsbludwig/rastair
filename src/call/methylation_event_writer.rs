@@ -13,8 +13,6 @@ use smol_str::{SmolStr, SmolStrBuilder};
 use std::collections::BTreeSet;
 use tracing::instrument;
 
-/// TODO: Make this a proper VCF writer
-/// cf. <https://samtools.github.io/hts-specs/VCFv4.5.pdf>
 pub struct MethylationEventWriter<'p, 'm>(
     pub &'p VariantCandidatePileup,
     pub &'m VariantCandidatePileupMetrics,
@@ -58,6 +56,17 @@ impl MethylationEventWriter<'_, '_> {
                 // by construction, we arrived here because we have at least one base
                 SamplesWithData: SamplesWithData(smallvec_inline![1]),
                 SequenceContext: SequenceContext(smallvec![self.sequence_context()]),
+                AllelFrequency: AllelFrequency(
+                    self.0
+                        .bases
+                        .alts(self.0.reference_base)
+                        .iter()
+                        .map(|alt| {
+                            let count = self.0.bases.iter().filter(|b| b.base == *alt).count();
+                            count as f64 / self.0.bases.len() as f64
+                        })
+                        .collect(),
+                ),
             },
             samples: smallvec::smallvec![vcf::Format {
                 SampleReadDepth: SampleReadDepth(smallvec![self.0.bases.len()])

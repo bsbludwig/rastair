@@ -8,6 +8,12 @@ info_field!(
     "Total read depth for each allele",
     InfoFieldNumber::OnePerAltAndRef
 );
+info_field!(
+    AllelFrequency(f64),
+    "AF",
+    "Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes)",
+    InfoFieldNumber::OnePerAlt
+);
 info_field!(BaseQuality(f64), "BQ", "RMS base quality", InfoFieldNumber::Num(1));
 info_field!(ReadDepth(usize), "DP", "Combined depth across samples", InfoFieldNumber::Num(1));
 info_field!(MappingQuality(f64), "MQ", "RMS mapping quality", InfoFieldNumber::Num(1));

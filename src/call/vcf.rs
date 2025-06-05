@@ -30,6 +30,7 @@ vcf_record!(
         SamplesWithData,
         StrandBias,
         SequenceContext,
+        AllelFrequency,
     ],
     // Call data
     //

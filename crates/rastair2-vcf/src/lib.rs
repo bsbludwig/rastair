@@ -14,7 +14,7 @@
 //! # use tempfile::TempDir;
 //! use rastair2_vcf::*;
 //!
-//! info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OneValPerAlt);
+//! info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OnePerAlt);
 //! format_field!(ReadDepth(u32), "RD", "Read Depth", FormatFieldNumber::Num(1));
 //! filter!(q10, "Quality below 10");
 //! filter!(s50, "Less than 50% of samples have data");
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn all_in() -> Result<()> {
-        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OneValPerAlt);
+        info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OnePerAlt);
         format_field!(Example(String), "Ex", "Genotype", FormatFieldNumber::Num(1));
         filter!(q10, "Quality below 10");
         filter!(s50, "Less than 50% of samples have data");
