@@ -1,13 +1,12 @@
-use std::collections::BTreeSet;
-
 use super::{scores::VariantCandidatePileupMetrics, variants::VariantCandidatePileup};
 use crate::{
     call::{variants::SeenBases, vcf},
     utils::{Base, Phred, RootMeanSquare},
 };
 use color_eyre::eyre::Result;
-use rastair2_vcf::{Vcf, standard_fields::*};
+use rastair2_vcf::{Vcf, VcfFixedFields, standard_fields::*};
 use smallvec::{SmallVec, smallvec, smallvec_inline};
+use std::collections::BTreeSet;
 use tracing::instrument;
 
 /// TODO: Make this a proper VCF writer
@@ -23,7 +22,7 @@ impl MethylationEventWriter<'_, '_> {
         let filters = vcf::Filters::new().add(PASS);
 
         let record = vcf::Record {
-            fixed_fields: rastair2_vcf::VcfFixedFields {
+            fixed_fields: VcfFixedFields {
                 chrom: self.0.chrom.clone(),
                 pos: self.0.pos,
                 id: BTreeSet::default(),
@@ -81,7 +80,7 @@ impl MethylationEventWriter<'_, '_> {
         *Phred::new(probability_call_wrong).expect("probability must be finite") as f32
     }
 
-    fn read_depth_per_allele(&self) -> SmallVec<usize, 4> {
+    fn read_depth_per_allele(&self) -> SmallVec<usize, 3> {
         fn count_bases(bases: &SeenBases, base: Base) -> usize {
             bases.iter().filter(|b| b.base == base).count()
         }
@@ -102,4 +101,14 @@ impl MethylationEventWriter<'_, '_> {
             reads_alt_rev: self.1.strand_bias.alt_ob,
         }
     }
+}
+
+#[test]
+fn record_size() {
+    dbg!(size_of::<VcfFixedFields>());
+    dbg!(size_of::<vcf::Filters>());
+    dbg!(size_of::<vcf::Info>());
+    dbg!(size_of::<vcf::Format>());
+    dbg!(size_of::<vcf::Record>());
+    assert!(size_of::<vcf::Record>() < 1024);
 }

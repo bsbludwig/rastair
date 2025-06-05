@@ -28,7 +28,7 @@ macro_rules! vcf_record {
     ) => {
         /// Filters that can be applied to a VCF record
         #[allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
-        pub struct Filters(smallvec::SmallVec<&'static str, 5>);
+        pub struct Filters(smallvec::SmallVec<&'static str, 2>);
 
         impl Filters {
             pub fn new() -> Self {

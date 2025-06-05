@@ -76,7 +76,7 @@ pub struct VcfFixedFields {
     ///
     /// (String; no whitespace, commas, or angle-brackets are permitted in the
     /// ID String itself)
-    pub alt: SmallVec<SmolStr, 4>,
+    pub alt: SmallVec<SmolStr, 2>,
     /// Quality
     ///
     /// Phred-scaled quality score for the assertion made in ALT. i.e. `−10
