@@ -9,13 +9,14 @@ pub struct VariantCandidatePileup {
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,
-    pub next_base: Option<Base>,
+    pub sequence_before: SmallVec<Base, 2>,
+    pub sequence_after: SmallVec<Base, 2>,
 }
 
 impl VariantCandidatePileup {
     /// Is this a C->G variant candidate?
     pub fn is_cpg(&self) -> bool {
-        self.reference_base == Base::C && self.next_base == Some(Base::G)
+        self.reference_base == Base::C && self.sequence_after.first() == Some(&Base::G)
     }
 }
 

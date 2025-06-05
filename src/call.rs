@@ -172,31 +172,25 @@ fn collect_candidate(
     let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
     let reference_base =
         segment.sequence.get(idx).wrap_err("failed to get reference base")?.as_base()?;
-    let next_base = segment.sequence.get(idx + 1).and_then(|x| x.as_base().ok());
-    if bases.is_variant_candidate() {
-        // info!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "found pile of interest");
-        Ok(Some(VariantCandidatePileup {
-            chrom: region.chromosome.clone(),
-            pos: pile.pos(),
-            bases,
-            reference_base,
-            next_base,
-        }))
-        // info!(?pileup, metrics=?pileup.metrics(), "variant candidate");
-    } else if bases.matches(reference_base) {
+
+    if bases.matches(reference_base) {
         // Matches reference base
         // boring.
         // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
         Ok(None)
     } else {
-        warn!(
-            ?bases,
-            pos = pile.pos(),
-            ?reference_base,
-            ?next_base,
-            "pile does not match reference but is also not interesting"
-        );
-        Ok(None)
+        Ok(Some(VariantCandidatePileup {
+            chrom: region.chromosome.clone(),
+            pos: pile.pos(),
+            bases,
+            reference_base,
+            sequence_before: segment
+                .sequence_slice::<2>(idx.saturating_sub(2), idx)
+                .wrap_err("failed to get sequence before pileup")?,
+            sequence_after: segment
+                .sequence_slice::<2>(idx + 1, idx + 3)
+                .wrap_err("failed to get sequence after pileup")?,
+        }))
     }
 }
 

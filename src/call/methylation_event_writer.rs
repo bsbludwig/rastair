@@ -1,11 +1,15 @@
 use super::{scores::VariantCandidatePileupMetrics, variants::VariantCandidatePileup};
 use crate::{
-    call::{variants::SeenBases, vcf},
+    call::{
+        variants::SeenBases,
+        vcf::{self, SequenceContext},
+    },
     utils::{Base, Phred, RootMeanSquare},
 };
 use color_eyre::eyre::Result;
 use rastair2_vcf::{Vcf, VcfFixedFields, standard_fields::*};
 use smallvec::{SmallVec, smallvec, smallvec_inline};
+use smol_str::{SmolStr, SmolStrBuilder};
 use std::collections::BTreeSet;
 use tracing::instrument;
 
@@ -53,6 +57,7 @@ impl MethylationEventWriter<'_, '_> {
                 ]),
                 // by construction, we arrived here because we have at least one base
                 SamplesWithData: SamplesWithData(smallvec_inline![1]),
+                SequenceContext: SequenceContext(smallvec![self.sequence_context()]),
             },
             samples: smallvec::smallvec![vcf::Format {
                 SampleReadDepth: SampleReadDepth(smallvec![self.0.bases.len()])
@@ -100,6 +105,18 @@ impl MethylationEventWriter<'_, '_> {
             reads_alt_fwd: self.1.strand_bias.alt_ot,
             reads_alt_rev: self.1.strand_bias.alt_ob,
         }
+    }
+
+    fn sequence_context(&self) -> SmolStr {
+        let mut builder = SmolStrBuilder::new();
+        for base in self.0.sequence_before.iter() {
+            builder.push_str((*base).into());
+        }
+        builder.push_str(self.0.reference_base.into());
+        for base in self.0.sequence_after.iter() {
+            builder.push_str((*base).into());
+        }
+        builder.finish()
     }
 }
 

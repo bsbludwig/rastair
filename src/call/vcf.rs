@@ -1,4 +1,5 @@
 use rastair2_vcf::{standard_fields::*, *};
+use smol_str::SmolStr;
 
 // TODO: Ideas for filters
 // - from VCF spec
@@ -8,6 +9,13 @@ use rastair2_vcf::{standard_fields::*, *};
 //   filter!(strand_bias, "Significant strand bias detected");
 //   filter!(low_coverage, "Low coverage detected");
 //   filter!(read_pos, "Variants clustered at read ends");
+
+info_field!(
+    SequenceContext(SmolStr),
+    "SC5",
+    "5-base sequence context centered on the variant position",
+    InfoFieldNumber::Num(1)
+);
 
 vcf_record!(
     // pass or why not
@@ -21,6 +29,7 @@ vcf_record!(
         MappingQuality0,
         SamplesWithData,
         StrandBias,
+        SequenceContext,
     ],
     // Call data
     //

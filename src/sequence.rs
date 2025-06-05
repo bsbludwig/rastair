@@ -7,7 +7,7 @@
 //! - Processing segments with configurable overlap between chunks
 
 use crate::utils::{
-    RegionString,
+    Base, RegionString, TryAsBase as _,
     file_helpers::{FastaReader, open_fasta},
 };
 use clap::value_parser;
@@ -18,6 +18,7 @@ use color_eyre::{
 };
 pub use regions::{ChunkRegion, FullRegion, Region};
 use rust_htslib::bam::{self, FetchDefinition, HeaderView, Read as _};
+use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::num::NonZeroU32;
 use tracing::{debug, instrument, trace};
@@ -133,6 +134,25 @@ impl Readers {
 pub struct Segment {
     pub range: ChunkRegion,
     pub sequence: Vec<u8>,
+}
+
+impl Segment {
+    /// Get a slice of the sequence
+    pub fn sequence_slice<const N: usize>(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> Result<SmallVec<Base, N>> {
+        let end = end.min(self.sequence.len());
+
+        self.sequence
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|b| b.as_base())
+            .collect::<Result<_, _>>()
+            .wrap_err_with(|| format!("Failed to read sequence slice {:?}", start..end))
+    }
 }
 
 impl<'seg> TryFrom<&'seg Segment> for FetchDefinition<'seg> {
@@ -515,4 +535,44 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_sequence_slice() -> Result<()> {
+        let segment = Segment {
+            range: ChunkRegion {
+                region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
+                last_position: 6105900,
+            },
+            sequence: b"ATCGG".into(),
+        };
+
+        // Test valid slice
+        let slice = segment.sequence_slice::<5>(1, 4)?;
+        assert_eq!(slice.as_slice(), &[Base::T, Base::C, Base::G]);
+
+        // Test out-of-bounds slice
+        let slice = segment.sequence_slice::<5>(0, 10)?;
+        assert_eq!(slice.as_slice(), &[Base::A, Base::T, Base::C, Base::G, Base::G]);
+
+        Ok(())
+    }
+
+    proptest::proptest!(
+        #[test]
+        fn proptest_sequence_slice(start in 0u64..100, end in 0u64..100, seq in "[ATCG]{0,10}") {
+            let segment = Segment {
+                range: ChunkRegion {
+                    region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
+                    last_position: 6105900,
+                },
+                sequence: seq.into_bytes(),
+            };
+
+            let start = start as usize;
+            let end = end as usize;
+
+            // Ensure we don't panic on out-of-bounds slices
+            segment.sequence_slice::<5>(start, end).unwrap();
+        }
+    );
 }

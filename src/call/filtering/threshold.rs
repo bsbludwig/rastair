@@ -63,7 +63,8 @@ mod tests {
     fn make_pileup(
         pos: u32,
         reference_base: Base,
-        next_base: Option<Base>,
+        sequence_before: Vec<Base>,
+        sequence_after: Vec<Base>,
         bases: Vec<Base>,
         _min_reads: usize,
     ) -> VariantCandidatePileup {
@@ -88,7 +89,8 @@ mod tests {
             chrom: SmolStr::new_inline("chr66"),
             pos,
             reference_base,
-            next_base,
+            sequence_before: SmallVec::from_slice(&sequence_before),
+            sequence_after: SmallVec::from_slice(&sequence_after),
             bases: crate::call::variants::SeenBases(seen_bases),
         }
     }
@@ -102,13 +104,24 @@ mod tests {
                 Just(Base::T),
                 Just(Base::G)
             ],
-            next_base in prop_oneof![
-                Just(None),
-                Just(Some(Base::A)),
-                Just(Some(Base::T)),
-                Just(Some(Base::C)),
-                Just(Some(Base::G))
-            ],
+            sequence_before in prop::collection::vec(
+                prop_oneof![
+                    Just(Base::A),
+                    Just(Base::T),
+                    Just(Base::C),
+                    Just(Base::G)
+                ],
+                0..2
+            ),
+            sequence_after in prop::collection::vec(
+                prop_oneof![
+                    Just(Base::A),
+                    Just(Base::T),
+                    Just(Base::C),
+                    Just(Base::G)
+                ],
+                0..2
+            ),
             bases in prop::collection::vec(
                 prop_oneof![
                     Just(Base::A),
@@ -119,7 +132,7 @@ mod tests {
                 5..100
             )
         ) {
-            let pileup = make_pileup(pos, reference_base, next_base, bases, 5);
+            let pileup = make_pileup(pos, reference_base, sequence_before, sequence_after, bases, 5);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
@@ -139,7 +152,7 @@ mod tests {
             let mut bases = vec![Base::T; t_count];
             bases.extend(vec![Base::C; c_count]);
 
-            let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, 5);
+            let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, 5);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
@@ -163,7 +176,7 @@ mod tests {
             reads_min in 5usize..10usize
         ) {
             let bases = vec![Base::T; count];
-            let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, reads_min);
+            let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, reads_min);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
@@ -189,7 +202,7 @@ mod tests {
             bases.extend(vec![Base::A; a_count]);
             bases.extend(vec![Base::G; g_count]);
 
-            let pileup = make_pileup(pos, Base::C, Some(Base::G), bases, 5);
+            let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, 5);
             let metrics = pileup.metrics().unwrap();
             let config = ThresholdConfig {
                 vaf_min: 0.1,
