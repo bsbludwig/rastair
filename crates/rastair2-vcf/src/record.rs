@@ -25,9 +25,8 @@ macro_rules! vcf_record {
         info: [$($info:ident),* $(,)?],
         format: [$($format:ident),* $(,)?],
         min_samples: $min_samples:expr
-    ) => {
+    ) => {pastey::paste!{
         /// Filters that can be applied to a VCF record
-        #[allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
         pub struct Filters(smallvec::SmallVec<&'static str, 2>);
 
         impl Filters {
@@ -67,10 +66,9 @@ macro_rules! vcf_record {
         }
 
         /// Info fields for a VCF record containing various metadata
-        #[allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
         pub struct Info {
             $(
-                pub $info: $info,
+                pub [<$info:snake>] : $info,
             )*
         }
 
@@ -84,7 +82,7 @@ macro_rules! vcf_record {
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
                 $(
-                    $crate::InfoField::write(&self.$info, record)?;
+                    $crate::InfoField::write(&self.[<$info:snake>], record)?;
                 )*
                 Ok(())
             }
@@ -93,10 +91,9 @@ macro_rules! vcf_record {
         /// Format fields for a VCF record containing sample-specific data
         ///
         /// Used to add data that was "called"
-        #[allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
         pub struct Format {
             $(
-                pub $format: $format,
+                pub [<$format:snake>]: $format,
             )*
         }
 
@@ -110,7 +107,7 @@ macro_rules! vcf_record {
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
                 $(
-                    $crate::FormatField::write(&self.$format, record)?;
+                    $crate::FormatField::write(&self.[<$format:snake>], record)?;
                 )*
                 Ok(())
             }
@@ -156,5 +153,5 @@ macro_rules! vcf_record {
                 Ok(())
             }
         }
-    };
-}
+    }
+}}

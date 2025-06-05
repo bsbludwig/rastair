@@ -41,22 +41,22 @@ impl MethylationEventWriter<'_, '_> {
             // TODO: Add filters
             filters,
             info: vcf::Info {
-                ReadDepthPerAllel: ReadDepthPerAllel(self.read_depth_per_allele()),
-                StrandBias: self.strand_bias(),
-                BaseQuality: BaseQuality(smallvec![*RootMeanSquare::new(
+                read_depth_per_allel: ReadDepthPerAllel(self.read_depth_per_allele()),
+                strand_bias: self.strand_bias(),
+                base_quality: BaseQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>(),
                 )]),
-                MappingQuality: MappingQuality(smallvec![*RootMeanSquare::new(
+                mapping_quality: MappingQuality(smallvec![*RootMeanSquare::new(
                     &self.0.bases.iter().map(|b| b.mapq).collect::<SmallVec<u8, 20>>(),
                 )]),
-                ReadDepth: ReadDepth(smallvec![self.0.bases.len()]),
-                MappingQuality0: MappingQuality0(smallvec![
+                read_depth: ReadDepth(smallvec![self.0.bases.len()]),
+                mapping_quality0: MappingQuality0(smallvec![
                     self.0.bases.iter().filter(|b| b.mapq == 0).count()
                 ]),
                 // by construction, we arrived here because we have at least one base
-                SamplesWithData: SamplesWithData(smallvec_inline![1]),
-                SequenceContext: SequenceContext(smallvec![self.sequence_context()]),
-                AllelFrequency: AllelFrequency(
+                samples_with_data: SamplesWithData(smallvec_inline![1]),
+                sequence_context: SequenceContext(smallvec![self.sequence_context()]),
+                allel_frequency: AllelFrequency(
                     self.0
                         .bases
                         .alts(self.0.reference_base)
@@ -69,7 +69,7 @@ impl MethylationEventWriter<'_, '_> {
                 ),
             },
             samples: smallvec::smallvec![vcf::Format {
-                SampleReadDepth: SampleReadDepth(smallvec![self.0.bases.len()])
+                sample_read_depth: SampleReadDepth(smallvec![self.0.bases.len()])
             }],
         };
         w.add(record)?;

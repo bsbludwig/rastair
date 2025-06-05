@@ -46,11 +46,11 @@
 //!         },
 //!         filters: Filters::new().add(q10).add(s50),
 //!         info: Info {
-//!             AlleleFrequency: AlleleFrequency(smallvec![0.5, 0.75]),
+//!             allele_frequency: AlleleFrequency(smallvec![0.5, 0.75]),
 //!         },
 //!         samples: smallvec![
 //!             Format {
-//!                 ReadDepth: ReadDepth(smallvec![4])
+//!                 read_depth: ReadDepth(smallvec![4])
 //!             }
 //!         ],
 //!     };
@@ -216,9 +216,9 @@ mod tests {
                     qual: 50.0,
                 },
                 filters: Filters::new().add(q10).add(s50),
-                info: Info { AlleleFrequency: AlleleFrequency(smallvec![0.5, 0.75]) },
+                info: Info { allele_frequency: AlleleFrequency(smallvec![0.5, 0.75]) },
                 samples: smallvec![Format {
-                    Example: Example(smallvec!["0/1".into(), "1/1".into()])
+                    example: Example(smallvec!["0/1".into(), "1/1".into()])
                 }],
             };
 
