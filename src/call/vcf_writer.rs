@@ -25,6 +25,7 @@ impl Params {
         match self.vcf_output.extension().map(|s| s.to_ascii_lowercase()) {
             Some(ext) if ext == OsStr::new("bcf") => VcfFormat::Bcf,
             Some(ext) if ext == OsStr::new("vcf") => VcfFormat::Vcf,
+            // TODO: add "vcf.gz"
             None => VcfFormat::Vcf,
             _ => {
                 warn!("Unexpected file extension, defaulting to VCF format without compression.");
