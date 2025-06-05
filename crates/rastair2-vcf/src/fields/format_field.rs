@@ -60,13 +60,16 @@ pub enum FormatFieldNumber {
 }
 
 impl FormatFieldNumber {
-    /// Guess the number of values that this field can hold.
+    /// Guess the number of values that this field will hold.
     ///
     /// Used for smallvec capacity allocation.
     pub const fn guess_num_values(&self) -> usize {
         match self {
             FormatFieldNumber::Flag => 0,
-            FormatFieldNumber::Num(n) => *n as usize,
+            FormatFieldNumber::Num(n) => {
+                let n = *n as usize;
+                if n > 3 { 3 } else { n }
+            }
             FormatFieldNumber::OneValPerAlt => 1,
             FormatFieldNumber::OnePerAltAndRef => 2,
             FormatFieldNumber::OnePerGenotype => 1,

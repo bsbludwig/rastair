@@ -44,16 +44,19 @@ pub enum InfoFieldNumber {
 }
 
 impl InfoFieldNumber {
-    /// Guess the number of values that this field can hold.
+    /// Guess the number of values that this field will hold.
     ///
     /// Used for smallvec capacity allocation.
     pub const fn guess_num_values(&self) -> usize {
         match self {
             InfoFieldNumber::Flag => 0,
-            InfoFieldNumber::Num(n) => *n as usize,
+            InfoFieldNumber::Num(n) => {
+                let n = *n as usize;
+                if n > 3 { 3 } else { n }
+            }
             InfoFieldNumber::OneValPerAlt => 1,
-            InfoFieldNumber::OnePerAltAndRef => 4,
-            InfoFieldNumber::OnePerGenotype => 1, // This is per genotype, not per sample
+            InfoFieldNumber::OnePerAltAndRef => 3,
+            InfoFieldNumber::OnePerGenotype => 2, // This is per genotype, not per sample
             InfoFieldNumber::Dot => 1,            // Represents variable or unknown number of values
         }
     }
