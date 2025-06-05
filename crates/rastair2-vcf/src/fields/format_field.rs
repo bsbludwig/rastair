@@ -1,6 +1,7 @@
 use color_eyre::{Result, eyre::Context as _};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 use std::fmt::{self, Display};
 
 /// A field that can be used in the INFO section.
@@ -224,6 +225,19 @@ impl FormatFieldValue for String {
     const TYPE_NAME: &'static str = "String";
 
     fn write(record: &mut Record, tag: &str, values: &[String]) -> Result<()> {
+        record
+            .push_format_string(
+                tag.as_bytes(),
+                &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
+            )
+            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+    }
+}
+
+impl FormatFieldValue for SmolStr {
+    const TYPE_NAME: &'static str = "String";
+
+    fn write(record: &mut Record, tag: &str, values: &[SmolStr]) -> Result<()> {
         record
             .push_format_string(
                 tag.as_bytes(),
