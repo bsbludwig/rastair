@@ -1,4 +1,4 @@
-use crate::utils::Base;
+use crate::utils::{Base, Counter};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{fmt, ops::Deref};
@@ -126,7 +126,7 @@ impl SeenBases {
 
     pub fn is_variant_candidate(&self) -> bool {
         let counter: Counter = self.0.iter().map(|x| x.base).collect();
-        counter.interesting()
+        counter.multiple_bases()
     }
 }
 
@@ -141,48 +141,5 @@ pub struct PositionInRead {
 impl fmt::Display for PositionInRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} / {}", self.pos, self.read_length)
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct Counter {
-    pub c: usize,
-    pub t: usize,
-    pub a: usize,
-    pub g: usize,
-}
-
-impl Counter {
-    /// Interesting if there are multiple different bases seen
-    fn interesting(&self) -> bool {
-        let mut count = 0;
-        if self.c > 0 {
-            count += 1;
-        }
-        if self.t > 0 {
-            count += 1;
-        }
-        if self.a > 0 {
-            count += 1;
-        }
-        if self.g > 0 {
-            count += 1;
-        }
-        count >= 1
-    }
-}
-
-impl FromIterator<Base> for Counter {
-    fn from_iter<I: IntoIterator<Item = Base>>(iter: I) -> Self {
-        let mut counter = Counter { c: 0, t: 0, a: 0, g: 0 };
-        for c in iter {
-            match c {
-                Base::C => counter.c += 1,
-                Base::T => counter.t += 1,
-                Base::A => counter.a += 1,
-                Base::G => counter.g += 1,
-            }
-        }
-        counter
     }
 }

@@ -1,9 +1,9 @@
 use crate::{
     call::{
-        variants::{Counter, VariantCandidatePileup},
+        variants::VariantCandidatePileup,
         vcf::{Format, Info},
     },
-    utils::Base,
+    utils::{Base, Counter},
 };
 
 #[derive(Debug, Clone, clap::Args)]

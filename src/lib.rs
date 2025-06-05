@@ -11,5 +11,7 @@ pub mod utils {
     pub use base_modification::MethylatedPositions;
     mod phred;
     pub use phred::Phred;
+    mod base_counter;
+    pub use base_counter::Counter;
 }
 pub mod sequence;
