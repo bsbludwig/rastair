@@ -18,16 +18,17 @@ pub struct VariantCandidatePileup {
 pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
 impl SeenBases {
+    pub fn alleles(&self) -> SmallVec<Base, 4> {
+        self.iter().map(|b| b.base).fold(smallvec::SmallVec::new(), |mut acc, base| {
+            if !acc.contains(&base) {
+                acc.push(base);
+            }
+            acc
+        })
+    }
+
     pub fn alts(&self, reference: Base) -> SmallVec<Base, 4> {
-        self.iter().map(|b| b.base).filter(|base| reference != *base).fold(
-            smallvec::SmallVec::new(),
-            |mut acc, base| {
-                if !acc.contains(&base) {
-                    acc.push(base);
-                }
-                acc
-            },
-        )
+        self.alleles().into_iter().filter(|base| reference != *base).collect::<SmallVec<Base, 4>>()
     }
 }
 
