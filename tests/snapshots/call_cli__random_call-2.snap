@@ -1,0 +1,19 @@
+---
+source: tests/call_cli.rs
+expression: result
+---
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##INFO=<ID=AD,Number=R,Type=Integer,Description="Total read depth for each allele">
+##INFO=<ID=BQ,Number=1,Type=Float,Description="RMS base quality">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Combined depth across samples">
+##INFO=<ID=MQ,Number=1,Type=Float,Description="RMS mapping quality">
+##INFO=<ID=MQ0,Number=1,Type=Integer,Description="Number of MAPQ == 0 reads">
+##INFO=<ID=NS,Number=1,Type=Integer,Description="Number of samples with data">
+##INFO=<ID=SB,Number=4,Type=Integer,Description="Strand bias">
+##INFO=<ID=SC5,Number=1,Type=String,Description="5-base sequence context centered on the variant position">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##contig=<ID=chr19,length=0>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
+chr19	6105712	.	C	T	30	PASS	AD=10,8;BQ=35.5778;DP=18;MQ=60;MQ0=0;NS=1;SB=4,6,3,5;SC5=AACGT	DP	18
+chr19	6105744	.	C	T	30	PASS	AD=8,8;BQ=35.7631;DP=16;MQ=60;MQ0=0;NS=1;SB=6,2,3,5;SC5=ACCGG	DP	16

@@ -1,6 +1,8 @@
-use color_eyre::Result;
+use color_eyre::{Result, eyre::Context as _};
+use insta::assert_snapshot;
 use insta_cmd::{assert_cmd_snapshot, get_cargo_bin};
 use std::process::Command;
+use tempfile::TempDir;
 
 fn rastair() -> Command {
     let mut cmd = Command::new(get_cargo_bin("rastair2"));
@@ -14,6 +16,7 @@ macro_rules! apply_common_filters {
         settings.add_filter(r"\w{4}-[0-9T\-:.]+Z\s", "[TIME]");
         settings.add_filter(r"duration=[\w.]+", "[DURATION]");
         settings.add_filter(r": close time.*", " [CLOSE]");
+        settings.add_filter(r"Wrote output to /.*/test.vcf", "Wrote output to [PATH]");
         let _bound = settings.bind_to_scope();
     }
 }
@@ -21,6 +24,10 @@ macro_rules! apply_common_filters {
 #[test]
 fn random_call() -> Result<()> {
     apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let temp_file = temp_dir.path().join("test.vcf");
+
     assert_cmd_snapshot!(rastair().args([
         "call",
         "-r",
@@ -29,17 +36,19 @@ fn random_call() -> Result<()> {
         "-l",
         "chr19:6105700-6105800",
         "-o",
-        "/dev/null",
-    ]), @r"
+    ]).arg(&temp_file), @r"
     success: true
     exit_code: 0
     ----- stdout -----
 
     ----- stderr -----
     [TIME] INFO rastair2::call: Processed 1 segments
-    [TIME] INFO rastair2::call: Wrote output to /dev/null
+    [TIME] INFO rastair2::call: Wrote output to [PATH]
     [TIME] INFO rastair2: Call finished [DURATION]
     ");
+
+    let result = std::fs::read_to_string(&temp_file).wrap_err("read temp file")?;
+    assert_snapshot!(result);
 
     Ok(())
 }
