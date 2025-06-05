@@ -3,7 +3,15 @@
 ## Structure
 
 This project is a Rust CLI application.
-It is structured as a library with a binary crate that serves as the entry point.
+It is not meant to be released or used as a library,
+even though it is structured as a library for internal organization.
+
+### Crates
+
+
+Aside from the main `rastair2` crate, we factored out some functionality into separate crates for better organization and reusability:
+
+- `crates/rastair2_vcf`: A library crate for handling VCF files.
 
 ## Testing
 
@@ -12,6 +20,9 @@ NOTE: `cargo clippy` is used to check for common mistakes and code style issues 
 Run the tests with `cargo test`.
 - Unit tests are added as test modules in the same file as the code they test.
 - Integration tests for the CLI are in the `tests` directory.
+- We use `insta` for snapshot testing in various places.
+  You can run the tests with `cargo insta test` to check the snapshots,
+  and `cargo insta review` to review changes to the snapshots.
 
 ### Tools
 
@@ -28,6 +39,24 @@ cargo tarpaulin -o html --output-dir tmp/coverage
 
 ## Code Style
 
+### Formatting
+
 Usage of `rustfmt` is required.
 Best set up formatting code on save.
 Alternatively, run `cargo fmt` before committing.
+
+### CLI argument composition
+
+We use `clap` for CLI argument parsing.
+Instead of defining a massive struct with all possible options,
+we define smaller structs in the places where they are needed,
+e.g. in the segmenter, the variant caller, and the methylation caller.
+These structs are then added as fields with `#[command(flatten)]` to the struct for the subcommand.
+This allows us to keep the code modular and maintainable,
+without the need to convert types and arguments.
+
+### Reducing allocations
+
+To reduce allocations, we use
+- `SmallVec` for lists where we know the maximum number of elements is often small
+- `SmolStr` for short strings or those that are often reused (note that these strings are immutable)
