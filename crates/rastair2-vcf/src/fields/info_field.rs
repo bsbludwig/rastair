@@ -250,9 +250,16 @@ impl InfoFieldValue for String {
 /// info_field!(Name(Type), "ID", "Description", InfoFieldNumber::OneValPerAlt);
 /// ```
 ///
-/// This will define a struct `Name` that implements the [`InfoField`] trait (as well as [`crate::VcfField`] and [`crate::HeaderField`]).
+/// This will define a struct `Name` that implements the [`InfoField`] trait (as
+/// well as [`crate::VcfField`] and [`crate::HeaderField`]).
 ///
-/// The last parameter must be a variant of [`crate::InfoFieldNumber`].
+/// The last parameter must be a variant of [`InfoFieldNumber`].
+///
+/// # Inlining
+///
+/// Fields can be lists and we want to keep most of the data on the
+/// stack/inline. The generated struct will use [`SmallVec`](smallvec::SmallVec)
+/// to inline a guessed number of values baed on the given [`InfoFieldNumber`].
 #[macro_export]
 macro_rules! info_field {
     ($name:ident($type:tt), $id:expr, $desc:expr, $number:expr) => {

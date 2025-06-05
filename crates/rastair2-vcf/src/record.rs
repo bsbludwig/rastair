@@ -7,7 +7,17 @@ pub trait WriteToVcf {
     fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()>;
 }
 
-/// Macro to define a VCF record with filters, info, format, and samples
+/// Macro to define a VCF `Record` struct alongside `Filters`, `Info` and `Format` structs.
+///
+/// Best call this in a module so you can refer to the types without this macro
+/// polluting the namespace.
+///
+/// # Inline samples
+///
+/// Similar to how info and format fields are built by [`crate::info_field!`]
+/// and [`crate::format_field!`], the `Record` struct created by this macro uses
+/// a [`smallvec::SmallVec`] for the `samples` field to inline up to
+/// `$min_samples` samples directly in the struct.
 #[macro_export]
 macro_rules! vcf_record {
     (
