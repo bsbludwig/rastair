@@ -18,6 +18,14 @@ impl Region {
     }
 }
 
+#[test]
+fn test_region_contains() {
+    let region = Region { chromosome: "chr1".into(), start: 100, end: 200 };
+    assert!(region.contains(150));
+    assert!(!region.contains(50));
+    assert!(!region.contains(250));
+}
+
 impl fmt::Display for Region {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}-{}", self.chromosome, self.start, self.end)
