@@ -1,3 +1,10 @@
+//! Methylation detection for variant candidates.
+//!
+//! Options:
+//! 1. methylated
+//! 2. snip
+//! 3. both
+
 use crate::{call::variants::VariantCandidatePileup, utils::Base};
 
 pub mod threshold;

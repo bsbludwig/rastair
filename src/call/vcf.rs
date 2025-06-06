@@ -16,7 +16,6 @@ info_field!(
     "5-base sequence context centered on the variant position",
     InfoFieldNumber::Num(1)
 );
-// TODO: Add base/mapping quality per allele
 info_field!(
     AllelBaseQuality(f64),
     "ABQ",
@@ -29,6 +28,25 @@ info_field!(
     "RMS Map quality per allele",
     InfoFieldNumber::OnePerAltAndRef
 );
+info_field!(
+    PositionInRead(f64),
+    "PIR",
+    "RMS of relative position in read",
+    InfoFieldNumber::OnePerAltAndRef
+);
+info_field!(
+    Entropy(f64),
+    "ENT100",
+    "Shannon entropy of 100bp sequence context around variant position",
+    InfoFieldNumber::Num(1)
+);
+info_field!(
+    NumAlignedBases(f64),
+    "NAB",
+    "RMS of number of aligned bases",
+    InfoFieldNumber::OnePerAltAndRef
+);
+info_field!(NumIndels(f64), "NOI", "RMS of number of indels", InfoFieldNumber::OnePerAltAndRef);
 
 vcf_record!(
     // pass or why not
