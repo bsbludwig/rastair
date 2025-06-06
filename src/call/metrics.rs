@@ -1,7 +1,7 @@
 use crate::{
     call::{
         variants::{SeenBases, VariantCandidatePileup},
-        vcf::{AllelBaseQuality, AllelMapQuality, Info, SequenceContext},
+        vcf::*,
     },
     utils::{Base, Phred, RootMeanSquare},
 };
@@ -28,13 +28,13 @@ impl VariantCandidatePileup {
 
     pub fn metrics(&self) -> Result<Info> {
         Ok(Info {
-            read_depth_per_allel: ReadDepthPerAllel(self.read_depth_per_allele()),
+            read_depth_per_allel: self.read_depth_per_allele(),
             strand_bias: self.strand_bias(),
             base_quality: BaseQuality(smallvec![*RootMeanSquare::new(
-                &self.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>(),
+                &self.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 30>>(),
             )]),
             mapping_quality: MappingQuality(smallvec![*RootMeanSquare::new(
-                &self.bases.iter().map(|b| b.mapq).collect::<SmallVec<u8, 20>>(),
+                &self.bases.iter().map(|b| b.mapq).collect::<SmallVec<u8, 30>>(),
             )]),
             read_depth: ReadDepth(smallvec![self.bases.len()]),
             mapping_quality0: MappingQuality0(smallvec![
@@ -43,49 +43,130 @@ impl VariantCandidatePileup {
             // by construction, we arrived here because we have at least one base
             samples_with_data: SamplesWithData(smallvec_inline![1]),
             sequence_context: SequenceContext(smallvec![self.sequence_context()]),
-            allel_frequency: AllelFrequency(
-                self.bases
-                    .alts(self.reference_base)
-                    .iter()
-                    .map(|alt| {
-                        let count = self.bases.iter().filter(|b| b.base == *alt).count();
-                        count as f64 / self.bases.len() as f64
-                    })
-                    .collect(),
-            ),
-            allel_base_quality: AllelBaseQuality(
-                self.bases
-                    .alleles()
-                    .iter()
-                    .map(|alt| {
-                        *RootMeanSquare::new(
-                            &self
-                                .bases
-                                .iter()
-                                .filter(|b| b.base == *alt)
-                                .map(|b| b.qual)
-                                .collect::<SmallVec<u8, 20>>(),
-                        )
-                    })
-                    .collect(),
-            ),
-            allel_map_quality: AllelMapQuality(
-                self.bases
-                    .alleles()
-                    .iter()
-                    .map(|alt| {
-                        *RootMeanSquare::new(
-                            &self
-                                .bases
-                                .iter()
-                                .filter(|b| b.base == *alt)
-                                .map(|b| b.mapq)
-                                .collect::<SmallVec<u8, 20>>(),
-                        )
-                    })
-                    .collect(),
-            ),
+            allel_frequency: self.allel_frequency(),
+            allel_base_quality: self.allel_base_quality(),
+            allel_map_quality: self.allel_map_quality(),
+            position_in_read: self.position_in_read(),
+            entropy: self.entropy(),
+            num_aligned_bases: self.num_aligned_bases(),
+            num_indels: self.num_indels(),
         })
+    }
+
+    fn num_indels(&self) -> NumIndels {
+        NumIndels(
+            self.bases
+                .alleles()
+                .iter()
+                .map(|alt| {
+                    *RootMeanSquare::new(
+                        &self
+                            .bases
+                            .iter()
+                            .filter(|b| b.base == *alt)
+                            .map(|b| b.indels)
+                            .collect::<SmallVec<u32, 20>>(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn num_aligned_bases(&self) -> NumAlignedBases {
+        NumAlignedBases(
+            self.bases
+                .alleles()
+                .iter()
+                .map(|alt| {
+                    *RootMeanSquare::new(
+                        &self
+                            .bases
+                            .iter()
+                            .filter(|b| b.base == *alt)
+                            .map(|b| b.matching_bases)
+                            .collect::<SmallVec<u32, 20>>(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    ///  Calculate Shannon entropy for 100bp context around variant position
+    ///
+    /// `H = -Σ(p_i * log2(p_i))` where `p_i` is frequency of base `i`
+    fn entropy(&self) -> Entropy {
+        // todo: implement - keep ref to the sequence, process context
+        Entropy(smallvec![0.])
+    }
+
+    fn position_in_read(&self) -> PositionInRead {
+        PositionInRead(
+            self.bases
+                .alleles()
+                .iter()
+                .map(|alt| {
+                    *RootMeanSquare::new(
+                        self.bases
+                            .iter()
+                            .filter(|b| b.base == *alt)
+                            .map(|b| f64::from(b.position.pos) / f64::from(b.position.read_length))
+                            .collect::<SmallVec<f64, 20>>()
+                            .as_slice(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn allel_map_quality(&self) -> AllelMapQuality {
+        AllelMapQuality(
+            self.bases
+                .alleles()
+                .iter()
+                .map(|alt| {
+                    *RootMeanSquare::new(
+                        &self
+                            .bases
+                            .iter()
+                            .filter(|b| b.base == *alt)
+                            .map(|b| b.mapq)
+                            .collect::<SmallVec<u8, 20>>(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn allel_base_quality(&self) -> AllelBaseQuality {
+        AllelBaseQuality(
+            self.bases
+                .alleles()
+                .iter()
+                .map(|alt| {
+                    *RootMeanSquare::new(
+                        &self
+                            .bases
+                            .iter()
+                            .filter(|b| b.base == *alt)
+                            .map(|b| b.qual)
+                            .collect::<SmallVec<u8, 20>>(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn allel_frequency(&self) -> AllelFrequency {
+        AllelFrequency(
+            self.bases
+                .alts(self.reference_base)
+                .iter()
+                .map(|alt| {
+                    let count = self.bases.iter().filter(|b| b.base == *alt).count();
+                    count as f64 / self.bases.len() as f64
+                })
+                .collect(),
+        )
     }
 
     /// Phred-scaled quality score for the assertion made in ALT
@@ -111,7 +192,7 @@ impl VariantCandidatePileup {
         }
     }
 
-    fn read_depth_per_allele(&self) -> SmallVec<usize, 3> {
+    fn read_depth_per_allele(&self) -> ReadDepthPerAllel {
         fn count_bases(bases: &SeenBases, base: Base) -> usize {
             bases.iter().filter(|b| b.base == base).count()
         }
@@ -121,7 +202,7 @@ impl VariantCandidatePileup {
         for alt in self.bases.alts(self.reference_base) {
             depth.push(count_bases(&self.bases, alt));
         }
-        depth
+        ReadDepthPerAllel(depth)
     }
 
     fn strand_bias(&self) -> StrandBias {

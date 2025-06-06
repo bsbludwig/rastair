@@ -8,7 +8,6 @@ pub struct VariantCandidatePileup {
     pub chrom: SmolStr,
     pub pos: u32,
     pub bases: SeenBases,
-    pub sequence: SmolVec<Base, 4>,
     pub reference_base: Base,
     pub sequence_before: SmallVec<Base, 2>,
     pub sequence_after: SmallVec<Base, 2>,

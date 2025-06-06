@@ -18,11 +18,17 @@ use std::{fmt, ops::Deref};
 pub struct RootMeanSquare(f64);
 
 impl RootMeanSquare {
-    pub fn new(data: &[u8]) -> RootMeanSquare {
+    pub fn new<T: Copy + Into<f64>>(data: &[T]) -> RootMeanSquare {
         if data.is_empty() {
             return RootMeanSquare(0.0);
         }
-        let sum_of_squares: f64 = data.iter().map(|&x| f64::from(x).powi(2)).sum();
+        let sum_of_squares: f64 = data
+            .iter()
+            .map(|x| {
+                let x: f64 = (*x).into();
+                x.powi(2)
+            })
+            .sum();
         let average_of_squares = sum_of_squares / data.len() as f64;
         RootMeanSquare(average_of_squares.sqrt())
     }

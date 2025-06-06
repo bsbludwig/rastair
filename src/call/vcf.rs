@@ -63,7 +63,11 @@ vcf_record!(
         SequenceContext,
         AllelFrequency,
         AllelBaseQuality,
-        AllelMapQuality
+        AllelMapQuality,
+        PositionInRead,
+        Entropy,
+        NumAlignedBases,
+        NumIndels,
     ],
     // Call data
     //
