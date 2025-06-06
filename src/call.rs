@@ -8,6 +8,7 @@ use rastair2_vcf::Vcf;
 use rust_htslib::bam::{
     FetchDefinition, Read as _,
     pileup::{Alignment, Pileup},
+    record::Cigar,
 };
 use smallvec::SmallVec;
 use tracing::{Level, debug, info, instrument, trace, warn};
@@ -180,6 +181,20 @@ fn collect_candidate(
 fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
     let pos = a.qpos()?;
     let record = a.record();
+
+    // get number of matches from CIGAR
+    let matches: u32 =
+        record.cigar().iter().map(|c| if let Cigar::Match(n) = c { *n } else { 0 }).sum();
+    // get number of indels from CIGAR
+    let indels: u32 = record
+        .cigar()
+        .iter()
+        .map(|c| match c {
+            Cigar::Del(n) | Cigar::Ins(n) => *n,
+            _ => 0,
+        })
+        .sum();
+
     if !record.is_proper_pair() {
         // fixme: maybe be more lenient here
         return None;
@@ -202,6 +217,8 @@ fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
             pos: u32::try_from(pos).expect("position fits in u32"),
             read_length: u32::try_from(record.seq().len()).expect("read length fits in u32"),
         },
+        matching_bases: matches,
+        indels,
     })
 }
 

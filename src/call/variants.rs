@@ -8,6 +8,7 @@ pub struct VariantCandidatePileup {
     pub chrom: SmolStr,
     pub pos: u32,
     pub bases: SeenBases,
+    pub sequence: SmolVec<Base, 4>,
     pub reference_base: Base,
     pub sequence_before: SmallVec<Base, 2>,
     pub sequence_after: SmallVec<Base, 2>,
@@ -41,6 +42,8 @@ fn test_seen_bases_alts() {
             mapq: 20,
             reverse: false,
             position: PositionInRead { pos: 0, read_length: 100 },
+            matching_bases: 90,
+            indels: 0,
             qname: SmallVec::from(&b"read1"[..]),
         },
         SeenBase {
@@ -49,6 +52,8 @@ fn test_seen_bases_alts() {
             mapq: 20,
             reverse: false,
             position: PositionInRead { pos: 1, read_length: 100 },
+            matching_bases: 90,
+            indels: 0,
             qname: SmallVec::from(&b"read1"[..]),
         },
     ]);
@@ -78,6 +83,8 @@ pub struct SeenBase {
     pub mapq: u8,
     pub reverse: bool,
     pub position: PositionInRead,
+    pub matching_bases: u32,
+    pub indels: u32,
     /// Query Name of the read this base belongs to
     ///
     /// <!-- LLM explanation -->

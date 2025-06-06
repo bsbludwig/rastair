@@ -68,7 +68,7 @@ impl VariantCandidatePileup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::Base;
+    use crate::{call::variants::SeenBase, utils::Base};
 
     use proptest::prelude::*;
     use smallvec::SmallVec;
@@ -86,7 +86,7 @@ mod tests {
         let seen_bases = bases
             .into_iter()
             .enumerate()
-            .map(|(idx, b)| crate::call::variants::SeenBase {
+            .map(|(idx, b)| SeenBase {
                 base: b,
                 qual: 30,
                 mapq: 30,
@@ -95,6 +95,8 @@ mod tests {
                     pos: u32::try_from(idx).expect("pos should fit into u32"),
                     read_length,
                 },
+                matching_bases: read_length,
+                indels: 0,
                 qname: SmallVec::from_slice(b"test"),
             })
             .collect();
