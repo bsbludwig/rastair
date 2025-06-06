@@ -278,6 +278,9 @@ impl InfoFieldValue for SmolStr {
 macro_rules! info_field {
     ($name:ident($type:tt), $id:expr, $desc:expr, $number:expr) => {
         #[doc = $desc]
+        #[doc = "("]
+        #[doc = stringify!($number)]
+        #[doc = ")"]
         #[derive(Debug, Clone)]
         pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
 
@@ -311,7 +314,7 @@ macro_rules! info_field {
 
     ($name:ident, $id:expr, $desc:expr) => {
         #[doc = $desc]
-        #[doc = "info flag for VCF output"]
+        #[doc = "(flag)"]
         #[derive(Debug, Clone)]
         pub struct $name;
 

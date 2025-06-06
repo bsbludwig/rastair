@@ -272,6 +272,9 @@ impl FormatFieldValue for SmolStr {
 macro_rules! format_field {
     ($name:ident($type:ty), $id:expr, $desc:expr, $number:expr) => {
         #[doc = $desc]
+        #[doc = "("]
+        #[doc = stringify!($number)]
+        #[doc = ")"]
         #[derive(Debug, Clone)]
         pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
 
