@@ -3,9 +3,9 @@ use crate::{
         variants::{SeenBases, VariantCandidatePileup},
         vcf::*,
     },
-    utils::{Base, Phred, RootMeanSquare},
+    utils::{Base, Counter, Phred, RootMeanSquare},
 };
-use color_eyre::Result;
+use color_eyre::{Result, eyre::ContextCompat as _};
 use rastair2_vcf::standard_fields::*;
 use smallvec::{SmallVec, smallvec, smallvec_inline};
 use smol_str::{SmolStr, SmolStrBuilder};
@@ -15,7 +15,7 @@ use tracing::warn;
 impl VariantCandidatePileup {
     pub fn fixed_fields(&self) -> rastair2_vcf::VcfFixedFields {
         rastair2_vcf::VcfFixedFields {
-            chrom: self.chrom.clone(),
+            chrom: self.chrom(),
             pos: self.pos,
             id: BTreeSet::default(),
             r#ref: self.reference_base.into(),
@@ -92,11 +92,34 @@ impl VariantCandidatePileup {
     }
 
     ///  Calculate Shannon entropy for 100bp context around variant position
-    ///
-    /// `H = -Σ(p_i * log2(p_i))` where `p_i` is frequency of base `i`
     fn entropy(&self) -> Entropy {
-        // todo: implement - keep ref to the sequence, process context
-        Entropy(smallvec![0.])
+        let pos = usize::try_from(self.pos).expect("pos fits usize");
+        let idx = usize::try_from(self.pos)
+            .expect("position fits in usize")
+            .checked_sub(usize::try_from(self.segment.range.start).expect("index fits in usize"))
+            .wrap_err_with(|| {
+                format!(
+                    "pile position {} is not in segment range {}..{}",
+                    pos, self.segment.range.start, self.segment.range.end
+                )
+            })
+            .expect("valid index");
+
+        let start = idx.saturating_sub(50);
+        let end = idx.saturating_add(50);
+        let seq_context = self.segment.get(start, end).expect("sequence context indices are valid");
+        let counts: Counter = seq_context.iter().filter_map(|&b| Base::try_from(b).ok()).collect();
+        let total = seq_context.len() as f64;
+        let entropy = counts
+            .entries()
+            .iter()
+            .map(|(_base, count)| {
+                let p = *count as f64 / total;
+                -p * p.log2()
+            })
+            .sum::<f64>();
+
+        Entropy(smallvec![entropy])
     }
 
     fn position_in_read(&self) -> PositionInRead {

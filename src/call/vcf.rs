@@ -37,7 +37,7 @@ info_field!(
 info_field!(
     Entropy(f64),
     "ENT100",
-    "Shannon entropy of 100bp sequence context around variant position",
+    "Shannon entropy of 100bp sequence context around variant position. Value range (0..2)",
     InfoFieldNumber::Num(1)
 );
 info_field!(

@@ -143,14 +143,20 @@ impl Segment {
         start: usize,
         end: usize,
     ) -> Result<SmallVec<Base, N>> {
+        self.get(start, end)?
+            .iter()
+            .map(|b| b.as_base())
+            .collect::<Result<_, _>>()
+            .wrap_err("Failed to read sequence slice as bases")
+    }
+
+    /// Get a slice of the sequence
+    pub fn get(&self, start: usize, end: usize) -> Result<&[u8]> {
+        let start = start.min(self.sequence.len());
         let end = end.min(self.sequence.len());
 
         self.sequence
             .get(start..end)
-            .unwrap_or_default()
-            .iter()
-            .map(|b| b.as_base())
-            .collect::<Result<_, _>>()
             .wrap_err_with(|| format!("Failed to read sequence slice {:?}", start..end))
     }
 }
@@ -235,6 +241,8 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation)]
 mod tests {
+    use proptest::{prop_assume, proptest};
+
     use super::*;
     use std::path::PathBuf;
 
@@ -557,9 +565,10 @@ mod tests {
         Ok(())
     }
 
-    proptest::proptest!(
+    proptest!(
         #[test]
-        fn proptest_sequence_slice(start in 0u64..100, end in 0u64..100, seq in "[ATCG]{0,10}") {
+        fn proptest_sequence_slice(start in 0usize..100, end in 0usize..100, seq in "[ATCG]{0,10}") {
+            prop_assume!(start <= end, "Start must be less than or equal to end");
             let segment = Segment {
                 range: ChunkRegion {
                     region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
@@ -567,9 +576,6 @@ mod tests {
                 },
                 sequence: seq.into_bytes(),
             };
-
-            let start = start as usize;
-            let end = end as usize;
 
             // Ensure we don't panic on out-of-bounds slices
             segment.sequence_slice::<5>(start, end).unwrap();

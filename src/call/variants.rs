@@ -1,16 +1,25 @@
-use crate::utils::{Base, Counter};
+use crate::{
+    sequence::Segment,
+    utils::{Base, Counter},
+};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::{fmt, ops::Deref};
+use std::{fmt, ops::Deref, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct VariantCandidatePileup {
-    pub chrom: SmolStr,
+    pub segment: Arc<Segment>,
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,
     pub sequence_before: SmallVec<Base, 2>,
     pub sequence_after: SmallVec<Base, 2>,
+}
+
+impl VariantCandidatePileup {
+    pub fn chrom(&self) -> SmolStr {
+        self.segment.range.chromosome.clone()
+    }
 }
 
 /// A collection of bases seen in a pileup

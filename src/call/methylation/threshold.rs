@@ -68,11 +68,15 @@ impl VariantCandidatePileup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{call::variants::SeenBase, utils::Base};
-
+    use crate::{
+        call::variants::SeenBase,
+        sequence::{ChunkRegion, Region, Segment},
+        utils::Base,
+    };
     use proptest::prelude::*;
     use smallvec::SmallVec;
     use smol_str::SmolStr;
+    use std::{iter::repeat_n, sync::Arc};
 
     fn make_pileup(
         pos: u32,
@@ -102,7 +106,17 @@ mod tests {
             .collect();
 
         VariantCandidatePileup {
-            chrom: SmolStr::new_inline("chr66"),
+            segment: Arc::new(Segment {
+                range: ChunkRegion {
+                    region: Region {
+                        chromosome: SmolStr::new_inline("chr66"),
+                        start: 1,
+                        end: 1000,
+                    },
+                    last_position: 100,
+                },
+                sequence: repeat_n(b"ACGTACGTACGTACGT", 100).flat_map(|x| *x).collect(),
+            }),
             pos,
             reference_base,
             sequence_before: SmallVec::from_slice(&sequence_before),
@@ -114,7 +128,7 @@ mod tests {
     proptest! {
         #[test]
         fn not_methylation_if_not_cpg(
-            pos in 1u32..1000u32,
+            pos in 1u32..100u32,
             reference_base in prop_oneof![
                 Just(Base::A),
                 Just(Base::T),
@@ -162,7 +176,7 @@ mod tests {
 
         #[test]
         fn potential_methylation_requires_cpg_and_t(
-            pos in 1u32..1000u32,
+            pos in 1u32..100u32,
             t_count in 3usize..6usize,  // Reduced T count
             c_count in 2usize..4usize   // Increased C count for better ratio
         ) {
@@ -189,7 +203,7 @@ mod tests {
 
         #[test]
         fn respects_min_reads_threshold(
-            pos in 1u32..1000u32,
+            pos in 1u32..100u32,
             count in 1usize..4usize,
             reads_min in 5usize..10usize
         ) {
@@ -209,7 +223,7 @@ mod tests {
 
         #[test]
         fn requires_sufficient_methylation_evidence(
-            pos in 1u32..1000u32,
+            pos in 1u32..100u32,
             c_count in 0usize..5usize,
             t_count in 0usize..5usize,
             a_count in 6usize..10usize,

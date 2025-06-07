@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     call::{variants::VariantCandidatePileup, vcf::Filters},
     sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
@@ -62,7 +64,7 @@ pub fn call(params: &CallParams) -> Result<()> {
             .and_then(|piles| {
                 piles.into_iter().try_for_each(|pile| {
                     write_pileup(&pile, &mut vcf_writer).wrap_err_with(|| {
-                        format!("Failed to write pileup for {}:{}", pile.chrom, pile.pos)
+                        format!("Failed to write pileup for {}:{}", pile.chrom(), pile.pos)
                     })
                 })
             })
@@ -90,6 +92,7 @@ fn process_region(
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
 
+    let segment = Arc::new(segment);
     // Go over each column in the pileup and collect variant candidates
     let piles = readers
         .bam
@@ -100,7 +103,7 @@ fn process_region(
             region.contains(u64::from(p.pos()))
         })
         .flat_map(|pile| {
-            collect_candidate(&pile, &segment, &segment.range)
+            collect_candidate(&pile, segment.clone())
                 .wrap_err_with(|| {
                     format!("Failed to get candidate from pileup at position {}", pile.pos())
                 })
@@ -137,8 +140,7 @@ fn process_region(
 #[instrument(level = "trace", skip_all)]
 fn collect_candidate(
     pile: &Pileup,
-    segment: &Segment,
-    region: &ChunkRegion,
+    segment: Arc<Segment>,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
@@ -163,7 +165,7 @@ fn collect_candidate(
         Ok(None)
     } else {
         Ok(Some(VariantCandidatePileup {
-            chrom: region.chromosome.clone(),
+            segment: segment.clone(),
             pos: pile.pos(),
             bases,
             reference_base,
