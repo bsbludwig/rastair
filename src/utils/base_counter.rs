@@ -24,7 +24,11 @@ impl Counter {
         if self.g > 0 {
             count += 1;
         }
-        count >= 1
+        count > 1
+    }
+
+    pub fn entries(&self) -> [(Base, usize); 4] {
+        [(Base::C, self.c), (Base::T, self.t), (Base::A, self.a), (Base::G, self.g)]
     }
 }
 
@@ -55,5 +59,16 @@ mod tests {
         assert_eq!(counter.c, 2);
         assert_eq!(counter.g, 1);
         assert_eq!(counter.t, 1);
+    }
+
+    #[test]
+    fn test_counter_multiple_bases() {
+        let bases = vec![Base::A, Base::C, Base::G, Base::T];
+        let counter: Counter = bases.into_iter().collect();
+        assert!(counter.multiple_bases());
+
+        let single_base = vec![Base::A];
+        let single_counter: Counter = single_base.into_iter().collect();
+        assert!(!single_counter.multiple_bases());
     }
 }
