@@ -4,11 +4,11 @@ use crate::{
 };
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::{fmt, ops::Deref, sync::Arc};
+use std::{fmt, ops::Deref, rc::Rc};
 
 #[derive(Debug, Clone)]
 pub struct VariantCandidatePileup {
-    pub segment: Arc<Segment>,
+    pub segment: Rc<Segment>,
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,

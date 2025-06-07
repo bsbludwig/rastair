@@ -76,7 +76,7 @@ mod tests {
     use proptest::prelude::*;
     use smallvec::SmallVec;
     use smol_str::SmolStr;
-    use std::{iter::repeat_n, sync::Arc};
+    use std::{iter::repeat_n, rc::Rc};
 
     fn make_pileup(
         pos: u32,
@@ -106,7 +106,7 @@ mod tests {
             .collect();
 
         VariantCandidatePileup {
-            segment: Arc::new(Segment {
+            segment: Rc::new(Segment {
                 range: ChunkRegion {
                     region: Region {
                         chromosome: SmolStr::new_inline("chr66"),

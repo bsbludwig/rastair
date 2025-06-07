@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::{
     call::{variants::VariantCandidatePileup, vcf::Filters},
     sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
@@ -13,6 +11,7 @@ use rust_htslib::bam::{
     record::Cigar,
 };
 use smallvec::SmallVec;
+use std::rc::Rc;
 use tracing::{Level, debug, info, instrument, trace, warn};
 
 mod methylation;
@@ -92,7 +91,7 @@ fn process_region(
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
 
-    let segment = Arc::new(segment);
+    let segment = Rc::new(segment);
     // Go over each column in the pileup and collect variant candidates
     let piles = readers
         .bam
@@ -140,7 +139,7 @@ fn process_region(
 #[instrument(level = "trace", skip_all)]
 fn collect_candidate(
     pile: &Pileup,
-    segment: Arc<Segment>,
+    segment: Rc<Segment>,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");

@@ -252,3 +252,5 @@ impl VariantCandidatePileup {
         builder.finish()
     }
 }
+
+// todo: add tests for metrics, maybe move metrics out
