@@ -1,6 +1,6 @@
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr};
-use rastair2_vcf::{Vcf, VcfBuilder, VcfFormat};
+use rastair2_vcf::{Compression, Vcf, VcfBuilder, VcfFormat};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::ffi::OsStr;
@@ -14,6 +14,7 @@ pub struct Params {
     ///
     /// Format is guessed based on the file extension:
     /// `.vcf` for VCF (uncompressed),
+    /// `.vcf.gz` for VCF (compressed),
     /// `.bcf` for BCF (compressed)
     #[arg(short = 'o', long)]
     pub vcf_output: ClioPath,
@@ -21,25 +22,28 @@ pub struct Params {
 
 impl Params {
     /// Create a new instance of `Params` with the specified VCF output path.
-    pub fn guess_format(&self) -> VcfFormat {
-        match self.vcf_output.extension().map(|s| s.to_ascii_lowercase()) {
-            Some(ext) if ext == OsStr::new("bcf") => VcfFormat::Bcf,
-            Some(ext) if ext == OsStr::new("vcf") => VcfFormat::Vcf,
-            // TODO: add "vcf.gz"
-            None => VcfFormat::Vcf,
-            _ => {
-                warn!("Unexpected file extension, defaulting to VCF format without compression.");
-                VcfFormat::Vcf
-            }
+    pub fn guess_format(&self) -> (VcfFormat, Compression) {
+        let Some(name) = self.vcf_output.file_name().and_then(OsStr::to_str) else {
+            warn!(
+                "No file name found in VCF output path, defaulting to VCF format without compression."
+            );
+            return (VcfFormat::Vcf, Compression::Off);
+        };
+
+        if name.ends_with("bcf") {
+            (VcfFormat::Bcf, Compression::On)
+        } else if name.ends_with("vcf") {
+            (VcfFormat::Vcf, Compression::Off)
+        } else if name.ends_with("vcf.gz") {
+            (VcfFormat::Vcf, Compression::On)
+        } else {
+            warn!("Unexpected file extension, defaulting to VCF format without compression.");
+            (VcfFormat::Vcf, Compression::Off)
         }
     }
 
     pub fn vcf_writer(&self, regions: &[ChunkRegion]) -> Result<Vcf<Record>> {
-        let format = self.guess_format();
-        let compression = match format {
-            VcfFormat::Bcf => rastair2_vcf::Compression::On,
-            VcfFormat::Vcf => rastair2_vcf::Compression::Off,
-        };
+        let (format, compression) = self.guess_format();
         debug!(
             target=?self.vcf_output.display(), ?format, ?compression,
             "Creating VCF writer",
