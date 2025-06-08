@@ -54,6 +54,26 @@ fn random_call() -> Result<()> {
 }
 
 #[test]
+fn pipe_to_stdout() -> Result<()> {
+    apply_common_filters!();
+
+    // Please manually verify that only the VCF output is printed to stdout and
+    // logging goes to stderr.
+    assert_cmd_snapshot!(rastair().args([
+        "call",
+        "-r",
+        "tests/data/test.fasta.gz",
+        "tests/data/test.bam",
+        "-l",
+        "chr19:6105700-6105750",
+        "-o",
+        "-"
+    ]));
+
+    Ok(())
+}
+
+#[test]
 fn missing_bam() -> Result<()> {
     apply_common_filters!();
     assert_cmd_snapshot!(rastair().args([
