@@ -37,17 +37,17 @@ impl VariantCandidatePileup {
     }
 
     /// Sequence slice before the variant position
-    pub fn sequence_before(&self) -> SmallVec<Base, 2> {
+    pub fn sequence_before<const N: usize>(&self) -> SmallVec<Base, N> {
         let idx = self.idx();
 
-        self.segment.sequence_slice::<2>(idx.saturating_sub(2), idx).unwrap_or_default()
+        self.segment.sequence_slice::<N>(idx.saturating_sub(N), idx).unwrap_or_default()
     }
 
     /// Sequence slice after the variant position
-    pub fn sequence_after(&self) -> SmallVec<Base, 2> {
+    pub fn sequence_after<const N: usize>(&self) -> SmallVec<Base, N> {
         let idx = self.idx();
 
-        self.segment.sequence_slice::<2>(idx + 1, idx + 3).unwrap_or_default()
+        self.segment.sequence_slice::<N>(idx + 1, idx + N + 1).unwrap_or_default()
     }
 }
 
