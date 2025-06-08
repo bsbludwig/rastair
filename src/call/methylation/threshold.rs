@@ -81,8 +81,8 @@ mod tests {
     fn make_pileup(
         pos: u32,
         reference_base: Base,
-        sequence_before: Vec<Base>,
-        sequence_after: Vec<Base>,
+        sequence_before: &[u8],
+        sequence_after: &[u8],
         bases: Vec<Base>,
         _min_reads: usize,
     ) -> VariantCandidatePileup {
@@ -105,6 +105,18 @@ mod tests {
             })
             .collect();
 
+        let sequence = repeat_n(b"ACGTACGTACGTACGT", 10).flat_map(|x| *x).collect::<Vec<_>>();
+        // replace the sequence [..., before, reference_base, after, ...]
+        let idx = pos as usize - 1;
+        let sequence = sequence[dbg!(..idx.saturating_sub(2))]
+            .iter()
+            .chain(sequence_before)
+            .chain(std::iter::once(&*reference_base))
+            .chain(sequence_after)
+            .chain(sequence[dbg!(idx + sequence_after.len()..)].iter())
+            .copied()
+            .collect::<Vec<_>>();
+
         VariantCandidatePileup {
             segment: Rc::new(Segment {
                 range: ChunkRegion {
@@ -115,12 +127,10 @@ mod tests {
                     },
                     last_position: 100,
                 },
-                sequence: repeat_n(b"ACGTACGTACGTACGT", 100).flat_map(|x| *x).collect(),
+                sequence,
             }),
             pos,
             reference_base,
-            sequence_before: SmallVec::from_slice(&sequence_before),
-            sequence_after: SmallVec::from_slice(&sequence_after),
             bases: crate::call::variants::SeenBases(seen_bases),
         }
     }
@@ -128,30 +138,14 @@ mod tests {
     proptest! {
         #[test]
         fn not_methylation_if_not_cpg(
-            pos in 1u32..100u32,
+            pos in 10u32..100u32,
             reference_base in prop_oneof![
                 Just(Base::A),
                 Just(Base::T),
                 Just(Base::G)
             ],
-            sequence_before in prop::collection::vec(
-                prop_oneof![
-                    Just(Base::A),
-                    Just(Base::T),
-                    Just(Base::C),
-                    Just(Base::G)
-                ],
-                0..2
-            ),
-            sequence_after in prop::collection::vec(
-                prop_oneof![
-                    Just(Base::A),
-                    Just(Base::T),
-                    Just(Base::C),
-                    Just(Base::G)
-                ],
-                0..2
-            ),
+            sequence_before in "[ATCG]{2}",
+            sequence_after in "[ATCG]{2}",
             bases in prop::collection::vec(
                 prop_oneof![
                     Just(Base::A),
@@ -162,7 +156,7 @@ mod tests {
                 5..100
             )
         ) {
-            let pileup = make_pileup(pos, reference_base, sequence_before, sequence_after, bases, 5);
+            let pileup = make_pileup(pos, reference_base, sequence_before.as_bytes(), sequence_after.as_bytes(), bases, 5);
             let metrics = pileup.metrics().unwrap();
             let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {
@@ -176,14 +170,15 @@ mod tests {
 
         #[test]
         fn potential_methylation_requires_cpg_and_t(
-            pos in 1u32..100u32,
+            pos in 10u32..100u32,
             t_count in 3usize..6usize,  // Reduced T count
             c_count in 2usize..4usize   // Increased C count for better ratio
         ) {
             let mut bases = vec![Base::T; t_count];
             bases.extend(vec![Base::C; c_count]);
 
-            let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, 5);
+            let pileup = make_pileup(pos, Base::C, b"AT", b"GG", bases, 5);
+            dbg!((pileup.sequence_before(), pileup.reference_base, pileup.sequence_after()));
             let metrics = pileup.metrics().unwrap();
             let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {
@@ -203,12 +198,12 @@ mod tests {
 
         #[test]
         fn respects_min_reads_threshold(
-            pos in 1u32..100u32,
+            pos in 10u32..100u32,
             count in 1usize..4usize,
             reads_min in 5usize..10usize
         ) {
             let bases = vec![Base::T; count];
-            let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, reads_min);
+            let pileup = make_pileup(pos, Base::C, b"AT", b"GG", bases, reads_min);
             let metrics = pileup.metrics().unwrap();
             let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {
@@ -223,7 +218,7 @@ mod tests {
 
         #[test]
         fn requires_sufficient_methylation_evidence(
-            pos in 1u32..100u32,
+            pos in 10u32..100u32,
             c_count in 0usize..5usize,
             t_count in 0usize..5usize,
             a_count in 6usize..10usize,
@@ -235,7 +230,7 @@ mod tests {
             bases.extend(vec![Base::A; a_count]);
             bases.extend(vec![Base::G; g_count]);
 
-            let pileup = make_pileup(pos, Base::C, vec![Base::A, Base::T], vec![Base::G, Base::G], bases, 5);
+            let pileup = make_pileup(pos, Base::C, b"AT", b"GG", bases, 5);
             let metrics = pileup.metrics().unwrap();
             let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {

@@ -168,12 +168,6 @@ fn collect_candidate(
             pos: pile.pos(),
             bases,
             reference_base,
-            sequence_before: segment
-                .sequence_slice::<2>(idx.saturating_sub(2), idx)
-                .wrap_err("failed to get sequence before pileup")?,
-            sequence_after: segment
-                .sequence_slice::<2>(idx + 1, idx + 3)
-                .wrap_err("failed to get sequence after pileup")?,
         }))
     }
 }

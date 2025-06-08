@@ -2,6 +2,7 @@ use crate::{
     sequence::Segment,
     utils::{Base, Counter},
 };
+use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{fmt, ops::Deref, rc::Rc};
@@ -12,13 +13,41 @@ pub struct VariantCandidatePileup {
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,
-    pub sequence_before: SmallVec<Base, 2>,
-    pub sequence_after: SmallVec<Base, 2>,
 }
 
 impl VariantCandidatePileup {
+    /// Chromosome name of the segment
     pub fn chrom(&self) -> SmolStr {
         self.segment.range.chromosome.clone()
+    }
+
+    /// Position in the segment, 1-based
+    fn idx(&self) -> usize {
+        let pos = usize::try_from(self.pos).expect("pos fits usize");
+        usize::try_from(self.pos)
+            .expect("position fits in usize")
+            .checked_sub(usize::try_from(self.segment.range.start).expect("index fits in usize"))
+            .wrap_err_with(|| {
+                format!(
+                    "pile position {} is not in segment range {}..{}",
+                    pos, self.segment.range.start, self.segment.range.end
+                )
+            })
+            .expect("valid index")
+    }
+
+    /// Sequence slice before the variant position
+    pub fn sequence_before(&self) -> SmallVec<Base, 2> {
+        let idx = self.idx();
+
+        self.segment.sequence_slice::<2>(idx.saturating_sub(2), idx).unwrap_or_default()
+    }
+
+    /// Sequence slice after the variant position
+    pub fn sequence_after(&self) -> SmallVec<Base, 2> {
+        let idx = self.idx();
+
+        self.segment.sequence_slice::<2>(idx + 1, idx + 3).unwrap_or_default()
     }
 }
 

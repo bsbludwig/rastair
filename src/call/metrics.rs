@@ -242,11 +242,11 @@ impl VariantCandidatePileup {
 
     fn sequence_context(&self) -> SmolStr {
         let mut builder = SmolStrBuilder::new();
-        for base in self.sequence_before.iter() {
+        for base in self.sequence_before().iter() {
             builder.push_str((*base).into());
         }
         builder.push_str(self.reference_base.into());
-        for base in self.sequence_after.iter() {
+        for base in self.sequence_after().iter() {
             builder.push_str((*base).into());
         }
         builder.finish()
