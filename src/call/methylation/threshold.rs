@@ -29,6 +29,12 @@ impl VariantCandidatePileup {
         _calling_metrics: &Format,
         config: &ThresholdConfig,
     ) -> bool {
+        // Check if the pileup is a CpG site
+        if !self.is_cpg() {
+            // Not a CpG site, cannot be a methylation event
+            return false;
+        }
+
         if !self.could_be_methylation_event() {
             return false;
         }
@@ -108,12 +114,12 @@ mod tests {
         let sequence = repeat_n(b"ACGTACGTACGTACGT", 10).flat_map(|x| *x).collect::<Vec<_>>();
         // replace the sequence [..., before, reference_base, after, ...]
         let idx = pos as usize - 1;
-        let sequence = sequence[dbg!(..idx.saturating_sub(2))]
+        let sequence = sequence[..idx.saturating_sub(2)]
             .iter()
             .chain(sequence_before)
             .chain(std::iter::once(&*reference_base))
             .chain(sequence_after)
-            .chain(sequence[dbg!(idx + sequence_after.len()..)].iter())
+            .chain(sequence[idx + sequence_after.len()..].iter())
             .copied()
             .collect::<Vec<_>>();
 
@@ -178,7 +184,6 @@ mod tests {
             bases.extend(vec![Base::C; c_count]);
 
             let pileup = make_pileup(pos, Base::C, b"AT", b"GG", bases, 5);
-            dbg!((pileup.sequence_before(), pileup.reference_base, pileup.sequence_after()));
             let metrics = pileup.metrics().unwrap();
             let calling_metrics = pileup.calling_metrics().unwrap();
             let config = ThresholdConfig {

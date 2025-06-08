@@ -17,6 +17,6 @@ impl VariantCandidatePileup {
 
     /// With TAPS, methylation is detected by observing a C->T transition
     pub fn could_be_methylation_event(&self) -> bool {
-        self.is_cpg() && self.bases.iter().any(|b| b.base == Base::T)
+        self.bases.iter().any(|b| b.base == Base::T)
     }
 }
