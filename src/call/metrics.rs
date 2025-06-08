@@ -3,14 +3,16 @@ use crate::{
         variants::{SeenBases, VariantCandidatePileup},
         vcf::*,
     },
-    utils::{Base, Counter, Phred, RootMeanSquare},
+    utils::{Base, Phred, RootMeanSquare},
 };
-use color_eyre::{Result, eyre::ContextCompat as _};
+use color_eyre::Result;
 use rastair2_vcf::standard_fields::*;
 use smallvec::{SmallVec, smallvec, smallvec_inline};
 use smol_str::{SmolStr, SmolStrBuilder};
 use std::collections::BTreeSet;
 use tracing::warn;
+
+mod entropy;
 
 impl VariantCandidatePileup {
     pub fn fixed_fields(&self) -> rastair2_vcf::VcfFixedFields {
@@ -89,37 +91,6 @@ impl VariantCandidatePileup {
                 })
                 .collect(),
         )
-    }
-
-    ///  Calculate Shannon entropy for 100bp context around variant position
-    fn entropy(&self) -> Entropy {
-        let pos = usize::try_from(self.pos).expect("pos fits usize");
-        let idx = usize::try_from(self.pos)
-            .expect("position fits in usize")
-            .checked_sub(usize::try_from(self.segment.range.start).expect("index fits in usize"))
-            .wrap_err_with(|| {
-                format!(
-                    "pile position {} is not in segment range {}..{}",
-                    pos, self.segment.range.start, self.segment.range.end
-                )
-            })
-            .expect("valid index");
-
-        let start = idx.saturating_sub(50);
-        let end = idx.saturating_add(50);
-        let seq_context = self.segment.get(start, end).expect("sequence context indices are valid");
-        let counts: Counter = seq_context.iter().filter_map(|&b| Base::try_from(b).ok()).collect();
-        let total = seq_context.len() as f64;
-        let entropy = counts
-            .entries()
-            .iter()
-            .map(|(_base, count)| {
-                let p = *count as f64 / total;
-                -p * p.log2()
-            })
-            .sum::<f64>();
-
-        Entropy(smallvec![entropy])
     }
 
     fn position_in_read(&self) -> PositionInRead {
@@ -252,5 +223,3 @@ impl VariantCandidatePileup {
         builder.finish()
     }
 }
-
-// todo: add tests for metrics, maybe move metrics out

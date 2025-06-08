@@ -22,7 +22,7 @@ impl VariantCandidatePileup {
     }
 
     /// Position in the segment, 1-based
-    fn idx(&self) -> usize {
+    pub fn idx(&self) -> usize {
         let pos = usize::try_from(self.pos).expect("pos fits usize");
         usize::try_from(self.pos)
             .expect("position fits in usize")
