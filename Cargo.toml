@@ -44,10 +44,9 @@ proptest = "1.6.0"
 tempfile = "3.19.1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
-
-# While developing
-dead_code = { level = "allow" }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(coverage, coverage_nightly)',
+] }
 
 [lints.clippy]
 unwrap_used = { level = "deny" }

@@ -26,6 +26,7 @@ fn test_region_contains() {
     assert!(!region.contains(250));
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for Region {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}-{}", self.chromosome, self.start, self.end)

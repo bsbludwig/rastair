@@ -31,11 +31,16 @@ Run the tests with `cargo test`.
 
 ### Test Coverage
 
-The code is tested using `cargo tarpaulin`:
+The code is tested using [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
 
 ```bash
-cargo tarpaulin -o html --output-dir tmp/coverage
+cargo install cargo-llvm-cov
+cargo +nightly llvm-cov --workspace --doctests --open
 ```
+
+This is also run in CI, making the tests fail with insufficient coverage (currently less than 70% of lines covered).
+
+You can use `#[cfg_attr(coverage_nightly, coverage(off))]` to ignore certain functions or modules from coverage analysis, e.g. `Debug` or `Display` implementations that are only used in logs.
 
 ## Code Style
 

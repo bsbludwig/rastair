@@ -61,6 +61,7 @@
 //! ```
 
 #![deny(missing_docs)]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub(crate) mod fields;
 pub(crate) mod filters;

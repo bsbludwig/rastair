@@ -32,7 +32,7 @@ pub struct RegionString {
     pub end: Option<NonZeroU32>,
 }
 
-#[cfg(not(tarpaulin_include))]
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for RegionString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.chromosome)?;

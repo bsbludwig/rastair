@@ -21,3 +21,16 @@ insta-cmd = "0.6.0"
 pastey = "0.1.0"
 proptest = "1.6.0"
 tempfile = "3.19.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(coverage, coverage_nightly)',
+] }
+
+[lints.clippy]
+unwrap_used = { level = "deny" }
+panic = { level = "deny" }
+indexing_slicing = { level = "deny" }
+undocumented_unsafe_blocks = { level = "deny" }
+unwrap_in_result = { level = "deny" }
+ok_expect = { level = "deny" }

@@ -97,7 +97,7 @@ fn test_seen_bases_alts() {
     assert_eq!(bases.alts(Base::A).as_slice(), &[Base::C]);
 }
 
-#[cfg(not(tarpaulin_include))]
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for SeenBases {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.0.iter()).finish()
@@ -149,7 +149,7 @@ pub struct SeenBase {
     pub qname: SmallVec<u8, 16>,
 }
 
-#[cfg(not(tarpaulin_include))]
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for SeenBase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.base)?;
@@ -183,6 +183,7 @@ pub struct PositionInRead {
     pub read_length: u32,
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for PositionInRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} / {}", self.pos, self.read_length)

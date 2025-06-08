@@ -44,20 +44,16 @@ pipelines:
                 # Run checks and generate reports
                 - deno run --allow-all ci/clippy_report.ts
           - step:
-              name: Test
+              name: Test and Code Coverage
               caches:
                 - cargo-registry
                 - cargo-git
                 - cargo-target-deps
                 - cargo-target-build
               script:
-                # Dependencies
                 - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
-                - curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
-                # Run checks and generate reports
-                - cargo nextest run --profile ci --workspace
-                - cargo test --doc --workspace --all-features
-                - mkdir -pv test-results; mv target/nextest/ci/junit.xml test-results/junit.xml
+                - curl --proto "=https" --tlsv1.2 -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz" | tar xzf - -C "$CARGO_HOME/bin"
+                - RUSTC_BOOTSTRAP=1 cargo llvm-cov --workspace --doctests --fail-under-lines 70
 
   tags:
     "*":
