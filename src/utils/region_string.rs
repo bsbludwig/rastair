@@ -6,7 +6,7 @@ use winnow::{
     ascii::dec_uint,
     combinator::{opt, preceded},
     error::{StrContext, StrContextValue},
-    token::{literal, take_while},
+    token::{literal, take_till},
 };
 
 /// A struct representing a genomic region string.
@@ -70,7 +70,7 @@ impl std::str::FromStr for RegionString {
 
 fn parser(input: &mut &str) -> winnow::Result<RegionString> {
     fn chromosome_name<'d>(input: &mut &'d str) -> winnow::Result<&'d str> {
-        take_while(1.., ('0'..='9', 'A'..='Z', 'a'..='z', '_', '-'))
+        take_till(1.., |c| c == ':')
             .context(StrContext::Expected(StrContextValue::Description("chromosome name")))
             .parse_next(input)
     }
@@ -255,6 +255,13 @@ mod tests {
         // non-ascii characters
         let err = RegionString::from_str("chrü1:100-200").unwrap_err();
         assert!(matches!(err, RegionStringError::InvalidAscii));
+
+        // mad scientist name
+        let region = RegionString::from_str("bacteria_1-strain-6#5").unwrap();
+        assert_eq!(
+            region,
+            RegionString { chromosome: "bacteria_1-strain-6#5".into(), start: None, end: None }
+        );
     }
 
     #[test]
