@@ -1,4 +1,4 @@
-use crate::call::vcf::{self, Record};
+use crate::call::vcf::{self, Methylated};
 use color_eyre::{
     Result, Section,
     eyre::{ContextCompat, bail},
@@ -22,8 +22,9 @@ pub struct ThresholdConfig {
 }
 
 pub fn call(record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record> {
-    let is_cpg =
-        record.fixed_fields.r#ref == "C" && record.base_after()?.filter(|x| x == "G").is_some();
+    let base_after =
+        base_after(record.fixed_fields.r#ref.as_bytes()[0], &record.info.sequence_context[0])?;
+    let is_cpg = &record.fixed_fields.r#ref == "C" && base_after.filter(|x| x == "G").is_some();
     if !is_cpg {
         // Not a CpG site, cannot be a methylation event
         return Ok(record);
@@ -64,43 +65,59 @@ pub fn call(record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record
     let allels = std::iter::once(record.fixed_fields.r#ref.clone())
         .chain(record.fixed_fields.alt.iter().cloned())
         .collect::<SmallVec<SmolStr, 4>>();
-    let read_depth_c = record.info.read_depth_per_allel
-        [allels.iter().position(|x| x == "C").expect("C should be present in allels")];
-    let read_depth_t = record.info.read_depth_per_allel
-        [allels.iter().position(|x| x == "T").expect("C should be present in allels")];
-    let read_depth_a = record.info.read_depth_per_allel
-        [allels.iter().position(|x| x == "A").expect("C should be present in allels")];
-    let read_depth_g = record.info.read_depth_per_allel
-        [allels.iter().position(|x| x == "G").expect("C should be present in allels")];
+    let read_depth_c = allels
+        .iter()
+        .position(|x| x == "C")
+        .map(|idx| record.info.read_depth_per_allel[idx])
+        .unwrap_or(0);
+    let read_depth_t = allels
+        .iter()
+        .position(|x| x == "T")
+        .map(|idx| record.info.read_depth_per_allel[idx])
+        .unwrap_or(0);
+    let read_depth_a = allels
+        .iter()
+        .position(|x| x == "A")
+        .map(|idx| record.info.read_depth_per_allel[idx])
+        .unwrap_or(0);
+    let read_depth_g = allels
+        .iter()
+        .position(|x| x == "G")
+        .map(|idx| record.info.read_depth_per_allel[idx])
+        .unwrap_or(0);
     if read_depth_a + read_depth_g >= read_depth_c + read_depth_t {
         // More A and G bases than C and T, not likely methylation
         return Ok(record);
     }
 
+    // It's a methylation event!
+    update_record(record)
+}
+
+/// Update the record to reflect a methylation event.
+fn update_record(mut record: vcf::Record) -> Result<vcf::Record> {
+    // Set the methylation event flag
+    record.samples[0].methylated = Methylated(1.);
+
+    // Set alts to "missing"
+    record.fixed_fields.alt = smallvec::smallvec![".".into()];
+
     Ok(record)
 }
 
-impl Record {
-    fn base_after(&self) -> Result<Option<SmolStr>> {
-        let me = &self.fixed_fields.r#ref.as_bytes()[0];
-        let context = &self.info.sequence_context[0];
-        match context.as_bytes() {
-            [_p2, _p1, mid, _n1, _n2] if mid == me => {
-                Ok(Some(context.get(2..3).wrap_err("index exists")?.into()))
-            }
-            [mid, _n1, _n2] if mid == me => {
-                Ok(Some(context.get(1..2).wrap_err("index exists")?.into()))
-            }
-            [_p2, _p1, mid] if mid == me => {
-                // we are at the end of the sequence, no base after
-                Ok(None)
-            }
-            _ => bail!(
-                "Sequence context with unexpected length {}: {:?}",
-                self.info.sequence_context.0.len(),
-                self.info.sequence_context
-            ),
+fn base_after(me: u8, context: &str) -> Result<Option<SmolStr>> {
+    match context.as_bytes() {
+        [_p2, _p1, mid, _n1, _n2] if *mid == me => {
+            Ok(Some(context.get(3..4).wrap_err("index exists")?.into()))
         }
+        [mid, _n1, _n2] if *mid == me => {
+            Ok(Some(context.get(1..2).wrap_err("index exists")?.into()))
+        }
+        [_p2, _p1, mid] if *mid == me => {
+            // we are at the end of the sequence, no base after
+            Ok(None)
+        }
+        _ => bail!("Sequence context with unexpected length {}: {:?}", context.len(), context),
     }
 }
 

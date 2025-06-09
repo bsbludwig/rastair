@@ -32,7 +32,7 @@ pub struct CallParams {
     segments: SegmentsParams,
 
     #[command(flatten)]
-    pub methylation: MethylationCallingParams,
+    methylation: MethylationCallingParams,
 
     #[command(flatten)]
     vcf: vcf_writer::Params,
