@@ -22,7 +22,7 @@ impl MethylationCallingParams {
                 // No methylation calling, return the record as is
                 Ok(record)
             }
-            MethylationCallingMode::Thresholds => super::threshold::call(record)
+            MethylationCallingMode::Thresholds => super::threshold::call(record, &self.thresholds)
                 .wrap_err("Failed to call methylation based on thresholds"),
             // MethylationCallingMode::ML => {
             //     // Placeholder for ML-based calling logic

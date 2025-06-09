@@ -1,14 +1,10 @@
-use crate::{
-    call::{
-        variants::VariantCandidatePileup,
-        vcf::{self, Format, Info},
-    },
-    utils::{Base, Counter},
-};
+use crate::call::vcf::{self, Record};
 use color_eyre::{
-    Result,
+    Result, Section,
     eyre::{ContextCompat, bail},
 };
+use smallvec::SmallVec;
+use smol_str::SmolStr;
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct ThresholdConfig {
@@ -25,234 +21,94 @@ pub struct ThresholdConfig {
     pub reads_min: usize,
 }
 
-pub fn call(record: vcf::Record) -> Result<vcf::Record> {
+pub fn call(record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record> {
+    let is_cpg =
+        record.fixed_fields.r#ref == "C" && record.base_after()?.filter(|x| x == "G").is_some();
+    if !is_cpg {
+        // Not a CpG site, cannot be a methylation event
+        return Ok(record);
+    }
+
+    let could_be_methylation_event = record.fixed_fields.alt.iter().any(|alt| alt == "T");
+    if !could_be_methylation_event {
+        // No T base found in alts, cannot be a methylation event
+        return Ok(record);
+    }
+
+    if record.info.read_depth[0] < config.reads_min {
+        // Not enough evidence for methylation
+        return Ok(record);
+    }
+
+    // Check if the VAF is above the minimum threshold
+    let t_alt_idx = record
+        .fixed_fields
+        .alt
+        .iter()
+        .position(|b| b == "T")
+        .wrap_err("T base should be present in alts after previous checks")
+        .note("This is a program error")?;
+    if *record
+        .info
+        .allel_frequency
+        .get(t_alt_idx)
+        .wrap_err("Failed to get T base in VAF")
+        .note("This is a program error")?
+        < config.vaf_min
+    {
+        // VAF is below the minimum threshold
+        return Ok(record);
+    }
+
+    // Check if more A and G bases than C and T
+    let allels = std::iter::once(record.fixed_fields.r#ref.clone())
+        .chain(record.fixed_fields.alt.iter().cloned())
+        .collect::<SmallVec<SmolStr, 4>>();
+    let read_depth_c = record.info.read_depth_per_allel
+        [allels.iter().position(|x| x == "C").expect("C should be present in allels")];
+    let read_depth_t = record.info.read_depth_per_allel
+        [allels.iter().position(|x| x == "T").expect("C should be present in allels")];
+    let read_depth_a = record.info.read_depth_per_allel
+        [allels.iter().position(|x| x == "A").expect("C should be present in allels")];
+    let read_depth_g = record.info.read_depth_per_allel
+        [allels.iter().position(|x| x == "G").expect("C should be present in allels")];
+    if read_depth_a + read_depth_g >= read_depth_c + read_depth_t {
+        // More A and G bases than C and T, not likely methylation
+        return Ok(record);
+    }
+
     Ok(record)
 }
-impl VariantCandidatePileup {
-    /// TODO: These are just arbitrary filters
-    pub fn likely_methylation_event(
-        &self,
-        info_metrics: &Info,
-        _calling_metrics: &Format,
-        config: &ThresholdConfig,
-    ) -> bool {
-        // Check if the pileup is a CpG site
-        if !self.is_cpg() {
-            // Not a CpG site, cannot be a methylation event
-            return false;
-        }
 
-        if !self.could_be_methylation_event() {
-            return false;
-        }
-
-        if self.bases.len() < config.reads_min {
-            // Not enough evidence for methylation
-            return false;
-        }
-
-        // Check if the VAF is above the minimum threshold
-        let t_alt_idx = self.bases.alts(Base::C).iter().position(|b| *b == Base::T);
-        if let Some(t_alt_idx) = t_alt_idx {
-            let vaf = info_metrics
-                .allel_frequency
-                .get(t_alt_idx)
-                .expect("T base should be present in alts");
-            if *vaf < config.vaf_min {
-                // VAF is below the minimum threshold
-                return false;
+impl Record {
+    fn base_after(&self) -> Result<Option<SmolStr>> {
+        let me = &self.fixed_fields.r#ref.as_bytes()[0];
+        let context = &self.info.sequence_context[0];
+        match context.as_bytes() {
+            [_p2, _p1, mid, _n1, _n2] if mid == me => {
+                Ok(Some(context.get(2..3).wrap_err("index exists")?.into()))
             }
-        } else {
-            // No T base found in alts
-            return false;
-        }
-
-        // Check if more A and G bases than C and T
-        let counter = Counter::from_iter(self.bases.iter().map(|b| b.base));
-        if counter.a + counter.g >= counter.c + counter.t {
-            // More A and G bases than C and T, not likely methylation
-            return false;
-        }
-
-        true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        call::variants::SeenBase,
-        sequence::{ChunkRegion, Region, Segment},
-        utils::Base,
-    };
-    use proptest::prelude::*;
-    use smallvec::SmallVec;
-    use smol_str::SmolStr;
-    use std::{iter::repeat_n, rc::Rc};
-
-    fn make_pileup(
-        pos: u32,
-        reference_base: Base,
-        sequence_before: &[u8],
-        sequence_after: &[u8],
-        bases: Vec<Base>,
-        _min_reads: usize,
-    ) -> VariantCandidatePileup {
-        let read_length = u32::try_from(bases.len()).expect("bases length should fit in u32");
-        let seen_bases = bases
-            .into_iter()
-            .enumerate()
-            .map(|(idx, b)| SeenBase {
-                base: b,
-                qual: 30,
-                mapq: 30,
-                reverse: false,
-                position: crate::call::variants::PositionInRead {
-                    pos: u32::try_from(idx).expect("pos should fit into u32"),
-                    read_length,
-                },
-                matching_bases: read_length,
-                indels: 0,
-                qname: SmallVec::from_slice(b"test"),
-            })
-            .collect();
-
-        let sequence = repeat_n(b"ACGTACGTACGTACGT", 10).flat_map(|x| *x).collect::<Vec<_>>();
-        // replace the sequence [..., before, reference_base, after, ...]
-        let idx = pos as usize - 1;
-        let sequence = sequence[..idx.saturating_sub(2)]
-            .iter()
-            .chain(sequence_before)
-            .chain(std::iter::once(&*reference_base))
-            .chain(sequence_after)
-            .chain(sequence[idx + sequence_after.len()..].iter())
-            .copied()
-            .collect::<Vec<_>>();
-
-        VariantCandidatePileup {
-            segment: Rc::new(Segment {
-                range: ChunkRegion {
-                    region: Region {
-                        chromosome: SmolStr::new_inline("chr66"),
-                        start: 1,
-                        end: 1000,
-                    },
-                    last_position: 100,
-                },
-                sequence,
-            }),
-            pos,
-            reference_base,
-            bases: crate::call::variants::SeenBases(seen_bases),
-        }
-    }
-
-    proptest! {
-        #[test]
-        fn not_methylation_if_not_cpg(
-            pos in 10u32..100u32,
-            reference_base in prop_oneof![
-                Just(Base::A),
-                Just(Base::T),
-                Just(Base::G)
-            ],
-            sequence_before in "[ATCG]{2}",
-            sequence_after in "[ATCG]{2}",
-            bases in prop::collection::vec(
-                prop_oneof![
-                    Just(Base::A),
-                    Just(Base::T),
-                    Just(Base::C),
-                    Just(Base::G)
-                ],
-                5..100
-            )
-        ) {
-            let pileup = make_pileup(pos, reference_base, sequence_before.as_bytes(), sequence_after.as_bytes(), bases, 5);
-            let metrics = pileup.metrics().unwrap();
-            let calling_metrics = pileup.calling_metrics().unwrap();
-            let config = ThresholdConfig {
-                vaf_min: 0.1,
-                binomial_max: 0.08,
-                reads_min: 5,
-            };
-
-            prop_assert!(!pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
-        }
-
-        #[test]
-        fn potential_methylation_requires_cpg_and_t(
-            pos in 10u32..100u32,
-            t_count in 3usize..6usize,  // Reduced T count
-            c_count in 2usize..4usize   // Increased C count for better ratio
-        ) {
-            let mut bases = vec![Base::T; t_count];
-            bases.extend(vec![Base::C; c_count]);
-
-            let pileup = make_pileup(pos, Base::C, b"AT", b"GG", bases, 5);
-            let metrics = pileup.metrics().unwrap();
-            let calling_metrics = pileup.calling_metrics().unwrap();
-            let config = ThresholdConfig {
-                vaf_min: 0.1,
-                binomial_max: 0.1,  // Increased slightly to accommodate test case
-                reads_min: 5,
-            };
-
-            // Should be possible methylation since we have:
-            // 1. CpG site (C reference with G next)
-            // 2. T bases present (indicating methylation)
-            // 3. More T bases than other bases
-            // 4. Above min read threshold
-            // 5. A mix of C and T bases to keep binomial test reasonable
-            prop_assert!(pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
-        }
-
-        #[test]
-        fn respects_min_reads_threshold(
-            pos in 10u32..100u32,
-            count in 1usize..4usize,
-            reads_min in 5usize..10usize
-        ) {
-            let bases = vec![Base::T; count];
-            let pileup = make_pileup(pos, Base::C, b"AT", b"GG", bases, reads_min);
-            let metrics = pileup.metrics().unwrap();
-            let calling_metrics = pileup.calling_metrics().unwrap();
-            let config = ThresholdConfig {
-                vaf_min: 0.1,
-                binomial_max: 0.08,
-                reads_min,
-            };
-
-            // Should not be methylation since below min_reads threshold
-            prop_assert!(!pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
-        }
-
-        #[test]
-        fn requires_sufficient_methylation_evidence(
-            pos in 10u32..100u32,
-            c_count in 0usize..5usize,
-            t_count in 0usize..5usize,
-            a_count in 6usize..10usize,
-            g_count in 6usize..10usize
-        ) {
-            let mut bases = vec![];
-            bases.extend(vec![Base::C; c_count]);
-            bases.extend(vec![Base::T; t_count]);
-            bases.extend(vec![Base::A; a_count]);
-            bases.extend(vec![Base::G; g_count]);
-
-            let pileup = make_pileup(pos, Base::C, b"AT", b"GG", bases, 5);
-            let metrics = pileup.metrics().unwrap();
-            let calling_metrics = pileup.calling_metrics().unwrap();
-            let config = ThresholdConfig {
-                vaf_min: 0.1,
-                binomial_max: 0.08,
-                reads_min: 5,
-            };
-
-            // Should not be methylation since more A+G than C+T
-            prop_assert!(!pileup.likely_methylation_event(&metrics, &calling_metrics, &config));
+            [mid, _n1, _n2] if mid == me => {
+                Ok(Some(context.get(1..2).wrap_err("index exists")?.into()))
+            }
+            [_p2, _p1, mid] if mid == me => {
+                // we are at the end of the sequence, no base after
+                Ok(None)
+            }
+            _ => bail!(
+                "Sequence context with unexpected length {}: {:?}",
+                self.info.sequence_context.0.len(),
+                self.info.sequence_context
+            ),
         }
     }
 }
+
+// todo: test this!
+// - create builder for records, maybe not here
+// - test: only consider CpG sites
+//   - test: Record::base_after
+// - test: only consider T base in alts
+// - test: check VAF threshold
+// - test: check read depth threshold
+// - test: check A and G bases vs C and T bases
