@@ -271,6 +271,42 @@ impl FormatFieldValue for SmolStr {
 /// to inline a guessed number of values baed on the given [`FormatFieldNumber`].
 #[macro_export]
 macro_rules! format_field {
+    ($name:ident($type:ty), $id:expr, $desc:expr, 1) => {
+        #[doc = $desc]
+        #[doc = "("]
+        #[doc = stringify!($number)]
+        #[doc = ")"]
+        #[derive(Debug, Clone)]
+        pub struct $name(pub $type);
+
+        impl std::ops::Deref for $name {
+            type Target = $type;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl $crate::VcfField for $name {
+            const ID: &'static str = $id;
+        }
+
+        impl $crate::HeaderField for $name {
+            const DESCRIPTION: &'static str = $desc;
+        }
+
+        impl $crate::FormatField for $name {
+            type Type = $type;
+            const NUMBER: $crate::FormatFieldNumber = $crate::FormatFieldNumber::Num(1);
+
+            fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
+                use $crate::VcfField as _;
+
+                <$type as $crate::FormatFieldValue>::write(record, Self::ID, &[self.0])
+            }
+        }
+    };
+
     ($name:ident($type:ty), $id:expr, $desc:expr, $number:expr) => {
         #[doc = $desc]
         #[doc = "("]

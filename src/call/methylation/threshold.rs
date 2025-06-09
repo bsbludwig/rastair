@@ -35,7 +35,7 @@ pub fn call(record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record
         return Ok(record);
     }
 
-    if record.info.read_depth[0] < config.reads_min {
+    if *record.info.read_depth < config.reads_min {
         // Not enough evidence for methylation
         return Ok(record);
     }

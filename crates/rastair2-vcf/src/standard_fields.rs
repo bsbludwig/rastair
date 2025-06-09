@@ -14,13 +14,13 @@ info_field!(
     "Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes)",
     InfoFieldNumber::OnePerAlt
 );
-info_field!(BaseQuality(f64), "BQ", "RMS base quality", InfoFieldNumber::Num(1));
-info_field!(ReadDepth(usize), "DP", "Combined depth across samples", InfoFieldNumber::Num(1));
-info_field!(MappingQuality(f64), "MQ", "RMS mapping quality", InfoFieldNumber::Num(1));
-info_field!(MappingQuality0(usize), "MQ0", "Number of MAPQ == 0 reads", InfoFieldNumber::Num(1));
-info_field!(SamplesWithData(usize), "NS", "Number of samples with data", InfoFieldNumber::Num(1));
+info_field!(BaseQuality(f64), "BQ", "RMS base quality", 1);
+info_field!(ReadDepth(usize), "DP", "Combined depth across samples", 1);
+info_field!(MappingQuality(f64), "MQ", "RMS mapping quality", 1);
+info_field!(MappingQuality0(usize), "MQ0", "Number of MAPQ == 0 reads", 1);
+info_field!(SamplesWithData(usize), "NS", "Number of samples with data", 1);
 
-format_field!(SampleReadDepth(usize), "DP", "Read depth", FormatFieldNumber::Num(1));
+format_field!(SampleReadDepth(usize), "DP", "Read depth", 1);
 format_field!(
     M5mC(f64),
     "M5mC",

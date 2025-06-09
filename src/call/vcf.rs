@@ -48,6 +48,8 @@ info_field!(
 );
 info_field!(NumIndels(f64), "NOI", "RMS of number of indels", InfoFieldNumber::OnePerAltAndRef);
 
+format_field!(Methylated(f64), "M5mC", "Methylation level at CpG sites", 1);
+
 vcf_record!(
     // pass or why not
     filters: [PASS],
@@ -72,7 +74,7 @@ vcf_record!(
     // Call data
     //
     // NOTE: The first sub-field must always be the genotype (GT) if it is present.
-    format: [SampleReadDepth],
+    format: [SampleReadDepth, Methylated],
     // hint to allocate this many slots for format data
     min_samples: 1
 );

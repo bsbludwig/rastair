@@ -277,6 +277,42 @@ impl InfoFieldValue for SmolStr {
 /// to inline a guessed number of values baed on the given [`InfoFieldNumber`].
 #[macro_export]
 macro_rules! info_field {
+    ($name:ident($type:tt), $id:expr, $desc:expr, 1) => {
+        #[doc = $desc]
+        #[doc = "("]
+        #[doc = stringify!($number)]
+        #[doc = ")"]
+        #[derive(Debug, Clone)]
+        pub struct $name(pub $type);
+
+        impl std::ops::Deref for $name {
+            type Target = $type;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl $crate::VcfField for $name {
+            const ID: &'static str = $id;
+        }
+
+        impl $crate::HeaderField for $name {
+            const DESCRIPTION: &'static str = $desc;
+        }
+
+        impl $crate::InfoField for $name {
+            type Type = $type;
+            const NUMBER: $crate::InfoFieldNumber = $crate::InfoFieldNumber::Num(1);
+
+            fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
+                use $crate::VcfField as _;
+
+                <$type as $crate::InfoFieldValue>::write(record, Self::ID, &[self.0])
+            }
+        }
+    };
+
     ($name:ident($type:tt), $id:expr, $desc:expr, $number:expr) => {
         #[doc = $desc]
         #[doc = "("]

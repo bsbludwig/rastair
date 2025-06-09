@@ -7,7 +7,7 @@ use crate::{
 };
 use color_eyre::Result;
 use rastair2_vcf::standard_fields::*;
-use smallvec::{SmallVec, smallvec, smallvec_inline};
+use smallvec::{SmallVec, smallvec};
 use smol_str::{SmolStr, SmolStrBuilder};
 use std::collections::BTreeSet;
 use tracing::warn;
@@ -32,18 +32,16 @@ impl VariantCandidatePileup {
         Ok(Info {
             read_depth_per_allel: self.read_depth_per_allele(),
             strand_bias: self.strand_bias(),
-            base_quality: BaseQuality(smallvec![*RootMeanSquare::new(
+            base_quality: BaseQuality(*RootMeanSquare::new(
                 &self.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 30>>(),
-            )]),
-            mapping_quality: MappingQuality(smallvec![*RootMeanSquare::new(
+            )),
+            mapping_quality: MappingQuality(*RootMeanSquare::new(
                 &self.bases.iter().map(|b| b.mapq).collect::<SmallVec<u8, 30>>(),
-            )]),
-            read_depth: ReadDepth(smallvec![self.bases.len()]),
-            mapping_quality0: MappingQuality0(smallvec![
-                self.bases.iter().filter(|b| b.mapq == 0).count()
-            ]),
+            )),
+            read_depth: ReadDepth(self.bases.len()),
+            mapping_quality0: MappingQuality0(self.bases.iter().filter(|b| b.mapq == 0).count()),
             // by construction, we arrived here because we have at least one base
-            samples_with_data: SamplesWithData(smallvec_inline![1]),
+            samples_with_data: SamplesWithData(1),
             sequence_context: SequenceContext(smallvec![self.sequence_context()]),
             allel_frequency: self.allel_frequency(),
             allel_base_quality: self.allel_base_quality(),
