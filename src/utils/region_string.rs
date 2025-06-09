@@ -3,10 +3,10 @@ use smol_str::SmolStr;
 use std::{fmt, num::NonZeroU32};
 use winnow::{
     Parser,
-    ascii::{alphanumeric1, dec_uint},
+    ascii::dec_uint,
     combinator::{opt, preceded},
     error::{StrContext, StrContextValue},
-    token::literal,
+    token::{literal, take_while},
 };
 
 /// A struct representing a genomic region string.
@@ -69,6 +69,12 @@ impl std::str::FromStr for RegionString {
 }
 
 fn parser(input: &mut &str) -> winnow::Result<RegionString> {
+    fn chromosome_name<'d>(input: &mut &'d str) -> winnow::Result<&'d str> {
+        take_while(1.., ('0'..='9', 'A'..='Z', 'a'..='z', '_', '-'))
+            .context(StrContext::Expected(StrContextValue::Description("chromosome name")))
+            .parse_next(input)
+    }
+
     fn index(input: &mut &str) -> winnow::Result<NonZeroU32> {
         dec_uint::<&str, u32, _>
             .try_map(NonZeroU32::try_from)
@@ -77,7 +83,7 @@ fn parser(input: &mut &str) -> winnow::Result<RegionString> {
     }
 
     (
-        alphanumeric1.context(StrContext::Label("chromosome name")),
+        chromosome_name,
         opt((
             preceded(literal(":"), index.context(StrContext::Label("start")))
                 .context(StrContext::Label("start2")),
@@ -86,7 +92,7 @@ fn parser(input: &mut &str) -> winnow::Result<RegionString> {
         )
             .context(StrContext::Label("range"))),
     )
-        .context(StrContext::Label("entire"))
+        .context(StrContext::Label("range"))
         .map(|(token, slice): (&str, Option<(NonZeroU32, Option<NonZeroU32>)>)| match slice {
             None => RegionString { chromosome: token.into(), start: None, end: None },
             Some((start, None)) => {
@@ -174,7 +180,8 @@ mod tests {
         Invalid region string:
         :100
         ^
-        invalid chromosome name
+        invalid range
+        expected chromosome name
         ");
 
         // invalid start position
@@ -217,7 +224,8 @@ mod tests {
         Invalid region string:
         :100
         ^
-        invalid chromosome name
+        invalid range
+        expected chromosome name
         ");
 
         // empty range part
@@ -326,5 +334,19 @@ mod tests {
             // can be used as a FetchDefinition for bam
             let _ = FetchDefinition::from(&parsed);
         }
+    }
+
+    #[test]
+    fn test_chromosome_name_with_underscore() {
+        // Test chromosome name with underscore
+        let region = RegionString::from_str("bacteriophage_lambda_CpG:1-48502").unwrap();
+        assert_eq!(
+            region,
+            RegionString {
+                chromosome: "bacteriophage_lambda_CpG".into(),
+                start: Some(NonZeroU32::new(1).unwrap()),
+                end: Some(NonZeroU32::new(48502).unwrap())
+            }
+        );
     }
 }
