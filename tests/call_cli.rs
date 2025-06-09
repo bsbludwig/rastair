@@ -35,6 +35,7 @@ fn random_call() -> Result<()> {
         "tests/data/test.bam",
         "-l",
         "chr19:6105700-6105800",
+        "--calling=thresholds",
         "-o",
     ]).arg(&temp_file), @r"
     success: true
