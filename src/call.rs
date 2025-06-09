@@ -1,5 +1,8 @@
 use crate::{
-    call::{variants::VariantCandidatePileup, vcf::Filters},
+    call::{
+        methylation::params::MethylationCallingParams, variants::VariantCandidatePileup,
+        vcf::Filters,
+    },
     sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
     utils::TryAsBase as _,
 };
@@ -21,7 +24,6 @@ pub mod variants;
 pub mod vcf;
 pub mod vcf_writer;
 
-use methylation::threshold::ThresholdConfig;
 use variants::{PositionInRead, SeenBase, SeenBases};
 
 #[derive(Debug, clap::Args)]
@@ -30,7 +32,7 @@ pub struct CallParams {
     segments: SegmentsParams,
 
     #[command(flatten)]
-    thresholds: ThresholdConfig,
+    pub methylation: MethylationCallingParams,
 
     #[command(flatten)]
     vcf: vcf_writer::Params,
@@ -56,21 +58,28 @@ pub fn call(params: &CallParams) -> Result<()> {
     let mut vcf_writer = params.vcf.vcf_writer(&regions).wrap_err("failed to create VCF writer")?;
 
     // Process each region and write results to the VCF
-    // TODO: For multithreaded processing, collect data in order and write in main thread
+    // TODO: For multithreaded processing, have readers per thread, collect data in order, and write in main thread
     regions.into_iter().try_for_each(|region| {
         regions_seen += 1;
-        process_region(&region, &mut readers, &params.thresholds)
+        process_region(&region, &mut readers)
             .and_then(|piles| {
                 piles.into_iter().try_for_each(|pile| {
-                    write_pileup(&pile, &mut vcf_writer).wrap_err_with(|| {
-                        format!("Failed to write pileup for {}:{}", pile.chrom(), pile.pos)
-                    })
+                    variant_metrics(&pile)
+                        .wrap_err("Failed to collect metrics")
+                        .and_then(|record| {
+                            params.methylation.call(record).wrap_err("Failed to call methylation")
+                        })
+                        .and_then(|record| {
+                            write_pileup(&record, &mut vcf_writer)
+                                .wrap_err("failed to write to VCF")
+                        })
+                        .wrap_err_with(|| {
+                            format!("Failed to process pileup {}:{}", pile.chrom(), pile.pos)
+                        })
                 })
             })
             .wrap_err_with(|| format!("failed to process region {}", region.region))
     })?;
-
-    info!("Processed {regions_seen} segments");
     info!("Wrote output to {}", params.vcf.vcf_output.display());
 
     return Ok(());
@@ -80,7 +89,6 @@ pub fn call(params: &CallParams) -> Result<()> {
 fn process_region(
     region: &ChunkRegion,
     readers: &mut Readers,
-    _thresholds: &ThresholdConfig,
 ) -> Result<Vec<VariantCandidatePileup>> {
     let segment = readers.segment(region).wrap_err("failed to fetch segment")?;
     trace!(len = segment.sequence.len(), "Processing region");
@@ -129,8 +137,6 @@ fn process_region(
             debug!(%count, %bytes, "Collected candidates");
         }
     }
-
-    // TODO: Add at least threshold filtering for methylation calling :)
 
     Ok(piles)
 }
@@ -217,19 +223,23 @@ fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
     })
 }
 
-/// Write a pileup to the VCF output
+/// Collect metrics
 #[instrument(level = "trace", skip_all)]
-fn write_pileup(pile: &VariantCandidatePileup, output: &mut Vcf<vcf::Record>) -> Result<()> {
-    // TODO: Maybe pull out the metrics
+fn variant_metrics(pile: &VariantCandidatePileup) -> Result<vcf::Record> {
     let metrics = pile.metrics().wrap_err("Failed to calculate metrics")?;
     let calling_metrics = pile.calling_metrics().wrap_err("Failed to calculate calling metrics")?;
 
-    let record = vcf::Record {
+    Ok(vcf::Record {
         fixed_fields: pile.fixed_fields(),
         // FIXME: Add filters based on thresholds
         filters: Filters::new().add(rastair2_vcf::standard_fields::PASS),
         info: metrics,
         samples: smallvec::smallvec![calling_metrics],
-    };
+    })
+}
+
+/// Write a pileup to the VCF output
+#[instrument(level = "trace", skip_all)]
+fn write_pileup(record: &vcf::Record, output: &mut Vcf<vcf::Record>) -> Result<()> {
     output.add(record).wrap_err("Failed to add record")
 }

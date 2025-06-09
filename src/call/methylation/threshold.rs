@@ -1,9 +1,13 @@
 use crate::{
     call::{
         variants::VariantCandidatePileup,
-        vcf::{Format, Info},
+        vcf::{self, Format, Info},
     },
     utils::{Base, Counter},
+};
+use color_eyre::{
+    Result,
+    eyre::{ContextCompat, bail},
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -21,6 +25,9 @@ pub struct ThresholdConfig {
     pub reads_min: usize,
 }
 
+pub fn call(record: vcf::Record) -> Result<vcf::Record> {
+    Ok(record)
+}
 impl VariantCandidatePileup {
     /// TODO: These are just arbitrary filters
     pub fn likely_methylation_event(

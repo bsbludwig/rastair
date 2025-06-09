@@ -7,6 +7,7 @@
 
 use crate::{call::variants::VariantCandidatePileup, utils::Base};
 
+pub mod params;
 pub mod threshold;
 
 impl VariantCandidatePileup {
