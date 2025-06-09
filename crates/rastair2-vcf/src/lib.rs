@@ -55,7 +55,7 @@
 //!         ],
 //!     };
 //!
-//!     vcf.add(data)?;
+//!     vcf.add(&data)?;
 //! }
 //! # Ok(()) }
 //! ```
@@ -165,7 +165,7 @@ pub struct Vcf<R: WriteToVcf> {
 
 impl<R: WriteToVcf> Vcf<R> {
     /// Add a record to the VCF
-    pub fn add(&mut self, data: R) -> Result<()> {
+    pub fn add(&mut self, data: &R) -> Result<()> {
         let mut record = self.writer.empty_record();
         data.write(&mut record).wrap_err("Failed to write record")?;
         self.writer.write(&record).wrap_err("Failed to write record to VCF")?;
@@ -223,7 +223,7 @@ mod tests {
                 }],
             };
 
-            vcf.add(data)?;
+            vcf.add(&data)?;
         }
 
         drop(vcf);
