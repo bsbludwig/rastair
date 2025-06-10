@@ -15,5 +15,7 @@ pub mod utils {
     pub use phred::Phred;
     mod base_counter;
     pub use base_counter::Counter;
+    mod strand;
+    pub use strand::{Strand, StrandFromRecord};
 }
 pub mod sequence;
