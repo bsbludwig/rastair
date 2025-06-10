@@ -90,10 +90,8 @@ impl InfoFieldValue for () {
     const TYPE_NAME: &'static str = "Flag";
 
     fn write(record: &mut Record, tag: &str, _values: &[()]) -> Result<()> {
-        record
-            .clear_info_flag(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} (Flag)"))?;
-        record.push_info_flag(tag.as_bytes()).wrap_err_with(|| format!("Failed to set flag {tag}"))
+        record.clear_info_flag(tag.as_bytes()).wrap_err("Failed to clear info field")?;
+        record.push_info_flag(tag.as_bytes()).wrap_err("Failed to set flag")
     }
 }
 
@@ -101,9 +99,7 @@ impl InfoFieldValue for u32 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &str, values: &[u32]) -> Result<()> {
-        record
-            .clear_info_integer(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} ({})", Self::TYPE_NAME))?;
+        record.clear_info_integer(tag.as_bytes()).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag.as_bytes(),
@@ -111,11 +107,9 @@ impl InfoFieldValue for u32 {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert u32 to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert u32 to i32")?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -123,9 +117,7 @@ impl InfoFieldValue for u64 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &str, values: &[u64]) -> Result<()> {
-        record
-            .clear_info_integer(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} ({})", Self::TYPE_NAME))?;
+        record.clear_info_integer(tag.as_bytes()).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag.as_bytes(),
@@ -137,7 +129,7 @@ impl InfoFieldValue for u64 {
                         format!("Failed to convert u64 to i32 for info field {tag}")
                     })?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -145,12 +137,8 @@ impl InfoFieldValue for i32 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &str, values: &[i32]) -> Result<()> {
-        record
-            .clear_info_integer(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} ({})", Self::TYPE_NAME))?;
-        record
-            .push_info_integer(tag.as_bytes(), values)
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+        record.clear_info_integer(tag.as_bytes()).wrap_err("Failed to clear field")?;
+        record.push_info_integer(tag.as_bytes(), values).wrap_err("Failed to set field")
     }
 }
 
@@ -158,9 +146,7 @@ impl InfoFieldValue for i64 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &str, values: &[i64]) -> Result<()> {
-        record
-            .clear_info_integer(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} ({})", Self::TYPE_NAME))?;
+        record.clear_info_integer(tag.as_bytes()).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag.as_bytes(),
@@ -172,7 +158,7 @@ impl InfoFieldValue for i64 {
                         format!("Failed to convert i64 to i32 for info field {tag}")
                     })?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -180,9 +166,7 @@ impl InfoFieldValue for usize {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &str, values: &[usize]) -> Result<()> {
-        record
-            .clear_info_integer(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} ({})", Self::TYPE_NAME))?;
+        record.clear_info_integer(tag.as_bytes()).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag.as_bytes(),
@@ -194,7 +178,7 @@ impl InfoFieldValue for usize {
                         format!("Failed to convert usize to i32 for info field {tag}")
                     })?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -202,12 +186,8 @@ impl InfoFieldValue for f32 {
     const TYPE_NAME: &'static str = "Float";
 
     fn write(record: &mut Record, tag: &str, values: &[f32]) -> Result<()> {
-        record
-            .clear_info_float(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} ({})", Self::TYPE_NAME))?;
-        record
-            .push_info_float(tag.as_bytes(), values)
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+        record.clear_info_float(tag.as_bytes()).wrap_err("Failed to clear field")?;
+        record.push_info_float(tag.as_bytes(), values).wrap_err("Failed to set field")
     }
 }
 
@@ -216,15 +196,13 @@ impl InfoFieldValue for f64 {
 
     #[allow(clippy::cast_possible_truncation)] // Allow casting f64 to f32, which is common in VCF
     fn write(record: &mut Record, tag: &str, values: &[f64]) -> Result<()> {
-        record
-            .clear_info_float(tag.as_bytes())
-            .wrap_err_with(|| format!("Failed to clear info field {tag} ({})", Self::TYPE_NAME))?;
+        record.clear_info_float(tag.as_bytes()).wrap_err("Failed to clear field")?;
         record
             .push_info_float(
                 tag.as_bytes(),
                 &values.iter().map(|&n| n as f32).collect::<SmallVec<f32, 5>>(),
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -237,7 +215,7 @@ impl InfoFieldValue for String {
                 tag.as_bytes(),
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -250,7 +228,7 @@ impl InfoFieldValue for SmolStr {
                 tag.as_bytes(),
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -342,9 +320,16 @@ macro_rules! info_field {
             const NUMBER: $crate::InfoFieldNumber = $number;
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
-                use $crate::VcfField as _;
+                use color_eyre::eyre::WrapErr;
+                use $crate::{InfoFieldValue, VcfField as _};
 
-                <$type as $crate::InfoFieldValue>::write(record, Self::ID, &self.0)
+                <$type as InfoFieldValue>::write(record, Self::ID, &self.0).wrap_err_with(|| {
+                    format!(
+                        "Failed to write info field {} (type {})",
+                        Self::ID,
+                        <Self::Type as InfoFieldValue>::TYPE_NAME
+                    )
+                })
             }
         }
     };
@@ -371,6 +356,7 @@ macro_rules! info_field {
                 use $crate::VcfField as _;
 
                 <() as $crate::InfoFieldValue>::write(record, Self::ID, &[])
+                    .wrap_err_with(|| format!("Failed to write info flag {}", Self::ID))
             }
         }
     };

@@ -123,11 +123,9 @@ impl FormatFieldValue for u32 {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert u32 to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert u32 to i32")?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -142,11 +140,9 @@ impl FormatFieldValue for u64 {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert u64 to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert u64 to i32")?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -154,9 +150,7 @@ impl FormatFieldValue for i32 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &str, values: &[i32]) -> Result<()> {
-        record
-            .push_format_integer(tag.as_bytes(), values)
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+        record.push_format_integer(tag.as_bytes(), values).wrap_err("Failed to set field")
     }
 }
 
@@ -171,11 +165,9 @@ impl FormatFieldValue for i64 {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert i64 to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert i64 to i32")?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -190,11 +182,9 @@ impl FormatFieldValue for usize {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert usize to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert usize to i32")?,
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -202,9 +192,7 @@ impl FormatFieldValue for f32 {
     const TYPE_NAME: &'static str = "Float";
 
     fn write(record: &mut Record, tag: &str, values: &[f32]) -> Result<()> {
-        record
-            .push_format_float(tag.as_bytes(), values)
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+        record.push_format_float(tag.as_bytes(), values).wrap_err("Failed to set field")
     }
 }
 
@@ -218,7 +206,7 @@ impl FormatFieldValue for f64 {
                 tag.as_bytes(),
                 &values.iter().map(|&n| n as f32).collect::<SmallVec<f32, 5>>(),
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -231,7 +219,7 @@ impl FormatFieldValue for String {
                 tag.as_bytes(),
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -244,7 +232,7 @@ impl FormatFieldValue for SmolStr {
                 tag.as_bytes(),
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
-            .wrap_err_with(|| format!("Failed to set info field {tag} ({})", Self::TYPE_NAME))
+            .wrap_err("Failed to set field")
     }
 }
 
@@ -300,9 +288,17 @@ macro_rules! format_field {
             const NUMBER: $crate::FormatFieldNumber = $crate::FormatFieldNumber::Num(1);
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
-                use $crate::VcfField as _;
+                use color_eyre::eyre::WrapErr;
+                use $crate::{FormatFieldValue, VcfField as _};
 
                 <$type as $crate::FormatFieldValue>::write(record, Self::ID, &[self.0])
+                    .wrap_err_with(|| {
+                        format!(
+                            "Failed to write format field {} (type {})",
+                            Self::ID,
+                            <Self::Type as FormatFieldValue>::TYPE_NAME
+                        )
+                    })
             }
         }
     };
@@ -336,9 +332,18 @@ macro_rules! format_field {
             const NUMBER: $crate::FormatFieldNumber = $number;
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
-                use $crate::VcfField as _;
+                use color_eyre::eyre::WrapErr;
+                use $crate::{FormatFieldValue, VcfField as _};
 
-                <$type as $crate::FormatFieldValue>::write(record, Self::ID, &self.0)
+                <$type as $crate::FormatFieldValue>::write(record, Self::ID, &self.0).wrap_err_with(
+                    || {
+                        format!(
+                            "Failed to write format field {} (type {})",
+                            Self::ID,
+                            <Self::Type as FormatFieldValue>::TYPE_NAME
+                        )
+                    },
+                )
             }
         }
     };
@@ -362,9 +367,11 @@ macro_rules! format_field {
             const NUMBER: $crate::FormatFieldNumber = $crate::FormatFieldNumber::Flag;
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
-                use $crate::VcfField as _;
+                use color_eyre::eyre::WrapErr;
+                use $crate::{FormatFieldValue, VcfField as _};
 
-                <$type as $crate::FormatFieldValue>::write(record, Self::ID, &self.0)
+                <$type as FormatFieldValue>::write(record, Self::ID, &self.0)
+                    .wrap_err_with(|| format!("Failed to write format flag {}", Self::ID))
             }
         }
     };
