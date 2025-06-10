@@ -28,6 +28,16 @@ impl Base {
         }
     }
 
+    /// Get the inverse base (complementary base)
+    pub fn inverse(&self) -> Base {
+        match self {
+            Base::A => Base::T,
+            Base::C => Base::G,
+            Base::G => Base::C,
+            Base::T => Base::A,
+        }
+    }
+
     pub fn as_char(&self) -> char {
         (*self) as u8 as char
     }
