@@ -3,7 +3,7 @@ use crate::{
         variants::{SeenBases, VariantCandidatePileup},
         vcf::*,
     },
-    utils::{Base, Phred, RootMeanSquare},
+    utils::{Base, Phred, RootMeanSquare, Strand},
 };
 use color_eyre::Result;
 use rastair2_vcf::standard_fields::*;
@@ -31,7 +31,7 @@ impl VariantCandidatePileup {
     pub fn metrics(&self) -> Result<Info> {
         Ok(Info {
             read_depth_per_allel: self.read_depth_per_allele(),
-            strand_bias: self.strand_bias(),
+            allele_specific_strand_bias: self.allele_specific_strand_bias(),
             base_quality: BaseQuality(*RootMeanSquare::new(
                 &self.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 30>>(),
             )),
@@ -56,16 +56,11 @@ impl VariantCandidatePileup {
     fn num_indels(&self) -> NumIndels {
         NumIndels(
             self.bases
-                .alleles()
+                .by_allele()
                 .iter()
-                .map(|alt| {
+                .map(|(_alt, seen)| {
                     *RootMeanSquare::new(
-                        &self
-                            .bases
-                            .iter()
-                            .filter(|b| b.base == *alt)
-                            .map(|b| b.indels)
-                            .collect::<SmallVec<u32, 20>>(),
+                        &seen.iter().map(|b| b.indels).collect::<SmallVec<u32, 20>>(),
                     )
                 })
                 .collect(),
@@ -75,16 +70,11 @@ impl VariantCandidatePileup {
     fn num_aligned_bases(&self) -> NumAlignedBases {
         NumAlignedBases(
             self.bases
-                .alleles()
+                .by_allele()
                 .iter()
-                .map(|alt| {
+                .map(|(_alt, seen)| {
                     *RootMeanSquare::new(
-                        &self
-                            .bases
-                            .iter()
-                            .filter(|b| b.base == *alt)
-                            .map(|b| b.matching_bases)
-                            .collect::<SmallVec<u32, 20>>(),
+                        &seen.iter().map(|b| b.matching_bases).collect::<SmallVec<u32, 20>>(),
                     )
                 })
                 .collect(),
@@ -94,16 +84,14 @@ impl VariantCandidatePileup {
     fn position_in_read(&self) -> PositionInRead {
         PositionInRead(
             self.bases
-                .alleles()
+                .by_allele()
                 .iter()
-                .map(|alt| {
+                .map(|(_alt, seen)| {
                     *RootMeanSquare::new(
-                        self.bases
+                        &seen
                             .iter()
-                            .filter(|b| b.base == *alt)
                             .map(|b| f64::from(b.position.pos) / f64::from(b.position.read_length))
-                            .collect::<SmallVec<f64, 20>>()
-                            .as_slice(),
+                            .collect::<SmallVec<f64, 20>>(),
                     )
                 })
                 .collect(),
@@ -113,17 +101,10 @@ impl VariantCandidatePileup {
     fn allel_map_quality(&self) -> AllelMapQuality {
         AllelMapQuality(
             self.bases
-                .alleles()
+                .by_allele()
                 .iter()
-                .map(|alt| {
-                    *RootMeanSquare::new(
-                        &self
-                            .bases
-                            .iter()
-                            .filter(|b| b.base == *alt)
-                            .map(|b| b.mapq)
-                            .collect::<SmallVec<u8, 20>>(),
-                    )
+                .map(|(_alt, seen)| {
+                    *RootMeanSquare::new(&seen.iter().map(|b| b.mapq).collect::<SmallVec<u8, 20>>())
                 })
                 .collect(),
         )
@@ -132,17 +113,10 @@ impl VariantCandidatePileup {
     fn allel_base_quality(&self) -> AllelBaseQuality {
         AllelBaseQuality(
             self.bases
-                .alleles()
+                .by_allele()
                 .iter()
-                .map(|alt| {
-                    *RootMeanSquare::new(
-                        &self
-                            .bases
-                            .iter()
-                            .filter(|b| b.base == *alt)
-                            .map(|b| b.qual)
-                            .collect::<SmallVec<u8, 20>>(),
-                    )
+                .map(|(_alt, seen)| {
+                    *RootMeanSquare::new(&seen.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>())
                 })
                 .collect(),
         )
@@ -197,16 +171,21 @@ impl VariantCandidatePileup {
         ReadDepthPerAllel(depth)
     }
 
-    fn strand_bias(&self) -> StrandBias {
-        let reference_bases = self.bases.iter().filter(|b| b.base == self.reference_base);
-        let alt_bases = self.bases.iter().filter(|b| b.base != self.reference_base);
-
-        StrandBias {
-            reads_ref_fwd: reference_bases.clone().filter(|b| !b.reverse).count(),
-            reads_ref_rev: reference_bases.clone().filter(|b| b.reverse).count(),
-            reads_alt_fwd: alt_bases.clone().filter(|b| !b.reverse).count(),
-            reads_alt_rev: alt_bases.clone().filter(|b| b.reverse).count(),
-        }
+    fn allele_specific_strand_bias(&self) -> AlleleSpecificStrandBias {
+        AlleleSpecificStrandBias(
+            self.bases
+                .by_allele()
+                .iter()
+                .map(|(_alt, seen)| {
+                    let ots = seen.iter().filter(|b| b.strand == Strand::OT).count();
+                    let obs = seen.iter().filter(|b| b.strand == Strand::OB).count();
+                    StrandCounts {
+                        ot: u32::try_from(ots).expect("count should fit in u32"),
+                        ob: u32::try_from(obs).expect("count should fit in u32"),
+                    }
+                })
+                .collect(),
+        )
     }
 
     fn sequence_context(&self) -> SmolStr {

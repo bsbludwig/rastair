@@ -1,6 +1,9 @@
 use rastair2_vcf::{standard_fields::*, *};
 use smol_str::SmolStr;
 
+mod as_strand_bias;
+pub use as_strand_bias::{AlleleSpecificStrandBias, StrandCounts};
+
 // TODO: Ideas for filters
 // - from VCF spec
 //   filter!(q10, "Quality below 10");
@@ -61,7 +64,7 @@ vcf_record!(
         MappingQuality,
         MappingQuality0,
         SamplesWithData,
-        StrandBias,
+        AlleleSpecificStrandBias,
         SequenceContext,
         AllelFrequency,
         AllelBaseQuality,

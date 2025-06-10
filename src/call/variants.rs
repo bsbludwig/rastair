@@ -1,6 +1,6 @@
 use crate::{
     sequence::Segment,
-    utils::{Base, Counter},
+    utils::{Base, Counter, Strand},
 };
 use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
@@ -65,6 +65,17 @@ impl SeenBases {
         })
     }
 
+    /// Get tuples of alleles (in order) and their corresponding evidence
+    pub fn by_allele(&self) -> SmallVec<(Base, SmallVec<&SeenBase, 20>), 4> {
+        self.alleles()
+            .iter()
+            .map(|base| {
+                let matching_bases = self.iter().filter(|b| b.base == *base).collect();
+                (*base, matching_bases)
+            })
+            .collect()
+    }
+
     pub fn alts(&self, reference: Base) -> SmallVec<Base, 4> {
         self.alleles().into_iter().filter(|base| reference != *base).collect::<SmallVec<Base, 4>>()
     }
@@ -77,7 +88,7 @@ fn test_seen_bases_alts() {
             base: Base::A,
             qual: 30,
             mapq: 20,
-            reverse: false,
+            strand: Strand::OT,
             position: PositionInRead { pos: 0, read_length: 100 },
             matching_bases: 90,
             indels: 0,
@@ -87,7 +98,7 @@ fn test_seen_bases_alts() {
             base: Base::C,
             qual: 30,
             mapq: 20,
-            reverse: false,
+            strand: Strand::OT,
             position: PositionInRead { pos: 1, read_length: 100 },
             matching_bases: 90,
             indels: 0,
@@ -118,7 +129,7 @@ pub struct SeenBase {
     pub base: Base,
     pub qual: u8,
     pub mapq: u8,
-    pub reverse: bool,
+    pub strand: Strand,
     pub position: PositionInRead,
     pub matching_bases: u32,
     pub indels: u32,
@@ -153,14 +164,7 @@ pub struct SeenBase {
 impl fmt::Debug for SeenBase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.base)?;
-        write!(
-            f,
-            " {}{} {}/{}",
-            if self.reverse { "rev" } else { "fwd" },
-            self.position,
-            self.qual,
-            self.mapq,
-        )
+        write!(f, " {}{} {}/{}", self.strand, self.position, self.qual, self.mapq,)
     }
 }
 

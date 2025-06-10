@@ -4,7 +4,7 @@ use crate::{
         vcf::Filters,
     },
     sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
-    utils::TryAsBase as _,
+    utils::{StrandFromRecord, TryAsBase as _},
 };
 use color_eyre::eyre::{Context, ContextCompat, Result};
 use rastair2_vcf::Vcf;
@@ -213,7 +213,7 @@ fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
         base: record.seq()[pos].as_base().ok()?, // fixme: handle error or at least check usual error modes
         qual: *record.qual().get(pos)?,
         mapq: record.mapq(),
-        reverse: record.is_reverse(),
+        strand: StrandFromRecord::strand(&record).ok()?,
         position: PositionInRead {
             pos: u32::try_from(pos).expect("position fits in u32"),
             read_length: u32::try_from(record.seq().len()).expect("read length fits in u32"),
