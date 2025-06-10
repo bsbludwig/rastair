@@ -49,15 +49,11 @@ impl VariantCandidatePileup {
 
         self.segment.sequence_slice::<N>(idx + 1, idx + N + 1).unwrap_or_default()
     }
-}
 
-/// A collection of bases seen in a pileup
-#[derive(Clone)]
-pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
-
-impl SeenBases {
     pub fn alleles(&self) -> SmallVec<Base, 4> {
-        self.iter().map(|b| b.base).fold(smallvec::SmallVec::new(), |mut acc, base| {
+        let mut res = SmallVec::new();
+        res.push(self.reference_base);
+        self.bases.iter().map(|b| b.base).fold(res, |mut acc, base| {
             if !acc.contains(&base) {
                 acc.push(base);
             }
@@ -70,43 +66,23 @@ impl SeenBases {
         self.alleles()
             .iter()
             .map(|base| {
-                let matching_bases = self.iter().filter(|b| b.base == *base).collect();
+                let matching_bases = self.bases.iter().filter(|b| b.base == *base).collect();
                 (*base, matching_bases)
             })
             .collect()
     }
 
-    pub fn alts(&self, reference: Base) -> SmallVec<Base, 4> {
-        self.alleles().into_iter().filter(|base| reference != *base).collect::<SmallVec<Base, 4>>()
+    pub fn alts(&self) -> SmallVec<Base, 4> {
+        self.alleles()
+            .into_iter()
+            .filter(|base| self.reference_base != *base)
+            .collect::<SmallVec<Base, 4>>()
     }
 }
 
-#[test]
-fn test_seen_bases_alts() {
-    let bases = SeenBases(smallvec::smallvec![
-        SeenBase {
-            base: Base::A,
-            qual: 30,
-            mapq: 20,
-            strand: Strand::OT,
-            position: PositionInRead { pos: 0, read_length: 100 },
-            matching_bases: 90,
-            indels: 0,
-            qname: SmallVec::from(&b"read1"[..]),
-        },
-        SeenBase {
-            base: Base::C,
-            qual: 30,
-            mapq: 20,
-            strand: Strand::OT,
-            position: PositionInRead { pos: 1, read_length: 100 },
-            matching_bases: 90,
-            indels: 0,
-            qname: SmallVec::from(&b"read1"[..]),
-        },
-    ]);
-    assert_eq!(bases.alts(Base::A).as_slice(), &[Base::C]);
-}
+/// A collection of bases seen in a pileup
+#[derive(Clone)]
+pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for SeenBases {
@@ -164,7 +140,7 @@ pub struct SeenBase {
 impl fmt::Debug for SeenBase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.base)?;
-        write!(f, " {}{} {}/{}", self.strand, self.position, self.qual, self.mapq,)
+        write!(f, " {} {} {}/{}", self.strand, self.position, self.qual, self.mapq,)
     }
 }
 
@@ -191,5 +167,76 @@ pub struct PositionInRead {
 impl fmt::Display for PositionInRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} / {}", self.pos, self.read_length)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sequence::{ChunkRegion, Region};
+    use insta::assert_debug_snapshot;
+
+    fn fake_segment() -> Rc<Segment> {
+        Rc::new(Segment {
+            range: ChunkRegion {
+                region: Region { chromosome: "chr19".into(), start: 1000, end: 1100 },
+                last_position: 2000,
+            },
+            sequence: vec![],
+        })
+    }
+
+    #[test]
+    fn test_alleles_in_order() {
+        let bases = SeenBases(SmallVec::from_vec(vec![
+            SeenBase {
+                base: Base::A,
+                qual: 30,
+                mapq: 20,
+                strand: Strand::OT,
+                position: PositionInRead { pos: 0, read_length: 100 },
+                matching_bases: 10,
+                indels: 0,
+                qname: SmallVec::from_vec(b"read1".to_vec()),
+            },
+            SeenBase {
+                base: Base::C,
+                qual: 30,
+                mapq: 20,
+                strand: Strand::OB,
+                position: PositionInRead { pos: 1, read_length: 100 },
+                matching_bases: 5,
+                indels: 0,
+                qname: SmallVec::from_vec(b"read2".to_vec()),
+            },
+            SeenBase {
+                base: Base::A,
+                qual: 30,
+                mapq: 20,
+                strand: Strand::OT,
+                position: PositionInRead { pos: 2, read_length: 100 },
+                matching_bases: 15,
+                indels: 0,
+                qname: SmallVec::from_vec(b"read3".to_vec()),
+            },
+        ]));
+
+        let variant_candidate = VariantCandidatePileup {
+            segment: fake_segment(),
+            pos: 1002, // Corresponds to index in the segment
+            bases,
+            reference_base: Base::T, // Assume T is the reference base at this position
+        };
+
+        let alleles = variant_candidate.alleles();
+        assert_eq!(alleles[0], Base::T, "Reference base should be first");
+
+        assert_debug_snapshot!(alleles, @r"
+        [
+            T,
+            A,
+            C,
+        ]
+        ");
     }
 }

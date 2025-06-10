@@ -20,7 +20,7 @@ impl VariantCandidatePileup {
             pos: self.pos,
             id: BTreeSet::default(),
             r#ref: self.reference_base.into(),
-            alt: self.bases.alts(self.reference_base).iter().map(|b| (*b).into()).collect(),
+            alt: self.alts().iter().map(|b| (*b).into()).collect(),
             // TODO: Figure out how to handle this. When do we have the data for
             // this? Should we start with `None`?
             qual: self.qual(),
@@ -54,8 +54,7 @@ impl VariantCandidatePileup {
 
     fn num_indels(&self) -> NumIndels {
         NumIndels(
-            self.bases
-                .by_allele()
+            self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
                     *RootMeanSquare::new(
@@ -68,8 +67,7 @@ impl VariantCandidatePileup {
 
     fn num_aligned_bases(&self) -> NumAlignedBases {
         NumAlignedBases(
-            self.bases
-                .by_allele()
+            self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
                     *RootMeanSquare::new(
@@ -82,8 +80,7 @@ impl VariantCandidatePileup {
 
     fn position_in_read(&self) -> PositionInRead {
         PositionInRead(
-            self.bases
-                .by_allele()
+            self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
                     *RootMeanSquare::new(
@@ -99,8 +96,7 @@ impl VariantCandidatePileup {
 
     fn allel_map_quality(&self) -> AllelMapQuality {
         AllelMapQuality(
-            self.bases
-                .by_allele()
+            self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
                     *RootMeanSquare::new(&seen.iter().map(|b| b.mapq).collect::<SmallVec<u8, 20>>())
@@ -111,8 +107,7 @@ impl VariantCandidatePileup {
 
     fn allel_base_quality(&self) -> AllelBaseQuality {
         AllelBaseQuality(
-            self.bases
-                .by_allele()
+            self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
                     *RootMeanSquare::new(&seen.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>())
@@ -123,8 +118,7 @@ impl VariantCandidatePileup {
 
     fn allel_frequency(&self) -> AllelFrequency {
         AllelFrequency(
-            self.bases
-                .alts(self.reference_base)
+            self.alts()
                 .iter()
                 .map(|alt| {
                     let count = self.bases.iter().filter(|b| b.base == *alt).count();
@@ -164,7 +158,7 @@ impl VariantCandidatePileup {
 
         let mut depth = SmallVec::new();
         depth.push(count_bases(&self.bases, self.reference_base));
-        for alt in self.bases.alts(self.reference_base) {
+        for alt in self.alts() {
             depth.push(count_bases(&self.bases, alt));
         }
         ReadDepthPerAllel(depth)
@@ -172,8 +166,7 @@ impl VariantCandidatePileup {
 
     fn allele_specific_strand_bias(&self) -> AlleleSpecificStrandBias {
         AlleleSpecificStrandBias(
-            self.bases
-                .by_allele()
+            self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
                     let ots = seen.iter().filter(|b| b.strand == Strand::OT).count();
