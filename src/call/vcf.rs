@@ -1,8 +1,16 @@
+//! VCF record definition
+//!
+//! This module defines structures that are used for both representing the data
+//! in VCF as well as intermediary data structures in rastair itself. This makes
+//! sure we put all data interesting to us also in VCF.
+
 use rastair2_vcf::{standard_fields::*, *};
-use smol_str::SmolStr;
 
 mod as_strand_bias;
 pub use as_strand_bias::{AlleleSpecificStrandBias, StrandCounts};
+
+mod sequence_context;
+pub use sequence_context::SequenceContext;
 
 // TODO: Ideas for filters
 // - from VCF spec
@@ -13,12 +21,6 @@ pub use as_strand_bias::{AlleleSpecificStrandBias, StrandCounts};
 //   filter!(low_coverage, "Low coverage detected");
 //   filter!(read_pos, "Variants clustered at read ends");
 
-info_field!(
-    SequenceContext(SmolStr),
-    "SC5",
-    "5-base sequence context centered on the variant position",
-    InfoFieldNumber::Num(1)
-);
 info_field!(
     AllelBaseQuality(f64),
     "ABQ",

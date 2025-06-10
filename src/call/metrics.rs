@@ -7,8 +7,7 @@ use crate::{
 };
 use color_eyre::Result;
 use rastair2_vcf::standard_fields::*;
-use smallvec::{SmallVec, smallvec};
-use smol_str::{SmolStr, SmolStrBuilder};
+use smallvec::SmallVec;
 use std::collections::BTreeSet;
 use tracing::warn;
 
@@ -42,7 +41,7 @@ impl VariantCandidatePileup {
             mapping_quality0: MappingQuality0(self.bases.iter().filter(|b| b.mapq == 0).count()),
             // by construction, we arrived here because we have at least one base
             samples_with_data: SamplesWithData(1),
-            sequence_context: SequenceContext(smallvec![self.sequence_context()]),
+            sequence_context: self.sequence_context(),
             allel_frequency: self.allel_frequency(),
             allel_base_quality: self.allel_base_quality(),
             allel_map_quality: self.allel_map_quality(),
@@ -188,15 +187,17 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn sequence_context(&self) -> SmolStr {
-        let mut builder = SmolStrBuilder::new();
-        for base in self.sequence_before::<2>().iter() {
-            builder.push_str((*base).into());
-        }
-        builder.push_str(self.reference_base.into());
-        for base in self.sequence_after::<2>().iter() {
-            builder.push_str((*base).into());
-        }
-        builder.finish()
+    fn sequence_context(&self) -> SequenceContext {
+        let (before_2, before_1) = match self.sequence_before::<2>().as_slice() {
+            [b2, b1] => (Some(*b2), Some(*b1)),
+            [b1] => (None, Some(*b1)),
+            _ => (None, None),
+        };
+        let (after_1, after_2) = match self.sequence_after::<2>().as_slice() {
+            [a1, a2] => (Some(*a1), Some(*a2)),
+            [a1] => (None, Some(*a1)),
+            _ => (None, None),
+        };
+        SequenceContext { before_2, before_1, me: self.reference_base, after_1, after_2 }
     }
 }
