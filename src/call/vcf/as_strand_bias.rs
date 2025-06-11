@@ -2,9 +2,18 @@ use color_eyre::eyre::{Context as _, Result};
 use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
+use std::ops::Deref;
 
 /// Allele-specific strand bias information for a variant
 pub struct AlleleSpecificStrandBias(pub SmallVec<StrandCounts, 4>);
+
+impl Deref for AlleleSpecificStrandBias {
+    type Target = SmallVec<StrandCounts, 4>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Counts of reads supporting an allele on the original top and bottom strands
 pub struct StrandCounts {
