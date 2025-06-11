@@ -1,6 +1,6 @@
 use crate::{
-    call::vcf::{self, Methylated},
     utils::Base,
+    vcf::{self, Methylated},
 };
 use color_eyre::{Result, Section, eyre::ContextCompat};
 use smallvec::SmallVec;

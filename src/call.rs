@@ -1,10 +1,9 @@
 use crate::{
-    call::{
-        methylation::params::MethylationCallingParams, variants::VariantCandidatePileup,
-        vcf::Filters,
-    },
+    call::{methylation::params::MethylationCallingParams, variants::VariantCandidatePileup},
     sequence::{ChunkRegion, Readers, Segment, SegmentsParams},
     utils::{StrandFromRecord, TryAsBase as _},
+    vcf::{self, Filters},
+    vcf_writer,
 };
 use color_eyre::eyre::{Context, ContextCompat, Result};
 use rastair2_vcf::Vcf;
@@ -21,8 +20,6 @@ mod methylation;
 mod metrics;
 mod variant_calling;
 pub mod variants;
-pub mod vcf;
-pub mod vcf_writer;
 
 use variants::{PositionInRead, SeenBase, SeenBases};
 

@@ -47,6 +47,6 @@ chr19	6105745	.	G	A	30	PASS	AD=13,3;BQ=34.0367;DP=16;MQ=60;MQ0=0;NS=1;AS_SB=10,3
 chr19	6105748	.	A	T	30	PASS	AD=15,1;BQ=30.5819;DP=16;MQ=60;MQ0=0;NS=1;AS_SB=9,6,1,0;SC5=GCACC;AF=0.0625;ABQ=31.3773,14;AMQ=60,60;PIR=0.590376,0.683544;ENT100=1.91147;NAB=79.3398,79;NOI=0,0	DP:M5mC	16:0
 
 ----- stderr -----
-[TIME] WARN rastair2::call::vcf_writer: Unexpected file extension, defaulting to VCF format without compression.
+[TIME] WARN rastair2::vcf_writer: Unexpected file extension, defaulting to VCF format without compression.
 [TIME] INFO rastair2::call: Wrote output to -
 [TIME] INFO rastair2: Call finished [DURATION]

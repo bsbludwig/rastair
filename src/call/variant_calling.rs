@@ -1,5 +1,5 @@
-use crate::call::{
-    variants::VariantCandidatePileup,
+use crate::{
+    call::variants::VariantCandidatePileup,
     vcf::{Format, Methylated},
 };
 use color_eyre::eyre::Result;

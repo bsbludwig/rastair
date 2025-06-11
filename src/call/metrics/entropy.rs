@@ -1,6 +1,7 @@
 use crate::{
-    call::{variants::VariantCandidatePileup, vcf::Entropy},
+    call::variants::VariantCandidatePileup,
     utils::{Base, Counter},
+    vcf::Entropy,
 };
 use smallvec::smallvec;
 

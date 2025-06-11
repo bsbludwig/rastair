@@ -1,9 +1,7 @@
 use crate::{
-    call::{
-        variants::{SeenBases, VariantCandidatePileup},
-        vcf::*,
-    },
+    call::variants::{SeenBases, VariantCandidatePileup},
     utils::{Base, Phred, RootMeanSquare, Strand},
+    vcf::*,
 };
 use color_eyre::Result;
 use rastair2_vcf::standard_fields::*;

@@ -6,7 +6,7 @@ use smol_str::SmolStr;
 use std::ffi::OsStr;
 use tracing::{debug, warn};
 
-use crate::{call::vcf::Record, sequence::ChunkRegion};
+use crate::{sequence::ChunkRegion, vcf::Record};
 
 #[derive(Debug, clap::Parser)]
 pub struct Params {

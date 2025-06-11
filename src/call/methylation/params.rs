@@ -1,4 +1,4 @@
-use crate::call::vcf;
+use crate::vcf;
 use color_eyre::{Result, eyre::Context};
 use std::fmt;
 use tracing::instrument;

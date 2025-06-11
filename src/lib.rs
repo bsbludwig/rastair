@@ -1,6 +1,8 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod call;
+pub mod vcf;
+pub mod vcf_writer;
 pub mod utils {
     mod base;
     pub use base::{Base, TryAsBase};
