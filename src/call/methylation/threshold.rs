@@ -249,9 +249,6 @@ fn call_gpc(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
 
 /// Update the record to reflect a methylation event.
 fn update_record(mut record: vcf::Record) -> Result<vcf::Record> {
-    // Set the methylation event flag
-    record.samples[0].methylated = Methylated(1.);
-
     // Set alts to "missing"
     record.fixed_fields.alt = smallvec::smallvec![".".into()];
 
