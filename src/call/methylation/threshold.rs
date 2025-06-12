@@ -23,29 +23,27 @@ pub struct ThresholdConfig {
     pos = record.fixed_fields.pos,
 ))]
 pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record> {
-    match call_cpg(&record, config)? {
+    match call_methylation(&record, config)? {
         MethylationEvent::Found(beta) => {
             record.samples[0].methylated = Methylated(beta);
             trace!(beta, "CpG methylation event found");
-            return update_record(record);
+            update_record(record)
         }
         MethylationEvent::NotFound { failed_at } => {
             trace!(failed = failed_at, "Not methylated");
+            Ok(record)
         }
     }
-    match call_gpc(&record, config)? {
-        MethylationEvent::Found(beta) => {
-            record.samples[0].methylated = Methylated(beta);
-            trace!(beta, "CpG methylation event found");
-            return update_record(record);
-        }
-        MethylationEvent::NotFound { failed_at } => {
-            trace!(failed = failed_at, "Not methylated");
-        }
-    }
+}
 
-    // It's not a methylation event
-    Ok(record)
+fn call_methylation(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
+    if record.fixed_fields.r#ref == "C" {
+        call_c(record, config)
+    } else if record.fixed_fields.r#ref == "G" {
+        call_g(&record, config)
+    } else {
+        Ok(MethylationEvent::no("Not a CpG site"))
+    }
 }
 
 #[derive(Debug)]
@@ -87,7 +85,7 @@ impl Record {
     }
 }
 
-fn call_cpg(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
+fn call_c(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
     let context = &record.info.sequence_context;
     let is_cpg =
         &record.fixed_fields.r#ref == "C" && context.after_1.filter(|x| *x == Base::G).is_some();
@@ -160,7 +158,7 @@ fn call_cpg(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
     Ok(MethylationEvent::Found(beta))
 }
 
-fn call_gpc(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
+fn call_g(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
     let context = &record.info.sequence_context;
     let is_reverse_cpg =
         &record.fixed_fields.r#ref == "G" && context.before_1.filter(|x| *x == Base::C).is_some();
@@ -261,7 +259,7 @@ mod tests {
     use insta::assert_debug_snapshot;
 
     #[test]
-    fn test_cpg_position() -> Result<()> {
+    fn cpg_c_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105084)?;
         let metrics = pileup.variant_metrics()?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
@@ -270,53 +268,13 @@ mod tests {
             pileup.chrom(),
             pileup.pos,
             pileup.reference_base,
-            &pileup.bases,
             &metrics.info.allele_specific_strand_bias,
-            call_cpg(&metrics, &config),
+            call_methylation(&metrics, &config),
         ), @r#"
         (
             "chr19",
             6105084,
             C,
-            [
-                C OB Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OT Q32 MQ60,
-                C OB Q36 MQ60,
-                C OT Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                C OT Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                T OT Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                C OB Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                C OB Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OB Q36 MQ60,
-                C OB Q36 MQ60,
-                T OT Q36 MQ60,
-                C OT Q36 MQ60,
-            ],
             AlleleSpecificStrandBias(
                 [
                     StrandCounts {
@@ -333,8 +291,131 @@ mod tests {
             ),
             Ok(
                 Found(
-                    0.7777777777777778,
+                    0.2222222222222222,
                 ),
+            ),
+        )
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    fn cpg_g_methylated() -> Result<()> {
+        let pileup = variant_pileup("chr19", 6105085)?;
+        let metrics = pileup.variant_metrics()?;
+        let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+
+        assert_debug_snapshot!((
+            pileup.chrom(),
+            pileup.pos,
+            pileup.reference_base,
+            &metrics.info.allele_specific_strand_bias,
+            call_methylation(&metrics, &config),
+        ), @r#"
+        (
+            "chr19",
+            6105085,
+            G,
+            AlleleSpecificStrandBias(
+                [
+                    StrandCounts {
+                        base: G,
+                        ot: 18,
+                        ob: 4,
+                    },
+                    StrandCounts {
+                        base: A,
+                        ot: 0,
+                        ob: 15,
+                    },
+                ],
+            ),
+            Ok(
+                Found(
+                    0.21052631578947367,
+                ),
+            ),
+        )
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    fn c_but_not_cpg() -> Result<()> {
+        let pileup = variant_pileup("chr19", 6105197)?;
+        let metrics = pileup.variant_metrics()?;
+        let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+
+        assert_debug_snapshot!((
+            pileup.chrom(),
+            pileup.pos,
+            pileup.reference_base,
+            &metrics.info.allele_specific_strand_bias,
+            call_methylation(&metrics, &config),
+        ), @r#"
+        (
+            "chr19",
+            6105197,
+            C,
+            AlleleSpecificStrandBias(
+                [
+                    StrandCounts {
+                        base: C,
+                        ot: 19,
+                        ob: 13,
+                    },
+                    StrandCounts {
+                        base: T,
+                        ot: 1,
+                        ob: 0,
+                    },
+                ],
+            ),
+            Ok(
+                NotFound {
+                    failed_at: "Not a CpG site",
+                },
+            ),
+        )
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    fn random_other_variant() -> Result<()> {
+        let pileup = variant_pileup("chr19", 6105114)?;
+        let metrics = pileup.variant_metrics()?;
+        let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+
+        assert_debug_snapshot!((
+            pileup.chrom(),
+            pileup.pos,
+            pileup.reference_base,
+            &metrics.info.allele_specific_strand_bias,
+            call_methylation(&metrics, &config),
+        ), @r#"
+        (
+            "chr19",
+            6105114,
+            A,
+            AlleleSpecificStrandBias(
+                [
+                    StrandCounts {
+                        base: A,
+                        ot: 20,
+                        ob: 18,
+                    },
+                    StrandCounts {
+                        base: G,
+                        ot: 0,
+                        ob: 1,
+                    },
+                ],
+            ),
+            Ok(
+                NotFound {
+                    failed_at: "Not a CpG site",
+                },
             ),
         )
         "#);
