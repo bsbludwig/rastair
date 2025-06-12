@@ -192,3 +192,52 @@ impl VariantCandidatePileup {
         SequenceContext { before_2, before_1, me: self.reference_base, after_1, after_2 }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::call::test_helpers::variant_pileup;
+    use color_eyre::Result;
+    use insta::assert_debug_snapshot;
+
+    #[test]
+    fn test_allele_specific_strand_bias_1() -> Result<()> {
+        let pileup = variant_pileup("bacteriophage_lambda_CpG", 2636)?;
+        assert_debug_snapshot!((
+            pileup.chrom(),
+            pileup.pos,
+            pileup.reference_base,
+            &pileup.bases,
+            pileup.allele_specific_strand_bias()
+        ), @r#"
+        (
+            "bacteriophage_lambda_CpG",
+            2636,
+            C,
+            [
+                C OB Q32 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                T OT Q36 MQ60,
+                T OT Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+            ],
+            AlleleSpecificStrandBias(
+                [
+                    StrandCounts {
+                        ot: 0,
+                        ob: 4,
+                    },
+                    StrandCounts {
+                        ot: 5,
+                        ob: 0,
+                    },
+                ],
+            ),
+        )
+        "#);
+        Ok(())
+    }
+}

@@ -59,7 +59,7 @@ impl std::ops::Deref for Base {
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() {
+        if f.alternate() || cfg!(test) {
             write!(f, "{}", (*self) as u8 as char)
         } else {
             write!(f, "{}", self.display_colored())

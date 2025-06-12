@@ -10,6 +10,7 @@ use std::{fmt, ops::Deref, rc::Rc};
 #[derive(Debug, Clone)]
 pub struct VariantCandidatePileup {
     pub segment: Rc<Segment>,
+    /// Position in the sequence, 0-based
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,
@@ -21,7 +22,7 @@ impl VariantCandidatePileup {
         self.segment.range.chromosome.clone()
     }
 
-    /// Position in the segment, 1-based
+    /// Position in the segment sequence, 0-based
     pub fn idx(&self) -> usize {
         let pos = usize::try_from(self.pos).expect("pos fits usize");
         usize::try_from(self.pos)
@@ -140,7 +141,7 @@ pub struct SeenBase {
 impl fmt::Debug for SeenBase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.base)?;
-        write!(f, " {} {} {}/{}", self.strand, self.position, self.qual, self.mapq,)
+        write!(f, " {} Q{} MQ{}", self.strand, self.qual, self.mapq,)
     }
 }
 

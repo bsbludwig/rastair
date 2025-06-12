@@ -9,11 +9,11 @@ use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use std::num::NonZeroU32;
 
-/// Fetch a pileup for a specific variant position in the test BAM file.
-pub fn variant_pileup(chr: &str, start: u32) -> Result<VariantCandidatePileup> {
+/// Fetch a pileup for a specific variant position (0-based!) in the test BAM file.
+pub fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
     let region = RegionString {
         chromosome: chr.into(),
-        start: Some(NonZeroU32::new(start.saturating_sub(100).max(1)).unwrap()),
+        start: Some(NonZeroU32::new(pos).unwrap()),
         end: None,
     };
     let p = SegmentsParams {
@@ -30,8 +30,8 @@ pub fn variant_pileup(chr: &str, start: u32) -> Result<VariantCandidatePileup> {
     let pileups = chunk.process(&mut readers).wrap_err("failed to process region")?;
     let pileup = pileups
         .into_iter()
-        .find(|p| p.pos == start)
-        .ok_or_else(|| color_eyre::eyre::eyre!("No pileup found at position {}", start))?;
+        .find(|p| p.pos == pos)
+        .ok_or_else(|| color_eyre::eyre::eyre!("No pileup found at position {}", pos))?;
 
     Ok(pileup)
 }

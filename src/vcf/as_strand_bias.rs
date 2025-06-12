@@ -5,6 +5,7 @@ use smallvec::SmallVec;
 use std::ops::Deref;
 
 /// Allele-specific strand bias information for a variant
+#[derive(Debug, Clone)]
 pub struct AlleleSpecificStrandBias(pub SmallVec<StrandCounts, 4>);
 
 impl Deref for AlleleSpecificStrandBias {
@@ -16,6 +17,7 @@ impl Deref for AlleleSpecificStrandBias {
 }
 
 /// Counts of reads supporting an allele on the original top and bottom strands
+#[derive(Debug, Clone)]
 pub struct StrandCounts {
     /// Number of reads from original top
     pub ot: u32,
