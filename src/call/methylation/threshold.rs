@@ -48,6 +48,7 @@ pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Re
     Ok(record)
 }
 
+#[derive(Debug)]
 enum MethylationEvent {
     NotFound {
         failed_at: &'static str,
@@ -252,3 +253,91 @@ fn update_record(mut record: vcf::Record) -> Result<vcf::Record> {
 // - test: check VAF threshold
 // - test: check read depth threshold
 // - test: check A and G bases vs C and T bases
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call::test_helpers::variant_pileup;
+    use color_eyre::Result;
+    use insta::assert_debug_snapshot;
+
+    #[test]
+    fn test_cpg_position() -> Result<()> {
+        let pileup = variant_pileup("chr19", 6105084)?;
+        let metrics = pileup.variant_metrics()?;
+        let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+
+        assert_debug_snapshot!((
+            pileup.chrom(),
+            pileup.pos,
+            pileup.reference_base,
+            &pileup.bases,
+            &metrics.info.allele_specific_strand_bias,
+            call_cpg(&metrics, &config),
+        ), @r#"
+        (
+            "chr19",
+            6105084,
+            C,
+            [
+                C OB Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OT Q32 MQ60,
+                C OB Q36 MQ60,
+                C OT Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                C OT Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                T OT Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                C OB Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                C OB Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OB Q36 MQ60,
+                C OB Q36 MQ60,
+                T OT Q36 MQ60,
+                C OT Q36 MQ60,
+            ],
+            AlleleSpecificStrandBias(
+                [
+                    StrandCounts {
+                        base: C,
+                        ot: 4,
+                        ob: 19,
+                    },
+                    StrandCounts {
+                        base: T,
+                        ot: 14,
+                        ob: 0,
+                    },
+                ],
+            ),
+            Ok(
+                Found(
+                    0.7777777777777778,
+                ),
+            ),
+        )
+        "#);
+        Ok(())
+    }
+}
