@@ -6,14 +6,22 @@ use crate::{
     utils::RegionString,
 };
 use clio::ClioPath;
-use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
+use color_eyre::{
+    Section,
+    eyre::{ContextCompat as _, Result, WrapErr},
+};
 use std::num::NonZeroU32;
 
 /// Fetch a pileup for a specific variant position (0-based!) in the test BAM file.
+///
+/// When comparing this to IGV, please keep in mind that IGV and VCF files use
+/// 1-based positions, so the `pos` parameter is off by one compared to what you
+/// see there.
 pub fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
     let region = RegionString {
         chromosome: chr.into(),
-        start: Some(NonZeroU32::new(pos).unwrap()),
+        // Make sure to fetch some context around the position for metrics
+        start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
         end: None,
     };
     let p = SegmentsParams {
@@ -31,7 +39,8 @@ pub fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
     let pileup = pileups
         .into_iter()
         .find(|p| p.pos == pos)
-        .ok_or_else(|| color_eyre::eyre::eyre!("No pileup found at position {}", pos))?;
+        .ok_or_else(|| color_eyre::eyre::eyre!("No variant at {chr}:{pos}"))
+        .note("Variant pileups are only built when at least one base differs from the reference")?;
 
     Ok(pileup)
 }
