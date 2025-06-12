@@ -47,6 +47,7 @@ impl VariantCandidatePileup {
             entropy: self.entropy(),
             num_aligned_bases: self.num_aligned_bases(),
             num_indels: self.num_indels(),
+            in_cp_g: self.in_cpg(),
         })
     }
 
@@ -192,6 +193,19 @@ impl VariantCandidatePileup {
         };
         SequenceContext { before_2, before_1, me: self.reference_base, after_1, after_2 }
     }
+
+    #[allow(clippy::if_same_then_else)] // clearer
+    fn in_cpg(&self) -> InCpG {
+        let base = self.reference_base;
+
+        if base == Base::C && self.sequence_after::<1>().first() == Some(&Base::G) {
+            InCpG(true)
+        } else if base == Base::G && self.sequence_before::<1>().last() == Some(&Base::C) {
+            InCpG(true)
+        } else {
+            InCpG(false)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +252,49 @@ mod tests {
                         ob: 0,
                     },
                 ],
+            ),
+        )
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    fn test_in_cpg() -> Result<()> {
+        // a CpG site
+        let pileup = variant_pileup("chr19", 6105084)?;
+        assert_debug_snapshot!((pileup.chrom(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
+        (
+            "chr19",
+            C,
+            6105084,
+            InCpG(
+                true,
+            ),
+        )
+        "#);
+
+        // a C variant, followed by a C
+        let pileup = variant_pileup("chr19", 6104589)?;
+        assert_debug_snapshot!((pileup.chrom(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
+        (
+            "chr19",
+            C,
+            6104589,
+            InCpG(
+                false,
+            ),
+        )
+        "#);
+
+        // some random variant with base G
+        let pileup = variant_pileup("chr19", 6105116)?;
+        assert_debug_snapshot!((pileup.chrom(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
+        (
+            "chr19",
+            G,
+            6105116,
+            InCpG(
+                false,
             ),
         )
         "#);
