@@ -2,12 +2,12 @@ use color_eyre::{Result, eyre::Context as _};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::fmt::{self, Display};
+use std::fmt;
 
 /// A field that can be used in the INFO section.
 pub trait FormatField: super::VcfField {
     /// The type of values that this field can hold.
-    type Type: FormatFieldValue + Display;
+    type Type: FormatFieldValue;
 
     /// The number of values that can be included with the field.
     const NUMBER: FormatFieldNumber;
@@ -110,6 +110,20 @@ pub trait FormatFieldValue: Sized {
 
     /// Write the values to the VCF record under the given tag.
     fn write(record: &mut Record, tag: &str, values: &[Self]) -> Result<()>;
+}
+
+impl<T: FormatFieldValue + Clone> FormatFieldValue for Option<T> {
+    const TYPE_NAME: &'static str = T::TYPE_NAME;
+
+    fn write(record: &mut Record, tag: &str, values: &[Option<T>]) -> Result<()> {
+        let non_none_values: Vec<_> = values.iter().filter_map(|v| v.as_ref()).cloned().collect();
+        if non_none_values.is_empty() {
+            // no values
+            Ok(())
+        } else {
+            T::write(record, tag, non_none_values.as_slice())
+        }
+    }
 }
 
 impl FormatFieldValue for u32 {

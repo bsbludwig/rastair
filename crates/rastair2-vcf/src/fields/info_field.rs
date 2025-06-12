@@ -86,6 +86,20 @@ pub trait InfoFieldValue: Sized {
     fn write(record: &mut Record, tag: &str, values: &[Self]) -> Result<()>;
 }
 
+impl<T: InfoFieldValue + Clone> InfoFieldValue for Option<T> {
+    const TYPE_NAME: &'static str = T::TYPE_NAME;
+
+    fn write(record: &mut Record, tag: &str, values: &[Option<T>]) -> Result<()> {
+        let non_none_values: Vec<_> = values.iter().filter_map(|v| v.as_ref()).cloned().collect();
+        if non_none_values.is_empty() {
+            // no values
+            Ok(())
+        } else {
+            T::write(record, tag, non_none_values.as_slice())
+        }
+    }
+}
+
 impl InfoFieldValue for bool {
     const TYPE_NAME: &'static str = "Flag";
 
