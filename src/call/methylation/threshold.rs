@@ -25,7 +25,7 @@ pub struct ThresholdConfig {
 pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record> {
     match call_methylation(&record, config)? {
         MethylationEvent::Found(beta) => {
-            record.samples[0].methylated = Methylated(beta);
+            record.samples[0].methylated = Methylated(Some(beta));
             trace!(beta, "CpG methylation event found");
             update_record(record)
         }

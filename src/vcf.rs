@@ -54,7 +54,7 @@ info_field!(
 info_field!(NumIndels(f64), "NOI", "RMS of number of indels", InfoFieldNumber::OnePerAltAndRef);
 info_field!(InCpG, "CPG", "Is this a CpG site?");
 
-format_field!(Methylated(f64), "M5mC", "Methylation level at CpG sites", 1);
+format_field!(Methylated(Option<f64>), "M5mC", "Methylation level at CpG sites", 1);
 
 vcf_record!(
     // pass or why not

@@ -9,7 +9,7 @@ impl VariantCandidatePileup {
     pub fn calling_metrics(&self) -> Result<Format> {
         Ok(Format {
             sample_read_depth: SampleReadDepth(self.bases.len()),
-            methylated: Methylated(0.),
+            methylated: Methylated(None),
         })
     }
 }
