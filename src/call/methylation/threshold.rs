@@ -1,8 +1,11 @@
 use crate::{
     utils::Base,
-    vcf::{self, Methylated},
+    vcf::{self, Methylated, Record},
 };
-use color_eyre::{Result, Section, eyre::ContextCompat};
+use color_eyre::{
+    Result, Section,
+    eyre::{Context as _, ContextCompat},
+};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use tracing::{instrument, trace};
@@ -65,6 +68,27 @@ impl MethylationEvent {
     }
 }
 
+struct Alleles(SmallVec<SmolStr, 4>);
+
+impl Alleles {
+    fn pos(&self, base: &str) -> Result<usize> {
+        self.0
+            .iter()
+            .position(|x| x == base)
+            .wrap_err_with(|| format!("Base {} not found in alleles", base))
+    }
+}
+
+impl Record {
+    fn allels(&self) -> Alleles {
+        Alleles(
+            std::iter::once(self.fixed_fields.r#ref.clone())
+                .chain(self.fixed_fields.alt.iter().cloned())
+                .collect::<SmallVec<SmolStr, 4>>(),
+        )
+    }
+}
+
 fn call_cpg(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
     let context = &record.info.sequence_context;
     let is_cpg =
@@ -101,29 +125,15 @@ fn call_cpg(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
     }
 
     // Check if more A and G bases than C and T
-    let allels = std::iter::once(record.fixed_fields.r#ref.clone())
-        .chain(record.fixed_fields.alt.iter().cloned())
-        .collect::<SmallVec<SmolStr, 4>>();
-    let read_depth_c = allels
-        .iter()
-        .position(|x| x == "C")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
-    let read_depth_t = allels
-        .iter()
-        .position(|x| x == "T")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
-    let read_depth_a = allels
-        .iter()
-        .position(|x| x == "A")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
-    let read_depth_g = allels
-        .iter()
-        .position(|x| x == "G")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
+    let allels = record.allels();
+    let read_depth_c =
+        allels.pos("C").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
+    let read_depth_t =
+        allels.pos("T").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
+    let read_depth_a =
+        allels.pos("A").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
+    let read_depth_g =
+        allels.pos("G").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
     if read_depth_a + read_depth_g >= read_depth_c + read_depth_t {
         return Ok(MethylationEvent::no("More A and G bases than C and T, not likely methylation"));
     }
@@ -138,9 +148,8 @@ fn call_cpg(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
             .note("This is a program error")?
             .ot;
         let alt_idx = allels
-            .iter()
-            .position(|x| x == "T")
-            .wrap_err("A base should be present in alts after previous checks")
+            .pos("T")
+            .wrap_err("T base should be present in alts after previous checks")
             .note("This is a program error")?;
 
         let alt_count = record
@@ -191,29 +200,15 @@ fn call_gpc(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
     }
 
     // Check if more A and G bases than C and T
-    let allels = std::iter::once(record.fixed_fields.r#ref.clone())
-        .chain(record.fixed_fields.alt.iter().cloned())
-        .collect::<SmallVec<SmolStr, 4>>();
-    let read_depth_c = allels
-        .iter()
-        .position(|x| x == "C")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
-    let read_depth_t = allels
-        .iter()
-        .position(|x| x == "T")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
-    let read_depth_a = allels
-        .iter()
-        .position(|x| x == "A")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
-    let read_depth_g = allels
-        .iter()
-        .position(|x| x == "G")
-        .map(|idx| record.info.read_depth_per_allel[idx])
-        .unwrap_or(0);
+    let allels = record.allels();
+    let read_depth_c =
+        allels.pos("C").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
+    let read_depth_t =
+        allels.pos("T").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
+    let read_depth_a =
+        allels.pos("A").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
+    let read_depth_g =
+        allels.pos("G").map(|idx| record.info.read_depth_per_allel[idx]).unwrap_or(0);
     if read_depth_c + read_depth_t >= read_depth_a + read_depth_g {
         return Ok(MethylationEvent::no(
             "More C and T bases than A and G, not likely methylation on opposite strand",
@@ -230,8 +225,7 @@ fn call_gpc(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
             .note("This is a program error")?
             .ob;
         let alt_idx = allels
-            .iter()
-            .position(|x| x == "A")
+            .pos("A")
             .wrap_err("A base should be present in alts after previous checks")
             .note("This is a program error")?;
 
@@ -242,6 +236,9 @@ fn call_gpc(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
             .wrap_err("Failed to get A base in allele specific strand bias")
             .note("This is a program error")?
             .ob;
+        trace!(?record
+            .info
+            .allele_specific_strand_bias, ?alt_count, ?ref_count, "beta");
         f64::from(alt_count) / f64::from(alt_count + ref_count)
     };
     Ok(MethylationEvent::Found(beta))
