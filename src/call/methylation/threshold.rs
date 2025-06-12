@@ -40,7 +40,7 @@ fn call_methylation(record: &vcf::Record, config: &ThresholdConfig) -> Result<Me
     if record.fixed_fields.r#ref == "C" {
         call_c(record, config)
     } else if record.fixed_fields.r#ref == "G" {
-        call_g(&record, config)
+        call_g(record, config)
     } else {
         Ok(MethylationEvent::no("Not a CpG site"))
     }
