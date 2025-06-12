@@ -23,6 +23,10 @@ pub struct Params {
 impl Params {
     /// Create a new instance of `Params` with the specified VCF output path.
     pub fn guess_format(&self) -> (VcfFormat, Compression) {
+        if self.vcf_output == ClioPath::new("-").expect("static path is valid") {
+            return (VcfFormat::Vcf, Compression::Off);
+        }
+
         let Some(name) = self.vcf_output.file_name().and_then(OsStr::to_str) else {
             warn!(
                 "No file name found in VCF output path, defaulting to VCF format without compression."
