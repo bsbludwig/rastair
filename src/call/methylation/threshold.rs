@@ -136,7 +136,7 @@ fn call_c(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationE
 
     // we're looking at ref C, so alt is T and we need to look at OT only
     let beta = {
-        let ref_count = record
+        let ref_ots = record
             .info
             .allele_specific_strand_bias
             .iter()
@@ -145,7 +145,7 @@ fn call_c(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationE
             .note("This is a program error")?
             .ot;
 
-        let alt_count = record
+        let alt_ots = record
             .info
             .allele_specific_strand_bias
             .iter()
@@ -153,7 +153,7 @@ fn call_c(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationE
             .wrap_err("Failed to get T base in allele specific strand bias")
             .note("This is a program error")?
             .ot;
-        f64::from(alt_count) / f64::from(alt_count + ref_count)
+        f64::from(alt_ots) / f64::from(alt_ots + ref_ots)
     };
     Ok(MethylationEvent::Found(beta))
 }
@@ -211,7 +211,7 @@ fn call_g(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationE
 
     // we're looking at ref G, so alt is A and we need to look at OB only
     let beta = {
-        let ref_count = record
+        let ref_obs = record
             .info
             .allele_specific_strand_bias
             .iter()
@@ -220,7 +220,7 @@ fn call_g(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationE
             .note("This is a program error")?
             .ob;
 
-        let alt_count = record
+        let alt_obs = record
             .info
             .allele_specific_strand_bias
             .iter()
@@ -230,8 +230,8 @@ fn call_g(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationE
             .ob;
         trace!(?record
             .info
-            .allele_specific_strand_bias, ?alt_count, ?ref_count, "beta");
-        f64::from(alt_count) / f64::from(alt_count + ref_count)
+            .allele_specific_strand_bias, ?alt_obs, ?ref_obs, "beta");
+        f64::from(alt_obs) / f64::from(alt_obs + ref_obs)
     };
     Ok(MethylationEvent::Found(beta))
 }
@@ -291,7 +291,7 @@ mod tests {
             ),
             Ok(
                 Found(
-                    0.2222222222222222,
+                    0.7777777777777778,
                 ),
             ),
         )
@@ -332,7 +332,7 @@ mod tests {
             ),
             Ok(
                 Found(
-                    0.21052631578947367,
+                    0.7894736842105263,
                 ),
             ),
         )
