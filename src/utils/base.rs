@@ -38,6 +38,15 @@ impl Base {
         }
     }
 
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Base::A => "A",
+            Base::C => "C",
+            Base::G => "G",
+            Base::T => "T",
+        }
+    }
+
     pub fn as_char(&self) -> char {
         (*self) as u8 as char
     }

@@ -2,10 +2,7 @@ use crate::{
     utils::Base,
     vcf::{self, Methylated, Record},
 };
-use color_eyre::{
-    Result, Section,
-    eyre::{Context as _, ContextCompat},
-};
+use color_eyre::{Result, Section, eyre::ContextCompat};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use tracing::{instrument, trace};
@@ -143,20 +140,18 @@ fn call_cpg(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
         let ref_count = record
             .info
             .allele_specific_strand_bias
-            .first() // the first allele is the reference
+            .iter()
+            .find(|x| x.base.as_str() == record.fixed_fields.r#ref) // the first allele is the reference
             .wrap_err("allele specific strand bias should have ref allele")
             .note("This is a program error")?
             .ot;
-        let alt_idx = allels
-            .pos("T")
-            .wrap_err("T base should be present in alts after previous checks")
-            .note("This is a program error")?;
 
         let alt_count = record
             .info
             .allele_specific_strand_bias
-            .get(alt_idx)
-            .wrap_err("Failed to get A base in allele specific strand bias")
+            .iter()
+            .find(|x| x.base.as_str() == "T")
+            .wrap_err("Failed to get T base in allele specific strand bias")
             .note("This is a program error")?
             .ot;
         f64::from(alt_count) / f64::from(alt_count + ref_count)
@@ -220,19 +215,17 @@ fn call_gpc(record: &vcf::Record, config: &ThresholdConfig) -> Result<Methylatio
         let ref_count = record
             .info
             .allele_specific_strand_bias
-            .first() // the first allele is the reference
+            .iter()
+            .find(|x| x.base.as_str() == record.fixed_fields.r#ref)
             .wrap_err("allele specific strand bias should have ref allele")
             .note("This is a program error")?
             .ob;
-        let alt_idx = allels
-            .pos("A")
-            .wrap_err("A base should be present in alts after previous checks")
-            .note("This is a program error")?;
 
         let alt_count = record
             .info
             .allele_specific_strand_bias
-            .get(alt_idx)
+            .iter()
+            .find(|x| x.base.as_str() == "A")
             .wrap_err("Failed to get A base in allele specific strand bias")
             .note("This is a program error")?
             .ob;

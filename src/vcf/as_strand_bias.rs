@@ -1,3 +1,4 @@
+use crate::utils::Base;
 use color_eyre::eyre::{Context as _, Result};
 use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
@@ -19,6 +20,8 @@ impl Deref for AlleleSpecificStrandBias {
 /// Counts of reads supporting an allele on the original top and bottom strands
 #[derive(Debug, Clone)]
 pub struct StrandCounts {
+    /// Base of the allele
+    pub base: Base,
     /// Number of reads from original top
     pub ot: u32,
     /// Number of reads from original bottom
