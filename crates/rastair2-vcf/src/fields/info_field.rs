@@ -86,12 +86,16 @@ pub trait InfoFieldValue: Sized {
     fn write(record: &mut Record, tag: &str, values: &[Self]) -> Result<()>;
 }
 
-impl InfoFieldValue for () {
+impl InfoFieldValue for bool {
     const TYPE_NAME: &'static str = "Flag";
 
-    fn write(record: &mut Record, tag: &str, _values: &[()]) -> Result<()> {
+    fn write(record: &mut Record, tag: &str, values: &[bool]) -> Result<()> {
         record.clear_info_flag(tag.as_bytes()).wrap_err("Failed to clear info field")?;
-        record.push_info_flag(tag.as_bytes()).wrap_err("Failed to set flag")
+        if values.first().copied().unwrap_or_default() {
+            record.push_info_flag(tag.as_bytes()).wrap_err("Failed to set flag")
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -338,7 +342,7 @@ macro_rules! info_field {
         #[doc = $desc]
         #[doc = "(flag)"]
         #[derive(Debug, Clone)]
-        pub struct $name;
+        pub struct $name(pub bool);
 
         impl $crate::VcfField for $name {
             const ID: &'static str = $id;
@@ -349,13 +353,14 @@ macro_rules! info_field {
         }
 
         impl $crate::InfoField for $name {
-            type Type = ();
+            type Type = bool;
             const NUMBER: $crate::InfoFieldNumber = $crate::InfoFieldNumber::Flag;
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
+                use color_eyre::eyre::WrapErr;
                 use $crate::VcfField as _;
 
-                <() as $crate::InfoFieldValue>::write(record, Self::ID, &[])
+                <bool as $crate::InfoFieldValue>::write(record, Self::ID, &[self.0])
                     .wrap_err_with(|| format!("Failed to write info flag {}", Self::ID))
             }
         }
@@ -401,13 +406,19 @@ mod tests {
         let mut record = vcf.empty_record();
 
         assert!(!record.info(Flag::ID.as_bytes()).flag()?);
-        Flag.write(&mut record)?;
+        Flag(false).write(&mut record)?;
+        assert!(!record.info(Flag::ID.as_bytes()).flag()?);
+        Flag(true).write(&mut record)?;
         assert!(record.info(Flag::ID.as_bytes()).flag()?);
 
-        Glag.write(&mut record)?;
+        // NOTE: clearing flag with `Flag(false).write(&mut record)?;` or
+        // `record.clear_info_flag(Flag::ID.as_bytes())?;` does not work -- bug
+        // in htslib?
+
+        Glag(true).write(&mut record)?;
         assert!(record.info(b"Glag").flag()?);
 
-        Klag.write(&mut record)?;
+        Klag(true).write(&mut record)?;
         assert!(record.info(b"Klag").flag()?);
 
         vcf.write(&record).wrap_err("Failed to write record")?;
