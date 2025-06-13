@@ -10,11 +10,11 @@ use tracing::{instrument, trace};
 #[derive(Debug, Clone, clap::Args)]
 pub struct ThresholdConfig {
     /// The minimum VAF to call a variant
-    #[clap(long, default_value_t = 0.1)]
+    #[clap(long, default_value_t = 0.)]
     pub vaf_min: f64,
 
     /// The minimum number of reads to call a variant
-    #[clap(long, default_value_t = 5)]
+    #[clap(long, default_value_t = 0)]
     pub reads_min: usize,
 }
 
