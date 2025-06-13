@@ -1,7 +1,4 @@
-use crate::{
-    utils::Base,
-    vcf::{self, Methylated, Record},
-};
+use crate::vcf::{self, Methylated, Record};
 use color_eyre::{Result, Section, eyre::ContextCompat};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -42,7 +39,7 @@ fn call_methylation(record: &vcf::Record, config: &ThresholdConfig) -> Result<Me
     } else if record.fixed_fields.r#ref == "G" {
         call_g(record, config)
     } else {
-        Ok(MethylationEvent::no("Not a CpG site"))
+        Ok(MethylationEvent::no("Not a C or G site"))
     }
 }
 
@@ -86,14 +83,11 @@ impl Record {
 }
 
 fn call_c(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
-    let context = &record.info.sequence_context;
-    let is_cpg =
-        &record.fixed_fields.r#ref == "C" && context.after_1.filter(|x| *x == Base::G).is_some();
-    if !is_cpg {
+    if !record.info.in_cp_g.0 {
         return Ok(MethylationEvent::no("Not a CpG site"));
     }
 
-    if is_cpg && !record.fixed_fields.alt.iter().any(|alt| alt == "T") {
+    if !record.fixed_fields.alt.iter().any(|alt| alt == "T") {
         return Ok(MethylationEvent::no("No T base in alts"));
     }
 
@@ -159,11 +153,8 @@ fn call_c(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationE
 }
 
 fn call_g(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
-    let context = &record.info.sequence_context;
-    let is_reverse_cpg =
-        &record.fixed_fields.r#ref == "G" && context.before_1.filter(|x| *x == Base::C).is_some();
-    if !is_reverse_cpg {
-        return Ok(MethylationEvent::no("Not a CpG site (reverse strand)"));
+    if !record.info.in_cp_g.0 {
+        return Ok(MethylationEvent::no("Not a CpG site"));
     }
 
     if !record.fixed_fields.alt.iter().any(|alt| alt == "A") {
@@ -414,7 +405,7 @@ mod tests {
             ),
             Ok(
                 NotFound {
-                    failed_at: "Not a CpG site",
+                    failed_at: "Not a C or G site",
                 },
             ),
         )
