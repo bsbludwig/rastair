@@ -12,9 +12,21 @@ pub struct Region {
 }
 
 impl Region {
+    pub fn range(&self) -> std::ops::Range<u64> {
+        self.start..self.end
+    }
+
     /// Returns true if the given position falls within this region's bounds
     pub fn contains(&self, pos: u64) -> bool {
-        (self.start..self.end).contains(&pos)
+        self.range().contains(&pos)
+    }
+
+    pub fn len(&self) -> u64 {
+        self.end - self.start
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start >= self.end
     }
 }
 

@@ -42,7 +42,10 @@ pub fn call(params: &CallParams) -> Result<()> {
     if regions.is_empty() {
         warn!("No segments found in BAM file, nothing to do");
         return Ok(());
+    } else if regions[0].region.len() < 2 {
+        warn!(region=%regions[0].region, "Given range is one base long, this will not yield any results for context-specific methylation calling.");
     }
+
     debug!("Going to process {} segments", regions.len());
 
     // Create a VCF writer for the output
