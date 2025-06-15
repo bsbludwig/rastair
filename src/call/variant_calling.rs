@@ -5,6 +5,8 @@ use crate::{
 use color_eyre::eyre::Result;
 use rastair2_vcf::standard_fields::*;
 
+mod error_model;
+pub use error_model::ErrorModel;
 impl VariantCandidatePileup {
     pub fn calling_metrics(&self) -> Result<Format> {
         Ok(Format {
