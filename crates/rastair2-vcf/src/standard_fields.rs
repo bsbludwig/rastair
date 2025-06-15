@@ -44,3 +44,5 @@ filter!(PASS, "All filters pass");
 
 mod strand_bias;
 pub use strand_bias::StrandBias;
+mod genotype;
+pub use genotype::{Genotype, GenotypeAllele};

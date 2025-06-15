@@ -81,7 +81,7 @@ vcf_record!(
     // Call data
     //
     // NOTE: The first sub-field must always be the genotype (GT) if it is present.
-    format: [SampleReadDepth, Methylated],
+    format: [Genotype, SampleReadDepth, Methylated],
     // hint to allocate this many slots for format data
     min_samples: 1
 );
