@@ -1,5 +1,5 @@
 use crate::{
-    call::methylation::params::MethylationCallingParams,
+    call::{methylation::params::MethylationCallingParams, variant_calling::VariantCallingParams},
     sequence::{ChunkRegion, SegmentsParams},
     vcf::{self},
     vcf_writer,
@@ -21,6 +21,9 @@ pub mod test_helpers;
 pub struct CallParams {
     #[command(flatten)]
     segments: SegmentsParams,
+
+    #[command(flatten)]
+    variant_calling: VariantCallingParams,
 
     #[command(flatten)]
     methylation: MethylationCallingParams,
