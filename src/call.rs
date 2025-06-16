@@ -8,10 +8,10 @@ use color_eyre::eyre::{Result, WrapErr};
 use rastair2_vcf::Vcf;
 use tracing::{debug, info, instrument, warn};
 
-mod methylation;
-mod metrics;
-mod process;
-mod variant_calling;
+pub mod methylation;
+pub mod metrics;
+pub mod process;
+pub mod variant_calling;
 pub mod variants;
 
 #[cfg(test)]
