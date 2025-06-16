@@ -1,7 +1,7 @@
 //! Helpers for writing concise tests.
 
 use crate::{
-    call::variants::VariantCandidatePileup,
+    call::{process::IncludeAllCpGs, variants::VariantCandidatePileup},
     sequence::{SegmentationParams, SegmentsParams},
     utils::RegionString,
 };
@@ -35,7 +35,8 @@ pub fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
 
     let chunk = readers.segments()?.next().wrap_err("failed to fetch segment")?;
 
-    let pileups = chunk.process(&mut readers).wrap_err("failed to process region")?;
+    let pileups =
+        chunk.process(&mut readers, IncludeAllCpGs::Yes).wrap_err("failed to process region")?;
     let pileup = pileups
         .into_iter()
         .find(|p| p.pos == pos)

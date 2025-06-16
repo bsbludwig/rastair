@@ -145,3 +145,38 @@ fn validates_region_arg() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn includes_all_cpgs_when_methylation_calling() -> Result<(), Box<dyn std::error::Error>> {
+    apply_common_filters!();
+    assert_cmd_snapshot!(
+        "does not include unmethylated cpgs without alts",
+        rastair().args([
+            "call",
+            "-r",
+            "tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "-l",
+            "chr19:6117965-6118004",
+            "-o",
+            "-"
+        ])
+    );
+
+    assert_cmd_snapshot!(
+        "includes all cpgs",
+        rastair().args([
+            "call",
+            "-r",
+            "tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "-l",
+            "chr19:6117965-6118004",
+            "-o",
+            "-",
+            "--calling=thresholds"
+        ])
+    );
+
+    Ok(())
+}

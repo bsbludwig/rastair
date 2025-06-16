@@ -59,7 +59,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     regions.into_iter().try_for_each(|region| {
         regions_seen += 1;
         region
-            .process(&mut readers)
+            .process(&mut readers, params.methylation.should_include_all_cpgs())
             .and_then(|piles| {
                 piles.into_iter().try_for_each(|pile| {
                     pile.variant_metrics(&params.variant_calling)

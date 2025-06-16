@@ -4,7 +4,7 @@ use crate::{
         variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
-    utils::{StrandFromRecord, TryAsBase as _},
+    utils::{Base, StrandFromRecord, TryAsBase as _},
     vcf::{self, Filters},
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
@@ -17,9 +17,19 @@ use smallvec::SmallVec;
 use std::rc::Rc;
 use tracing::{Level, debug, instrument, trace, warn};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncludeAllCpGs {
+    Yes,
+    No,
+}
+
 impl ChunkRegion {
     #[instrument(level = "info", skip_all, fields(region=%self.region))]
-    pub fn process(&self, readers: &mut Readers) -> Result<Vec<VariantCandidatePileup>> {
+    pub fn process(
+        &self,
+        readers: &mut Readers,
+        include_cpgs: IncludeAllCpGs,
+    ) -> Result<Vec<VariantCandidatePileup>> {
         let segment = readers.segment(self).wrap_err("failed to fetch segment")?;
         trace!(len = segment.sequence.len(), "Processing region");
 
@@ -40,7 +50,7 @@ impl ChunkRegion {
                 self.contains(u64::from(p.pos()))
             })
             .flat_map(|pile| {
-                collect_candidate(&pile, segment.clone())
+                collect_candidate(&pile, segment.clone(), include_cpgs)
                     .wrap_err_with(|| {
                         format!("Failed to get candidate from pileup at position {}", pile.pos())
                     })
@@ -77,6 +87,7 @@ impl ChunkRegion {
 fn collect_candidate(
     pile: &Pileup,
     segment: Rc<Segment>,
+    include_cpgs: IncludeAllCpGs,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
@@ -95,17 +106,38 @@ fn collect_candidate(
     let reference_base =
         segment.sequence.get(idx).wrap_err("failed to get reference base")?.as_base()?;
 
-    if bases.matches(reference_base) {
-        // Matches reference base, boring.
-        // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
-        Ok(None)
-    } else {
+    if !bases.matches(reference_base)
+        || include_cpgs == IncludeAllCpGs::Yes
+            && is_cpg(
+                reference_base,
+                idx.checked_sub(1)
+                    .and_then(|idx| segment.sequence.get(idx))
+                    .and_then(|x| x.as_base().ok()),
+                idx.checked_add(1)
+                    .and_then(|idx| segment.sequence.get(idx))
+                    .and_then(|x| x.as_base().ok()),
+            )
+    {
         Ok(Some(VariantCandidatePileup {
             segment: segment.clone(),
             pos: pile.pos(),
             bases,
             reference_base,
         }))
+    } else {
+        // Matches reference base, boring.
+        // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
+        Ok(None)
+    }
+}
+
+fn is_cpg(reference_base: Base, before: Option<Base>, after: Option<Base>) -> bool {
+    if reference_base == Base::C {
+        after == Some(Base::T)
+    } else if reference_base == Base::G {
+        before == Some(Base::C)
+    } else {
+        false
     }
 }
 

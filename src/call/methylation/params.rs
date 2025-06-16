@@ -1,4 +1,4 @@
-use crate::vcf;
+use crate::{call::process::IncludeAllCpGs, vcf};
 use color_eyre::{Result, eyre::Context};
 use std::fmt;
 use tracing::instrument;
@@ -14,6 +14,15 @@ pub struct MethylationCallingParams {
 }
 
 impl MethylationCallingParams {
+    // todo: make this a generic filter that can be called directly when looking at a pileup
+    pub fn should_include_all_cpgs(&self) -> IncludeAllCpGs {
+        if matches!(self.calling, MethylationCallingMode::None) {
+            IncludeAllCpGs::No
+        } else {
+            IncludeAllCpGs::Yes
+        }
+    }
+
     /// Call methylation events based on the configured mode
     #[instrument(level = "trace", skip_all)]
     pub fn call(&self, record: vcf::Record) -> Result<vcf::Record> {
