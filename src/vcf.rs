@@ -54,6 +54,18 @@ info_field!(
 info_field!(NumIndels(f64), "NOI", "RMS of number of indels", InfoFieldNumber::OnePerAltAndRef);
 info_field!(InCpG, "CPG", "Is this a CpG site?");
 
+format_field!(
+    GenotypeLikelihood(Option<f64>),
+    "GL",
+    "Genotype likelihoods",
+    FormatFieldNumber::OnePerGenotype
+);
+format_field!(
+    GenotypeConfidence(Option<f64>),
+    "GC",
+    "Genotype confidence",
+    FormatFieldNumber::OnePerGenotype
+);
 format_field!(Methylated(Option<f64>), "M5mC", "Methylation level at CpG sites", 1);
 
 vcf_record!(
@@ -81,7 +93,7 @@ vcf_record!(
     // Call data
     //
     // NOTE: The first sub-field must always be the genotype (GT) if it is present.
-    format: [Genotype, SampleReadDepth, Methylated],
+    format: [Genotype, GenotypeLikelihood, GenotypeConfidence, SampleReadDepth, Methylated],
     // hint to allocate this many slots for format data
     min_samples: 1
 );

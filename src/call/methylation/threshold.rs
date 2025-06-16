@@ -245,14 +245,14 @@ fn update_record(mut record: vcf::Record) -> Result<vcf::Record> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::test_helpers::variant_pileup;
+    use crate::call::{test_helpers::variant_pileup, variant_calling::VariantCallingParams};
     use color_eyre::Result;
     use insta::assert_debug_snapshot;
 
     #[test]
     fn cpg_c_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105084)?;
-        let metrics = pileup.variant_metrics()?;
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
 
         assert_debug_snapshot!((
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn cpg_g_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105085)?;
-        let metrics = pileup.variant_metrics()?;
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
 
         assert_debug_snapshot!((
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn c_but_not_cpg() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105197)?;
-        let metrics = pileup.variant_metrics()?;
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
 
         assert_debug_snapshot!((
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn random_other_variant() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105114)?;
-        let metrics = pileup.variant_metrics()?;
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
 
         assert_debug_snapshot!((

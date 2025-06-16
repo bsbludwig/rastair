@@ -1,5 +1,8 @@
 use crate::{
-    call::variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
+    call::{
+        variant_calling::VariantCallingParams,
+        variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
+    },
     sequence::{ChunkRegion, Readers, Segment},
     utils::{StrandFromRecord, TryAsBase as _},
     vcf::{self, Filters},
@@ -154,10 +157,10 @@ fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
 impl VariantCandidatePileup {
     /// Collect metrics
     #[instrument(level = "trace", skip_all)]
-    pub fn variant_metrics(&self) -> Result<vcf::Record> {
+    pub fn variant_metrics(&self, params: &VariantCallingParams) -> Result<vcf::Record> {
         let metrics = self.metrics().wrap_err("Failed to calculate metrics")?;
         let calling_metrics =
-            self.calling_metrics().wrap_err("Failed to calculate calling metrics")?;
+            self.calling_metrics(params).wrap_err("Failed to calculate calling metrics")?;
 
         Ok(vcf::Record {
             fixed_fields: self.fixed_fields(),

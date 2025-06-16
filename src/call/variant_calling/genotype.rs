@@ -1,14 +1,42 @@
 // Adapted from rastair1, AGPL-3.0-only, (C) Benjamin Schuster-Boeckler
 // source: https://bitbucket.org/bsblabludwig/rastair/src/306bf046f14c64992c06b9000c60113e35a0f766/src/operations/count_variants/mod.rs#lines-394
 
-use crate::call::variant_calling::ErrorModel;
+use crate::{
+    call::{variant_calling::ErrorModel, variants::VariantCandidatePileup},
+    utils::{Base, Strand},
+};
 use color_eyre::eyre::{Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
 use rastair2_vcf::standard_fields::GenotypeAllele;
-use tracing::trace;
+use tracing::{debug, instrument, trace};
+
+impl VariantCandidatePileup {
+    pub fn estimate_genotype(&self, error_model: ErrorModel) -> Option<EstimatedGenotype> {
+        let (nosnp, snp) = if self.reference_base == Base::C {
+            (
+                self.bases.iter().filter(|b| b.base == Base::C && b.strand == Strand::OB).count(),
+                self.bases.iter().filter(|b| b.base == Base::T && b.strand == Strand::OB).count(),
+            )
+        } else if self.reference_base == Base::G {
+            (
+                self.bases.iter().filter(|b| b.base == Base::G && b.strand == Strand::OT).count(),
+                self.bases.iter().filter(|b| b.base == Base::A && b.strand == Strand::OT).count(),
+            )
+        } else {
+            return None;
+        };
+        match EstimatedGenotype::calculate(nosnp, snp, error_model) {
+            Ok(gt) => Some(gt),
+            Err(error) => {
+                debug!(%error, "Failed to calculate genotype");
+                None
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Genotype {
+pub enum GenotypeTag {
     /// Homozygous reference (CC)
     #[default]
     CC,
@@ -18,29 +46,30 @@ pub enum Genotype {
     TT,
 }
 
-impl From<Genotype> for [GenotypeAllele; 2] {
-    fn from(value: Genotype) -> Self {
+impl From<GenotypeTag> for [GenotypeAllele; 2] {
+    fn from(value: GenotypeTag) -> Self {
         match value {
-            Genotype::CC => [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)],
-            Genotype::CT => [GenotypeAllele::Phased(0), GenotypeAllele::Phased(1)],
-            Genotype::TT => [GenotypeAllele::Phased(1), GenotypeAllele::Phased(1)],
+            GenotypeTag::CC => [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)],
+            GenotypeTag::CT => [GenotypeAllele::Phased(0), GenotypeAllele::Phased(1)],
+            GenotypeTag::TT => [GenotypeAllele::Phased(1), GenotypeAllele::Phased(1)],
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct EstimatedGenotype {
-    pub genotype: Genotype,
+    pub genotype: GenotypeTag,
     pub likelihood: f64,
     pub confidence: f64,
 }
 
 impl EstimatedGenotype {
     #[allow(clippy::cast_possible_truncation)]
+    #[instrument(level = "trace", name = "calculate_genotype")]
     pub fn calculate(ref_count: usize, alt_count: usize, error_model: ErrorModel) -> Result<Self> {
         let error_rate = error_model.error_rate();
         ensure!(
-            ref_count > 0 && alt_count > 0,
+            ref_count > 0 || alt_count > 0,
             "No ref or alt read counts, cannot compute likelihood"
         );
         ensure!(error_rate > f64::MIN, "Error rate too small, cannot calculate likelihood");
@@ -68,14 +97,14 @@ impl EstimatedGenotype {
             if p_het < p_hom {
                 trace!("Assuming CC: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
                 Ok(EstimatedGenotype {
-                    genotype: Genotype::CC,
+                    genotype: GenotypeTag::CC,
                     likelihood: p_hom,
                     confidence: (p_hom - p_het) / p_hom,
                 })
             } else {
                 trace!("Assuming CT: ({ref_count} vs {alt_count}) -> ({p_het:.5} >= {p_hom:.5})");
                 Ok(EstimatedGenotype {
-                    genotype: Genotype::CT,
+                    genotype: GenotypeTag::CT,
                     likelihood: p_het / p_het_max,
                     confidence: (p_het - p_hom) / p_het,
                 })
@@ -85,14 +114,14 @@ impl EstimatedGenotype {
             if p_het < p_hom {
                 trace!("Assuming TT: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
                 Ok(EstimatedGenotype {
-                    genotype: Genotype::TT,
+                    genotype: GenotypeTag::TT,
                     likelihood: p_hom,
                     confidence: (p_hom - p_het) / p_hom,
                 })
             } else {
                 trace!("Assuming TC: ({ref_count} vs {alt_count}) -> ({p_het:.5} >= {p_hom:.5})");
                 Ok(EstimatedGenotype {
-                    genotype: Genotype::CT,
+                    genotype: GenotypeTag::CT,
                     likelihood: p_het / p_het_max,
                     confidence: (p_het - p_hom) / p_het,
                 })

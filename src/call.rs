@@ -62,7 +62,7 @@ pub fn call(params: &CallParams) -> Result<()> {
             .process(&mut readers)
             .and_then(|piles| {
                 piles.into_iter().try_for_each(|pile| {
-                    pile.variant_metrics()
+                    pile.variant_metrics(&params.variant_calling)
                         .wrap_err("Failed to collect metrics")
                         .and_then(|record| {
                             params.methylation.call(record).wrap_err("Failed to call methylation")
