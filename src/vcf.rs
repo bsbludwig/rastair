@@ -3,6 +3,10 @@
 //! This module defines structures that are used for both representing the data
 //! in VCF as well as intermediary data structures in rastair itself. This makes
 //! sure we put all data interesting to us also in VCF.
+//!
+//! See
+//! <https://github.com/samtools/hts-specs/blob/0d7f8774658f7cee0a4540b0682174e460726432/VCFv4.5.tex>
+//! for the VCF spec.
 
 use rastair2_vcf::{standard_fields::*, *};
 
