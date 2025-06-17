@@ -20,6 +20,15 @@ Reads   . . . . . . .    +
 We can see that in the `CG` context, the `C` is read as `T` in 3 OT reads, and the `G` is read as `A` in 2 OB reads.
 This gives us a good indication that the `C` is methylated.
 
+## Output (VCF)
+
+When methylation calling is enabled, Rastair will include all `CpG` sites in the output VCF file.
+It will set the beta value in the `M5mC` format field for each site.
+
+If a certain threshold of confidence is met,
+the alt allele will be set to `.` since it is not considered a variant in the traditional sense.
+(NOTE: This is not yet implemented.)
+
 ## Data flow
 
 Right now, Rastair collects all possible variant positions from aligned reads relative to a given reference genome.
