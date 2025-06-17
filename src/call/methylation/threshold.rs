@@ -6,16 +6,17 @@ use color_eyre::{
     Result, Section,
     eyre::{Context, ContextCompat},
 };
+use rastair2_vcf::standard_fields::PASS;
 use tracing::{instrument, trace};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct ThresholdConfig {
-    /// The minimum VAF to call a variant
+    /// The minimum variant allele frequency
     #[clap(long, default_value_t = 0.)]
     pub vaf_min: f64,
 
     /// The minimum number of reads to call a variant
-    #[clap(long, default_value_t = 0)]
+    #[clap(long, default_value_t = 3)]
     pub reads_min: usize,
 }
 
@@ -45,7 +46,10 @@ pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Re
             if record.fixed_fields.alt == [alt.as_str()] && others == 0 {
                 record.fixed_fields.alt = smallvec::smallvec![".".into()];
             }
-            // add_filters(&mut record, config, ref_, alt).wrap_err("Failed to add filters")?;
+            add_filters(&mut record, config, ref_, alt).wrap_err("Failed to add filters")?;
+            if record.filters.is_empty() {
+                record.filters.add(PASS);
+            }
         }
         other => {
             trace!(?other, "Not methylated");
@@ -60,29 +64,10 @@ fn add_filters(
     record: &mut vcf::Record,
     config: &ThresholdConfig,
     _ref_base: Base,
-    alt_base: Base,
+    _alt_base: Base,
 ) -> Result<()> {
     if *record.info.read_depth < config.reads_min {
-        // record.filters.add(todo!());
-    }
-
-    // Check if the VAF is above the minimum threshold
-    let t_alt_idx = record
-        .fixed_fields
-        .alt
-        .iter()
-        .position(|b| b == alt_base.as_str())
-        .wrap_err("Alt base should be present in alts after previous checks")
-        .note("This is a program error")?;
-    if *record
-        .info
-        .allel_frequency
-        .get(t_alt_idx)
-        .wrap_err("Failed to get alt base in VAF")
-        .note("This is a program error")?
-        < config.vaf_min
-    {
-        // record.filters.add(todo!());
+        record.filters.add(vcf::lowDP);
     }
 
     Ok(())

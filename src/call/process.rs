@@ -197,11 +197,7 @@ impl VariantCandidatePileup {
         Ok(vcf::Record {
             fixed_fields: self.fixed_fields(),
             // FIXME: Add filters based on thresholds
-            filters: {
-                let mut f = Filters::new();
-                f.add(rastair2_vcf::standard_fields::PASS);
-                f
-            },
+            filters: Filters::new(),
             info: metrics,
             samples: smallvec::smallvec![calling_metrics],
         })

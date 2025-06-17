@@ -38,6 +38,14 @@ macro_rules! vcf_record {
             pub fn add(&mut self, filter: impl $crate::VcfFilter) {
                 self.0.push(filter.filter());
             }
+
+            pub fn len(&self) -> usize {
+                self.0.len()
+            }
+
+            pub fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
         }
 
         impl $crate::WriteToVcf for Filters {

@@ -22,8 +22,9 @@ pub use sequence_context::SequenceContext;
 //   filter!(s50, "Less than 50% of samples have data");
 // - custom filters
 //   filter!(strand_bias, "Significant strand bias detected");
-//   filter!(low_coverage, "Low coverage detected");
 //   filter!(read_pos, "Variants clustered at read ends");
+
+filter!(lowDP, "Low read depth");
 
 info_field!(
     AllelBaseQuality(f64),
@@ -74,7 +75,7 @@ format_field!(Methylated(Option<f64>), "M5mC", "Methylation level at CpG sites",
 
 vcf_record!(
     // pass or why not
-    filters: [PASS],
+    filters: [PASS, lowDP],
     // general info
     info: [
         ReadDepthPerAllel,
