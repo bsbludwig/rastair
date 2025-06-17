@@ -2,8 +2,10 @@ use crate::{
     utils::Base,
     vcf::{self, Methylated},
 };
-use color_eyre::{Result, Section, eyre::ContextCompat};
-use smol_str::SmolStr;
+use color_eyre::{
+    Result, Section,
+    eyre::{Context, ContextCompat},
+};
 use tracing::{instrument, trace};
 
 #[derive(Debug, Clone, clap::Args)]
@@ -22,71 +24,46 @@ pub struct ThresholdConfig {
     pos = record.fixed_fields.pos,
 ), name = "methylation_call")]
 pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record> {
-    match call_methylation(&record, config)? {
-        MethylationEvent::NotACpG => {
-            // trace!("Not a CpG site, skipping");
-        }
-        MethylationEvent::Found(beta) => {
+    if !record.info.in_cp_g.0 {
+        trace!("Not a CpG site, skipping");
+        return Ok(record);
+    }
+
+    let (ref_, alt) = if record.fixed_fields.r#ref == "C" {
+        (Base::C, Base::T)
+    } else if record.fixed_fields.r#ref == "G" {
+        (Base::G, Base::A)
+    } else {
+        // trace!("Not a CpG site, skipping");
+        return Ok(record);
+    };
+
+    match call_position(&record, ref_, alt).wrap_err("Failed to call position")? {
+        MethylationEvent::Found { beta, others } => {
             trace!(beta, "Methylation event found");
             record.samples[0].methylated = Methylated(Some(beta));
-            if beta > 1.0 {
-                // fixme: this disables it right now
+            if record.fixed_fields.alt == [alt.as_str()] && others == 0 {
                 record.fixed_fields.alt = smallvec::smallvec![".".into()];
             }
+            // add_filters(&mut record, config, ref_, alt).wrap_err("Failed to add filters")?;
         }
-        MethylationEvent::NotFound { failed_at } => {
-            trace!(%failed_at, "Not methylated");
+        other => {
+            trace!(?other, "Not methylated");
             record.samples[0].methylated = Methylated(Some(0.));
         }
     }
+
     Ok(record)
 }
 
-fn call_methylation(record: &vcf::Record, config: &ThresholdConfig) -> Result<MethylationEvent> {
-    if record.fixed_fields.r#ref == "C" {
-        call_position(record, config, Base::C, Base::T)
-    } else if record.fixed_fields.r#ref == "G" {
-        call_position(record, config, Base::G, Base::A)
-    } else {
-        Ok(MethylationEvent::NotACpG)
-    }
-}
-
-#[derive(Debug)]
-enum MethylationEvent {
-    NotACpG,
-    NotFound {
-        failed_at: SmolStr,
-    },
-    /// `CpG` methylation event found, give beta value
-    ///
-    /// `alt_count/(alt_count+ref_count)` for OT (in case of ref `C`) or OB (in case of ref `G`)
-    Found(f64),
-}
-
-impl MethylationEvent {
-    /// Returns true if the event is a methylation event
-    pub fn no(t: impl Into<SmolStr>) -> MethylationEvent {
-        MethylationEvent::NotFound { failed_at: t.into() }
-    }
-}
-
-fn call_position(
-    record: &vcf::Record,
+fn add_filters(
+    record: &mut vcf::Record,
     config: &ThresholdConfig,
-    ref_base: Base,
+    _ref_base: Base,
     alt_base: Base,
-) -> Result<MethylationEvent> {
-    if !record.info.in_cp_g.0 {
-        return Ok(MethylationEvent::no("Not a CpG site"));
-    }
-
-    if !record.fixed_fields.alt.iter().any(|alt| alt == alt_base.as_str()) {
-        return Ok(MethylationEvent::no("No T base in alts"));
-    }
-
+) -> Result<()> {
     if *record.info.read_depth < config.reads_min {
-        return Ok(MethylationEvent::no("Not enough reads"));
+        // record.filters.add(todo!());
     }
 
     // Check if the VAF is above the minimum threshold
@@ -105,26 +82,51 @@ fn call_position(
         .note("This is a program error")?
         < config.vaf_min
     {
-        return Ok(MethylationEvent::no("VAF below minimum threshold"));
+        // record.filters.add(todo!());
     }
 
+    Ok(())
+}
+
+#[derive(Debug)]
+enum MethylationEvent {
+    /// `CpG` methylation event found, give beta value
+    ///
+    /// `alt_count/(alt_count+ref_count)` for OT (in case of ref `C`) or OB (in case of ref `G`)
+    Found {
+        beta: f64,
+        others: u32,
+    },
+    NotACpG,
+    NoEvidenceByAlt,
+}
+
+fn call_position(record: &vcf::Record, ref_base: Base, alt_base: Base) -> Result<MethylationEvent> {
+    if !record.info.in_cp_g.0 {
+        return Ok(MethylationEvent::NotACpG);
+    }
+
+    if !record.fixed_fields.alt.iter().any(|alt| alt == alt_base.as_str()) {
+        return Ok(MethylationEvent::NoEvidenceByAlt);
+    }
+
+    let refs = record
+        .info
+        .allele_specific_strand_bias
+        .iter()
+        .find(|x| x.base == ref_base)
+        .wrap_err("allele specific strand bias should have ref allele")
+        .note("This is a program error")?;
+
+    let alts = record
+        .info
+        .allele_specific_strand_bias
+        .iter()
+        .find(|x| x.base == alt_base)
+        .wrap_err("Failed to get alt base in allele specific strand bias")
+        .note("This is a program error")?;
+
     let beta = {
-        let refs = record
-            .info
-            .allele_specific_strand_bias
-            .iter()
-            .find(|x| x.base == ref_base)
-            .wrap_err("allele specific strand bias should have ref allele")
-            .note("This is a program error")?;
-
-        let alts = record
-            .info
-            .allele_specific_strand_bias
-            .iter()
-            .find(|x| x.base == alt_base)
-            .wrap_err("Failed to get alt base in allele specific strand bias")
-            .note("This is a program error")?;
-
         let (refs, alts) = if ref_base == Base::C {
             // ref C: alt is T and we need to look at OT only
             (refs.ot, alts.ot)
@@ -132,10 +134,16 @@ fn call_position(
             // ref G: alt is A and we need to look at OB only
             (refs.ob, alts.ob)
         };
-
         f64::from(alts) / f64::from(alts + refs)
     };
-    Ok(MethylationEvent::Found(beta))
+
+    let others = {
+        let (_other_refs, other_alts) =
+            if ref_base == Base::C { (refs.ob, alts.ob) } else { (refs.ot, alts.ot) };
+        other_alts
+    };
+
+    Ok(MethylationEvent::Found { beta, others })
 }
 
 // todo: test this!
@@ -155,20 +163,25 @@ mod tests {
     #[test]
     fn cpg_c_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105084)?;
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        let metrics = call(metrics, &config)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
             pileup.pos,
             pileup.reference_base,
+            &metrics.info.in_cp_g,
             &metrics.info.allele_specific_strand_bias,
-            call_methylation(&metrics, &config),
+            &metrics.samples[0].methylated,
         ), @r#"
         (
             "chr19",
             6105084,
             C,
+            InCpG(
+                true,
+            ),
             AlleleSpecificStrandBias(
                 [
                     StrandCounts {
@@ -183,8 +196,8 @@ mod tests {
                     },
                 ],
             ),
-            Ok(
-                Found(
+            Methylated(
+                Some(
                     0.7777777777777778,
                 ),
             ),
@@ -196,20 +209,25 @@ mod tests {
     #[test]
     fn cpg_g_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105085)?;
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        let metrics = call(metrics, &config)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
             pileup.pos,
             pileup.reference_base,
+            &metrics.info.in_cp_g,
             &metrics.info.allele_specific_strand_bias,
-            call_methylation(&metrics, &config),
+            &metrics.samples[0].methylated,
         ), @r#"
         (
             "chr19",
             6105085,
             G,
+            InCpG(
+                true,
+            ),
             AlleleSpecificStrandBias(
                 [
                     StrandCounts {
@@ -224,8 +242,8 @@ mod tests {
                     },
                 ],
             ),
-            Ok(
-                Found(
+            Methylated(
+                Some(
                     0.7894736842105263,
                 ),
             ),
@@ -237,20 +255,25 @@ mod tests {
     #[test]
     fn c_but_not_cpg() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105197)?;
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        let metrics = call(metrics, &config)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
             pileup.pos,
             pileup.reference_base,
+            &metrics.info.in_cp_g,
             &metrics.info.allele_specific_strand_bias,
-            call_methylation(&metrics, &config),
+            &metrics.samples[0].methylated,
         ), @r#"
         (
             "chr19",
             6105197,
             C,
+            InCpG(
+                false,
+            ),
             AlleleSpecificStrandBias(
                 [
                     StrandCounts {
@@ -265,10 +288,8 @@ mod tests {
                     },
                 ],
             ),
-            Ok(
-                NotFound {
-                    failed_at: "Not a CpG site",
-                },
+            Methylated(
+                None,
             ),
         )
         "#);
@@ -278,20 +299,25 @@ mod tests {
     #[test]
     fn random_other_variant() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105114)?;
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        let metrics = call(metrics, &config)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
             pileup.pos,
             pileup.reference_base,
+            &metrics.info.in_cp_g,
             &metrics.info.allele_specific_strand_bias,
-            call_methylation(&metrics, &config),
+            &metrics.samples[0].methylated,
         ), @r#"
         (
             "chr19",
             6105114,
             A,
+            InCpG(
+                false,
+            ),
             AlleleSpecificStrandBias(
                 [
                     StrandCounts {
@@ -306,8 +332,8 @@ mod tests {
                     },
                 ],
             ),
-            Ok(
-                NotACpG,
+            Methylated(
+                None,
             ),
         )
         "#);
@@ -317,22 +343,25 @@ mod tests {
     #[test]
     fn methylatable_position_not_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6115809)?;
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
-
-        let after = call(metrics, &config)?;
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        let metrics = call(metrics, &config)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
             pileup.pos,
             pileup.reference_base,
-            &after.info.allele_specific_strand_bias,
-            &after.samples[0].methylated,
+            &metrics.info.in_cp_g,
+            &metrics.info.allele_specific_strand_bias,
+            &metrics.samples[0].methylated,
         ), @r#"
         (
             "chr19",
             6115809,
             C,
+            InCpG(
+                true,
+            ),
             AlleleSpecificStrandBias(
                 [
                     StrandCounts {
