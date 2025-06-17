@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 ///
 /// See [VCF specification](https://samtools.github.io/hts-specs/VCFv4.5.pdf) section 1.6.1
 /// from which the descriptions of the fields are taken.
+#[derive(Debug, Clone)]
 pub struct VcfFixedFields {
     /// Chromosome name
     ///

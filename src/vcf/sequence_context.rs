@@ -7,6 +7,7 @@ use smol_str::{SmolStr, SmolStrBuilder};
 /// 5-base sequence context centered on the variant position
 ///
 /// Printed in VCF as string with up to 5 characters.
+#[derive(Debug, Clone)]
 pub struct SequenceContext {
     pub before_2: Option<Base>,
     pub before_1: Option<Base>,

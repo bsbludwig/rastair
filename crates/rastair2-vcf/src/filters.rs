@@ -31,6 +31,7 @@ macro_rules! filter {
     ($name:ident, $description:expr) => {
         #[doc = $description]
         #[doc = "info field for VCF output"]
+        #[derive(Debug, Clone)]
         #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
         pub struct $name;
 

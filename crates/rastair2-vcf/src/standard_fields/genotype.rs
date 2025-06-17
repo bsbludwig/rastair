@@ -22,6 +22,7 @@ pub use rust_htslib::bcf::record::GenotypeAllele;
 use smallvec::SmallVec;
 
 /// Represents a genotype in a VCF record, which can contain multiple alleles.
+#[derive(Debug, Clone)]
 pub struct Genotype(pub SmallVec<GenotypeAllele, 4>);
 
 impl VcfField for Genotype {
