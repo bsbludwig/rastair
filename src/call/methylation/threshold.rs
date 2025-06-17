@@ -313,4 +313,48 @@ mod tests {
         "#);
         Ok(())
     }
+
+    #[test]
+    fn methylatable_position_not_methylated() -> Result<()> {
+        let pileup = variant_pileup("chr19", 6115809)?;
+        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
+
+        let after = call(metrics, &config)?;
+
+        assert_debug_snapshot!((
+            pileup.chrom(),
+            pileup.pos,
+            pileup.reference_base,
+            &after.info.allele_specific_strand_bias,
+            &after.samples[0].methylated,
+        ), @r#"
+        (
+            "chr19",
+            6115809,
+            C,
+            AlleleSpecificStrandBias(
+                [
+                    StrandCounts {
+                        base: C,
+                        ot: 5,
+                        ob: 4,
+                    },
+                    StrandCounts {
+                        base: A,
+                        ot: 1,
+                        ob: 0,
+                    },
+                ],
+            ),
+            Methylated(
+                Some(
+                    0.0,
+                ),
+            ),
+        )
+        "#);
+
+        Ok(())
+    }
 }
