@@ -35,9 +35,8 @@ macro_rules! vcf_record {
                 Self(smallvec::SmallVec::new())
             }
 
-            pub fn add(mut self, filter: impl $crate::VcfFilter) -> Self {
+            pub fn add(&mut self, filter: impl $crate::VcfFilter) {
                 self.0.push(filter.filter());
-                self
             }
         }
 

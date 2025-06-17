@@ -44,7 +44,7 @@
 //!             alt: smallvec!["C".into(), "G".into()],
 //!             qual: Some(50.0),
 //!         },
-//!         filters: Filters::new().add(q10).add(s50),
+//!         filters: { let mut f = Filters::new(); f.add(q10); f.add(s50); f },
 //!         info: Info {
 //!             allele_frequency: AlleleFrequency(smallvec![0.5, 0.75]),
 //!         },
@@ -216,7 +216,12 @@ mod tests {
                     alt: SmallVec::from(["C".into(), "G".into()]),
                     qual: Some(50.0),
                 },
-                filters: Filters::new().add(q10).add(s50),
+                filters: {
+                    let mut f = Filters::new();
+                    f.add(q10);
+                    f.add(s50);
+                    f
+                },
                 info: Info { allele_frequency: AlleleFrequency(smallvec![0.5, 0.75]) },
                 samples: smallvec![Format {
                     example: Example(smallvec!["0/1".into(), "1/1".into()])
