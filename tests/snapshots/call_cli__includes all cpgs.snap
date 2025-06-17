@@ -54,5 +54,5 @@ chr19	6117998	.	C	.	30	.	AD=18;BQ=35.3648;DP=18;MQ=60;MQ0=0;NS=1;AS_SB=12,6;SC5=
 chr19	6118003	.	G	.	30	.	AD=18;BQ=34.049;DP=18;MQ=60;MQ0=0;NS=1;AS_SB=13,5;SC5=TCGC;ABQ=34.049;AMQ=60;PIR=0.547962;ENT100=1.80808;NAB=79.0784;NOI=0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.999878:18:0
 
 ----- stderr -----
-[TIME] INFO rastair2::call: Wrote output to -
+[TIME] INFO rastair2::call: Wrote output file="-"
 [TIME] INFO rastair2: Call finished [DURATION]

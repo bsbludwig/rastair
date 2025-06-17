@@ -16,7 +16,7 @@ macro_rules! apply_common_filters {
         settings.add_filter(r"\w{4}-[0-9T\-:.]+Z\s", "[TIME]");
         settings.add_filter(r"duration=[\w.]+", "[DURATION]");
         settings.add_filter(r": close time.*", " [CLOSE]");
-        settings.add_filter(r"Wrote output to /.*/test.vcf", "Wrote output to [PATH]");
+        settings.add_filter(r#"file="/.*/test.vcf"#, "file=[PATH]");
         let _bound = settings.bind_to_scope();
     }
 }
@@ -37,15 +37,15 @@ fn random_call() -> Result<()> {
         "chr19:6105700-6105800",
         "--calling=thresholds",
         "-o",
-    ]).arg(&temp_file), @r"
+    ]).arg(&temp_file), @r#"
     success: true
     exit_code: 0
     ----- stdout -----
 
     ----- stderr -----
-    [TIME] INFO rastair2::call: Wrote output to [PATH]
+    [TIME] INFO rastair2::call: Wrote output file=[PATH]"
     [TIME] INFO rastair2: Call finished [DURATION]
-    ");
+    "#);
 
     let result = std::fs::read_to_string(&temp_file).wrap_err("read temp file")?;
     assert_snapshot!(result);
@@ -88,7 +88,7 @@ fn missing_bam() -> Result<()> {
     ----- stderr -----
     error: Invalid value for --fasta-file <FASTA_FILE>: Invalid path "test_data/test.fasta.gz": No such file or directory (os error 2)
 
-    Usage: rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> --vcf-output <VCF_OUTPUT> <BAM_FILE>
+    Usage: rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>
 
     For more information, try '--help'.
     "#);
@@ -111,7 +111,7 @@ fn missing_fasta() -> Result<(), Box<dyn std::error::Error>> {
     ----- stderr -----
     error: Invalid value for --fasta-file <FASTA_FILE>: Invalid path "tests/data/test_which_doesnt_exist.fasta": No such file or directory (os error 2)
 
-    Usage: rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> --vcf-output <VCF_OUTPUT> <BAM_FILE>
+    Usage: rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>
 
     For more information, try '--help'.
     "#);

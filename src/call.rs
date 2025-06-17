@@ -80,7 +80,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     })?;
 
     drop(vcf_writer); // Ensure all data is flushed to the output file
-    info!("Wrote output to {}", params.vcf.vcf_output.display());
+    info!(file = %params.vcf.vcf_output, "Wrote output");
 
     return Ok(());
 }

@@ -16,7 +16,7 @@ pub struct Params {
     /// `.vcf` for VCF (uncompressed),
     /// `.vcf.gz` for VCF (compressed),
     /// `.bcf` for BCF (compressed)
-    #[arg(short = 'o', long)]
+    #[arg(short = 'o', long, default_value = "-")]
     pub vcf_output: ClioPath,
 }
 
