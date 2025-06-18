@@ -14,13 +14,24 @@ use rust_htslib::bam::{
     record::Cigar,
 };
 use smallvec::SmallVec;
-use std::rc::Rc;
+use std::{ops::Deref, rc::Rc};
 use tracing::{Level, debug, instrument, trace, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IncludeAllCpGs {
     Yes,
     No,
+}
+
+impl Deref for IncludeAllCpGs {
+    type Target = bool;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            IncludeAllCpGs::Yes => &true,
+            IncludeAllCpGs::No => &false,
+        }
+    }
 }
 
 impl ChunkRegion {
@@ -105,25 +116,25 @@ fn collect_candidate(
     let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
     let reference_base =
         segment.sequence.get(idx).wrap_err("failed to get reference base")?.as_base()?;
+    let has_alts = !bases.matches(reference_base);
 
-    if !bases.matches(reference_base)
-        || include_cpgs == IncludeAllCpGs::Yes
-            && is_cpg(
-                reference_base,
-                idx.checked_sub(1)
-                    .and_then(|idx| segment.sequence.get(idx))
-                    .and_then(|x| x.as_base().ok()),
-                idx.checked_add(1)
-                    .and_then(|idx| segment.sequence.get(idx))
-                    .and_then(|x| x.as_base().ok()),
-            )
+    let res =
+        VariantCandidatePileup { segment: segment.clone(), pos: pile.pos(), bases, reference_base };
+
+    if has_alts
+        || (*include_cpgs && {
+            let before = idx
+                .checked_sub(1)
+                .and_then(|idx| segment.sequence.get(idx))
+                .and_then(|x| x.as_base().ok());
+            let after = idx
+                .checked_add(1)
+                .and_then(|idx| segment.sequence.get(idx))
+                .and_then(|x| x.as_base().ok());
+            is_cpg(reference_base, before, after)
+        })
     {
-        Ok(Some(VariantCandidatePileup {
-            segment: segment.clone(),
-            pos: pile.pos(),
-            bases,
-            reference_base,
-        }))
+        Ok(Some(res))
     } else {
         // Matches reference base, boring.
         // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
@@ -133,12 +144,22 @@ fn collect_candidate(
 
 fn is_cpg(reference_base: Base, before: Option<Base>, after: Option<Base>) -> bool {
     if reference_base == Base::C {
-        after == Some(Base::T)
+        after == Some(Base::G)
     } else if reference_base == Base::G {
         before == Some(Base::C)
     } else {
         false
     }
+}
+
+#[test]
+fn test_is_cpg() {
+    assert!(is_cpg(Base::C, None, Some(Base::G)));
+    assert!(is_cpg(Base::G, Some(Base::C), None));
+    assert!(!is_cpg(Base::A, Some(Base::G), None));
+    assert!(!is_cpg(Base::T, None, Some(Base::C)));
+    assert!(!is_cpg(Base::C, None, None));
+    assert!(!is_cpg(Base::G, None, None));
 }
 
 /// Collect info from a pileup alignment
@@ -196,7 +217,6 @@ impl VariantCandidatePileup {
 
         Ok(vcf::Record {
             fixed_fields: self.fixed_fields(),
-            // FIXME: Add filters based on thresholds
             filters: Filters::new(),
             info: metrics,
             samples: smallvec::smallvec![calling_metrics],
