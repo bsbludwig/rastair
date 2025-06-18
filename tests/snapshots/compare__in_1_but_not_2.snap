@@ -1,0 +1,5 @@
+---
+source: tests/compare.rs
+expression: "rastair1.difference(&rastair2).map(|x| x + 1).collect::<Vec<_>>()"
+---
+[]
