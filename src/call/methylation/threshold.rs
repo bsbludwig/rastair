@@ -263,7 +263,7 @@ mod tests {
                 [
                     StrandCounts {
                         base: C,
-                        ot: 19,
+                        ot: 20,
                         ob: 13,
                     },
                     StrandCounts {
