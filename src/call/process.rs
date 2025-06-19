@@ -163,7 +163,7 @@ fn test_is_cpg() {
 }
 
 /// Collect info from a pileup alignment
-fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
+pub(crate) fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
     let pos = a.qpos()?;
     let record = a.record();
 
