@@ -134,7 +134,7 @@ pub struct SeenBase {
     /// - Identifying paired reads
     /// - Debugging alignment issues
     /// - Linking back to original FASTQ files
-    pub qname: SmallVec<u8, 16>,
+    pub qname: SmallVec<u8, 42>,
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
