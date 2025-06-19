@@ -30,6 +30,7 @@ macro_rules! vcf_record {
         #[derive(Debug, Clone)]
         pub struct Filters(smallvec::SmallVec<&'static str, 2>);
 
+        #[allow(unused)]
         impl Filters {
             pub fn new() -> Self {
                 Self(smallvec::SmallVec::new())

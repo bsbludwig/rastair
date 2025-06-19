@@ -2,8 +2,8 @@
 
 use crate::{
     call::{
-        process::{IncludeAllCpGs, PileupMappingParams, pileup_mapper},
-        variants::{SeenBases, VariantCandidatePileup},
+        process::{IncludeAllCpGs, PileupMappingParams},
+        variants::VariantCandidatePileup,
     },
     sequence::{Readers, SegmentationParams, SegmentsParams},
     utils::RegionString,
@@ -13,7 +13,6 @@ use color_eyre::{
     Section,
     eyre::{ContextCompat as _, Result, WrapErr},
 };
-use rust_htslib::bam::{FetchDefinition, Read as _, pileup::Pileup};
 use std::num::NonZeroU32;
 
 pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
@@ -31,22 +30,6 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
         segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 0 },
     };
     p.readers().wrap_err("failed to fetch segments")
-}
-
-pub(crate) fn pileup(chr: &str, pos: u32) -> Result<Pileup> {
-    let mut readers = test_readers(chr, pos)?;
-    let chunk = readers.segments()?.next().wrap_err("failed to fetch segment")?;
-    let segment = readers.segment(&chunk)?;
-    FetchDefinition::try_from(&segment)
-        .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))?;
-
-    readers
-        .bam
-        .pileup()
-        .filter_map(|p| p.ok())
-        .find(|p| p.pos() == pos)
-        // .map(|pile| (SeenBases(pile.alignments().filter_map(pileup_mapper).collect()), pile))
-        .wrap_err_with(|| format!("No pileup found at {chr}:{pos} in BAM file"))
 }
 
 /// Fetch a pileup for a specific variant position (0-based!) in the test BAM file.
