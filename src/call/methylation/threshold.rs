@@ -44,7 +44,7 @@ pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Re
             trace!(beta, "Methylation event found");
             record.samples[0].methylated = Methylated(Some(beta));
             if record.fixed_fields.alt == [alt.as_str()] && others == 0 {
-                record.fixed_fields.alt = smallvec::smallvec![".".into()];
+                record.fixed_fields.alt = smallvec::smallvec!["<*>".into()];
             }
             add_filters(&mut record, config, ref_, alt).wrap_err("Failed to add filters")?;
             if record.filters.is_empty() {
