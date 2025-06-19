@@ -119,7 +119,24 @@ fn collect_candidate(
                 segment.range.end
             )
         })?;
-    let bases = SeenBases(pile.alignments().filter_map(pileup_mapper).collect());
+
+    let mut seen_names = HashSet::new();
+    let seen_bases = pile
+        .alignments()
+        .filter_map(pileup_mapper)
+        .filter_map(|pile| {
+            let new = seen_names.insert(pile.qname.clone());
+            if !new {
+                // If we already saw this read, skip it
+                if !params.keep_overlapping_reads {
+                    return None;
+                }
+            }
+            Some(pile)
+        })
+        .collect();
+
+    let bases = SeenBases(seen_bases);
     let reference_base =
         segment.sequence.get(idx).wrap_err("failed to get reference base")?.as_base()?;
     let has_alts = !bases.matches(reference_base);
