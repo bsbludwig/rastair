@@ -54,12 +54,17 @@ pub fn call(params: &CallParams) -> Result<()> {
     // Create a VCF writer for the output
     let mut vcf_writer = params.vcf.vcf_writer(&regions).wrap_err("failed to create VCF writer")?;
 
+    let pileup_mapping_params = process::PileupMappingParams {
+        include_cpgs: params.methylation.should_include_all_cpgs(),
+        keep_overlapping_reads: params.variant_calling.keep_overlapping_reads,
+    };
+
     // Process each region and write results to the VCF
     // TODO: For multithreaded processing, have readers per thread, collect data in order, and write in main thread
     regions.into_iter().try_for_each(|region| {
         regions_seen += 1;
         region
-            .process(&mut readers, params.methylation.should_include_all_cpgs())
+            .process(&mut readers, &pileup_mapping_params)
             .and_then(|piles| {
                 piles.into_iter().try_for_each(|pile| {
                     pile.variant_metrics(&params.variant_calling)

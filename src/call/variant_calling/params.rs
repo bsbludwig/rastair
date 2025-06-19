@@ -7,4 +7,8 @@ pub struct VariantCallingParams {
     /// This should match the sequencing platform used to generate the data
     #[arg(long, default_value = "novaseq6000")]
     pub error_model: ErrorModel,
+
+    /// Whether to keep overlapping reads
+    #[arg(long, default_value_t = false)]
+    pub keep_overlapping_reads: bool,
 }

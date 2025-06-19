@@ -14,8 +14,14 @@ use rust_htslib::bam::{
     record::Cigar,
 };
 use smallvec::SmallVec;
-use std::{ops::Deref, rc::Rc};
+use std::{collections::HashSet, ops::Deref, rc::Rc};
 use tracing::{Level, debug, instrument, trace, warn};
+
+#[derive(Debug, Clone)]
+pub struct PileupMappingParams {
+    pub include_cpgs: IncludeAllCpGs,
+    pub keep_overlapping_reads: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IncludeAllCpGs {
@@ -39,7 +45,7 @@ impl ChunkRegion {
     pub fn process(
         &self,
         readers: &mut Readers,
-        include_cpgs: IncludeAllCpGs,
+        params: &PileupMappingParams,
     ) -> Result<Vec<VariantCandidatePileup>> {
         let segment = readers.segment(self).wrap_err("failed to fetch segment")?;
         trace!(len = segment.sequence.len(), "Processing region");
@@ -61,7 +67,7 @@ impl ChunkRegion {
                 self.contains(u64::from(p.pos()))
             })
             .flat_map(|pile| {
-                collect_candidate(&pile, segment.clone(), include_cpgs)
+                collect_candidate(&pile, segment.clone(), params)
                     .wrap_err_with(|| {
                         format!("Failed to get candidate from pileup at position {}", pile.pos())
                     })
@@ -98,7 +104,7 @@ impl ChunkRegion {
 fn collect_candidate(
     pile: &Pileup,
     segment: Rc<Segment>,
-    include_cpgs: IncludeAllCpGs,
+    params: &PileupMappingParams,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
@@ -122,7 +128,7 @@ fn collect_candidate(
         VariantCandidatePileup { segment: segment.clone(), pos: pile.pos(), bases, reference_base };
 
     if has_alts
-        || (*include_cpgs && {
+        || (*params.include_cpgs && {
             let before = idx
                 .checked_sub(1)
                 .and_then(|idx| segment.sequence.get(idx))
