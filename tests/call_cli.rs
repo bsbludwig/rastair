@@ -46,8 +46,6 @@ fn pipe_to_stdout() -> Result<()> {
         "tests/data/test.bam",
         "-l",
         "chr19:6105700-6105750",
-        "-o",
-        "-"
     ]));
 
     Ok(())
