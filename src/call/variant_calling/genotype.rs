@@ -8,7 +8,7 @@ use crate::{
 use color_eyre::eyre::{Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
 use rastair2_vcf::standard_fields::GenotypeAllele;
-use tracing::{debug, instrument, trace};
+use tracing::{instrument, trace};
 
 impl VariantCandidatePileup {
     pub fn estimate_genotype(&self, error_model: ErrorModel) -> Option<EstimatedGenotype> {
@@ -28,7 +28,7 @@ impl VariantCandidatePileup {
         match EstimatedGenotype::calculate(nosnp, snp, error_model) {
             Ok(gt) => Some(gt),
             Err(error) => {
-                debug!(%error, "Failed to calculate genotype");
+                trace!(%error, "Failed to calculate genotype");
                 None
             }
         }
