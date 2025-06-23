@@ -1,14 +1,46 @@
 use bgzip::{BGZFReader, index::BGZFIndex, read::IndexedBGZFReader};
 use bio::io::fasta::IndexedReader;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::{
+    Section,
+    eyre::{Context, Result, eyre},
+};
 use std::{
+    fmt,
     fs::File,
     io::{Read, Seek},
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
 use tracing::{debug, instrument};
 
-pub type FastaReader = IndexedReader<Box<dyn ReadAndSeek>>;
+pub struct FastaReader {
+    fasta_file: PathBuf,
+    index_file: PathBuf,
+    reader: IndexedReader<Box<dyn ReadAndSeek>>,
+}
+
+impl fmt::Debug for FastaReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FastaReader")
+            .field("fasta", &self.fasta_file)
+            .field("index", &self.index_file)
+            .finish()
+    }
+}
+
+impl Deref for FastaReader {
+    type Target = IndexedReader<Box<dyn ReadAndSeek>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.reader
+    }
+}
+
+impl DerefMut for FastaReader {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.reader
+    }
+}
 
 /// Combines `Read` and `Seek` traits.
 pub trait ReadAndSeek: Read + Seek {}
@@ -19,31 +51,35 @@ impl<R: Read + Seek> ReadAndSeek for R {}
 /// Open a FASTA file with a FAI index.
 ///
 /// Assumes that next to the FASTA file, there is a corresponding `.fai` index file.
-/// These can be created using `samtools faidx` or `bgzip -r` commands.
 #[instrument(level = "debug")]
-pub fn open_fasta(path: &Path) -> Result<IndexedReader<Box<dyn ReadAndSeek>>, OpenFastaError> {
-    let fasta_file = open_maybe_bgzip(path)
-        .map_err(|source| OpenFastaError::OpenFile { path: path.to_path_buf(), source })?;
-    let index_path = path.with_extension("fai");
-    let fasta_index = bio::io::fasta::Index::from_file(&index_path).map_err(|err| {
-        OpenFastaError::OpenFastaIndex { index_path, source: eyre!(Box::new(err)) }
+pub fn open_fasta(fasta_path: &Path) -> Result<FastaReader> {
+    let fasta_file = open_maybe_bgzip(fasta_path)
+        .wrap_err_with(|| format!("Failed to open FASTA file {fasta_path:?}"))?;
+    let possible_index_files =
+        [fasta_path.with_extension("fai"), fasta_path.with_extension("gz.fai")];
+    let index_path = possible_index_files.iter().find(|p| p.exists()).ok_or_else(|| {
+        eyre!("No index file found for FASTA input {fasta_path:?}")
+            .with_note(|| format!("Expected index file to be one of: {:?}", possible_index_files))
+            .with_suggestion(|| format!("Create FASTA index with `samtools faidx {fasta_path:?}`"))
     })?;
-    Ok(IndexedReader::with_index(fasta_file, fasta_index))
-}
 
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum OpenFastaError {
-    #[error("Failed to open FASTA file `{path}`")]
-    OpenFile { path: PathBuf, source: OpenMaybeBgzipError },
-    #[error("Failed to read index file `{index_path}`")]
-    OpenFastaIndex { index_path: PathBuf, source: color_eyre::Report },
+    let fasta_index = bio::io::fasta::Index::from_file(&index_path)
+        .map_err(|err| eyre!(Box::new(err)))
+        .wrap_err_with(|| format!("Failed to read FASTA index file {index_path:?}"))
+        .with_note(|| {
+            format!("You can create a FASTA index using `samtools faidx {fasta_path:?}`.")
+        })?;
+    Ok(FastaReader {
+        reader: IndexedReader::with_index(fasta_file.into_reader(), fasta_index),
+        fasta_file: fasta_path.to_path_buf(),
+        index_file: index_path.to_path_buf(),
+    })
 }
 
 #[cfg(test)]
 mod fasta_tests {
     use super::*;
-    use std::io::Write;
+    use std::{io::Write, path::PathBuf};
     use tempfile::TempDir;
 
     #[test]
@@ -70,8 +106,7 @@ mod fasta_tests {
     fn test_open_fasta_missing_file() {
         let non_existent_path = PathBuf::from("/path/that/does/not/exist.fa");
         let result = open_fasta(&non_existent_path);
-
-        assert!(matches!(result, Err(OpenFastaError::OpenFile { .. })));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -84,8 +119,7 @@ mod fasta_tests {
         fasta_file.write_all(b">seq1\nACGT\n")?;
 
         let result = open_fasta(&fasta_path);
-
-        assert!(matches!(result, Err(OpenFastaError::OpenFastaIndex { .. })));
+        assert!(result.is_err());
 
         Ok(())
     }
@@ -132,10 +166,58 @@ mod fasta_tests {
         index_file.write_all(b"corrupted_content")?;
 
         let result = open_fasta(&fasta_path);
-
-        assert!(matches!(result, Err(OpenFastaError::OpenFastaIndex { .. })));
+        assert!(result.is_err());
 
         Ok(())
+    }
+}
+
+enum BgzipReader {
+    Gz { gz_file: PathBuf, index_file: PathBuf, reader: Box<dyn ReadAndSeek> },
+    Uncompressed { file: PathBuf, reader: Box<dyn ReadAndSeek> },
+}
+
+impl BgzipReader {
+    pub fn into_reader(self) -> Box<dyn ReadAndSeek> {
+        match self {
+            BgzipReader::Gz { reader, .. } => reader,
+            BgzipReader::Uncompressed { reader, .. } => reader,
+        }
+    }
+}
+
+impl fmt::Debug for BgzipReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BgzipReader::Gz { gz_file, index_file, .. } => f
+                .debug_struct("BgzipReader")
+                .field("gz_file", gz_file)
+                .field("index_file", index_file)
+                .finish(),
+            BgzipReader::Uncompressed { file, .. } => {
+                f.debug_struct("BgzipReader").field("file", file).finish()
+            }
+        }
+    }
+}
+
+impl Deref for BgzipReader {
+    type Target = Box<dyn ReadAndSeek>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            BgzipReader::Gz { reader, .. } => reader,
+            BgzipReader::Uncompressed { reader, .. } => reader,
+        }
+    }
+}
+
+impl DerefMut for BgzipReader {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            BgzipReader::Gz { reader, .. } => reader,
+            BgzipReader::Uncompressed { reader, .. } => reader,
+        }
     }
 }
 
@@ -143,56 +225,51 @@ mod fasta_tests {
 /// to be a bgzip-compressed file and that there is a corresponding `.gz.gzi`
 /// index file.
 #[instrument(level = "debug", skip_all)]
-fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(
-    path: P,
-) -> Result<Box<dyn ReadAndSeek>, OpenMaybeBgzipError> {
+fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(path: P) -> Result<BgzipReader> {
     let path = path.as_ref();
 
     if path.extension().unwrap_or_default() == "gz" {
-        let mut index_path = Path::new(path).to_owned();
-        index_path.set_extension("gz.gzi");
-        if !index_path.exists() {
-            return Err(OpenMaybeBgzipError::NoIndexFile { path: path.to_owned(), index_path });
-        }
-        let index = BGZFIndex::from_reader(open(&index_path)?).map_err(|source| {
-            OpenMaybeBgzipError::ReadIndex { path: index_path.to_owned(), source }
+        let possible_index_files = [path.with_extension("gzi"), path.with_extension("gz.gzi")];
+        let index_path = possible_index_files.iter().find(|p| p.exists()).ok_or_else(|| {
+            eyre!("No index file found for bgzip input {path:?}")
+                .with_note(|| {
+                    format!("Expected index file to be one of: {:?}", possible_index_files)
+                })
+                .with_suggestion(|| format!("Create bgzip index with `bgzip -r {path:?}`"))
         })?;
+        let index = BGZFIndex::from_reader(open(index_path)?)
+            .map_err(|source| eyre!(Box::new(source)))
+            .wrap_err_with(|| format!("Failed to read index file {index_path:?}"))?;
         let gzreader = BGZFReader::new(open(path)?)
-            .map_err(|source| OpenMaybeBgzipError::ReadBgzip { path: path.to_owned(), source })?;
-        let in_file = IndexedBGZFReader::new(gzreader, index).map_err(|source| {
-            OpenMaybeBgzipError::IndexedBgzipReader { path: path.to_owned(), source }
-        })?;
+            .wrap_err_with(|| format!("Failed to read bgzip file {path:?}"))?;
+        let in_file = IndexedBGZFReader::new(gzreader, index)
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to create indexed bgzip reader for {path:?} with index {index_path:?}"
+                )
+            })
+            .with_suggestion(|| {
+                format!(
+                    "Maybe the index is invalid? You can recreate it with `bgzip -r {index_path:?}`"
+                )
+            })?;
         debug!(?index_path, "Opened bgzip file");
-        Ok(Box::new(in_file))
+        Ok(BgzipReader::Gz {
+            gz_file: path.to_path_buf(),
+            index_file: index_path.to_path_buf(),
+            reader: Box::new(in_file),
+        })
     } else {
         let in_file = open(path)?;
         debug!("Opened uncompressed file");
-        Ok(Box::new(in_file))
+        Ok(BgzipReader::Uncompressed { file: path.to_path_buf(), reader: in_file })
     }
 }
 
-fn open(path: &Path) -> Result<Box<dyn ReadAndSeek>, OpenMaybeBgzipError> {
-    let file = File::open(path)
-        .map_err(|source| OpenMaybeBgzipError::OpenFile { path: path.to_owned(), source })?;
-    let buffered = std::io::BufReader::new(file);
-    Ok(Box::new(buffered))
-}
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum OpenMaybeBgzipError {
-    #[error("Failed to open file `{path}`")]
-    OpenFile { path: PathBuf, source: std::io::Error },
-    #[error(
-        "Index file `{index_path}` does not exist. bgzip input must be indexed (try `bgzip -r {path:?}`)"
-    )]
-    NoIndexFile { path: PathBuf, index_path: PathBuf },
-    #[error("Failed to read index file `{path}`")]
-    ReadIndex { path: PathBuf, source: std::io::Error },
-    #[error("Failed to read bgzip file `{path}`")]
-    ReadBgzip { path: PathBuf, source: bgzip::BGZFError },
-    #[error("Failed to read indexed bgzip file `{path}`")]
-    IndexedBgzipReader { path: PathBuf, source: bgzip::BGZFError },
+fn open(path: &Path) -> Result<Box<dyn ReadAndSeek>> {
+    let file = File::open(path).wrap_err_with(|| format!("Failed to open file {path:?}"))?;
+    let file = std::io::BufReader::new(file);
+    Ok(Box::new(file))
 }
 
 #[cfg(test)]
@@ -259,8 +336,7 @@ mod open_maybe_bgzip {
     fn test_open_file_error() {
         let path = PathBuf::from("/nonexistent/file.txt");
         let result = open_maybe_bgzip(&path);
-
-        assert!(matches!(result, Err(OpenMaybeBgzipError::OpenFile { path: p, .. }) if p == path));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -273,12 +349,7 @@ mod open_maybe_bgzip {
         file.write_all(b"some content")?;
 
         let result = open_maybe_bgzip(&file_path);
-
-        assert!(matches!(
-            result,
-            Err(OpenMaybeBgzipError::NoIndexFile { path, index_path })
-            if path == file_path && index_path == file_path.with_extension("gz.gzi")
-        ));
+        assert!(result.is_err());
 
         Ok(())
     }
@@ -298,12 +369,7 @@ mod open_maybe_bgzip {
         index_file.write_all(b"this is not a valid bgzip index")?;
 
         let result = open_maybe_bgzip(&file_path);
-
-        assert!(matches!(
-            result,
-            Err(OpenMaybeBgzipError::ReadIndex { path, .. })
-            if path == index_path
-        ));
+        assert!(result.is_err());
 
         Ok(())
     }
@@ -323,12 +389,7 @@ mod open_maybe_bgzip {
         index.write(&mut File::create(&index_path)?)?;
 
         let result = open_maybe_bgzip(&file_path);
-
-        assert!(matches!(
-            result,
-            Err(OpenMaybeBgzipError::ReadBgzip { path, .. })
-            if path == file_path
-        ));
+        assert!(result.is_err());
 
         Ok(())
     }
@@ -349,8 +410,7 @@ mod open_maybe_bgzip {
         write!(&mut index, "no thanks")?;
 
         let result = open_maybe_bgzip(&file_path);
-
-        assert!(matches!(result, Err(OpenMaybeBgzipError::ReadIndex { .. })));
+        assert!(result.is_err());
 
         Ok(())
     }
