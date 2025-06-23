@@ -22,7 +22,8 @@ impl<R: Read + Seek> ReadAndSeek for R {}
 /// These can be created using `samtools faidx` or `bgzip -r` commands.
 #[instrument(level = "debug")]
 pub fn open_fasta(path: &Path) -> Result<IndexedReader<Box<dyn ReadAndSeek>>, OpenFastaError> {
-    let fasta_file = open_maybe_bgzip(path)?;
+    let fasta_file = open_maybe_bgzip(path)
+        .map_err(|source| OpenFastaError::OpenFile { path: path.to_path_buf(), source })?;
     let index_path = path.with_extension("fai");
     let fasta_index = bio::io::fasta::Index::from_file(&index_path).map_err(|err| {
         OpenFastaError::OpenFastaIndex { index_path, source: eyre!(Box::new(err)) }
@@ -33,12 +34,9 @@ pub fn open_fasta(path: &Path) -> Result<IndexedReader<Box<dyn ReadAndSeek>>, Op
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum OpenFastaError {
-    #[error("Failed to open file {source}")]
-    OpenFile {
-        #[from]
-        source: OpenMaybeBgzipError,
-    },
-    #[error("Failed to read index file `{index_path}`: {source}")]
+    #[error("Failed to open FASTA file `{path}`")]
+    OpenFile { path: PathBuf, source: OpenMaybeBgzipError },
+    #[error("Failed to read index file `{index_path}`")]
     OpenFastaIndex { index_path: PathBuf, source: color_eyre::Report },
 }
 
@@ -183,15 +181,17 @@ fn open(path: &Path) -> Result<Box<dyn ReadAndSeek>, OpenMaybeBgzipError> {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum OpenMaybeBgzipError {
-    #[error("Failed to open file `{path}`: {source}")]
+    #[error("Failed to open file `{path}`")]
     OpenFile { path: PathBuf, source: std::io::Error },
-    #[error("{index_path:?} does not exist. bgzip input must be indexed (try bgzip -r {path:?})")]
+    #[error(
+        "Index file `{index_path}` does not exist. bgzip input must be indexed (try `bgzip -r {path:?}`)"
+    )]
     NoIndexFile { path: PathBuf, index_path: PathBuf },
-    #[error("Failed to read index file `{path}`: {source}")]
+    #[error("Failed to read index file `{path}`")]
     ReadIndex { path: PathBuf, source: std::io::Error },
-    #[error("Failed to read bgzip file `{path}`: {source}")]
+    #[error("Failed to read bgzip file `{path}`")]
     ReadBgzip { path: PathBuf, source: bgzip::BGZFError },
-    #[error("Failed to read indexed bgzip file `{path}`: {source}")]
+    #[error("Failed to read indexed bgzip file `{path}`")]
     IndexedBgzipReader { path: PathBuf, source: bgzip::BGZFError },
 }
 
