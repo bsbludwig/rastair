@@ -87,7 +87,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     drop(vcf_writer); // Ensure all data is flushed to the output file
     info!(file = %params.vcf.vcf_output, "Wrote output");
 
-    return Ok(());
+    Ok(())
 }
 
 /// Write a pileup to the VCF output
