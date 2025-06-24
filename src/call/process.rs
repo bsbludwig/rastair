@@ -42,7 +42,7 @@ impl Deref for IncludeAllCpGs {
 }
 
 impl ChunkRegion {
-    #[instrument(level = "info", skip_all, fields(region=%self.region))]
+    #[instrument(level = "info", skip_all)]
     pub fn process(
         &self,
         readers: &mut Readers,

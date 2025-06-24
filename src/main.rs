@@ -58,7 +58,7 @@ fn main() -> Result<()> {
                         env_filter = env_filter.add_directive(parsed_directive);
                     }
                     Err(error) => {
-                        warn!(?error, "Warning: Invalid log directive `{directive}`");
+                        warn!(%error, "Warning: Invalid log directive `{directive}`");
                     }
                 }
             }
@@ -70,6 +70,7 @@ fn main() -> Result<()> {
             .with(
                 tracing_subscriber::fmt::Layer::default()
                     .with_target(true)
+                    .with_thread_names(args.verbose)
                     // .with_span_events(FmtSpan::CLOSE) // maybe enable with flag
                     .with_writer(std::io::stderr),
             )

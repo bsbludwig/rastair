@@ -144,7 +144,10 @@ impl VariantCandidatePileup {
         match Phred::new(probability_call_wrong) {
             Ok(phred) => Some(*phred as f32),
             Err(error) => {
-                warn!(%error, "Failed to calculate quality score for variant");
+                warn!(
+                    error = format!("{error:#}"),
+                    "Failed to calculate quality score for variant"
+                );
                 None
             }
         }

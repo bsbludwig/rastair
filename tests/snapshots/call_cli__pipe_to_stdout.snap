@@ -9,8 +9,6 @@ info:
     - tests/data/test.bam
     - "-l"
     - "chr19:6105700-6105750"
-    - "-o"
-    - "-"
   env:
     NO_COLOR: "1"
 ---

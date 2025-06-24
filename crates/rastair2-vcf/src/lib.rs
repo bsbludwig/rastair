@@ -28,7 +28,7 @@
 //!
 //! # let temp_dir = TempDir::new()?;
 //! # let temp_file = temp_dir.path().join("test.vcf");
-//! let writer = VcfBuilder::new(&temp_file, VcfFormat::Vcf, Compression::Off)?;
+//! let writer = VcfBuilder::new(&temp_file, VcfFormat::Vcf, Compression::Off, 1)?;
 //!
 //! let contigs = [SmolStr::new("1")];
 //! let samples = [SmolStr::new("sample")];
@@ -94,6 +94,7 @@ pub struct VcfBuilder {
     target: PathBuf,
     format: VcfFormat,
     compressed: Compression,
+    threads: usize,
 }
 
 /// Compression options for the VCF writer
@@ -109,10 +110,15 @@ impl VcfBuilder {
     /// Create a new VCF builder
     ///
     /// Note: This only initializes the header. It does not create the VCF file yet.
-    pub fn new(target: &Path, format: VcfFormat, compressed: Compression) -> Result<Self> {
+    pub fn new(
+        target: &Path,
+        format: VcfFormat,
+        compressed: Compression,
+        threads: usize,
+    ) -> Result<Self> {
         let header = Header::new();
 
-        Ok(Self { target: target.to_path_buf(), format, compressed, header })
+        Ok(Self { target: target.to_path_buf(), format, compressed, header, threads })
     }
 
     /// Initialize the VCF with a given record type, contigs, and samples.
@@ -132,13 +138,14 @@ impl VcfBuilder {
             self.header.push_sample(sample.as_bytes());
         }
 
-        let vcf = Writer::from_path(
+        let mut vcf = Writer::from_path(
             &self.target,
             &self.header,
             matches!(self.compressed, Compression::Off),
             self.format,
         )
         .wrap_err_with(|| format!("Failed to create VCF writer for `{}`", self.target.display()))?;
+        vcf.set_threads(self.threads.max(1)).wrap_err("Failed to set threads for VCF writer")?;
 
         let mut chromosomes = BTreeMap::new();
         for chrom in contigs {
@@ -200,7 +207,7 @@ mod tests {
 
         let temp_dir = TempDir::new()?;
         let temp_file = temp_dir.path().join("test.vcf");
-        let writer = VcfBuilder::new(&temp_file, VcfFormat::Vcf, Compression::Off)?;
+        let writer = VcfBuilder::new(&temp_file, VcfFormat::Vcf, Compression::Off, 1)?;
 
         let contigs = [SmolStr::new("1")];
         let samples = [SmolStr::new("sample")];

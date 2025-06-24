@@ -52,7 +52,8 @@ impl Params {
             target=?self.vcf_output.display(), ?format, ?compression,
             "Creating VCF writer",
         );
-        let writer = VcfBuilder::new(&self.vcf_output, format, compression)
+        let threads = 2; // Chosen after some profiling, should be enough for most cases, only used for compression
+        let writer = VcfBuilder::new(&self.vcf_output, format, compression, threads)
             .wrap_err("Failed to create VCF writer")?;
 
         // List all chromosomes in the regions for VCF header

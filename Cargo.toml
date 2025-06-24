@@ -19,9 +19,11 @@ clap_complete_command = "0.6.1"
 clio = { version = "0.3.5", features = ["clap", "clap-parse", "pipe"] }
 color-eyre = "0.6.3"
 mimalloc = { version = "0.1.47", features = ["override"] }
+ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
 pastey = "0.1.0"
 probability = "0.20.3"
 rastair2-vcf = { version = "0.1.0", path = "crates/rastair2-vcf" }
+rayon = "1.10.0"
 readable = { version = "0.16.0", default-features = false, features = [
     "byte",
     "num",

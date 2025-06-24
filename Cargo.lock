@@ -1284,6 +1284,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4895175b425cb1f87721b59f0f286c2092bd4af812243672510e1ac53e2e0ad"
 
 [[package]]
+name = "ordered-channel"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95be4d57809897b5a7539fc15a7dfe0e84141bc3dfaa2e9b1b27caa90acf61ab"
+dependencies = [
+ "crossbeam-channel",
+]
+
+[[package]]
 name = "ordered-float"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1545,10 +1554,12 @@ dependencies = [
  "insta",
  "insta-cmd",
  "mimalloc",
+ "ordered-channel",
  "pastey",
  "probability",
  "proptest",
  "rastair2-vcf",
+ "rayon",
  "readable",
  "rust-htslib",
  "rustc-hash 2.1.1",
