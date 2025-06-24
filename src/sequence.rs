@@ -7,7 +7,7 @@
 //! - Processing segments with configurable overlap between chunks
 
 use crate::utils::{
-    Base, RegionString, TryAsBase as _,
+    Base, RegionString,
     file_helpers::{FastaReader, open_fasta},
 };
 use clap::value_parser;
@@ -143,11 +143,7 @@ impl Segment {
         start: usize,
         end: usize,
     ) -> Result<SmallVec<Base, N>> {
-        self.get(start, end)?
-            .iter()
-            .map(|b| b.as_base())
-            .collect::<Result<_, _>>()
-            .wrap_err("Failed to read sequence slice as bases")
+        Ok(self.get(start, end)?.iter().map(Base::from).collect())
     }
 
     /// Get a slice of the sequence

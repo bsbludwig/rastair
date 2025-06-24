@@ -8,6 +8,7 @@ pub enum Base {
     C = b'C',
     G = b'G',
     T = b'T',
+    Unknown = b'N',
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -25,6 +26,7 @@ impl Base {
             Base::C => "\x1b[34mC\x1b[0m", // blue
             Base::G => "\x1b[33mG\x1b[0m", // yellow
             Base::T => "\x1b[31mT\x1b[0m", // red
+            Base::Unknown => "N",          // white
         }
     }
 
@@ -35,6 +37,7 @@ impl Base {
             Base::C => Base::G,
             Base::G => Base::C,
             Base::T => Base::A,
+            Base::Unknown => Base::Unknown,
         }
     }
 
@@ -44,6 +47,7 @@ impl Base {
             Base::C => "C",
             Base::G => "G",
             Base::T => "T",
+            Base::Unknown => "N",
         }
     }
 
@@ -61,6 +65,7 @@ impl std::ops::Deref for Base {
             Base::C => &b'C',
             Base::G => &b'G',
             Base::T => &b'T',
+            Base::Unknown => &b'N',
         }
     }
 }
@@ -84,25 +89,29 @@ impl std::str::FromStr for Base {
         let Some(first) = s.as_bytes().first() else {
             return Err(BaseError::Empty);
         };
-        first.as_base()
+        Ok(Base::from(*first))
     }
 }
 
-impl TryFrom<u8> for Base {
-    type Error = BaseError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+impl From<u8> for Base {
+    fn from(value: u8) -> Self {
         match value {
-            b'a' => Ok(Base::A),
-            b'c' => Ok(Base::C),
-            b'g' => Ok(Base::G),
-            b't' => Ok(Base::T),
-            b'A' => Ok(Base::A),
-            b'C' => Ok(Base::C),
-            b'G' => Ok(Base::G),
-            b'T' => Ok(Base::T),
-            _ => Err(BaseError::InvalidBaseError(value)),
+            b'a' => Base::A,
+            b'c' => Base::C,
+            b'g' => Base::G,
+            b't' => Base::T,
+            b'A' => Base::A,
+            b'C' => Base::C,
+            b'G' => Base::G,
+            b'T' => Base::T,
+            _ => Base::Unknown,
         }
+    }
+}
+
+impl From<&u8> for Base {
+    fn from(value: &u8) -> Self {
+        Base::from(*value)
     }
 }
 
@@ -114,12 +123,7 @@ impl From<Base> for SmolStr {
 
 impl From<Base> for &'static str {
     fn from(val: Base) -> Self {
-        match val {
-            Base::A => "A",
-            Base::C => "C",
-            Base::G => "G",
-            Base::T => "T",
-        }
+        val.as_str()
     }
 }
 
@@ -131,16 +135,6 @@ pub enum BaseError {
     InvalidBaseError(u8),
 }
 
-pub trait TryAsBase {
-    fn as_base(&self) -> Result<Base, BaseError>;
-}
-
-impl TryAsBase for u8 {
-    fn as_base(&self) -> Result<Base, BaseError> {
-        (*self).try_into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,18 +143,19 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn proptest_roundtrip(input: u8) {
-            let Ok(base) = input.as_base() else {
-                // We're just checking that there is no panic, but errors are fine!
-                return Ok(());
+            let base = match Base::from(input) {
+                Base::Unknown => return Ok(()), // We don't panic on unknown bases
+                base => base
             };
             assert_eq!(*base, (input as char).to_ascii_uppercase() as u8);
         }
 
         #[test]
         fn proptest_roundtrip_str(input in r"\PC{0,10}" ) {
-            let Ok(base) = Base::from_str(&input) else {
-                // We're just checking that there is no panic, but errors are fine!
-                return Ok(());
+            let base = match Base::from_str(&input) {
+                Err(_) => return Ok(()), // We don't panic on invalid bases
+                Ok(Base::Unknown) => return Ok(()), // We don't panic on unknown bases
+                Ok(base) => base,
             };
             assert_eq!(*base, input.trim().to_ascii_uppercase().as_bytes()[0]);
         }
@@ -170,7 +165,7 @@ mod tests {
     fn test_u8_to_base_valid() {
         let valid_bases = [b'A', b'C', b'G', b'T'];
         for &base in &valid_bases {
-            let parsed = base.as_base().unwrap();
+            let parsed = Base::from(base);
             assert_eq!(*parsed, base);
             // display
             assert_eq!(parsed.to_string(), (base as char).to_string());

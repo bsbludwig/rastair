@@ -4,7 +4,7 @@ use crate::{
         variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
-    utils::{Base, StrandFromRecord, TryAsBase as _},
+    utils::{Base, StrandFromRecord},
     vcf::{self, Filters},
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
@@ -168,8 +168,7 @@ fn collect_candidate(
         .collect();
 
     let bases = SeenBases(seen_bases);
-    let reference_base =
-        segment.sequence.get(idx).wrap_err("failed to get reference base")?.as_base()?;
+    let reference_base = segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
     let has_alts = !bases.matches(reference_base);
 
     let res =
@@ -177,14 +176,10 @@ fn collect_candidate(
 
     if has_alts
         || (*params.include_cpgs && {
-            let before = idx
-                .checked_sub(1)
-                .and_then(|idx| segment.sequence.get(idx))
-                .and_then(|x| x.as_base().ok());
-            let after = idx
-                .checked_add(1)
-                .and_then(|idx| segment.sequence.get(idx))
-                .and_then(|x| x.as_base().ok());
+            let before =
+                idx.checked_sub(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
+            let after =
+                idx.checked_add(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
             is_cpg(reference_base, before, after)
         })
     {
@@ -248,7 +243,7 @@ pub(crate) fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
 
     Some(SeenBase {
         // qname: SmallVec::from(record.qname()),
-        base: record.seq()[pos].as_base().ok()?, // fixme: handle error or at least check usual error modes
+        base: record.seq()[pos].into(), // fixme: handle error or at least check usual error modes
         qual: *record.qual().get(pos)?,
         mapq: record.mapq(),
         strand: StrandFromRecord::strand(&record).ok()?,

@@ -14,7 +14,7 @@ impl VariantCandidatePileup {
             .get(idx.saturating_sub(50), idx.saturating_add(51))
             .expect("sequence context indices are valid");
 
-        let counts: Counter = seq_context.iter().filter_map(|&b| Base::try_from(b).ok()).collect();
+        let counts: Counter = seq_context.iter().map(|&b| Base::from(b)).collect();
         let total = seq_context.len() as f64;
         let entropy = counts
             .entries()

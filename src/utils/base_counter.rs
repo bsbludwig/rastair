@@ -41,6 +41,7 @@ impl FromIterator<Base> for Counter {
                 Base::T => counter.t += 1,
                 Base::A => counter.a += 1,
                 Base::G => counter.g += 1,
+                Base::Unknown => continue, // Ignore unknown bases
             }
         }
         counter

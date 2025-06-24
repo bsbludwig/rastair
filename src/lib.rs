@@ -5,7 +5,7 @@ pub mod vcf;
 pub mod vcf_writer;
 pub mod utils {
     mod base;
-    pub use base::{Base, TryAsBase};
+    pub use base::Base;
     pub mod file_helpers;
     mod region_string;
     pub use region_string::RegionString;
