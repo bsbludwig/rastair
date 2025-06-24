@@ -13,8 +13,9 @@ use rust_htslib::bam::{
     pileup::{Alignment, Pileup},
     record::Cigar,
 };
+use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
-use std::{collections::HashSet, ops::Deref, rc::Rc};
+use std::{ops::Deref, rc::Rc};
 use tracing::{Level, debug, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,11 @@ impl ChunkRegion {
             .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", self.region))?;
 
         let segment = Rc::new(segment);
+
+        // Allocate a set to track seen read names with enough capacity to avoid reallocation.
+        let mut resusable_seen_names_set =
+            FxHashSet::with_capacity_and_hasher(64, rustc_hash::FxBuildHasher);
+
         // Go over each column in the pileup and collect variant candidates
         let piles = readers
             .bam
@@ -67,7 +73,7 @@ impl ChunkRegion {
                 self.contains(u64::from(p.pos()))
             })
             .flat_map(|pile| {
-                collect_candidate(&pile, segment.clone(), params)
+                collect_candidate(&pile, segment.clone(), params, &mut resusable_seen_names_set)
                     .wrap_err_with(|| {
                         format!("Failed to get candidate from pileup at position {}", pile.pos())
                     })
@@ -105,6 +111,10 @@ fn collect_candidate(
     pile: &Pileup,
     segment: Rc<Segment>,
     params: &PileupMappingParams,
+    // This set is used to track seen read names. It is reused across calls to
+    // avoid reallocation. The keys are also SmallVec to avoid further
+    // allocations and keep all data inline.
+    resusable_seen_names_set: &mut FxHashSet<SmallVec<u8, 48>>,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
@@ -120,20 +130,29 @@ fn collect_candidate(
             )
         })?;
 
-    let mut seen_names = HashSet::new();
+    let seen_names = {
+        resusable_seen_names_set.clear();
+        resusable_seen_names_set
+    };
+
     let seen_bases = pile
         .alignments()
-        .filter_map(pileup_mapper)
         .filter_map(|pile| {
-            let new = seen_names.insert(pile.qname.clone());
+            if params.keep_overlapping_reads {
+                return Some(pile);
+            }
+
+            let name: SmallVec<u8, 48> = SmallVec::from(pile.record().qname());
+            let new = seen_names.insert(name);
             if !new {
                 // If we already saw this read, skip it
-                if !params.keep_overlapping_reads {
-                    return None;
-                }
+                None
+            } else {
+                // Otherwise, keep it
+                Some(pile)
             }
-            Some(pile)
         })
+        .filter_map(pileup_mapper)
         .collect();
 
     let bases = SeenBases(seen_bases);
