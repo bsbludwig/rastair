@@ -247,7 +247,7 @@ pub(crate) fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
     // }
 
     Some(SeenBase {
-        qname: SmallVec::from(record.qname()),
+        // qname: SmallVec::from(record.qname()),
         base: record.seq()[pos].as_base().ok()?, // fixme: handle error or at least check usual error modes
         qual: *record.qual().get(pos)?,
         mapq: record.mapq(),
