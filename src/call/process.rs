@@ -94,7 +94,7 @@ impl ChunkRegion {
             .filter_map(|res| match res {
                 Ok(x) => Some(x),
                 Err(error) => {
-                    warn!(%error, "Failed to get pileup, skipping");
+                    warn!(error = format!("{error:#}"), "Failed to get pileup, skipping");
                     None
                 }
             })
