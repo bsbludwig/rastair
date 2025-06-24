@@ -43,10 +43,6 @@ pub struct SegmentsParams {
     #[arg(short = 'l', long)]
     pub region: Option<RegionString>,
 
-    /// Number of threads to use for reading the BAM file
-    #[arg(long, default_value_t = 4)]
-    pub threads: usize,
-
     #[command(flatten)]
     pub segmentation: SegmentationParams,
 }
@@ -65,9 +61,7 @@ pub struct SegmentationParams {
 impl SegmentsParams {
     pub fn readers(&self) -> Result<Readers> {
         let fasta = open_fasta(&self.fasta_file)?;
-
-        let mut bam = bam::IndexedReader::from_path(self.bam_file.path())?;
-        bam.set_threads(self.threads)?;
+        let bam = bam::IndexedReader::from_path(self.bam_file.path())?;
 
         Ok(Readers { fasta, bam, params: self.clone() })
     }
@@ -267,7 +261,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
-            threads: 4,
             segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
@@ -289,7 +282,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105800".parse().unwrap()),
-            threads: 4,
             segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
@@ -315,7 +307,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105900".parse().unwrap()),
-            threads: 4,
             segmentation: SegmentationParams {
                 segment_max_length: 100, // Small max length to force multiple segments
                 segment_overlap: 20,     // Known overlap amount
@@ -385,7 +376,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
-            threads: 4,
             segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
@@ -421,7 +411,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
-            threads: 4,
             segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
@@ -460,7 +449,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
-            threads: 4,
             segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
@@ -495,7 +483,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
-            threads: 4,
             segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
@@ -519,7 +506,6 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105900".parse().unwrap()),
-            threads: 4,
             segmentation: SegmentationParams {
                 segment_max_length: 50, // Small max length to force multiple segments
                 segment_overlap: 0,     // No overlap

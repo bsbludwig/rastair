@@ -26,7 +26,6 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
         bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
         fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
         region: Some(region),
-        threads: 1,
         segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 0 },
     };
     p.readers().wrap_err("failed to fetch segments")

@@ -30,6 +30,10 @@ pub struct CallParams {
 
     #[command(flatten)]
     vcf: vcf_writer::Params,
+
+    /// Number of threads to use for processing the BAM file, 0 means auto-detect
+    #[arg(long, default_value_t = 0)]
+    pub threads: usize,
 }
 
 /// Read BAM + FASTA and call variants and methylation events
