@@ -7,6 +7,9 @@ use rastair2::call::{CallParams, call};
 use tracing::{debug, info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Debug, clap::Parser)]
 struct Cli {
     #[clap(subcommand)]
