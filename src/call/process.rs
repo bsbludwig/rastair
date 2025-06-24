@@ -67,7 +67,19 @@ impl ChunkRegion {
         let piles = readers
             .bam
             .pileup()
-            .filter_map(|p| p.ok())
+            .filter_map(|p| {
+                if tracing::enabled!(Level::TRACE) {
+                    match p {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            trace!(%e, "Failed to read pileup, skipping");
+                            None
+                        }
+                    }
+                } else {
+                    p.ok()
+                }
+            })
             .filter(|p| {
                 // Filter out pileups that are not in the region of interest
                 self.contains(u64::from(p.pos()))
