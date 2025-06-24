@@ -1,5 +1,7 @@
 # Architecture and Code Style
 
+This document describes the architecture and code style of the `rastair2` project.
+
 ## Structure
 
 This project is a Rust CLI application.
@@ -41,6 +43,19 @@ cargo +nightly llvm-cov --workspace --doctests --open
 This is also run in CI, making the tests fail with insufficient coverage (currently less than 70% of lines covered).
 
 You can use `#[cfg_attr(coverage_nightly, coverage(off))]` to ignore certain functions or modules from coverage analysis, e.g. `Debug` or `Display` implementations that are only used in logs.
+
+## Performance
+
+Good reference for general topics:
+[The Rust Performance Book](https://nnethercote.github.io/perf-book/build-configuration.html)
+
+To measure performance, a representative dataset is needed, not just the small test files in this repository.
+For the following, we assume you have a good "call" command as `$call`, e.g. `call test.bam -r test.fa.gz --calling thresholds -o tmp/test.bcf`
+
+- Use [samply](https://github.com/mstange/samply/) to quickly get profiling data: `cargo build --profile profiling && samply record $CARGO_TARGET_DIR/profiling/rastair2 $call`
+- You can use [cargo-pgo](https://github.com/Kobzol/cargo-pgo) for optimizing the code over two runs:
+  1. `cargo pgo instrument run -- $call` to build a binary with profiling instrumentation and run it to collect profiling data.
+  2. `cargo pgo optimize run -- $call` to build a binary again, with optimizations based on the collected profiling data.
 
 ## Code Style
 
