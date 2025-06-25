@@ -42,7 +42,7 @@ pub struct CallParams {
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
     // Initialize readers for BAM and FASTA files
-    let readers = params.segments.readers().wrap_err("failed to fetch segments")?;
+    let readers = params.segments.readers().wrap_err("Failed to fetch segments")?;
 
     // Get segments that are small enough to process in RAM
     let regions: Vec<ChunkRegion> =
@@ -58,6 +58,9 @@ pub fn call(params: &CallParams) -> Result<()> {
 
     // Process each region and write results to the VCF
     //
+    // This is done in parallel to speed up the processing, so here are a few
+    // comments on this works.
+    //
     // There are two aspects to this: Collecting the variant candidates and
     // writing them to the VCF. To use all CPU available, we use rayon to
     // process the regions in parallel. From there, we send ready-made VCF
@@ -68,12 +71,15 @@ pub fn call(params: &CallParams) -> Result<()> {
     // The connection between the processing threads and the VCF writer this
     // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
     // the parallel iterator.
-
     let (vcf_sender, vcf_receiver) = {
         // At least 5x buffer for VCF records to account for reordering and processing time
         let buffer_size = params.threads.max(2).mul(5);
         ordered_channel::bounded(buffer_size)
     };
+
+    // We're going to go over the regions in parallel, and add the index of the
+    // region here for the ordered channel.
+    let regions_iter = regions.iter().enumerate();
 
     // Create a VCF writer for the output
     let writer_thread = thread::Builder::new()
@@ -81,21 +87,25 @@ pub fn call(params: &CallParams) -> Result<()> {
         .spawn({
             let vcf_output = params.vcf.vcf_output.clone();
             let mut vcf_writer =
-                params.vcf.vcf_writer(&regions).wrap_err("failed to create VCF writer")?;
+                params.vcf.vcf_writer(&regions).wrap_err("Failed to create VCF writer")?;
             move || -> Result<()> {
+                // Since we only have the region index to ensure order, each
+                // processing thread will send a vector of VCF records when it's
+                // done with a region.
                 for records in vcf_receiver {
                     for record in records {
-                        vcf_writer.add(&record).wrap_err("failed to write record to VCF")?;
+                        vcf_writer.add(&record).wrap_err("Failed to write record to VCF")?;
                     }
                 }
 
-                drop(vcf_writer); // Ensure all data is flushed to the output file
-                info!(file = %vcf_output, "Wrote output");
+                // Ensure all data is flushed to the output file
+                drop(vcf_writer);
 
+                info!(file = %vcf_output, "Wrote output");
                 Ok(())
             }
         })
-        .wrap_err("failed to spawn VCF writer thread")?;
+        .wrap_err("Failed to spawn VCF writer thread")?;
 
     // Run this in a custom rayon thread pool to control the number of threads
     // and be able to tweak parameters when profiling
@@ -103,9 +113,9 @@ pub fn call(params: &CallParams) -> Result<()> {
         .thread_name(|idx| format!("worker-{idx}"))
         .num_threads(params.threads)
         .build()
-        .wrap_err("failed to create thread pool for rayon")?
+        .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {
-            regions.into_iter().enumerate().par_bridge().try_for_each_with(
+            regions_iter.par_bridge().try_for_each_with(
                 (vcf_sender, params),
                 |(vcf_sender, params), (index, region)| {
                     process_region(index, region, vcf_sender, params)
@@ -116,31 +126,39 @@ pub fn call(params: &CallParams) -> Result<()> {
     writer_thread
         .join()
         .map_err(|e| eyre!("{e:?}"))
-        .wrap_err("failed to join VCF writer thread")?
+        .wrap_err("Failed to join VCF writer thread")?
         .wrap_err("writer thread error")?;
 
     Ok(())
 }
 
 thread_local! {
+    /// Readers for the BAM and FASTA files, initialized per thread to avoid
+    /// re-opening files or having a lock
     static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
 }
 
 #[instrument(level = "debug", skip_all, fields(region=%region.region))]
 fn process_region(
     index: usize,
-    region: ChunkRegion,
+    region: &ChunkRegion,
     vcf_sender: &mut ordered_channel::Sender<Vec<vcf::Record>>,
     params: &CallParams,
 ) -> Result<()> {
-    let res = READERS.with(|tl| -> Result<Vec<vcf::Record>> {
-        let mut tl_borrow = tl.borrow_mut();
-
-        // Initialize thread-local resources if not already done
-        if tl_borrow.is_none() {
-            *tl_borrow = Some(params.segments.readers().wrap_err("fetch readers")?);
-        }
-        let readers = tl_borrow.as_mut().wrap_err("failed to access thread-local resources")?;
+    // Use thread-local readers to avoid re-opening files in each thread
+    let res = READERS.with(|local_readers| -> Result<Vec<vcf::Record>> {
+        let mut local_readers = local_readers.borrow_mut();
+        let readers = {
+            // Initialize thread-local readers first time the thread accesses them
+            if local_readers.is_none() {
+                let readers = params
+                    .segments
+                    .readers()
+                    .wrap_err("Failed to open readers in worker thread")?;
+                *local_readers = Some(readers);
+            }
+            local_readers.as_mut().wrap_err("Failed to access thread-local resources")?
+        };
 
         let pileup_mapping_params = process::PileupMappingParams {
             include_cpgs: params.methylation.should_include_all_cpgs(),
@@ -158,6 +176,7 @@ fn process_region(
                     .and_then(|record| {
                         params.methylation.call(record).wrap_err("Failed to call methylation")
                     })
+                    // chain the steps above to add outer error context
                     .wrap_err_with(|| {
                         format!("Failed to process pileup {}:{}", pile.chrom(), pile.pos)
                     })
@@ -172,7 +191,8 @@ fn process_region(
         Ok(records) => records,
         Err(e) => {
             warn!(e = format!("{e:#}"), "Failed to process region");
-            Vec::new() // we still want to send an empty vector to the VCF writer to increment the index
+            // We still send an empty vector to the channel to increment the index
+            Vec::new()
         }
     };
 
