@@ -10,11 +10,9 @@ fn random_call() -> Result<()> {
 
     assert_cmd_snapshot!(rastair().args([
         "call",
-        "-r",
-        "tests/data/test.fasta.gz",
+        "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
-        "-l",
-        "chr19:6105700-6105800",
+        "--region=chr19:6105700-6105800",
         "--calling=thresholds",
         "-o",
     ]).arg(&temp_file), @r#"
@@ -41,11 +39,9 @@ fn pipe_to_stdout() -> Result<()> {
     // logging goes to stderr.
     assert_cmd_snapshot!(rastair().args([
         "call",
-        "-r",
-        "tests/data/test.fasta.gz",
+        "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
-        "-l",
-        "chr19:6105700-6105750",
+        "--region=chr19:6105700-6105750",
     ]));
 
     Ok(())
@@ -58,13 +54,9 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
         "does not include unmethylated cpgs without alts",
         rastair().args([
             "call",
-            "-r",
-            "tests/data/test.fasta.gz",
+            "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "-l",
-            "chr19:6117965-6118004",
-            "-o",
-            "-"
+            "--region=chr19:6117965-6118004",
         ])
     );
 
@@ -72,13 +64,9 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
         "includes all cpgs",
         rastair().args([
             "call",
-            "-r",
-            "tests/data/test.fasta.gz",
+            "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "-l",
-            "chr19:6117965-6118004",
-            "-o",
-            "-",
+            "--region=chr19:6117965-6118004",
             "--calling=thresholds"
         ])
     );
