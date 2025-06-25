@@ -95,12 +95,30 @@ pub fn call(params: &CallParams) -> Result<()> {
             let mut vcf_writer =
                 params.vcf.vcf_writer(&regions).wrap_err("Failed to create VCF writer")?;
             move || -> Result<()> {
+                // The segments we get have some overlap between them, so we
+                // need to ensure that we don't write the same record multiple
+                // times.
+                let mut last_seen_chrom: Option<SmolStr> = None;
+                let mut last_seen_pos: Option<u32> = None;
+
                 // Since we only have the region index to ensure order, each
                 // processing thread will send a vector of VCF records when it's
                 // done with a region.
                 for records in vcf_receiver {
-                    for record in records {
-                        vcf_writer.add(&record).wrap_err("Failed to write record to VCF")?;
+                    for record in &records {
+                        let record: &vcf::Record = record;
+
+                        // Skip records that are already seen
+                        if last_seen_chrom.as_ref() == Some(&record.fixed_fields.chrom)
+                            && last_seen_pos >= Some(record.fixed_fields.pos)
+                        {
+                            continue;
+                        }
+                        // Seen a new record, update the last seen
+                        last_seen_chrom = Some(record.fixed_fields.chrom.clone());
+                        last_seen_pos = Some(record.fixed_fields.pos);
+
+                        vcf_writer.add(record).wrap_err("Failed to write record to VCF")?;
                     }
                 }
 
