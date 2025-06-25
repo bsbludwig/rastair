@@ -5,7 +5,11 @@ use crate::{
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, eyre};
 use rayon::prelude::*;
-use std::{ops::Mul as _, thread};
+use smol_str::SmolStr;
+use std::{
+    ops::Mul as _,
+    thread::{self, available_parallelism},
+};
 use tracing::{debug, info, instrument, warn};
 
 pub mod methylation;
@@ -31,10 +35,12 @@ pub struct CallParams {
     #[command(flatten)]
     vcf: vcf_writer::Params,
 
-    /// Number of threads to use for processing the BAM file, 0 means auto-detect
+    /// Number of threads to use for processing the BAM file. Will use all
+    /// available threads when not specified.
     ///
     /// Note that VCF writing might use additional threads internally for compression.
-    #[arg(long, default_value_t = 0)]
+    /// This can be overwritten with `--vcf-threads`.
+    #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
     pub threads: usize,
 }
 
@@ -59,21 +65,21 @@ pub fn call(params: &CallParams) -> Result<()> {
     // Process each region and write results to the VCF
     //
     // This is done in parallel to speed up the processing, so here are a few
-    // comments on this works.
+    // comments on this works. There are two aspects to this: Collecting the
+    // variant candidates and writing them to the VCF.
     //
-    // There are two aspects to this: Collecting the variant candidates and
-    // writing them to the VCF. To use all CPU available, we use rayon to
-    // process the regions in parallel. From there, we send ready-made VCF
-    // records to a special writer thread that only deals with writing the VCF
-    // file. (In reality, writing also uses multiple threads internally for
-    // parallel compression, but we don't have to care about that here.)
+    // To use all CPU available, we use rayon to process the regions in
+    // parallel. From there, we send ready-made VCF records to a special writer
+    // thread that only deals with writing the VCF file.
+    let writer_threads = params.vcf.vcf_threads;
+    let worker_threads = params.threads.saturating_sub(writer_threads.get()).max(1);
 
     // The connection between the processing threads and the VCF writer this
     // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
     // the parallel iterator.
     let (vcf_sender, vcf_receiver) = {
         // At least 5x buffer for VCF records to account for reordering and processing time
-        let buffer_size = params.threads.max(2).mul(5);
+        let buffer_size = worker_threads.mul(5);
         ordered_channel::bounded(buffer_size)
     };
 
@@ -111,7 +117,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     // and be able to tweak parameters when profiling
     rayon::ThreadPoolBuilder::new()
         .thread_name(|idx| format!("worker-{idx}"))
-        .num_threads(params.threads)
+        .num_threads(worker_threads)
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {

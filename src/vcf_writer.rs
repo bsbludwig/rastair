@@ -3,7 +3,7 @@ use color_eyre::eyre::{Result, WrapErr};
 use rastair2_vcf::{Compression, Vcf, VcfBuilder, VcfFormat};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::ffi::OsStr;
+use std::{ffi::OsStr, num::NonZeroUsize};
 use tracing::{debug, warn};
 
 use crate::{sequence::ChunkRegion, vcf::Record};
@@ -18,6 +18,13 @@ pub struct Params {
     /// `.bcf` for BCF (compressed)
     #[arg(short = 'o', long, default_value = "-")]
     pub vcf_output: ClioPath,
+
+    /// Number of threads to use for writing (and compressing) VCF files
+    ///
+    /// This is subtracted from `--threads` but never below 1
+    // Default value chosen after profiling on a machine with 14 cores.
+    #[arg(long, default_value = "2")]
+    pub vcf_threads: NonZeroUsize,
 }
 
 impl Params {
@@ -52,8 +59,7 @@ impl Params {
             target=?self.vcf_output.display(), ?format, ?compression,
             "Creating VCF writer",
         );
-        let threads = 2; // Chosen after some profiling, should be enough for most cases, only used for compression
-        let writer = VcfBuilder::new(&self.vcf_output, format, compression, threads)
+        let writer = VcfBuilder::new(&self.vcf_output, format, compression, self.vcf_threads.get())
             .wrap_err("Failed to create VCF writer")?;
 
         // List all chromosomes in the regions for VCF header
