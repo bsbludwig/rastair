@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 mod utils;
+use color_eyre::eyre::eyre;
 use utils::*;
 
 #[test]
@@ -70,6 +73,42 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
             "--calling=thresholds"
         ])
     );
+
+    Ok(())
+}
+
+#[test]
+fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let temp_file = temp_dir.path().join("test.vcf");
+
+    let call = rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=chr19",
+            "--segment-max-length=10000",
+            "--segment-overlap=300",
+            "--calling=thresholds",
+            "-o",
+        ])
+        .arg(&temp_file)
+        .status()
+        .wrap_err("running rastair2")?;
+    assert!(call.success());
+
+    let text = std::fs::read_to_string(&temp_file).wrap_err("read rastair 2 vcf")?;
+    text.lines()
+        .filter(|line| !line.starts_with("#"))
+        .filter_map(|line| line.split("\t").nth(1))
+        .filter_map(|x| x.parse::<u32>().ok())
+        .try_fold(BTreeSet::new(), |mut set, position| {
+            let is_new = set.insert(position);
+            if is_new { Ok(set) } else { Err(eyre!("Duplicate position found: {}", position)) }
+        })?;
 
     Ok(())
 }
