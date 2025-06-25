@@ -11,6 +11,8 @@ definitions:
     # Cache only dependency compilation artifacts, not our own code
     cargo-target-deps: target/debug/deps/
     cargo-target-build: target/debug/build/
+    cargo-target-deps-cov: target/llvm-cov-target/debug/deps/
+    cargo-target-build-cov: target/llvm-cov-target/debug/build/
     # Cache Deno modules for scripts
     deno-modules: ~/.cache/deno/
 
@@ -50,6 +52,8 @@ pipelines:
                 - cargo-git
                 - cargo-target-deps
                 - cargo-target-build
+                - cargo-target-deps-cov
+                - cargo-target-build-cov
               script:
                 - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
                 - curl --proto "=https" --tlsv1.2 -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz" | tar xzf - -C "$CARGO_HOME/bin"
