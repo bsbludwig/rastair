@@ -50,7 +50,7 @@ pub struct SegmentsParams {
 #[derive(Debug, clap::Args, Clone)]
 pub struct SegmentationParams {
     /// Maximum length of a segment in bases
-    #[arg(long, default_value_t = 1_000_000)]
+    #[arg(long, default_value_t = 100_000)]
     pub segment_max_length: u64,
 
     /// Number of bases to overlap between segments
