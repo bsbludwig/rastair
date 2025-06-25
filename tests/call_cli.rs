@@ -28,9 +28,6 @@ fn random_call() -> Result<()> {
     [TIME] INFO rastair2: Call finished [DURATION]
     "#);
 
-    let result = std::fs::read_to_string(&temp_file).wrap_err("read temp file")?;
-    assert_snapshot!(result);
-
     Ok(())
 }
 

@@ -4,11 +4,9 @@ info:
   program: rastair2
   args:
     - call
-    - "-r"
-    - tests/data/test.fasta.gz
+    - "--fasta-file=tests/data/test.fasta.gz"
     - tests/data/test.bam
-    - "-l"
-    - "chr19:6105700-6105750"
+    - "--region=chr19:6105700-6105750"
   env:
     NO_COLOR: "1"
 ---
@@ -17,6 +15,9 @@ exit_code: 0
 ----- stdout -----
 ##fileformat=VCFv4.2
 ##FILTER=<ID=PASS,Description="All filters passed">
+##rastair2Version=0.1.0
+##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105750
+##reference="tests/data/test.fasta.gz"
 ##FILTER=<ID=lowDP,Description="Low read depth">
 ##INFO=<ID=AD,Number=R,Type=Integer,Description="Total read depth for each allele">
 ##INFO=<ID=BQ,Number=1,Type=Float,Description="RMS base quality">

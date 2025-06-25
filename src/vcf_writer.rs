@@ -1,6 +1,6 @@
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr};
-use rastair2_vcf::{Compression, Vcf, VcfBuilder, VcfFormat};
+use rastair2_vcf::{Compression, VcfBuilder, VcfFile, VcfFormat};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{ffi::OsStr, num::NonZeroUsize};
@@ -53,14 +53,23 @@ impl Params {
         }
     }
 
-    pub fn vcf_writer(&self, regions: &[ChunkRegion]) -> Result<Vcf<Record>> {
+    pub fn vcf_writer(
+        &self,
+        regions: &[ChunkRegion],
+        metadata: &[String],
+    ) -> Result<VcfFile<Record>> {
         let (format, compression) = self.guess_format();
         debug!(
             target=?self.vcf_output.display(), ?format, ?compression,
             "Creating VCF writer",
         );
-        let writer = VcfBuilder::new(&self.vcf_output, format, compression, self.vcf_threads.get())
-            .wrap_err("Failed to create VCF writer")?;
+        let mut writer =
+            VcfBuilder::new(&self.vcf_output, format, compression, self.vcf_threads.get())
+                .wrap_err("Failed to create VCF writer")?;
+
+        for line in metadata {
+            writer.add_header_line(format!("##{line}"));
+        }
 
         // List all chromosomes in the regions for VCF header
         let contigs = regions.iter().map(|r| r.chromosome.clone()).fold(

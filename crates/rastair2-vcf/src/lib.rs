@@ -121,6 +121,11 @@ impl VcfBuilder {
         Ok(Self { target: target.to_path_buf(), format, compressed, header, threads })
     }
 
+    /// Add a line to the VCF header.
+    pub fn add_header_line(&mut self, line: impl AsRef<[u8]>) {
+        self.header.push_record(line.as_ref());
+    }
+
     /// Initialize the VCF with a given record type, contigs, and samples.
     ///
     /// This will start writing to the target file specified in the builder.
@@ -128,11 +133,12 @@ impl VcfBuilder {
         mut self,
         contigs: &[SmolStr],
         samples: &[SmolStr],
-    ) -> Result<Vcf<R>> {
+    ) -> Result<VcfFile<R>> {
         R::write_header(&mut self.header).wrap_err("Failed to write VCF header")?;
 
         for chrom in contigs {
-            self.header.push_record(format!(r#"##contig=<ID={},length=0>"#, chrom).as_bytes());
+            // FIXME: Set length to the actual length of the chromosome if known
+            self.add_header_line(format!(r#"##contig=<ID={},length=0>"#, chrom));
         }
         for sample in samples {
             self.header.push_sample(sample.as_bytes());
@@ -156,12 +162,12 @@ impl VcfBuilder {
             chromosomes.insert(chrom.clone(), id);
         }
 
-        Ok(Vcf { chromosomes, samples: 0, record_type: PhantomData, writer: vcf })
+        Ok(VcfFile { chromosomes, samples: 0, record_type: PhantomData, writer: vcf })
     }
 }
 
 /// VCF writer for a specific record type
-pub struct Vcf<R: WriteToVcf> {
+pub struct VcfFile<R: WriteToVcf> {
     /// Maps chromosome names to their IDs in the VCF header
     pub chromosomes: BTreeMap<SmolStr, u32>,
     /// Number of samples in the VCF
@@ -170,7 +176,7 @@ pub struct Vcf<R: WriteToVcf> {
     writer: Writer,
 }
 
-impl<R: WriteToVcf> Vcf<R> {
+impl<R: WriteToVcf> VcfFile<R> {
     /// Add a record to the VCF
     pub fn add(&mut self, data: &R) -> Result<()> {
         let mut record = self.writer.empty_record();

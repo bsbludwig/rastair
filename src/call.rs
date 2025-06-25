@@ -92,8 +92,18 @@ pub fn call(params: &CallParams) -> Result<()> {
         .name("vcf_writer".to_string())
         .spawn({
             let vcf_output = params.vcf.vcf_output.clone();
-            let mut vcf_writer =
-                params.vcf.vcf_writer(&regions).wrap_err("Failed to create VCF writer")?;
+            let metadata = [
+                format!("rastair2Version={}", env!("CARGO_PKG_VERSION")),
+                format!(
+                    "rastair2Command={}",
+                    std::env::args().skip(1).collect::<Vec<_>>().join(" ")
+                ),
+                format!("reference={}", params.segments.fasta_file),
+            ];
+            let mut vcf_writer = params
+                .vcf
+                .vcf_writer(&regions, &metadata)
+                .wrap_err("Failed to create VCF writer")?;
             move || -> Result<()> {
                 // The segments we get have some overlap between them, so we
                 // need to ensure that we don't write the same record multiple
