@@ -5,6 +5,7 @@ use crate::{
 use color_eyre::eyre::Context as _;
 
 /// Strand bias information for a variant
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StrandBias {
     /// Number of reads supporting the reference allele on the forward strand
     pub reads_ref_fwd: usize,

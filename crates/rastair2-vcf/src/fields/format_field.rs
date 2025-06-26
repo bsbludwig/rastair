@@ -278,7 +278,7 @@ macro_rules! format_field {
         #[doc = "("]
         #[doc = stringify!($number)]
         #[doc = ")"]
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub $type);
 
         impl std::ops::Deref for $name {
@@ -322,7 +322,7 @@ macro_rules! format_field {
         #[doc = "("]
         #[doc = stringify!($number)]
         #[doc = ")"]
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
 
         impl std::ops::Deref for $name {
@@ -365,7 +365,7 @@ macro_rules! format_field {
     ($name:ident, $id:expr, $desc:expr) => {
         #[doc = $desc]
         #[doc = "format flag for VCF output"]
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub Vec<$type>);
 
         impl $crate::VcfField for $name {

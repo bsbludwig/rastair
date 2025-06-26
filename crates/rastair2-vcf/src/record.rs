@@ -27,8 +27,8 @@ macro_rules! vcf_record {
         min_samples: $min_samples:expr
     ) => {pastey::paste!{
         /// Filters that can be applied to a VCF record
-        #[derive(Debug, Clone)]
-        pub struct Filters(smallvec::SmallVec<&'static str, 2>);
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        pub struct Filters(smallvec::SmallVec<smol_str::SmolStr, 2>);
 
         #[allow(unused)]
         impl Filters {
@@ -75,7 +75,7 @@ macro_rules! vcf_record {
         }
 
         /// Info fields for a VCF record containing various metadata
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct Info {
             $(
                 pub [<$info:snake>] : $info,
@@ -101,7 +101,7 @@ macro_rules! vcf_record {
         /// Format fields for a VCF record containing sample-specific data
         ///
         /// Used to add data that was "called"
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct Format {
             $(
                 pub [<$format:snake>]: $format,
@@ -125,7 +125,7 @@ macro_rules! vcf_record {
         }
 
         /// A VCF record containing fixed fields, filters, info, and format data
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         #[allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
         pub struct Record {
             /// Fixed fields for the VCF record, such as chromosome, position, ID, reference, and alternate alleles

@@ -18,12 +18,37 @@
 
 use crate::{FormatField, FormatFieldNumber, FormatFieldValue, HeaderField, VcfField};
 use color_eyre::eyre::{Context, Result};
-pub use rust_htslib::bcf::record::GenotypeAllele;
+pub use rust_htslib::bcf::record::GenotypeAllele as HtslibGenotypeAllele;
 use smallvec::SmallVec;
 
 /// Represents a genotype in a VCF record, which can contain multiple alleles.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Genotype(pub SmallVec<GenotypeAllele, 4>);
+
+/// Represents a single allele in a genotype, which can be phased or unphased.
+// Copy from `rust_htslib::bcf::record::GenotypeAllele` for adding serde derives
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum GenotypeAllele {
+    /// Unphased allele with index `i`
+    Unphased(i32),
+    /// Phased allele with index `i`
+    Phased(i32),
+    /// Unphased missing allele
+    UnphasedMissing,
+    /// Phased missing allele
+    PhasedMissing,
+}
+
+impl From<GenotypeAllele> for HtslibGenotypeAllele {
+    fn from(allele: GenotypeAllele) -> Self {
+        match allele {
+            GenotypeAllele::Unphased(i) => HtslibGenotypeAllele::Unphased(i),
+            GenotypeAllele::Phased(i) => HtslibGenotypeAllele::Phased(i),
+            GenotypeAllele::UnphasedMissing => HtslibGenotypeAllele::UnphasedMissing,
+            GenotypeAllele::PhasedMissing => HtslibGenotypeAllele::PhasedMissing,
+        }
+    }
+}
 
 impl VcfField for Genotype {
     const ID: &'static str = "GT";
@@ -47,7 +72,14 @@ impl FormatFieldValue for GenotypeAllele {
     const TYPE_NAME: &'static str = "String";
 
     fn write(record: &mut rust_htslib::bcf::Record, _tag: &str, values: &[Self]) -> Result<()> {
-        record.push_genotypes(values).wrap_err("Failed to set genotype")
+        record
+            .push_genotypes(
+                &values
+                    .iter()
+                    .map(|x| HtslibGenotypeAllele::from(x.clone()))
+                    .collect::<SmallVec<_, 6>>(),
+            )
+            .wrap_err("Failed to set genotype")
     }
 }
 

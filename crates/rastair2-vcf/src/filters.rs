@@ -9,6 +9,8 @@
 //! > not been applied, then this field must be set to the MISSING value. (String, no whitespace or semicolons
 //! > permitted, duplicate values not allowed.)
 
+use smol_str::SmolStr;
+
 /// A filter that can be applied to VCF records
 pub trait VcfFilter {
     /// The name of the filter, used in the VCF header
@@ -18,8 +20,8 @@ pub trait VcfFilter {
     fn header() -> String;
 
     /// Returns the filter name as it should appear in the VCF record
-    fn filter(&self) -> &'static str {
-        Self::NAME
+    fn filter(&self) -> SmolStr {
+        SmolStr::new_static(Self::NAME)
     }
 }
 
