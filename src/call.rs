@@ -89,7 +89,7 @@ pub fn call(params: &CallParams) -> Result<()> {
 
     // Create a VCF writer for the output
     let writer_thread = thread::Builder::new()
-        .name("vcf_writer".to_string())
+        .name("writer".to_string())
         .spawn({
             let vcf_output = params.vcf.vcf_output.clone();
             let metadata = [
@@ -100,10 +100,8 @@ pub fn call(params: &CallParams) -> Result<()> {
                 ),
                 format!("reference={}", params.segments.fasta_file),
             ];
-            let mut vcf_writer = params
-                .vcf
-                .vcf_writer(&regions, &metadata)
-                .wrap_err("Failed to create VCF writer")?;
+            let mut writer =
+                params.vcf.writer(&regions, &metadata).wrap_err("Failed to create VCF writer")?;
             move || -> Result<()> {
                 // The segments we get have some overlap between them, so we
                 // need to ensure that we don't write the same record multiple
@@ -128,12 +126,12 @@ pub fn call(params: &CallParams) -> Result<()> {
                         last_seen_chrom = Some(record.fixed_fields.chrom.clone());
                         last_seen_pos = Some(record.fixed_fields.pos);
 
-                        vcf_writer.add(record).wrap_err("Failed to write record to VCF")?;
+                        writer.add(record).wrap_err("Failed to write record to VCF")?;
                     }
                 }
 
                 // Ensure all data is flushed to the output file
-                drop(vcf_writer);
+                drop(writer);
 
                 info!(file = %vcf_output, "Wrote output");
                 Ok(())
