@@ -28,6 +28,7 @@ pub struct MpkVcfHeader {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[allow(clippy::large_enum_variant)] // all but two entries in a file are `Record`s
 pub enum MpkEntry<'r> {
     Header(MpkHeader),
     VcfHeader(MpkVcfHeader),
