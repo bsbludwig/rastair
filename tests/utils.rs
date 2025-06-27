@@ -2,6 +2,7 @@
 
 use std::process::Command;
 
+use color_eyre::eyre::bail;
 pub use color_eyre::{Result, eyre::Context as _};
 pub use insta::{assert_debug_snapshot, assert_snapshot};
 pub use insta_cmd::assert_cmd_snapshot;
@@ -22,5 +23,18 @@ macro_rules! apply_common_filters {
         settings.add_filter(r": close time.*", " [CLOSE]");
         settings.add_filter(r#"file="/.*/test.vcf"#, "file=[PATH]");
         let _bound = settings.bind_to_scope();
+    }
+}
+
+pub trait ExitStatusResultExt {
+    fn is_success(&self) -> Result<()>;
+}
+
+impl ExitStatusResultExt for std::process::ExitStatus {
+    fn is_success(&self) -> Result<()> {
+        if !self.success() {
+            bail!("Command failed with status: {}", self)
+        }
+        Ok(())
     }
 }

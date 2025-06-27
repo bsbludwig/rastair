@@ -1,8 +1,6 @@
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr};
 use rastair2_vcf::{Compression, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
-use rustc_hash::FxHashSet;
-use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{ffi::OsStr, num::NonZeroUsize};
 use tracing::{debug, warn};
@@ -71,6 +69,16 @@ pub enum VcfFormat {
     Bcf,
 }
 
+impl From<VcfFormat> for (HtsVcfFormat, Compression) {
+    fn from(format: VcfFormat) -> Self {
+        match format {
+            VcfFormat::Vcf => (HtsVcfFormat::Vcf, Compression::Off),
+            VcfFormat::VcfCompressed => (HtsVcfFormat::Vcf, Compression::On),
+            VcfFormat::Bcf => (HtsVcfFormat::Bcf, Compression::On),
+        }
+    }
+}
+
 impl Params {
     /// Create a new instance of `Params` with the specified VCF output path.
     pub fn guess_format(&self) -> Format {
@@ -98,27 +106,38 @@ impl Params {
     }
 
     pub fn writer(&self, regions: &[ChunkRegion], metadata: &[String]) -> Result<Writer> {
+        // List all chromosomes in the regions for VCF header
+        let contigs = regions.iter().map(|r| r.chromosome.clone()).fold(
+            Vec::<SmolStr>::new(),
+            |mut acc, chrom| {
+                if !acc.contains(&chrom) {
+                    acc.push(chrom);
+                }
+                acc
+            },
+        );
+        let samples = vec![SmolStr::new("sample")]; // TODO: we have one sample for now
+
         let (format, compression) = match self.guess_format() {
             Format::MessagePack => {
                 let writer = self
-                    .create_mpk_writer(regions, metadata)
+                    .create_mpk_writer(contigs, samples, metadata)
                     .wrap_err("Failed to create MessagePack writer")?;
                 return Ok(Writer::MessagePack(writer));
             }
-            Format::Vcf(VcfFormat::Vcf) => (HtsVcfFormat::Vcf, Compression::Off),
-            Format::Vcf(VcfFormat::VcfCompressed) => (HtsVcfFormat::Vcf, Compression::On),
-            Format::Vcf(VcfFormat::Bcf) => (HtsVcfFormat::Bcf, Compression::On),
+            Format::Vcf(f) => f.into(),
         };
 
         Ok(Writer::Vcf(
-            self.vcf_writer(regions, metadata, format, compression)
+            self.vcf_writer(&contigs, &samples, metadata, format, compression)
                 .wrap_err("Failed to create VCF writer")?,
         ))
     }
 
     pub fn vcf_writer(
         &self,
-        regions: &[ChunkRegion],
+        contigs: &[SmolStr],
+        samples: &[SmolStr],
         metadata: &[String],
         format: HtsVcfFormat,
         compression: Compression,
@@ -135,24 +154,13 @@ impl Params {
             writer.add_header_line(format!("##{line}"));
         }
 
-        // List all chromosomes in the regions for VCF header
-        let contigs = regions.iter().map(|r| r.chromosome.clone()).fold(
-            SmallVec::<SmolStr, 20>::new(),
-            |mut acc, chrom| {
-                if !acc.contains(&chrom) {
-                    acc.push(chrom);
-                }
-                acc
-            },
-        );
-        let samples = [SmolStr::new("sample")]; // TODO: we have one sample for now
-
         writer.build(&contigs, &samples).wrap_err("Failed to build VCF writer")
     }
 
     pub fn create_mpk_writer(
         &self,
-        regions: &[ChunkRegion],
+        contigs: Vec<SmolStr>,
+        samples: Vec<SmolStr>,
         metadata: &[String],
     ) -> Result<MessagePackWriter> {
         let path = &self.vcf_output;
@@ -162,15 +170,6 @@ impl Params {
         );
         let mut w = MessagePackWriter::new(path)
             .wrap_err_with(|| format!("Failed to create MessagePack writer for {path}"))?;
-
-        // List all chromosomes in the regions for VCF header
-        let contigs = regions
-            .iter()
-            .map(|r| r.chromosome.clone())
-            .collect::<FxHashSet<_>>()
-            .into_iter()
-            .collect();
-        let samples = vec![SmolStr::new("sample")]; // TODO: we have one sample for now
 
         w.add_metadata(MpkVcfHeader { contigs, samples, metadata: metadata.to_owned() })?;
 

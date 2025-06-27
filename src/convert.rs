@@ -1,6 +1,8 @@
+use std::num::NonZeroUsize;
+
 use crate::io::{
     formats::{FromFileExtension, InputFormat, OutputFormat},
-    mpk::MessagePackReader,
+    mpk::{MessagePackReader, MpkEntry},
     vcf_writer,
 };
 use clap::value_parser;
@@ -9,7 +11,7 @@ use color_eyre::{
     Section as _,
     eyre::{ContextCompat, Result, WrapErr, bail, eyre},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Convert between different file formats that rastair2 supports
 ///
@@ -83,15 +85,48 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
                 "Cannot convert MessagePack to BED format directly. Please convert to VCF or BCF first."
             )
         }
-        (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::VcfLike(_)) => {
-            // FIXME: This is just a placeholder for debugging purposes
+        (
+            InputFormat::VcfLike(vcf_writer::Format::MessagePack),
+            OutputFormat::VcfLike(vcf_writer::Format::Vcf(format)),
+        ) => {
             let r = MessagePackReader::new(&params.input)
                 .wrap_err("Failed to create MessagePack reader")
                 .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
                 .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
-            info!(header=?r.header, "opened mpk file");
-            dbg!(&r.vcf_header);
-            dbg!(r.entries.count());
+            debug!(header=?r.header, "opened mpk file");
+            let Some(meta) = r.vcf_header else {
+                bail!("MessagePack file does not contain a VCF header");
+            };
+
+            let params = vcf_writer::Params {
+                vcf_output: params.output.clone(),
+                vcf_threads: NonZeroUsize::new(4).expect("valid number"),
+            };
+
+            let (format, compression) = format.into();
+            let mut writer = params
+                .vcf_writer(&meta.contigs, &meta.samples, &meta.metadata, format, compression)
+                .wrap_err_with(|| {
+                    format!("Failed to create VCF writer for output file `{}`", params.vcf_output)
+                })?;
+
+            for entry in r.entries {
+                match entry {
+                    Ok(MpkEntry::Record(record)) => {
+                        writer.add(&record).wrap_err("Failed to write record")?;
+                    }
+                    Ok(x) => {
+                        warn!(?x, "Skipping unsupported entry type in MessagePack file");
+                        continue;
+                    }
+                    Err(e) => {
+                        let error = format!("{e:#}");
+                        warn!(%error, "Error reading entry from MessagePack file, skipping");
+                        continue;
+                    }
+                }
+            }
+
             Ok(())
         }
         _ => {
