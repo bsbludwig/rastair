@@ -1,12 +1,20 @@
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr};
-use rastair2_vcf::{Compression, VcfBuilder, VcfFile, VcfFormat};
+use rastair2_vcf::{Compression, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
+use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::{ffi::OsStr, fs::File, io::BufWriter, num::NonZeroUsize};
+use std::{ffi::OsStr, num::NonZeroUsize};
 use tracing::{debug, warn};
 
-use crate::{sequence::ChunkRegion, vcf::Record};
+use crate::{
+    io::{
+        formats::FromFileExtension,
+        mpk::{MessagePackWriter, MpkVcfHeader},
+    },
+    sequence::ChunkRegion,
+    vcf::Record,
+};
 
 #[derive(Debug, Clone, clap::Parser)]
 pub struct Params {
@@ -28,55 +36,78 @@ pub struct Params {
     pub vcf_threads: NonZeroUsize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// Text-based VCF format
-    Vcf,
-    /// Binary VCF format (BCF)
-    Bcf,
+    Vcf(VcfFormat),
     /// Rastair-internal `MessagePack` format, always LZ4-compressed
     MessagePack,
 }
 
+impl clap::ValueEnum for Format {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            Format::Vcf(VcfFormat::Vcf),
+            Format::Vcf(VcfFormat::VcfCompressed),
+            Format::Vcf(VcfFormat::Bcf),
+            Format::MessagePack,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        match self {
+            Format::Vcf(format) => format.to_possible_value(),
+            Format::MessagePack => Some(clap::builder::PossibleValue::new("mpk.lz4")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum VcfFormat {
+    /// Text-based VCF format
+    Vcf,
+    /// Compressed text-based VCF format
+    VcfCompressed,
+    /// Binary VCF format (BCF)
+    Bcf,
+}
+
 impl Params {
     /// Create a new instance of `Params` with the specified VCF output path.
-    pub fn guess_format(&self) -> (Format, Compression) {
-        if self.vcf_output == ClioPath::new("-").expect("static path is valid") {
-            return (Format::Vcf, Compression::Off);
+    pub fn guess_format(&self) -> Format {
+        if self.vcf_output.is_std() {
+            return Format::Vcf(VcfFormat::Vcf);
         }
 
         let Some(name) = self.vcf_output.file_name().and_then(OsStr::to_str) else {
             warn!(
+                filename=%self.vcf_output,
                 "No file name found in VCF output path, defaulting to VCF format without compression."
             );
-            return (Format::Vcf, Compression::Off);
+            return Format::Vcf(VcfFormat::Vcf);
         };
 
-        if name.ends_with("bcf") {
-            (Format::Bcf, Compression::On)
-        } else if name.ends_with("vcf") {
-            (Format::Vcf, Compression::Off)
-        } else if name.ends_with("vcf.gz") {
-            (Format::Vcf, Compression::On)
-        } else if name.ends_with("mpk.lz4") {
-            (Format::MessagePack, Compression::On)
-        } else {
-            warn!("Unexpected file extension, defaulting to VCF format without compression.");
-            (Format::Vcf, Compression::Off)
-        }
+        let Some(format) = Format::from_file_extension(name) else {
+            warn!(
+                filename=%self.vcf_output,
+                "Could not determine format from file extension, defaulting to VCF format without compression."
+            );
+            return Format::Vcf(VcfFormat::Vcf);
+        };
+
+        format
     }
 
     pub fn writer(&self, regions: &[ChunkRegion], metadata: &[String]) -> Result<Writer> {
-        let (format, compression) = self.guess_format();
-
-        let format = match format {
+        let (format, compression) = match self.guess_format() {
             Format::MessagePack => {
-                let writer =
-                    self.create_direct_writer().wrap_err("Failed to create MessagePack writer")?;
+                let writer = self
+                    .create_mpk_writer(regions, metadata)
+                    .wrap_err("Failed to create MessagePack writer")?;
                 return Ok(Writer::MessagePack(writer));
             }
-            Format::Vcf => VcfFormat::Vcf,
-            Format::Bcf => VcfFormat::Bcf,
+            Format::Vcf(VcfFormat::Vcf) => (HtsVcfFormat::Vcf, Compression::Off),
+            Format::Vcf(VcfFormat::VcfCompressed) => (HtsVcfFormat::Vcf, Compression::On),
+            Format::Vcf(VcfFormat::Bcf) => (HtsVcfFormat::Bcf, Compression::On),
         };
 
         Ok(Writer::Vcf(
@@ -89,7 +120,7 @@ impl Params {
         &self,
         regions: &[ChunkRegion],
         metadata: &[String],
-        format: VcfFormat,
+        format: HtsVcfFormat,
         compression: Compression,
     ) -> Result<VcfFile<Record>> {
         debug!(
@@ -119,33 +150,44 @@ impl Params {
         writer.build(&contigs, &samples).wrap_err("Failed to build VCF writer")
     }
 
-    pub fn create_direct_writer(&self) -> Result<DirectWriter> {
+    pub fn create_mpk_writer(
+        &self,
+        regions: &[ChunkRegion],
+        metadata: &[String],
+    ) -> Result<MessagePackWriter> {
         let path = &self.vcf_output;
         warn!(
             %path,
             "MessagePack format only for internal use, no stability guarantees",
         );
-        let file = BufWriter::new(
-            File::create(path.path()).wrap_err_with(|| format!("Failed to create file {path}"))?,
-        );
+        let mut w = MessagePackWriter::new(path)
+            .wrap_err_with(|| format!("Failed to create MessagePack writer for {path}"))?;
 
-        lz4::EncoderBuilder::new().level(0).build(file).wrap_err("Failed to create LZ4 encoder")
+        // List all chromosomes in the regions for VCF header
+        let contigs = regions
+            .iter()
+            .map(|r| r.chromosome.clone())
+            .collect::<FxHashSet<_>>()
+            .into_iter()
+            .collect();
+        let samples = vec![SmolStr::new("sample")]; // TODO: we have one sample for now
+
+        w.add_metadata(MpkVcfHeader { contigs, samples, metadata: metadata.to_owned() })?;
+
+        Ok(w)
     }
 }
 
-type DirectWriter = lz4::Encoder<BufWriter<File>>;
-
 pub enum Writer {
     Vcf(VcfFile<Record>),
-    MessagePack(DirectWriter),
+    MessagePack(MessagePackWriter),
 }
 
 impl Writer {
     pub fn add(&mut self, record: &Record) -> Result<()> {
         match self {
             Writer::Vcf(writer) => writer.add(record).wrap_err("Failed to write record to VCF"),
-            Writer::MessagePack(writer) => rmp_serde::encode::write_named(writer, record)
-                .wrap_err("Failed to write record to MessagePack file"),
+            Writer::MessagePack(writer) => writer.add(record),
         }
     }
 }

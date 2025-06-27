@@ -3,7 +3,10 @@ use color_eyre::{
     Section,
     eyre::{Context, Result},
 };
-use rastair2::call::{CallParams, call};
+use rastair2::{
+    call::{CallParams, call},
+    convert::ConvertParams,
+};
 use tracing::{debug, info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
@@ -28,6 +31,8 @@ struct Cli {
 enum Subcommand {
     /// Call methylated positions
     Call(CallParams),
+    /// Convert between different file formats
+    Convert(ConvertParams),
     /// Write shell completions
     #[command(hide = true)]
     GenerateShellCompletions {
@@ -85,6 +90,14 @@ fn main() -> Result<()> {
             call(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Call finished");
+        }
+        Subcommand::Convert(params) => {
+            // track execution time
+            let start = std::time::Instant::now();
+            debug!(?params, "Running convert command");
+            rastair2::convert::convert(&params)?;
+            let duration = start.elapsed();
+            info!(?duration, "Convert finished");
         }
         Subcommand::GenerateShellCompletions { shell } => {
             shell.generate(&mut Cli::command(), &mut std::io::stdout());

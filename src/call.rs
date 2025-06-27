@@ -1,7 +1,8 @@
 use crate::{
     call::{methylation::params::MethylationCallingParams, variant_calling::VariantCallingParams},
+    io::vcf_writer,
     sequence::{ChunkRegion, Readers, SegmentsParams},
-    vcf, vcf_writer,
+    vcf,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, eyre};
 use rayon::prelude::*;

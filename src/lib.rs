@@ -1,8 +1,13 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod call;
+pub mod convert;
+pub mod io {
+    pub mod formats;
+    pub mod mpk;
+    pub mod vcf_writer;
+}
 pub mod vcf;
-pub mod vcf_writer;
 pub mod utils {
     mod base;
     pub use base::Base;
