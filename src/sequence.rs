@@ -428,15 +428,13 @@ mod tests {
 
         // Test start position beyond chromosome length
         let invalid_start = chr19_len + 100;
-        let region_invalid_start: RegionString =
-            format!("chr19:{}", invalid_start).parse().unwrap();
+        let region_invalid_start: RegionString = format!("chr19:{invalid_start}").parse().unwrap();
         let result = get_selected_region(&region_invalid_start, header);
         assert!(result.is_err());
 
         // Test end position beyond chromosome length
         let invalid_end = chr19_len + 100;
-        let region_invalid_end: RegionString =
-            format!("chr19:100-{}", invalid_end).parse().unwrap();
+        let region_invalid_end: RegionString = format!("chr19:100-{invalid_end}").parse().unwrap();
         let result = get_selected_region(&region_invalid_end, header);
         assert!(result.is_err());
 

@@ -3,7 +3,7 @@ name = "rastair2"
 description = "Fast and flexible extraction of methylation information from BAM files"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.86.0"
+rust-version = "1.88.0"
 license = "AGPL-3.0-only"
 authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"
@@ -25,12 +25,13 @@ probability = "0.20.3"
 rastair2-vcf = { version = "0.1.0", path = "crates/rastair2-vcf" }
 rayon = "1.10.0"
 readable = { version = "0.16.0", default-features = false, features = [
-    "byte",
-    "num",
+  "byte",
+  "num",
 ] }
 rust-htslib = { version = "0.49.0", default-features = false, features = [
-    "bzip2",
-    "lzma",
+  "bzip2",
+  "lzma",
+  "libdeflate",
 ] }
 rustc-hash = "2.1.1"
 smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
@@ -49,7 +50,7 @@ tempfile = "3.19.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(coverage, coverage_nightly)',
+  'cfg(coverage, coverage_nightly)',
 ] }
 
 [lints.clippy]

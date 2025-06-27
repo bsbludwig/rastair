@@ -1,4 +1,4 @@
-image: rust:1.86 # keep in sync with `rust-toolchain.yml`
+image: rust:1.88 # keep in sync with `rust-toolchain.yml`
 
 options:
   max-time: 30
@@ -9,10 +9,8 @@ definitions:
     cargo-registry: /usr/local/cargo/registry/
     cargo-git: /usr/local/cargo/git/
     # Cache only dependency compilation artifacts, not our own code
-    cargo-target-deps: target/debug/deps/
-    cargo-target-build: target/debug/build/
-    cargo-target-deps-cov: target/llvm-cov-target/debug/deps/
-    cargo-target-build-cov: target/llvm-cov-target/debug/build/
+    cargo-target: target/debug/
+    cargo-target-cov: target/llvm-cov-target/debug
     # Cache Deno modules for scripts
     deno-modules: ~/.cache/deno/
 
@@ -32,8 +30,7 @@ pipelines:
               caches:
                 - cargo-registry
                 - cargo-git
-                - cargo-target-deps
-                - cargo-target-build
+                - cargo-target
                 - deno-modules
               script:
                 # Dependencies
@@ -50,10 +47,8 @@ pipelines:
               caches:
                 - cargo-registry
                 - cargo-git
-                - cargo-target-deps
-                - cargo-target-build
-                - cargo-target-deps-cov
-                - cargo-target-build-cov
+                - cargo-target
+                - cargo-target-cov
               script:
                 - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
                 - curl --proto "=https" --tlsv1.2 -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz" | tar xzf - -C "$CARGO_HOME/bin"
@@ -66,8 +61,6 @@ pipelines:
           caches:
             - cargo-registry
             - cargo-git
-            - cargo-target-deps
-            - cargo-target-build
           script:
             # Dependencies
             - rustup component add clippy rustfmt

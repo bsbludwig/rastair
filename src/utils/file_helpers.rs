@@ -59,7 +59,7 @@ pub fn open_fasta(fasta_path: &Path) -> Result<FastaReader> {
         [fasta_path.with_extension("fai"), fasta_path.with_extension("gz.fai")];
     let index_path = possible_index_files.iter().find(|p| p.exists()).ok_or_else(|| {
         eyre!("No index file found for FASTA input {fasta_path:?}")
-            .with_note(|| format!("Expected index file to be one of: {:?}", possible_index_files))
+            .with_note(|| format!("Expected index file to be one of: {possible_index_files:?}"))
             .with_suggestion(|| format!("Create FASTA index with `samtools faidx {fasta_path:?}`"))
     })?;
 
@@ -232,9 +232,7 @@ fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(path: P) -> Result<BgzipRe
         let possible_index_files = [path.with_extension("gzi"), path.with_extension("gz.gzi")];
         let index_path = possible_index_files.iter().find(|p| p.exists()).ok_or_else(|| {
             eyre!("No index file found for bgzip input {path:?}")
-                .with_note(|| {
-                    format!("Expected index file to be one of: {:?}", possible_index_files)
-                })
+                .with_note(|| format!("Expected index file to be one of: {possible_index_files:?}"))
                 .with_suggestion(|| format!("Create bgzip index with `bgzip -r {path:?}`"))
         })?;
         let index = BGZFIndex::from_reader(open(index_path)?)

@@ -138,7 +138,7 @@ impl VcfBuilder {
 
         for chrom in contigs {
             // FIXME: Set length to the actual length of the chromosome if known
-            self.add_header_line(format!(r#"##contig=<ID={},length=0>"#, chrom));
+            self.add_header_line(format!(r#"##contig=<ID={chrom},length=0>"#));
         }
         for sample in samples {
             self.header.push_sample(sample.as_bytes());
@@ -158,7 +158,7 @@ impl VcfBuilder {
             let id = vcf
                 .header()
                 .name2rid(chrom.as_bytes())
-                .wrap_err_with(|| format!("Failed to add contig `{}` to header", chrom))?;
+                .wrap_err_with(|| format!("Failed to add contig `{chrom}` to header"))?;
             chromosomes.insert(chrom.clone(), id);
         }
 

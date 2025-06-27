@@ -37,10 +37,10 @@ impl fmt::Display for RegionString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.chromosome)?;
         if let Some(start) = self.start {
-            write!(f, ":{}", start)?;
+            write!(f, ":{start}")?;
         }
         if let Some(end) = self.end {
-            write!(f, "-{}", end)?;
+            write!(f, "-{end}")?;
         }
         Ok(())
     }
@@ -309,7 +309,7 @@ mod tests {
             let _ = FetchDefinition::from(&parsed);
 
             // chromosome with start
-            let region_str = format!("{}:{}", chrom, start);
+            let region_str = format!("{chrom}:{start}");
             let parsed = RegionString::from_str(&region_str)?;
             assert_eq!(parsed.chromosome, chrom);
             assert_eq!(parsed.start, NonZeroU32::new(start));
@@ -318,7 +318,7 @@ mod tests {
             let _ = FetchDefinition::from(&parsed);
 
             // chromosome with start and end
-            let region_str = format!("{}:{}-{}", chrom, start, end);
+            let region_str = format!("{chrom}:{start}-{end}");
             let parsed = RegionString::from_str(&region_str)?;
             assert_eq!(parsed.chromosome, chrom);
             assert_eq!(parsed.start, NonZeroU32::new(start));
