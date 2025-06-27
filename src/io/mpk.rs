@@ -44,15 +44,14 @@ impl MessagePackWriter {
     /// Create a new `MessagePackWriter` with the specified output path.
     #[instrument(level = "debug")]
     pub fn new(path: &ClioPath) -> Result<Self> {
-        let file = BufWriter::new(
-            path.clone().create().wrap_err_with(|| format!("Failed to create output {path}"))?,
-        );
+        let file =
+            path.clone().create().wrap_err_with(|| format!("Failed to create output {path}"))?;
 
         let writer = lz4::EncoderBuilder::new()
             .level(0)
             .build(file)
             .wrap_err("Failed to create LZ4 encoder")?;
-        let mut me = Self { path: path.clone(), writer: Box::new(writer) };
+        let mut me = Self { path: path.clone(), writer: Box::new(BufWriter::new(writer)) };
         me.write(&MpkEntry::Header(MpkHeader {
             rastair2_version: env!("CARGO_PKG_VERSION").into(),
         }))?;
