@@ -154,7 +154,7 @@ impl Params {
             writer.add_header_line(format!("##{line}"));
         }
 
-        writer.build(&contigs, &samples).wrap_err("Failed to build VCF writer")
+        writer.build(contigs, samples).wrap_err("Failed to build VCF writer")
     }
 
     pub fn create_mpk_writer(
