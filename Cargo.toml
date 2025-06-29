@@ -40,7 +40,7 @@ cstr8 = { workspace = true }
 tracing = { workspace = true }
 
 # bio tools
-bgzip = "0.3.1"
+bgzip = { version = "0.3.1", features = ["zlib-ng"] }
 bio = "2.2.0"
 rastair2-vcf = { version = "0.1.0", path = "crates/rastair2-vcf" }
 
