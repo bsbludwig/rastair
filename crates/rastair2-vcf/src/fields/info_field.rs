@@ -105,9 +105,9 @@ impl InfoFieldValue for bool {
     const TYPE_NAME: &'static str = "Flag";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[bool]) -> Result<()> {
-        record.clear_info_flag(tag.as_bytes()).wrap_err("Failed to clear info field")?;
+        record.clear_info_flag(tag).wrap_err("Failed to clear info field")?;
         if values.first().copied().unwrap_or_default() {
-            record.push_info_flag(tag.as_bytes()).wrap_err("Failed to set flag")
+            record.push_info_flag(tag).wrap_err("Failed to set flag")
         } else {
             Ok(())
         }
@@ -228,7 +228,7 @@ impl InfoFieldValue for String {
     fn write(record: &mut Record, tag: &CStr8, values: &[String]) -> Result<()> {
         record
             .push_info_string(
-                tag.as_bytes(),
+                tag,
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
             .wrap_err("Failed to set field")
@@ -241,7 +241,7 @@ impl InfoFieldValue for SmolStr {
     fn write(record: &mut Record, tag: &CStr8, values: &[SmolStr]) -> Result<()> {
         record
             .push_info_string(
-                tag.as_bytes(),
+                tag,
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
             .wrap_err("Failed to set field")
