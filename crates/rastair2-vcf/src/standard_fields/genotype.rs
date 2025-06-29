@@ -18,6 +18,7 @@
 
 use crate::{FormatField, FormatFieldNumber, FormatFieldValue, HeaderField, VcfField};
 use color_eyre::eyre::{Context, Result};
+use cstr8::CStr8;
 pub use rust_htslib::bcf::record::GenotypeAllele as HtslibGenotypeAllele;
 use smallvec::SmallVec;
 
@@ -71,7 +72,7 @@ impl FormatField for Genotype {
 impl FormatFieldValue for GenotypeAllele {
     const TYPE_NAME: &'static str = "String";
 
-    fn write(record: &mut rust_htslib::bcf::Record, _tag: &str, values: &[Self]) -> Result<()> {
+    fn write(record: &mut rust_htslib::bcf::Record, _tag: &CStr8, values: &[Self]) -> Result<()> {
         record
             .push_genotypes(
                 &values

@@ -57,7 +57,7 @@ impl FormatField for StrandBias {
         let tag = Self::ID;
         record
             .push_format_integer(
-                tag.as_bytes(),
+                tag,
                 &[
                     self.reads_ref_fwd as i32,
                     self.reads_ref_rev as i32,

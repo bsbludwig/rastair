@@ -1,4 +1,5 @@
 use color_eyre::{Result, eyre::Context as _};
+use cstr8::CStr8;
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -109,13 +110,13 @@ pub trait FormatFieldValue: Sized {
     const TYPE_NAME: &'static str;
 
     /// Write the values to the VCF record under the given tag.
-    fn write(record: &mut Record, tag: &str, values: &[Self]) -> Result<()>;
+    fn write(record: &mut Record, tag: &CStr8, values: &[Self]) -> Result<()>;
 }
 
 impl<T: FormatFieldValue + Clone> FormatFieldValue for Option<T> {
     const TYPE_NAME: &'static str = T::TYPE_NAME;
 
-    fn write(record: &mut Record, tag: &str, values: &[Option<T>]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[Option<T>]) -> Result<()> {
         let non_none_values: Vec<_> = values.iter().filter_map(|v| v.as_ref()).cloned().collect();
         if non_none_values.is_empty() {
             // no values
@@ -129,10 +130,10 @@ impl<T: FormatFieldValue + Clone> FormatFieldValue for Option<T> {
 impl FormatFieldValue for u32 {
     const TYPE_NAME: &'static str = "Integer";
 
-    fn write(record: &mut Record, tag: &str, values: &[u32]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[u32]) -> Result<()> {
         record
             .push_format_integer(
-                tag.as_bytes(),
+                tag,
                 &values
                     .iter()
                     .map(|&n| i32::try_from(n))
@@ -146,10 +147,10 @@ impl FormatFieldValue for u32 {
 impl FormatFieldValue for u64 {
     const TYPE_NAME: &'static str = "Integer";
 
-    fn write(record: &mut Record, tag: &str, values: &[u64]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[u64]) -> Result<()> {
         record
             .push_format_integer(
-                tag.as_bytes(),
+                tag,
                 &values
                     .iter()
                     .map(|&n| i32::try_from(n))
@@ -163,18 +164,18 @@ impl FormatFieldValue for u64 {
 impl FormatFieldValue for i32 {
     const TYPE_NAME: &'static str = "Integer";
 
-    fn write(record: &mut Record, tag: &str, values: &[i32]) -> Result<()> {
-        record.push_format_integer(tag.as_bytes(), values).wrap_err("Failed to set field")
+    fn write(record: &mut Record, tag: &CStr8, values: &[i32]) -> Result<()> {
+        record.push_format_integer(tag, values).wrap_err("Failed to set field")
     }
 }
 
 impl FormatFieldValue for i64 {
     const TYPE_NAME: &'static str = "Integer";
 
-    fn write(record: &mut Record, tag: &str, values: &[i64]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[i64]) -> Result<()> {
         record
             .push_format_integer(
-                tag.as_bytes(),
+                tag,
                 &values
                     .iter()
                     .map(|&n| i32::try_from(n))
@@ -188,10 +189,10 @@ impl FormatFieldValue for i64 {
 impl FormatFieldValue for usize {
     const TYPE_NAME: &'static str = "Integer";
 
-    fn write(record: &mut Record, tag: &str, values: &[usize]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[usize]) -> Result<()> {
         record
             .push_format_integer(
-                tag.as_bytes(),
+                tag,
                 &values
                     .iter()
                     .map(|&n| i32::try_from(n))
@@ -205,8 +206,8 @@ impl FormatFieldValue for usize {
 impl FormatFieldValue for f32 {
     const TYPE_NAME: &'static str = "Float";
 
-    fn write(record: &mut Record, tag: &str, values: &[f32]) -> Result<()> {
-        record.push_format_float(tag.as_bytes(), values).wrap_err("Failed to set field")
+    fn write(record: &mut Record, tag: &CStr8, values: &[f32]) -> Result<()> {
+        record.push_format_float(tag, values).wrap_err("Failed to set field")
     }
 }
 
@@ -214,12 +215,9 @@ impl FormatFieldValue for f64 {
     const TYPE_NAME: &'static str = "Float";
 
     #[allow(clippy::cast_possible_truncation)] // Allow casting f64 to f32, which is common in VCF
-    fn write(record: &mut Record, tag: &str, values: &[f64]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[f64]) -> Result<()> {
         record
-            .push_format_float(
-                tag.as_bytes(),
-                &values.iter().map(|&n| n as f32).collect::<SmallVec<f32, 5>>(),
-            )
+            .push_format_float(tag, &values.iter().map(|&n| n as f32).collect::<SmallVec<f32, 5>>())
             .wrap_err("Failed to set field")
     }
 }
@@ -227,10 +225,10 @@ impl FormatFieldValue for f64 {
 impl FormatFieldValue for String {
     const TYPE_NAME: &'static str = "String";
 
-    fn write(record: &mut Record, tag: &str, values: &[String]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[String]) -> Result<()> {
         record
             .push_format_string(
-                tag.as_bytes(),
+                tag,
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
             .wrap_err("Failed to set field")
@@ -240,10 +238,10 @@ impl FormatFieldValue for String {
 impl FormatFieldValue for SmolStr {
     const TYPE_NAME: &'static str = "String";
 
-    fn write(record: &mut Record, tag: &str, values: &[SmolStr]) -> Result<()> {
+    fn write(record: &mut Record, tag: &CStr8, values: &[SmolStr]) -> Result<()> {
         record
             .push_format_string(
-                tag.as_bytes(),
+                tag,
                 &values.iter().map(|s| s.as_bytes()).collect::<SmallVec<&[u8], 5>>(),
             )
             .wrap_err("Failed to set field")
