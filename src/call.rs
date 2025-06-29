@@ -79,8 +79,8 @@ pub fn call(params: &CallParams) -> Result<()> {
     // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
     // the parallel iterator.
     let (vcf_sender, vcf_receiver) = {
-        // At least 5x buffer for VCF records to account for reordering and processing time
-        let buffer_size = worker_threads.mul(5);
+        // At least 10x buffer for VCF records to account for reordering and processing time
+        let buffer_size = worker_threads.mul(10);
         ordered_channel::bounded(buffer_size)
     };
 
