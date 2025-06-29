@@ -49,8 +49,9 @@ impl InfoField for AlleleSpecificStrandBias {
             .0
             .iter()
             .flat_map(|c| [c.ot, c.ob])
-            .map(|count| i32::try_from(count).wrap_err("strand counts should fit in i32"))
-            .collect::<Result<_>>()?;
+            .map(i32::try_from)
+            .collect::<Result<_, _>>()
+            .wrap_err("strand counts should fit in i32")?;
 
         record.push_info_integer(tag, &counts).wrap_err("Failed to set field")
     }
