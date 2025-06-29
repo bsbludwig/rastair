@@ -37,7 +37,7 @@ impl SequenceContext {
 }
 
 impl VcfField for SequenceContext {
-    const ID: &'static str = "SC5";
+    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("SC5");
 }
 
 impl HeaderField for SequenceContext {

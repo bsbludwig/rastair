@@ -526,6 +526,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "cstr8"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b66fb03be8678b49eb4afb24a4c0748c4ea4f6f7ad357423b1ce4be9658d413"
+
+[[package]]
 name = "csv"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1580,6 +1586,7 @@ dependencies = [
  "clap_complete_command",
  "clio",
  "color-eyre",
+ "cstr8",
  "insta",
  "insta-cmd",
  "lz4",
@@ -1610,6 +1617,7 @@ name = "rastair2-vcf"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "cstr8",
  "insta",
  "insta-cmd",
  "pastey",
@@ -1727,11 +1735,10 @@ dependencies = [
 [[package]]
 name = "rust-htslib"
 version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "115ae57b89deb942275566eca8c31da053d8df0d8bda12e50c4c4aa994877068"
 dependencies = [
  "bio-types",
  "byteorder",
+ "cstr8",
  "custom_derive",
  "derive-new 0.7.0",
  "hts-sys",

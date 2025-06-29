@@ -13,5 +13,5 @@ pub trait HeaderField {
 /// A field that can be used in VCF.
 pub trait VcfField: HeaderField {
     /// The ID of the field, used in the VCF header and record.
-    const ID: &'static str;
+    const ID: &'static cstr8::CStr8;
 }

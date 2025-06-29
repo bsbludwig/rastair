@@ -18,7 +18,7 @@ pub struct StrandBias {
 }
 
 impl VcfField for StrandBias {
-    const ID: &'static str = "SB";
+    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("SB");
 }
 
 impl HeaderField for StrandBias {
@@ -32,12 +32,12 @@ impl InfoField for StrandBias {
 
     fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::eyre::Result<()> {
         let tag = Self::ID;
-        record.clear_info_integer(tag.as_bytes()).wrap_err_with(|| {
+        record.clear_info_integer(tag).wrap_err_with(|| {
             format!("Failed to clear info field {tag} ({})", Self::Type::TYPE_NAME)
         })?;
         record
             .push_info_integer(
-                tag.as_bytes(),
+                tag,
                 &[
                     self.reads_ref_fwd as i32,
                     self.reads_ref_rev as i32,

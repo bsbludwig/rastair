@@ -29,7 +29,7 @@ pub struct StrandCounts {
 }
 
 impl VcfField for AlleleSpecificStrandBias {
-    const ID: &'static str = "AS_SB";
+    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("AS_SB");
 }
 
 impl HeaderField for AlleleSpecificStrandBias {
@@ -44,7 +44,7 @@ impl InfoField for AlleleSpecificStrandBias {
 
     fn write(&self, record: &mut Record) -> Result<()> {
         let tag = Self::ID;
-        record.clear_info_integer(tag.as_bytes()).wrap_err("Failed to clear field")?;
+        record.clear_info_integer(tag).wrap_err("Failed to clear field")?;
         let counts: SmallVec<i32, 8> = self
             .0
             .iter()
@@ -52,6 +52,6 @@ impl InfoField for AlleleSpecificStrandBias {
             .map(|count| i32::try_from(count).wrap_err("strand counts should fit in i32"))
             .collect::<Result<_>>()?;
 
-        record.push_info_integer(tag.as_bytes(), &counts).wrap_err("Failed to set field")
+        record.push_info_integer(tag, &counts).wrap_err("Failed to set field")
     }
 }

@@ -51,7 +51,7 @@ impl From<GenotypeAllele> for HtslibGenotypeAllele {
 }
 
 impl VcfField for Genotype {
-    const ID: &'static str = "GT";
+    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("GT");
 }
 
 impl HeaderField for Genotype {

@@ -290,7 +290,7 @@ macro_rules! format_field {
         }
 
         impl $crate::VcfField for $name {
-            const ID: &'static str = $id;
+            const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);
         }
 
         impl $crate::HeaderField for $name {
@@ -334,7 +334,7 @@ macro_rules! format_field {
         }
 
         impl $crate::VcfField for $name {
-            const ID: &'static str = $id;
+            const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);
         }
 
         impl $crate::HeaderField for $name {
@@ -369,7 +369,7 @@ macro_rules! format_field {
         pub struct $name(pub Vec<$type>);
 
         impl $crate::VcfField for $name {
-            const ID: &'static str = $id;
+            const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);
         }
 
         impl $crate::HeaderField for $name {
