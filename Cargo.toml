@@ -11,46 +11,73 @@ readme = "README.md"
 [workspace]
 members = ["crates/*"]
 
-[dependencies]
-bgzip = "0.3.1"
-bio = "2.2.0"
-clap = { version = "4.5.35", features = ["derive", "env"] }
-clap_complete_command = "0.6.1"
-clio = { version = "0.3.5", features = ["clap", "clap-parse", "pipe"] }
-color-eyre = "0.6.3"
+[workspace.dependencies]
+color-eyre = "0.6.5"
+smallvec = { version = "2.0.0-alpha.11", features = ["serde", "std"] }
+smol_str = { version = "0.3.2", features = ["serde"] }
+serde = { version = "1.0.219", features = ["derive"] }
 cstr8 = "0.1.4"
-lz4 = "1.28.1"
-mimalloc = { version = "0.1.47", features = ["override"] }
-ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
-pastey = "0.1.0"
-probability = "0.20.3"
-rastair2-vcf = { version = "0.1.0", path = "crates/rastair2-vcf" }
-rayon = "1.10.0"
-readable = { version = "0.16.0", default-features = false, features = [
-  "byte",
-  "num",
-] }
-rmp-serde = "1.3.0"
-rust-htslib = { version = "0.49.0", path = "../../rust-bio/rust-htslib", default-features = false, features = [
+rust-htslib = { version = "0.49.0", git = "https://github.com/killercup/rust-htslib.git", branch = "feature/cstr8", default-features = false, features = [
   "bzip2",
   "lzma",
   "libdeflate",
 ] }
-rustc-hash = "2.1.1"
-serde = { version = "1.0.219", features = ["derive"] }
-smallvec = { version = "2.0.0-alpha.11", features = ["serde", "std"] }
-smol_str = { version = "0.3.2", features = ["serde"] }
-thiserror = "2.0.12"
 tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
-tracing-error = "0.2.1"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+
+insta = { version = "1.43.1", features = ["filters"] }
+insta-cmd = "0.6.0"
+pastey = "0.1.0"
+proptest = "1.7.0"
+tempfile = "3.20.0"
+
+[dependencies]
+rust-htslib = { workspace = true }
+color-eyre = { workspace = true }
+smallvec = { workspace = true }
+smol_str = { workspace = true }
+serde = { workspace = true }
+cstr8 = { workspace = true }
+tracing = { workspace = true }
+
+# bio tools
+bgzip = "0.3.1"
+bio = "2.2.0"
+rastair2-vcf = { version = "0.1.0", path = "crates/rastair2-vcf" }
+
+# cli stuff
+clap = { version = "4.5.35", features = ["derive", "env"] }
+clap_complete_command = "0.6.1"
+clio = { version = "0.3.5", features = ["clap", "clap-parse", "pipe"] }
+
+# multithreading
+rayon = "1.10.0"
+ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
+mimalloc = { version = "0.1.47", features = ["override"] }
+
+# I/O
+lz4 = "1.28.1"
+rmp-serde = "1.3.0"
+
+# utils
+probability = "0.20.3"
+rustc-hash = "2.1.1"
+pastey = "0.1.0"
 winnow = { version = "0.7.6", features = ["simd"] }
 
+# error handling and logging
+thiserror = "2.0.12"
+tracing-error = "0.2.1"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+readable = { version = "0.16.0", default-features = false, features = [
+  "byte",
+  "num",
+] }
+
 [dev-dependencies]
-insta = { version = "1.42.2", features = ["filters"] }
-insta-cmd = "0.6.0"
-proptest = "1.6.0"
-tempfile = "3.19.1"
+insta = { workspace = true }
+insta-cmd = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
