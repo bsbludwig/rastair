@@ -1,0 +1,56 @@
+---
+source: tests/call_cli.rs
+info:
+  program: rastair2
+  args:
+    - call
+    - "--fasta-file=tests/data/test.fasta.gz"
+    - tests/data/test.bam
+    - "--region=chr19:6117965-6118004"
+    - "--calling=thresholds"
+    - "--cpgs-only"
+  env:
+    NO_COLOR: "1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##rastair2Version=0.1.0
+##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6117965-6118004 --calling=thresholds --cpgs-only
+##reference="tests/data/test.fasta.gz"
+##FILTER=<ID=lowDP,Description="Low read depth">
+##INFO=<ID=AD,Number=R,Type=Integer,Description="Total read depth for each allele">
+##INFO=<ID=BQ,Number=1,Type=Float,Description="RMS base quality">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Combined depth across samples">
+##INFO=<ID=MQ,Number=1,Type=Float,Description="RMS mapping quality">
+##INFO=<ID=MQ0,Number=1,Type=Integer,Description="Number of MAPQ == 0 reads">
+##INFO=<ID=NS,Number=1,Type=Integer,Description="Number of samples with data">
+##INFO=<ID=AS_SB,Number=.,Type=Integer,Description="Strand bias per allele: tuples of [reads_ot, reads_ob] for each allele">
+##INFO=<ID=SC5,Number=1,Type=String,Description="5-base sequence context centered on the variant position">
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes)">
+##INFO=<ID=ABQ,Number=R,Type=Float,Description="RMS Base quality per allele">
+##INFO=<ID=AMQ,Number=R,Type=Float,Description="RMS Map quality per allele">
+##INFO=<ID=PIR,Number=R,Type=Float,Description="RMS of relative position in read">
+##INFO=<ID=ENT100,Number=1,Type=Float,Description="Shannon entropy of 100bp sequence context around variant position. Value range (0..2)">
+##INFO=<ID=NAB,Number=R,Type=Float,Description="RMS of number of aligned bases">
+##INFO=<ID=NOI,Number=R,Type=Float,Description="RMS of number of indels">
+##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods">
+##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##FORMAT=<ID=M5mC,Number=1,Type=Float,Description="Methylation level at CpG sites">
+##contig=<ID=chr19,length=0>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
+chr19	6117975	.	C	.	30	.	AD=23;BQ=35.1617;DP=23;MQ=60;MQ0=0;NS=1;AS_SB=11,12;SC5=AGCGT;ABQ=35.1617;AMQ=60;PIR=0.631944;ENT100=1.80808;NAB=79.0072;NOI=0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.999756:23:0
+chr19	6117976	.	G	.	30	.	AD=23;BQ=35.67;DP=23;MQ=60;MQ0=0;NS=1;AS_SB=11,12;SC5=GCGTG;ABQ=35.67;AMQ=60;PIR=0.643293;ENT100=1.80808;NAB=79.0072;NOI=0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.999512:23:0
+chr19	6117984	.	C	.	30	.	AD=24;BQ=35.0196;DP=24;MQ=60;MQ0=0;NS=1;AS_SB=14,10;SC5=AGCGC;ABQ=35.0196;AMQ=60;PIR=0.653496;ENT100=1.80808;NAB=78.8112;NOI=0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.999023:24:0
+chr19	6117985	.	G	T	30	.	AD=23,1;BQ=34.359;DP=24;MQ=60;MQ0=0;NS=1;AS_SB=13,10,1,0;SC5=GCGCA;AF=0.0416667;ABQ=34.9764,14;AMQ=60,60;PIR=0.678693,0.075;ENT100=1.80808;NAB=79.0941,72;NOI=0,0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.999878:24:0
+chr19	6118002	.	C	.	30	.	AD=19;BQ=33.5104;DP=19;MQ=60;MQ0=0;NS=1;AS_SB=14,5;SC5=GTCGC;ABQ=33.5104;AMQ=60;PIR=0.569953;ENT100=1.80808;NAB=79.1271;NOI=0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.96875:19:0
+chr19	6118003	.	G	.	30	.	AD=18;BQ=34.049;DP=18;MQ=60;MQ0=0;NS=1;AS_SB=13,5;SC5=TCGC;ABQ=34.049;AMQ=60;PIR=0.547962;ENT100=1.80808;NAB=79.0784;NOI=0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.999878:18:0
+
+----- stderr -----
+[TIME] INFO rastair2::call: Wrote output file="-"
+[TIME] INFO rastair2: Call finished [DURATION]

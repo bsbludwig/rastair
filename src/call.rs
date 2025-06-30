@@ -203,6 +203,10 @@ fn process_region(
 
         let records = piles
             .into_iter()
+            .filter(|pile| {
+                // Filter out piles that are not CpG if requested
+                !params.variant_calling.cpgs_only || pile.is_cpg
+            })
             .map(|pile| {
                 pile.variant_metrics(&params.variant_calling)
                     .wrap_err("Failed to collect metrics")

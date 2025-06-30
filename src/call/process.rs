@@ -171,18 +171,17 @@ fn collect_candidate(
     let reference_base = segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
     let has_alts = !bases.matches(reference_base);
 
-    let res =
-        VariantCandidatePileup { segment: segment.clone(), pos: pile.pos(), bases, reference_base };
+    let before = idx.checked_sub(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
+    let after = idx.checked_add(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
+    let res = VariantCandidatePileup {
+        segment: segment.clone(),
+        pos: pile.pos(),
+        bases,
+        reference_base,
+        is_cpg: is_cpg(reference_base, before, after),
+    };
 
-    if has_alts
-        || (*params.include_cpgs && {
-            let before =
-                idx.checked_sub(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
-            let after =
-                idx.checked_add(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
-            is_cpg(reference_base, before, after)
-        })
-    {
+    if has_alts || (*params.include_cpgs && res.is_cpg) {
         Ok(Some(res))
     } else {
         // Matches reference base, boring.

@@ -14,6 +14,7 @@ pub struct VariantCandidatePileup {
     pub pos: u32,
     pub bases: SeenBases,
     pub reference_base: Base,
+    pub is_cpg: bool,
 }
 
 impl VariantCandidatePileup {
@@ -227,6 +228,7 @@ mod tests {
             pos: 1002, // Corresponds to index in the segment
             bases,
             reference_base: Base::T, // Assume T is the reference base at this position
+            is_cpg: false,
         };
 
         let alleles = variant_candidate.alleles();

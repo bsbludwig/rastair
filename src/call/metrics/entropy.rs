@@ -56,6 +56,7 @@ mod tests {
             pos: 50,
             bases: SeenBases(smallvec![]),
             reference_base: Base::A,
+            is_cpg: false,
         };
         let entropy = pileup.entropy();
         assert_eq!(entropy.0[0], 0.0);
@@ -75,6 +76,7 @@ mod tests {
             pos: 50,
             bases: SeenBases(smallvec![]),
             reference_base: Base::A,
+            is_cpg: false,
         };
         let entropy = pileup.entropy();
         assert!(entropy.0[0] > 0.0);
@@ -95,6 +97,7 @@ mod tests {
                 pos: 50,
                 bases: SeenBases(smallvec![]),
                 reference_base: Base::A,
+                is_cpg: false,
             };
             let entropy = pileup.entropy();
             assert!(entropy.0[0] >= 0.0);

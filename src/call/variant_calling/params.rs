@@ -11,4 +11,8 @@ pub struct VariantCallingParams {
     /// Whether to keep overlapping reads
     #[arg(long, default_value_t = false)]
     pub keep_overlapping_reads: bool,
+
+    /// Only look at sites that are CpG in the reference
+    #[arg(long, default_value_t = false)]
+    pub cpgs_only: bool,
 }

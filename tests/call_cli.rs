@@ -75,6 +75,24 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
 }
 
 #[test]
+fn includes_only_cpgs_when_methylation_calling() -> Result<()> {
+    apply_common_filters!();
+    assert_cmd_snapshot!(
+        "includes only cpgs",
+        rastair().args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=chr19:6117965-6118004",
+            "--calling=thresholds",
+            "--cpgs-only"
+        ])
+    );
+
+    Ok(())
+}
+
+#[test]
 fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
     apply_common_filters!();
 
