@@ -198,8 +198,7 @@ fn process_region(
             keep_overlapping_reads: params.variant_calling.keep_overlapping_reads,
         };
 
-        let piles =
-            region.process(readers, &pileup_mapping_params).wrap_err("Failed to process region")?;
+        let piles = region.process(readers, &pileup_mapping_params)?;
 
         let records = piles
             .into_iter()
@@ -227,7 +226,7 @@ fn process_region(
     let records = match res {
         Ok(records) => records,
         Err(e) => {
-            warn!(e = format!("{e:#}"), "Failed to process region");
+            warn!(error = format!("{e:#}"), "Failed to process region");
             // We still send an empty vector to the channel to increment the index
             Vec::new()
         }

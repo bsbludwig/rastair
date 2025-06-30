@@ -61,7 +61,15 @@ pub struct SegmentationParams {
 impl SegmentsParams {
     pub fn readers(&self) -> Result<Readers> {
         let fasta = open_fasta(&self.fasta_file)?;
-        let bam = bam::IndexedReader::from_path(self.bam_file.path())?;
+        let bam_path = self.bam_file.path();
+        let bam = bam::IndexedReader::from_path(bam_path)
+            .with_suggestion(|| {
+                format!(
+                    "Ensure the BAM file is sorted and indexed with \
+                    `samtools sort {bam_path:?}` and `samtools index {bam_path:?}`, respectively."
+                )
+            })
+            .note("If you have a .bai file, ensure it is in the same directory as the BAM file.")?;
 
         Ok(Readers { fasta, bam, params: self.clone() })
     }

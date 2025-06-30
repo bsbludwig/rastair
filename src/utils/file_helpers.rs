@@ -55,8 +55,11 @@ impl<R: Read + Seek> ReadAndSeek for R {}
 pub fn open_fasta(fasta_path: &Path) -> Result<FastaReader> {
     let fasta_file = open_maybe_bgzip(fasta_path)
         .wrap_err_with(|| format!("Failed to open FASTA file {fasta_path:?}"))?;
-    let possible_index_files =
-        [fasta_path.with_extension("fai"), fasta_path.with_extension("gz.fai")];
+    let possible_index_files = [
+        fasta_path.with_extension("fai"),
+        fasta_path.with_extension("fa.fai"),
+        fasta_path.with_extension("gz.fai"),
+    ];
     let index_path = possible_index_files.iter().find(|p| p.exists()).ok_or_else(|| {
         eyre!("No index file found for FASTA input {fasta_path:?}")
             .with_note(|| format!("Expected index file to be one of: {possible_index_files:?}"))
