@@ -161,7 +161,7 @@ impl VariantCandidatePileup {
                 .map(|(alt, seen)| {
                     let ots = seen.iter().filter(|b| b.strand == Strand::OT).count();
                     let obs = seen.iter().filter(|b| b.strand == Strand::OB).count();
-                    StrandCounts {
+                    ByStrand {
                         base: *alt,
                         ot: u32::try_from(ots).expect("count should fit in u32"),
                         ob: u32::try_from(obs).expect("count should fit in u32"),
@@ -232,12 +232,12 @@ mod tests {
             ],
             AlleleSpecificStrandBias(
                 [
-                    StrandCounts {
+                    ByStrand {
                         base: C,
                         ot: 0,
                         ob: 4,
                     },
-                    StrandCounts {
+                    ByStrand {
                         base: T,
                         ot: 5,
                         ob: 0,

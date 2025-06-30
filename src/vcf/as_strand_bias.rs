@@ -1,4 +1,4 @@
-use crate::utils::Base;
+use crate::vcf::ByStrand;
 use color_eyre::eyre::{Context as _, Result};
 use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
@@ -7,25 +7,14 @@ use std::ops::Deref;
 
 /// Allele-specific strand bias information for a variant
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AlleleSpecificStrandBias(pub SmallVec<StrandCounts, 4>);
+pub struct AlleleSpecificStrandBias(pub SmallVec<ByStrand<u32>, 4>);
 
 impl Deref for AlleleSpecificStrandBias {
-    type Target = SmallVec<StrandCounts, 4>;
+    type Target = SmallVec<ByStrand<u32>, 4>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
-}
-
-/// Counts of reads supporting an allele on the original top and bottom strands
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct StrandCounts {
-    /// Base of the allele
-    pub base: Base,
-    /// Number of reads from original top
-    pub ot: u32,
-    /// Number of reads from original bottom
-    pub ob: u32,
 }
 
 impl VcfField for AlleleSpecificStrandBias {
@@ -34,7 +23,7 @@ impl VcfField for AlleleSpecificStrandBias {
 
 impl HeaderField for AlleleSpecificStrandBias {
     const DESCRIPTION: &'static str =
-        "Strand bias per allele: tuples of [reads_ot, reads_ob] for each allele";
+        "Strand bias per allele (tuples of [reads_ot, reads_ob] for each allele)";
 }
 
 impl InfoField for AlleleSpecificStrandBias {

@@ -169,12 +169,12 @@ mod tests {
             ),
             AlleleSpecificStrandBias(
                 [
-                    StrandCounts {
+                    ByStrand {
                         base: C,
                         ot: 4,
                         ob: 19,
                     },
-                    StrandCounts {
+                    ByStrand {
                         base: T,
                         ot: 14,
                         ob: 0,
@@ -215,12 +215,12 @@ mod tests {
             ),
             AlleleSpecificStrandBias(
                 [
-                    StrandCounts {
+                    ByStrand {
                         base: G,
                         ot: 18,
                         ob: 4,
                     },
-                    StrandCounts {
+                    ByStrand {
                         base: A,
                         ot: 0,
                         ob: 15,
@@ -261,12 +261,12 @@ mod tests {
             ),
             AlleleSpecificStrandBias(
                 [
-                    StrandCounts {
+                    ByStrand {
                         base: C,
                         ot: 20,
                         ob: 13,
                     },
-                    StrandCounts {
+                    ByStrand {
                         base: T,
                         ot: 1,
                         ob: 0,
@@ -305,12 +305,12 @@ mod tests {
             ),
             AlleleSpecificStrandBias(
                 [
-                    StrandCounts {
+                    ByStrand {
                         base: A,
                         ot: 20,
                         ob: 18,
                     },
-                    StrandCounts {
+                    ByStrand {
                         base: G,
                         ot: 0,
                         ob: 1,
@@ -349,12 +349,12 @@ mod tests {
             ),
             AlleleSpecificStrandBias(
                 [
-                    StrandCounts {
+                    ByStrand {
                         base: C,
                         ot: 5,
                         ob: 4,
                     },
-                    StrandCounts {
+                    ByStrand {
                         base: A,
                         ot: 1,
                         ob: 0,

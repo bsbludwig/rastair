@@ -11,10 +11,12 @@
 use rastair2_vcf::{standard_fields::*, *};
 
 mod as_strand_bias;
-pub use as_strand_bias::{AlleleSpecificStrandBias, StrandCounts};
 
+pub use as_strand_bias::AlleleSpecificStrandBias;
 mod sequence_context;
 pub use sequence_context::SequenceContext;
+mod utils;
+pub use utils::ByStrand;
 
 // TODO: Ideas for filters
 // - from VCF spec
