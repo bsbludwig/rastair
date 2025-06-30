@@ -33,7 +33,6 @@ impl InfoField for AlleleSpecificStrandBias {
 
     fn write(&self, record: &mut Record) -> Result<()> {
         let tag = Self::ID;
-        record.clear_info_integer(tag).wrap_err("Failed to clear field")?;
         let counts: SmallVec<i32, 8> = self
             .0
             .iter()
