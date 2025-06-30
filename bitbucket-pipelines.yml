@@ -35,7 +35,7 @@ pipelines:
               script:
                 # Dependencies
                 - rustup component add clippy
-                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
+                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake
                 # Install Deno for scripts
                 - curl -fsSL https://deno.land/x/install/install.sh | sh
                 - export DENO_INSTALL="/root/.deno"
@@ -50,7 +50,7 @@ pipelines:
                 - cargo-target
                 - cargo-target-cov
               script:
-                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev
+                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake
                 - curl --proto "=https" --tlsv1.2 -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz" | tar xzf - -C "$CARGO_HOME/bin"
                 - RUSTC_BOOTSTRAP=1 cargo llvm-cov --workspace --doctests --fail-under-lines 70
 
