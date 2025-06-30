@@ -359,34 +359,6 @@ macro_rules! format_field {
             }
         }
     };
-
-    ($name:ident, $id:expr, $desc:expr) => {
-        #[doc = $desc]
-        #[doc = "format flag for VCF output"]
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-        pub struct $name(pub Vec<$type>);
-
-        impl $crate::VcfField for $name {
-            const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);
-        }
-
-        impl $crate::HeaderField for $name {
-            const DESCRIPTION: &'static str = $desc;
-        }
-
-        impl $crate::FormatField for $name {
-            type Type = $type;
-            const NUMBER: $crate::FormatFieldNumber = $crate::FormatFieldNumber::Flag;
-
-            fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
-                use color_eyre::eyre::WrapErr;
-                use $crate::{FormatFieldValue, VcfField as _};
-
-                <$type as FormatFieldValue>::write(record, Self::ID, &self.0)
-                    .wrap_err_with(|| format!("Failed to write format flag {}", Self::ID))
-            }
-        }
-    };
 }
 
 #[cfg(test)]
