@@ -105,7 +105,6 @@ impl InfoFieldValue for bool {
     const TYPE_NAME: &'static str = "Flag";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[bool]) -> Result<()> {
-        record.clear_info_flag(tag).wrap_err("Failed to clear info field")?;
         if values.first().copied().unwrap_or_default() {
             record.push_info_flag(tag).wrap_err("Failed to set flag")
         } else {
@@ -118,7 +117,6 @@ impl InfoFieldValue for u32 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[u32]) -> Result<()> {
-        record.clear_info_integer(tag).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag,
@@ -136,7 +134,6 @@ impl InfoFieldValue for u64 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[u64]) -> Result<()> {
-        record.clear_info_integer(tag).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag,
@@ -156,7 +153,6 @@ impl InfoFieldValue for i32 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[i32]) -> Result<()> {
-        record.clear_info_integer(tag).wrap_err("Failed to clear field")?;
         record.push_info_integer(tag, values).wrap_err("Failed to set field")
     }
 }
@@ -165,7 +161,6 @@ impl InfoFieldValue for i64 {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[i64]) -> Result<()> {
-        record.clear_info_integer(tag).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag,
@@ -185,7 +180,6 @@ impl InfoFieldValue for usize {
     const TYPE_NAME: &'static str = "Integer";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[usize]) -> Result<()> {
-        record.clear_info_integer(tag).wrap_err("Failed to clear field")?;
         record
             .push_info_integer(
                 tag,
@@ -205,7 +199,6 @@ impl InfoFieldValue for f32 {
     const TYPE_NAME: &'static str = "Float";
 
     fn write(record: &mut Record, tag: &CStr8, values: &[f32]) -> Result<()> {
-        record.clear_info_float(tag).wrap_err("Failed to clear field")?;
         record.push_info_float(tag, values).wrap_err("Failed to set field")
     }
 }
@@ -215,7 +208,6 @@ impl InfoFieldValue for f64 {
 
     #[allow(clippy::cast_possible_truncation)] // Allow casting f64 to f32, which is common in VCF
     fn write(record: &mut Record, tag: &CStr8, values: &[f64]) -> Result<()> {
-        record.clear_info_float(tag).wrap_err("Failed to clear field")?;
         record
             .push_info_float(tag, &values.iter().map(|&n| n as f32).collect::<SmallVec<f32, 5>>())
             .wrap_err("Failed to set field")

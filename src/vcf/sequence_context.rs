@@ -49,9 +49,6 @@ impl InfoField for SequenceContext {
     type Type = SmolStr;
 
     fn write(&self, record: &mut Record) -> Result<()> {
-        let tag = Self::ID;
-        record.clear_info_string(tag).wrap_err("Failed to clear field")?;
-
         record
             .push_info_string(Self::ID, &[self.to_smol_str().as_bytes()])
             .wrap_err("Failed to set field")
