@@ -13,6 +13,7 @@ use std::{
 };
 use tracing::{debug, info, instrument, warn};
 
+pub mod denovo_cpg;
 pub mod methylation;
 pub mod metrics;
 pub mod process;
@@ -29,6 +30,9 @@ pub struct CallParams {
 
     #[command(flatten)]
     variant_calling: VariantCallingParams,
+
+    #[command(flatten)]
+    denovo_cpg: denovo_cpg::DenovoParams,
 
     #[command(flatten)]
     methylation: MethylationCallingParams,
@@ -205,6 +209,11 @@ fn process_region(
             .map(|pile| pile.variant_metrics(&params.variant_calling))
             .collect::<Result<Vec<_>>>()
             .wrap_err("Failed to collect metrics")?;
+
+        records
+            .iter_mut()
+            .try_for_each(|record| params.denovo_cpg.filter(record))
+            .wrap_err("Failed to filter de novo CpG")?;
 
         // Call methylation events if requested
         for i in 0..records.len() {

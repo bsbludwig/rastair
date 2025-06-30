@@ -79,6 +79,12 @@ format_field!(
     "Genotype confidence",
     FormatFieldNumber::OnePerGenotype
 );
+format_field!(
+    DeNovoCpg(Option<f64>),
+    "CPG_Call",
+    "Is a likely de-novo CPG position? (Range 0..1)",
+    1
+);
 format_field!(Methylated(Option<f64>), "M5mC", "Methylation level at CpG sites", 1);
 
 vcf_record!(
@@ -109,7 +115,7 @@ vcf_record!(
     // Call data
     //
     // NOTE: The first sub-field must always be the genotype (GT) if it is present.
-    format: [Genotype, GenotypeLikelihood, GenotypeConfidence, SampleReadDepth, Methylated],
+    format: [Genotype, GenotypeLikelihood, GenotypeConfidence, SampleReadDepth, Methylated, DeNovoCpg],
     // hint to allocate this many slots for format data
     min_samples: 1
 );
