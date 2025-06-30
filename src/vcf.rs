@@ -11,8 +11,9 @@
 use rastair2_vcf::{standard_fields::*, *};
 
 mod as_strand_bias;
-
 pub use as_strand_bias::AlleleSpecificStrandBias;
+mod asq;
+pub use asq::{StrandSpecificBaseQuality, StrandSpecificMappingQuality};
 mod sequence_context;
 pub use sequence_context::SequenceContext;
 mod utils;
@@ -91,6 +92,8 @@ vcf_record!(
         AllelFrequency,
         AllelBaseQuality,
         AllelMapQuality,
+        StrandSpecificBaseQuality,
+        StrandSpecificMappingQuality,
         PositionInRead,
         Entropy,
         NumAlignedBases,

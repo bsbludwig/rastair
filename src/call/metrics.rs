@@ -43,6 +43,8 @@ impl VariantCandidatePileup {
             allel_frequency: self.allel_frequency(),
             allel_base_quality: self.allel_base_quality(),
             allel_map_quality: self.allel_map_quality(),
+            strand_specific_base_quality: self.strand_specific_base_quality(),
+            strand_specific_mapping_quality: self.strand_specific_mapping_quality(),
             position_in_read: self.position_in_read(),
             entropy: self.entropy(),
             num_aligned_bases: self.num_aligned_bases(),
@@ -166,6 +168,48 @@ impl VariantCandidatePileup {
                         ot: u32::try_from(ots).expect("count should fit in u32"),
                         ob: u32::try_from(obs).expect("count should fit in u32"),
                     }
+                })
+                .collect(),
+        )
+    }
+
+    fn strand_specific_base_quality(&self) -> StrandSpecificBaseQuality {
+        StrandSpecificBaseQuality(
+            self.by_allele()
+                .iter()
+                .map(|(alt, seen)| {
+                    let ots = seen
+                        .iter()
+                        .filter(|b| b.strand == Strand::OT)
+                        .map(|b| b.qual)
+                        .collect::<RootMeanSquare>();
+                    let obs = seen
+                        .iter()
+                        .filter(|b| b.strand == Strand::OB)
+                        .map(|b| b.qual)
+                        .collect::<RootMeanSquare>();
+                    ByStrand { base: *alt, ot: *ots, ob: *obs }
+                })
+                .collect(),
+        )
+    }
+
+    fn strand_specific_mapping_quality(&self) -> StrandSpecificMappingQuality {
+        StrandSpecificMappingQuality(
+            self.by_allele()
+                .iter()
+                .map(|(alt, seen)| {
+                    let ots = seen
+                        .iter()
+                        .filter(|b| b.strand == Strand::OT)
+                        .map(|b| b.mapq)
+                        .collect::<RootMeanSquare>();
+                    let obs = seen
+                        .iter()
+                        .filter(|b| b.strand == Strand::OB)
+                        .map(|b| b.mapq)
+                        .collect::<RootMeanSquare>();
+                    ByStrand { base: *alt, ot: *ots, ob: *obs }
                 })
                 .collect(),
         )
