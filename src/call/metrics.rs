@@ -29,12 +29,12 @@ impl VariantCandidatePileup {
         Ok(Info {
             read_depth_per_allel: self.read_depth_per_allele(),
             allele_specific_strand_bias: self.allele_specific_strand_bias(),
-            base_quality: BaseQuality(*RootMeanSquare::new(
-                &self.bases.iter().map(|b| b.qual).collect::<SmallVec<u8, 30>>(),
-            )),
-            mapping_quality: MappingQuality(*RootMeanSquare::new(
-                &self.bases.iter().map(|b| b.mapq).collect::<SmallVec<u8, 30>>(),
-            )),
+            base_quality: BaseQuality(
+                *self.bases.iter().map(|b| b.qual).collect::<RootMeanSquare>(),
+            ),
+            mapping_quality: MappingQuality(
+                *self.bases.iter().map(|b| b.mapq).collect::<RootMeanSquare>(),
+            ),
             read_depth: ReadDepth(self.bases.len()),
             mapping_quality0: MappingQuality0(self.bases.iter().filter(|b| b.mapq == 0).count()),
             // by construction, we arrived here because we have at least one base
@@ -55,11 +55,7 @@ impl VariantCandidatePileup {
         NumIndels(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| {
-                    *RootMeanSquare::new(
-                        &seen.iter().map(|b| b.indels).collect::<SmallVec<u32, 20>>(),
-                    )
-                })
+                .map(|(_alt, seen)| *seen.iter().map(|b| b.indels).collect::<RootMeanSquare>())
                 .collect(),
         )
     }
@@ -69,9 +65,7 @@ impl VariantCandidatePileup {
             self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
-                    *RootMeanSquare::new(
-                        &seen.iter().map(|b| b.matching_bases).collect::<SmallVec<u32, 20>>(),
-                    )
+                    *seen.iter().map(|b| b.matching_bases).collect::<RootMeanSquare>()
                 })
                 .collect(),
         )
@@ -82,12 +76,10 @@ impl VariantCandidatePileup {
             self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| {
-                    *RootMeanSquare::new(
-                        &seen
-                            .iter()
-                            .map(|b| f64::from(b.position.pos) / f64::from(b.position.read_length))
-                            .collect::<SmallVec<f64, 20>>(),
-                    )
+                    *seen
+                        .iter()
+                        .map(|b| f64::from(b.position.pos) / f64::from(b.position.read_length))
+                        .collect::<RootMeanSquare>()
                 })
                 .collect(),
         )
@@ -97,9 +89,7 @@ impl VariantCandidatePileup {
         AllelMapQuality(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| {
-                    *RootMeanSquare::new(&seen.iter().map(|b| b.mapq).collect::<SmallVec<u8, 20>>())
-                })
+                .map(|(_alt, seen)| *seen.iter().map(|b| b.mapq).collect::<RootMeanSquare>())
                 .collect(),
         )
     }
@@ -108,9 +98,7 @@ impl VariantCandidatePileup {
         AllelBaseQuality(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| {
-                    *RootMeanSquare::new(&seen.iter().map(|b| b.qual).collect::<SmallVec<u8, 20>>())
-                })
+                .map(|(_alt, seen)| *seen.iter().map(|b| b.qual).collect::<RootMeanSquare>())
                 .collect(),
         )
     }

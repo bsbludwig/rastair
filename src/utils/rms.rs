@@ -9,27 +9,31 @@ use std::{fmt, ops::Deref};
 /// ```rust
 /// # use rastair2::utils::RootMeanSquare;
 /// let data = [1, 2, 3, 4, 5];
-/// // constructing the type calculates the value
-/// let rms = RootMeanSquare::new(&data);
+/// // Explicitly construct from an iterator
+/// let rms = RootMeanSquare::from_iter(data);
+/// // our using `collect`
+/// let rms: RootMeanSquare = data.into_iter().collect();
 /// // you can use the value as a float
 /// assert_eq!(rms.round(), 3.0);
 /// ```
 #[derive(Clone, Copy)]
 pub struct RootMeanSquare(f64);
 
-impl RootMeanSquare {
-    pub fn new<T: Copy + Into<f64>>(data: &[T]) -> RootMeanSquare {
-        if data.is_empty() {
-            return RootMeanSquare(0.0);
-        }
-        let sum_of_squares: f64 = data
-            .iter()
+impl<T: Into<f64>> FromIterator<T> for RootMeanSquare {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut count = 0;
+        let sum_of_squares: f64 = iter
+            .into_iter()
             .map(|x| {
-                let x: f64 = (*x).into();
+                let x: f64 = x.into();
+                count += 1;
                 x.powi(2)
             })
             .sum();
-        let average_of_squares = sum_of_squares / data.len() as f64;
+        if count == 0 {
+            return RootMeanSquare(0.0);
+        }
+        let average_of_squares = sum_of_squares / f64::from(count);
         RootMeanSquare(average_of_squares.sqrt())
     }
 }
@@ -65,19 +69,19 @@ mod tests {
         #[test]
         fn test_rms_constant_value(value: u8) {
             let data = vec![value; 100];
-            let rms = RootMeanSquare::new(&data);
+            let rms = RootMeanSquare::from_iter(data);
             prop_assert_eq!(*rms, f64::from(value));
         }
 
         #[test]
         fn test_rms_never_negative(data: Vec<u8>) {
-            let rms = RootMeanSquare::new(&data);
+            let rms = RootMeanSquare::from_iter(data);
             prop_assert!(*rms >= 0.0);
         }
 
         #[test]
         fn test_rms_zero_iff_all_zeros(data: Vec<u8>) {
-            let rms = RootMeanSquare::new(&data);
+            let rms = RootMeanSquare::from_iter(data.clone());
             if data.iter().all(|&x| x == 0) {
                 prop_assert_eq!(rms.0, 0.0);
             } else if !data.is_empty() {
@@ -88,14 +92,14 @@ mod tests {
         #[test]
         fn test_rms_greater_than_or_equal_to_mean(data in vec(any::<u8>(), 1..300)) {
             let mean = data.iter().map(|&x| f64::from(x)).sum::<f64>() / data.len() as f64;
-            let rms = RootMeanSquare::new(&data);
+            let rms = RootMeanSquare::from_iter(data);
             prop_assert!(*rms >= mean);
         }
 
         #[test]
         fn test_rms_less_than_or_equal_to_max(data in vec(any::<u8>(), 1..300)) {
             let max = f64::from(*data.iter().max().unwrap());
-            let rms = RootMeanSquare::new(&data);
+            let rms = RootMeanSquare::from_iter(data);
             prop_assert!(*rms <= max);
         }
     }
