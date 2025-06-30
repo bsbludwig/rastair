@@ -24,10 +24,15 @@ pub struct ThresholdConfig {
     chr = %record.fixed_fields.chrom,
     pos = record.fixed_fields.pos,
 ), name = "methylation_call")]
-pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Record> {
+pub fn call(
+    config: &ThresholdConfig,
+    record: &mut vcf::Record,
+    before: Option<&vcf::Record>,
+    after: Option<&vcf::Record>,
+) -> Result<()> {
     if !record.info.in_cp_g.0 {
         trace!("Not a CpG site, skipping");
-        return Ok(record);
+        return Ok(());
     }
 
     let (ref_, alt) = if record.fixed_fields.r#ref == "C" {
@@ -36,17 +41,17 @@ pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Re
         (Base::G, Base::A)
     } else {
         // trace!("Not a CpG site, skipping");
-        return Ok(record);
+        return Ok(());
     };
 
-    match call_position(&record, ref_, alt).wrap_err("Failed to call position")? {
+    match call_position(record, ref_, alt).wrap_err("Failed to call position")? {
         MethylationEvent::Found { beta, others } => {
             trace!(beta, "Methylation event found");
             record.samples[0].methylated = Methylated(Some(beta));
             if record.fixed_fields.alt == [alt.as_str()] && others == 0 {
                 record.fixed_fields.alt = smallvec::smallvec!["<*>".into()];
             }
-            add_filters(&mut record, config, ref_, alt).wrap_err("Failed to add filters")?;
+            add_filters(record, config, ref_, alt).wrap_err("Failed to add filters")?;
             if record.filters.is_empty() {
                 record.filters.add(PASS);
             }
@@ -57,7 +62,7 @@ pub fn call(mut record: vcf::Record, config: &ThresholdConfig) -> Result<vcf::Re
         }
     }
 
-    Ok(record)
+    Ok(())
 }
 
 fn add_filters(
@@ -149,8 +154,8 @@ mod tests {
     fn cpg_c_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105084)?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
-        let metrics = call(metrics, &config)?;
+        let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        call(&config, &mut metrics, None, None)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
@@ -195,8 +200,8 @@ mod tests {
     fn cpg_g_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105085)?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
-        let metrics = call(metrics, &config)?;
+        let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        call(&config, &mut metrics, None, None)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
@@ -241,8 +246,8 @@ mod tests {
     fn c_but_not_cpg() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105197)?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
-        let metrics = call(metrics, &config)?;
+        let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        call(&config, &mut metrics, None, None)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
@@ -285,8 +290,8 @@ mod tests {
     fn random_other_variant() -> Result<()> {
         let pileup = variant_pileup("chr19", 6105114)?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
-        let metrics = call(metrics, &config)?;
+        let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        call(&config, &mut metrics, None, None)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),
@@ -329,8 +334,8 @@ mod tests {
     fn methylatable_position_not_methylated() -> Result<()> {
         let pileup = variant_pileup("chr19", 6115809)?;
         let config = ThresholdConfig { vaf_min: 0.1, reads_min: 5 };
-        let metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
-        let metrics = call(metrics, &config)?;
+        let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
+        call(&config, &mut metrics, None, None)?;
 
         assert_debug_snapshot!((
             pileup.chrom(),

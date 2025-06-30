@@ -25,18 +25,24 @@ impl MethylationCallingParams {
 
     /// Call methylation events based on the configured mode
     #[instrument(level = "trace", skip_all)]
-    pub fn call(&self, record: vcf::Record) -> Result<vcf::Record> {
+    pub fn call(
+        &self,
+        record: &mut vcf::Record,
+        before: Option<&vcf::Record>,
+        after: Option<&vcf::Record>,
+    ) -> Result<()> {
         match self.calling {
             MethylationCallingMode::None => {
                 // No methylation calling, return the record as is
-                Ok(record)
+                Ok(())
             }
-            MethylationCallingMode::Thresholds => super::threshold::call(record, &self.thresholds)
-                .wrap_err("Failed to call methylation based on thresholds"),
-            // MethylationCallingMode::ML => {
-            //     // Placeholder for ML-based calling logic
-            //     unimplemented!("ML-based methylation calling is not implemented yet")
-            // }
+            MethylationCallingMode::Thresholds => {
+                super::threshold::call(&self.thresholds, record, before, after)
+                    .wrap_err("Failed to call methylation based on thresholds")
+            } // MethylationCallingMode::ML => {
+              //     // Placeholder for ML-based calling logic
+              //     unimplemented!("ML-based methylation calling is not implemented yet")
+              // }
         }
     }
 }

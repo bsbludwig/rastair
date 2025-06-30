@@ -200,25 +200,32 @@ fn process_region(
 
         let piles = region.process(readers, &pileup_mapping_params)?;
 
-        let records = piles
+        let mut records = piles
             .into_iter()
-            .filter(|pile| {
-                // Filter out piles that are not CpG if requested
-                !params.variant_calling.cpgs_only || pile.is_cpg
-            })
-            .map(|pile| {
-                pile.variant_metrics(&params.variant_calling)
-                    .wrap_err("Failed to collect metrics")
-                    .and_then(|record| {
-                        params.methylation.call(record).wrap_err("Failed to call methylation")
-                    })
-                    // chain the steps above to add outer error context
-                    .wrap_err_with(|| {
-                        format!("Failed to process pileup {}:{}", pile.chrom(), pile.pos)
-                    })
-            })
+            .map(|pile| pile.variant_metrics(&params.variant_calling))
             .collect::<Result<Vec<_>>>()
             .wrap_err("Failed to collect metrics")?;
+
+        // Call methylation events if requested
+        for i in 0..records.len() {
+            // To appease the borrow checker and get a mutable reference to the current record,
+            // we split the records into three parts.
+            let (left, right) = records.split_at_mut(i);
+            let (current_slice, next_slice) = right.split_at_mut(1);
+            let current = &mut current_slice[0];
+            let before = left.last();
+            let after = next_slice.first();
+
+            params
+                .methylation
+                .call(current, before, after)
+                .wrap_err("Failed to call methylation")?;
+        }
+
+        if params.variant_calling.cpgs_only {
+            // Filter out piles that are not CpG if requested
+            records.retain(|record| record.info.in_cp_g.0);
+        }
 
         Ok(records)
     });
