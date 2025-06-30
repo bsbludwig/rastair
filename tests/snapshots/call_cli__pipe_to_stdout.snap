@@ -37,6 +37,7 @@ exit_code: 0
 ##INFO=<ID=NAB,Number=R,Type=Float,Description="RMS of number of aligned bases">
 ##INFO=<ID=NOI,Number=R,Type=Float,Description="RMS of number of indels">
 ##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
+##INFO=<ID=CPGnovo,Number=0,Type=Flag,Description="De-novo CPG candidate: Could the alt alleles create a new CpG site?">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods">
 ##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence">

@@ -50,6 +50,7 @@ impl VariantCandidatePileup {
             num_aligned_bases: self.num_aligned_bases(),
             num_indels: self.num_indels(),
             in_cp_g: self.in_cpg(),
+            de_novo_cp_g_candidate: self.de_novo_cpg(),
         })
     }
 
@@ -232,14 +233,16 @@ impl VariantCandidatePileup {
     #[allow(clippy::if_same_then_else)] // clearer
     fn in_cpg(&self) -> InCpG {
         let base = self.reference_base;
+        let c_in_cpg = base == Base::C && self.ref_after() == Some(Base::G);
+        let g_in_cpg = base == Base::G && self.ref_before() == Some(Base::C);
 
-        if base == Base::C && self.sequence_after::<1>().first() == Some(&Base::G) {
-            InCpG(true)
-        } else if base == Base::G && self.sequence_before::<1>().last() == Some(&Base::C) {
-            InCpG(true)
-        } else {
-            InCpG(false)
-        }
+        InCpG(c_in_cpg || g_in_cpg)
+    }
+
+    fn de_novo_cpg(&self) -> DeNovoCpGCandidate {
+        let new_c = self.alts().contains(&Base::C) && self.ref_after() == Some(Base::G);
+        let new_g = self.alts().contains(&Base::G) && self.ref_before() == Some(Base::C);
+        DeNovoCpGCandidate(new_c || new_g)
     }
 }
 

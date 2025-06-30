@@ -45,11 +45,21 @@ impl VariantCandidatePileup {
         self.segment.sequence_slice::<N>(idx.saturating_sub(N), idx).unwrap_or_default()
     }
 
+    /// Reference base right before the variant position
+    pub fn ref_before(&self) -> Option<Base> {
+        self.sequence_before::<1>().first().copied()
+    }
+
     /// Sequence slice after the variant position
     pub fn sequence_after<const N: usize>(&self) -> SmallVec<Base, N> {
         let idx = self.idx();
 
         self.segment.sequence_slice::<N>(idx + 1, idx + N + 1).unwrap_or_default()
+    }
+
+    /// Reference base right after the variant position
+    pub fn ref_after(&self) -> Option<Base> {
+        self.sequence_after::<1>().first().copied()
     }
 
     pub fn alleles(&self) -> SmallVec<Base, 4> {
