@@ -210,11 +210,6 @@ fn process_region(
             .collect::<Result<Vec<_>>>()
             .wrap_err("Failed to collect metrics")?;
 
-        records
-            .iter_mut()
-            .try_for_each(|record| params.denovo_cpg.filter(record))
-            .wrap_err("Failed to filter de novo CpG")?;
-
         // Call methylation events if requested
         for i in 0..records.len() {
             // To appease the borrow checker and get a mutable reference to the current record,
@@ -224,6 +219,11 @@ fn process_region(
             let current = &mut current_slice[0];
             let before = left.last();
             let after = next_slice.first();
+
+            params
+                .denovo_cpg
+                .filter(current, before, after)
+                .wrap_err("Failed to filter de-novo CpG")?;
 
             params
                 .methylation
