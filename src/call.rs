@@ -211,14 +211,26 @@ fn process_region(
             .wrap_err("Failed to collect metrics")?;
 
         // Call methylation events if requested
-        for i in 0..records.len() {
-            // To appease the borrow checker and get a mutable reference to the current record,
-            // we split the records into three parts.
-            let (left, right) = records.split_at_mut(i);
-            let (current_slice, next_slice) = right.split_at_mut(1);
-            let current = &mut current_slice[0];
-            let before = left.last();
-            let after = next_slice.first();
+        let record_len = records.len();
+        for i in 0..record_len {
+            let (before, current, after) = {
+                // To appease the borrow checker and get a mutable reference to the current record,
+                // we split the records into three parts.
+                let (left, right) = records.split_at_mut(i);
+                let (current_slice, next_slice) = right.split_at_mut(1);
+                let current = &mut current_slice[0];
+                (left.last(), current, next_slice.first())
+            };
+
+            // we might not have the direct neighbors, so we use `Option` to handle that
+            let before = before.filter(|r| {
+                r.fixed_fields.chrom == current.fixed_fields.chrom
+                    && Some(r.fixed_fields.pos) == current.fixed_fields.pos.checked_sub(1)
+            });
+            let after = after.filter(|r| {
+                r.fixed_fields.chrom == current.fixed_fields.chrom
+                    && Some(r.fixed_fields.pos) == current.fixed_fields.pos.checked_add(1)
+            });
 
             params
                 .denovo_cpg
