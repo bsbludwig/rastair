@@ -4,7 +4,7 @@ A core feature of Rastair is the ability to call methylation from [TAPS] sequenc
 In [TAPS] sequences, a mehtylated position is a `CG` sequence
 where the original top `C` is read as `T` and the original bottom `G` is read as `A`.
 
-For example, given this reference and pileup:
+For example, given this reference and pileup (`.` means reference base):
 
 ```text
 Ref     A T C G C C T  Strand
@@ -27,15 +27,6 @@ It will set the beta value in the `M5mC` format field for each site.
 
 If a certain threshold of confidence is met,
 the alt allele will be set to `.` since it is not considered a variant in the traditional sense.
-(NOTE: This is not yet implemented.)
-
-## Data flow
-
-Right now, Rastair collects all possible variant positions from aligned reads relative to a given reference genome.
-These are represented as the same `Record`s that can also be converted to `VCF` lines.
-The methylation calling code plugs in at the point where the `Record`s are being processed,
-i.e. it is called with an already constructed `Record` object.
-If a methylation call is made, the `Record` is updated.
 
 ## Criteria for methylation calling
 
