@@ -1,4 +1,7 @@
+use std::io::Write as _;
+
 use clap::{CommandFactory as _, Parser as _};
+use clio::ClioPath;
 use color_eyre::{
     Section,
     eyre::{Context, Result},
@@ -39,6 +42,13 @@ enum Subcommand {
         /// The shell to generate the completions for
         #[arg(value_enum)]
         shell: clap_complete_command::Shell,
+    },
+    /// Write CLI help as markdown file
+    #[command(hide = true)]
+    GenerateCliDocs {
+        /// The output file to write the markdown to
+        #[arg()]
+        output: ClioPath,
     },
 }
 
@@ -101,6 +111,12 @@ fn main() -> Result<()> {
         }
         Subcommand::GenerateShellCompletions { shell } => {
             shell.generate(&mut Cli::command(), &mut std::io::stdout());
+        }
+        Subcommand::GenerateCliDocs { output } => {
+            let mut file = output.clone().create().wrap_err("Failed to create output")?;
+            let markdown = clap_markdown::help_markdown::<Cli>();
+            file.write_all(markdown.as_bytes())
+                .wrap_err_with(|| format!("Failed to write CLI help to {output}"))?;
         }
     }
 

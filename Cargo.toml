@@ -72,6 +72,7 @@ readable = { version = "0.16.0", default-features = false, features = [
   "byte",
   "num",
 ] }
+clap-markdown = "0.1.5"
 
 [dev-dependencies]
 insta = { workspace = true }
