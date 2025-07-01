@@ -85,6 +85,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [lints.clippy]
+dbg_macro = { level = "warn" }
 unwrap_used = { level = "deny" }
 panic = { level = "deny" }
 # indexing_slicing = { level = "deny" }
