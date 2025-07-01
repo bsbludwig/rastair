@@ -28,6 +28,10 @@ pub use utils::ByStrand;
 //   filter!(read_pos, "Variants clustered at read ends");
 
 filter!(lowDP, "Low read depth");
+filter!(dnCpG_lowDp, "Low read depth for de-novo CpG candidate");
+filter!(dnCpG_bq, "Low base quality for de-novo CpG candidate");
+filter!(dnCpG_mapq, "Low mapping quality for de-novo CpG candidate");
+filter!(dnCpG_af, "Low variant allele frequency for de-novo CpG candidate");
 
 info_field!(
     AllelBaseQuality(f64),
@@ -89,7 +93,11 @@ format_field!(Methylated(Option<f64>), "M5mC", "Methylation level at CpG sites",
 
 vcf_record!(
     // pass or why not
-    filters: [PASS, lowDP],
+    filters: [
+        PASS,
+        lowDP,
+        dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_af,
+    ],
     // general info
     info: [
         ReadDepthPerAllel,

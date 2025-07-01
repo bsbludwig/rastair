@@ -21,6 +21,10 @@ exit_code: 0
 ##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6117965-6118004 --calling=thresholds --cpgs-only
 ##reference="tests/data/test.fasta.gz"
 ##FILTER=<ID=lowDP,Description="Low read depth">
+##FILTER=<ID=dnCpG_lowDp,Description="Low read depth for de-novo CpG candidate">
+##FILTER=<ID=dnCpG_bq,Description="Low base quality for de-novo CpG candidate">
+##FILTER=<ID=dnCpG_mapq,Description="Low mapping quality for de-novo CpG candidate">
+##FILTER=<ID=dnCpG_af,Description="Low variant allele frequency for de-novo CpG candidate">
 ##INFO=<ID=AD,Number=R,Type=Integer,Description="Total read depth for each allele">
 ##INFO=<ID=BQ,Number=1,Type=Float,Description="RMS base quality">
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="Combined depth across samples">
