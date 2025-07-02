@@ -5,12 +5,23 @@ use crate::{
 use color_eyre::Result;
 use tracing::trace;
 
+/// Add filters
 pub fn add_filters(config: &ThresholdConfig, record: &mut vcf::Record) -> Result<()> {
+    if !(*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate) {
+        // Not a CpG site, skipping filters
+        return Ok(());
+    }
+
     vcf::lowDp::apply(config, record);
     vcf::m_vaf::apply(config, record);
     vcf::m_bq_ratio::apply(config, record);
     vcf::m_pos::apply(config, record);
     vcf::m_highDp::apply(config, record);
+
+    // If no filters were added, we're gonna call it
+    if record.filters.is_empty() {
+        record.filters.add(rastair2_vcf::standard_fields::PASS);
+    }
 
     Ok(())
 }

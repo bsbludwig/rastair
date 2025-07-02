@@ -241,11 +241,6 @@ fn process_region(
                 .methylation
                 .call(current, before, after) // Might also add filters
                 .wrap_err("Failed to call methylation")?;
-
-            let did_we_implement_all_filters = false; // FIXME: just to keep track during development
-            if did_we_implement_all_filters && current.filters.is_empty() {
-                current.filters.add(rastair2_vcf::standard_fields::PASS);
-            }
         }
 
         if params.variant_calling.cpgs_only {
