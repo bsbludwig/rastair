@@ -18,12 +18,15 @@ exit_code: 0
 ##rastair2Version=0.1.0
 ##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105750
 ##reference="tests/data/test.fasta.gz"
-##FILTER=<ID=lowDP,Description="Low read depth">
+##FILTER=<ID=lowDp,Description="Low read depth">
 ##FILTER=<ID=dnCpG_lowDp,Description="Low read depth for de-novo CpG candidate">
 ##FILTER=<ID=dnCpG_bq,Description="Low base quality for de-novo CpG candidate">
 ##FILTER=<ID=dnCpG_mapq,Description="Low mapping quality for de-novo CpG candidate">
 ##FILTER=<ID=dnCpG_vaf,Description="Low variant allele frequency for de-novo CpG candidate">
 ##FILTER=<ID=m_vaf,Description="Low variant allele frequency for methylation candidate">
+##FILTER=<ID=m_bq_ratio,Description="Low quality ratio for methylation candidate">
+##FILTER=<ID=m_pos,Description="Alt allele evidence from read edges for methylation candidate">
+##FILTER=<ID=m_highDp,Description="Excessive coverage for methylation candidate">
 ##INFO=<ID=AD,Number=R,Type=Integer,Description="Total read depth for each allele">
 ##INFO=<ID=BQ,Number=1,Type=Float,Description="RMS base quality">
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="Combined depth across samples">

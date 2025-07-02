@@ -8,10 +8,6 @@
 //! <https://github.com/samtools/hts-specs/blob/0d7f8774658f7cee0a4540b0682174e460726432/VCFv4.5.tex>
 //! for the VCF spec.
 
-// TODO: Add helpers to make lookup code shorter, e.g.
-// - `record.info.as_read_depth[G]` -> `Option<usize>`
-// - `record.info.as_strand_bias[C][OT]`
-
 use rastair2_vcf::{standard_fields::*, *};
 
 mod as_strand_bias;
@@ -30,20 +26,15 @@ pub use methylation::Methylated;
 mod utils;
 pub use utils::ByStrand;
 
-// TODO: Ideas for filters
-// - from VCF spec
-//   filter!(q10, "Quality below 10");
-//   filter!(s50, "Less than 50% of samples have data");
-// - custom filters
-//   filter!(strand_bias, "Significant strand bias detected");
-//   filter!(read_pos, "Variants clustered at read ends");
-
-filter!(lowDP, "Low read depth");
+filter!(lowDp, "Low read depth");
 filter!(dnCpG_lowDp, "Low read depth for de-novo CpG candidate");
 filter!(dnCpG_bq, "Low base quality for de-novo CpG candidate");
 filter!(dnCpG_mapq, "Low mapping quality for de-novo CpG candidate");
 filter!(dnCpG_vaf, "Low variant allele frequency for de-novo CpG candidate");
 filter!(m_vaf, "Low variant allele frequency for methylation candidate");
+filter!(m_bq_ratio, "Low quality ratio for methylation candidate");
+filter!(m_pos, "Alt allele evidence from read edges for methylation candidate");
+filter!(m_highDp, "Excessive coverage for methylation candidate");
 
 info_field!(
     AlleleBaseQuality(f64),
@@ -94,9 +85,9 @@ vcf_record!(
     // pass or why not
     filters: [
         PASS,
-        lowDP,
+        lowDp,
         dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf,
-        m_vaf,
+        m_vaf, m_bq_ratio, m_pos, m_highDp,
     ],
     // general info
     info: [

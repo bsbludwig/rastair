@@ -14,7 +14,14 @@ use insta::assert_debug_snapshot;
 #[test]
 fn cpg_c_methylated() -> Result<()> {
     let pileup = variant_pileup("chr19", 6105084)?;
-    let config = ThresholdConfig { m_vaf_min: 0.1, m_min_depth: 5 };
+    let config = ThresholdConfig {
+        m_vaf_min: 0.1,
+        m_min_depth: 5,
+        m_bq_ratio_min: 0.27,
+        m_read_position_min: 0.2,
+        m_read_position_max: 0.8,
+        m_max_coverage: 1000,
+    };
     let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
     call(&config, &mut metrics, None, None)?;
 
@@ -56,7 +63,14 @@ fn cpg_c_methylated() -> Result<()> {
 #[test]
 fn cpg_g_methylated() -> Result<()> {
     let pileup = variant_pileup("chr19", 6105085)?;
-    let config = ThresholdConfig { m_vaf_min: 0.1, m_min_depth: 5 };
+    let config = ThresholdConfig {
+        m_vaf_min: 0.1,
+        m_min_depth: 5,
+        m_bq_ratio_min: 0.27,
+        m_read_position_min: 0.2,
+        m_read_position_max: 0.8,
+        m_max_coverage: 1000,
+    };
     let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
     call(&config, &mut metrics, None, None)?;
 
@@ -98,7 +112,14 @@ fn cpg_g_methylated() -> Result<()> {
 #[test]
 fn c_but_not_cpg() -> Result<()> {
     let pileup = variant_pileup("chr19", 6105197)?;
-    let config = ThresholdConfig { m_vaf_min: 0.1, m_min_depth: 5 };
+    let config = ThresholdConfig {
+        m_vaf_min: 0.1,
+        m_min_depth: 5,
+        m_bq_ratio_min: 0.27,
+        m_read_position_min: 0.2,
+        m_read_position_max: 0.8,
+        m_max_coverage: 1000,
+    };
     let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
     call(&config, &mut metrics, None, None)?;
 
@@ -138,7 +159,14 @@ fn c_but_not_cpg() -> Result<()> {
 #[test]
 fn random_other_variant() -> Result<()> {
     let pileup = variant_pileup("chr19", 6105114)?;
-    let config = ThresholdConfig { m_vaf_min: 0.1, m_min_depth: 5 };
+    let config = ThresholdConfig {
+        m_vaf_min: 0.1,
+        m_min_depth: 5,
+        m_bq_ratio_min: 0.27,
+        m_read_position_min: 0.2,
+        m_read_position_max: 0.8,
+        m_max_coverage: 1000,
+    };
     let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
     call(&config, &mut metrics, None, None)?;
 
@@ -178,7 +206,14 @@ fn random_other_variant() -> Result<()> {
 #[test]
 fn methylatable_position_not_methylated() -> Result<()> {
     let pileup = variant_pileup("chr19", 6115809)?;
-    let config = ThresholdConfig { m_vaf_min: 0.1, m_min_depth: 5 };
+    let config = ThresholdConfig {
+        m_vaf_min: 0.1,
+        m_min_depth: 5,
+        m_bq_ratio_min: 0.27,
+        m_read_position_min: 0.2,
+        m_read_position_max: 0.8,
+        m_max_coverage: 1000,
+    };
     let mut metrics = pileup.variant_metrics(&VariantCallingParams::default())?;
     call(&config, &mut metrics, None, None)?;
 
