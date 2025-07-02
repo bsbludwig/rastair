@@ -28,9 +28,11 @@ pub struct Params {
 
     /// Number of threads to use for writing (and compressing) VCF files
     ///
-    /// This is subtracted from `--threads` but never below 1
+    /// This is subtracted from `--threads` but never below 1. Adjust this if
+    /// you think that VCF writing is a bottleneck, e.g. when the output files
+    /// contain a lot of positions.
     // Default value chosen after profiling on a machine with 14 cores.
-    #[arg(long, default_value = "2")]
+    #[arg(long, default_value = "3")]
     pub vcf_threads: NonZeroUsize,
 }
 

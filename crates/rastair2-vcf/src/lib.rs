@@ -151,7 +151,11 @@ impl VcfBuilder {
             self.format,
         )
         .wrap_err_with(|| format!("Failed to create VCF writer for `{}`", self.target.display()))?;
-        vcf.set_threads(self.threads.max(1)).wrap_err("Failed to set threads for VCF writer")?;
+
+        let extra_threads = self.threads.saturating_sub(1); // we are one of the threads already
+        if extra_threads > 0 {
+            vcf.set_threads(extra_threads).wrap_err("Failed to set threads for VCF writer")?;
+        }
 
         let mut chromosomes = BTreeMap::new();
         for chrom in contigs {
