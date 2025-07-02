@@ -1,12 +1,12 @@
 use crate::{
-    call::methylation::threshold::ThresholdConfig,
+    call::methylation::threshold::ThresholdParams,
     vcf::{self},
 };
 use color_eyre::Result;
 use tracing::trace;
 
 /// Add filters
-pub fn add_filters(config: &ThresholdConfig, record: &mut vcf::Record) -> Result<()> {
+pub fn add_filters(config: &ThresholdParams, record: &mut vcf::Record) -> Result<()> {
     if !(*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate) {
         // Not a CpG site, skipping filters
         return Ok(());
@@ -29,10 +29,10 @@ pub fn add_filters(config: &ThresholdConfig, record: &mut vcf::Record) -> Result
 /// Check if this filter applies to the record.
 trait CheckFilter: rastair2_vcf::VcfFilter {
     /// Check if the filter condition is met for the given record.
-    fn check(_config: &ThresholdConfig, _record: &mut vcf::Record) -> bool;
+    fn check(_config: &ThresholdParams, _record: &mut vcf::Record) -> bool;
 
     /// Apply the filter to the record if the condition is met.
-    fn apply(config: &ThresholdConfig, record: &mut vcf::Record) {
+    fn apply(config: &ThresholdParams, record: &mut vcf::Record) {
         if Self::check(config, record) {
             record.filters.add(Self::default());
         }
@@ -40,13 +40,13 @@ trait CheckFilter: rastair2_vcf::VcfFilter {
 }
 
 impl CheckFilter for vcf::lowDp {
-    fn check(config: &ThresholdConfig, record: &mut vcf::Record) -> bool {
+    fn check(config: &ThresholdParams, record: &mut vcf::Record) -> bool {
         *record.info.read_depth < config.m_min_depth
     }
 }
 
 impl CheckFilter for vcf::m_vaf {
-    fn check(config: &ThresholdConfig, record: &mut vcf::Record) -> bool {
+    fn check(config: &ThresholdParams, record: &mut vcf::Record) -> bool {
         let Some(alt) = record.m_base() else {
             return false;
         };
@@ -63,7 +63,7 @@ impl CheckFilter for vcf::m_vaf {
 }
 
 impl CheckFilter for vcf::m_bq_ratio {
-    fn check(config: &ThresholdConfig, record: &mut vcf::Record) -> bool {
+    fn check(config: &ThresholdParams, record: &mut vcf::Record) -> bool {
         let Some(alt) = record.m_base() else {
             return false;
         };
@@ -97,7 +97,7 @@ impl CheckFilter for vcf::m_bq_ratio {
 }
 
 impl CheckFilter for vcf::m_pos {
-    fn check(config: &ThresholdConfig, record: &mut vcf::Record) -> bool {
+    fn check(config: &ThresholdParams, record: &mut vcf::Record) -> bool {
         let Some(alt) = record.m_base() else {
             return false;
         };
@@ -115,7 +115,7 @@ impl CheckFilter for vcf::m_pos {
 }
 
 impl CheckFilter for vcf::m_highDp {
-    fn check(config: &ThresholdConfig, record: &mut vcf::Record) -> bool {
+    fn check(config: &ThresholdParams, record: &mut vcf::Record) -> bool {
         *record.info.read_depth > config.m_max_coverage
     }
 }

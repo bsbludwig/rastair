@@ -10,7 +10,7 @@ pub struct MethylationCallingParams {
     pub calling: MethylationCallingMode,
 
     #[command(flatten)]
-    thresholds: super::threshold::ThresholdConfig,
+    thresholds: super::threshold::ThresholdParams,
 }
 
 impl MethylationCallingParams {

@@ -1,6 +1,6 @@
 use crate::{
     call::methylation::threshold::{
-        ThresholdConfig, filters::add_filters, utils::NoStrandBiasForBaseErrorExt as _,
+        ThresholdParams, filters::add_filters, utils::NoStrandBiasForBaseErrorExt as _,
     },
     utils::Base::*,
     vcf::{self, Methylated},
@@ -19,7 +19,7 @@ use tracing::{Level, debug, instrument, trace, warn};
     name = "methylation_call"
 )]
 pub fn call(
-    config: &ThresholdConfig,
+    config: &ThresholdParams,
     record: &mut vcf::Record,
     before: Option<&vcf::Record>,
     after: Option<&vcf::Record>,
