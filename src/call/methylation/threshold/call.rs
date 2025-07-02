@@ -5,7 +5,7 @@ use crate::{
     utils::Base::*,
     vcf::{self, Methylated},
 };
-use color_eyre::{Result, eyre::Context};
+use color_eyre::{Result, Section, eyre::Context};
 use smol_str::SmolStr;
 use tracing::{Level, debug, instrument, trace, warn};
 
@@ -93,7 +93,9 @@ fn ref_t_to_c(record: &vcf::Record) -> Result<Methylated> {
 fn ref_not_t_to_c(record: &vcf::Record) -> Result<Methylated> {
     // Ref is not T: count alt == T and alt == C separately
     let mod_count = record.strand_count(T).or_empty().ot;
-    let unmod_count = record.strand_count(C).or_empty().ot;
+    let unmod =
+        record.strand_count(C).wrap_err("No evidence for C").note("This is a programming error")?;
+    let unmod_count = unmod.ot;
 
     // Check if there's evidence for T on the OB, which would be very
     // weird, ie a multi-allelic site (X->C _and_ X->T ?!)
@@ -103,16 +105,8 @@ fn ref_not_t_to_c(record: &vcf::Record) -> Result<Methylated> {
         warn!(?t_counts, "Evidence for multi-allelic SNP at het D/C site");
     }
 
-    if unmod_count == 0 {
-        warn!(
-            c = ?record.strand_count(C),
-            "No evidence for C - this should be impossible"
-        );
-        Ok(Methylated::NoEvidence)
-    } else {
-        let total = mod_count + unmod_count;
-        Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
-    }
+    let total = mod_count + unmod_count;
+    Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
 }
 
 fn ref_a_to_g(record: &vcf::Record) -> Result<Methylated> {
@@ -143,7 +137,9 @@ fn ref_a_to_g(record: &vcf::Record) -> Result<Methylated> {
 fn ref_not_a_to_g(record: &vcf::Record) -> Result<Methylated> {
     // Ref is not A: count alt == A and alt == G separately
     let mod_count = record.strand_count(A).or_empty().ob;
-    let unmod_count = record.strand_count(G).or_empty().ob;
+    let unmod =
+        record.strand_count(G).wrap_err("No evidence for G").note("This is a programming error")?;
+    let unmod_count = unmod.ob;
 
     if tracing::enabled!(Level::DEBUG)
         && let Ok(a_counts) = record.strand_count(A)
@@ -152,13 +148,8 @@ fn ref_not_a_to_g(record: &vcf::Record) -> Result<Methylated> {
         debug!(?a_counts, "Evidence for multi-allelic SNP at het H/G site");
     }
 
-    if unmod_count == 0 {
-        trace!("No evidence for G");
-        Ok(Methylated::NoEvidence)
-    } else {
-        let total = mod_count + unmod_count;
-        Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
-    }
+    let total = mod_count + unmod_count;
+    Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
 }
 
 fn ref_c(record: &vcf::Record) -> Result<Methylated> {
