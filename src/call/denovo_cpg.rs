@@ -26,11 +26,11 @@ impl From<&VariantCandidatePileup> for vcf::DeNovoCpGCandidate {
         let ref_base = pileup.reference_base;
         let (alt_base, alt_index) = if let Some(pos) =
             pileup.alts().iter().position(|x| *x == Base::C)
-            && pileup.ref_after() == Some(Base::G)
+            && pileup.ref_after() == Base::G
         {
             (Base::C, pos)
         } else if let Some(pos) = pileup.alts().iter().position(|x| *x == Base::G)
-            && pileup.ref_before() == Some(Base::C)
+            && pileup.ref_before() == Base::C
         {
             (Base::G, pos)
         } else {

@@ -37,7 +37,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
     let ref_after = sequence_context.after_1;
 
     // Check if alt contains "C" and ref_after is "G" (creating new CpG)
-    if record.has_alt(C) && ref_after == Some(G) {
+    if record.has_alt(C) && ref_after == G {
         if record.main.r#ref == T {
             // T > C case: need to use strand to distinguish mod from unmod
             let c_counts = record.strand_count(C)?;
@@ -96,7 +96,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         }
     }
     // Check if alt contains "G" and ref_before is "C" (creating new CpG)
-    else if record.has_alt(G) && ref_before == Some(C) {
+    else if record.has_alt(G) && ref_before == C {
         if record.main.r#ref == A {
             // A > G case: similar logic but for OB strand
             let g_counts = record.strand_count(G)?;

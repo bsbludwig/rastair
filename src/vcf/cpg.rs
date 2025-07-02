@@ -21,9 +21,9 @@ pub enum InCpG {
 
 impl InCpG {
     pub fn new(base: Base, before: Option<Base>, after: Option<Base>) -> Self {
-        if base == Base::C && after == Some(Base::G) {
+        if base == Base::C && after == Base::G {
             InCpG::C
-        } else if base == Base::G && before == Some(Base::C) {
+        } else if base == Base::G && before == Base::C {
             InCpG::G
         } else {
             InCpG::No

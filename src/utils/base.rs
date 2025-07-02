@@ -82,9 +82,21 @@ impl PartialEq<str> for Base {
     }
 }
 
-impl PartialEq<SmolStr> for Base {
-    fn eq(&self, other: &SmolStr) -> bool {
-        self.as_str() == other.as_str()
+impl PartialEq<Option<SmolStr>> for Base {
+    fn eq(&self, other: &Option<SmolStr>) -> bool {
+        if let Some(other) = other { other == self } else { false }
+    }
+}
+
+impl PartialEq<Option<Base>> for Base {
+    fn eq(&self, other: &Option<Base>) -> bool {
+        if let Some(other) = other { other == self } else { false }
+    }
+}
+
+impl PartialEq<Base> for Option<Base> {
+    fn eq(&self, other: &Base) -> bool {
+        if let Some(me) = self { other == me } else { false }
     }
 }
 

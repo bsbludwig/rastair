@@ -192,9 +192,9 @@ fn collect_candidate(
 
 fn is_cpg(reference_base: Base, before: Option<Base>, after: Option<Base>) -> bool {
     if reference_base == Base::C {
-        after == Some(Base::G)
+        after == Base::G
     } else if reference_base == Base::G {
-        before == Some(Base::C)
+        before == Base::C
     } else {
         false
     }
