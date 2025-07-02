@@ -3,17 +3,11 @@ use crate::{
     vcf::{self},
 };
 use color_eyre::Result;
-use rastair2_vcf::standard_fields::PASS;
 use tracing::trace;
 
 pub fn add_filters(config: &ThresholdConfig, record: &mut vcf::Record) -> Result<()> {
     vcf::lowDP::apply(config, record);
     vcf::m_vaf::apply(config, record);
-
-    let did_we_implement_all_filters = false; // just to keep track during development
-    if did_we_implement_all_filters && record.filters.is_empty() {
-        record.filters.add(PASS);
-    }
 
     Ok(())
 }
