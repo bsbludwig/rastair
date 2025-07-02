@@ -21,26 +21,13 @@ pub fn call(
     after: Option<&vcf::Record>,
 ) -> Result<()> {
     if *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate {
-        call_cpg(record, before, after).wrap_err("Failed to call CpG methylation")?;
+        record.samples[0].methylated = call_methylation(record, record.main.r#ref.clone())
+            .wrap_err("Failed to call de novo CpG methylation")?;
         add_filters(config, record).wrap_err("Failed to add filters for CpG methylation")?;
     } else {
         trace!("Not a CpG site, skipping");
         return Ok(());
     };
-
-    Ok(())
-}
-
-pub fn call_cpg(
-    record: &mut vcf::Record,
-    _before: Option<&vcf::Record>,
-    _after: Option<&vcf::Record>,
-) -> Result<()> {
-    let ref_base = record.main.r#ref.clone();
-
-    // todo: add filters
-    record.samples[0].methylated =
-        call_methylation(record, ref_base).wrap_err("Failed to call de novo CpG methylation")?;
 
     Ok(())
 }
