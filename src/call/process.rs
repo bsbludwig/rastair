@@ -5,7 +5,7 @@ use crate::{
     },
     sequence::{ChunkRegion, Readers, Segment},
     utils::{Base, StrandFromRecord},
-    vcf::{self, Filters},
+    vcf::{self, Filters, InCpG},
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use rust_htslib::bam::{
@@ -178,7 +178,7 @@ fn collect_candidate(
         pos: pile.pos(),
         bases,
         reference_base,
-        is_cpg: is_cpg(reference_base, before, after),
+        is_cpg: *InCpG::new(reference_base, before, after),
     };
 
     if has_alts || (*params.include_cpgs && res.is_cpg) {
@@ -188,26 +188,6 @@ fn collect_candidate(
         // trace!(?bases, pos = pile.pos(), ?reference_base, ?next_base, "pile matches reference");
         Ok(None)
     }
-}
-
-fn is_cpg(reference_base: Base, before: Option<Base>, after: Option<Base>) -> bool {
-    if reference_base == Base::C {
-        after == Base::G
-    } else if reference_base == Base::G {
-        before == Base::C
-    } else {
-        false
-    }
-}
-
-#[test]
-fn test_is_cpg() {
-    assert!(is_cpg(Base::C, None, Some(Base::G)));
-    assert!(is_cpg(Base::G, Some(Base::C), None));
-    assert!(!is_cpg(Base::A, Some(Base::G), None));
-    assert!(!is_cpg(Base::T, None, Some(Base::C)));
-    assert!(!is_cpg(Base::C, None, None));
-    assert!(!is_cpg(Base::G, None, None));
 }
 
 /// Collect info from a pileup alignment

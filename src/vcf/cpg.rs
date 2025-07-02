@@ -1,12 +1,13 @@
+use crate::{
+    call::variants::VariantCandidatePileup,
+    utils::{Base, Base::*},
+};
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use rastair2_vcf::VcfField as _;
 use rust_htslib::bcf::Record;
 use std::fmt;
 use std::ops::Deref;
-
-use crate::call::variants::VariantCandidatePileup;
-use crate::utils::Base;
 
 /// Is this a CpG site?
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -21,9 +22,9 @@ pub enum InCpG {
 
 impl InCpG {
     pub fn new(base: Base, before: Option<Base>, after: Option<Base>) -> Self {
-        if base == Base::C && after == Base::G {
+        if base == C && after == G {
             InCpG::C
-        } else if base == Base::G && before == Base::C {
+        } else if base == G && before == C {
             InCpG::G
         } else {
             InCpG::No
@@ -82,15 +83,15 @@ mod tests {
 
     #[test]
     fn test_in_cpg() {
-        assert_eq!(InCpG::new(Base::A, None, None), InCpG::No);
+        assert_eq!(InCpG::new(A, None, None), InCpG::No);
 
-        assert_eq!(InCpG::new(Base::C, None, Some(Base::G)), InCpG::C);
-        assert_eq!(InCpG::new(Base::C, Some(Base::A), Some(Base::G)), InCpG::C);
+        assert_eq!(InCpG::new(C, None, Some(G)), InCpG::C);
+        assert_eq!(InCpG::new(C, Some(A), Some(G)), InCpG::C);
 
-        assert_eq!(InCpG::new(Base::G, Some(Base::C), None), InCpG::G);
-        assert_eq!(InCpG::new(Base::G, Some(Base::C), Some(Base::T)), InCpG::G);
+        assert_eq!(InCpG::new(G, Some(C), None), InCpG::G);
+        assert_eq!(InCpG::new(G, Some(C), Some(T)), InCpG::G);
 
-        assert_eq!(InCpG::new(Base::T, Some(Base::C), Some(Base::G)), InCpG::No);
-        assert_eq!(InCpG::new(Base::C, Some(Base::T), Some(Base::A)), InCpG::No);
+        assert_eq!(InCpG::new(T, Some(C), Some(G)), InCpG::No);
+        assert_eq!(InCpG::new(C, Some(T), Some(A)), InCpG::No);
     }
 }

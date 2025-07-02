@@ -1,6 +1,6 @@
 use crate::{
     call::variants::VariantCandidatePileup,
-    utils::Base,
+    utils::Base::*,
     vcf::{self},
 };
 use color_eyre::Result;
@@ -24,15 +24,14 @@ pub struct DenovoParams {
 impl From<&VariantCandidatePileup> for vcf::DeNovoCpGCandidate {
     fn from(pileup: &VariantCandidatePileup) -> Self {
         let ref_base = pileup.reference_base;
-        let (alt_base, alt_index) = if let Some(pos) =
-            pileup.alts().iter().position(|x| *x == Base::C)
-            && pileup.ref_after() == Base::G
+        let (alt_base, alt_index) = if let Some(pos) = pileup.alts().iter().position(|x| *x == C)
+            && pileup.ref_after() == G
         {
-            (Base::C, pos)
-        } else if let Some(pos) = pileup.alts().iter().position(|x| *x == Base::G)
-            && pileup.ref_before() == Base::C
+            (C, pos)
+        } else if let Some(pos) = pileup.alts().iter().position(|x| *x == G)
+            && pileup.ref_before() == C
         {
-            (Base::G, pos)
+            (G, pos)
         } else {
             return vcf::DeNovoCpGCandidate::NotCandidate;
         };
