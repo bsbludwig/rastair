@@ -27,8 +27,8 @@ pub struct ThresholdConfig {
 
 mod call;
 pub use call::call;
-
 mod filters;
+mod utils;
 
 #[cfg(test)]
 mod tests;

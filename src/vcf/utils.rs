@@ -10,3 +10,11 @@ pub struct ByStrand<T> {
     /// Value for the bottom strand
     pub ob: T,
 }
+
+impl<T: Copy> Copy for ByStrand<T> {}
+
+impl<T: Default> Default for ByStrand<T> {
+    fn default() -> Self {
+        ByStrand { base: Base::Unknown, ot: T::default(), ob: T::default() }
+    }
+}
