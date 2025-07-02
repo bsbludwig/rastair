@@ -25,9 +25,14 @@ pub fn call(
     after: Option<&vcf::Record>,
 ) -> Result<()> {
     if *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate {
-        record.samples[0].methylated =
-            call_methylation(record, record.main.r#ref.clone(), before, after)
-                .wrap_err("Failed to call de novo CpG methylation")?;
+        let res = call_methylation(record, record.main.r#ref.clone(), before, after)
+            .wrap_err("Failed to call CpG methylation")?;
+        if let Some(beta) = res.beta()
+            && !beta.is_finite()
+        {
+            warn!(?res, "Methylation calling resulted in non-finite beta value")
+        }
+        record.samples[0].methylated = res;
         add_filters(config, record).wrap_err("Failed to add filters for CpG methylation")?;
     } else {
         trace!("Not a CpG site, skipping");
@@ -82,9 +87,10 @@ fn ref_t_to_c(record: &vcf::Record) -> Result<Methylated> {
             Ok(Methylated::NoEvidence)
         }
     } else {
+        let mod_count = t_counts.ot;
         let total = c_counts.ot + t_counts.ot;
         if total > 0 {
-            Ok(Methylated::DeNovoCpG { beta: f(t_counts.ot) / f(total) })
+            Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
         } else {
             Ok(Methylated::NoEvidence)
         }
@@ -107,7 +113,11 @@ fn ref_not_t_to_c(record: &vcf::Record) -> Result<Methylated> {
     }
 
     let total = mod_count + unmod_count;
-    Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
+    if total > 0 {
+        Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
+    } else {
+        Ok(Methylated::NoEvidence)
+    }
 }
 
 fn ref_a_to_g(record: &vcf::Record) -> Result<Methylated> {
@@ -126,9 +136,10 @@ fn ref_a_to_g(record: &vcf::Record) -> Result<Methylated> {
             Ok(Methylated::NoEvidence)
         }
     } else {
-        let total = g_counts.ob + a_counts.ob;
+        let mod_count = a_counts.ob;
+        let total = g_counts.ob + mod_count;
         if total > 0 {
-            Ok(Methylated::DeNovoCpG { beta: f(a_counts.ob) / f(total) })
+            Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
         } else {
             Ok(Methylated::NoEvidence)
         }
@@ -150,7 +161,11 @@ fn ref_not_a_to_g(record: &vcf::Record) -> Result<Methylated> {
     }
 
     let total = mod_count + unmod_count;
-    Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
+    if total > 0 {
+        Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
+    } else {
+        Ok(Methylated::NoEvidence)
+    }
 }
 
 fn ref_c(record: &vcf::Record) -> Result<Methylated> {
