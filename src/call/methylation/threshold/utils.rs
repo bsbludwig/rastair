@@ -37,11 +37,11 @@ impl fmt::Display for NoStrandBiasForBaseError {
 
 pub trait NoStrandBiasForBaseErrorExt {
     /// Returns the strand bias counts for the base, or a default value if the error is encountered.
-    fn or_default(&self) -> vcf::ByStrand<u32>;
+    fn or_empty(&self) -> vcf::ByStrand<u32>;
 }
 
 impl NoStrandBiasForBaseErrorExt for Result<vcf::ByStrand<u32>, NoStrandBiasForBaseError> {
-    fn or_default(&self) -> vcf::ByStrand<u32> {
+    fn or_empty(&self) -> vcf::ByStrand<u32> {
         match self {
             Ok(counts) => *counts,
             Err(NoStrandBiasForBaseError { base }) => vcf::ByStrand { base: *base, ot: 0, ob: 0 },
