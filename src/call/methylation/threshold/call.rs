@@ -8,7 +8,7 @@ use color_eyre::{
     eyre::{Context, ContextCompat},
 };
 use smol_str::SmolStr;
-use tracing::{instrument, trace, warn};
+use tracing::{Level, debug, instrument, trace, warn};
 
 #[instrument(level="trace", skip(record, config), fields(
 chr = %record.main.chrom,
@@ -93,7 +93,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             }
 
             if unmod_count == 0 {
-                trace!(
+                warn!(
                     chr = %record.main.chrom,
                     pos = record.main.pos,
                     "No evidence for C - this should be impossible"
@@ -139,10 +139,11 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
 
             let unmod_count = strand_count(Base::G).map(|counts| counts.ob).unwrap_or(0);
 
-            if let Some(a_counts) = strand_count(Base::A)
+            if tracing::enabled!(Level::DEBUG)
+                && let Some(a_counts) = strand_count(Base::A)
                 && a_counts.ot > 0
             {
-                warn!(
+                debug!(
                     chr = %record.main.chrom,
                     pos = record.main.pos,
                     "Evidence for multi-allelic SNP at het H/G site"
@@ -165,8 +166,8 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
     // Handle C or G positions next to variants
     else if ref_base == "C" {
         // Check for non-T alternatives (possible C->N SNP)
-        if record.main.alt.iter().any(|alt| alt != "T") {
-            warn!(
+        if tracing::enabled!(Level::TRACE) && record.main.alt.iter().any(|alt| alt != "T") {
+            trace!(
                 chr = %record.main.chrom,
                 pos = record.main.pos,
                 "Possible C->N SNP next to a de-novo G"
@@ -196,8 +197,8 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         }
     } else if ref_base == "G" {
         // Check for non-A alternatives (possible G->N SNP)
-        if record.main.alt.iter().any(|alt| alt != "A") {
-            warn!(
+        if tracing::enabled!(Level::TRACE) && record.main.alt.iter().any(|alt| alt != "A") {
+            trace!(
                 chr = %record.main.chrom,
                 pos = record.main.pos,
                 "Possible G->N SNP next to a de-novo C"
