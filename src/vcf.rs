@@ -8,6 +8,10 @@
 //! <https://github.com/samtools/hts-specs/blob/0d7f8774658f7cee0a4540b0682174e460726432/VCFv4.5.tex>
 //! for the VCF spec.
 
+// TODO: Add helpers to make lookup code shorter, e.g.
+// - `record.info.as_read_depth[G]` -> `Option<usize>`
+// - `record.info.as_strand_bias[C][OT]`
+
 use rastair2_vcf::{standard_fields::*, *};
 
 mod as_strand_bias;
@@ -85,12 +89,6 @@ format_field!(
     "Genotype confidence",
     FormatFieldNumber::OnePerGenotype
 );
-format_field!(
-    DeNovoCpg(Option<f64>),
-    "CPG_Call",
-    "Is a likely de-novo CPG position? (Range 0..1)",
-    1
-);
 
 vcf_record!(
     // pass or why not
@@ -125,7 +123,7 @@ vcf_record!(
     // Call data
     //
     // NOTE: The first sub-field must always be the genotype (GT) if it is present.
-    format: [Genotype, GenotypeLikelihood, GenotypeConfidence, SampleReadDepth, Methylated, DeNovoCpg],
+    format: [Genotype, GenotypeLikelihood, GenotypeConfidence, SampleReadDepth, Methylated],
     // hint to allocate this many slots for format data
     min_samples: 1
 );

@@ -42,53 +42,29 @@ impl From<&VariantCandidatePileup> for vcf::DeNovoCpGCandidate {
 }
 
 impl DenovoParams {
-    pub fn filter(
-        &self,
-        record: &mut vcf::Record,
-        _before: Option<&vcf::Record>,
-        _after: Option<&vcf::Record>,
-    ) -> Result<()> {
-        let vcf::DeNovoCpGCandidate::Candidate { alt_index, .. } =
+    pub fn filter(&self, record: &mut vcf::Record) -> Result<()> {
+        let vcf::DeNovoCpGCandidate::Candidate { alt_index: idx, .. } =
             record.info.de_novo_cp_g_candidate
         else {
             return Ok(());
         };
 
-        let critera: [(bool, Box<dyn Fn(&mut vcf::Record)>); 4] = [
-            (
-                record.info.allele_read_depth.get(alt_index).copied().unwrap_or_default()
-                    >= self.cpg_novo_min_depth,
-                Box::new(|record| record.filters.add(vcf::dnCpG_lowDp)),
-            ),
-            (
-                record.info.allele_base_quality.get(alt_index).copied().unwrap_or_default()
-                    >= self.cpg_novo_min_baseq,
-                Box::new(|record| record.filters.add(vcf::dnCpG_bq)),
-            ),
-            (
-                record.info.allele_map_quality.get(alt_index).copied().unwrap_or_default()
-                    >= self.cpg_novo_min_mapq,
-                Box::new(|record| record.filters.add(vcf::dnCpG_mapq)),
-            ),
-            (
-                record.info.allele_frequency.get(alt_index).copied().unwrap_or_default()
-                    >= self.cpg_novo_min_vaf,
-                Box::new(|record| record.filters.add(vcf::dnCpG_vaf)),
-            ),
-        ];
-
-        let critera_len = critera.len();
-        let mut met_criteria = 0;
-        for (criteria_met, filter_fn) in critera {
-            if criteria_met {
-                met_criteria += 1;
-            } else {
-                filter_fn(record);
-            }
+        if record.info.allele_read_depth.get(idx) <= Some(&self.cpg_novo_min_depth) {
+            record.filters.add(vcf::dnCpG_lowDp);
         }
 
-        record.samples[0].de_novo_cpg =
-            vcf::DeNovoCpg(Some(f64::from(met_criteria) / critera_len as f64));
+        if record.info.allele_base_quality.get(idx) <= Some(&self.cpg_novo_min_baseq) {
+            record.filters.add(vcf::dnCpG_bq);
+        }
+
+        if record.info.allele_map_quality.get(idx) <= Some(&self.cpg_novo_min_mapq) {
+            record.filters.add(vcf::dnCpG_mapq);
+        }
+
+        if record.info.allele_frequency.get(idx) <= Some(&self.cpg_novo_min_vaf) {
+            record.filters.add(vcf::dnCpG_vaf);
+        }
+
         Ok(())
     }
 }

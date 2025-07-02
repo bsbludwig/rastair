@@ -235,10 +235,7 @@ fn process_region(
                 (before, current, after)
             };
 
-            params
-                .denovo_cpg
-                .filter(current, before, after)
-                .wrap_err("Failed to filter de-novo CpG")?;
+            params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
 
             params
                 .methylation
