@@ -49,17 +49,17 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             if t_counts.ob >= 2 {
                 // mod (reads showing T) are the ref here
                 // divide by 2 assuming diploid genome
-                let mod_count = f64::from(t_counts.ot) / 2.;
-                let total = f64::from(c_counts.ot) + mod_count;
+                let mod_count = f(t_counts.ot) / 2.;
+                let total = f(c_counts.ot) + mod_count;
                 if total > 0. {
                     Ok(Methylated::DeNovoCpG { beta: mod_count / total })
                 } else {
                     Ok(Methylated::NoEvidence)
                 }
             } else {
-                let total = f64::from(c_counts.ot + t_counts.ot);
-                if total > 0. {
-                    Ok(Methylated::DeNovoCpG { beta: f64::from(t_counts.ot) / total })
+                let total = c_counts.ot + t_counts.ot;
+                if total > 0 {
+                    Ok(Methylated::DeNovoCpG { beta: f(t_counts.ot) / f(total) })
                 } else {
                     Ok(Methylated::NoEvidence)
                 }
@@ -91,7 +91,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
                 Ok(Methylated::NoEvidence)
             } else {
                 let total = mod_count + unmod_count;
-                Ok(Methylated::DeNovoCpG { beta: f64::from(mod_count) / f64::from(total) })
+                Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
             }
         }
     }
@@ -105,17 +105,17 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             // If there's 2+ reads evidence for A on OT, assume het SNP and adjust beta
             if a_counts.ot >= 2 {
                 // divide by 2 assuming diploid genome
-                let mod_count = a_counts.ob / 2;
-                let total = g_counts.ob + mod_count;
-                if total > 0 {
-                    Ok(Methylated::DeNovoCpG { beta: f64::from(mod_count) / f64::from(total) })
+                let mod_count = f(a_counts.ob) / 2.;
+                let total = f(g_counts.ob) + mod_count;
+                if total > 0. {
+                    Ok(Methylated::DeNovoCpG { beta: mod_count / total })
                 } else {
                     Ok(Methylated::NoEvidence)
                 }
             } else {
                 let total = g_counts.ob + a_counts.ob;
                 if total > 0 {
-                    Ok(Methylated::DeNovoCpG { beta: f64::from(a_counts.ob) / f64::from(total) })
+                    Ok(Methylated::DeNovoCpG { beta: f(a_counts.ob) / f(total) })
                 } else {
                     Ok(Methylated::NoEvidence)
                 }
@@ -146,7 +146,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
                 Ok(Methylated::NoEvidence)
             } else {
                 let total = mod_count + unmod_count;
-                Ok(Methylated::DeNovoCpG { beta: f64::from(mod_count) / f64::from(total) })
+                Ok(Methylated::DeNovoCpG { beta: f(mod_count) / f(total) })
             }
         }
     }
@@ -165,18 +165,18 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             let t_counts = record.strand_count(T)?;
             let c_counts = record.strand_count(C)?;
 
-            let mut mod_count = t_counts.ot;
-            let unmod_count = c_counts.ot;
+            let mut mod_count = f(t_counts.ot);
+            let unmod_count = f(c_counts.ot);
 
             let snp_count = t_counts.ob;
             if snp_count > 1 {
                 // divide by 2 assuming diploid genome
-                mod_count /= 2;
+                mod_count /= 2.;
             }
 
             let total = mod_count + unmod_count;
-            if total > 0 {
-                Ok(Methylated::OriginalCpG { beta: f64::from(mod_count) / f64::from(total) })
+            if total > 0. {
+                Ok(Methylated::OriginalCpG { beta: mod_count / total })
             } else {
                 Ok(Methylated::NoEvidence)
             }
@@ -197,18 +197,18 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             let a_counts = record.strand_count(A)?;
             let g_counts = record.strand_count(G)?;
 
-            let mut mod_count = a_counts.ob;
-            let unmod_count = g_counts.ob;
-            let snp_count = a_counts.ot;
+            let mut mod_count = f(a_counts.ob);
+            let unmod_count = f(g_counts.ob);
+            let snp_count = f(a_counts.ot);
 
-            if snp_count > 1 {
+            if snp_count > 1. {
                 // divide by 2 assuming diploid genome
-                mod_count /= 2;
+                mod_count /= 2.;
             }
 
             let total = mod_count + unmod_count;
-            if total > 0 {
-                Ok(Methylated::OriginalCpG { beta: f64::from(mod_count) / f64::from(total) })
+            if total > 0. {
+                Ok(Methylated::OriginalCpG { beta: mod_count / total })
             } else {
                 Ok(Methylated::NoEvidence)
             }
@@ -224,4 +224,8 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         );
         Ok(Methylated::NoEvidence)
     }
+}
+
+fn f(x: impl Into<f64>) -> f64 {
+    x.into()
 }
