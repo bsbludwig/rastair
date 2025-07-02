@@ -70,6 +70,30 @@ impl std::ops::Deref for Base {
     }
 }
 
+impl AsRef<str> for Base {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq<str> for Base {
+    fn eq(&self, other: &str) -> bool {
+        *self.as_str() == *other
+    }
+}
+
+impl PartialEq<SmolStr> for Base {
+    fn eq(&self, other: &SmolStr) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<Base> for SmolStr {
+    fn eq(&self, other: &Base) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -1,7 +1,7 @@
 use crate::{
     call::methylation::threshold::{ThresholdConfig, filters::add_filters},
-    vcf::{self, Methylated},
     utils::Base::{self, *},
+    vcf::{self, Methylated},
 };
 use color_eyre::{
     Result,
@@ -48,16 +48,16 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
     let ref_after = sequence_context.after_1;
 
     // Helper function to get strand bias counts for a specific base
-    let strand_count = |base: Base| -> Option<&vcf::ByStrand<u32>> {
-        record.info.allele_specific_strand_bias.iter().find(|x| x.base == base)
+    let strand_count = |base: Base| -> Option<vcf::ByStrand<u32>> {
+        record.info.allele_specific_strand_bias.iter().find(|x| x.base == base).cloned()
     };
 
     // Check if alt contains "C" and ref_after is "G" (creating new CpG)
-        if record.main.r#ref == "T" {
     if record.has_alt(C) && ref_after == Some(G) {
+        if record.main.r#ref == T {
             // T > C case: need to use strand to distinguish mod from unmod
-            let c_counts = strand_count(Base::C).wrap_err("Missing C counts in strand bias")?;
-            let t_counts = strand_count(Base::T).wrap_err("Missing T counts in strand bias")?;
+            let c_counts = strand_count(C).wrap_err("Missing C counts in strand bias")?;
+            let t_counts = strand_count(T).wrap_err("Missing T counts in strand bias")?;
 
             // If there's 2+ reads evidence for T on OB, assume het SNP and adjust beta
             // Note that T is the _ref_ here
@@ -82,17 +82,17 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             }
         } else {
             // Ref is not T: count alt == T and alt == C separately
-                strand_count(Base::T).map(|counts| counts.ot).unwrap_or(0)
             let mod_count = if record.has_alt(T) {
+                strand_count(T).map(|counts| counts.ot).unwrap_or(0)
             } else {
                 0
             };
 
-            let unmod_count = strand_count(Base::C).map(|counts| counts.ot).unwrap_or(0);
+            let unmod_count = strand_count(C).map(|counts| counts.ot).unwrap_or(0);
 
             // Check if there's evidence for T on the OB, which would be very
             // weird, ie a multi-allelic site (X->C _and_ X->T ?!)
-            if let Some(t_counts) = strand_count(Base::T)
+            if let Some(t_counts) = strand_count(T)
                 && t_counts.ob > 0
             {
                 warn!(
@@ -116,11 +116,11 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         }
     }
     // Check if alt contains "G" and ref_before is "C" (creating new CpG)
-        if record.main.r#ref == "A" {
     else if record.has_alt(G) && ref_before == Some(C) {
+        if record.main.r#ref == A {
             // A > G case: similar logic but for OB strand
-            let g_counts = strand_count(Base::G).wrap_err("Missing G counts in strand bias")?;
-            let a_counts = strand_count(Base::A).wrap_err("Missing A counts in strand bias")?;
+            let g_counts = strand_count(G).wrap_err("Missing G counts in strand bias")?;
+            let a_counts = strand_count(A).wrap_err("Missing A counts in strand bias")?;
 
             // If there's 2+ reads evidence for A on OT, assume het SNP and adjust beta
             if a_counts.ot >= 2 {
@@ -141,16 +141,16 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             }
         } else {
             // Ref is not A: count alt == A and alt == G separately
-                strand_count(Base::A).map(|counts| counts.ob).unwrap_or(0)
             let mod_count = if record.has_alt(A) {
+                strand_count(A).map(|counts| counts.ob).unwrap_or(0)
             } else {
                 0
             };
 
-            let unmod_count = strand_count(Base::G).map(|counts| counts.ob).unwrap_or(0);
+            let unmod_count = strand_count(G).map(|counts| counts.ob).unwrap_or(0);
 
             if tracing::enabled!(Level::DEBUG)
-                && let Some(a_counts) = strand_count(Base::A)
+                && let Some(a_counts) = strand_count(A)
                 && a_counts.ot > 0
             {
                 debug!(
@@ -174,7 +174,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         }
     }
     // Handle C or G positions next to variants
-    else if ref_base == "C" {
+    else if ref_base == C {
         // Check for non-T alternatives (possible C->N SNP)
         if tracing::enabled!(Level::TRACE) && record.has_alts_other_than(T) {
             trace!(
@@ -184,9 +184,9 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             );
         }
 
-            let t_counts = strand_count(Base::T).wrap_err("Missing T counts in strand bias")?;
-            let c_counts = strand_count(Base::C).wrap_err("Missing C counts in strand bias")?;
         if record.has_alt(T) {
+            let t_counts = strand_count(T).wrap_err("Missing T counts in strand bias")?;
+            let c_counts = strand_count(C).wrap_err("Missing C counts in strand bias")?;
 
             let mut mod_count = t_counts.ot;
             let unmod_count = c_counts.ot;
@@ -205,7 +205,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         } else {
             Ok(Methylated::NoEvidence)
         }
-    } else if ref_base == "G" {
+    } else if ref_base == G {
         // Check for non-A alternatives (possible G->N SNP)
         if tracing::enabled!(Level::TRACE) && record.has_alts_other_than(A) {
             trace!(
@@ -215,9 +215,9 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             );
         }
 
-            let a_counts = strand_count(Base::A).wrap_err("Missing A counts in strand bias")?;
-            let g_counts = strand_count(Base::G).wrap_err("Missing G counts in strand bias")?;
         if record.has_alt(A) {
+            let a_counts = strand_count(A).wrap_err("Missing A counts in strand bias")?;
+            let g_counts = strand_count(G).wrap_err("Missing G counts in strand bias")?;
 
             let mut mod_count = a_counts.ob;
             let unmod_count = g_counts.ob;
