@@ -28,7 +28,7 @@ macro_rules! vcf_record {
     ) => {pastey::paste!{
         /// Filters that can be applied to a VCF record
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-        pub struct Filters(smallvec::SmallVec<smol_str::SmolStr, 2>);
+        pub struct Filters(smallvec::SmallVec<smol_str::SmolStr, 8>);
 
         #[allow(unused)]
         impl Filters {
@@ -129,7 +129,7 @@ macro_rules! vcf_record {
         #[allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
         pub struct Record {
             /// Fixed fields for the VCF record, such as chromosome, position, ID, reference, and alternate alleles
-            pub fixed_fields: VcfFixedFields,
+            pub main:  VcfFixedFields,
             /// Filters applied to the VCF record
             pub filters: Filters,
             /// Metrics and data about the variant
@@ -152,7 +152,7 @@ macro_rules! vcf_record {
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
                 use color_eyre::eyre::WrapErr;
 
-                self.fixed_fields.write(record)?;
+                self.main.write(record)?;
                 self.filters.write(record)
                     .wrap_err("Failed to write filters")?;
                 self.info.write(record)

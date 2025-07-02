@@ -122,14 +122,14 @@ pub fn call(params: &CallParams) -> Result<()> {
                         let record: &vcf::Record = record;
 
                         // Skip records that are already seen
-                        if last_seen_chrom.as_ref() == Some(&record.fixed_fields.chrom)
-                            && last_seen_pos >= Some(record.fixed_fields.pos)
+                        if last_seen_chrom.as_ref() == Some(&record.main.chrom)
+                            && last_seen_pos >= Some(record.main.pos)
                         {
                             continue;
                         }
                         // Seen a new record, update the last seen
-                        last_seen_chrom = Some(record.fixed_fields.chrom.clone());
-                        last_seen_pos = Some(record.fixed_fields.pos);
+                        last_seen_chrom = Some(record.main.chrom.clone());
+                        last_seen_pos = Some(record.main.pos);
 
                         writer.add(record).wrap_err("Failed to write record to VCF")?;
                     }
@@ -219,18 +219,21 @@ fn process_region(
                 let (left, right) = records.split_at_mut(i);
                 let (current_slice, next_slice) = right.split_at_mut(1);
                 let current = &mut current_slice[0];
-                (left.last(), current, next_slice.first())
-            };
 
-            // we might not have the direct neighbors, so we use `Option` to handle that
-            let before = before.filter(|r| {
-                r.fixed_fields.chrom == current.fixed_fields.chrom
-                    && Some(r.fixed_fields.pos) == current.fixed_fields.pos.checked_sub(1)
-            });
-            let after = after.filter(|r| {
-                r.fixed_fields.chrom == current.fixed_fields.chrom
-                    && Some(r.fixed_fields.pos) == current.fixed_fields.pos.checked_add(1)
-            });
+                let before = left.last();
+                let after = next_slice.first();
+                // we might not have the direct neighbors
+                let before = before.filter(|r| {
+                    r.main.chrom == current.main.chrom
+                        && Some(r.main.pos) == current.main.pos.checked_sub(1)
+                });
+                let after = after.filter(|r| {
+                    r.main.chrom == current.main.chrom
+                        && Some(r.main.pos) == current.main.pos.checked_add(1)
+                });
+
+                (before, current, after)
+            };
 
             params
                 .denovo_cpg

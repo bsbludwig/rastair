@@ -36,7 +36,7 @@
 //!
 //! {
 //!     let data = Record {
-//!         fixed_fields: VcfFixedFields {
+//!         main: VcfFixedFields {
 //!             chrom: "1".into(),
 //!             pos: 7,
 //!             id: BTreeSet::from(["rs123".into()]),
@@ -225,7 +225,7 @@ mod tests {
 
         {
             let data = Record {
-                fixed_fields: VcfFixedFields {
+                main: VcfFixedFields {
                     chrom: "1".into(),
                     pos: 7,
                     id: BTreeSet::from(["rs123".into()]),

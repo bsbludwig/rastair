@@ -264,7 +264,7 @@ impl VariantCandidatePileup {
             self.calling_metrics(params).wrap_err("Failed to calculate calling metrics")?;
 
         Ok(vcf::Record {
-            fixed_fields: self.fixed_fields(),
+            main: self.fixed_fields(),
             filters: Filters::new(),
             info: metrics,
             samples: smallvec::smallvec![calling_metrics],

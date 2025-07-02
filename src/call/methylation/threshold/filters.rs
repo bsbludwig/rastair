@@ -42,7 +42,7 @@ impl CheckFilter for vcf::m_vaf {
         let Some(alt) = record.m_base() else {
             return false;
         };
-        let Some(alt_index) = record.fixed_fields.alt.iter().position(|a| a == alt.as_str()) else {
+        let Some(alt_index) = record.main.alt.iter().position(|a| a == alt.as_str()) else {
             return false;
         };
         let Some(vaf) = record.info.allele_frequency.get(alt_index) else {

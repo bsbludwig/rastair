@@ -11,8 +11,8 @@ use smol_str::SmolStr;
 use tracing::{instrument, trace, warn};
 
 #[instrument(level="trace", skip(record, config), fields(
-chr = %record.fixed_fields.chrom,
-pos = record.fixed_fields.pos,
+chr = %record.main.chrom,
+pos = record.main.pos,
 ), name = "methylation_call")]
 pub fn call(
     config: &ThresholdConfig,
@@ -36,7 +36,7 @@ pub fn call_cpg(
     _before: Option<&vcf::Record>,
     _after: Option<&vcf::Record>,
 ) -> Result<()> {
-    let ref_base = record.fixed_fields.r#ref.clone();
+    let ref_base = record.main.r#ref.clone();
 
     // todo: add filters
     record.samples[0].methylated =
@@ -56,8 +56,8 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
     };
 
     // Check if alt contains "C" and ref_after is "G" (creating new CpG)
-    if record.fixed_fields.alt.iter().any(|alt| alt == "C") && ref_after == Some(Base::G) {
-        if record.fixed_fields.r#ref == "T" {
+    if record.main.alt.iter().any(|alt| alt == "C") && ref_after == Some(Base::G) {
+        if record.main.r#ref == "T" {
             // T > C case: need to use strand to distinguish mod from unmod
             let c_counts = strand_count(Base::C).wrap_err("Missing C counts in strand bias")?;
             let t_counts = strand_count(Base::T).wrap_err("Missing T counts in strand bias")?;
@@ -85,7 +85,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             }
         } else {
             // Ref is not T: count alt == T and alt == C separately
-            let mod_count = if record.fixed_fields.alt.iter().any(|alt| alt == "T") {
+            let mod_count = if record.main.alt.iter().any(|alt| alt == "T") {
                 strand_count(Base::T).map(|counts| counts.ot).unwrap_or(0)
             } else {
                 0
@@ -99,16 +99,16 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
                 && t_counts.ob > 0
             {
                 warn!(
-                    chr = %record.fixed_fields.chrom,
-                    pos = record.fixed_fields.pos,
+                    chr = %record.main.chrom,
+                    pos = record.main.pos,
                     "Evidence for multi-allelic SNP at het D/C site"
                 );
             }
 
             if unmod_count == 0 {
                 trace!(
-                    chr = %record.fixed_fields.chrom,
-                    pos = record.fixed_fields.pos,
+                    chr = %record.main.chrom,
+                    pos = record.main.pos,
                     "No evidence for C - this should be impossible"
                 );
                 Ok(Methylated::NoEvidence)
@@ -119,8 +119,8 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         }
     }
     // Check if alt contains "G" and ref_before is "C" (creating new CpG)
-    else if record.fixed_fields.alt.iter().any(|alt| alt == "G") && ref_before == Some(Base::C) {
-        if record.fixed_fields.r#ref == "A" {
+    else if record.main.alt.iter().any(|alt| alt == "G") && ref_before == Some(Base::C) {
+        if record.main.r#ref == "A" {
             // A > G case: similar logic but for OB strand
             let g_counts = strand_count(Base::G).wrap_err("Missing G counts in strand bias")?;
             let a_counts = strand_count(Base::A).wrap_err("Missing A counts in strand bias")?;
@@ -144,7 +144,7 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
             }
         } else {
             // Ref is not A: count alt == A and alt == G separately
-            let mod_count = if record.fixed_fields.alt.iter().any(|alt| alt == "A") {
+            let mod_count = if record.main.alt.iter().any(|alt| alt == "A") {
                 strand_count(Base::A).map(|counts| counts.ob).unwrap_or(0)
             } else {
                 0
@@ -156,16 +156,16 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
                 && a_counts.ot > 0
             {
                 warn!(
-                    chr = %record.fixed_fields.chrom,
-                    pos = record.fixed_fields.pos,
+                    chr = %record.main.chrom,
+                    pos = record.main.pos,
                     "Evidence for multi-allelic SNP at het H/G site"
                 );
             }
 
             if unmod_count == 0 {
                 trace!(
-                    chr = %record.fixed_fields.chrom,
-                    pos = record.fixed_fields.pos,
+                    chr = %record.main.chrom,
+                    pos = record.main.pos,
                     "No evidence for G"
                 );
                 Ok(Methylated::NoEvidence)
@@ -178,15 +178,15 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
     // Handle C or G positions next to variants
     else if ref_base == "C" {
         // Check for non-T alternatives (possible C->N SNP)
-        if record.fixed_fields.alt.iter().any(|alt| alt != "T") {
+        if record.main.alt.iter().any(|alt| alt != "T") {
             warn!(
-                chr = %record.fixed_fields.chrom,
-                pos = record.fixed_fields.pos,
+                chr = %record.main.chrom,
+                pos = record.main.pos,
                 "Possible C->N SNP next to a de-novo G"
             );
         }
 
-        if record.fixed_fields.alt.iter().any(|alt| alt == "T") {
+        if record.main.alt.iter().any(|alt| alt == "T") {
             let t_counts = strand_count(Base::T).wrap_err("Missing T counts in strand bias")?;
             let c_counts = strand_count(Base::C).wrap_err("Missing C counts in strand bias")?;
 
@@ -209,15 +209,15 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         }
     } else if ref_base == "G" {
         // Check for non-A alternatives (possible G->N SNP)
-        if record.fixed_fields.alt.iter().any(|alt| alt != "A") {
+        if record.main.alt.iter().any(|alt| alt != "A") {
             warn!(
-                chr = %record.fixed_fields.chrom,
-                pos = record.fixed_fields.pos,
+                chr = %record.main.chrom,
+                pos = record.main.pos,
                 "Possible G->N SNP next to a de-novo C"
             );
         }
 
-        if record.fixed_fields.alt.iter().any(|alt| alt == "A") {
+        if record.main.alt.iter().any(|alt| alt == "A") {
             let a_counts = strand_count(Base::A).wrap_err("Missing A counts in strand bias")?;
             let g_counts = strand_count(Base::G).wrap_err("Missing G counts in strand bias")?;
 
@@ -240,8 +240,8 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylate
         }
     } else {
         warn!(
-            chr = %record.fixed_fields.chrom,
-            pos = record.fixed_fields.pos,
+            chr = %record.main.chrom,
+            pos = record.main.pos,
             ref_base = ?ref_base,
             "Neither C nor G as ref, but also not a SNP - this should be impossible"
         );
