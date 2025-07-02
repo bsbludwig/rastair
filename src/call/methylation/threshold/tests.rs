@@ -45,10 +45,8 @@ fn cpg_c_methylated() -> Result<()> {
                 },
             ],
         ),
-        Methylated(
-            Some(
-                0.7777777777777778,
-            ),
+        Methylated::OriginalCpG(
+            0.7777777777777778,
         ),
     )
     "#);
@@ -89,10 +87,8 @@ fn cpg_g_methylated() -> Result<()> {
                 },
             ],
         ),
-        Methylated(
-            Some(
-                0.7894736842105263,
-            ),
+        Methylated::OriginalCpG(
+            0.7894736842105263,
         ),
     )
     "#);
@@ -133,9 +129,7 @@ fn c_but_not_cpg() -> Result<()> {
                 },
             ],
         ),
-        Methylated(
-            None,
-        ),
+        Methylated::Unknown,
     )
     "#);
     Ok(())
@@ -175,9 +169,7 @@ fn random_other_variant() -> Result<()> {
                 },
             ],
         ),
-        Methylated(
-            None,
-        ),
+        Methylated::Unknown,
     )
     "#);
     Ok(())
@@ -217,11 +209,7 @@ fn methylatable_position_not_methylated() -> Result<()> {
                 },
             ],
         ),
-        Methylated(
-            Some(
-                0.0,
-            ),
-        ),
+        Methylated::NoEvidence,
     )
     "#);
 

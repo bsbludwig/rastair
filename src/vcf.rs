@@ -20,6 +20,9 @@ mod cpg;
 pub use cpg::InCpG;
 mod denovo_cpg;
 pub use denovo_cpg::DeNovoCpGCandidate;
+mod methylation;
+pub use methylation::Methylated;
+
 mod utils;
 pub use utils::ByStrand;
 
@@ -88,7 +91,6 @@ format_field!(
     "Is a likely de-novo CPG position? (Range 0..1)",
     1
 );
-format_field!(Methylated(Option<f64>), "M5mC", "Methylation level at CpG sites", 1);
 
 vcf_record!(
     // pass or why not

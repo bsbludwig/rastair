@@ -39,21 +39,13 @@ pub fn call_cpg(
     let ref_base = record.fixed_fields.r#ref.clone();
 
     // todo: add filters
-    let beta =
+    record.samples[0].methylated =
         call_methylation(record, ref_base).wrap_err("Failed to call de novo CpG methylation")?;
-
-    if let Some(beta_value) = beta {
-        trace!(beta = beta_value, "De novo CpG methylation event found");
-        record.samples[0].methylated = Methylated(Some(beta_value));
-    } else {
-        trace!("No de novo CpG methylation detected");
-        record.samples[0].methylated = Methylated(Some(0.0));
-    }
 
     Ok(())
 }
 
-fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f64>> {
+fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylated> {
     let sequence_context = &record.info.sequence_context;
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
@@ -78,10 +70,18 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f6
                 // divide by 2 assuming diploid genome
                 let mod_count = f64::from(t_counts.ot) / 2.;
                 let total = f64::from(c_counts.ot) + mod_count;
-                if total > 0. { Ok(Some(mod_count / total)) } else { Ok(Some(0.0)) }
+                if total > 0. {
+                    Ok(Methylated::DeNovoCpG { beta: mod_count / total })
+                } else {
+                    Ok(Methylated::NoEvidence)
+                }
             } else {
                 let total = f64::from(c_counts.ot + t_counts.ot);
-                if total > 0. { Ok(Some(f64::from(t_counts.ot) / total)) } else { Ok(Some(0.0)) }
+                if total > 0. {
+                    Ok(Methylated::DeNovoCpG { beta: f64::from(t_counts.ot) / total })
+                } else {
+                    Ok(Methylated::NoEvidence)
+                }
             }
         } else {
             // Ref is not T: count alt == T and alt == C separately
@@ -106,15 +106,15 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f6
             }
 
             if unmod_count == 0 {
-                warn!(
+                trace!(
                     chr = %record.fixed_fields.chrom,
                     pos = record.fixed_fields.pos,
                     "No evidence for C - this should be impossible"
                 );
-                Ok(None)
+                Ok(Methylated::NoEvidence)
             } else {
                 let total = mod_count + unmod_count;
-                Ok(Some(f64::from(mod_count) / f64::from(total)))
+                Ok(Methylated::DeNovoCpG { beta: f64::from(mod_count) / f64::from(total) })
             }
         }
     }
@@ -130,16 +130,16 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f6
                 let mod_count = a_counts.ob / 2;
                 let total = g_counts.ob + mod_count;
                 if total > 0 {
-                    Ok(Some(f64::from(mod_count) / f64::from(total)))
+                    Ok(Methylated::DeNovoCpG { beta: f64::from(mod_count) / f64::from(total) })
                 } else {
-                    Ok(Some(0.0))
+                    Ok(Methylated::NoEvidence)
                 }
             } else {
                 let total = g_counts.ob + a_counts.ob;
                 if total > 0 {
-                    Ok(Some(f64::from(a_counts.ob) / f64::from(total)))
+                    Ok(Methylated::DeNovoCpG { beta: f64::from(a_counts.ob) / f64::from(total) })
                 } else {
-                    Ok(Some(0.0))
+                    Ok(Methylated::NoEvidence)
                 }
             }
         } else {
@@ -163,15 +163,15 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f6
             }
 
             if unmod_count == 0 {
-                warn!(
+                trace!(
                     chr = %record.fixed_fields.chrom,
                     pos = record.fixed_fields.pos,
                     "No evidence for G"
                 );
-                Ok(None)
+                Ok(Methylated::NoEvidence)
             } else {
                 let total = mod_count + unmod_count;
-                Ok(Some(f64::from(mod_count) / f64::from(total)))
+                Ok(Methylated::DeNovoCpG { beta: f64::from(mod_count) / f64::from(total) })
             }
         }
     }
@@ -200,12 +200,12 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f6
 
             let total = mod_count + unmod_count;
             if total > 0 {
-                Ok(Some(f64::from(mod_count) / f64::from(total)))
+                Ok(Methylated::OriginalCpG { beta: f64::from(mod_count) / f64::from(total) })
             } else {
-                Ok(Some(0.0))
+                Ok(Methylated::NoEvidence)
             }
         } else {
-            Ok(Some(0.0))
+            Ok(Methylated::NoEvidence)
         }
     } else if ref_base == "G" {
         // Check for non-A alternatives (possible G->N SNP)
@@ -231,12 +231,12 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f6
 
             let total = mod_count + unmod_count;
             if total > 0 {
-                Ok(Some(f64::from(mod_count) / f64::from(total)))
+                Ok(Methylated::OriginalCpG { beta: f64::from(mod_count) / f64::from(total) })
             } else {
-                Ok(Some(0.0))
+                Ok(Methylated::NoEvidence)
             }
         } else {
-            Ok(Some(0.0))
+            Ok(Methylated::NoEvidence)
         }
     } else {
         warn!(
@@ -245,6 +245,6 @@ fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Option<f6
             ref_base = ?ref_base,
             "Neither C nor G as ref, but also not a SNP - this should be impossible"
         );
-        Ok(None)
+        Ok(Methylated::NoEvidence)
     }
 }

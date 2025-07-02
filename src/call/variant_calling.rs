@@ -33,7 +33,7 @@ impl VariantCandidatePileup {
             genotype_likelihood,
             genotype_confidence,
             sample_read_depth: SampleReadDepth(self.bases.len()),
-            methylated: Methylated(None),
+            methylated: Methylated::Unknown,
             de_novo_cpg: DeNovoCpg(None),
         })
     }
