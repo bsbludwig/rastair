@@ -27,7 +27,7 @@ impl VariantCandidatePileup {
 
     pub fn metrics(&self) -> Result<Info> {
         Ok(Info {
-            read_depth_per_allel: self.read_depth_per_allele(),
+            allele_read_depth: self.read_depth_per_allele(),
             allele_specific_strand_bias: self.allele_specific_strand_bias(),
             base_quality: BaseQuality(
                 *self.bases.iter().map(|b| b.qual).collect::<RootMeanSquare>(),
@@ -40,9 +40,9 @@ impl VariantCandidatePileup {
             // by construction, we arrived here because we have at least one base
             samples_with_data: SamplesWithData(1),
             sequence_context: self.sequence_context(),
-            allel_frequency: self.allel_frequency(),
-            allel_base_quality: self.allel_base_quality(),
-            allel_map_quality: self.allel_map_quality(),
+            allele_frequency: self.allel_frequency(),
+            allele_base_quality: self.allele_base_quality(),
+            allele_map_quality: self.allele_map_quality(),
             strand_specific_base_quality: self.strand_specific_base_quality(),
             strand_specific_mapping_quality: self.strand_specific_mapping_quality(),
             position_in_read: self.position_in_read(),
@@ -88,8 +88,8 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn allel_map_quality(&self) -> AllelMapQuality {
-        AllelMapQuality(
+    fn allele_map_quality(&self) -> AlleleMapQuality {
+        AlleleMapQuality(
             self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| *seen.iter().map(|b| b.mapq).collect::<RootMeanSquare>())
@@ -97,8 +97,8 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn allel_base_quality(&self) -> AllelBaseQuality {
-        AllelBaseQuality(
+    fn allele_base_quality(&self) -> AlleleBaseQuality {
+        AlleleBaseQuality(
             self.by_allele()
                 .iter()
                 .map(|(_alt, seen)| *seen.iter().map(|b| b.qual).collect::<RootMeanSquare>())
@@ -106,8 +106,8 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn allel_frequency(&self) -> AllelFrequency {
-        AllelFrequency(
+    fn allel_frequency(&self) -> AlleleFrequency {
+        AlleleFrequency(
             self.alts()
                 .iter()
                 .map(|alt| {
@@ -144,7 +144,7 @@ impl VariantCandidatePileup {
         }
     }
 
-    fn read_depth_per_allele(&self) -> ReadDepthPerAllel {
+    fn read_depth_per_allele(&self) -> AlleleReadDepth {
         fn count_bases(bases: &SeenBases, base: Base) -> usize {
             bases.iter().filter(|b| b.base == base).count()
         }
@@ -154,7 +154,7 @@ impl VariantCandidatePileup {
         for alt in self.alts() {
             depth.push(count_bases(&self.bases, alt));
         }
-        ReadDepthPerAllel(depth)
+        AlleleReadDepth(depth)
     }
 
     fn allele_specific_strand_bias(&self) -> AlleleSpecificStrandBias {

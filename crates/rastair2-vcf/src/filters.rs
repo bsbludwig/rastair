@@ -12,7 +12,7 @@
 use smol_str::SmolStr;
 
 /// A filter that can be applied to VCF records
-pub trait VcfFilter {
+pub trait VcfFilter: Default {
     /// The name of the filter, used in the VCF header
     const NAME: &'static str;
 

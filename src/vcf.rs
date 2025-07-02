@@ -42,13 +42,13 @@ filter!(dnCpG_vaf, "Low variant allele frequency for de-novo CpG candidate");
 filter!(m_vaf, "Low variant allele frequency for methylation candidate");
 
 info_field!(
-    AllelBaseQuality(f64),
+    AlleleBaseQuality(f64),
     "ABQ",
     "RMS Base quality per allele",
     InfoFieldNumber::OnePerAltAndRef
 );
 info_field!(
-    AllelMapQuality(f64),
+    AlleleMapQuality(f64),
     "AMQ",
     "RMS Map quality per allele",
     InfoFieldNumber::OnePerAltAndRef
@@ -102,7 +102,7 @@ vcf_record!(
     ],
     // general info
     info: [
-        ReadDepthPerAllel,
+        AlleleReadDepth,
         BaseQuality,
         ReadDepth,
         MappingQuality,
@@ -110,9 +110,9 @@ vcf_record!(
         SamplesWithData,
         AlleleSpecificStrandBias,
         SequenceContext,
-        AllelFrequency,
-        AllelBaseQuality,
-        AllelMapQuality,
+        AlleleFrequency,
+        AlleleBaseQuality,
+        AlleleMapQuality,
         StrandSpecificBaseQuality,
         StrandSpecificMappingQuality,
         PositionInRead,

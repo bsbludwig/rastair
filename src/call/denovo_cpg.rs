@@ -56,22 +56,22 @@ impl DenovoParams {
 
         let critera: [(bool, Box<dyn Fn(&mut vcf::Record)>); 4] = [
             (
-                record.info.read_depth_per_allel.get(alt_index).copied().unwrap_or_default()
+                record.info.allele_read_depth.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_depth,
                 Box::new(|record| record.filters.add(vcf::dnCpG_lowDp)),
             ),
             (
-                record.info.allel_base_quality.get(alt_index).copied().unwrap_or_default()
+                record.info.allele_base_quality.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_baseq,
                 Box::new(|record| record.filters.add(vcf::dnCpG_bq)),
             ),
             (
-                record.info.allel_map_quality.get(alt_index).copied().unwrap_or_default()
+                record.info.allele_map_quality.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_mapq,
                 Box::new(|record| record.filters.add(vcf::dnCpG_mapq)),
             ),
             (
-                record.info.allel_frequency.get(alt_index).copied().unwrap_or_default()
+                record.info.allele_frequency.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_vaf,
                 Box::new(|record| record.filters.add(vcf::dnCpG_vaf)),
             ),

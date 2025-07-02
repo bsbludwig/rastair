@@ -3,13 +3,13 @@
 use crate::{FormatFieldNumber, InfoFieldNumber, filter, format_field, info_field};
 
 info_field!(
-    ReadDepthPerAllel(usize),
+    AlleleReadDepth(usize),
     "AD",
     "Total read depth for each allele",
     InfoFieldNumber::OnePerAltAndRef
 );
 info_field!(
-    AllelFrequency(f64),
+    AlleleFrequency(f64),
     "AF",
     "Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes)",
     InfoFieldNumber::OnePerAlt
