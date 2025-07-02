@@ -245,9 +245,7 @@ fn process_region(
 
         if params.variant_calling.cpgs_only {
             // Filter out piles that are not CpG if requested
-            records.retain(|record| {
-                record.info.in_cp_g.0 || record.info.de_novo_cp_g_candidate.is_candidate()
-            });
+            records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
         }
 
         Ok(records)

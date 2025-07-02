@@ -1,0 +1,96 @@
+use color_eyre::Result;
+use color_eyre::eyre::WrapErr;
+use rastair2_vcf::VcfField as _;
+use rust_htslib::bcf::Record;
+use std::fmt;
+use std::ops::Deref;
+
+use crate::call::variants::VariantCandidatePileup;
+use crate::utils::Base;
+
+/// Is this a CpG site?
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InCpG {
+    /// No, this is not a CpG site.
+    No,
+    /// Yes, first position in CpG.
+    C,
+    /// Yes, second position in CpG.
+    G,
+}
+
+impl InCpG {
+    pub fn new(base: Base, before: Option<Base>, after: Option<Base>) -> Self {
+        if base == Base::C && after == Some(Base::G) {
+            InCpG::C
+        } else if base == Base::G && before == Some(Base::C) {
+            InCpG::G
+        } else {
+            InCpG::No
+        }
+    }
+}
+
+impl fmt::Debug for InCpG {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InCpG::No => write!(f, "NoCpg"),
+            InCpG::C => write!(f, "CpG::C"),
+            InCpG::G => write!(f, "CpG::G"),
+        }
+    }
+}
+
+impl Deref for InCpG {
+    type Target = bool;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            InCpG::No => &false,
+            _ => &true,
+        }
+    }
+}
+
+impl From<&VariantCandidatePileup> for InCpG {
+    fn from(pileup: &VariantCandidatePileup) -> Self {
+        InCpG::new(pileup.reference_base, pileup.ref_before(), pileup.ref_after())
+    }
+}
+
+impl rastair2_vcf::VcfField for InCpG {
+    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("CPG");
+}
+
+impl rastair2_vcf::HeaderField for InCpG {
+    const DESCRIPTION: &'static str = "Is this a CpG site?";
+}
+
+impl rastair2_vcf::InfoField for InCpG {
+    type Type = bool;
+    const NUMBER: rastair2_vcf::InfoFieldNumber = rastair2_vcf::InfoFieldNumber::Flag;
+
+    fn write(&self, record: &mut Record) -> Result<()> {
+        <bool as rastair2_vcf::InfoFieldValue>::write(record, Self::ID, &[*self != InCpG::No])
+            .wrap_err("Failed to write info flag CPG")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_in_cpg() {
+        assert_eq!(InCpG::new(Base::A, None, None), InCpG::No);
+
+        assert_eq!(InCpG::new(Base::C, None, Some(Base::G)), InCpG::C);
+        assert_eq!(InCpG::new(Base::C, Some(Base::A), Some(Base::G)), InCpG::C);
+
+        assert_eq!(InCpG::new(Base::G, Some(Base::C), None), InCpG::G);
+        assert_eq!(InCpG::new(Base::G, Some(Base::C), Some(Base::T)), InCpG::G);
+
+        assert_eq!(InCpG::new(Base::T, Some(Base::C), Some(Base::G)), InCpG::No);
+        assert_eq!(InCpG::new(Base::C, Some(Base::T), Some(Base::A)), InCpG::No);
+    }
+}

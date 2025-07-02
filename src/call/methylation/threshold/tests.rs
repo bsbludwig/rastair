@@ -26,34 +26,32 @@ fn cpg_c_methylated() -> Result<()> {
         &metrics.info.allele_specific_strand_bias,
         &metrics.samples[0].methylated,
     ), @r#"
-        (
-            "chr19",
-            6105084,
-            C,
-            InCpG(
-                true,
+    (
+        "chr19",
+        6105084,
+        C,
+        CpG::C,
+        AlleleSpecificStrandBias(
+            [
+                ByStrand {
+                    base: C,
+                    ot: 4,
+                    ob: 19,
+                },
+                ByStrand {
+                    base: T,
+                    ot: 14,
+                    ob: 0,
+                },
+            ],
+        ),
+        Methylated(
+            Some(
+                0.7777777777777778,
             ),
-            AlleleSpecificStrandBias(
-                [
-                    ByStrand {
-                        base: C,
-                        ot: 4,
-                        ob: 19,
-                    },
-                    ByStrand {
-                        base: T,
-                        ot: 14,
-                        ob: 0,
-                    },
-                ],
-            ),
-            Methylated(
-                Some(
-                    0.7777777777777778,
-                ),
-            ),
-        )
-        "#);
+        ),
+    )
+    "#);
     Ok(())
 }
 
@@ -72,34 +70,32 @@ fn cpg_g_methylated() -> Result<()> {
         &metrics.info.allele_specific_strand_bias,
         &metrics.samples[0].methylated,
     ), @r#"
-        (
-            "chr19",
-            6105085,
-            G,
-            InCpG(
-                true,
+    (
+        "chr19",
+        6105085,
+        G,
+        CpG::G,
+        AlleleSpecificStrandBias(
+            [
+                ByStrand {
+                    base: G,
+                    ot: 18,
+                    ob: 4,
+                },
+                ByStrand {
+                    base: A,
+                    ot: 0,
+                    ob: 15,
+                },
+            ],
+        ),
+        Methylated(
+            Some(
+                0.7894736842105263,
             ),
-            AlleleSpecificStrandBias(
-                [
-                    ByStrand {
-                        base: G,
-                        ot: 18,
-                        ob: 4,
-                    },
-                    ByStrand {
-                        base: A,
-                        ot: 0,
-                        ob: 15,
-                    },
-                ],
-            ),
-            Methylated(
-                Some(
-                    0.7894736842105263,
-                ),
-            ),
-        )
-        "#);
+        ),
+    )
+    "#);
     Ok(())
 }
 
@@ -118,32 +114,30 @@ fn c_but_not_cpg() -> Result<()> {
         &metrics.info.allele_specific_strand_bias,
         &metrics.samples[0].methylated,
     ), @r#"
-        (
-            "chr19",
-            6105197,
-            C,
-            InCpG(
-                false,
-            ),
-            AlleleSpecificStrandBias(
-                [
-                    ByStrand {
-                        base: C,
-                        ot: 20,
-                        ob: 13,
-                    },
-                    ByStrand {
-                        base: T,
-                        ot: 1,
-                        ob: 0,
-                    },
-                ],
-            ),
-            Methylated(
-                None,
-            ),
-        )
-        "#);
+    (
+        "chr19",
+        6105197,
+        C,
+        NoCpg,
+        AlleleSpecificStrandBias(
+            [
+                ByStrand {
+                    base: C,
+                    ot: 20,
+                    ob: 13,
+                },
+                ByStrand {
+                    base: T,
+                    ot: 1,
+                    ob: 0,
+                },
+            ],
+        ),
+        Methylated(
+            None,
+        ),
+    )
+    "#);
     Ok(())
 }
 
@@ -162,32 +156,30 @@ fn random_other_variant() -> Result<()> {
         &metrics.info.allele_specific_strand_bias,
         &metrics.samples[0].methylated,
     ), @r#"
-        (
-            "chr19",
-            6105114,
-            A,
-            InCpG(
-                false,
-            ),
-            AlleleSpecificStrandBias(
-                [
-                    ByStrand {
-                        base: A,
-                        ot: 20,
-                        ob: 18,
-                    },
-                    ByStrand {
-                        base: G,
-                        ot: 0,
-                        ob: 1,
-                    },
-                ],
-            ),
-            Methylated(
-                None,
-            ),
-        )
-        "#);
+    (
+        "chr19",
+        6105114,
+        A,
+        NoCpg,
+        AlleleSpecificStrandBias(
+            [
+                ByStrand {
+                    base: A,
+                    ot: 20,
+                    ob: 18,
+                },
+                ByStrand {
+                    base: G,
+                    ot: 0,
+                    ob: 1,
+                },
+            ],
+        ),
+        Methylated(
+            None,
+        ),
+    )
+    "#);
     Ok(())
 }
 
@@ -206,34 +198,32 @@ fn methylatable_position_not_methylated() -> Result<()> {
         &metrics.info.allele_specific_strand_bias,
         &metrics.samples[0].methylated,
     ), @r#"
-        (
-            "chr19",
-            6115809,
-            C,
-            InCpG(
-                true,
+    (
+        "chr19",
+        6115809,
+        C,
+        CpG::C,
+        AlleleSpecificStrandBias(
+            [
+                ByStrand {
+                    base: C,
+                    ot: 5,
+                    ob: 4,
+                },
+                ByStrand {
+                    base: A,
+                    ot: 1,
+                    ob: 0,
+                },
+            ],
+        ),
+        Methylated(
+            Some(
+                0.0,
             ),
-            AlleleSpecificStrandBias(
-                [
-                    ByStrand {
-                        base: C,
-                        ot: 5,
-                        ob: 4,
-                    },
-                    ByStrand {
-                        base: A,
-                        ot: 1,
-                        ob: 0,
-                    },
-                ],
-            ),
-            Methylated(
-                Some(
-                    0.0,
-                ),
-            ),
-        )
-        "#);
+        ),
+    )
+    "#);
 
     Ok(())
 }

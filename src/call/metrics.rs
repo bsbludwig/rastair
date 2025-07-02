@@ -230,13 +230,8 @@ impl VariantCandidatePileup {
         SequenceContext { before_2, before_1, me: self.reference_base, after_1, after_2 }
     }
 
-    #[allow(clippy::if_same_then_else)] // clearer
     fn in_cpg(&self) -> InCpG {
-        let base = self.reference_base;
-        let c_in_cpg = base == Base::C && self.ref_after() == Some(Base::G);
-        let g_in_cpg = base == Base::G && self.ref_before() == Some(Base::C);
-
-        InCpG(c_in_cpg || g_in_cpg)
+        InCpG::from(self)
     }
 
     fn de_novo_cpg(&self) -> DeNovoCpGCandidate {
@@ -303,9 +298,7 @@ mod tests {
             "chr19",
             C,
             6105084,
-            InCpG(
-                true,
-            ),
+            CpG::C,
         )
         "#);
 
@@ -316,9 +309,7 @@ mod tests {
             "chr19",
             C,
             6104589,
-            InCpG(
-                false,
-            ),
+            NoCpg,
         )
         "#);
 
@@ -329,9 +320,7 @@ mod tests {
             "chr19",
             G,
             6105116,
-            InCpG(
-                false,
-            ),
+            NoCpg,
         )
         "#);
         Ok(())

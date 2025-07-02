@@ -16,6 +16,8 @@ mod asq;
 pub use asq::{StrandSpecificBaseQuality, StrandSpecificMappingQuality};
 mod sequence_context;
 pub use sequence_context::SequenceContext;
+mod cpg;
+pub use cpg::InCpG;
 mod denovo_cpg;
 pub use denovo_cpg::DeNovoCpGCandidate;
 mod utils;
@@ -67,7 +69,6 @@ info_field!(
     InfoFieldNumber::OnePerAltAndRef
 );
 info_field!(NumIndels(f64), "NOI", "RMS of number of indels", InfoFieldNumber::OnePerAltAndRef);
-info_field!(InCpG, "CPG", "Is this a CpG site?");
 
 format_field!(
     GenotypeLikelihood(Option<f64>),

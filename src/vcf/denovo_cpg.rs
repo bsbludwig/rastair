@@ -1,8 +1,8 @@
+use crate::utils::Base;
 use color_eyre::{Result, eyre::WrapErr};
 use rastair2_vcf::{InfoFieldNumber, VcfField as _};
 use rust_htslib::bcf::Record;
-
-use crate::utils::Base;
+use std::ops::Deref;
 
 /// De-novo CPG candidate: Could the alt alleles create a new CpG site?
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -11,10 +11,14 @@ pub enum DeNovoCpGCandidate {
     Candidate { ref_base: Base, alt_base: Base, alt_index: usize },
 }
 
-impl DeNovoCpGCandidate {
-    /// Check if this is a candidate for de-novo CpG.
-    pub fn is_candidate(&self) -> bool {
-        matches!(self, DeNovoCpGCandidate::Candidate { .. })
+impl Deref for DeNovoCpGCandidate {
+    type Target = bool;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            DeNovoCpGCandidate::NotCandidate => &false,
+            DeNovoCpGCandidate::Candidate { .. } => &true,
+        }
     }
 }
 
