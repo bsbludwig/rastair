@@ -65,7 +65,7 @@ impl DenovoParams {
             (
                 record.info.allel_frequency.get(alt_idx).copied().unwrap_or_default()
                     >= self.cpg_novo_min_vaf,
-                Box::new(|record| record.filters.add(vcf::dnCpG_af)),
+                Box::new(|record| record.filters.add(vcf::dnCpG_vaf)),
             ),
         ];
 

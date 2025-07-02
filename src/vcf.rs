@@ -31,7 +31,8 @@ filter!(lowDP, "Low read depth");
 filter!(dnCpG_lowDp, "Low read depth for de-novo CpG candidate");
 filter!(dnCpG_bq, "Low base quality for de-novo CpG candidate");
 filter!(dnCpG_mapq, "Low mapping quality for de-novo CpG candidate");
-filter!(dnCpG_af, "Low variant allele frequency for de-novo CpG candidate");
+filter!(dnCpG_vaf, "Low variant allele frequency for de-novo CpG candidate");
+filter!(m_vaf, "Low variant allele frequency for methylation candidate");
 
 info_field!(
     AllelBaseQuality(f64),
@@ -96,7 +97,8 @@ vcf_record!(
     filters: [
         PASS,
         lowDP,
-        dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_af,
+        dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf,
+        m_vaf,
     ],
     // general info
     info: [
