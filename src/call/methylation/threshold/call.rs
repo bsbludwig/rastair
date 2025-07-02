@@ -5,7 +5,10 @@ use crate::{
     utils::Base::*,
     vcf::{self, Methylated},
 };
-use color_eyre::{Result, Section, eyre::Context};
+use color_eyre::{
+    Result, Section,
+    eyre::{Context, eyre},
+};
 use smol_str::SmolStr;
 use tracing::{Level, debug, instrument, trace, warn};
 
@@ -18,12 +21,13 @@ use tracing::{Level, debug, instrument, trace, warn};
 pub fn call(
     config: &ThresholdConfig,
     record: &mut vcf::Record,
-    _before: Option<&vcf::Record>,
-    _after: Option<&vcf::Record>,
+    before: Option<&vcf::Record>,
+    after: Option<&vcf::Record>,
 ) -> Result<()> {
     if *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate {
-        record.samples[0].methylated = call_methylation(record, record.main.r#ref.clone())
-            .wrap_err("Failed to call de novo CpG methylation")?;
+        record.samples[0].methylated =
+            call_methylation(record, record.main.r#ref.clone(), before, after)
+                .wrap_err("Failed to call de novo CpG methylation")?;
         add_filters(config, record).wrap_err("Failed to add filters for CpG methylation")?;
     } else {
         trace!("Not a CpG site, skipping");
@@ -33,32 +37,29 @@ pub fn call(
     Ok(())
 }
 
-fn call_methylation(record: &vcf::Record, ref_base: SmolStr) -> Result<Methylated> {
+fn call_methylation(
+    record: &vcf::Record,
+    ref_base: SmolStr,
+    _before: Option<&vcf::Record>,
+    _after: Option<&vcf::Record>,
+) -> Result<Methylated> {
     let sequence_context = &record.info.sequence_context;
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
 
-    // Check if alt contains "C" and ref_after is "G" (creating new CpG)
     if record.has_alt(C) && ref_after == G {
+        // creating new CpG
         if record.main.r#ref == T { ref_t_to_c(record) } else { ref_not_t_to_c(record) }
-    }
-    // Check if alt contains "G" and ref_before is "C" (creating new CpG)
-    else if record.has_alt(G) && ref_before == C {
+    } else if record.has_alt(G) && ref_before == C {
+        // creating new CpG
         if record.main.r#ref == A { ref_a_to_g(record) } else { ref_not_a_to_g(record) }
-    }
-    // Handle C or G positions next to variants
-    else if ref_base == C {
+    } else if ref_base == C {
         ref_c(record)
     } else if ref_base == G {
         ref_g(record)
     } else {
-        warn!(
-            chr = %record.main.chrom,
-            pos = record.main.pos,
-            ref_base = ?ref_base,
-            "Neither C nor G as ref, but also not a SNP - this should be impossible"
-        );
-        Ok(Methylated::NoEvidence)
+        // Getting here should be impossible by construction
+        Err(eyre!("Neither C nor G as ref, but also not a SNP")).note("This is a programming error")
     }
 }
 
@@ -102,7 +103,7 @@ fn ref_not_t_to_c(record: &vcf::Record) -> Result<Methylated> {
     if let Ok(t_counts) = record.strand_count(T)
         && t_counts.ob > 0
     {
-        warn!(?t_counts, "Evidence for multi-allelic SNP at het D/C site");
+        debug!(?t_counts, "Evidence for multi-allelic SNP at het D/C site");
     }
 
     let total = mod_count + unmod_count;
@@ -154,7 +155,10 @@ fn ref_not_a_to_g(record: &vcf::Record) -> Result<Methylated> {
 
 fn ref_c(record: &vcf::Record) -> Result<Methylated> {
     // Check for non-T alternatives (possible C->N SNP)
-    if tracing::enabled!(Level::TRACE) && record.has_alts_other_than(T) {
+    if tracing::enabled!(Level::TRACE)
+        && *record.info.de_novo_cp_g_candidate
+        && record.has_alts_other_than(T)
+    {
         trace!(
             chr = %record.main.chrom,
             pos = record.main.pos,
@@ -188,7 +192,10 @@ fn ref_c(record: &vcf::Record) -> Result<Methylated> {
 
 fn ref_g(record: &vcf::Record) -> Result<Methylated> {
     // Check for non-A alternatives (possible G->N SNP)
-    if tracing::enabled!(Level::TRACE) && record.has_alts_other_than(A) {
+    if tracing::enabled!(Level::TRACE)
+        && *record.info.de_novo_cp_g_candidate
+        && record.has_alts_other_than(A)
+    {
         trace!(
             chr = %record.main.chrom,
             pos = record.main.pos,
