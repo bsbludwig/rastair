@@ -20,7 +20,7 @@ pub fn call(
     before: Option<&vcf::Record>,
     after: Option<&vcf::Record>,
 ) -> Result<()> {
-    if record.info.in_cp_g.0 || record.info.de_novo_cp_g_candidate.0 {
+    if record.info.in_cp_g.0 || record.info.de_novo_cp_g_candidate.is_candidate() {
         call_cpg(record, before, after).wrap_err("Failed to call CpG methylation")?;
         add_filters(config, record).wrap_err("Failed to add filters for CpG methylation")?;
     } else {

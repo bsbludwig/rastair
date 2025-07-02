@@ -1,6 +1,9 @@
-use crate::{utils::Base, vcf};
+use crate::{
+    call::variants::VariantCandidatePileup,
+    utils::Base,
+    vcf::{self},
+};
 use color_eyre::Result;
-use tracing::warn;
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct DenovoParams {
@@ -18,6 +21,26 @@ pub struct DenovoParams {
     pub cpg_novo_min_vaf: f64,
 }
 
+impl From<&VariantCandidatePileup> for vcf::DeNovoCpGCandidate {
+    fn from(pileup: &VariantCandidatePileup) -> Self {
+        let ref_base = pileup.reference_base;
+        let (alt_base, alt_index) = if let Some(pos) =
+            pileup.alts().iter().position(|x| *x == Base::C)
+            && pileup.ref_after() == Some(Base::G)
+        {
+            (Base::C, pos)
+        } else if let Some(pos) = pileup.alts().iter().position(|x| *x == Base::G)
+            && pileup.ref_before() == Some(Base::C)
+        {
+            (Base::G, pos)
+        } else {
+            return vcf::DeNovoCpGCandidate::NotCandidate;
+        };
+
+        vcf::DeNovoCpGCandidate::Candidate { ref_base, alt_base, alt_index }
+    }
+}
+
 impl DenovoParams {
     pub fn filter(
         &self,
@@ -25,45 +48,30 @@ impl DenovoParams {
         _before: Option<&vcf::Record>,
         _after: Option<&vcf::Record>,
     ) -> Result<()> {
-        if !record.info.de_novo_cp_g_candidate.0 {
+        let vcf::DeNovoCpGCandidate::Candidate { alt_index, .. } =
+            record.info.de_novo_cp_g_candidate
+        else {
             return Ok(());
-        }
-
-        let alt_idx = {
-            if let Some(pos) = record.fixed_fields.alt.iter().position(|alt| alt == "C")
-                && record.info.sequence_context.after_1 == Some(Base::G)
-            {
-                pos
-            } else if let Some(pos) = record.fixed_fields.alt.iter().position(|alt| alt == "G")
-                && record.info.sequence_context.before_1 == Some(Base::C)
-            {
-                pos
-            } else {
-                warn!(
-                    "Position previously tagged as de-novo CpG candidate does not have C or G as alternate allele. This is likely a bug in the variant calling pipeline."
-                );
-                return Ok(());
-            }
         };
 
         let critera: [(bool, Box<dyn Fn(&mut vcf::Record)>); 4] = [
             (
-                record.info.read_depth_per_allel.get(alt_idx).copied().unwrap_or_default()
+                record.info.read_depth_per_allel.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_depth,
                 Box::new(|record| record.filters.add(vcf::dnCpG_lowDp)),
             ),
             (
-                record.info.allel_base_quality.get(alt_idx).copied().unwrap_or_default()
+                record.info.allel_base_quality.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_baseq,
                 Box::new(|record| record.filters.add(vcf::dnCpG_bq)),
             ),
             (
-                record.info.allel_map_quality.get(alt_idx).copied().unwrap_or_default()
+                record.info.allel_map_quality.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_mapq,
                 Box::new(|record| record.filters.add(vcf::dnCpG_mapq)),
             ),
             (
-                record.info.allel_frequency.get(alt_idx).copied().unwrap_or_default()
+                record.info.allel_frequency.get(alt_index).copied().unwrap_or_default()
                     >= self.cpg_novo_min_vaf,
                 Box::new(|record| record.filters.add(vcf::dnCpG_vaf)),
             ),

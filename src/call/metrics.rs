@@ -240,9 +240,7 @@ impl VariantCandidatePileup {
     }
 
     fn de_novo_cpg(&self) -> DeNovoCpGCandidate {
-        let new_c = self.alts().contains(&Base::C) && self.ref_after() == Some(Base::G);
-        let new_g = self.alts().contains(&Base::G) && self.ref_before() == Some(Base::C);
-        DeNovoCpGCandidate(new_c || new_g)
+        DeNovoCpGCandidate::from(self)
     }
 }
 
