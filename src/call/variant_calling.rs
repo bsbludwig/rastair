@@ -9,6 +9,7 @@ pub use error_model::ErrorModel;
 use smallvec::smallvec;
 use tracing::instrument;
 mod genotype;
+mod read_masking;
 
 impl VariantCandidatePileup {
     #[instrument(level="trace", skip_all, fields(chr = %self.chrom(), pos = self.pos))]

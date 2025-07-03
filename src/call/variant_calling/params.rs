@@ -1,6 +1,7 @@
 use super::ErrorModel;
+use crate::call::variant_calling::read_masking::ReadMaskParams;
 
-#[derive(Debug, Clone, Default, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct VariantCallingParams {
     /// The error model to use
     ///
@@ -15,4 +16,18 @@ pub struct VariantCallingParams {
     /// Only look at sites that are CpG in the reference
     #[arg(long, default_value_t = false)]
     pub cpgs_only: bool,
+
+    #[command(flatten)]
+    read_masking: ReadMaskParams,
+}
+
+impl Default for VariantCallingParams {
+    fn default() -> Self {
+        Self {
+            error_model: ErrorModel::Novaseq6000,
+            keep_overlapping_reads: false,
+            cpgs_only: false,
+            read_masking: ReadMaskParams::default(),
+        }
+    }
 }
