@@ -43,9 +43,9 @@ impl ReadMaskParams {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReadMask {
     /// Number of bases to exclude from the start of the read
-    pub from_start: usize,
+    pub from_start: u32,
     /// Number of bases to exclude from the end of the read
-    pub from_end: usize,
+    pub from_end: u32,
 }
 
 /// Mask settings for both read orientations
@@ -61,8 +61,8 @@ pub struct ReadMaskSetting {
 pub enum ParseMaskError {
     #[error("Invalid read mask format, expected four comma-separated integers")]
     InvalidFormat,
-    #[error("Failed to parse read mask integer: {0}")]
-    ParseIntError(ParseIntError),
+    #[error("Failed to parse read mask integer")]
+    ParseIntError(#[source] ParseIntError),
 }
 
 impl FromStr for ReadMaskSetting {
@@ -72,8 +72,8 @@ impl FromStr for ReadMaskSetting {
         let values = s
             .trim()
             .splitn(5, ',') // if there are 5 values, it's an error anyway
-            .map(|i| i.parse::<usize>().map_err(ParseMaskError::ParseIntError))
-            .collect::<Result<SmallVec<usize, 5>, _>>()?;
+            .map(|i| i.parse::<u32>().map_err(ParseMaskError::ParseIntError))
+            .collect::<Result<SmallVec<u32, 5>, _>>()?;
 
         match values[..] {
             [r1_left, r1_right, r2_left, r2_right] => Ok(ReadMaskSetting {
@@ -94,10 +94,10 @@ mod tests {
     proptest! {
         #[test]
         fn test_parse_read_mask_setting_valid(
-            r1_left in 0usize..1000,
-            r1_right in 0usize..1000,
-            r2_left in 0usize..1000,
-            r2_right in 0usize..1000
+            r1_left in 0u32..1000,
+            r1_right in 0u32..1000,
+            r2_left in 0u32..1000,
+            r2_right in 0u32..1000
         ) {
             let input = format!("{r1_left},{r1_right},{r2_left},{r2_right}");
             let result = ReadMaskSetting::from_str(&input).unwrap();
@@ -110,7 +110,7 @@ mod tests {
 
         #[test]
         fn test_parse_read_mask_setting_invalid_count(
-            values in prop::collection::vec(0usize..1000, 0..10)
+            values in prop::collection::vec(0u32..1000, 0..10)
         ) {
             prop_assume!(values.len() != 4);
 
@@ -126,7 +126,7 @@ mod tests {
         #[test]
         fn test_parse_read_mask_setting_invalid_integer(
             invalid_str in "[a-zA-Z!@#$%^&*()]+",
-            valid_nums in prop::collection::vec(0usize..1000, 0..3)
+            valid_nums in prop::collection::vec(0u32..1000, 0..3)
         ) {
             let mut parts = valid_nums.iter().map(|v| v.to_string()).collect::<Vec<_>>();
             parts.push(invalid_str);
