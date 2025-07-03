@@ -9,7 +9,6 @@ use color_eyre::{
     Result, Section,
     eyre::{Context, eyre},
 };
-use smol_str::SmolStr;
 use tracing::{Level, debug, instrument, trace, warn};
 
 #[instrument(
@@ -25,7 +24,7 @@ pub fn call(
     after: Option<&vcf::Record>,
 ) -> Result<()> {
     if *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate {
-        let res = call_methylation(record, record.main.r#ref.clone(), before, after)
+        let res = call_methylation(config, record, before, after)
             .wrap_err("Failed to call CpG methylation")?;
         if let Some(beta) = res.beta()
             && !beta.is_finite()
@@ -43,32 +42,41 @@ pub fn call(
 }
 
 fn call_methylation(
+    config: &ThresholdParams,
     record: &vcf::Record,
-    ref_base: SmolStr,
     _before: Option<&vcf::Record>,
     _after: Option<&vcf::Record>,
 ) -> Result<Methylated> {
+    let ref_base = record.main.r#ref.clone();
     let sequence_context = &record.info.sequence_context;
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
 
     if record.has_alt(C) && ref_after == G {
         // creating new CpG
-        if record.main.r#ref == T { ref_t_to_c(record) } else { ref_not_t_to_c(record) }
+        if record.main.r#ref == T {
+            ref_t_to_c(config, record)
+        } else {
+            ref_not_t_to_c(config, record)
+        }
     } else if record.has_alt(G) && ref_before == C {
         // creating new CpG
-        if record.main.r#ref == A { ref_a_to_g(record) } else { ref_not_a_to_g(record) }
+        if record.main.r#ref == A {
+            ref_a_to_g(config, record)
+        } else {
+            ref_not_a_to_g(config, record)
+        }
     } else if ref_base == C {
-        ref_c(record)
+        ref_c(config, record)
     } else if ref_base == G {
-        ref_g(record)
+        ref_g(config, record)
     } else {
         // Getting here should be impossible by construction
         Err(eyre!("Neither C nor G as ref, but also not a SNP")).note("This is a programming error")
     }
 }
 
-fn ref_t_to_c(record: &vcf::Record) -> Result<Methylated> {
+fn ref_t_to_c(config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> {
     // T > C case: need to use strand to distinguish mod from unmod
     let c_counts = record.strand_count(C)?;
     let t_counts = record.strand_count(T)?;
@@ -76,7 +84,7 @@ fn ref_t_to_c(record: &vcf::Record) -> Result<Methylated> {
     // If there's 2+ reads evidence for T on OB, assume het SNP and adjust beta
     // Note that T is the _ref_ here
     // TODO: some more sophisticated SNP calling here, taking into account baseq, mapq etc
-    if t_counts.ob >= 2 {
+    if t_counts.ob >= config.m_min_denovo_depth {
         // mod (reads showing T) are the ref here
         // divide by 2 assuming diploid genome
         let mod_count = f(t_counts.ot) / 2.;
@@ -97,7 +105,7 @@ fn ref_t_to_c(record: &vcf::Record) -> Result<Methylated> {
     }
 }
 
-fn ref_not_t_to_c(record: &vcf::Record) -> Result<Methylated> {
+fn ref_not_t_to_c(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> {
     // Ref is not T: count alt == T and alt == C separately
     let mod_count = record.strand_count(T).or_empty().ot;
     let unmod =
@@ -120,13 +128,13 @@ fn ref_not_t_to_c(record: &vcf::Record) -> Result<Methylated> {
     }
 }
 
-fn ref_a_to_g(record: &vcf::Record) -> Result<Methylated> {
+fn ref_a_to_g(config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> {
     // A > G case: similar logic but for OB strand
     let g_counts = record.strand_count(G)?;
     let a_counts = record.strand_count(A)?;
 
     // If there's 2+ reads evidence for A on OT, assume het SNP and adjust beta
-    if a_counts.ot >= 2 {
+    if a_counts.ot >= config.m_min_denovo_depth {
         // divide by 2 assuming diploid genome
         let mod_count = f(a_counts.ob) / 2.;
         let total = f(g_counts.ob) + mod_count;
@@ -146,7 +154,7 @@ fn ref_a_to_g(record: &vcf::Record) -> Result<Methylated> {
     }
 }
 
-fn ref_not_a_to_g(record: &vcf::Record) -> Result<Methylated> {
+fn ref_not_a_to_g(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> {
     // Ref is not A: count alt == A and alt == G separately
     let mod_count = record.strand_count(A).or_empty().ob;
     let unmod =
@@ -168,7 +176,7 @@ fn ref_not_a_to_g(record: &vcf::Record) -> Result<Methylated> {
     }
 }
 
-fn ref_c(record: &vcf::Record) -> Result<Methylated> {
+fn ref_c(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> {
     // Check for non-T alternatives (possible C->N SNP)
     if tracing::enabled!(Level::TRACE)
         && *record.info.de_novo_cp_g_candidate
@@ -205,7 +213,7 @@ fn ref_c(record: &vcf::Record) -> Result<Methylated> {
     }
 }
 
-fn ref_g(record: &vcf::Record) -> Result<Methylated> {
+fn ref_g(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> {
     // Check for non-A alternatives (possible G->N SNP)
     if tracing::enabled!(Level::TRACE)
         && *record.info.de_novo_cp_g_candidate
