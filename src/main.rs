@@ -31,6 +31,7 @@ struct Cli {
 /// Process TAPS-sequenced BAM files for methylation calling
 #[derive(Debug, clap::Subcommand)]
 #[command(version, about)]
+#[allow(clippy::large_enum_variant)]
 enum Subcommand {
     /// Call methylated positions
     Call(CallParams),
