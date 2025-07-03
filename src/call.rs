@@ -200,6 +200,7 @@ fn process_region(
         let pileup_mapping_params = process::PileupMappingParams {
             include_cpgs: params.methylation.should_include_all_cpgs(),
             keep_overlapping_reads: params.variant_calling.keep_overlapping_reads,
+            read_masking: params.variant_calling.read_masking.clone(),
         };
 
         let piles = region.process(readers, &pileup_mapping_params)?;

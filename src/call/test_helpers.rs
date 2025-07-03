@@ -3,6 +3,7 @@
 use crate::{
     call::{
         process::{IncludeAllCpGs, PileupMappingParams},
+        variant_calling::ReadMaskParams,
         variants::VariantCandidatePileup,
     },
     sequence::{Readers, SegmentationParams, SegmentsParams},
@@ -47,6 +48,7 @@ pub(crate) fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePile
             &PileupMappingParams {
                 include_cpgs: IncludeAllCpGs::Yes,
                 keep_overlapping_reads: false,
+                read_masking: ReadMaskParams::default(),
             },
         )
         .wrap_err("failed to process region")?;

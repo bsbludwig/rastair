@@ -18,7 +18,7 @@ pub struct VariantCallingParams {
     pub cpgs_only: bool,
 
     #[command(flatten)]
-    read_masking: ReadMaskParams,
+    pub read_masking: ReadMaskParams,
 }
 
 impl Default for VariantCallingParams {

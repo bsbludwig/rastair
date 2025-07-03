@@ -10,6 +10,7 @@ use smallvec::smallvec;
 use tracing::instrument;
 mod genotype;
 mod read_masking;
+pub use read_masking::ReadMaskParams;
 
 impl VariantCandidatePileup {
     #[instrument(level="trace", skip_all, fields(chr = %self.chrom(), pos = self.pos))]

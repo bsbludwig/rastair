@@ -1,6 +1,6 @@
 use crate::{
     call::{
-        variant_calling::VariantCallingParams,
+        variant_calling::{ReadMaskParams, VariantCallingParams},
         variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
@@ -22,6 +22,7 @@ use tracing::{Level, debug, instrument, trace, warn};
 pub struct PileupMappingParams {
     pub include_cpgs: IncludeAllCpGs,
     pub keep_overlapping_reads: bool,
+    pub read_masking: ReadMaskParams,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +166,7 @@ fn collect_candidate(
             }
         })
         .filter_map(pileup_mapper)
+        .filter(|seen_base| params.read_masking.filter(seen_base))
         .collect();
 
     let bases = SeenBases(seen_bases);
@@ -226,6 +228,7 @@ pub(crate) fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
         qual: *record.qual().get(pos)?,
         mapq: record.mapq(),
         strand: StrandFromRecord::strand(&record).ok()?,
+        reverse: record.is_reverse(),
         position: PositionInRead {
             pos: u32::try_from(pos).expect("position fits in u32"),
             read_length: u32::try_from(record.seq_len()).expect("read length fits in u32"),
