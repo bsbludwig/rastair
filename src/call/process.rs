@@ -228,7 +228,7 @@ pub(crate) fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
         strand: StrandFromRecord::strand(&record).ok()?,
         position: PositionInRead {
             pos: u32::try_from(pos).expect("position fits in u32"),
-            read_length: u32::try_from(record.seq().len()).expect("read length fits in u32"),
+            read_length: u32::try_from(record.seq_len()).expect("read length fits in u32"),
         },
         matching_bases: matches,
         indels,
