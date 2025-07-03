@@ -205,7 +205,7 @@ fn process_region(
         let piles = region.process(readers, &pileup_mapping_params)?;
 
         let mut records = piles
-            .into_iter()
+            .iter()
             .map(|pile| pile.variant_metrics(&params.variant_calling))
             .collect::<Result<Vec<_>>>()
             .wrap_err("Failed to collect metrics")?;
@@ -213,27 +213,7 @@ fn process_region(
         // Call methylation events if requested
         let record_len = records.len();
         for i in 0..record_len {
-            let (before, current, after) = {
-                // To appease the borrow checker and get a mutable reference to the current record,
-                // we split the records into three parts.
-                let (left, right) = records.split_at_mut(i);
-                let (current_slice, next_slice) = right.split_at_mut(1);
-                let current = &mut current_slice[0];
-
-                let before = left.last();
-                let after = next_slice.first();
-                // we might not have the direct neighbors
-                let before = before.filter(|r| {
-                    r.main.chrom == current.main.chrom
-                        && Some(r.main.pos) == current.main.pos.checked_sub(1)
-                });
-                let after = after.filter(|r| {
-                    r.main.chrom == current.main.chrom
-                        && Some(r.main.pos) == current.main.pos.checked_add(1)
-                });
-
-                (before, current, after)
-            };
+            let (before, current, after) = surrounding_records(&mut records, i);
 
             params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
 
@@ -263,4 +243,28 @@ fn process_region(
     vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")?;
 
     Ok(())
+}
+
+/// Get the surrounding records for a given index in the records slice.
+fn surrounding_records(
+    records: &mut [vcf::Record],
+    index: usize,
+) -> (Option<&vcf::Record>, &mut vcf::Record, Option<&vcf::Record>) {
+    // To appease the borrow checker and get a mutable reference to the current record,
+    // we split the records into three parts.
+    let (left, right) = records.split_at_mut(index);
+    let (current_slice, next_slice) = right.split_at_mut(1);
+    let current = &mut current_slice[0];
+
+    let before = left.last();
+    let after = next_slice.first();
+    // we might not have the direct neighbors
+    let before = before.filter(|r| {
+        r.main.chrom == current.main.chrom && Some(r.main.pos) == current.main.pos.checked_sub(1)
+    });
+    let after = after.filter(|r| {
+        r.main.chrom == current.main.chrom && Some(r.main.pos) == current.main.pos.checked_add(1)
+    });
+
+    (before, current, after)
 }
