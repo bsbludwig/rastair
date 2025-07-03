@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+color-eyre.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+clap = { version = "4.5.40", features = ["derive"] }
+
+cargo-pgo = "0.2.9"
+ctrlc = "3.4.7"
