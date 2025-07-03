@@ -4,7 +4,7 @@
 //! that comes from the fringes of the read. You can mask out specific areas
 //! from reads to reduce this.
 
-use crate::call::variants::SeenBase;
+use crate::{call::variants::SeenBase, utils::Strand};
 use smallvec::SmallVec;
 use std::{num::ParseIntError, str::FromStr};
 
@@ -34,8 +34,58 @@ pub struct ReadMaskParams {
 }
 
 impl ReadMaskParams {
-    pub fn filter(&self, _read: &SeenBase) -> bool {
-        true
+    pub fn filter(&self, read: &SeenBase) -> bool {
+        let len = read.position.read_length;
+        let pos = read.position.pos;
+
+        match (read.strand, read.reverse) {
+            (Strand::OT, true) => {
+                let mask = self.n_ot.r2;
+
+                let too_small = len < mask.from_start + mask.from_end + 1;
+
+                // flipped end/start mask, the read is mapped in reverse
+                let masked_start = pos < mask.from_start;
+                let masked_end = pos > len - mask.from_start - 1;
+
+                !too_small && !masked_start && !masked_end
+            }
+            (Strand::OT, false) => {
+                let mask = self.n_ot.r1;
+
+                let too_small = len < mask.from_start + mask.from_end + 1;
+
+                // normal start/end mask, the read is mapped in forward
+                let masked_start = pos < mask.from_start;
+                let masked_end = pos > len - mask.from_end - 1;
+
+                !too_small && !masked_start && !masked_end
+            }
+            (Strand::OB, true) => {
+                let mask = self.n_ob.r1;
+
+                let too_small = len < mask.from_start + mask.from_end + 1;
+
+                // I'm flipping the start/end here, because the R1 of the OB is reversed but
+                // samtools reports it in ref direction, so if I want to remove 5 bases from the start
+                // of the read, that's actually the "end" in the coordinate system that htslib provides
+                let masked_start = pos < mask.from_end;
+                let masked_end = pos > len - mask.from_start - 1;
+
+                !too_small && !masked_start && !masked_end
+            }
+            (Strand::OB, false) => {
+                let mask = self.n_ob.r2;
+
+                let too_small = len < mask.from_start + mask.from_end + 1;
+
+                // normal start/end mask, the read is mapped in forward
+                let masked_start = pos < mask.from_start;
+                let masked_end = pos > len - mask.from_end - 1;
+
+                !too_small && !masked_start && !masked_end
+            }
+        }
     }
 }
 
