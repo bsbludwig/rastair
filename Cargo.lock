@@ -286,9 +286,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.27"
+version = "1.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d487aa071b5f64da6f19a3e848e3578944b726ee5a4854b82172f02aa876bfdc"
+checksum = "5c1599538de2394445747c8cf7935946e3cc27e9625f889d979bfb2aaf569362"
 dependencies = [
  "jobserver",
  "libc",
@@ -1766,7 +1766,7 @@ dependencies = [
 [[package]]
 name = "rust-htslib"
 version = "0.49.0"
-source = "git+https://github.com/killercup/rust-htslib.git?branch=feature%2Fcstr8#54b2d944f39279be421e1b179729b32ec6551bda"
+source = "git+https://github.com/killercup/rust-htslib.git?branch=feature%2Fcstr8#b128d26ee992529c4aebd3f017bc1d39f5d89a57"
 dependencies = [
  "bio-types",
  "byteorder",

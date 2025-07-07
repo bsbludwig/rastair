@@ -50,7 +50,7 @@ macro_rules! filter {
                 &self,
                 header: &rust_htslib::bcf::header::HeaderView,
             ) -> rust_htslib::errors::Result<rust_htslib::bcf::header::Id> {
-                header.name_to_id(stringify!($name).as_bytes())
+                header.name_to_id(cstr8::cstr8!(stringify!($name)))
             }
 
             fn is_pass(&self) -> bool {
