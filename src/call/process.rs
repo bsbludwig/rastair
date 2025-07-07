@@ -197,17 +197,16 @@ fn collect_candidate(
 pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> Option<SeenBase> {
     let pos = a.qpos()?;
     let record = a.record();
+    let cigar = record.cigar();
 
     if !params.read_flags.filter(&record) {
         return None;
     }
 
     // get number of matches from CIGAR
-    let matches: u32 =
-        record.cigar().iter().map(|c| if let Cigar::Match(n) = c { *n } else { 0 }).sum();
+    let matches: u32 = cigar.iter().map(|c| if let Cigar::Match(n) = c { *n } else { 0 }).sum();
     // get number of indels from CIGAR
-    let indels: u32 = record
-        .cigar()
+    let indels: u32 = cigar
         .iter()
         .map(|c| match c {
             Cigar::Del(n) | Cigar::Ins(n) => *n,
