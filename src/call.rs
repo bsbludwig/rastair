@@ -201,6 +201,7 @@ fn process_region(
             include_cpgs: params.methylation.should_include_all_cpgs(),
             keep_overlapping_reads: params.variant_calling.keep_overlapping_reads,
             read_masking: params.variant_calling.read_masking.clone(),
+            read_flags: params.variant_calling.read_flags.clone(),
         };
 
         let piles = region.process(readers, &pileup_mapping_params)?;

@@ -1,5 +1,5 @@
 use super::ErrorModel;
-use crate::call::variant_calling::read_masking::ReadMaskParams;
+use crate::call::variant_calling::{read_flags::ReadFlags, read_masking::ReadMaskParams};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct VariantCallingParams {
@@ -19,6 +19,9 @@ pub struct VariantCallingParams {
 
     #[command(flatten)]
     pub read_masking: ReadMaskParams,
+
+    #[command(flatten)]
+    pub read_flags: ReadFlags,
 }
 
 impl Default for VariantCallingParams {
@@ -28,6 +31,7 @@ impl Default for VariantCallingParams {
             keep_overlapping_reads: false,
             cpgs_only: false,
             read_masking: ReadMaskParams::default(),
+            read_flags: ReadFlags::default(),
         }
     }
 }

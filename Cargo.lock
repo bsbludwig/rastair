@@ -347,6 +347,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap-num"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "822c4000301ac390e65995c62207501e3ef800a1fc441df913a5e8e4dc374816"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "clap_builder"
 version = "4.5.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1604,6 +1613,7 @@ dependencies = [
  "bio",
  "clap",
  "clap-markdown",
+ "clap-num",
  "clap_complete_command",
  "clio",
  "color-eyre",

@@ -1,6 +1,6 @@
 use crate::{
     call::{
-        variant_calling::{ReadMaskParams, VariantCallingParams},
+        variant_calling::{ReadFlags, ReadMaskParams, VariantCallingParams},
         variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
@@ -23,6 +23,7 @@ pub struct PileupMappingParams {
     pub include_cpgs: IncludeAllCpGs,
     pub keep_overlapping_reads: bool,
     pub read_masking: ReadMaskParams,
+    pub read_flags: ReadFlags,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +166,7 @@ fn collect_candidate(
                 Some(pile)
             }
         })
-        .filter_map(pileup_mapper)
+        .filter_map(|pile| pileup_mapper(&params, pile))
         .filter(|seen_base| params.read_masking.filter(seen_base))
         .collect();
 
@@ -193,9 +194,13 @@ fn collect_candidate(
 }
 
 /// Collect info from a pileup alignment
-pub(crate) fn pileup_mapper(a: Alignment<'_>) -> Option<SeenBase> {
+pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> Option<SeenBase> {
     let pos = a.qpos()?;
     let record = a.record();
+
+    if !params.read_flags.filter(&record) {
+        return None;
+    }
 
     // get number of matches from CIGAR
     let matches: u32 =

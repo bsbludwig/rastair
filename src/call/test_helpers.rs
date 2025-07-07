@@ -48,7 +48,8 @@ pub(crate) fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePile
             &PileupMappingParams {
                 include_cpgs: IncludeAllCpGs::Yes,
                 keep_overlapping_reads: false,
-                read_masking: ReadMaskParams::default(),
+                read_masking: Default::default(),
+                read_flags: Default::default(),
             },
         )
         .wrap_err("failed to process region")?;

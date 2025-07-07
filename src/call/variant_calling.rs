@@ -9,6 +9,8 @@ pub use error_model::ErrorModel;
 use smallvec::smallvec;
 use tracing::instrument;
 mod genotype;
+mod read_flags;
+pub use read_flags::ReadFlags;
 mod read_masking;
 pub use read_masking::ReadMaskParams;
 
