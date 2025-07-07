@@ -3,7 +3,6 @@
 use crate::{
     call::{
         process::{IncludeAllCpGs, PileupMappingParams},
-        variant_calling::ReadMaskParams,
         variants::VariantCandidatePileup,
     },
     sequence::{Readers, SegmentationParams, SegmentsParams},

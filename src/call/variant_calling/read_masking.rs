@@ -39,6 +39,10 @@ impl ReadMaskParams {
         let pos = read.position.pos;
 
         match (read.strand, read.reverse) {
+            (Strand::Unknown, _) => {
+                // If the strand is unknown, we don't apply any masking
+                true
+            }
             (Strand::OT, true) => {
                 let mask = self.n_ot.r2;
 
