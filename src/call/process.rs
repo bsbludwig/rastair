@@ -217,9 +217,11 @@ pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> O
 
     Some(SeenBase {
         // qname: SmallVec::from(record.qname()),
-        base: record.seq()[pos].into(), // fixme: handle error or at least check usual error modes
+        // fixme: handle error or at least check usual error modes
+        base: record.seq()[pos].into(),
         qual: *record.qual().get(pos)?,
         mapq: record.mapq(),
+        // Strand of the read, derived from the record. Early return if strand cannot be determined.
         strand: StrandFromRecord::strand(&record).ok()?,
         reverse: record.is_reverse(),
         position: PositionInRead {

@@ -1,7 +1,5 @@
-use std::fmt;
-
-use color_eyre::eyre::{Result, bail};
 use rust_htslib::bam::Record;
+use std::fmt;
 
 /// Original top or bottom strand of a read
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +8,17 @@ pub enum Strand {
     OT,
     /// Original bottom
     OB,
+    /// Unknown
+    Unknown,
+}
+
+impl Strand {
+    pub fn ok(self) -> Option<Self> {
+        match self {
+            Strand::OT | Strand::OB => Some(self),
+            Strand::Unknown => None,
+        }
+    }
 }
 
 impl fmt::Display for Strand {
@@ -17,13 +26,14 @@ impl fmt::Display for Strand {
         match self {
             Strand::OT => write!(f, "OT"),
             Strand::OB => write!(f, "OB"),
+            Strand::Unknown => write!(f, "NA"),
         }
     }
 }
 
 pub trait StrandFromRecord {
     /// Create a `Strand` from a BCF record
-    fn strand(&self) -> Result<Strand>;
+    fn strand(&self) -> Strand;
 }
 
 /// Get strand from `htslib` record
@@ -39,25 +49,21 @@ pub trait StrandFromRecord {
 impl StrandFromRecord for Record {
     /// Get strand from record
     #[allow(clippy::collapsible_else_if)] // clearer
-    fn strand(&self) -> Result<Strand> {
+    fn strand(&self) -> Strand {
         if self.is_first_in_template() {
             if self.is_reverse() {
-                Ok(Strand::OB) // Original bottom
+                Strand::OB // Original bottom
             } else {
-                Ok(Strand::OT) // Original top
+                Strand::OT // Original top
             }
         } else if self.is_last_in_template() {
             if self.is_mate_reverse() {
-                Ok(Strand::OB) // Original bottom
+                Strand::OB // Original bottom
             } else {
-                Ok(Strand::OT) // Original top
+                Strand::OT // Original top
             }
         } else {
-            bail!(
-                "Record {} is not first or last in template, cannot determine strand from flags {}",
-                String::from_utf8_lossy(self.qname()),
-                self.flags()
-            );
+            Strand::Unknown // Not a paired read or no flags set
         }
     }
 }
@@ -70,24 +76,24 @@ mod tests {
     fn test_various_records() {
         let mut record = Record::default();
         record.set_flags(0x40 | 0x10); // First in pair, reverse strand
-        assert_eq!(StrandFromRecord::strand(&record).unwrap(), Strand::OB);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
 
         record.set_flags(0x80 | 0x20); // Second in pair, reverse strand
-        assert_eq!(StrandFromRecord::strand(&record).unwrap(), Strand::OB);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
 
         record.set_flags(0x40 | 0x20); // First in pair, mate reverse strand
-        assert_eq!(StrandFromRecord::strand(&record).unwrap(), Strand::OT);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
         record.set_flags(0x80 | 0x10); // Second in pair, mate reverse strand
-        assert_eq!(StrandFromRecord::strand(&record).unwrap(), Strand::OT);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
         record.set_flags(0x40); // First in pair, forward strand
-        assert_eq!(StrandFromRecord::strand(&record).unwrap(), Strand::OT);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
         record.set_flags(0x80); // Second in pair, forward strand
-        assert_eq!(StrandFromRecord::strand(&record).unwrap(), Strand::OT);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
         record.set_flags(0x00); // No flags set
-        assert!(StrandFromRecord::strand(&record).is_err(), "Should fail with no flags set");
+        assert_eq!(StrandFromRecord::strand(&record), Strand::Unknown);
     }
 }
