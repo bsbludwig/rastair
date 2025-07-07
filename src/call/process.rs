@@ -11,7 +11,6 @@ use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use rust_htslib::bam::{
     FetchDefinition, Read as _,
     pileup::{Alignment, Pileup},
-    record::Cigar,
 };
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
@@ -197,22 +196,12 @@ fn collect_candidate(
 pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> Option<SeenBase> {
     let pos = a.qpos()?;
     let record = a.record();
-    let cigar = record.cigar();
+    let cigar = record.raw_cigar();
 
     if !params.read_flags.filter(&record) {
         return None;
     }
-
-    // get number of matches from CIGAR
-    let matches: u32 = cigar.iter().map(|c| if let Cigar::Match(n) = c { *n } else { 0 }).sum();
-    // get number of indels from CIGAR
-    let indels: u32 = cigar
-        .iter()
-        .map(|c| match c {
-            Cigar::Del(n) | Cigar::Ins(n) => *n,
-            _ => 0,
-        })
-        .sum();
+    let (matches, indels) = calc_cigar_data(cigar);
 
     // if !record.is_proper_pair() {
     //     // fixme: maybe be more lenient here
@@ -240,6 +229,30 @@ pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> O
         matching_bases: matches,
         indels,
     })
+}
+
+/// Calculate the number of matches and indels from a packed CIGAR array.
+///
+/// Packed CIGAR data is encoded as follows:
+/// - lower 4 bits for the operation
+/// - upper 28 bits for the length
+fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
+    let mut matches = 0;
+    let mut indels = 0;
+    for c in cigar {
+        let len = c >> 4;
+        match c & 0b1111 {
+            // Match
+            0 => matches += len,
+            // Insertion or deletion
+            1 | 2 => indels += len,
+            _ => {
+                // Other operations (like soft clipping, padding, etc.) are ignored
+                // for the purpose of counting matches and indels.
+            }
+        }
+    }
+    (matches, indels)
 }
 
 impl VariantCandidatePileup {
