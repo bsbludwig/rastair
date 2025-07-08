@@ -9,10 +9,11 @@ use color_eyre::{
 };
 use std::{
     env::set_current_dir,
+    fs,
     path::{Path, PathBuf},
     process::Command as StdCommand,
 };
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
@@ -22,6 +23,8 @@ struct Cli {
 
 #[derive(Debug, clap::Subcommand)]
 enum Command {
+    /// Run this as pre-commit hook
+    PreCommit,
     /// Run tests
     Test {
         #[clap(long)]
@@ -53,6 +56,10 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
+        Command::PreCommit => {
+            info!("Running pre-commit checks...");
+            pre_commit().wrap_err("Pre-commit checks failed")?;
+        }
         Command::Test { coverage } => {
             info!("Running tests...");
             run_tests(coverage)?;
@@ -75,6 +82,32 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn pre_commit() -> Result<()> {
+    fn install_pre_commit_hook() -> Result<()> {
+        let path = Path::new(".git/hooks/pre-commit");
+        if path.exists() {
+            debug!("Pre-commit hook already exists, skipping installation.");
+            return Ok(());
+        }
+        let hook_content = "#! /usr/bin/env bash\ncargo xtask pre-commit\n";
+        fs::write(path, hook_content).wrap_err("Failed to write pre-commit hook")?;
+        info!("Pre-commit hook installed successfully.");
+        Ok(())
+    }
+
+    install_pre_commit_hook().wrap_err("Failed to install pre-commit hook")?;
+
+    let fmt = StdCommand::new("cargo")
+        .arg("fmt")
+        .arg("--all")
+        .arg("--check")
+        .status()
+        .wrap_err("Failed to run cargo fmt --check")?;
+    ensure!(fmt.success(), "Cargo fmt check failed");
+    run_tests(false).wrap_err("Failed to run tests")?;
+    Ok(())
+}
+
 fn workspace_dir() -> Result<PathBuf> {
     let output = std::process::Command::new(env!("CARGO"))
         .arg("locate-project")
@@ -89,7 +122,7 @@ fn workspace_dir() -> Result<PathBuf> {
     Ok(cargo_path.parent().wrap_err("could not get parent of Cargo.toml path")?.to_path_buf())
 }
 
-fn build_release() -> Result<(), color_eyre::eyre::Error> {
+fn build_release() -> Result<()> {
     let status = StdCommand::new(env!("CARGO"))
         .arg("build")
         .arg("--release")

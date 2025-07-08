@@ -10,9 +10,22 @@ This repository contains the code for the **in-progress** development of Rastair
 
 The code is in the early stages of development.
 
-## Usage
+## Installation
 
-There are no releases yet. Download the code and run it locally using `cargo`.
+There are no official releases yet.
+
+### From Source
+
+To build rastair2, you'll need:
+
+- Rust (version 1.88 or later)
+- `libclang-dev` and `cmake`
+
+Then you can build it with:
+
+```bash
+cargo xtask release
+```
 
 ## License
 

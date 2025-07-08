@@ -10,7 +10,6 @@ even though it is structured as a library for internal organization.
 
 ### Crates
 
-
 Aside from the main `rastair2` crate, we factored out some functionality into separate crates for better organization and reusability:
 
 - `crates/rastair2_vcf`: A library crate for handling VCF files.
@@ -19,7 +18,7 @@ Aside from the main `rastair2` crate, we factored out some functionality into se
 
 NOTE: `cargo clippy` is used to check for common mistakes and code style issues beyond default compiler warnings.
 
-Run the tests with `cargo test`.
+Run the tests with `cargo xtask test`.
 - Unit tests are added as test modules in the same file as the code they test.
 - Integration tests for the CLI are in the `tests` directory.
 - We use `insta` for snapshot testing in various places.
@@ -37,7 +36,7 @@ The code is tested using [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llv
 
 ```bash
 cargo install cargo-llvm-cov
-cargo +nightly llvm-cov --workspace --doctests --open
+cargo cargo xtask test --coverage
 ```
 
 This is also run in CI, making the tests fail with insufficient coverage (currently less than 70% of lines covered).
@@ -53,9 +52,8 @@ To measure performance, a representative dataset is needed, not just the small t
 For the following, we assume you have a good "call" command as `$call`, e.g. `call test.bam -r test.fa.gz --calling thresholds -o tmp/test.bcf`
 
 - Use [samply](https://github.com/mstange/samply/) to quickly get profiling data: `cargo build --profile profiling && samply record $CARGO_TARGET_DIR/profiling/rastair2 $call`
-- You can use [cargo-pgo](https://github.com/Kobzol/cargo-pgo) for optimizing the code over two runs:
-  1. `cargo pgo instrument run -- $call` to build a binary with profiling instrumentation and run it to collect profiling data.
-  2. `cargo pgo optimize run -- $call` to build a binary again, with optimizations based on the collected profiling data.
+- You can use [cargo-pgo](https://github.com/Kobzol/cargo-pgo) for building with profile-guided optimizations (PGO):
+  `cargo xtask release --pgo -- $call`
 
 ## Code Style
 
