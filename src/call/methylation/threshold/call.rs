@@ -1,9 +1,7 @@
 use crate::{
-    call::methylation::threshold::{
-        ThresholdParams, filters::add_filters, utils::NoStrandBiasForBaseErrorExt as _,
-    },
+    call::methylation::threshold::{ThresholdParams, filters::add_filters},
     utils::Base::*,
-    vcf::{self, Methylated},
+    vcf::{self, Methylated, utils::NoStrandBiasForBaseErrorExt as _},
 };
 use color_eyre::{
     Result, Section,
