@@ -1,5 +1,4 @@
 options(run.main=FALSE)
-source("../../rastair_call_to_methylkit.R")
 
 test_that("save_as_methylkit correctly converts example input", {
 
@@ -23,29 +22,32 @@ test_that("save_as_methylkit correctly converts example input", {
 
   colnames(df)[1] <- "#chr"
 
+  input_file <- tempfile(fileext = ".tsv")
+  # write test data to file
+  write.table(df, input_file, sep="\t", row.names = FALSE, quote=FALSE)
 
   # Temp output file
   output_file <- tempfile(fileext = ".tsv")
 
-  # Run function 
-  save_as_methylkit(df, output_file)
+  system(paste("../../rastair_call_to_methylkit.sh", input_file, ">", output_file))
 
   # Read and check result
-  result <- readr::read_tsv(output_file, col_types = readr::cols())
+  result <- read.csv(output_file, sep="\t", quote="", header=TRUE)
+
+  unlink(input_file)
+  unlink(output_file)
 
   expect_equal(colnames(result), c("chrBase", "chr", "base", "strand", "coverage", "freqC", "freqT"))
-  expect_equal(result$chrBase, paste0("J02459.1:", c(3,4,6,7,12,13,14)))
+  expect_equal(result$chrBase, paste0("J02459.1:", c(4, 5, 7, 8, 13, 14, 15)))
   expect_equal(result$chr, rep("J02459.1", 7))
-  expect_equal(result$base, c(3,4,6,7,12,13,14))
+  expect_equal(result$base, c(4, 5, 7, 8, 13, 14, 15))
   expect_equal(result$strand, c("F","R","F","R","F","R","F"))
-  expect_equal(result$coverage, c(1,18,24,24,33,33,34))
-  
+  expect_equal(result$coverage, df$unmod + df$mod)
+
   # freqC = 100 * mod / (mod + unmod)
-  expected_freqC <- 100 * df$mod / (df$mod + df$unmod)
-  expected_freqT <- 100 * df$unmod / (df$mod + df$unmod)
+  expected_freqC <- round(100 * df$mod / (df$mod + df$unmod), 2)
+  expected_freqT <- round(100 * df$unmod / (df$mod + df$unmod), 2)
 
   expect_equal(result$freqC, expected_freqC)
   expect_equal(result$freqT, expected_freqT)
-
-  unlink(output_file)
 })
