@@ -39,10 +39,7 @@ RUN Rscript -e "install.packages('BiocManager', repos='https://cloud.r-project.o
 RUN Rscript -e "BiocManager::install('Rsamtools', version = '3.18', ask = FALSE)" \
     -e "if (!requireNamespace('remotes', quietly = TRUE)) install.packages('remotes', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('ggplot2', version = '3.5.1', repos = 'https://cloud.r-project.org')" \
-    -e "remotes::install_version('gtable', version = '0.3.6', repos = 'https://cloud.r-project.org')" \
-    -e "remotes::install_version('readr', version = '2.1.5', repos = 'https://cloud.r-project.org')" \
-    -e "remotes::install_version('dplyr', version = '1.1.4', repos = 'https://cloud.r-project.org')" \
-    -e "remotes::install_version('stringr', version = '1.5.1', repos = 'https://cloud.r-project.org')"
+    -e "remotes::install_version('gtable', version = '0.3.6', repos = 'https://cloud.r-project.org')"
 
     # Set working directory
 WORKDIR /app
