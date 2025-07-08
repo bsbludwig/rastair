@@ -106,6 +106,49 @@ impl TryFrom<&Rastair2Record> for Rastair1BedFormat {
     }
 }
 
+impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
+    type Error = color_eyre::eyre::Report;
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn try_from(r: &HtslibRecord) -> Result<Self, Self::Error> {
+        let contig = r
+            .rid()
+            .wrap_err("Record has not ID")
+            .and_then(|id| r.header().rid2name(id).wrap_err("Header does not contain ID"))
+            .and_then(|name| str::from_utf8(name).wrap_err("Contig name is not valid UTF-8"))
+            .map(SmolStr::new)
+            .wrap_err("Could not fetch contig name")?;
+        let ref_base = r
+            .alleles()
+            .first()
+            .and_then(|x| str::from_utf8(x).ok())
+            .map(SmolStr::new)
+            .wrap_err("No reference base found in record")?;
+        let beta = r
+            .info(Methylated::ID.as_bytes())
+            .float()
+            .wrap_err("Could not fetch beta value from record")?
+            .and_then(|x| x.first())
+            .copied()
+            .unwrap_or_default();
+
+        Ok(Rastair1BedFormat {
+            contig,
+            pos: r.pos() as usize,
+            r#ref: ref_base,
+            beta,
+            unmod: todo!(),
+            r#mod: todo!(),
+            no_snp: todo!(),
+            snp: todo!(),
+            coverage: todo!(),
+            genotype: todo!(),
+            genotype_likelihood: todo!(),
+            genotype_confidence: todo!(),
+        })
+    }
+}
+
 impl Rastair1BedFormat {
     fn write(&self, mut f: impl Write) -> Result<()> {
         let Rastair1BedFormat {
