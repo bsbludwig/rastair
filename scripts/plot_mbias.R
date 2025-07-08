@@ -221,7 +221,7 @@ main <- function() {
 
   if (dim(mbias_table)[1] == 0) {
     message("Empty input table")
-    quit(save="no", status=2)
+    quit(save="no", status=0)
   }
   # Add strand and read_pair columns
   mbias_table <- post_process_mbias_table(mbias_table)
