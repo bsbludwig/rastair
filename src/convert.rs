@@ -1,7 +1,10 @@
-use crate::io::{
-    formats::{FromFileExtension, InputFormat, OutputFormat},
-    mpk::{MessagePackReader, MpkEntry},
-    vcf_writer,
+use crate::{
+    bed::{BedWriter, Rastair1BedFormat},
+    io::{
+        formats::{FromFileExtension, InputFormat, OutputFormat},
+        mpk::{MessagePackReader, MpkEntry},
+        vcf_writer,
+    },
 };
 use clap::value_parser;
 use clio::ClioPath;
@@ -89,9 +92,31 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             todo!("Implement VCF->BED conversion")
         }
         (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::Bed) => {
-            bail!(
-                "Cannot convert MessagePack to BED format directly. Please convert to VCF or BCF first."
-            )
+            let r = MessagePackReader::new(&params.input)
+                .wrap_err("Failed to create MessagePack reader")
+                .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
+                .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
+
+            let mut writer = BedWriter::new(&params.output).wrap_err_with(|| {
+                format!("Failed to create BED writer for output file `{}`", params.output)
+            })?;
+
+            for entry in r.entries {
+                match entry {
+                    Ok(MpkEntry::Record(record)) => {
+                        let record = Rastair1BedFormat::try_from(record.as_ref())
+                            .wrap_err("Failed to convert record to BED format")?;
+                        writer.write_record(&record).wrap_err("Failed to write record")?;
+                    }
+                    Ok(x) => {
+                        warn!(?x, "Skipping unsupported entry type in MessagePack file");
+                        continue;
+                    }
+                    Err(e) => Err(e)?,
+                }
+            }
+
+            Ok(())
         }
         (
             InputFormat::VcfLike(vcf_writer::Format::MessagePack),
@@ -127,11 +152,7 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
                         warn!(?x, "Skipping unsupported entry type in MessagePack file");
                         continue;
                     }
-                    Err(e) => {
-                        let error = format!("{e:#}");
-                        warn!(%error, "Error reading entry from MessagePack file, skipping");
-                        continue;
-                    }
+                    Err(e) => Err(e)?,
                 }
             }
 

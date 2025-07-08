@@ -92,6 +92,8 @@ impl FromFileExtension for InputFormat {
 
 impl FromFileExtension for OutputFormat {
     fn from_file_extension(p: &str) -> Option<Self> {
-        vcf_writer::Format::from_file_extension(p).map(OutputFormat::VcfLike)
+        vcf_writer::Format::from_file_extension(p)
+            .map(OutputFormat::VcfLike)
+            .or_else(|| if p.ends_with(".bed") { Some(OutputFormat::Bed) } else { None })
     }
 }

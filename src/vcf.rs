@@ -23,7 +23,7 @@ pub use denovo_cpg::DeNovoCpGCandidate;
 mod methylation;
 pub use methylation::Methylated;
 
-mod utils;
+pub mod utils;
 pub use utils::ByStrand;
 
 filter!(lowDp, "Low read depth");

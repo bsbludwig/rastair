@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod bed;
 pub mod call;
 pub mod convert;
 pub mod io {
