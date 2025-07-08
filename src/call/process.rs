@@ -165,7 +165,7 @@ fn collect_candidate(
                 Some(pile)
             }
         })
-        .filter_map(|pile| pileup_mapper(&params, pile))
+        .filter_map(|pile| pileup_mapper(params, pile))
         .filter(|seen_base| params.read_masking.filter(seen_base))
         .collect();
 
