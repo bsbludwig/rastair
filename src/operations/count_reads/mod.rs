@@ -100,6 +100,8 @@ pub struct ReadIterator<'a>
     config: &'a ReadCounterConfig,
     // Ignore reads if they start beyond this position
     pub right_margin: u64,
+    // pre-allocate the Record so that we save the allocation each time
+    next_record: Record,
 }
 
 impl<'a> ReadIterator<'a>
@@ -128,73 +130,77 @@ impl<'a> ReadIterator<'a>
         if right_margin <= segment.region.start {
             bail!("Tiling window larger than segment, no reads will be processed!");
         }
+        let record: Record = Record::new();
         Ok(Self { sequence: segment,
                   cpgs: all_cpgs,
                   cpg_offset: 0,
                   bam_reader: reader,
                   config,
-                  right_margin })
+                  right_margin,
+                  next_record: record })
     }
 
     /// Progress the pointer in the bam file iterator to the next read that matches the criteria set in the config.
     /// Return None if there's no more reads to find in the current segment.
-    fn find_next_read(&mut self) -> Option<Record>
+    fn find_next_read(&mut self) -> Option<()>
     {
-        let mut record: Record = Record::new();
         loop {
-            match self.bam_reader.read(&mut record)? {
+            match self.bam_reader.read(&mut self.next_record)? {
                 Ok(_) => (),
                 Err(e) => {
                     info!("Failed to fetch next read: {}", e);
                     return None;
                 }
             }
-            let qname = std::str::from_utf8(record.qname()).unwrap_or_default();
+            let qname = std::str::from_utf8(self.next_record.qname()).unwrap_or_default();
             // if read starts beyond the right margin, terminate
-            if (record.pos() as u64) > self.right_margin {
+            if (self.next_record.pos() as u64) > self.right_margin {
                 debug!("Skipping read {} that starts beyond right margin: {} <= {}",
                        qname,
-                       record.pos(),
+                       self.next_record.pos(),
                        self.right_margin);
                 return None;
             }
 
             // check if the current read started before the segment start, which means
             // it was processed in a previous iteration. Skip
-            if record.pos() > 0 && (record.pos() as u64) <= self.sequence.region.start {
+            if self.next_record.pos() > 0
+               && (self.next_record.pos() as u64) <= self.sequence.region.start
+            {
                 debug!("Skipping read {} that started in a previous segment: {} <= {}",
                        qname,
-                       record.pos(),
+                       self.next_record.pos(),
                        self.sequence.region.start);
                 continue;
             }
             // skip reads that lack required flags
-            if record.flags() & self.config.required_flags != self.config.required_flags {
+            if self.next_record.flags() & self.config.required_flags != self.config.required_flags {
                 debug!("Read {} lacks required flag: {} vs {}",
                        qname,
-                       record.flags(),
+                       self.next_record.flags(),
                        self.config.required_flags);
                 continue;
             }
             // skip reads that match an excluded flag
-            else if record.flags() & self.config.excluded_flags > 0 {
+            else if self.next_record.flags() & self.config.excluded_flags > 0 {
                 debug!("Read {} has excluded flag: {} vs {}",
                        qname,
-                       record.flags(),
+                       self.next_record.flags(),
                        self.config.excluded_flags);
                 continue;
             }
 
             // skip reads with low mapq
-            if record.mapq() < self.config.min_mapq {
+            if self.next_record.mapq() < self.config.min_mapq {
                 debug!("Read {} has low quality: {} < {}",
                        qname,
-                       record.mapq(),
+                       self.next_record.mapq(),
                        self.config.min_mapq);
                 continue;
             }
             let read_pair_orientation =
-                record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
+                self.next_record
+                    .read_pair_orientation_lenient(self.config.exclude_ambiguous);
 
             match read_pair_orientation {
                 F1R2 => (),
@@ -202,14 +208,14 @@ impl<'a> ReadIterator<'a>
                 _ => {
                     debug!("Skipping incorrectly paired read {}. (flag {})",
                            qname,
-                           record.flags());
+                           self.next_record.flags());
                     continue;
                 }
             }
 
             break;
         }
-        Some(record)
+        Some(())
     }
 }
 
@@ -219,14 +225,14 @@ impl Iterator for ReadIterator<'_>
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        let record = self.find_next_read()?;
+        self.find_next_read()?;
 
         /* Check if the read extends beyond the end of the margin
          */
-        let alignment = record.cigar();
+        let alignment = self.next_record.cigar();
         if (alignment.end_pos() as u64) >= self.sequence.region.end {
             warn!("Read {} extends beyond end of segment {}, tiling window set too short: {}",
-                  std::str::from_utf8(record.qname()).unwrap_or_default(),
+                  std::str::from_utf8(self.next_record.qname()).unwrap_or_default(),
                   self.sequence,
                   self.config.tiling_window_size);
         }
@@ -236,14 +242,14 @@ impl Iterator for ReadIterator<'_>
                                                                .region
                                                                .contig
                                                                .clone(),
-                                                   start: record.pos().abs() as u64,
+                                                   start: self.next_record.pos() as u64,
                                                    end: alignment.end_pos() as u64 },
-                           flag: record.flags(),
-                           mapq: record.mapq(),
-                           frag_length: record.insert_size().abs() as u32,
-                           read_length: record.seq_len() as u32,
+                           flag: self.next_record.flags(),
+                           mapq: self.next_record.mapq(),
+                           frag_length: self.next_record.insert_size().abs() as u32,
+                           read_length: self.next_record.seq_len() as u32,
                            read_id:
-                               String::from_utf8(Vec::from(record.qname())).unwrap_or_default(),
+                               String::from_utf8(Vec::from(self.next_record.qname())).unwrap_or_default(),
                            cpg_count: 0,
                            mod_count: 0,
                            mod_cpgs: Vec::new(),
@@ -287,7 +293,7 @@ impl Iterator for ReadIterator<'_>
         }
         let mut offset = 0;
         // Find all CpGs in the subset covered by the read
-        'block_loop: for block in record.aligned_pairs() {
+        'block_loop: for block in self.next_record.aligned_pairs() {
             trace!("Processing block {}/{}", block[0], block[1]);
             if (self.cpg_offset + offset) >= self.cpgs.len() {
                 debug!("Found all CpGs in segment, stop");
@@ -316,7 +322,7 @@ impl Iterator for ReadIterator<'_>
             }
 
             let base = self.sequence.sequence[(cpg_pos - self.sequence.region.start) as usize];
-            let read_base = record.seq()[block[0] as usize].to_ascii_uppercase();
+            let read_base = self.next_record.seq()[block[0] as usize].to_ascii_uppercase();
 
             // check if the position in this read is meaningful
             debug!("Processing pos {} in read {}: {} vs {}, flag {}",
@@ -324,9 +330,17 @@ impl Iterator for ReadIterator<'_>
                    next_read_count.read_id,
                    char::from_u32(base as u32).unwrap_or_default(),
                    char::from_u32(read_base as u32).unwrap_or_default(),
-                   record.flags());
+                   self.next_record.flags());
             let read_pair_orientation =
-                record.read_pair_orientation_lenient(self.config.exclude_ambiguous);
+                self.next_record
+                    .read_pair_orientation_lenient(self.config.exclude_ambiguous);
+
+            // I need to calculate the position in read like this, because block[0] does not
+            // account for soft clipping!
+            assert!(alignment.leading_softclips() + alignment.leading_hardclips() <= block[0]);
+            let pos_in_read = (block[0]
+                               - (alignment.leading_softclips() + alignment.leading_hardclips()))
+                              as usize;
             match read_pair_orientation {
                 F1R2 => {
                     match base {
@@ -335,13 +349,13 @@ impl Iterator for ReadIterator<'_>
                             if read_base == b'T' {
                                 // mod
                                 next_read_count.mod_count = next_read_count.mod_count + 1;
-                                next_read_count.mod_cpgs.push(block[0] as usize);
+                                next_read_count.mod_cpgs.push(pos_in_read);
                             } else if read_base == b'C' {
                                 //unmod
-                                next_read_count.unmod_cpgs.push(block[0] as usize);
+                                next_read_count.unmod_cpgs.push(pos_in_read);
                             } else {
                                 debug!("SNP or sequencing error");
-                                next_read_count.snp_cpgs.push(block[0] as usize);
+                                next_read_count.snp_cpgs.push(pos_in_read);
                             }
                         }
                         _ => continue,
@@ -354,13 +368,13 @@ impl Iterator for ReadIterator<'_>
                             if read_base == b'A' {
                                 // mod
                                 next_read_count.mod_count = next_read_count.mod_count + 1;
-                                next_read_count.mod_cpgs.push(block[0] as usize);
+                                next_read_count.mod_cpgs.push(pos_in_read);
                             } else if read_base == b'G' {
                                 //unmod
-                                next_read_count.unmod_cpgs.push(block[0] as usize);
+                                next_read_count.unmod_cpgs.push(pos_in_read);
                             } else {
                                 debug!("SNP or sequencing error");
-                                next_read_count.snp_cpgs.push(block[0] as usize);
+                                next_read_count.snp_cpgs.push(pos_in_read);
                             }
                         }
                         _ => continue,

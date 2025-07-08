@@ -1,3 +1,5 @@
+#!/usr/bin/env Rscript
+
 # This file is part of the standard setup for testthat.
 # It is recommended that you do not modify it.
 #
@@ -6,7 +8,7 @@
 # * https://r-pkgs.org/testing-design.html#sec-tests-files-overview
 # * https://testthat.r-lib.org/articles/special-files.html
 
-library(testthat)
-library(scripts)
+suppressPackageStartupMessages(library(testthat))
 
-test_check("scripts")
+# Run the tests in the 'tests/testthat' directory
+test_dir("testthat")

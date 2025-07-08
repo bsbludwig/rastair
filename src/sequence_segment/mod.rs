@@ -210,7 +210,7 @@ impl<R> SequenceSegmentIterator<R> where R: Read + Seek
         cur_region
     }
 
-    fn reached_end(&self) -> bool
+    pub fn reached_end(&self) -> bool
     {
         self.index_pos >= self.sequences.len()
     }

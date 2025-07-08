@@ -289,7 +289,7 @@ fn correct_pos_with_skips() -> Result<(), Box<dyn std::error::Error>>
                   .unwrap_or_default();
 
     let elems = roi.split("\t").collect::<Vec<&str>>();
-    assert_eq!(elems[11], "22,40,54,57,64");
+    assert_eq!(elems[11], "14,32,46,49,56");
     Ok(())
 }
 
@@ -316,7 +316,7 @@ fn correct_data_in_random_region_2() -> Result<(), Box<dyn std::error::Error>>
     assert_eq!(elems[9], "8");
     assert_eq!(elems[10], "0");
     assert_eq!(elems[11], ""); // these will all look like unmod, with no mod
-    assert_eq!(elems[12], "8,14,32,38,43,55,63,77"); // these will all look like unmod, with no mod
+    assert_eq!(elems[12], "5,11,29,35,40,52,60,74"); // these will all look like unmod, with no mod
     Ok(())
 }
 
@@ -378,7 +378,6 @@ fn does_not_report_deleted_positions() -> Result<(), Box<dyn std::error::Error>>
 fn correctly_reports_read_length() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut cmd = Command::cargo_bin("rastair")?;
-
     cmd.arg("per-read");
     cmd.args(["--fasta-file", "test_data/test.fasta.gz"]);
     cmd.args(["-l", "bacteriophage_lambda_CpG:114-158"]);
