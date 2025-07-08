@@ -1,4 +1,9 @@
 use crate::io::vcf_writer::{self, VcfFormat};
+use clio::ClioPath;
+use color_eyre::{
+    Result, Section as _,
+    eyre::{ContextCompat as _, bail, eyre},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFormat {
@@ -47,10 +52,20 @@ impl clap::ValueEnum for OutputFormat {
     }
 }
 
-pub trait FromFileExtension {
-    fn from_file_extension(p: &str) -> Option<Self>
-    where
-        Self: Sized;
+pub trait FromFileExtension: Sized {
+    fn from_file_extension(path: &str) -> Option<Self>;
+
+    fn guess_format(path: &ClioPath) -> Result<Self> {
+        let Some(filename) = path.path().file_name().and_then(|x| x.to_str()) else {
+            bail!("No file name found in path `{path}`");
+        };
+
+        Self::from_file_extension(filename).wrap_err_with(|| {
+            eyre!("Could not determine format from file extension `{filename}`").suggestion(
+                "You can specify the format explicitly with `--input-format` or `--output-format`",
+            )
+        })
+    }
 }
 
 impl FromFileExtension for vcf_writer::Format {

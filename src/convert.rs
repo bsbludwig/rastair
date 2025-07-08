@@ -1,5 +1,3 @@
-use std::num::NonZeroUsize;
-
 use crate::io::{
     formats::{FromFileExtension, InputFormat, OutputFormat},
     mpk::{MessagePackReader, MpkEntry},
@@ -9,8 +7,9 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
     Section as _,
-    eyre::{ContextCompat, Result, WrapErr, bail, eyre},
+    eyre::{Result, WrapErr, bail, eyre},
 };
+use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};
 
 /// Convert between different file formats that rastair2 supports
@@ -42,32 +41,41 @@ pub struct ConvertParams {
     pub output_format: Option<OutputFormat>,
 }
 
-pub fn convert(params: &ConvertParams) -> Result<()> {
-    let input_format = match params.input_format {
-        Some(format) => format,
-        None => {
-            if params.input.is_std() {
-                return Err(eyre!("Input is stdin but no input format was specified")
-                    .note("Please specify the input format with `--input-format`"));
-            } else {
-                guess_format::<InputFormat>(&params.input)
-                    .wrap_err("Failed to guess input format from file extension")?
+impl ConvertParams {
+    fn formats(&self) -> Result<(InputFormat, OutputFormat)> {
+        let input_format = match self.input_format {
+            Some(format) => format,
+            None => {
+                if self.input.is_std() {
+                    return Err(eyre!("Input is stdin but no input format was specified"))
+                        .note("Please specify the input format with `--input-format`");
+                } else {
+                    InputFormat::guess_format(&self.input)
+                        .wrap_err("Failed to guess input format from file extension")?
+                }
             }
-        }
-    };
+        };
 
-    let output_format = match params.output_format {
-        Some(format) => format,
-        None => {
-            if params.output.is_std() {
-                return Err(eyre!("Output is stdout but no output format was specified")
-                    .note("Please specify the output format with `--output-format`"));
-            } else {
-                guess_format::<OutputFormat>(&params.output)
-                    .wrap_err("Failed to guess output format from file extension")?
+        let output_format = match self.output_format {
+            Some(format) => format,
+            None => {
+                if self.output.is_std() {
+                    return Err(eyre!("Output is stdout but no output format was specified")
+                        .note("Please specify the output format with `--output-format`"));
+                } else {
+                    OutputFormat::guess_format(&self.output)
+                        .wrap_err("Failed to guess output format from file extension")?
+                }
             }
-        }
-    };
+        };
+
+        Ok((input_format, output_format))
+    }
+}
+
+pub fn convert(params: &ConvertParams) -> Result<()> {
+    let (input_format, output_format) =
+        params.formats().wrap_err("Failed to determine input and output formats")?;
 
     match (input_format, output_format) {
         (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) if input == output => {
@@ -134,19 +142,3 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
         }
     }
 }
-
-fn guess_format<T: FromFileExtension>(path: &ClioPath) -> Result<T> {
-    let Some(name) = path.path().file_name().and_then(|x| x.to_str()) else {
-        bail!("No file name found in path `{path}`");
-    };
-
-    T::from_file_extension(name).wrap_err_with(|| {
-        eyre!("Could not determine format from file extension `{name}`").suggestion(
-            "You can specify the format explicitly with `--input-format` or `--output-format`",
-        )
-    })
-}
-
-// fn mpack_to_vcf(input: &ClioPath, output: &ClioPath) -> Result<()> {
-//     todo!()
-// }
