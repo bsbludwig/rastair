@@ -51,6 +51,17 @@ impl From<GenotypeAllele> for HtslibGenotypeAllele {
     }
 }
 
+impl From<HtslibGenotypeAllele> for GenotypeAllele {
+    fn from(allele: HtslibGenotypeAllele) -> Self {
+        match allele {
+            HtslibGenotypeAllele::Unphased(i) => GenotypeAllele::Unphased(i),
+            HtslibGenotypeAllele::Phased(i) => GenotypeAllele::Phased(i),
+            HtslibGenotypeAllele::UnphasedMissing => GenotypeAllele::UnphasedMissing,
+            HtslibGenotypeAllele::PhasedMissing => GenotypeAllele::PhasedMissing,
+        }
+    }
+}
+
 impl VcfField for Genotype {
     const ID: &'static cstr8::CStr8 = cstr8::cstr8!("GT");
 }

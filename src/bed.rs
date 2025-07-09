@@ -1,20 +1,10 @@
 use crate::{
-    utils::{Base::*, Phred},
-    vcf::{
-        GenotypeConfidence, GenotypeLikelihood, Methylated, Record as Rastair2Record,
-        utils::NoStrandBiasForBaseErrorExt as _,
-    },
+    utils::Phred,
+    vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
 use clio::ClioPath;
-use color_eyre::{
-    Result,
-    eyre::{Context as _, ContextCompat as _},
-};
-use rastair2_vcf::{
-    VcfField,
-    standard_fields::{Genotype, GenotypeAllele},
-};
-use rust_htslib::bcf::Record as HtslibRecord;
+use color_eyre::{Result, eyre::Context as _};
+use rastair2_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::SmolStr;
 use std::io::Write;
 use tracing::instrument;
@@ -64,90 +54,8 @@ impl Rastair1BedFormat {
     pub const HEADER: &'static str = "#chr\tstart\tend\tname\tbeta_est\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage\tgenotype\tgt_p_score\tgt_conf_score";
 }
 
-impl TryFrom<&Rastair2Record> for Rastair1BedFormat {
-    type Error = color_eyre::eyre::Report;
-
-    #[allow(clippy::cast_possible_truncation)]
-    fn try_from(record: &Rastair2Record) -> Result<Self, Self::Error> {
-        let r#ref = record.main.r#ref.clone();
-
-        let (unmod, r#mod, no_snp, snp) = if r#ref == "C" {
-            (
-                record.strand_count(C).or_empty().ot,
-                record.strand_count(T).or_empty().ot,
-                record.strand_count(C).or_empty().ob,
-                record.strand_count(T).or_empty().ob,
-            )
-        } else if r#ref == "G" {
-            (
-                record.strand_count(G).or_empty().ob,
-                record.strand_count(A).or_empty().ob,
-                record.strand_count(G).or_empty().ot,
-                record.strand_count(A).or_empty().ot,
-            )
-        } else {
-            (0, 0, 0, 0)
-        };
-
-        Ok(Rastair1BedFormat {
-            contig: record.main.chrom.clone(),
-            pos: record.main.pos as usize,
-            r#ref,
-            beta: record.samples[0].methylated.beta().unwrap_or_default() as f32,
-            unmod,
-            r#mod,
-            no_snp,
-            snp,
-            coverage: *record.info.read_depth,
-            genotype: record.samples[0].genotype.clone(),
-            genotype_likelihood: record.samples[0].genotype_likelihood.clone(),
-            genotype_confidence: record.samples[0].genotype_confidence.clone(),
-        })
-    }
-}
-
-impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
-    type Error = color_eyre::eyre::Report;
-
-    #[allow(clippy::cast_possible_truncation)]
-    fn try_from(r: &HtslibRecord) -> Result<Self, Self::Error> {
-        let contig = r
-            .rid()
-            .wrap_err("Record has not ID")
-            .and_then(|id| r.header().rid2name(id).wrap_err("Header does not contain ID"))
-            .and_then(|name| str::from_utf8(name).wrap_err("Contig name is not valid UTF-8"))
-            .map(SmolStr::new)
-            .wrap_err("Could not fetch contig name")?;
-        let ref_base = r
-            .alleles()
-            .first()
-            .and_then(|x| str::from_utf8(x).ok())
-            .map(SmolStr::new)
-            .wrap_err("No reference base found in record")?;
-        let beta = r
-            .info(Methylated::ID.as_bytes())
-            .float()
-            .wrap_err("Could not fetch beta value from record")?
-            .and_then(|x| x.first())
-            .copied()
-            .unwrap_or_default();
-
-        Ok(Rastair1BedFormat {
-            contig,
-            pos: r.pos() as usize,
-            r#ref: ref_base,
-            beta,
-            unmod: todo!(),
-            r#mod: todo!(),
-            no_snp: todo!(),
-            snp: todo!(),
-            coverage: todo!(),
-            genotype: todo!(),
-            genotype_likelihood: todo!(),
-            genotype_confidence: todo!(),
-        })
-    }
-}
+mod internal_to_bed;
+mod vcf_to_bed;
 
 impl Rastair1BedFormat {
     fn write(&self, mut f: impl Write) -> Result<()> {
@@ -175,7 +83,7 @@ impl Rastair1BedFormat {
 
         write!(
             f,
-            "{contig}\t{start}\t{end}\t{name}\t{beta}\t{strand}\t{unmod}\t{mod}\t{no_snp}\t{snp}\t{coverage}\t"
+            "{contig}\t{start}\t{end}\t{name}\t{beta:.2}\t{strand}\t{unmod}\t{mod}\t{no_snp}\t{snp}\t{coverage}\t"
         )?;
 
         let genotype = genotype_to_rastair1_string(genotype, r#ref);
@@ -191,13 +99,13 @@ impl Rastair1BedFormat {
             .and_then(|x| Phred::new(x).ok())
             .map(|x| *x)
             .unwrap_or_default();
-        write!(f, "{genotype}\t{likelihood}\t{confidence}")?;
+        write!(f, "{genotype}\t{likelihood:.2}\t{confidence:.2}")?;
 
         Ok(())
     }
 }
 
-fn genotype_to_rastair1_string(genotype: &Genotype, ref_base: &str) -> SmolStr {
+pub fn genotype_to_rastair1_string(genotype: &Genotype, ref_base: &str) -> SmolStr {
     match genotype.0.as_slice() {
         [GenotypeAllele::Phased(0)] | [GenotypeAllele::Unphased(0)] => {
             if ref_base == "C" {
