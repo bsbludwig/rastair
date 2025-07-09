@@ -6,20 +6,21 @@ use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
 use rastair2_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::SmolStr;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use tracing::instrument;
 
 #[derive(Debug)]
 pub struct BedWriter {
     pub path: ClioPath,
-    writer: clio::Output,
+    writer: BufWriter<clio::Output>,
 }
 
 impl BedWriter {
     #[instrument(level = "debug")]
     pub fn new(path: &ClioPath) -> Result<Self> {
-        let mut writer =
+        let writer =
             path.clone().create().wrap_err_with(|| format!("Failed to create output {path}"))?;
+        let mut writer = BufWriter::new(writer);
         writeln!(&mut writer, "{}", Rastair1BedFormat::HEADER)
             .wrap_err_with(|| format!("Failed to write header to {path}"))?;
         Ok(Self { path: path.clone(), writer })

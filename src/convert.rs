@@ -5,6 +5,7 @@ use crate::{
         mpk::{MessagePackReader, MpkEntry},
         vcf_writer,
     },
+    vcf::{DeNovoCpGCandidate, InCpG},
 };
 use clap::value_parser;
 use clio::ClioPath;
@@ -109,14 +110,16 @@ impl ConvertParams {
 fn vcf_to_bed(params: &ConvertParams) -> Result<()> {
     let mut reader = rust_htslib::bcf::Reader::from_path(params.input.path())
         .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?;
+    reader.set_threads(2).wrap_err("Failed to set VCF reader threads")?;
 
     let mut writer = BedWriter::new(&params.output).wrap_err_with(|| {
         format!("Failed to create BED writer for output file `{}`", params.output)
     })?;
 
-    for record in reader.records() {
-        let Ok(record) = record else {
-            warn!("Skipping invalid record in VCF file");
+    let mut record = reader.empty_record();
+    while let Some(res) = reader.read(&mut record) {
+        if let Err(error) = res {
+            debug!(%error, "Skipping invalid record in VCF file");
             continue;
         };
 
