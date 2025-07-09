@@ -1,2 +1,6 @@
 /target
 /tmp
+.ipynb_checkpoints
+**/*.Rproj
+**/*.Rhistory
+**/*.Rproj.user
