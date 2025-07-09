@@ -44,6 +44,34 @@ pub struct ConvertParams {
     pub output_format: Option<OutputFormat>,
 }
 
+pub fn convert(params: &ConvertParams) -> Result<()> {
+    let (input_format, output_format) =
+        params.formats().wrap_err("Failed to determine input and output formats")?;
+
+    match (input_format, output_format) {
+        (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) if input == output => {
+            warn!("Input and output formats are the same, no conversion will be performed");
+            std::fs::copy(params.input.path(), params.output.path())
+                .wrap_err("Failed to copy input file to output file")?;
+            info!("Copied input file to output file without conversion");
+            Ok(())
+        }
+        (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed) => {
+            todo!("Implement VCF->BED conversion")
+        }
+        (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::Bed) => {
+            mpk_to_bed(params)
+        }
+        (
+            InputFormat::VcfLike(vcf_writer::Format::MessagePack),
+            OutputFormat::VcfLike(vcf_writer::Format::Vcf(format)),
+        ) => mpk_to_vcf(params, format),
+        _ => {
+            bail!("Unsupported conversion from {:?} to {:?}", input_format, output_format);
+        }
+    }
+}
+
 impl ConvertParams {
     fn formats(&self) -> Result<(InputFormat, OutputFormat)> {
         let input_format = match self.input_format {
@@ -76,90 +104,68 @@ impl ConvertParams {
     }
 }
 
-pub fn convert(params: &ConvertParams) -> Result<()> {
-    let (input_format, output_format) =
-        params.formats().wrap_err("Failed to determine input and output formats")?;
+fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<()> {
+    let r = MessagePackReader::new(&params.input)
+        .wrap_err("Failed to create MessagePack reader")
+        .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
+        .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
+    debug!(header=?r.header, "opened mpk file");
+    let Some(meta) = r.vcf_header else {
+        bail!("MessagePack file does not contain a VCF header");
+    };
 
-    match (input_format, output_format) {
-        (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) if input == output => {
-            warn!("Input and output formats are the same, no conversion will be performed");
-            std::fs::copy(params.input.path(), params.output.path())
-                .wrap_err("Failed to copy input file to output file")?;
-            info!("Copied input file to output file without conversion");
-            Ok(())
-        }
-        (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed) => {
-            todo!("Implement VCF->BED conversion")
-        }
-        (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::Bed) => {
-            let r = MessagePackReader::new(&params.input)
-                .wrap_err("Failed to create MessagePack reader")
-                .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
-                .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
+    let params = vcf_writer::Params {
+        vcf_output: params.output.clone(),
+        vcf_threads: NonZeroUsize::new(4).expect("valid number"),
+    };
 
-            let mut writer = BedWriter::new(&params.output).wrap_err_with(|| {
-                format!("Failed to create BED writer for output file `{}`", params.output)
-            })?;
+    let (format, compression) = format.into();
+    let mut writer = params
+        .vcf_writer(&meta.contigs, &meta.samples, &meta.metadata, format, compression)
+        .wrap_err_with(|| {
+            format!("Failed to create VCF writer for output file `{}`", params.vcf_output)
+        })?;
 
-            for entry in r.entries {
-                match entry {
-                    Ok(MpkEntry::Record(record)) => {
-                        let record = Rastair1BedFormat::try_from(record.as_ref())
-                            .wrap_err("Failed to convert record to BED format")?;
-                        writer.write_record(&record).wrap_err("Failed to write record")?;
-                    }
-                    Ok(x) => {
-                        warn!(?x, "Skipping unsupported entry type in MessagePack file");
-                        continue;
-                    }
-                    Err(e) => Err(e)?,
-                }
+    for entry in r.entries {
+        match entry {
+            Ok(MpkEntry::Record(record)) => {
+                writer.add(&record).wrap_err("Failed to write record")?;
             }
-
-            Ok(())
-        }
-        (
-            InputFormat::VcfLike(vcf_writer::Format::MessagePack),
-            OutputFormat::VcfLike(vcf_writer::Format::Vcf(format)),
-        ) => {
-            let r = MessagePackReader::new(&params.input)
-                .wrap_err("Failed to create MessagePack reader")
-                .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
-                .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
-            debug!(header=?r.header, "opened mpk file");
-            let Some(meta) = r.vcf_header else {
-                bail!("MessagePack file does not contain a VCF header");
-            };
-
-            let params = vcf_writer::Params {
-                vcf_output: params.output.clone(),
-                vcf_threads: NonZeroUsize::new(4).expect("valid number"),
-            };
-
-            let (format, compression) = format.into();
-            let mut writer = params
-                .vcf_writer(&meta.contigs, &meta.samples, &meta.metadata, format, compression)
-                .wrap_err_with(|| {
-                    format!("Failed to create VCF writer for output file `{}`", params.vcf_output)
-                })?;
-
-            for entry in r.entries {
-                match entry {
-                    Ok(MpkEntry::Record(record)) => {
-                        writer.add(&record).wrap_err("Failed to write record")?;
-                    }
-                    Ok(x) => {
-                        warn!(?x, "Skipping unsupported entry type in MessagePack file");
-                        continue;
-                    }
-                    Err(e) => Err(e)?,
-                }
+            Ok(x) => {
+                warn!(?x, "Skipping unsupported entry type in MessagePack file");
+                continue;
             }
-
-            Ok(())
-        }
-        _ => {
-            bail!("Unsupported conversion from {:?} to {:?}", input_format, output_format);
+            Err(e) => Err(e)?,
         }
     }
+
+    Ok(())
+}
+
+fn mpk_to_bed(params: &ConvertParams) -> Result<()> {
+    let r = MessagePackReader::new(&params.input)
+        .wrap_err("Failed to create MessagePack reader")
+        .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
+        .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
+
+    let mut writer = BedWriter::new(&params.output).wrap_err_with(|| {
+        format!("Failed to create BED writer for output file `{}`", params.output)
+    })?;
+
+    for entry in r.entries {
+        match entry {
+            Ok(MpkEntry::Record(record)) => {
+                let record = Rastair1BedFormat::try_from(record.as_ref())
+                    .wrap_err("Failed to convert record to BED format")?;
+                writer.write_record(&record).wrap_err("Failed to write record")?;
+            }
+            Ok(x) => {
+                warn!(?x, "Skipping unsupported entry type in MessagePack file");
+                continue;
+            }
+            Err(e) => Err(e)?,
+        }
+    }
+
+    Ok(())
 }
