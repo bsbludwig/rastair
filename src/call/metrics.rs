@@ -128,6 +128,7 @@ impl VariantCandidatePileup {
     ///
     /// NOTE: we are in the case where we have a variant
     #[allow(clippy::cast_possible_truncation)]
+    // TODO: return Phred<f32>
     fn qual(&self) -> Option<f32> {
         // TODO: Calculate this properly based on the pileup
         let probability_call_wrong = 0.001;

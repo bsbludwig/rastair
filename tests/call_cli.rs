@@ -24,7 +24,7 @@ fn random_call() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    [TIME] INFO rastair2::call: Wrote output file=[PATH]"
+    [TIME] INFO rastair2::call: Wrote VCF output file=[PATH]"
     [TIME] INFO rastair2: Call finished [DURATION]
     "#);
 
@@ -43,6 +43,34 @@ fn pipe_to_stdout() -> Result<()> {
         "tests/data/test.bam",
         "--region=chr19:6105700-6105750",
     ]));
+
+    Ok(())
+}
+
+#[test]
+fn write_bcf_to_file_and_bed_to_stdout() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let temp_file = temp_dir.path().join("test.bcf");
+
+    let call = rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=chr19:6105700-6105750",
+            "--bed=-",
+            "--vcf-output",
+        ])
+        .arg(&temp_file)
+        .output()?;
+
+    assert!(call.status.success(), "rastair call failed");
+    assert!(temp_file.exists());
+
+    let bed = str::from_utf8(&call.stdout)?;
+    assert_snapshot!(bed);
 
     Ok(())
 }
@@ -99,7 +127,7 @@ fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let temp_file = temp_dir.path().join("test.vcf");
 
-    let call = rastair()
+    rastair()
         .args([
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
@@ -112,8 +140,9 @@ fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
         ])
         .arg(&temp_file)
         .status()
-        .wrap_err("running rastair2")?;
-    assert!(call.success());
+        .wrap_err("running rastair2")?
+        .is_success()
+        .wrap_err("rastair2 call failed")?;
 
     let text = std::fs::read_to_string(&temp_file).wrap_err("read rastair 2 vcf")?;
     text.lines()

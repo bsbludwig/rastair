@@ -22,6 +22,9 @@ macro_rules! apply_common_filters {
         settings.add_filter(r"duration=[\w.]+", "[DURATION]");
         settings.add_filter(r": close time.*", " [CLOSE]");
         settings.add_filter(r#"file="/.*/test.vcf"#, "file=[PATH]");
+        settings.add_filter(r#"file="/.*/test.vcf.gz"#, "file=[PATH]");
+        settings.add_filter(r#"file="/.*/test.bcf"#, "file=[PATH]");
+        settings.add_filter(r#"file="/.*/test.mpk.lz4"#, "file=[PATH]");
         let _bound = settings.bind_to_scope();
     }
 }

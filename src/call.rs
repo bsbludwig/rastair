@@ -1,10 +1,12 @@
 use crate::{
+    bed::BedWriter,
     call::{methylation::params::MethylationCallingParams, variant_calling::VariantCallingParams},
     io::vcf_writer,
     sequence::{ChunkRegion, Readers, SegmentsParams},
     vcf,
 };
-use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, eyre};
+use clio::ClioPath;
+use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
 use rayon::prelude::*;
 use smol_str::SmolStr;
 use std::{
@@ -47,11 +49,20 @@ pub struct CallParams {
     /// This can be overwritten with `--vcf-threads`.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
     pub threads: usize,
+
+    /// Output BED file with the called methylation events.
+    #[arg(long = "bed")]
+    pub bed_output: Option<ClioPath>,
 }
 
 /// Read BAM + FASTA and call variants and methylation events
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
+    ensure!(
+        Some(&params.vcf.vcf_output) != params.bed_output.as_ref(),
+        "Can't write both VCF and BED output to the same file. Please specify different output files."
+    );
+
     // Initialize readers for BAM and FASTA files
     let readers = params.segments.readers().wrap_err("Failed to fetch segments")?;
 
@@ -107,6 +118,14 @@ pub fn call(params: &CallParams) -> Result<()> {
             ];
             let mut writer =
                 params.vcf.writer(&regions, &metadata).wrap_err("Failed to create VCF writer")?;
+
+            let bed_output = params.bed_output.clone();
+            let mut bed_writer = bed_output
+                .as_ref()
+                .map(|bed_output| {
+                    BedWriter::new(bed_output).wrap_err("Failed to create BED writer")
+                })
+                .transpose()?;
             move || -> Result<()> {
                 // The segments we get have some overlap between them, so we
                 // need to ensure that we don't write the same record multiple
@@ -132,13 +151,29 @@ pub fn call(params: &CallParams) -> Result<()> {
                         last_seen_pos = Some(record.main.pos);
 
                         writer.add(record).wrap_err("Failed to write record to VCF")?;
+
+                        if let Some(bed_writer) = bed_writer.as_mut()
+                            && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
+                        {
+                            // Write the record to the BED file if requested
+                            bed_writer
+                                .write_record(
+                                    &record
+                                        .try_into()
+                                        .wrap_err("Failed to convert record to BED format")?,
+                                )
+                                .wrap_err("Failed to write record to BED")?;
+                        }
                     }
                 }
 
                 // Ensure all data is flushed to the output file
                 drop(writer);
 
-                info!(file = %vcf_output, "Wrote output");
+                info!(file = %vcf_output, "Wrote VCF output");
+                if let Some(bed_output) = bed_output {
+                    info!(file = %bed_output, "Wrote BED output");
+                }
                 Ok(())
             }
         })

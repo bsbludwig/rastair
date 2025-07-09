@@ -69,13 +69,13 @@ info_field!(
 info_field!(NumIndels(f64), "NOI", "RMS of number of indels", InfoFieldNumber::OnePerAltAndRef);
 
 format_field!(
-    GenotypeLikelihood(Option<f64>),
+    GenotypeLikelihood(Option<f64>), // todo: Phred scale
     "GL",
     "Genotype likelihoods",
     FormatFieldNumber::OnePerGenotype
 );
 format_field!(
-    GenotypeConfidence(Option<f64>),
+    GenotypeConfidence(Option<f64>), // todo: Phred scale
     "GC",
     "Genotype confidence",
     FormatFieldNumber::OnePerGenotype
