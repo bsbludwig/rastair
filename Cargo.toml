@@ -9,7 +9,7 @@ authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"
 
 [workspace]
-members = ["crates/*", "xtask"]
+members = ["crates/*", "tools/*"]
 
 [workspace.dependencies]
 color-eyre = "0.6.5"

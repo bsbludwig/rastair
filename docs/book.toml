@@ -3,3 +3,7 @@ authors = ["Pascal Hertleif"]
 language = "en"
 src = "src"
 title = "Rastair2"
+
+[preprocessor.glossary]
+command = "cargo run -p mdbook-glossary"
+glossary = "src/glossary.yaml"
