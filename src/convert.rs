@@ -12,6 +12,7 @@ use color_eyre::{
     Section as _,
     eyre::{Result, WrapErr, bail, eyre},
 };
+use rastair2_vcf::VcfField;
 use rust_htslib::bcf::Read as _;
 use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};
@@ -118,6 +119,13 @@ fn vcf_to_bed(params: &ConvertParams) -> Result<()> {
             warn!("Skipping invalid record in VCF file");
             continue;
         };
+
+        let cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or_default();
+        let dn_cpg = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or_default();
+        if !cpg && !dn_cpg {
+            continue;
+        }
+
         let record = Rastair1BedFormat::try_from(&record)
             .wrap_err("Failed to convert record to BED format")?;
         writer.write_record(&record).wrap_err("Failed to write record")?;
@@ -177,6 +185,9 @@ fn mpk_to_bed(params: &ConvertParams) -> Result<()> {
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
+                if !(*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate) {
+                    continue;
+                }
                 let record = Rastair1BedFormat::try_from(record.as_ref())
                     .wrap_err("Failed to convert record to BED format")?;
                 writer.write_record(&record).wrap_err("Failed to write record")?;
