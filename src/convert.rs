@@ -12,6 +12,7 @@ use color_eyre::{
     Section as _,
     eyre::{Result, WrapErr, bail, eyre},
 };
+use rust_htslib::bcf::Read as _;
 use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};
 
@@ -57,15 +58,15 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             Ok(())
         }
         (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed) => {
-            todo!("Implement VCF->BED conversion")
+            vcf_to_bed(params).wrap_err("Failed to convert VCF to BED")
         }
         (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::Bed) => {
-            mpk_to_bed(params)
+            mpk_to_bed(params).wrap_err("Failed to convert MessagePack to BED")
         }
         (
             InputFormat::VcfLike(vcf_writer::Format::MessagePack),
             OutputFormat::VcfLike(vcf_writer::Format::Vcf(format)),
-        ) => mpk_to_vcf(params, format),
+        ) => mpk_to_vcf(params, format).wrap_err("Failed to convert MessagePack to VCF"),
         _ => {
             bail!("Unsupported conversion from {:?} to {:?}", input_format, output_format);
         }
@@ -102,6 +103,27 @@ impl ConvertParams {
 
         Ok((input_format, output_format))
     }
+}
+
+fn vcf_to_bed(params: &ConvertParams) -> Result<()> {
+    let mut reader = rust_htslib::bcf::Reader::from_path(params.input.path())
+        .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?;
+
+    let mut writer = BedWriter::new(&params.output).wrap_err_with(|| {
+        format!("Failed to create BED writer for output file `{}`", params.output)
+    })?;
+
+    for record in reader.records() {
+        let Ok(record) = record else {
+            warn!("Skipping invalid record in VCF file");
+            continue;
+        };
+        let record = Rastair1BedFormat::try_from(&record)
+            .wrap_err("Failed to convert record to BED format")?;
+        writer.write_record(&record).wrap_err("Failed to write record")?;
+    }
+
+    Ok(())
 }
 
 fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<()> {
