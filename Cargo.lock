@@ -2214,6 +2214,7 @@ dependencies = [
  "cstr8",
  "insta",
  "insta-cmd",
+ "libc",
  "lz4",
  "mimalloc",
  "ordered-channel",

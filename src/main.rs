@@ -57,6 +57,7 @@ fn main() -> Result<()> {
     color_eyre::install()
         .wrap_err("Failed to set up panic handler")
         .note("Seeing this error message is somewhat ironic, we know")?;
+    reset_sigpipe();
 
     let args = Cli::parse();
 
@@ -122,4 +123,14 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/*
+ * some super-hacky sh*t to make this behave like a normal unix program and quit when the pipe ends
+ */
+fn reset_sigpipe() {
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
 }
