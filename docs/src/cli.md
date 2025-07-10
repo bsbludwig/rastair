@@ -166,11 +166,11 @@ Convert between different file formats
 
   Possible values:
   - `vcf`:
-    Text-based VCF format
+    Text-based VCF format (.vcf)
   - `bcf`:
-    Binary VCF format (BCF)
+    Binary VCF format (.bcf)
   - `vcf-compressed`:
-    Compressed text-based VCF format
+    Compressed text-based VCF format (.vcf.gz)
   - `mpk.lz4`
 
 * `-o`, `--output <OUTPUT>` — Output file
@@ -178,11 +178,11 @@ Convert between different file formats
 
   Possible values:
   - `vcf`:
-    Text-based VCF format
+    Text-based VCF format (.vcf)
   - `bcf`:
-    Binary VCF format (BCF)
+    Binary VCF format (.bcf)
   - `vcf-compressed`:
-    Compressed text-based VCF format
+    Compressed text-based VCF format (.vcf.gz)
   - `mpk.lz4`
   - `bed`
 

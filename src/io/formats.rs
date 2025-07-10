@@ -13,6 +13,7 @@ pub enum InputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     VcfLike(vcf_writer::Format),
+    /// BED format
     Bed,
 }
 

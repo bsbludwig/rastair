@@ -63,11 +63,11 @@ impl clap::ValueEnum for Format {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum VcfFormat {
-    /// Text-based VCF format
+    /// Text-based VCF format (.vcf)
     Vcf,
-    /// Compressed text-based VCF format
+    /// Compressed text-based VCF format (.vcf.gz)
     VcfCompressed,
-    /// Binary VCF format (BCF)
+    /// Binary VCF format (.bcf)
     Bcf,
 }
 
