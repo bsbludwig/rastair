@@ -19,17 +19,17 @@
   description: |
     A specific version of a gene or DNA sequence that can vary between individuals. Alleles can differ by a single nucleotide (@SNV), a small insertion or deletion (@indel), or larger structural changes.
 
-- key: RefAllele
+- key: refAllele
   short: "reference allele"
   group: "Genetics"
   description: |
-    Base that is present in the @referenceGenome at a specific @locus. Opposite to @AltAllele.
+    Base that is present in the @referenceGenome at a specific @locus. Opposite to @altAllele.
 
-- key: AltAllele
+- key: altAllele
   short: "alternative allele"
   group: "Genetics"
   description: |
-    Base that is different from the @RefAllele at a specific @locus. Opposite to @RefAllele.
+    Base that is different from the @refAllele at a specific @locus. Opposite to @refAllele.
 
 - key: referenceGenome
   short: "reference genome"
@@ -97,7 +97,7 @@
   long: "Variant Call Format"
   group: "File Formats"
   description: |
-    File format based on @TSV that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @RefAllele, @AltAllele, quality score, and other annotations. @vcfPaper
+    File format based on @TSV that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations. @vcfPaper
 
     It looks like this:
 
@@ -384,7 +384,7 @@
   long: "Variant Allele Frequency"
   group: "Genetics"
   description: |
-    The proportion of a specific @AltAllele in a sample compared to the total number of alleles at that @variant:
+    The proportion of a specific @altAllele in a sample compared to the total number of alleles at that @variant:
 
     $ \text{VAF} = \frac{\text{Reads supporting the variant allele}}{\text{Total reads covering the site}} $
 
