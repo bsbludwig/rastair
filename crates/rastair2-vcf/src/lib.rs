@@ -185,7 +185,7 @@ impl<R: WriteToVcf> VcfFile<R> {
     pub fn add(&mut self, data: &R) -> Result<()> {
         let mut record = self.writer.empty_record();
         data.write(&mut record).wrap_err("Failed to write record")?;
-        self.writer.write(&record).wrap_err("Failed to write record to VCF")?;
+        self.writer.write(&record).wrap_err("Failed to write record to VCF file")?;
         Ok(())
     }
 }

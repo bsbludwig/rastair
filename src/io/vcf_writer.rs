@@ -187,7 +187,9 @@ pub enum Writer {
 impl Writer {
     pub fn add(&mut self, record: &Record) -> Result<()> {
         match self {
-            Writer::Vcf(writer) => writer.add(record).wrap_err("Failed to write record to VCF"),
+            Writer::Vcf(writer) => {
+                writer.add(record).wrap_err("Failed to write record to VCF writer")
+            }
             Writer::MessagePack(writer) => writer.add(record),
         }
     }
