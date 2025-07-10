@@ -136,11 +136,12 @@ fn run_tests(with_coverage: bool) -> Result<()> {
     let ci = std::env::var("CI").is_ok();
     if with_coverage {
         ensure!(
-            StdCommand::new("cargo-llvm-cov").arg("llvm-cov").arg("--version").status()?.success(),
+            StdCommand::new("cargo").arg("llvm-cov").arg("--version").status()?.success(),
             "cargo-llvm-cov is not installed. Please install it with: cargo install cargo-llvm-cov"
         );
         info!("Running tests with coverage...");
-        StdCommand::new("cargo-llvm-cov")
+        StdCommand::new("cargo")
+            .arg("llvm-cov")
             .arg("test")
             .arg("--workspace")
             .arg("--doctests")
