@@ -8,6 +8,15 @@ license = "AGPL-3.0-only"
 authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"
 
+[package.metadata.bin]
+cargo-binstall = { version = "1.14.1" }
+cargo-llvm-cov = { version = "0.6.17" }
+cargo-insta = { version = "1.43.1" }
+cargo-nextest = { version = "0.9.100" }
+
+mdbook = { version = "0.4.51" }
+mdbook-katex = { version = "0.9.4" }
+
 [workspace]
 members = ["crates/*", "tools/*"]
 
