@@ -7,3 +7,6 @@ title = "Rastair2"
 [preprocessor.glossary]
 command = "cargo run -p mdbook-glossary"
 glossary = "src/glossary.yaml"
+
+[preprocessor.katex]
+after = ["links"]

@@ -75,6 +75,22 @@ Call methylated positions
 * `--cpgs-only` — Only look at sites that are CpG in the reference
 
   Default value: `false`
+* `--nOT <N_OT>` — For OT reads, exclude `[r1_start, r1_end, r2_start, r2_end]` bases from counting.
+
+   The coordinates are relative to the read, so start is the distance from the 5' of the read, the end is the distance to the 3', irrespective of which way around the read aligns to the reference.
+
+   Also note that the distance is relative to read length, not alignment length, so soft-clipped bases count, too!
+
+  Default value: `0,0,0,0`
+* `--nOB <N_OB>` — For OB reads, exclude `[r1_start, r1_end, r2_start, r2_end]` bases from counting.
+
+   The coordinates are relative to the read, so start is the distance from the 5' of the read, the end is the distance to the 3', irrespective of which way around the read aligns to the reference.
+
+   Also note that the distance is relative to read length, not alignment length, so soft-clipped bases count, too!
+
+  Default value: `0,0,0,0`
+* `-f`, `--include-flags <INCLUDE_FLAGS>` — Include reads that match all of these bit-flags
+* `-F`, `--exclude-flags <EXCLUDE_FLAGS>` — Exclude reads that match any of these bit-flags
 * `--cpg-novo-min-depth <CPG_NOVO_MIN_DEPTH>` — Minimum reads needed in support of de-novo CpG
 
   Default value: `2`
@@ -97,12 +113,27 @@ Call methylated positions
   - `thresholds`:
     Call methylation events based on thresholds
 
-* `--vaf-min <VAF_MIN>` — The minimum variant allele frequency
+* `--m-vaf-min <M_VAF_MIN>` — The minimum variant allele frequency
 
-  Default value: `0`
-* `--reads-min <READS_MIN>` — The minimum number of reads to call a variant
+  Default value: `0.2`
+* `--m-min-depth <M_MIN_DEPTH>` — The minimum number of reads to call a position as methylated
 
   Default value: `3`
+* `--m-min-denovo-depth <M_MIN_DENOVO_DEPTH>` — The minimum number of reads required as evidence for a de novo CpG
+
+  Default value: `2`
+* `--m-bq-ratio-min <M_BQ_RATIO_MIN>` — The minimum quality ratio `(ad_alt*bq_alt + 1) / (ad_ref*bq_ref + 1)`
+
+  Default value: `0.27`
+* `--m-read-position-min <M_READ_POSITION_MIN>` — The minimum relative position in read for alt allele evidence
+
+  Default value: `0.2`
+* `--m-read-position-max <M_READ_POSITION_MAX>` — The maximum relative position in read for alt allele evidence
+
+  Default value: `0.8`
+* `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
+
+  Default value: `1000`
 * `-o`, `--vcf-output <VCF_OUTPUT>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
@@ -110,14 +141,15 @@ Call methylated positions
   Default value: `-`
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
 
-   This is subtracted from `--threads` but never below 1
+   This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
 
-  Default value: `2`
+  Default value: `3`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
   Default value: `14`
+* `--bed <BED_OUTPUT>` — Output BED file with the called methylation events
 
 
 

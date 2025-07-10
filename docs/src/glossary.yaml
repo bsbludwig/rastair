@@ -68,9 +68,9 @@
   long: "Sequence Alignment Map"
   group: "File Formats"
   description: |
-    A text-based file format that stores sequence data in a tab-delimited format. #link("https://samtools.github.io/hts-specs/SAMv1.pdf")[Format Specification for version 1.0]. It is used to store the alignment of sequence reads to a @referenceGenome. SAM files are used to visualize and analyze sequence data in genome browsers like @IGV. @samPaper
+    A text-based file format that stores sequence data in a tab-delimited format. [Format Specification for version 1.0]("https://samtools.github.io/hts-specs/SAMv1.pdf"). It is used to store the alignment of sequence reads to a @referenceGenome. SAM files are used to visualize and analyze sequence data in genome browsers like @IGV. @samPaper
 
-    Additional keys are defined in the #link("https://samtools.github.io/hts-specs/SAMtags.pdf")[Optional Fields Specification].
+    Additional keys are defined in the [Optional Fields Specification]("https://samtools.github.io/hts-specs/SAMtags.pdf").
 
 - key: BAM
   long: "Binary Alignment Map"
@@ -97,7 +97,7 @@
   long: "Variant Call Format"
   group: "File Formats"
   description: |
-    File format based on @TSV that stores information about genetic variants. #link("https://samtools.github.io/hts-specs/VCFv4.5.pdf")[Format Specification for VCFv4.5]. It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @RefAllele, @AltAllele, quality score, and other annotations. @vcfPaper
+    File format based on @TSV that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @RefAllele, @AltAllele, quality score, and other annotations. @vcfPaper
 
     It looks like this:
 
@@ -126,7 +126,7 @@
   description: |
     A suite of programs for interacting with sequencing data. It can manipulate @SAM and @BAM files, perform format conversions, and identify variants in sequence data. @samPaper
 
-    Under the umbrella organization of `samtools`, a lot of related projects can be found, including #link("https://github.com/samtools/hts-specs")[specifications for file formats].
+    Under the umbrella organization of `samtools`, a lot of related projects can be found, including [specifications for file formats]("https://github.com/samtools/hts-specs").
 
 - key: bcftools
   short: BCFtools
@@ -208,7 +208,7 @@
     Determine whether there is a significant association between the observed frequencies of the variables with the expected frequencies to assess the independence of the variables.
 
     The test statistic is calculated as the sum of the squared differences between the observed and expected frequencies, divided by the expected frequencies. The resulting value is compared to a critical value from the Chi-square distribution to determine statistical significance:
-    $ chi^2 = sum_i frac((O_i - E_i)^2, E_i) $
+      $$ \chi^2 = \sum_i \frac{(O_i - E_i)^2}{E_i} $$
     where $O_i$ is the observed frequency, $E_i$ is the expected frequency, and the sum is taken over all categories.
 
     The Chi-square test is commonly used in genetics to assess the association between genetic variants and phenotypes, as well as in population genetics to test for deviations from Hardy-Weinberg equilibrium, which describes the expected frequencies of genotypes in a population under certain assumptions.
@@ -226,7 +226,7 @@
   group: "Genetics"
   # link: https://www.nist.gov/programs-projects/genome-bottle
   description: |
-    "A public-private-academic consortium hosted by NIST to develop the technical infrastructure (reference standards, reference methods, and reference data) to enable translation of whole human genome sequencing to clinical practice and innovations in technologies." -- #link("https://www.nist.gov/programs-projects/genome-bottle")[nist.gov]
+    "A public-private-academic consortium hosted by NIST to develop the technical infrastructure (reference standards, reference methods, and reference data) to enable translation of whole human genome sequencing to clinical practice and innovations in technologies." -- [nist.gov]("https://www.nist.gov/programs-projects/genome-bottle")
 
 - key: DiploidGenome
   short: diploid genome
@@ -278,7 +278,7 @@
 - key: Phred-scaled
   group: "Statistics"
   description: |
-    A Phred-scaled quality score is a logarithmic measure of the probability that a base call is incorrect. The formula is $ Q = -10 dot log P $ where $P$  is the probability of an incorrect base call. A higher Phred score indicates a more reliable base call. The name "Phred" comes from the base calling software of the same name.
+    A Phred-scaled quality score is a logarithmic measure of the probability that a base call is incorrect. The formula is $ Q = -10 \cdot \log P $ where $P$  is the probability of an incorrect base call. A higher Phred score indicates a more reliable base call. The name "Phred" comes from the base calling software of the same name.
 
 - key: OT
   long: Original Top
@@ -386,7 +386,7 @@
   description: |
     The proportion of a specific @AltAllele in a sample compared to the total number of alleles at that @variant:
 
-    $ "VAF" = frac("Total reads covering the site", "Reads supporting the variant allele") $
+    $ \text{VAF} = \frac{\text{Reads supporting the variant allele}}{\text{Total reads covering the site}} $
 
 - key: PGO
   long: "Profile-Guided Optimization"

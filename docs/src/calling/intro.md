@@ -1,10 +1,10 @@
 # Methylation calling in Rastair
 
-A core feature of Rastair is the ability to call methylation from [TAPS] sequencing data.
-In [TAPS] sequences, a mehtylated position is a `CG` sequence
-where the original top `C` is read as `T` and the original bottom `G` is read as `A`.
+A core feature of Rastair is the ability to call @methylation from @TAPS sequencing data.
+In @TAPS sequences, a mehtylated position is a `CG` sequence
+where the @OT `C` is read as `T` and the @OB `G` is read as `A`.
 
-For example, given this reference and pileup (`.` means reference base):
+For example, given this reference and @pileup (`.` means reference base):
 
 ```text
 Ref     A T C G C C T  Strand
@@ -30,9 +30,9 @@ the alt allele will be set to `.` since it is not considered a variant in the tr
 
 ## Criteria for methylation calling
 
-- Only `CpG` sites are considered for methylation calling.
-- OT reads with `T` on the ref `C` position
-- OB reads with `A` on the ref `G` position
+- Only @CpG sites are considered for methylation calling.
+- @OT reads with `T` on the ref `C` position
+- @OB reads with `A` on the ref `G` position
 - Low number of other read bases at same positions
 - Good read depth
 - High base quality
@@ -42,8 +42,6 @@ the alt allele will be set to `.` since it is not considered a variant in the tr
 
 ## Filters
 
-In VCF, filters are used to indicate whether we have reliable evidence supporting a variant/methylation call.
+In @VCF, filters are used to indicate whether we have reliable evidence supporting a variant/methylation call.
 We currently don't use filters in this implementation,
 but the criteria above will become filters in the future.
-
-[TAPS]: https://www.nature.com/articles/s41587-019-0041-2
