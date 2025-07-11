@@ -1,4 +1,5 @@
 mod format_field;
+mod impls_for_wrappers;
 mod info_field;
 
 pub use format_field::{FormatField, FormatFieldNumber, FormatFieldValue};
