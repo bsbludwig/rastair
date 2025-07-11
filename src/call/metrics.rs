@@ -30,10 +30,10 @@ impl VariantCandidatePileup {
             allele_read_depth: self.read_depth_per_allele(),
             allele_specific_strand_bias: self.allele_specific_strand_bias(),
             base_quality: BaseQuality(
-                *self.bases.iter().map(|b| b.qual).collect::<RootMeanSquare>(),
+                self.bases.iter().map(|b| b.qual).collect::<RootMeanSquare>(),
             ),
             mapping_quality: MappingQuality(
-                *self.bases.iter().map(|b| b.mapq).collect::<RootMeanSquare>(),
+                self.bases.iter().map(|b| b.mapq).collect::<RootMeanSquare>(),
             ),
             read_depth: ReadDepth(self.bases.len()),
             mapping_quality0: MappingQuality0(self.bases.iter().filter(|b| b.mapq == 0).count()),

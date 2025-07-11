@@ -14,9 +14,9 @@ info_field!(
     "Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes)",
     InfoFieldNumber::OnePerAlt
 );
-info_field!(BaseQuality(f64), "BQ", "RMS base quality", 1);
+info_field!(BaseQuality(RootMeanSquare), "BQ", "RMS base quality", 1);
 info_field!(ReadDepth(usize), "DP", "Combined depth across samples", 1);
-info_field!(MappingQuality(f64), "MQ", "RMS mapping quality", 1);
+info_field!(MappingQuality(RootMeanSquare), "MQ", "RMS mapping quality", 1);
 info_field!(MappingQuality0(usize), "MQ0", "Number of MAPQ == 0 reads", 1);
 info_field!(SamplesWithData(usize), "NS", "Number of samples with data", 1);
 
@@ -43,6 +43,7 @@ format_field!(
 filter!(PASS, "All filters pass");
 
 mod strand_bias;
+use rastair2_types::rms::RootMeanSquare;
 pub use strand_bias::StrandBias;
 mod genotype;
 pub use genotype::{Genotype, GenotypeAllele};
