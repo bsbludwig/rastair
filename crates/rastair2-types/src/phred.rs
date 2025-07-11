@@ -1,6 +1,5 @@
-use std::ops::Deref;
-
 use color_eyre::{Result, eyre::bail};
+use std::{fmt, ops::Deref};
 
 /// Phred-scaled quality score
 ///
@@ -26,6 +25,7 @@ use color_eyre::{Result, eyre::bail};
 /// > | 60 | 1 in 1,000,000 | 99.9999% |
 /// >
 /// > The phred quality score is the negative ratio of the error probability to the reference level of `P=1` expressed in [Decibel (dB)](https://en.wikipedia.org/wiki/20_log_rule "20 log rule").
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Phred(f64);
 
 impl Phred {
@@ -44,6 +44,20 @@ impl Deref for Phred {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl fmt::Debug for Phred {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Phred({:.2})", self.0)
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl fmt::Display for Phred {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 

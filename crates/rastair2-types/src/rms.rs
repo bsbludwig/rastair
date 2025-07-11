@@ -7,7 +7,7 @@ use std::{fmt, ops::Deref};
 /// # Examples
 ///
 /// ```rust
-/// # use rastair2::utils::RootMeanSquare;
+/// # use rastair2_types::RootMeanSquare;
 /// let data = [1, 2, 3, 4, 5];
 /// // Explicitly construct from an iterator
 /// let rms = RootMeanSquare::from_iter(data);
@@ -16,7 +16,7 @@ use std::{fmt, ops::Deref};
 /// // you can use the value as a float
 /// assert_eq!(rms.round(), 3.0);
 /// ```
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct RootMeanSquare(f64);
 
 impl<T: Into<f64>> FromIterator<T> for RootMeanSquare {

@@ -2221,6 +2221,7 @@ dependencies = [
  "pastey",
  "probability",
  "proptest",
+ "rastair2-types",
  "rastair2-vcf",
  "rayon",
  "readable",
@@ -2239,6 +2240,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rastair2-types"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "insta",
+ "proptest",
+ "rust-htslib",
+ "serde",
+ "smol_str",
+ "thiserror 2.0.12",
+ "winnow 0.7.11",
+]
+
+[[package]]
 name = "rastair2-vcf"
 version = "0.1.0"
 dependencies = [
@@ -2248,6 +2263,7 @@ dependencies = [
  "insta-cmd",
  "pastey",
  "proptest",
+ "rastair2-types",
  "rust-htslib",
  "serde",
  "smallvec 2.0.0-alpha.11",

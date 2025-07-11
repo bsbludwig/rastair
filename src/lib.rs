@@ -10,20 +10,12 @@ pub mod io {
 }
 pub mod vcf;
 pub mod utils {
-    mod base;
-    pub use base::Base;
-    pub mod file_helpers;
-    mod region_string;
-    pub use region_string::RegionString;
-    mod rms;
-    pub use rms::RootMeanSquare;
+    pub use rastair2_types::*;
+
     mod base_modification;
+    pub mod file_helpers;
     pub use base_modification::MethylatedPositions;
-    mod phred;
-    pub use phred::Phred;
     mod base_counter;
     pub use base_counter::Counter;
-    mod strand;
-    pub use strand::{Strand, StrandFromRecord};
 }
 pub mod sequence;
