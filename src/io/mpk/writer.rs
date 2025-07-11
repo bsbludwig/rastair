@@ -48,3 +48,9 @@ impl MessagePackWriter {
             .wrap_err("Failed to write entry to MessagePack file")
     }
 }
+
+impl Drop for MessagePackWriter {
+    fn drop(&mut self) {
+        let _ = self.writer.flush();
+    }
+}
