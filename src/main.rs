@@ -130,6 +130,7 @@ fn main() -> Result<()> {
  */
 fn reset_sigpipe() {
     #[cfg(unix)]
+    // SAFETY: Calls libc
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
