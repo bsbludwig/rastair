@@ -9,7 +9,7 @@ use rastair2_vcf::{
     standard_fields::{Genotype, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
-use smallvec::{SmallVec, smallvec_inline};
+use smallvec::SmallVec;
 use smol_str::SmolStr;
 use tracing::trace;
 
@@ -20,38 +20,40 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
     fn try_from(r: &HtslibRecord) -> Result<Self, Self::Error> {
         let contig = r
             .rid()
-            .wrap_err("Record has not ID")
+            .wrap_err("Record has no ID")
             .and_then(|id| r.header().rid2name(id).wrap_err("Header does not contain ID"))
             .and_then(|name| str::from_utf8(name).wrap_err("Contig name is not valid UTF-8"))
             .map(SmolStr::new)
             .wrap_err("Could not fetch contig name")?;
-        let r#ref = r
-            .alleles()
-            .first()
-            .and_then(|x| str::from_utf8(x).ok())
-            .map(SmolStr::new)
-            .wrap_err("No reference base found in record")?;
-        let beta = r
-            .format(Methylated::ID.as_bytes())
-            .float()
-            .ok()
-            .and_then(|x| x.first().copied())
-            .and_then(|x| x.first())
-            .copied()
-            .unwrap_or_default();
-        let read_depth = r
-            .info(ReadDepth::ID.as_bytes())
-            .integer()
-            .wrap_err("Could not fetch read depth from record")?
-            .and_then(|x| x.first())
-            .copied()
-            .unwrap_or_default() as usize;
+
         let alleles = r
             .alleles()
             .iter()
             .map(|a| str::from_utf8(a).map(SmolStr::new))
             .collect::<Result<SmallVec<_, 4>, _>>()
             .wrap_err("Failed to parse alleles")?;
+        let r#ref = alleles.first().wrap_err("Record has no reference allele")?.clone();
+
+        let beta = if let Ok(buffer) = r.format(Methylated::ID.as_bytes()).float()
+            && let Some(betas) = buffer.first()
+            && let Some(beta) = betas.first()
+        {
+            *beta
+        } else {
+            0.0
+        };
+
+        let read_depth = if let Some(buffer) = r
+            .info(ReadDepth::ID.as_bytes())
+            .integer()
+            .wrap_err("Could not fetch read depth from record")?
+            && let Some(depth) = buffer.first()
+        {
+            *depth
+        } else {
+            0
+        };
+
         let assb = r
             .info(AlleleSpecificStrandBias::ID.as_bytes())
             .integer()
@@ -68,28 +70,31 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             (0, 0, 0, 0)
         };
 
-        let genotype = r
-            .genotypes()
-            .map(|g| g.get(0).iter().map(|x| (*x).into()).collect())
-            .unwrap_or_default();
-        let genotype_likelihood = GenotypeLikelihood(smallvec_inline![
-            r.format(GenotypeLikelihood::ID.as_bytes())
-                .float()
-                .ok()
-                .and_then(|x| x.first().copied())
-                .and_then(|x| x.first())
-                .copied()
-                .map(f64::from)
-        ]);
-        let genotype_confidence = GenotypeConfidence(smallvec_inline![
-            r.format(GenotypeConfidence::ID.as_bytes())
-                .float()
-                .ok()
-                .and_then(|x| x.first().copied())
-                .and_then(|x| x.first())
-                .copied()
-                .map(f64::from),
-        ]);
+        let genotype = if let Ok(gs) = r.genotypes() {
+            gs.get(0).iter().map(|x| (*x).into()).collect()
+        } else {
+            SmallVec::new()
+        };
+        let genotype_likelihood = GenotypeLikelihood(SmallVec::from_buf([{
+            if let Ok(buffer) = r.format(GenotypeLikelihood::ID.as_bytes()).float()
+                && let Some(first) = buffer.first()
+                && let Some(val) = first.first()
+            {
+                Some(f64::from(*val))
+            } else {
+                None
+            }
+        }]));
+        let genotype_confidence = GenotypeConfidence(SmallVec::from_buf([{
+            if let Ok(buffer) = r.format(GenotypeConfidence::ID.as_bytes()).float()
+                && let Some(first) = buffer.first()
+                && let Some(val) = first.first()
+            {
+                Some(f64::from(*val))
+            } else {
+                None
+            }
+        }]));
 
         Ok(Rastair1BedFormat {
             contig,
@@ -100,7 +105,7 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             r#mod,
             no_snp,
             snp,
-            coverage: read_depth,
+            coverage: read_depth as usize,
             genotype: Genotype(genotype),
             genotype_likelihood,
             genotype_confidence,
