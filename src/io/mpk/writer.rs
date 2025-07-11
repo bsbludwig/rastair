@@ -24,9 +24,12 @@ impl MessagePackWriter {
 
         let writer = lz4::EncoderBuilder::new()
             .level(0)
+            .block_size(lz4::BlockSize::Max1MB)
             .build(file)
             .wrap_err("Failed to create LZ4 encoder")?;
-        let mut me = Self { path: path.clone(), writer: Box::new(BufWriter::new(writer)) };
+        let one_mb = 1024 * 1024;
+        let mut me =
+            Self { path: path.clone(), writer: Box::new(BufWriter::with_capacity(one_mb, writer)) };
         me.write(&MpkEntry::Header(MpkHeader {
             rastair2_version: env!("CARGO_PKG_VERSION").into(),
         }))?;
