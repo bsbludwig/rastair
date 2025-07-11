@@ -9,6 +9,7 @@ use color_eyre::{
 use rastair2::{
     call::{CallParams, call},
     convert::ConvertParams,
+    io::mpk::viewer::MpkViewParams,
 };
 use tracing::{debug, info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
@@ -37,6 +38,8 @@ enum Subcommand {
     Call(CallParams),
     /// Convert between different file formats
     Convert(ConvertParams),
+    /// View internal format as JSON lines
+    View(MpkViewParams),
     /// Write shell completions
     #[command(hide = true)]
     GenerateShellCompletions {
@@ -110,6 +113,10 @@ fn main() -> Result<()> {
             rastair2::convert::convert(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Convert finished");
+        }
+        Subcommand::View(params) => {
+            warn!("This format is for internal use only and may change without notice.");
+            rastair2::io::mpk::viewer::view(&params)?;
         }
         Subcommand::GenerateShellCompletions { shell } => {
             shell.generate(&mut Cli::command(), &mut std::io::stdout());

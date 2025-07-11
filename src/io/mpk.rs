@@ -5,6 +5,7 @@
 
 pub mod format;
 pub mod reader;
+pub mod viewer;
 pub mod writer;
 
 pub use format::MpkEntry;

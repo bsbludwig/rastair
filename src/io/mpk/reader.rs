@@ -29,6 +29,7 @@ impl MessagePackReader {
         Ok(Self { path: path.clone(), reader: Box::new(reader) })
     }
 
+    #[instrument(level = "debug", skip(self))]
     pub fn read(self) -> Result<MpkFile> {
         let mut entries = self.read_entry().peekable();
         let header = match entries.next() {
