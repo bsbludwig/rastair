@@ -89,8 +89,18 @@ fn pre_commit() -> Result<()> {
             debug!("Pre-commit hook already exists, skipping installation.");
             return Ok(());
         }
-        let hook_content = "#! /usr/bin/env bash\ncargo xtask pre-commit\n";
+        let hook_content = "#! /usr/bin/env bash\nset -euo pipefail\ncargo xtask pre-commit\n";
         fs::write(path, hook_content).wrap_err("Failed to write pre-commit hook")?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms)
+                .wrap_err("Failed to make pre-commit hook executable")?;
+        }
+
         info!("Pre-commit hook installed successfully.");
         Ok(())
     }
@@ -104,7 +114,7 @@ fn pre_commit() -> Result<()> {
         .status()
         .wrap_err("Failed to run cargo fmt --check")?;
     ensure!(fmt.success(), "Cargo fmt check failed");
-    run_tests(false).wrap_err("Failed to run tests")?;
+    run_tests(false)?;
     Ok(())
 }
 
@@ -140,7 +150,7 @@ fn run_tests(with_coverage: bool) -> Result<()> {
             "cargo-llvm-cov is not installed. Please install it with: cargo install cargo-llvm-cov"
         );
         info!("Running tests with coverage...");
-        StdCommand::new("cargo")
+        let res = StdCommand::new("cargo")
             .arg("llvm-cov")
             .arg("test")
             .arg("--workspace")
@@ -150,15 +160,16 @@ fn run_tests(with_coverage: bool) -> Result<()> {
             .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
             .status()
             .wrap_err("Failed to run tests with coverage")?;
-        return Ok(());
+        ensure!(res.success(), "Tests failed");
     } else {
-        StdCommand::new("cargo")
+        let res = StdCommand::new("cargo")
             .arg("test")
             .arg("--all")
             .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
             .env("RUST_BACKTRACE", "1")
             .status()
             .wrap_err("Failed to run tests")?;
+        ensure!(res.success(), "Tests failed");
     }
 
     Ok(())
