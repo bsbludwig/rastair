@@ -1,6 +1,6 @@
 use crate::{
     bed::Rastair1BedFormat,
-    utils::Base::*,
+    utils::Base::{self, *},
     vcf::{AlleleSpecificStrandBias, ByStrand, GenotypeConfidence, GenotypeLikelihood, Methylated},
 };
 use color_eyre::eyre::{Context as _, ContextCompat as _, Report, bail};
@@ -148,10 +148,10 @@ impl StrandCount {
                 ob: count[1] as u32,
             };
             match count.base {
-                A => counts.a = count,
-                C => counts.c = count,
-                G => counts.g = count,
-                T => counts.t = count,
+                Base::A => counts.a = count,
+                Base::C => counts.c = count,
+                Base::G => counts.g = count,
+                Base::T => counts.t = count,
                 _ => {}
             }
         }
