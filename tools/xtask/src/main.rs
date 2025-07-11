@@ -31,6 +31,8 @@ enum Command {
         #[clap(long)]
         coverage: bool,
     },
+    /// Accept new snapshots and run doctests
+    Insta,
     /// Generate documentation with mdbook
     Docs {
         #[clap(long)]
@@ -65,6 +67,21 @@ fn main() -> Result<()> {
             info!("Running tests...");
             let status = run_tests(coverage)?.wait().wrap_err("Failed to wait for test process")?;
             ensure!(status.success(), "Tests failed, please fix the issues before committing.");
+        }
+        Command::Insta => {
+            info!("Running insta tests and doctests...");
+            let status = StdCommand::new("cargo")
+                .arg("insta")
+                .arg("test")
+                .arg("--workspace")
+                .arg("--test-runner=nextest")
+                .arg("--accept")
+                .status()
+                .wrap_err("Failed to run insta tests")?;
+            ensure!(
+                status.success(),
+                "Insta tests failed, please fix the issues before committing."
+            );
         }
         Command::Docs { serve: open } => {
             info!("Generating documentation...");
