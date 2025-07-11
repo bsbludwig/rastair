@@ -30,7 +30,7 @@
 //! # let temp_file = temp_dir.path().join("test.vcf");
 //! let writer = VcfBuilder::new(&temp_file, VcfFormat::Vcf, Compression::Off, 1)?;
 //!
-//! let contigs = [SmolStr::new("1")];
+//! let contigs = [Contig { name: SmolStr::new("1"), length: 1000 }];
 //! let samples = [SmolStr::new("sample")];
 //! let mut vcf = writer.build::<Record>(&contigs, &samples)?;
 //!
@@ -131,14 +131,14 @@ impl VcfBuilder {
     /// This will start writing to the target file specified in the builder.
     pub fn build<R: WriteToVcf>(
         mut self,
-        contigs: &[SmolStr],
+        contigs: &[Contig],
         samples: &[SmolStr],
     ) -> Result<VcfFile<R>> {
         R::write_header(&mut self.header).wrap_err("Failed to write VCF header")?;
 
-        for chrom in contigs {
-            // FIXME: Set length to the actual length of the chromosome if known
-            self.add_header_line(format!(r#"##contig=<ID={chrom},length=0>"#));
+        for contig in contigs {
+            let Contig { name, length } = contig;
+            self.add_header_line(format!(r#"##contig=<ID={name},length={length}>"#));
         }
         for sample in samples {
             self.header.push_sample(sample.as_bytes());
@@ -158,12 +158,12 @@ impl VcfBuilder {
         }
 
         let mut chromosomes = BTreeMap::new();
-        for chrom in contigs {
+        for contig in contigs {
             let id = vcf
                 .header()
-                .name2rid(chrom.as_bytes())
-                .wrap_err_with(|| format!("Failed to add contig `{chrom}` to header"))?;
-            chromosomes.insert(chrom.clone(), id);
+                .name2rid(contig.name.as_bytes())
+                .wrap_err_with(|| format!("Failed to add contig `{}` to header", contig.name))?;
+            chromosomes.insert(contig.name.clone(), id);
         }
 
         Ok(VcfFile { chromosomes, samples: 0, record_type: PhantomData, writer: vcf })
@@ -188,6 +188,15 @@ impl<R: WriteToVcf> VcfFile<R> {
         self.writer.write(&record).wrap_err("Failed to write record to VCF file")?;
         Ok(())
     }
+}
+
+/// Represents a contig (chromosome) in the VCF file
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct Contig {
+    /// Name of the contig (chromosome)
+    pub name: SmolStr,
+    /// Length of the contig
+    pub length: u64,
 }
 
 #[cfg(test)]
@@ -219,7 +228,7 @@ mod tests {
         let temp_file = temp_dir.path().join("test.vcf");
         let writer = VcfBuilder::new(&temp_file, VcfFormat::Vcf, Compression::Off, 1)?;
 
-        let contigs = [SmolStr::new("1")];
+        let contigs = [Contig { name: SmolStr::new("1"), length: 1000 }];
         let samples = [SmolStr::new("sample")];
         let mut vcf = writer.build::<Record>(&contigs, &samples)?;
 
