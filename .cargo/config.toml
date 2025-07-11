@@ -1,5 +1,6 @@
 [alias]
 xtask = "run --package xtask --"
+bin = ["run", "--package", "cargo-bin", "--"]
 binstall = ["bin", "cargo-binstall"]
 insta = ["bin", "cargo-insta"]
 llvm-cov = ["bin", "cargo-llvm-cov"]

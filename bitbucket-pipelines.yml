@@ -5,14 +5,9 @@ options:
 
 definitions:
   caches:
-    # Cache Cargo registry and index for faster dependency downloads
     cargo-registry: /usr/local/cargo/registry/
     cargo-git: /usr/local/cargo/git/
-    # Cache only dependency compilation artifacts, not our own code
-    cargo-target: target/debug/
-    cargo-target-cov: target/llvm-cov-target/debug
-    # Cache Deno modules for scripts
-    deno-modules: ~/.cache/deno/
+    cargo-target: target/debug//
 
 pipelines:
   default:
@@ -23,36 +18,16 @@ pipelines:
               fail-fast: false
               script:
                 - rustup component add rustfmt
-                # Ensure code style
                 - cargo fmt -- --check
           - step:
-              name: Lint
+              name: Test
               caches:
                 - cargo-registry
                 - cargo-git
                 - cargo-target
-                - deno-modules
-              script:
-                # Dependencies
-                - rustup component add clippy
-                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake
-                # Install Deno for scripts
-                - curl -fsSL https://deno.land/x/install/install.sh | sh
-                - export DENO_INSTALL="/root/.deno"
-                - export PATH="$DENO_INSTALL/bin:$PATH"
-                # Run checks and generate reports
-                - deno run --allow-all ci/clippy_report.ts
-          - step:
-              name: Test and Code Coverage
-              caches:
-                - cargo-registry
-                - cargo-git
-                - cargo-target
-                - cargo-target-cov
               script:
                 - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake
-                - curl --proto "=https" --tlsv1.2 -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz" | tar xzf - -C "$CARGO_HOME/bin"
-                - RUSTC_BOOTSTRAP=1 cargo llvm-cov --workspace --doctests --fail-under-lines 70
+                - cargo xtask test
 
   tags:
     "*":
@@ -62,10 +37,7 @@ pipelines:
             - cargo-registry
             - cargo-git
           script:
-            # Dependencies
-            - rustup component add clippy rustfmt
             - apt-get update && apt-get install -y --no-install-recommends libclang-dev
-            # Build artifacts
-            - cargo build --release
+            - cargo xtask release
           artifacts:
             - target/release/rastair2
