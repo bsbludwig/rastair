@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use crate::{
     io::{
         formats::FromFileExtension,
-        mpk::{MessagePackWriter, MpkVcfHeader},
+        mpk::{MessagePackWriter, format::MpkVcfHeader},
     },
     sequence::ChunkRegion,
     vcf::Record,
