@@ -1,6 +1,9 @@
 use crate::{
     bed::BedWriter,
-    call::{methylation::params::MethylationCallingParams, variant_calling::VariantCallingParams},
+    call::{
+        methylation::params::MethylationCallingParams, ml::MachineLearning,
+        variant_calling::VariantCallingParams,
+    },
     io::vcf_writer,
     sequence::{ChunkRegion, Readers, SegmentsParams},
     vcf,
@@ -18,6 +21,7 @@ use tracing::{debug, info, instrument, warn};
 pub mod denovo_cpg;
 pub mod methylation;
 pub mod metrics;
+mod ml;
 pub mod process;
 pub mod variant_calling;
 pub mod variants;
@@ -53,6 +57,10 @@ pub struct CallParams {
     /// Output BED file with the called methylation events.
     #[arg(long = "bed")]
     pub bed_output: Option<ClioPath>,
+
+    /// Use machine learning model with this threshold value to call variants and methylation events
+    #[arg(long = "ml")]
+    pub ml: Option<f64>,
 }
 
 /// Read BAM + FASTA and call variants and methylation events
@@ -75,6 +83,13 @@ pub fn call(params: &CallParams) -> Result<()> {
     } else if regions[0].region.len() < 2 {
         warn!(region=%regions[0].region, "Given range is one base long, this will not yield any results for context-specific methylation calling.");
     }
+
+    // Init ML model if requested
+    let ml = if let Some(threshold) = params.ml {
+        MachineLearning::with_threshold(threshold)
+    } else {
+        MachineLearning::disabled()
+    };
 
     debug!("Going to process {} segments", regions.len());
 
@@ -190,7 +205,7 @@ pub fn call(params: &CallParams) -> Result<()> {
             regions_iter.par_bridge().try_for_each_with(
                 (vcf_sender, params),
                 |(vcf_sender, params), (index, region)| {
-                    process_region(index, region, vcf_sender, params)
+                    process_region(index, region, vcf_sender, params, &ml)
                 },
             )
         })?;
@@ -216,6 +231,7 @@ fn process_region(
     region: &ChunkRegion,
     vcf_sender: &mut ordered_channel::Sender<Vec<vcf::Record>>,
     params: &CallParams,
+    ml: &MachineLearning,
 ) -> Result<()> {
     // Use thread-local readers to avoid re-opening files in each thread
     let res = READERS.with(|local_readers| -> Result<Vec<vcf::Record>> {
@@ -258,6 +274,14 @@ fn process_region(
                 .methylation
                 .call(current, before, after) // Might also add filters
                 .wrap_err("Failed to call methylation")?;
+
+            if *current.info.in_cp_g && current.filters.is_empty() {
+                let res = ml.cpg(current, before, after);
+                if res.pass() {
+                    let pos = current.main.pos;
+                    info!(pos, ?res, "ML says yes");
+                }
+            }
         }
 
         if params.variant_calling.cpgs_only {
