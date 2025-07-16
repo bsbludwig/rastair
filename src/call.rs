@@ -5,7 +5,7 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    sequence::{ChunkRegion, Readers, SegmentsParams},
+    sequence::{ChunkRegion, ReaderParams, Readers},
     vcf,
 };
 use clio::ClioPath;
@@ -32,7 +32,7 @@ pub mod test_helpers;
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
     #[command(flatten)]
-    segments: SegmentsParams,
+    segments: ReaderParams,
 
     #[command(flatten)]
     variant_calling: VariantCallingParams,

@@ -27,7 +27,7 @@ mod chunked;
 mod regions;
 
 #[derive(Debug, clap::Args, Clone)]
-pub struct SegmentsParams {
+pub struct ReaderParams {
     /// Path to sorted and indexed BAM file
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
     pub bam_file: ClioPath,
@@ -58,7 +58,7 @@ pub struct SegmentationParams {
     pub segment_overlap: u64,
 }
 
-impl SegmentsParams {
+impl ReaderParams {
     pub fn readers(&self) -> Result<Readers> {
         let fasta = open_fasta(&self.fasta_file)?;
         let bam_path = self.bam_file.path();
@@ -78,7 +78,7 @@ impl SegmentsParams {
 pub struct Readers {
     pub fasta: FastaReader,
     pub bam: bam::IndexedReader,
-    params: SegmentsParams,
+    params: ReaderParams,
 }
 
 impl Readers {
@@ -265,7 +265,7 @@ mod tests {
             last_position: 6105900,
         };
 
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_calculate_segments() -> Result<()> {
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105800".parse().unwrap()),
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_overlapping_segments() -> Result<()> {
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105900".parse().unwrap()),
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_get_selected_region_variations() -> Result<()> {
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_get_selected_region_errors() -> Result<()> {
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_get_full_regions() -> Result<()> {
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_segment_error_handling() -> Result<()> {
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: None,
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_non_overlapping_segments() -> Result<()> {
-        let params = SegmentsParams {
+        let params = ReaderParams {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105900".parse().unwrap()),
