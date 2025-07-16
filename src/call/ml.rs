@@ -26,7 +26,7 @@ mod models {
     use biosphere::RandomForest;
     use color_eyre::{Result, eyre::Context};
     use std::{fmt, io::Read};
-    use tracing::instrument;
+    use tracing::{debug, instrument};
 
     use crate::vcf::Record;
 
@@ -101,8 +101,9 @@ mod models {
             let Some(model) = self.cpg.as_ref() else {
                 return MlResult::None;
             };
+
             let features = super::cpg::params_from_record(record, before, after);
-            let prediction = model.predict(&features.view().insert_axis(ndarray::Axis(0)));
+            let prediction = model.predict(&features.view());
             match prediction.get(0).copied() {
                 Some(p) => MlResult::Prediction { prediction: p, threshold: self.threshold },
                 None => MlResult::None,
@@ -140,70 +141,8 @@ mod cpg {
         utils::Base,
         vcf::{ByStrand, Record, utils::NoStrandBiasForBaseErrorExt},
     };
-    use ndarray::Array1;
+    use ndarray::{Array1, Array2, array};
     use tracing::{debug, instrument};
-
-    // Ben: the way that these are derived is in the vcf_to_train notebook
-    // basically, the `_adj` features are the adjacent G or C (depending on the ref position)
-    // p1-p5[ACGT] is just a one-hot encoding of A/C/G/T of the sequence context position 1,2,[ref],4,5
-    // all the count features are normalised to depth  or strand-depth
-    struct Params {
-        ad_alt: f64,
-        ad_alt_adj: f64,
-        ad_ref: f64,
-        alt_a: f64,
-        alt_c: f64,
-        alt_g: f64,
-        alt_t: f64,
-        alt_score: f64,
-        alt_score_adj: f64,
-        bq_alt: f64,
-        bq_ob_alt: f64,
-        bq_ob_ref: f64,
-        bq_ot_alt: f64,
-        bq_ot_ref: f64,
-        bq_ref: f64,
-        is_snp: f64,
-        mapq: f64,
-        mq_alt: f64,
-        mq_ob_alt: f64,
-        mq_ob_ref: f64,
-        mq_ot_alt: f64,
-        mq_ot_ref: f64,
-        mq_ref: f64,
-        num_aligned_bases_alt: f64,
-        num_aligned_bases_ref: f64,
-        num_indels_alt: f64,
-        num_indels_ref: f64,
-        num_mapq0: f64,
-        p1_a: f64,
-        p1_c: f64,
-        p1_g: f64,
-        p1_t: f64,
-        p2_a: f64,
-        p2_c: f64,
-        p2_g: f64,
-        p2_t: f64,
-        p4_a: f64,
-        p4_c: f64,
-        p4_g: f64,
-        p4_t: f64,
-        p5_a: f64,
-        p5_c: f64,
-        p5_g: f64,
-        p5_t: f64,
-        pos_in_read_alt: f64,
-        pos_in_read_ref: f64,
-        ref_a: f64,
-        ref_c: f64,
-        ref_g: f64,
-        ref_t: f64,
-        region_entropy: f64,
-        sb_ob_alt: f64,
-        sb_ob_ref: f64,
-        sb_ot_alt: f64,
-        sb_ot_ref: f64,
-    }
 
     /// Extract feature parameters from a VCF record for CpG classification
     ///
@@ -229,7 +168,7 @@ mod cpg {
         record: &Record,
         before: Option<&Record>,
         after: Option<&Record>,
-    ) -> Array1<f64> {
+    ) -> Array2<f64> {
         let ref_base = &record.main.r#ref;
         let depth = *record.info.read_depth as f64;
 
@@ -248,12 +187,11 @@ mod cpg {
         let (p5a, p5c, p5g, p5t) = one_hot_encode_base(seq_ctx.after_2);
 
         // One-hot encode ref and alt (fetch specific alt for CpG methylation)
-        let (ref_a, ref_c, ref_g, ref_t) =
-            one_hot_encode_base(Some(Base::from(ref_base.as_bytes()[0])));
+        let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(Some(Base::from(ref_base)));
         let target_alt = if ref_base == "C" { "T" } else { "A" };
         let (alt_a, alt_c, alt_g, alt_t) =
             if let Some(alt) = record.main.alt.iter().find(|a| a.as_str() == target_alt) {
-                one_hot_encode_base(Some(Base::from(alt.as_bytes()[0])))
+                one_hot_encode_base(Some(Base::from(alt)))
             } else {
                 debug!(target_alt, "No relevant alt allele found for methylation");
                 (0.0, 0.0, 0.0, 0.0)
@@ -267,7 +205,7 @@ mod cpg {
             record.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64 / depth;
 
         // Extract normalized strand bias counts
-        let ref_strand = record.strand_count(Base::from(ref_base.as_bytes()[0])).or_empty();
+        let ref_strand = record.strand_count(Base::from(ref_base)).or_empty();
         let alt_strand = record.strand_count(target_alt_base).or_empty();
 
         let sb_ot_ref = ref_strand.ot as f64 / depth;
@@ -279,28 +217,28 @@ mod cpg {
         let alt_score = if ref_base == "C" {
             // For C: use "ob" (original bottom) strand data
             let bq_ob_alt = get_strand_base_quality(record, target_alt_base).ob;
-            let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base.as_bytes()[0])).ob;
+            let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base)).ob;
             (sb_ob_alt * bq_ob_alt + 1.0) / (sb_ob_ref * bq_ob_ref + 1.0)
         } else {
             // For G: use "ot" (original top) strand data
             let bq_ot_alt = get_strand_base_quality(record, target_alt_base).ot;
-            let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base.as_bytes()[0])).ot;
+            let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base)).ot;
             (sb_ot_alt * bq_ot_alt + 1.0) / (sb_ot_ref * bq_ot_ref + 1.0)
         };
 
         // Extract base quality metrics
         let bq_ref = record.info.allele_base_quality.first().copied().unwrap_or(0.0);
         let bq_alt = record.info.allele_base_quality.get(alt_index + 1).copied().unwrap_or(0.0);
-        let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base.as_bytes()[0])).ot;
-        let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base.as_bytes()[0])).ob;
+        let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base)).ot;
+        let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base)).ob;
         let bq_ot_alt = get_strand_base_quality(record, target_alt_base).ot;
         let bq_ob_alt = get_strand_base_quality(record, target_alt_base).ob;
 
         // Extract mapping quality metrics
         let mq_ref = record.info.allele_map_quality.first().copied().unwrap_or(0.0);
         let mq_alt = record.info.allele_map_quality.get(alt_index + 1).copied().unwrap_or(0.0);
-        let mq_ot_ref = get_strand_map_quality(record, Base::from(ref_base.as_bytes()[0])).ot;
-        let mq_ob_ref = get_strand_map_quality(record, Base::from(ref_base.as_bytes()[0])).ob;
+        let mq_ot_ref = get_strand_map_quality(record, Base::from(ref_base)).ot;
+        let mq_ob_ref = get_strand_map_quality(record, Base::from(ref_base)).ob;
         let mq_ot_alt = get_strand_map_quality(record, target_alt_base).ot;
         let mq_ob_alt = get_strand_map_quality(record, target_alt_base).ob;
 
@@ -317,66 +255,62 @@ mod cpg {
         // Calculate adjacent position features
         let (ad_alt_adj, alt_score_adj) = calculate_adjacent_features(record, before, after);
 
-        let params = Params {
-            ad_alt,
+        array![[
             ad_alt_adj,
-            ad_ref,
-            alt_a,
-            alt_c,
-            alt_g,
-            alt_t,
-            alt_score,
             alt_score_adj,
-            bq_alt,
-            bq_ob_alt,
-            bq_ob_ref,
-            bq_ot_alt,
-            bq_ot_ref,
-            bq_ref,
-            is_snp,
-            mapq,
-            mq_alt,
-            mq_ob_alt,
-            mq_ob_ref,
-            mq_ot_alt,
-            mq_ot_ref,
-            mq_ref,
-            num_aligned_bases_alt,
-            num_aligned_bases_ref,
-            num_indels_alt,
-            num_indels_ref,
-            num_mapq0,
-            p1_a: p1a,
-            p1_c: p1c,
-            p1_g: p1g,
-            p1_t: p1t,
-            p2_a: p2a,
-            p2_c: p2c,
-            p2_g: p2g,
-            p2_t: p2t,
-            p4_a: p4a,
-            p4_c: p4c,
-            p4_g: p4g,
-            p4_t: p4t,
-            p5_a: p5a,
-            p5_c: p5c,
-            p5_g: p5g,
-            p5_t: p5t,
-            pos_in_read_alt,
-            pos_in_read_ref,
             ref_a,
             ref_c,
             ref_g,
             ref_t,
+            alt_a,
+            alt_c,
+            alt_g,
+            alt_t,
+            mapq,
+            num_mapq0,
+            p1a,
+            p1c,
+            p1g,
+            p1t,
+            p2a,
+            p2c,
+            p2g,
+            p2t,
+            p4a,
+            p4c,
+            p4g,
+            p4t,
+            p5a,
+            p5c,
+            p5g,
+            p5t,
             region_entropy,
-            sb_ob_alt,
+            ad_ref,
+            ad_alt,
+            sb_ot_ref,
             sb_ob_ref,
             sb_ot_alt,
-            sb_ot_ref,
-        };
-
-        // Convert to Array1<f64>
-        params_to_array(params)
+            sb_ob_alt,
+            alt_score,
+            bq_ref,
+            bq_alt,
+            bq_ot_ref,
+            bq_ob_ref,
+            bq_ot_alt,
+            bq_ob_alt,
+            mq_ot_ref,
+            mq_ob_ref,
+            mq_ot_alt,
+            mq_ob_alt,
+            mq_ref,
+            mq_alt,
+            pos_in_read_ref,
+            pos_in_read_alt,
+            num_aligned_bases_ref,
+            num_aligned_bases_alt,
+            num_indels_ref,
+            num_indels_alt,
+        ]]
     }
 
     fn one_hot_encode_base(base: Option<Base>) -> (f64, f64, f64, f64) {
@@ -385,11 +319,7 @@ mod cpg {
             Some(Base::C) => (0.0, 1.0, 0.0, 0.0),
             Some(Base::G) => (0.0, 0.0, 1.0, 0.0),
             Some(Base::T) => (0.0, 0.0, 0.0, 1.0),
-            _ => {
-                debug!(?base, "Unknown base for one-hot encoding");
-                // Unknown or None
-                (0.0, 0.0, 0.0, 0.0)
-            }
+            _ => (0.0, 0.0, 0.0, 0.0),
         }
     }
 
@@ -413,6 +343,7 @@ mod cpg {
             .unwrap_or_default()
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn calculate_adjacent_features(
         record: &Record,
         before: Option<&Record>,
@@ -467,63 +398,63 @@ mod cpg {
         }
     }
 
-    fn params_to_array(params: Params) -> Array1<f64> {
-        Array1::from(vec![
-            params.ad_alt,
-            params.ad_alt_adj,
-            params.ad_ref,
-            params.alt_a,
-            params.alt_c,
-            params.alt_g,
-            params.alt_t,
-            params.alt_score,
-            params.alt_score_adj,
-            params.bq_alt,
-            params.bq_ob_alt,
-            params.bq_ob_ref,
-            params.bq_ot_alt,
-            params.bq_ot_ref,
-            params.bq_ref,
-            params.is_snp,
-            params.mapq,
-            params.mq_alt,
-            params.mq_ob_alt,
-            params.mq_ob_ref,
-            params.mq_ot_alt,
-            params.mq_ot_ref,
-            params.mq_ref,
-            params.num_aligned_bases_alt,
-            params.num_aligned_bases_ref,
-            params.num_indels_alt,
-            params.num_indels_ref,
-            params.num_mapq0,
-            params.p1_a,
-            params.p1_c,
-            params.p1_g,
-            params.p1_t,
-            params.p2_a,
-            params.p2_c,
-            params.p2_g,
-            params.p2_t,
-            params.p4_a,
-            params.p4_c,
-            params.p4_g,
-            params.p4_t,
-            params.p5_a,
-            params.p5_c,
-            params.p5_g,
-            params.p5_t,
-            params.pos_in_read_alt,
-            params.pos_in_read_ref,
-            params.ref_a,
-            params.ref_c,
-            params.ref_g,
-            params.ref_t,
-            params.region_entropy,
-            params.sb_ob_alt,
-            params.sb_ob_ref,
-            params.sb_ot_alt,
-            params.sb_ot_ref,
-        ])
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{
+            call::{
+                process::PileupMappingParams, test_helpers::variant_pileup,
+                variant_calling::VariantCallingParams,
+            },
+            sequence::ReaderParams,
+        };
+        use color_eyre::Result;
+
+        #[test]
+        fn ch12_10588_c_t() -> Result<()> {
+            let reader = ReaderParams::test_with(
+                "tmp/taps/NA12878_aa_chr12.bam",
+                "tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa",
+            );
+            {
+                let record = reader
+                    .pileup("chr12", 10587)?
+                    .variant_metrics(&VariantCallingParams::default())?;
+                let fields = params_from_record(&record, None, None);
+                eprintln!(
+                    "{}:{} {} {fields:?}",
+                    record.main.chrom, record.main.pos, record.main.r#ref
+                );
+                eprintln!(
+                    "{}:{}_{}\t{}",
+                    record.main.chrom,
+                    record.main.pos,
+                    record.main.r#ref,
+                    to_tsv(fields.into_array())
+                );
+            }
+            {
+                let record = reader
+                    .pileup("chr12", 10601)?
+                    .variant_metrics(&VariantCallingParams::default())?;
+                let fields = params_from_record(&record, None, None);
+                eprintln!(
+                    "{}:{} {} {fields:?}",
+                    record.main.chrom, record.main.pos, record.main.r#ref
+                );
+                eprintln!(
+                    "{}:{}_{}\t{}",
+                    record.main.chrom,
+                    record.main.pos,
+                    record.main.r#ref,
+                    to_tsv(fields.into_array())
+                );
+            }
+            Ok(())
+        }
+
+        fn to_tsv(fields: Array1<f64>) -> String {
+            fields.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("\t")
+        }
     }
 }

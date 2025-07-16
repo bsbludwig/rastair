@@ -6,11 +6,12 @@ use crate::{
     },
     io::vcf_writer,
     sequence::{ChunkRegion, ReaderParams, Readers},
-    vcf,
+    vcf::{self, MachineLearningPrediction, low_ml_score},
 };
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
 use rayon::prelude::*;
+use smallvec::smallvec_inline;
 use smol_str::SmolStr;
 use std::{
     ops::Mul as _,
@@ -275,17 +276,28 @@ fn process_region(
                 .call(current, before, after) // Might also add filters
                 .wrap_err("Failed to call methylation")?;
 
-            if *current.info.in_cp_g && current.filters.is_empty() {
-                let res = ml.cpg(current, before, after);
-                if res.pass() {
-                    let pos = current.main.pos;
-                    info!(pos, ?res, "ML says yes");
+            if *current.info.in_cp_g {
+                if let res @ ml::MlResult::Prediction { prediction, .. } =
+                    ml.cpg(current, before, after)
+                {
+                    if res.pass() {
+                        current.samples[0].machine_learning_prediction =
+                            MachineLearningPrediction(smallvec_inline![Some(prediction)]);
+                    } else {
+                        current.filters.add(low_ml_score);
+                    }
                 }
+            }
+
+            // If no filters were added, we're gonna call it
+            if current.filters.is_empty() {
+                current.filters.add(rastair2_vcf::standard_fields::PASS);
             }
         }
 
         if params.variant_calling.cpgs_only {
             // Filter out piles that are not CpG if requested
+            // TODO: Maybe do this before expensive ML calls?
             records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
         }
 

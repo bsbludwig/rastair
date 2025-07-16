@@ -39,6 +39,7 @@ impl VariantCandidatePileup {
             genotype_confidence,
             sample_read_depth: SampleReadDepth(self.bases.len()),
             methylated: Methylated::Unknown,
+            machine_learning_prediction: MachineLearningPrediction(smallvec![None]),
         })
     }
 }
