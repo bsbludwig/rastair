@@ -229,6 +229,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "biosphere"
+version = "0.4.0"
+source = "git+https://github.com/DaGaMs/biosphere.git#832d07297206b193a3c54133899752e6c1b59ad1"
+dependencies = [
+ "ndarray",
+ "rand 0.8.5",
+ "rayon",
+ "serde",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2205,6 +2216,7 @@ version = "0.1.0"
 dependencies = [
  "bgzip",
  "bio",
+ "biosphere",
  "clap",
  "clap-markdown",
  "clap-num",
@@ -2217,6 +2229,7 @@ dependencies = [
  "libc",
  "lz4",
  "mimalloc",
+ "ndarray",
  "ordered-channel",
  "pastey",
  "probability",

@@ -109,7 +109,7 @@ pub fn params_from_record(
         alt_c,
         alt_g,
         alt_t,
-        mapq,
+        *mapq,
         num_mapq0,
         p1a,
         p1c,
