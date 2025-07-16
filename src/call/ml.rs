@@ -19,7 +19,6 @@
 
 #![allow(unused)]
 
-pub use cpg::params_from_record;
 pub use models::{MachineLearning, MlResult};
 
 mod models;
@@ -27,3 +26,4 @@ mod utils;
 
 mod cpg;
 mod denovo_cpg;
+mod others;
