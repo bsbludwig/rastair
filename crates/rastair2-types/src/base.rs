@@ -128,16 +128,36 @@ impl std::str::FromStr for Base {
 impl From<u8> for Base {
     fn from(value: u8) -> Self {
         match value {
-            b'a' => Base::A,
-            b'c' => Base::C,
-            b'g' => Base::G,
-            b't' => Base::T,
-            b'A' => Base::A,
-            b'C' => Base::C,
-            b'G' => Base::G,
-            b'T' => Base::T,
+            b'A' | b'a' => Base::A,
+            b'C' | b'c' => Base::C,
+            b'G' | b'g' => Base::G,
+            b'T' | b't' => Base::T,
             _ => Base::Unknown,
         }
+    }
+}
+
+impl From<&str> for Base {
+    fn from(val: &str) -> Self {
+        match val {
+            "A" | "a" => Base::A,
+            "C" | "c" => Base::C,
+            "G" | "g" => Base::G,
+            "T" | "t" => Base::T,
+            _ => Base::Unknown,
+        }
+    }
+}
+
+impl From<SmolStr> for Base {
+    fn from(val: SmolStr) -> Self {
+        val.as_str().into()
+    }
+}
+
+impl From<&SmolStr> for Base {
+    fn from(val: &SmolStr) -> Self {
+        val.as_str().into()
     }
 }
 
