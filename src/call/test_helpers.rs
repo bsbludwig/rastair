@@ -1,5 +1,5 @@
 //! Helpers for writing concise tests.
-#![allow(clippy::unwrap_in_result)]
+#![allow(unused, clippy::unwrap_in_result)]
 
 use crate::{
     call::{
