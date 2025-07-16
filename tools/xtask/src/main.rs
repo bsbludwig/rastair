@@ -4,14 +4,15 @@ use cargo_pgo::{
 };
 use clap::Parser;
 use color_eyre::{
-    Result,
+    Result, Section,
     eyre::{Context, ContextCompat, ensure, eyre},
 };
 use std::{
     env::set_current_dir,
     fs,
     path::{Path, PathBuf},
-    process::Command as StdCommand,
+    process::{Child, Command as StdCommand},
+    thread,
 };
 use tracing::{debug, info};
 
@@ -23,13 +24,15 @@ struct Cli {
 
 #[derive(Debug, clap::Subcommand)]
 enum Command {
-    /// Run this as pre-commit hook
+    /// Run quick checks, also adds itself as pre-commit hook
     PreCommit,
     /// Run tests
     Test {
         #[clap(long)]
         coverage: bool,
     },
+    /// Accept new snapshots and run doctests
+    Insta,
     /// Generate documentation with mdbook
     Docs {
         #[clap(long)]
@@ -62,7 +65,23 @@ fn main() -> Result<()> {
         }
         Command::Test { coverage } => {
             info!("Running tests...");
-            run_tests(coverage)?;
+            let status = run_tests(coverage)?.wait().wrap_err("Failed to wait for test process")?;
+            ensure!(status.success(), "Tests failed, please fix the issues before committing.");
+        }
+        Command::Insta => {
+            info!("Running insta tests and doctests...");
+            let status = StdCommand::new("cargo")
+                .arg("insta")
+                .arg("test")
+                .arg("--workspace")
+                .arg("--test-runner=nextest")
+                .arg("--accept")
+                .status()
+                .wrap_err("Failed to run insta tests")?;
+            ensure!(
+                status.success(),
+                "Insta tests failed, please fix the issues before committing."
+            );
         }
         Command::Docs { serve: open } => {
             info!("Generating documentation...");
@@ -89,22 +108,52 @@ fn pre_commit() -> Result<()> {
             debug!("Pre-commit hook already exists, skipping installation.");
             return Ok(());
         }
-        let hook_content = "#! /usr/bin/env bash\ncargo xtask pre-commit\n";
+        let hook_content = "#! /usr/bin/env bash\nset -euo pipefail\ncargo xtask pre-commit\n";
         fs::write(path, hook_content).wrap_err("Failed to write pre-commit hook")?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms)
+                .wrap_err("Failed to make pre-commit hook executable")?;
+        }
+
         info!("Pre-commit hook installed successfully.");
         Ok(())
     }
 
     install_pre_commit_hook().wrap_err("Failed to install pre-commit hook")?;
 
-    let fmt = StdCommand::new("cargo")
-        .arg("fmt")
+    let mut test_handle = StdCommand::new("cargo")
+        .arg("nextest")
+        .arg("run")
         .arg("--all")
-        .arg("--check")
-        .status()
-        .wrap_err("Failed to run cargo fmt --check")?;
-    ensure!(fmt.success(), "Cargo fmt check failed");
-    run_tests(false).wrap_err("Failed to run tests")?;
+        .spawn()
+        .wrap_err("Failed to run tests")?;
+
+    let fmt_handle = thread::spawn(|| {
+        let fmt = StdCommand::new("cargo")
+            .arg("fmt")
+            .arg("--all")
+            .arg("--check")
+            .status()
+            .wrap_err("Failed to run cargo fmt --check")?;
+        ensure!(fmt.success(), "Cargo fmt check failed");
+        Ok(())
+    });
+
+    if let Err(error) =
+        fmt_handle.join().map_err(|e| eyre!("Failed to join fmt thread: {e:?}")).and_then(|res| res)
+    {
+        test_handle.kill().wrap_err("Failed to kill test process")?;
+        return Err(error).suggestion("Run `cargo fmt` to fix formatting issues.");
+    }
+
+    let status = test_handle.wait().wrap_err("Failed to wait for test process")?;
+    ensure!(status.success(), "Tests failed, please fix the issues before committing.");
+
     Ok(())
 }
 
@@ -132,35 +181,33 @@ fn build_release() -> Result<()> {
     Ok(())
 }
 
-fn run_tests(with_coverage: bool) -> Result<()> {
+fn run_tests(with_coverage: bool) -> Result<Child> {
     let ci = std::env::var("CI").is_ok();
     if with_coverage {
         ensure!(
-            StdCommand::new("cargo-llvm-cov").arg("llvm-cov").arg("--version").status()?.success(),
+            StdCommand::new("cargo").arg("llvm-cov").arg("--version").status()?.success(),
             "cargo-llvm-cov is not installed. Please install it with: cargo install cargo-llvm-cov"
         );
         info!("Running tests with coverage...");
-        StdCommand::new("cargo-llvm-cov")
+        StdCommand::new("cargo")
+            .arg("llvm-cov")
             .arg("test")
             .arg("--workspace")
             .arg("--doctests")
             .env("RUST_BACKTRACE", "1")
             .env("RUSTC_BOOTSTRAP", "1") // for doctests, don't worry about it
             .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
-            .status()
-            .wrap_err("Failed to run tests with coverage")?;
-        return Ok(());
+            .spawn()
+            .wrap_err("Failed to run tests with coverage")
     } else {
         StdCommand::new("cargo")
             .arg("test")
             .arg("--all")
             .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
             .env("RUST_BACKTRACE", "1")
-            .status()
-            .wrap_err("Failed to run tests")?;
+            .spawn()
+            .wrap_err("Failed to run tests")
     }
-
-    Ok(())
 }
 
 fn generate_docs(serve: bool) -> Result<()> {

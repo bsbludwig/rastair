@@ -8,3 +8,4 @@
 **/*.csi
 **/*.vcf.gz
 **/*.vcf.gz.tbi
+.bin/

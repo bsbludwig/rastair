@@ -15,7 +15,7 @@ use winnow::{
 ///
 /// ```rust
 /// use std::str::FromStr;
-/// use rastair2::utils::RegionString;
+/// use rastair2_types::RegionString;
 ///
 /// let entire_chr17 = RegionString::from_str("chr17").unwrap();
 /// let chr17_from_100 = RegionString::from_str("chr17:100").unwrap();

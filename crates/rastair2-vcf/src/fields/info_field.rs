@@ -141,9 +141,7 @@ impl InfoFieldValue for u64 {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert u64 to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert u64 to i32 for info field")?,
             )
             .wrap_err("Failed to set field")
     }
@@ -168,9 +166,7 @@ impl InfoFieldValue for i64 {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert i64 to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert i64 to i32 for info field")?,
             )
             .wrap_err("Failed to set field")
     }
@@ -187,9 +183,7 @@ impl InfoFieldValue for usize {
                     .iter()
                     .map(|&n| i32::try_from(n))
                     .collect::<Result<SmallVec<i32, 5>, _>>()
-                    .wrap_err_with(|| {
-                        format!("Failed to convert usize to i32 for info field {tag}")
-                    })?,
+                    .wrap_err("Failed to convert usize to i32 for info field")?,
             )
             .wrap_err("Failed to set field")
     }

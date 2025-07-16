@@ -150,7 +150,7 @@ pub fn call(params: &CallParams) -> Result<()> {
                         last_seen_chrom = Some(record.main.chrom.clone());
                         last_seen_pos = Some(record.main.pos);
 
-                        writer.add(record).wrap_err("Failed to write record to VCF")?;
+                        writer.add(record).wrap_err("Failed to write VCF record")?;
 
                         if let Some(bed_writer) = bed_writer.as_mut()
                             && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
@@ -277,7 +277,11 @@ fn process_region(
         }
     };
 
-    vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")?;
+    if let Err(_err) =
+        vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")
+    {
+        // the channel is closed, because the writer thread has finished
+    }
 
     Ok(())
 }

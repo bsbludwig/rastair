@@ -1,0 +1,395 @@
+- key: TAPS
+  long: "TET-Assisted Pyridine-Borane Sequencing"
+  group: "Genetics"
+  description: |
+    A method for detecting DNA modifications, such as @methylation, at single-base resolution. TAPS uses a chemical reaction to convert 5-methylcytosine (5mC) to thymine (T) while leaving unmodified cytosines unchanged. Allows the detection of 5mC sites using standard sequencing technologies. Alternative to @bisulfite sequencing, which can introduce biases and artifacts during the conversion process. #notecite(<liu2019bisulfite>)
+
+- key: bisulfite
+  group: "Genetics"
+  description: |
+    A chemical treatment used to convert unmethylated cytosines to uracil in DNA used in bisulfite sequencing to detect DNA @methylation patterns. Methylated cytosines are protected from conversion, allowing researchers to distinguish between methylated and unmethylated cytosines in the genome.
+
+- key: variant
+  group: "Genetics"
+  description: |
+    Used to refer to a specific region of the genome which differs between two genomes. Variants can be @SNV:pl, insertions, deletions, or structural changes.
+
+- key: allele
+  group: "Genetics"
+  description: |
+    A specific version of a gene or DNA sequence that can vary between individuals. Alleles can differ by a single nucleotide (@SNV), a small insertion or deletion (@indel), or larger structural changes.
+
+- key: refAllele
+  short: "reference allele"
+  group: "Genetics"
+  description: |
+    Base that is present in the @referenceGenome at a specific @locus. Opposite to @altAllele.
+
+- key: altAllele
+  short: "alternative allele"
+  group: "Genetics"
+  description: |
+    Base that is different from the @refAllele at a specific @locus. Opposite to @refAllele.
+
+- key: referenceGenome
+  short: "reference genome"
+  group: "Genetics"
+  description: |
+    Sequence of the species' genome that is used as a reference for comparing and analyzing genetic data.
+
+- key: haplotype
+  group: "Genetics"
+  description: |
+    The @allele:pl at @variant:pl close together on the same @chromosome tend to occur together more often than is expected by chance. These blocks of @allele:pl are called haplotypes. Genes that are close to each other on the same @chromosome tend to be inherited together because they're less likely to be separated during the process of recombination, which occurs when @chromosome:pl exchange genetic material.
+
+- key: methylation
+  group: "Genetics"
+  description: |
+    Methylation is a chemical modification of DNA that involves adding a small molecule called a methyl group (CH₃) to certain parts of DNA, typically at cytosine bases adjacent to guanine bases (@CpG sites). This process is part of the epigenetic mechanisms that regulate gene expression without altering the underlying DNA sequence. Methylation often acts as a "switch" by turning genes off when methyl groups are added. It is a crucial process during development and helps maintain cellular identity. If genes involved in growth are turned off due to methylation, it might prevent them from causing uncontrolled cell division (cancer). However, if tumor-suppressor genes get hypermethylated, they can be silenced too, contributing to cancer. Conversely, hypomethylation (reduced methylation) may activate genes that shouldn't be on, also leading to issues like cancer.
+
+- key: methylated
+  group: "Genetics"
+  description: |
+    Refers to DNA that has undergone @methylation.
+
+- key: SNV
+  long: "Single Nucleotide Variant"
+  group: "Genetics"
+  description: |
+    A variation in a single nucleotide that occurs at a specific position in the genome.
+
+- key: SNP
+  long: "Single Nucleotide Polymorphism"
+  group: "Genetics"
+  description: |
+    A @SNV that occurs at a given minimum frequency in the population.
+
+- key: SAM
+  long: "Sequence Alignment Map"
+  group: "File Formats"
+  description: |
+    A text-based file format that stores sequence data in a tab-delimited format. [Format Specification for version 1.0]("https://samtools.github.io/hts-specs/SAMv1.pdf"). It is used to store the alignment of sequence reads to a @referenceGenome. SAM files are used to visualize and analyze sequence data in genome browsers like @IGV. @samPaper
+
+    Additional keys are defined in the [Optional Fields Specification]("https://samtools.github.io/hts-specs/SAMtags.pdf").
+
+- key: BAM
+  long: "Binary Alignment Map"
+  group: "File Formats"
+  description: |
+    A binary version of the @SAM file format. It is a compressed, indexed, and binary representation of the sequence alignment data. BAM files are used to store sequence data efficiently. They can be visualized and analyzed in genome browsers like @IGV.
+
+- key: BED
+  long: "Browser Extensible Data"
+  group: "File Formats"
+  description: |
+    A text-based file format that stores genomic regions as a list of intervals.
+
+    It looks like this:
+    ```
+    chr1	11873	12227	ENSG00000223972.5	0	+
+    chr1	12612	12721	ENSG00000227232.5	0	-
+    chr1	13220	14409	ENSG00000278267.1	0	+
+    ```
+
+    The first three columns represent the @chromosome, start position, and end position of the interval. The other columns contain additional information about the interval.
+
+- key: VCF
+  long: "Variant Call Format"
+  group: "File Formats"
+  description: |
+    File format based on @TSV that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations. @vcfPaper
+
+    It looks like this:
+
+    ```
+    #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample1	sample2
+    chr1	10001	.	A	C	30	PASS	.	GT:DP	0/1:10	1/1:20
+    chr1	10002	.	T	G	20	PASS	.	GT:DP	0/1:15	1/1:25
+    ```
+
+    The first row contains the column headers. The first eight columns are mandatory fields that describe the variant. The remaining columns contain information about the samples and their genotypes.
+
+- key: TSV
+  long: "Tab-Separated Values"
+  group: "File Formats"
+  description: |
+    Text-based file format, each line corresponds to a row, and columns are separated by tabs.
+
+- key: FASTQ
+  group: "File Formats"
+  description: |
+    A text-based file format that stores DNA or RNA sequences and their corresponding quality scores. It is used to store raw sequencing data from high-throughput sequencing experiments. FASTQ files contain the sequence data in the form of nucleotide bases (A, T, C, G) and quality scores that represent the confidence in each base call.
+
+- key: samtools
+  short: SAMtools
+  group: "Tools"
+  description: |
+    A suite of programs for interacting with sequencing data. It can manipulate @SAM and @BAM files, perform format conversions, and identify variants in sequence data. @samPaper
+
+    Under the umbrella organization of `samtools`, a lot of related projects can be found, including [specifications for file formats]("https://github.com/samtools/hts-specs").
+
+- key: bcftools
+  short: BCFtools
+  group: "Tools"
+  description: |
+    A set of utilities for manipulating variant calls in the @VCF and BCF file formats. @samtoolsPaper
+
+- key: bedtools
+  short: BEDtools
+  group: "Tools"
+  description: |
+    A suite of utilities for manipulating genomic intervals stored in @BED files.
+
+- key: GATK
+  short: GATK
+  long: "Genome Analysis Toolkit"
+  group: "Tools"
+  description: |
+    A software package for analyzing sequencing data with tools for variant discovery, genotyping, and other analyses.
+
+- key: BCF
+  long: "Binary Call Format"
+  group: "File Formats"
+  description: |
+    A binary version of the @VCF file format. It stores variant calls in a compressed and indexed binary format. BCF files are more efficient for storing large variant datasets and can be used with tools like @bcftools.
+
+- key: IGV
+  long: "Integrative Genomics Viewer"
+  group: "Tools"
+  description: |
+    A visualization tool for interactive exploration of @SAM and @BAM files.
+    Also see  @screenshot-igv.
+
+- key: locus
+  group: "Genetics"
+  description: |
+    A specific position on a @chromosome where a gene or other DNA sequence is located. It can also refer to the position of a @variant in the genome.
+
+- key: chromosome
+  group: "Genetics"
+  description: |
+    A long DNA molecule that contains many genes and other genetic elements.
+
+- key: assay
+  group: "Genetics"
+  description: |
+    A test or procedure used to measure a specific property or characteristic of a sample. In genetics, assays are used to detect and measure genetic variations, gene expression levels, protein interactions, and other biological processes.
+
+- key: CIGAR
+  long: "Compact Idiosyncratic Gapped Alignment Report"
+  group: "Sequence Analysis"
+  description: |
+    A string that represents the alignment of a sequence read to a @referenceGenome. It encodes information about the alignment, including matches, mismatches, insertions, deletions, and skips. It is used in the @SAM and @BAM file formats.
+
+- key: bwa2-aligner
+  short: "BWA"
+  long: "Burrows-Wheeler Aligner"
+  group: "Tools"
+  description: |
+    A software package for mapping low-divergent sequences against a large @referenceGenome.
+
+- key: Minimap2
+  short: "Minimap2"
+  group: "Tools"
+  # link: https://github.com/lh3/minimap2
+  description: |
+    Sequence alignment program that aligns DNA or mRNA sequences against a reference database.
+
+- key: RMS
+  long: "Root Mean Square"
+  group: "Statistics"
+  description: |
+    Statistical measure of the average deviation of a set of values from their mean.
+
+- key: ChiSquare
+  short: "Chi-square test"
+  group: "Statistics"
+  description: |
+    Determine whether there is a significant association between the observed frequencies of the variables with the expected frequencies to assess the independence of the variables.
+
+    The test statistic is calculated as the sum of the squared differences between the observed and expected frequencies, divided by the expected frequencies. The resulting value is compared to a critical value from the Chi-square distribution to determine statistical significance:
+      $$ \chi^2 = \sum_i \frac{(O_i - E_i)^2}{E_i} $$
+    where $O_i$ is the observed frequency, $E_i$ is the expected frequency, and the sum is taken over all categories.
+
+    The Chi-square test is commonly used in genetics to assess the association between genetic variants and phenotypes, as well as in population genetics to test for deviations from Hardy-Weinberg equilibrium, which describes the expected frequencies of genotypes in a population under certain assumptions.
+
+- key: RandomForest
+  short: RF
+  long: "Random Forest"
+  group: "Statistics"
+  description: |
+    Supervised learning algorithm, used for classification and regression.
+
+- key: GIAB
+  short: GIAB
+  long: Genome In a Bottle
+  group: "Genetics"
+  # link: https://www.nist.gov/programs-projects/genome-bottle
+  description: |
+    "A public-private-academic consortium hosted by NIST to develop the technical infrastructure (reference standards, reference methods, and reference data) to enable translation of whole human genome sequencing to clinical practice and innovations in technologies." -- [nist.gov]("https://www.nist.gov/programs-projects/genome-bottle")
+
+- key: DiploidGenome
+  short: diploid genome
+  group: "Genetics"
+  description: |
+    Genome that contains two sets of @chromosome:pl, one set inherited from each parent.
+
+- key: ML
+  long: "Machine Learning"
+  group: "Statistics"
+  description: |
+    Algorithms that can receive input data and use statistical analysis to predict an output value within an acceptable range.
+
+- key: indel
+  long: "insertion/deletion"
+  group: "Genetics"
+  description: |
+    Variation in the genome where a small number of nucleotides are inserted or deleted.
+
+- key: CpG
+  short: CpG
+  long: "Cytosine-phosphate-Guanine"
+  group: "Genetics"
+  description: |
+    A site in the DNA sequence where a cytosine nucleotide is followed by a guanine nucleotide in the linear sequence of bases along its 5' → 3' direction. CpG sites are often associated with gene regulation through DNA @methylation.
+
+- key: Rust
+  group: "Programming"
+  description: |
+    A systems programming language, known for its safety, speed, and concurrency. @rustPaper
+
+- key: htslib
+  group: "Tools"
+  description: |
+    A C library for reading/writing sequencing data, used by tools like @samtools and @bcftools to manipulate @SAM, @BAM, and @VCF files@htslibPaper. Rastair uses the @Rust bindings provided by the `rust-htslib` crate.
+
+- key: mapQ
+  long: "mapping quality"
+  group: "Sequence Analysis"
+  description: |
+    A @Phred-scaled probability that the mapping position of a read is incorrect. A higher mapping quality indicates a more reliable alignment. Numbers are typically between 0 and 60.
+
+- key: baseQ
+  long: "base quality"
+  group: "Sequence Analysis"
+  description: |
+    A @Phred-scaled probability that the base call is incorrect. A higher base quality indicates a more reliable base call. Numbers are typically between 0 and 40.
+
+- key: Phred-scaled
+  group: "Statistics"
+  description: |
+    A Phred-scaled quality score is a logarithmic measure of the probability that a base call is incorrect. The formula is $ Q = -10 \cdot \log P $ where $P$  is the probability of an incorrect base call. A higher Phred score indicates a more reliable base call. The name "Phred" comes from the base calling software of the same name.
+
+- key: OT
+  long: Original Top
+  group: "Sequence Analysis"
+  description: |
+    The original top of the original molecule of DNA that was sequenced. The "top" by definition is the sequence that matches the reference sequence.
+
+- key: OB
+  long: Original Bottom
+  group: "Sequence Analysis"
+  description: |
+    The original bottom alignment score of a read.
+
+- key: repeatedSequence
+  short: repeated sequence
+  group: "Genetics"
+  description: |
+    A sequence that occurs multiple times in the genome. There homopolymer repeats like `AAAAAA`, tandem repeats like `ATATATAT`, and interspersed repeats which are dispersed throughout the genome.
+
+- key: maximumLikelihood
+  short: maximum likelihood
+  group: "Statistics"
+  description: |
+    A method used to estimate the parameters of a statistical model. It finds the parameter values that maximize the likelihood of the observed data. The maximum likelihood estimate is the set of parameter values that make the observed data most probable. It is a common method for fitting models to data in statistics and machine learning.
+
+- key: CLI
+  long: "Command Line Interface"
+  group: "Programming"
+  description: |
+    Terminal-based interface for interacting with software using text commands.
+
+- key: bgzip
+  group: "Tools"
+  description: |
+    Compression tool that produces @BGZF files, commonly used to compress @VCF and @BAM files. Part of @samtools.
+
+- key: BGZF
+  long: "Blocked GNU Zip Format"
+  group: "File Formats"
+  description: |
+    A block compression format in which the input file is compressed as a series of GZIP-compressed blocks that can be indexed for efficient random access.
+
+- key: LLVM
+  group: "Programming"
+  description: |
+    Compiler infrastructure project, used as backend for various programming languages including the official @Rust compiler.
+
+- key: closure
+  group: "Programming"
+  description: |
+    A function that "closes over" bindings in the surrounding scope, i.e., variables from around its definition location are accessible inside of it.
+
+- key: record
+  group: "Sequence Analysis"
+  description: |
+    Alternative term for @read.
+
+- key: read
+  long: sequence read
+  group: "Sequence Analysis"
+  description: |
+    A short sequence of DNA or RNA that is generated by a high-throughput sequencing technology. Reads are typically a few hundred base pairs long and are used to reconstruct the original sequence of the genome.
+
+- key: alignment
+  group: "Sequence Analysis"
+  description: |
+    Represents the mapping of a sequence @read to a @referenceGenome in @BAM and @SAM files. It includes information about the position, orientation, and quality of the alignment.
+
+- key: pileup
+  group: "Sequence Analysis"
+  description: |
+    A summary of the read alignments at a specific position in the @referenceGenome in @BAM and @SAM files. As a data structure, a pileup is a matrix where each row represents a @read and each column represents a position in the @referenceGenome. From this, the most likely base at that position can be inferred and used to call variants.
+
+- key: qname
+  long: "query template name"
+  group: "File Formats"
+  description: |
+    A unique identifier for a sequence @read in a @SAM or @BAM file. It is used to track the origin of the read and link it to other information in the file. Example: `NB502094:69:HN2H2BGX5:2:21111:24699:8526`
+
+- key: putative
+  group: "Genetics"
+  description: |
+    Refers to something that is assumed to be true or valid based on initial evidence but has not been definitively proven.
+
+- key: flamegraph
+  group: "Programming"
+  description: |
+    A visualization of profiled software, allowing the user to see which functions are consuming the most time. The x-axis represents the stack depth, and the y-axis represents the function name. The width of each box represents the amount of time spent in that function. @gregg2016flame
+
+- key: LTO
+  long: "Link Time Optimization"
+  group: "Programming"
+  description: |
+    A compiler optimization technique that performs optimizations across the entire program at link time, rather than at compile time. This can lead to improved performance and reduced code size.
+
+- key: CI
+  long: "Continuous Integration"
+  group: "Programming"
+  description: |
+    A software development practice where automated tests and builds are run on a regular basis (e.g. on every push to the repository) to ensure that code changes do not introduce new bugs or issues.
+
+- key: VAF
+  long: "Variant Allele Frequency"
+  group: "Genetics"
+  description: |
+    The proportion of a specific @altAllele in a sample compared to the total number of alleles at that @variant:
+
+    $ \text{VAF} = \frac{\text{Reads supporting the variant allele}}{\text{Total reads covering the site}} $
+
+- key: PGO
+  long: "Profile-Guided Optimization"
+  group: "Programming"
+  description: |
+    A compiler optimization technique that uses profiling information from previous runs of the program to optimize the code for better performance. This can lead to improved runtime performance and reduced code size.

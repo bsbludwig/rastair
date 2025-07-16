@@ -9,10 +9,10 @@ Install the following dependencies:
 - [Rust](https://www.rust-lang.org/tools/install) (version 1.88 or later)
 - System dependencies for htslib and zlib: `libclang-dev cmake`
 
-Clone the repository and build the project:
+Clone the repository and build the project using:
 
 ```bash
-cargo build --release
+cargo xtask release
 ```
 
 The binary will be located in `target/release/rastair2`.

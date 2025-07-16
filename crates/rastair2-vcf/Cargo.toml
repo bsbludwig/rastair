@@ -13,6 +13,7 @@ smallvec = { workspace = true }
 smol_str = { workspace = true }
 serde = { workspace = true }
 cstr8 = { workspace = true }
+rastair2-types = { version = "0.1.0", path = "../rastair2-types" }
 
 [dev-dependencies]
 insta = { workspace = true }

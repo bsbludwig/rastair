@@ -1,14 +1,14 @@
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr};
-use rastair2_vcf::{Compression, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
+use rastair2_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
 use smol_str::SmolStr;
-use std::{ffi::OsStr, num::NonZeroUsize};
+use std::{collections::BTreeSet, ffi::OsStr, num::NonZeroUsize};
 use tracing::{debug, warn};
 
 use crate::{
     io::{
         formats::FromFileExtension,
-        mpk::{MessagePackWriter, MpkVcfHeader},
+        mpk::{MessagePackWriter, format::MpkVcfHeader},
     },
     sequence::ChunkRegion,
     vcf::Record,
@@ -63,11 +63,11 @@ impl clap::ValueEnum for Format {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum VcfFormat {
-    /// Text-based VCF format
+    /// Text-based VCF format (.vcf)
     Vcf,
-    /// Compressed text-based VCF format
+    /// Compressed text-based VCF format (.vcf.gz)
     VcfCompressed,
-    /// Binary VCF format (BCF)
+    /// Binary VCF format (.bcf)
     Bcf,
 }
 
@@ -108,16 +108,11 @@ impl Params {
     }
 
     pub fn writer(&self, regions: &[ChunkRegion], metadata: &[String]) -> Result<Writer> {
-        // List all chromosomes in the regions for VCF header
-        let contigs = regions.iter().map(|r| r.chromosome.clone()).fold(
-            Vec::<SmolStr>::new(),
-            |mut acc, chrom| {
-                if !acc.contains(&chrom) {
-                    acc.push(chrom);
-                }
-                acc
-            },
-        );
+        let contigs: BTreeSet<Contig> = regions
+            .iter()
+            .map(|r| Contig { name: r.chromosome.clone(), length: r.len() })
+            .collect();
+        let contigs: Vec<Contig> = contigs.into_iter().collect();
         let samples = vec![SmolStr::new("sample")]; // TODO: we have one sample for now
 
         let (format, compression) = match self.guess_format() {
@@ -138,7 +133,7 @@ impl Params {
 
     pub fn vcf_writer(
         &self,
-        contigs: &[SmolStr],
+        contigs: &[Contig],
         samples: &[SmolStr],
         metadata: &[String],
         format: HtsVcfFormat,
@@ -161,7 +156,7 @@ impl Params {
 
     pub fn create_mpk_writer(
         &self,
-        contigs: Vec<SmolStr>,
+        contigs: Vec<Contig>,
         samples: Vec<SmolStr>,
         metadata: &[String],
     ) -> Result<MessagePackWriter> {
@@ -187,7 +182,9 @@ pub enum Writer {
 impl Writer {
     pub fn add(&mut self, record: &Record) -> Result<()> {
         match self {
-            Writer::Vcf(writer) => writer.add(record).wrap_err("Failed to write record to VCF"),
+            Writer::Vcf(writer) => {
+                writer.add(record).wrap_err("Failed to write record to VCF writer")
+            }
             Writer::MessagePack(writer) => writer.add(record),
         }
     }

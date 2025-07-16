@@ -109,11 +109,7 @@ impl PartialEq<Base> for SmolStr {
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() || cfg!(test) {
-            write!(f, "{}", (*self) as u8 as char)
-        } else {
-            write!(f, "{}", self.display_colored())
-        }
+        write!(f, "{}", (*self) as u8 as char)
     }
 }
 
@@ -207,11 +203,6 @@ mod tests {
             assert_eq!(parsed.to_string(), (base as char).to_string());
             // debug -- same, actually
             assert_eq!(format!("{parsed:#?}"), (base as char).to_string());
-            // display in color
-            let colored = parsed.display_colored();
-            // skip initial ANSI color codes
-            let x = colored.chars().nth(5).unwrap();
-            assert_eq!(x, base as char);
         }
     }
 }

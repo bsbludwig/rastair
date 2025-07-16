@@ -11,3 +11,4 @@ clap = { version = "4.5.40", features = ["derive"] }
 
 cargo-pgo = "0.2.9"
 ctrlc = "3.4.7"
+cargo-run-bin = { version = "1.7.4", features = ["cli"] }
