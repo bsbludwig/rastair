@@ -276,16 +276,13 @@ fn process_region(
                 .call(current, before, after) // Might also add filters
                 .wrap_err("Failed to call methylation")?;
 
-            if *current.info.in_cp_g {
-                if let res @ ml::MlResult::Prediction { prediction, .. } =
-                    ml.cpg(current, before, after)
-                {
-                    if res.pass() {
-                        current.samples[0].machine_learning_prediction =
-                            MachineLearningPrediction(smallvec_inline![Some(prediction)]);
-                    } else {
-                        current.filters.add(low_ml_score);
-                    }
+            if let res @ ml::MlResult::Prediction { prediction, .. } =
+                ml.predict(current, before, after)
+            {
+                current.samples[0].machine_learning_prediction =
+                    MachineLearningPrediction(smallvec_inline![Some(prediction)]);
+                if !res.pass() {
+                    current.filters.add(low_ml_score);
                 }
             }
 

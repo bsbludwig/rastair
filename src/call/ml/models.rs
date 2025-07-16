@@ -73,12 +73,20 @@ impl MachineLearning {
         }
     }
 
-    pub fn cpg(
+    pub fn predict(
         &self,
         record: &Record,
         before: Option<&Record>,
         after: Option<&Record>,
     ) -> MlResult {
+        let (model, features) = if *record.info.in_cp_g {
+            (self.cpg.as_ref(), super::cpg::params_from_record(record, before, after))
+        } else if *record.info.de_novo_cp_g_candidate {
+            (self.denovo_cpg.as_ref(), super::denovo_cpg::params_from_record(record, before, after))
+        } else {
+            (self.others.as_ref(), super::others::params_from_record(record, before, after))
+        };
+
         let Some(model) = self.cpg.as_ref() else {
             return MlResult::None;
         };
@@ -89,24 +97,6 @@ impl MachineLearning {
             Some(p) => MlResult::Prediction { prediction: p, threshold: self.threshold },
             None => MlResult::None,
         }
-    }
-
-    pub fn denovo_cpg(
-        &self,
-        record: &Record,
-        before: Option<&Record>,
-        after: Option<&Record>,
-    ) -> Option<f64> {
-        todo!()
-    }
-
-    pub fn others(
-        &self,
-        record: &Record,
-        before: Option<&Record>,
-        after: Option<&Record>,
-    ) -> Option<f64> {
-        todo!()
     }
 }
 
