@@ -26,3 +26,4 @@ mod models;
 mod utils;
 
 mod cpg;
+mod denovo_cpg;
