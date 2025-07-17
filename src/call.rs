@@ -275,6 +275,16 @@ fn process_region(
                 .methylation
                 .call(current, before, after) // Might also add filters
                 .wrap_err("Failed to call methylation")?;
+        }
+
+        // Filter out piles that are not CpG if requested
+        if params.variant_calling.cpgs_only {
+            records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
+        }
+
+        let record_len = records.len();
+        for i in 0..record_len {
+            let (before, current, after) = surrounding_records(&mut records, i);
 
             if let res @ ml::MlResult::Prediction { prediction, .. } =
                 ml.predict(current, before, after)
@@ -290,12 +300,6 @@ fn process_region(
             if current.filters.is_empty() {
                 current.filters.add(rastair2_vcf::standard_fields::PASS);
             }
-        }
-
-        if params.variant_calling.cpgs_only {
-            // Filter out piles that are not CpG if requested
-            // TODO: Maybe do this before expensive ML calls?
-            records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
         }
 
         Ok(records)
