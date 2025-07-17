@@ -12,9 +12,9 @@ readme = "README.md"
 cargo-binstall = { version = "1.14.1" }
 cargo-llvm-cov = { version = "0.6.17" }
 cargo-insta = { version = "1.43.1" }
-cargo-nextest = { version = "0.9.100" }
+cargo-nextest = { version = "0.9.101" }
 
-mdbook = { version = "0.4.51" }
+mdbook = { version = "0.4.52" }
 mdbook-katex = { version = "0.9.4" }
 
 [workspace]
