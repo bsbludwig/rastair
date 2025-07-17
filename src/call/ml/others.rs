@@ -1,9 +1,9 @@
 use super::utils::*;
 use crate::{
     utils::Base,
-    vcf::{ByStrand, DeNovoCpGCandidate, Record, utils::NoStrandBiasForBaseErrorExt},
+    vcf::{utils::NoStrandBiasForBaseErrorExt, ByStrand, DeNovoCpGCandidate, Record},
 };
-use ndarray::{Array1, Array2, array};
+use ndarray::{array, Array1, Array2};
 use tracing::{debug, instrument};
 
 /// Extract feature parameters from a VCF record for CpG classification
@@ -33,17 +33,17 @@ pub fn params_from_record(
     let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(Some(Base::from(alt_allele)));
 
     // Extract normalized allele depths
-    let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64 / depth;
-    let ad_alt = record.info.allele_read_depth.get(1).copied().unwrap_or(0) as f64 / depth;
+    let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64;
+    let ad_alt = record.info.allele_read_depth.get(1).copied().unwrap_or(0) as f64;
 
     // Extract normalized strand bias counts
     let ref_strand = record.strand_count(Base::from(ref_base)).or_empty();
     let alt_strand = record.strand_count(Base::from(alt_allele)).or_empty();
 
-    let sb_ot_ref = f64::from(ref_strand.ot) / depth;
-    let sb_ob_ref = f64::from(ref_strand.ob) / depth;
-    let sb_ot_alt = f64::from(alt_strand.ot) / depth;
-    let sb_ob_alt = f64::from(alt_strand.ob) / depth;
+    let sb_ot_ref = f64::from(ref_strand.ot);
+    let sb_ob_ref = f64::from(ref_strand.ob);
+    let sb_ot_alt = f64::from(alt_strand.ot);
+    let sb_ob_alt = f64::from(alt_strand.ob);
 
     // Calculate strand bias ratios
     let sb_alt = (sb_ot_alt + 1.0) / (sb_ob_alt + 1.0);
@@ -52,7 +52,7 @@ pub fn params_from_record(
     // Calculate alt_score
     let bq_ref = record.info.allele_base_quality.first().copied().unwrap_or(0.0);
     let bq_alt = record.info.allele_base_quality.get(1).copied().unwrap_or(0.0);
-    let alt_score = (ad_alt * bq_alt + 1.0) / (ad_ref * bq_ref + 1.0);
+    let alt_score = ((ad_alt * bq_alt + 1.0) / (ad_ref * bq_ref + 1.0)).log2();
 
     // Extract base quality metrics
     let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base)).ot;
@@ -75,9 +75,6 @@ pub fn params_from_record(
     let num_aligned_bases_alt = record.info.num_aligned_bases.get(1).copied().unwrap_or(0.0);
     let num_indels_ref = record.info.num_indels.first().copied().unwrap_or(0.0);
     let num_indels_alt = record.info.num_indels.get(1).copied().unwrap_or(0.0);
-
-    // For "other" positions, we determine SNP status based on ref/alt length
-    let is_snp = if ref_base.len() == 1 && alt_allele.len() == 1 { 1.0 } else { 0.0 };
 
     // Never change the order of these variables, as they are used in the model
     array![[
@@ -108,12 +105,12 @@ pub fn params_from_record(
         p5g,
         p5t,
         region_entropy,
-        ad_ref,
-        ad_alt,
-        sb_ot_ref,
-        sb_ob_ref,
-        sb_ot_alt,
-        sb_ob_alt,
+        ad_ref / depth,
+        ad_alt / depth,
+        sb_ot_ref / depth,
+        sb_ob_ref / depth,
+        sb_ot_alt / depth,
+        sb_ob_alt / depth,
         sb_alt,
         sb_ref,
         alt_score,
@@ -134,8 +131,7 @@ pub fn params_from_record(
         num_aligned_bases_ref,
         num_aligned_bases_alt,
         num_indels_ref,
-        num_indels_alt,
-        is_snp
+        num_indels_alt
     ]]
 }
 

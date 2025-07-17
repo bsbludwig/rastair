@@ -1,9 +1,9 @@
 use super::utils::*;
 use crate::{
     utils::Base,
-    vcf::{ByStrand, Record, utils::NoStrandBiasForBaseErrorExt},
+    vcf::{utils::NoStrandBiasForBaseErrorExt, ByStrand, Record},
 };
-use ndarray::{Array1, Array2, array};
+use ndarray::{array, Array1, Array2};
 use tracing::{debug, instrument};
 
 /// Extract feature parameters from a VCF record for CpG classification
@@ -39,32 +39,31 @@ pub fn params_from_record(
         };
 
     // Extract normalized allele depths
-    let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64 / depth;
+    let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64;
     let target_alt_base = if ref_base == "C" { Base::T } else { Base::A };
     let alt_index = record.main.alt.iter().position(|a| a.as_str() == target_alt).unwrap_or(0);
-    let ad_alt =
-        record.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64 / depth;
+    let ad_alt = record.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
 
     // Extract normalized strand bias counts
     let ref_strand = record.strand_count(Base::from(ref_base)).or_empty();
     let alt_strand = record.strand_count(target_alt_base).or_empty();
 
-    let sb_ot_ref = f64::from(ref_strand.ot) / depth;
-    let sb_ob_ref = f64::from(ref_strand.ob) / depth;
-    let sb_ot_alt = f64::from(alt_strand.ot) / depth;
-    let sb_ob_alt = f64::from(alt_strand.ob) / depth;
+    let sb_ot_ref = f64::from(ref_strand.ot);
+    let sb_ob_ref = f64::from(ref_strand.ob);
+    let sb_ot_alt = f64::from(alt_strand.ot);
+    let sb_ob_alt = f64::from(alt_strand.ob);
 
     // Calculate alt_score based on ref base (C vs G)
     let alt_score = if ref_base == "C" {
         // For C: use "ob" (original bottom) strand data
         let bq_ob_alt = get_strand_base_quality(record, target_alt_base).ob;
         let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base)).ob;
-        (sb_ob_alt * bq_ob_alt + 1.0) / (sb_ob_ref * bq_ob_ref + 1.0)
+        (sb_ob_alt * bq_ob_alt + 1.0) / (sb_ob_ref * bq_ob_ref + 1.0).log2()
     } else {
         // For G: use "ot" (original top) strand data
         let bq_ot_alt = get_strand_base_quality(record, target_alt_base).ot;
         let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base)).ot;
-        (sb_ot_alt * bq_ot_alt + 1.0) / (sb_ot_ref * bq_ot_ref + 1.0)
+        (sb_ot_alt * bq_ot_alt + 1.0) / (sb_ot_ref * bq_ot_ref + 1.0).log2()
     };
 
     // Extract base quality metrics
@@ -93,7 +92,8 @@ pub fn params_from_record(
     let num_indels_alt = record.info.num_indels.get(alt_index + 1).copied().unwrap_or(0.0);
 
     // Calculate adjacent position features
-    let (ad_alt_adj, alt_score_adj) = calculate_adjacent_features(record, before, after);
+    let (beta_ratio, ad_alt_adj, alt_score_adj) =
+        calculate_adjacent_features(record, before, after);
 
     array![[
         ad_alt_adj,
@@ -125,12 +125,12 @@ pub fn params_from_record(
         p5g,
         p5t,
         region_entropy,
-        ad_ref,
-        ad_alt,
-        sb_ot_ref,
-        sb_ob_ref,
-        sb_ot_alt,
-        sb_ob_alt,
+        ad_ref / depth,
+        ad_alt / depth,
+        sb_ot_ref / depth,
+        sb_ob_ref / depth,
+        sb_ot_alt / depth,
+        sb_ob_alt / depth,
         alt_score,
         bq_ref,
         bq_alt,
@@ -150,6 +150,7 @@ pub fn params_from_record(
         num_aligned_bases_alt,
         num_indels_ref,
         num_indels_alt,
+        beta_ratio
     ]]
 }
 
@@ -158,51 +159,70 @@ fn calculate_adjacent_features(
     record: &Record,
     before: Option<&Record>,
     after: Option<&Record>,
-) -> (f64, f64) {
+) -> (f64, f64, f64) {
     let ref_base = &record.main.r#ref;
 
     if ref_base == "C"
         && let Some(after) = after
         && after.main.r#ref == "G"
-        && let Some(alt_index) = after.main.alt.iter().position(|a| a == "A")
     {
-        // For C positions: look for G→A transitions in the after record
-        let ad_alt = after.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
-        let depth = *after.info.read_depth as f64;
-        let ad_alt_norm = ad_alt / depth;
+        // Calculate beta of current position
+        let beta_center = f64::from(record.strand_count(Base::T).or_empty().ot)
+            / (f64::from(record.strand_count(Base::T).or_empty().ot)
+                + f64::from(record.strand_count(Base::C).or_empty().ot));
+        if let Some(alt_index) = after.main.alt.iter().position(|a| a == "A") {
+            // For C positions: look for G→A transitions in the after record
+            let ad_alt =
+                after.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
+            let depth = *after.info.read_depth as f64;
+            let ad_alt_norm = ad_alt / depth;
 
-        // Calculate alt_score for G→A
-        let alt_strand = after.strand_count(Base::A).or_empty();
-        let ref_strand = after.strand_count(Base::G).or_empty();
-        let bq_ot_alt = get_strand_base_quality(after, Base::A).ot;
-        let bq_ot_ref = get_strand_base_quality(after, Base::G).ot;
-        let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0)
-            / (f64::from(ref_strand.ot) * bq_ot_ref + 1.0);
-
-        (ad_alt_norm, alt_score)
+            // Calculate alt_score for G→A
+            let alt_strand = after.strand_count(Base::A).or_empty();
+            let ref_strand = after.strand_count(Base::G).or_empty();
+            let bq_ot_alt = get_strand_base_quality(after, Base::A).ot;
+            let bq_ot_ref = get_strand_base_quality(after, Base::G).ot;
+            let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0)
+                / (f64::from(ref_strand.ot) * bq_ot_ref + 1.0);
+            let beta_after =
+                f64::from(alt_strand.ob) / (f64::from(alt_strand.ob) + f64::from(ref_strand.ob));
+            let beta_ratio = ((beta_center + 1.0) / (beta_after + 1.0)).log2();
+            (beta_ratio, ad_alt_norm, alt_score.log2())
+        } else {
+            (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0)
+        }
     } else if ref_base == "G"
         && let Some(before) = before
         && before.main.r#ref == "C"
-        && let Some(alt_index) = before.main.alt.iter().position(|a| a == "T")
     {
-        // For G positions: look for C→T transitions in the before record
-        let ad_alt = before.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
-        let depth = *before.info.read_depth as f64;
-        let ad_alt_norm = ad_alt / depth;
+        let beta_center = f64::from(record.strand_count(Base::A).or_empty().ob)
+            / (f64::from(record.strand_count(Base::A).or_empty().ob)
+                + f64::from(record.strand_count(Base::G).or_empty().ob));
+        if let Some(alt_index) = before.main.alt.iter().position(|a| a == "T") {
+            // For G positions: look for C→T transitions in the before record
+            let ad_alt =
+                before.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
+            let depth = *before.info.read_depth as f64;
+            let ad_alt_norm = ad_alt / depth;
 
-        // Calculate alt_score for C→T
-        let alt_strand = before.strand_count(Base::T).or_empty();
-        let ref_strand = before.strand_count(Base::C).or_empty();
-        let bq_ob_alt = get_strand_base_quality(before, Base::T).ob;
-        let bq_ob_ref = get_strand_base_quality(before, Base::C).ob;
-        let alt_score = (f64::from(alt_strand.ob) * bq_ob_alt + 1.0)
-            / (f64::from(ref_strand.ob) * bq_ob_ref + 1.0);
-
-        (ad_alt_norm, alt_score)
+            // Calculate alt_score for C→T
+            let alt_strand = before.strand_count(Base::T).or_empty();
+            let ref_strand = before.strand_count(Base::C).or_empty();
+            let bq_ob_alt = get_strand_base_quality(before, Base::T).ob;
+            let bq_ob_ref = get_strand_base_quality(before, Base::C).ob;
+            let alt_score = (f64::from(alt_strand.ob) * bq_ob_alt + 1.0)
+                / (f64::from(ref_strand.ob) * bq_ob_ref + 1.0);
+            let beta_before =
+                f64::from(alt_strand.ot) / (f64::from(alt_strand.ot) + f64::from(ref_strand.ot));
+            let beta_ratio = ((beta_center + 1.0) / (beta_before + 1.0)).log2();
+            (beta_ratio, ad_alt_norm, alt_score.log2())
+        } else {
+            ((beta_center + 1.0 / 1.0).log2(), 0.0, 0.0)
+        }
     } else {
         // No adjacent evidence for methylation, return defaults
         debug!(%ref_base, before=%before.is_some(), after=%after.is_some(), "No adjacent evidence for methylation");
-        (0.0, 0.0)
+        (0.0, 0.0, 0.0)
     }
 }
 
