@@ -1,5 +1,5 @@
 use crate::{
-    bed::{BedWriter, Rastair1BedFormat},
+    bed::{BedFormat, BedWriter, Rastair1BedFormat},
     io::{
         formats::{FromFileExtension, InputFormat, OutputFormat},
         mpk::{MessagePackReader, MpkEntry},
@@ -59,11 +59,11 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             info!("Copied input file to output file without conversion");
             Ok(())
         }
-        (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed) => {
-            vcf_to_bed(params).wrap_err("Failed to convert VCF to BED")
+        (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed(format)) => {
+            vcf_to_bed(params, format).wrap_err("Failed to convert VCF to BED")
         }
-        (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::Bed) => {
-            mpk_to_bed(params).wrap_err("Failed to convert MessagePack to BED")
+        (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::Bed(format)) => {
+            mpk_to_bed(params, format).wrap_err("Failed to convert MessagePack to BED")
         }
         (
             InputFormat::VcfLike(vcf_writer::Format::MessagePack),
@@ -107,12 +107,12 @@ impl ConvertParams {
     }
 }
 
-fn vcf_to_bed(params: &ConvertParams) -> Result<()> {
+fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     let mut reader = rust_htslib::bcf::Reader::from_path(params.input.path())
         .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?;
     reader.set_threads(2).wrap_err("Failed to set VCF reader threads")?;
 
-    let mut writer = BedWriter::new(&params.output).wrap_err_with(|| {
+    let mut writer = BedWriter::new(&params.output, format).wrap_err_with(|| {
         format!("Failed to create BED writer for output file `{}`", params.output)
     })?;
 
@@ -175,13 +175,13 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
     Ok(())
 }
 
-fn mpk_to_bed(params: &ConvertParams) -> Result<()> {
+fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     let r = MessagePackReader::new(&params.input)
         .wrap_err("Failed to create MessagePack reader")
         .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
         .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
 
-    let mut writer = BedWriter::new(&params.output).wrap_err_with(|| {
+    let mut writer = BedWriter::new(&params.output, format).wrap_err_with(|| {
         format!("Failed to create BED writer for output file `{}`", params.output)
     })?;
 

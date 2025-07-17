@@ -1,4 +1,7 @@
-use crate::io::vcf_writer::{self, VcfFormat};
+use crate::{
+    bed::BedFormat,
+    io::vcf_writer::{self, VcfFormat},
+};
 use clio::ClioPath;
 use color_eyre::{
     Result, Section as _,
@@ -13,8 +16,7 @@ pub enum InputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     VcfLike(vcf_writer::Format),
-    /// BED format
-    Bed,
+    Bed(BedFormat),
 }
 
 impl clap::ValueEnum for InputFormat {
@@ -41,14 +43,15 @@ impl clap::ValueEnum for OutputFormat {
             OutputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::Bcf)),
             OutputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::VcfCompressed)),
             OutputFormat::VcfLike(vcf_writer::Format::MessagePack),
-            OutputFormat::Bed,
+            OutputFormat::Bed(BedFormat::Bed),
+            OutputFormat::Bed(BedFormat::BedGz),
         ]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         match self {
             OutputFormat::VcfLike(format) => format.to_possible_value(),
-            OutputFormat::Bed => Some(clap::builder::PossibleValue::new("bed")),
+            OutputFormat::Bed(format) => format.to_possible_value(),
         }
     }
 }
@@ -85,6 +88,18 @@ impl FromFileExtension for vcf_writer::Format {
     }
 }
 
+impl FromFileExtension for BedFormat {
+    fn from_file_extension(p: &str) -> Option<Self> {
+        if p.ends_with(".bed.gz") {
+            Some(BedFormat::BedGz)
+        } else if p.ends_with(".bed") {
+            Some(BedFormat::Bed)
+        } else {
+            None
+        }
+    }
+}
+
 impl FromFileExtension for InputFormat {
     fn from_file_extension(p: &str) -> Option<Self> {
         vcf_writer::Format::from_file_extension(p).map(InputFormat::VcfLike)
@@ -95,6 +110,6 @@ impl FromFileExtension for OutputFormat {
     fn from_file_extension(p: &str) -> Option<Self> {
         vcf_writer::Format::from_file_extension(p)
             .map(OutputFormat::VcfLike)
-            .or_else(|| if p.ends_with(".bed") { Some(OutputFormat::Bed) } else { None })
+            .or_else(|| BedFormat::from_file_extension(p).map(OutputFormat::Bed))
     }
 }

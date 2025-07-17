@@ -1,35 +1,90 @@
 use crate::{
+    io::formats::FromFileExtension as _,
     utils::Phred,
     vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
+use bgzip::Compression;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
 use rastair2_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::SmolStr;
 use std::io::{BufWriter, Write};
-use tracing::instrument;
+use tracing::{debug, instrument};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, clap::Args)]
+pub struct BedParams {
+    /// Output BED file with the called methylated positions
+    #[arg(long = "bed")]
+    pub bed_output: Option<ClioPath>,
+
+    /// Format of the output BED file
+    ///
+    /// If not specified, the format is guessed based on the file extension.
+    #[arg(long)]
+    pub bed_format: Option<BedFormat>,
+}
+
+impl BedParams {
+    pub fn bed_format(&self) -> BedFormat {
+        if let Some(format) = self.bed_format {
+            format
+        } else if let Some(path) = &self.bed_output
+            && let Some(path) = path.path().to_str()
+            && let Some(format) = BedFormat::from_file_extension(path)
+        {
+            format
+        } else {
+            debug!(
+                "Could not determine BED output format from file extension, defaulting to uncompressed"
+            );
+            BedFormat::Bed
+        }
+    }
+
+    pub fn writer(&self) -> Result<Option<BedWriter>> {
+        let Some(path) = &self.bed_output else {
+            return Ok(None);
+        };
+
+        let format = self.bed_format();
+        let writer = BedWriter::new(path, format)
+            .wrap_err_with(|| format!("Failed to create BED writer for {path}"))?;
+        Ok(Some(writer))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum BedFormat {
+    /// .bed file
+    BedGz,
+    /// .bed.gz file
+    Bed,
+}
+
 pub struct BedWriter {
     pub path: ClioPath,
-    writer: BufWriter<clio::Output>,
+    pub format: BedFormat,
+    writer: Box<dyn Write + Send + Sync>,
 }
 
 impl BedWriter {
     #[instrument(level = "debug")]
-    pub fn new(path: &ClioPath) -> Result<Self> {
-        let writer =
-            path.clone().create().wrap_err_with(|| format!("Failed to create output {path}"))?;
-        let mut writer = BufWriter::new(writer);
+    pub fn new(path: &ClioPath, format: BedFormat) -> Result<Self> {
+        let writer = path.clone().create().wrap_err("Failed to create output")?;
+        let writer = BufWriter::new(writer);
+        let mut writer: Box<dyn Write + Send + Sync> = match format {
+            BedFormat::BedGz => Box::new(bgzip::BGZFWriter::new(writer, Compression::fast())),
+            BedFormat::Bed => Box::new(writer),
+        };
         writeln!(&mut writer, "{}", Rastair1BedFormat::HEADER)
-            .wrap_err_with(|| format!("Failed to write header to {path}"))?;
-        Ok(Self { path: path.clone(), writer })
+            .wrap_err("Failed to write header")?;
+        Ok(Self { path: path.clone(), format, writer })
     }
 
     pub fn write_record(&mut self, record: &Rastair1BedFormat) -> Result<()> {
-        record.write(&mut self.writer).wrap_err_with(|| {
-            format!("Failed to write record for {}:{}", record.contig, record.pos)
-        })?;
+        record
+            .write(&mut self.writer)
+            .wrap_err_with(|| format!("Failed to write record {}:{}", record.contig, record.pos))?;
         writeln!(self.writer)?;
         Ok(())
     }
