@@ -17,13 +17,13 @@ use tracing::{debug, instrument};
 #[derive(Debug, Clone, clap::Args)]
 pub struct BedParams {
     /// Output BED file with the called methylated positions
-    #[arg(long = "bed")]
-    pub bed_output: Option<ClioPath>,
+    #[arg(long = "bed", required = false, default_missing_value = "-", num_args = 0..=1)]
+    pub bed: Option<ClioPath>,
 
     /// Format of the output BED file
     ///
     /// If not specified, the format is guessed based on the file extension.
-    #[arg(long)]
+    #[arg(long, requires = "bed")]
     pub bed_format: Option<BedFormat>,
 }
 
@@ -31,7 +31,7 @@ impl BedParams {
     pub fn bed_format(&self) -> BedFormat {
         if let Some(format) = self.bed_format {
             format
-        } else if let Some(path) = &self.bed_output
+        } else if let Some(path) = &self.bed
             && let Some(path) = path.path().to_str()
             && let Some(format) = BedFormat::from_file_extension(path)
         {
@@ -45,7 +45,7 @@ impl BedParams {
     }
 
     pub fn writer(&self) -> Result<Option<BedWriter>> {
-        let Some(path) = &self.bed_output else {
+        let Some(path) = &self.bed else {
             return Ok(None);
         };
 
@@ -58,9 +58,9 @@ impl BedParams {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum BedFormat {
-    /// .bed file
+    /// BGZIP compressed file, usually `.bed.gz`
     BedGz,
-    /// .bed.gz file
+    /// Regular BED file, usually `.bed`
     Bed,
 }
 

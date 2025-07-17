@@ -66,12 +66,16 @@ pub struct CallParams {
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
     ensure!(
-        params.vcf.vcf_output.as_ref() != params.bed.bed_output.as_ref(),
+        params.vcf.vcf.is_some() || params.bed.bed.is_some(),
+        "No output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`."
+    );
+    ensure!(
+        params.vcf.vcf.as_ref() != params.bed.bed.as_ref(),
         "Can't write both VCF and BED output to the same file. Please specify different output files."
     );
 
     // Initialize readers for BAM and FASTA files
-    let readers = params.segments.readers().wrap_err("Failed to fetch segments")?;
+    let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
 
     // Get segments that are small enough to process in RAM
     let regions: Vec<ChunkRegion> =
@@ -121,7 +125,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     let writer_thread = thread::Builder::new()
         .name("writer".to_string())
         .spawn({
-            let vcf_output = params.vcf.vcf_output.clone();
+            let vcf_output = params.vcf.vcf.clone();
             let metadata = [
                 format!("rastair2Version={}", env!("CARGO_PKG_VERSION")),
                 format!(
@@ -182,7 +186,7 @@ pub fn call(params: &CallParams) -> Result<()> {
                     drop(vcf_writer);
                     info!(file = %vcf_output, "Wrote VCF output");
                 }
-                if let Some(bed_output) = bed.bed_output.as_ref()
+                if let Some(bed_output) = bed.bed.as_ref()
                     && let Some(bed_writer) = bed_writer
                 {
                     bed_writer.close().wrap_err("Failed to close BED writer")?;

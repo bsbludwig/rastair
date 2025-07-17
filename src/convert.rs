@@ -148,7 +148,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
     };
 
     let vcf_params = vcf_writer::Params {
-        vcf_output: Some(params.output.clone()),
+        vcf: Some(params.output.clone()),
         vcf_threads: NonZeroUsize::new(4).expect("valid number"),
     };
 

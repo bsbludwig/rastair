@@ -34,6 +34,7 @@ pub trait ExitStatusResultExt {
 }
 
 impl ExitStatusResultExt for std::process::ExitStatus {
+    #[track_caller]
     fn is_success(&self) -> Result<()> {
         if !self.success() {
             bail!("Command failed with status: {}", self)

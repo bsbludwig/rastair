@@ -40,7 +40,7 @@ fn write_mpk_then_view_file() -> Result<()> {
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
             "--region=chr19:6105700-6105750",
-            "-o",
+            "--vcf",
         ])
         .arg(&mpk)
         .status()?

@@ -26,8 +26,8 @@ pub struct Params {
     /// `.vcf.gz` for VCF (compressed),
     /// `.bcf` for BCF (compressed)
     /// `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
-    #[arg(short = 'o', long, default_value = "-")]
-    pub vcf_output: Option<ClioPath>,
+    #[arg(short = 'o', long, required = false, default_missing_value = "-", num_args = 0..=1)]
+    pub vcf: Option<ClioPath>,
 
     /// Number of threads to use for writing (and compressing) VCF files
     ///
@@ -87,7 +87,7 @@ impl From<VcfFormat> for (HtsVcfFormat, Compression) {
 impl Params {
     /// Create a new instance of `Params` with the specified VCF output path.
     pub fn guess_format(&self) -> Format {
-        let Some(vcf_output) = &self.vcf_output else {
+        let Some(vcf_output) = &self.vcf else {
             // No VCF output, so the format doesn't matter.
             return Format::Vcf(VcfFormat::Vcf);
         };
@@ -116,7 +116,7 @@ impl Params {
     }
 
     pub fn writer(&self, regions: &[ChunkRegion], metadata: &[String]) -> Result<Option<Writer>> {
-        let Some(_) = &self.vcf_output else {
+        let Some(_) = &self.vcf else {
             return Ok(None);
         };
 
@@ -155,7 +155,7 @@ impl Params {
         format: HtsVcfFormat,
         compression: Compression,
     ) -> Result<Option<VcfFile<Record>>> {
-        let Some(vcf_output) = &self.vcf_output else {
+        let Some(vcf_output) = &self.vcf else {
             return Ok(None);
         };
 
@@ -179,7 +179,7 @@ impl Params {
         samples: Vec<SmolStr>,
         metadata: &[String],
     ) -> Result<Option<MessagePackWriter>> {
-        let Some(path) = &self.vcf_output else {
+        let Some(path) = &self.vcf else {
             return Ok(None);
         };
         warn!(

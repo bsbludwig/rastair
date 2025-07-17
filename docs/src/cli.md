@@ -129,23 +129,31 @@ Call methylated positions
 * `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
 
   Default value: `1000`
-* `-o`, `--vcf-output <VCF_OUTPUT>` — VCF/BCF output file path (use - to write to stdout)
+* `--ml <ML>` — Use machine learning model with this threshold value to call variants and methylation events
+* `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
-
-  Default value: `-`
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
 
    This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
 
   Default value: `3`
-* `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
+* `--bed <BED>` — Output BED file with the called methylated positions
+* `--bed-format <BED_FORMAT>` — Format of the output BED file
+
+   If not specified, the format is guessed based on the file extension.
+
+  Possible values:
+  - `bed-gz`:
+    BGZIP compressed file, usually `.bed.gz`
+  - `bed`:
+    Regular BED file, usually `.bed`
+
+* `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
   Default value: `14`
-* `--bed <BED_OUTPUT>` — Output BED file with the called methylation events
-* `--ml <ML>` — Use machine learning model with this threshold value to call variants and methylation events
 
 
 
@@ -180,7 +188,10 @@ Convert between different file formats
   - `vcf-compressed`:
     Compressed text-based VCF format (.vcf.gz)
   - `mpk.lz4`
-  - `bed`
+  - `bed`:
+    Regular BED file, usually `.bed`
+  - `bed-gz`:
+    BGZIP compressed file, usually `.bed.gz`
 
 
 

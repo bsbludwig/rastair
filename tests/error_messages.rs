@@ -7,7 +7,8 @@ fn missing_bam() -> Result<()> {
     assert_cmd_snapshot!(rastair().args([
         "call",
         "--fasta-file=test_data/test.fasta.gz",
-        "/path/to/nonexistent/file.bam"
+        "/path/to/nonexistent/file.bam",
+        "--vcf"
     ]), @r#"
     success: false
     exit_code: 2
@@ -48,6 +49,32 @@ fn missing_fasta() -> Result<()> {
 }
 
 #[test]
+fn missing_output_choice() -> Result<()> {
+    apply_common_filters!();
+    assert_cmd_snapshot!(rastair().args([
+        "call",
+        "--fasta-file=tests/data/test.fasta.gz",
+        "tests/data/test.bam",
+    ]), @r"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Error: 
+       0: [91mNo output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`.[0m
+
+    Location:
+       [35msrc/call.rs[0m:[35m68[0m
+
+    Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
+    Run with RUST_BACKTRACE=full to include source snippets.
+    ");
+
+    Ok(())
+}
+
+#[test]
 fn validates_region_arg() -> Result<()> {
     apply_common_filters!();
     assert_cmd_snapshot!(rastair().args([
@@ -55,6 +82,7 @@ fn validates_region_arg() -> Result<()> {
         "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
         "--region=chr19:6105700-xxx",
+        "--vcf",
     ]), @r"
     success: false
     exit_code: 2
@@ -67,6 +95,35 @@ fn validates_region_arg() -> Result<()> {
 
 
     For more information, try '--help'.
+    ");
+
+    Ok(())
+}
+
+#[test]
+fn different_paths_for_bed_and_vcf() -> Result<()> {
+    apply_common_filters!();
+    assert_cmd_snapshot!(rastair().args([
+        "call",
+        "--fasta-file=tests/data/test.fasta.gz",
+        "tests/data/test.bam",
+        "--region=chr19:6105700",
+        "--vcf=foo",
+        "--bed=foo",
+    ]), @r"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Error: 
+       0: [91mCan't write both VCF and BED output to the same file. Please specify different output files.[0m
+
+    Location:
+       [35msrc/call.rs[0m:[35m72[0m
+
+    Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
+    Run with RUST_BACKTRACE=full to include source snippets.
     ");
 
     Ok(())
