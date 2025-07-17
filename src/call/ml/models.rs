@@ -1,15 +1,18 @@
 use biosphere::RandomForest;
-use color_eyre::{Result, eyre::Context};
-use std::{fmt, io::Read};
+use color_eyre::{
+    Result,
+    eyre::{Context, ensure},
+};
+use std::{fmt, fs, io::Read, path::Path};
 use tracing::{debug, instrument};
 
 use crate::vcf::Record;
 
 pub struct MachineLearning {
-    threshold: f64,
-    cpg: Option<Box<RandomForest>>,
-    denovo_cpg: Option<Box<RandomForest>>,
-    others: Option<Box<RandomForest>>,
+    pub threshold: f64,
+    pub cpg: Option<Box<RandomForest>>,
+    pub denovo_cpg: Option<Box<RandomForest>>,
+    pub others: Option<Box<RandomForest>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -55,24 +58,6 @@ impl MachineLearning {
         Self { threshold: 1., cpg: None, denovo_cpg: None, others: None }
     }
 
-    pub fn with_threshold(threshold: f64) -> Self {
-        Self {
-            threshold,
-            cpg: Some(Box::new(
-                load_rf(&include_bytes!("../../../models/BS_RF_800-2_CpG.rf.mpk.lz4")[..])
-                    .expect("Failed to load CpG RF model"),
-            )),
-            denovo_cpg: Some(Box::new(
-                load_rf(&include_bytes!("../../../models/BS_RF_800-2_denovo.rf.mpk.lz4")[..])
-                    .expect("Failed to load DeNovo CpG RF model"),
-            )),
-            others: Some(Box::new(
-                load_rf(&include_bytes!("../../../models/BS_RF_800-2_other.rf.mpk.lz4")[..])
-                    .expect("Failed to load Others RF model"),
-            )),
-        }
-    }
-
     pub fn predict(
         &self,
         record: &Record,
@@ -101,6 +86,20 @@ impl MachineLearning {
 }
 
 #[instrument(level = "debug", skip_all)]
+pub fn load_model(path: Option<&Path>, built_in: &[u8]) -> Result<RandomForest> {
+    let Some(path) = path else {
+        return load_rf(built_in);
+    };
+    load_model_from_file(path)
+        .wrap_err_with(|| format!("Failed to load model from: {}", path.display()))
+}
+
+fn load_model_from_file(path: &Path) -> Result<RandomForest> {
+    ensure!(path.exists(), "Model file does not exist");
+    let file = fs::read(path).wrap_err("Failed to read model file")?;
+    load_rf(&file[..]).wrap_err("Failed to load model")
+}
+
 fn load_rf(reader: impl Read) -> Result<RandomForest> {
     let decompress = lz4::Decoder::new(reader).wrap_err("Failed to create LZ4 decoder")?;
     rmp_serde::from_read(decompress).wrap_err("Failed to deserialize random forest")

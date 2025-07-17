@@ -42,9 +42,8 @@ pub struct CallParams {
     denovo_cpg: denovo_cpg::DenovoParams,
     #[command(flatten)]
     methylation: MethylationCallingParams,
-    /// Use machine learning model with this threshold value to call variants and methylation events
-    #[arg(long = "ml")]
-    pub ml: Option<f64>,
+    #[command(flatten)]
+    ml: ml::MachineLearningParams,
 
     // --- Output parameters ---
     #[command(flatten)]
@@ -88,11 +87,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     }
 
     // Init ML model if requested
-    let ml = if let Some(threshold) = params.ml {
-        MachineLearning::with_threshold(threshold)
-    } else {
-        MachineLearning::disabled()
-    };
+    let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
     debug!("Going to process {} segments", regions.len());
 

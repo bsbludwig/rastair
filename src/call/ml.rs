@@ -20,8 +20,10 @@
 #![allow(unused)]
 
 pub use models::{MachineLearning, MlResult};
+pub use params::MachineLearningParams;
 
 mod models;
+mod params;
 mod utils;
 
 mod cpg;

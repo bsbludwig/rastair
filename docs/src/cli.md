@@ -130,6 +130,17 @@ Call methylated positions
 
   Default value: `1000`
 * `--ml <ML>` — Use machine learning model with this threshold value to call variants and methylation events
+
+   When specified, a ML model will classify positions with a prediction score. Anything above this threshold is considered PASS.
+* `--model-cpg <MODEL_CPG>` — Path to the model for CpG positions
+
+   Default is the bundled model in the Rastair binary.
+* `--model-denovo-cpg <MODEL_DENOVO_CPG>` — Path to the model for de novo CpG positions
+
+   Default is the bundled model in the Rastair binary.
+* `--model-others <MODEL_OTHERS>` — Path to the model for other positions
+
+   Default is the bundled model in the Rastair binary.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)

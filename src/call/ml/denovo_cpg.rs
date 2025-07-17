@@ -248,10 +248,8 @@ mod tests {
             let chr = record.main.chrom;
             let pos = record.main.pos + 1; // Convert to 1-based position
             let ref_base = record.main.r#ref;
-            let alt_base = match record.info.de_novo_cp_g_candidate {
-                DeNovoCpGCandidate::Candidate { alt_base, .. } => format!("{}", alt_base),
-                _ => "?".to_string(),
-            };
+            let alt_base =
+                record.info.de_novo_cp_g_candidate.alt_base().map(|b| b.as_str()).unwrap_or("?");
             let tsv = to_tsv(fields);
             eprintln!("{chr}:{pos}_{ref_base}>{alt_base}\t{tsv}\tREF");
         }
@@ -262,10 +260,8 @@ mod tests {
             let chr = record.main.chrom;
             let pos = record.main.pos + 1; // Convert to 1-based position
             let ref_base = record.main.r#ref;
-            let alt_base = match record.info.de_novo_cp_g_candidate {
-                DeNovoCpGCandidate::Candidate { alt_base, .. } => format!("{}", alt_base),
-                _ => "?".to_string(),
-            };
+            let alt_base =
+                record.info.de_novo_cp_g_candidate.alt_base().map(|b| b.as_str()).unwrap_or("?");
             let tsv = to_tsv(fields);
             eprintln!("{chr}:{pos}_{ref_base}>{alt_base}\t{tsv}\tREF");
         }
