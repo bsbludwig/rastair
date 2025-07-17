@@ -7,6 +7,7 @@ This document contains the help content for the `rastair2` command-line program.
 * [`rastair2`↴](#rastair2)
 * [`rastair2 call`↴](#rastair2-call)
 * [`rastair2 convert`↴](#rastair2-convert)
+* [`rastair2 view`↴](#rastair2-view)
 
 ## `rastair2`
 
@@ -20,6 +21,7 @@ Process TAPS-sequenced BAM files for methylation calling
 
 * `call` — Call methylated positions
 * `convert` — Convert between different file formats
+* `view` — View internal format as JSON lines
 
 ###### **Options:**
 
@@ -103,16 +105,9 @@ Call methylated positions
 * `--cpg-novo-min-vaf <CPG_NOVO_MIN_VAF>` — Minimum variant allele frequency for de-novo CpGs
 
   Default value: `0.2`
-* `--calling <CALLING>` — The methylation calling mode
+* `--skip-methylation-calling` — Calculate threshold values and filters for methylation
 
-  Default value: `none`
-
-  Possible values:
-  - `none`:
-    Don't perform methylation calling
-  - `thresholds`:
-    Call methylation events based on thresholds
-
+  Default value: `false`
 * `--m-vaf-min <M_VAF_MIN>` — The minimum variant allele frequency
 
   Default value: `0.2`
@@ -150,6 +145,7 @@ Call methylated positions
 
   Default value: `14`
 * `--bed <BED_OUTPUT>` — Output BED file with the called methylation events
+* `--ml <ML>` — Use machine learning model with this threshold value to call variants and methylation events
 
 
 
@@ -186,6 +182,24 @@ Convert between different file formats
   - `mpk.lz4`
   - `bed`
 
+
+
+
+## `rastair2 view`
+
+View internal format as JSON lines
+
+**Usage:** `rastair2 view [OPTIONS] <INPUT>`
+
+###### **Arguments:**
+
+* `<INPUT>` — Message Pack file to view
+
+###### **Options:**
+
+* `-o`, `--output <OUTPUT>` — Message Pack file to view
+
+  Default value: `-`
 
 
 
