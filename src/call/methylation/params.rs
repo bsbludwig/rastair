@@ -1,26 +1,24 @@
 use crate::{call::process::IncludeAllCpGs, vcf};
 use color_eyre::{Result, eyre::Context};
-use std::fmt;
 use tracing::instrument;
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct MethylationCallingParams {
-    /// The methylation calling mode
-    #[arg(long, default_value_t = MethylationCallingMode::None)]
-    pub calling: MethylationCallingMode,
+    /// Calculate threshold values and filters for methylation
+    #[arg(long, default_value_t = false)]
+    skip_methylation_calling: bool,
 
     #[command(flatten)]
-    thresholds: super::threshold::ThresholdParams,
+    thresholds: ThresholdParams,
 }
 
 impl MethylationCallingParams {
-    // todo: make this a generic filter that can be called directly when looking at a pileup
+    pub fn methylation_calling(&self) -> bool {
+        !self.skip_methylation_calling
+    }
+
     pub fn should_include_all_cpgs(&self) -> IncludeAllCpGs {
-        if matches!(self.calling, MethylationCallingMode::None) {
-            IncludeAllCpGs::No
-        } else {
-            IncludeAllCpGs::Yes
-        }
+        if self.methylation_calling() { IncludeAllCpGs::Yes } else { IncludeAllCpGs::No }
     }
 
     /// Call methylation events based on the configured mode
@@ -31,38 +29,57 @@ impl MethylationCallingParams {
         before: Option<&vcf::Record>,
         after: Option<&vcf::Record>,
     ) -> Result<()> {
-        match self.calling {
-            MethylationCallingMode::None => {
-                // No methylation calling, return the record as is
-                Ok(())
-            }
-            MethylationCallingMode::Thresholds => {
-                super::threshold::call(&self.thresholds, record, before, after)
-                    .wrap_err("Failed to call methylation based on thresholds")
-            } // MethylationCallingMode::ML => {
-              //     // Placeholder for ML-based calling logic
-              //     unimplemented!("ML-based methylation calling is not implemented yet")
-              // }
+        if self.methylation_calling() {
+            super::call(&self.thresholds, record, before, after)
+                .wrap_err("Failed to call methylation based on thresholds")
+        } else {
+            // If no methylation calling is configured, just return the record as is
+            Ok(())
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum MethylationCallingMode {
-    /// Don't perform methylation calling
-    None,
-    /// Call methylation events based on thresholds
-    Thresholds,
-    // /// Call methylation events based on ML model
-    // ML,
+#[derive(Debug, Clone, clap::Args)]
+pub struct ThresholdParams {
+    /// The minimum variant allele frequency
+    #[clap(long, default_value_t = 0.2)]
+    pub m_vaf_min: f64,
+
+    /// The minimum number of reads to call a position as methylated
+    #[clap(long, default_value_t = 3)]
+    pub m_min_depth: usize,
+
+    /// The minimum number of reads required as evidence for a de novo CpG
+    #[clap(long, default_value_t = 2)]
+    pub m_min_denovo_depth: u32,
+
+    /// The minimum quality ratio `(ad_alt*bq_alt + 1) / (ad_ref*bq_ref + 1)`
+    #[clap(long, default_value_t = 0.27)]
+    pub m_bq_ratio_min: f64,
+
+    /// The minimum relative position in read for alt allele evidence
+    #[clap(long, default_value_t = 0.2)]
+    pub m_read_position_min: f64,
+
+    /// The maximum relative position in read for alt allele evidence
+    #[clap(long, default_value_t = 0.8)]
+    pub m_read_position_max: f64,
+
+    /// The maximum coverage depth for methylation calling
+    #[clap(long, default_value_t = 1000)]
+    pub m_max_coverage: usize,
 }
 
-impl fmt::Display for MethylationCallingMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MethylationCallingMode::None => write!(f, "none"),
-            MethylationCallingMode::Thresholds => write!(f, "thresholds"),
-            // MethylationCallingMode::ML => write!(f, "ml"),
+impl Default for ThresholdParams {
+    fn default() -> Self {
+        Self {
+            m_vaf_min: 0.2,
+            m_min_depth: 3,
+            m_min_denovo_depth: 2,
+            m_bq_ratio_min: 0.27,
+            m_read_position_min: 0.2,
+            m_read_position_max: 0.8,
+            m_max_coverage: 1000,
         }
     }
 }

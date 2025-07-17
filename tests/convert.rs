@@ -9,13 +9,7 @@ fn write_mpk_then_convert_to_bcf() -> Result<()> {
     let mpk = temp_dir.path().join("test.mpk.lz4");
 
     rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--calling=thresholds",
-            "-o",
-        ])
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam", "-o"])
         .arg(&mpk)
         .status()?
         .is_success()
@@ -50,13 +44,7 @@ fn write_mpk_then_convert_to_bed() -> Result<()> {
     let mpk = temp_dir.path().join("test.mpk.lz4");
 
     rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--calling=thresholds",
-            "-o",
-        ])
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam", "-o"])
         .arg(&mpk)
         .status()?
         .is_success()
@@ -82,13 +70,7 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
     let mpk = temp_dir.path().join("test.bcf");
 
     rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--calling=thresholds",
-            "-o",
-        ])
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam", "-o"])
         .arg(&mpk)
         .status()?
         .is_success()

@@ -16,7 +16,6 @@ fn random_call() -> Result<()> {
         "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
         "--region=chr19:6105700-6105800",
-        "--calling=thresholds",
         "-o",
     ]).arg(&temp_file), @r#"
     success: true
@@ -85,6 +84,7 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
             "--region=chr19:6117965-6118004",
+            "--skip-methylation-calling"
         ])
     );
 
@@ -95,7 +95,6 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
             "--region=chr19:6117965-6118004",
-            "--calling=thresholds"
         ])
     );
 
@@ -112,7 +111,6 @@ fn includes_only_cpgs_when_methylation_calling() -> Result<()> {
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
             "--region=chr19:6117965-6118004",
-            "--calling=thresholds",
             "--cpgs-only"
         ])
     );
@@ -135,7 +133,6 @@ fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
             "--region=chr19",
             "--segment-max-length=10000",
             "--segment-overlap=300",
-            "--calling=thresholds",
             "-o",
         ])
         .arg(&temp_file)

@@ -14,7 +14,6 @@ fn write_mpk_then_view_stdout() -> Result<()> {
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
             "--region=chr19:6105700-6105750",
-            "--calling=thresholds",
             "-o",
         ])
         .arg(&mpk)
@@ -41,7 +40,6 @@ fn write_mpk_then_view_file() -> Result<()> {
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
             "--region=chr19:6105700-6105750",
-            "--calling=thresholds",
             "-o",
         ])
         .arg(&mpk)

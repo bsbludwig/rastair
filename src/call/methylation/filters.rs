@@ -1,5 +1,5 @@
 use crate::{
-    call::methylation::threshold::ThresholdParams,
+    call::methylation::ThresholdParams,
     vcf::{self},
 };
 use color_eyre::Result;
