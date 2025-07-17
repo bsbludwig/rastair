@@ -7,7 +7,6 @@ use crate::{
     },
     vcf::{DeNovoCpGCandidate, InCpG},
 };
-use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
     Section as _,
@@ -31,19 +30,19 @@ use tracing::{debug, info, warn};
 #[derive(Debug, clap::Args)]
 pub struct ConvertParams {
     /// Input file
-    #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(short = 'i', long, default_value = "-")]
     pub input: ClioPath,
 
     /// Input file format, guessed from file extension if not specified
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     pub input_format: Option<InputFormat>,
 
     /// Output file
-    #[arg(short = 'o', long)]
+    #[arg(short = 'o', long, default_value = "-")]
     pub output: ClioPath,
 
     /// Output file format, guessed from file extension if not specified
-    #[arg(long)]
+    #[arg(short = 'F', long)]
     pub output_format: Option<OutputFormat>,
 }
 
@@ -54,9 +53,21 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
     match (input_format, output_format) {
         (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) if input == output => {
             warn!("Input and output formats are the same, no conversion will be performed");
-            std::fs::copy(params.input.path(), params.output.path())
-                .wrap_err("Failed to copy input file to output file")?;
-            info!("Copied input file to output file without conversion");
+
+            let mut from = params
+                .input
+                .clone()
+                .open()
+                .wrap_err_with(|| format!("Failed to open input `{}`", params.input))?;
+            let mut to = params
+                .output
+                .clone()
+                .create()
+                .wrap_err_with(|| format!("Failed to create output `{}`", params.output))?;
+
+            std::io::copy(&mut from, &mut to).wrap_err("Failed to copy input to output")?;
+
+            info!("Copied input to output without conversion");
             Ok(())
         }
         (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed(format)) => {
@@ -108,8 +119,14 @@ impl ConvertParams {
 }
 
 fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
-    let mut reader = rust_htslib::bcf::Reader::from_path(params.input.path())
-        .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?;
+    let mut reader = if params.input.is_std() {
+        rust_htslib::bcf::Reader::from_stdin().wrap_err("Failed to open stdin to read VCF file")?
+    } else if params.input.is_file() {
+        rust_htslib::bcf::Reader::from_path(params.input.path())
+            .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?
+    } else {
+        return Err(eyre!("VCF input can only be file or stdin").note("If you need to convert from other source, please open an issue in the rastair2 repository"));
+    };
     reader.set_threads(2).wrap_err("Failed to set VCF reader threads")?;
 
     let mut writer = BedWriter::new(&params.output, format).wrap_err_with(|| {
@@ -141,7 +158,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
     let r = MessagePackReader::new(&params.input)
         .wrap_err("Failed to create MessagePack reader")
         .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
-        .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
+        .wrap_err_with(|| format!("Failed to read MessagePack from `{}`", params.input))?;
     debug!(header=?r.header, "opened mpk file");
     let Some(meta) = r.vcf_header else {
         bail!("MessagePack file does not contain a VCF header");

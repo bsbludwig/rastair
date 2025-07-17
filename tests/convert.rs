@@ -1,4 +1,6 @@
 mod utils;
+
+use std::process::Command;
 use utils::*;
 
 #[test]
@@ -84,6 +86,19 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
         .status()?
         .is_success()
         .wrap_err("Failed to convert to bed")?;
+
+    Ok(())
+}
+
+#[test]
+fn can_pipe_through() -> Result<()> {
+    apply_common_filters!();
+
+    let mut cmd = Command::new(insta_cmd::get_cargo_bin("/bin/bash"));
+    cmd.arg("-c");
+    cmd.arg("cargo run -q --release -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --ml --vcf | head -n1000 | cargo run -q --release -- convert -f bcf -F bed | head -n5");
+
+    assert_cmd_snapshot!(cmd);
 
     Ok(())
 }
