@@ -233,6 +233,7 @@ mod tests {
     use color_eyre::Result;
 
     #[test]
+    #[ignore = "needs big test file"]
     fn test_denovo_cpg_params() -> Result<()> {
         let reader = ReaderParams::test_with(
             "tmp/taps/NA12878_aa_chr12.bam",

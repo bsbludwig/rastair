@@ -219,6 +219,7 @@ mod tests {
     use color_eyre::Result;
 
     #[test]
+    #[ignore = "needs big test file"]
     fn ch12_10588_c_t() -> Result<()> {
         let reader = ReaderParams::test_with(
             "tmp/taps/NA12878_aa_chr12.bam",
