@@ -17,7 +17,6 @@ fn compare_rastair_1_and_2() -> Result<()> {
             "tests/data/test.bam",
             "-l",
             "chr19",
-            "--calling=thresholds",
             "-o",
         ])
         .arg(&temp_file)

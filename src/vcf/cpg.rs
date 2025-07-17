@@ -30,6 +30,14 @@ impl InCpG {
             InCpG::No
         }
     }
+
+    pub fn alt_base(&self) -> Option<Base> {
+        match self {
+            InCpG::C => Some(T),
+            InCpG::G => Some(A),
+            InCpG::No => None,
+        }
+    }
 }
 
 impl fmt::Debug for InCpG {

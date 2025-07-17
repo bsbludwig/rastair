@@ -1,5 +1,5 @@
 use crate::{
-    call::methylation::threshold::ThresholdParams,
+    call::methylation::ThresholdParams,
     vcf::{self},
 };
 use color_eyre::Result;
@@ -17,11 +17,6 @@ pub fn add_filters(config: &ThresholdParams, record: &mut vcf::Record) -> Result
     vcf::m_bq_ratio::apply(config, record);
     vcf::m_pos::apply(config, record);
     vcf::m_highDp::apply(config, record);
-
-    // If no filters were added, we're gonna call it
-    if record.filters.is_empty() {
-        record.filters.add(rastair2_vcf::standard_fields::PASS);
-    }
 
     Ok(())
 }

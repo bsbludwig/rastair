@@ -194,7 +194,6 @@ fn run_tests(with_coverage: bool) -> Result<Child> {
             .arg("test")
             .arg("--workspace")
             .arg("--doctests")
-            .env("RUST_BACKTRACE", "1")
             .env("RUSTC_BOOTSTRAP", "1") // for doctests, don't worry about it
             .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
             .spawn()
@@ -204,7 +203,6 @@ fn run_tests(with_coverage: bool) -> Result<Child> {
             .arg("test")
             .arg("--all")
             .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
-            .env("RUST_BACKTRACE", "1")
             .spawn()
             .wrap_err("Failed to run tests")
     }

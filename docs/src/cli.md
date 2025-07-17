@@ -7,6 +7,7 @@ This document contains the help content for the `rastair2` command-line program.
 * [`rastair2`↴](#rastair2)
 * [`rastair2 call`↴](#rastair2-call)
 * [`rastair2 convert`↴](#rastair2-convert)
+* [`rastair2 view`↴](#rastair2-view)
 
 ## `rastair2`
 
@@ -20,6 +21,7 @@ Process TAPS-sequenced BAM files for methylation calling
 
 * `call` — Call methylated positions
 * `convert` — Convert between different file formats
+* `view` — View internal format as JSON lines
 
 ###### **Options:**
 
@@ -103,16 +105,9 @@ Call methylated positions
 * `--cpg-novo-min-vaf <CPG_NOVO_MIN_VAF>` — Minimum variant allele frequency for de-novo CpGs
 
   Default value: `0.2`
-* `--calling <CALLING>` — The methylation calling mode
+* `--skip-methylation-calling` — Calculate threshold values and filters for methylation
 
-  Default value: `none`
-
-  Possible values:
-  - `none`:
-    Don't perform methylation calling
-  - `thresholds`:
-    Call methylation events based on thresholds
-
+  Default value: `false`
 * `--m-vaf-min <M_VAF_MIN>` — The minimum variant allele frequency
 
   Default value: `0.2`
@@ -134,22 +129,42 @@ Call methylated positions
 * `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
 
   Default value: `1000`
-* `-o`, `--vcf-output <VCF_OUTPUT>` — VCF/BCF output file path (use - to write to stdout)
+* `--ml <ML>` — Use machine learning model with this threshold value to call variants and methylation events
+
+   When specified, a ML model will classify positions with a prediction score. Anything above this threshold is considered PASS.
+* `--model-cpg <MODEL_CPG>` — Path to the model for CpG positions
+
+   Default is the bundled model in the Rastair binary.
+* `--model-denovo-cpg <MODEL_DENOVO_CPG>` — Path to the model for de novo CpG positions
+
+   Default is the bundled model in the Rastair binary.
+* `--model-others <MODEL_OTHERS>` — Path to the model for other positions
+
+   Default is the bundled model in the Rastair binary.
+* `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
-
-  Default value: `-`
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
 
    This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
 
   Default value: `3`
-* `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
+* `--bed <BED>` — Output BED file with the called methylated positions
+* `--bed-format <BED_FORMAT>` — Format of the output BED file
+
+   If not specified, the format is guessed based on the file extension.
+
+  Possible values:
+  - `bed-gz`:
+    BGZIP compressed file, usually `.bed.gz`
+  - `bed`:
+    Regular BED file, usually `.bed`
+
+* `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
   Default value: `14`
-* `--bed <BED_OUTPUT>` — Output BED file with the called methylation events
 
 
 
@@ -184,8 +199,29 @@ Convert between different file formats
   - `vcf-compressed`:
     Compressed text-based VCF format (.vcf.gz)
   - `mpk.lz4`
-  - `bed`
+  - `bed`:
+    Regular BED file, usually `.bed`
+  - `bed-gz`:
+    BGZIP compressed file, usually `.bed.gz`
 
+
+
+
+## `rastair2 view`
+
+View internal format as JSON lines
+
+**Usage:** `rastair2 view [OPTIONS] <INPUT>`
+
+###### **Arguments:**
+
+* `<INPUT>` — Message Pack file to view
+
+###### **Options:**
+
+* `-o`, `--output <OUTPUT>` — Message Pack file to view
+
+  Default value: `-`
 
 
 

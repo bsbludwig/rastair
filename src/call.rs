@@ -1,13 +1,16 @@
 use crate::{
-    bed::BedWriter,
-    call::{methylation::params::MethylationCallingParams, variant_calling::VariantCallingParams},
+    bed::BedParams,
+    call::{
+        methylation::params::MethylationCallingParams, ml::MachineLearning,
+        variant_calling::VariantCallingParams,
+    },
     io::vcf_writer,
-    sequence::{ChunkRegion, Readers, SegmentsParams},
-    vcf,
+    sequence::{ChunkRegion, ReaderParams, Readers},
+    vcf::{self, MachineLearningPrediction, low_ml_score},
 };
-use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
 use rayon::prelude::*;
+use smallvec::smallvec_inline;
 use smol_str::SmolStr;
 use std::{
     ops::Mul as _,
@@ -18,6 +21,7 @@ use tracing::{debug, info, instrument, warn};
 pub mod denovo_cpg;
 pub mod methylation;
 pub mod metrics;
+mod ml;
 pub mod process;
 pub mod variant_calling;
 pub mod variants;
@@ -27,44 +31,50 @@ pub mod test_helpers;
 
 #[derive(Debug, clap::Args)]
 pub struct CallParams {
+    // --- Input parameters ---
     #[command(flatten)]
-    segments: SegmentsParams,
+    segments: ReaderParams,
 
+    // --- Calling parameters ---
     #[command(flatten)]
     variant_calling: VariantCallingParams,
-
     #[command(flatten)]
     denovo_cpg: denovo_cpg::DenovoParams,
-
     #[command(flatten)]
     methylation: MethylationCallingParams,
+    #[command(flatten)]
+    ml: ml::MachineLearningParams,
 
+    // --- Output parameters ---
     #[command(flatten)]
     vcf: vcf_writer::Params,
+    #[command(flatten)]
+    bed: BedParams,
 
+    // --- Other runtime parameters ---
     /// Number of threads to use for processing the BAM file. Will use all
     /// available threads when not specified.
     ///
     /// Note that VCF writing might use additional threads internally for compression.
     /// This can be overwritten with `--vcf-threads`.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
-    pub threads: usize,
-
-    /// Output BED file with the called methylation events.
-    #[arg(long = "bed")]
-    pub bed_output: Option<ClioPath>,
+    total_threads: usize,
 }
 
 /// Read BAM + FASTA and call variants and methylation events
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
     ensure!(
-        Some(&params.vcf.vcf_output) != params.bed_output.as_ref(),
+        params.vcf.vcf.is_some() || params.bed.bed.is_some(),
+        "No output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`."
+    );
+    ensure!(
+        params.vcf.vcf.as_ref() != params.bed.bed.as_ref(),
         "Can't write both VCF and BED output to the same file. Please specify different output files."
     );
 
     // Initialize readers for BAM and FASTA files
-    let readers = params.segments.readers().wrap_err("Failed to fetch segments")?;
+    let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
 
     // Get segments that are small enough to process in RAM
     let regions: Vec<ChunkRegion> =
@@ -75,6 +85,9 @@ pub fn call(params: &CallParams) -> Result<()> {
     } else if regions[0].region.len() < 2 {
         warn!(region=%regions[0].region, "Given range is one base long, this will not yield any results for context-specific methylation calling.");
     }
+
+    // Init ML model if requested
+    let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
     debug!("Going to process {} segments", regions.len());
 
@@ -88,7 +101,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     // parallel. From there, we send ready-made VCF records to a special writer
     // thread that only deals with writing the VCF file.
     let writer_threads = params.vcf.vcf_threads;
-    let worker_threads = params.threads.saturating_sub(writer_threads.get()).max(1);
+    let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
 
     // The connection between the processing threads and the VCF writer this
     // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
@@ -107,7 +120,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     let writer_thread = thread::Builder::new()
         .name("writer".to_string())
         .spawn({
-            let vcf_output = params.vcf.vcf_output.clone();
+            let vcf_output = params.vcf.vcf.clone();
             let metadata = [
                 format!("rastair2Version={}", env!("CARGO_PKG_VERSION")),
                 format!(
@@ -116,16 +129,12 @@ pub fn call(params: &CallParams) -> Result<()> {
                 ),
                 format!("reference={}", params.segments.fasta_file),
             ];
-            let mut writer =
+            let mut vcf_writer =
                 params.vcf.writer(&regions, &metadata).wrap_err("Failed to create VCF writer")?;
 
-            let bed_output = params.bed_output.clone();
-            let mut bed_writer = bed_output
-                .as_ref()
-                .map(|bed_output| {
-                    BedWriter::new(bed_output).wrap_err("Failed to create BED writer")
-                })
-                .transpose()?;
+            let bed = params.bed.clone();
+            let mut bed_writer = bed.writer().wrap_err("Failed to create BED writer")?;
+
             move || -> Result<()> {
                 // The segments we get have some overlap between them, so we
                 // need to ensure that we don't write the same record multiple
@@ -150,12 +159,13 @@ pub fn call(params: &CallParams) -> Result<()> {
                         last_seen_chrom = Some(record.main.chrom.clone());
                         last_seen_pos = Some(record.main.pos);
 
-                        writer.add(record).wrap_err("Failed to write VCF record")?;
+                        if let Some(vcf_writer) = vcf_writer.as_mut() {
+                            vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
+                        }
 
                         if let Some(bed_writer) = bed_writer.as_mut()
                             && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
                         {
-                            // Write the record to the BED file if requested
                             bed_writer
                                 .write_record(
                                     &record
@@ -167,11 +177,14 @@ pub fn call(params: &CallParams) -> Result<()> {
                     }
                 }
 
-                // Ensure all data is flushed to the output file
-                drop(writer);
-
-                info!(file = %vcf_output, "Wrote VCF output");
-                if let Some(bed_output) = bed_output {
+                if let Some(vcf_output) = vcf_output.as_ref() {
+                    drop(vcf_writer);
+                    info!(file = %vcf_output, "Wrote VCF output");
+                }
+                if let Some(bed_output) = bed.bed.as_ref()
+                    && let Some(bed_writer) = bed_writer
+                {
+                    bed_writer.close().wrap_err("Failed to close BED writer")?;
                     info!(file = %bed_output, "Wrote BED output");
                 }
                 Ok(())
@@ -190,7 +203,7 @@ pub fn call(params: &CallParams) -> Result<()> {
             regions_iter.par_bridge().try_for_each_with(
                 (vcf_sender, params),
                 |(vcf_sender, params), (index, region)| {
-                    process_region(index, region, vcf_sender, params)
+                    process_region(index, region, vcf_sender, params, &ml)
                 },
             )
         })?;
@@ -216,6 +229,7 @@ fn process_region(
     region: &ChunkRegion,
     vcf_sender: &mut ordered_channel::Sender<Vec<vcf::Record>>,
     params: &CallParams,
+    ml: &MachineLearning,
 ) -> Result<()> {
     // Use thread-local readers to avoid re-opening files in each thread
     let res = READERS.with(|local_readers| -> Result<Vec<vcf::Record>> {
@@ -260,9 +274,29 @@ fn process_region(
                 .wrap_err("Failed to call methylation")?;
         }
 
+        // Filter out piles that are not CpG if requested
         if params.variant_calling.cpgs_only {
-            // Filter out piles that are not CpG if requested
             records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
+        }
+
+        let record_len = records.len();
+        for i in 0..record_len {
+            let (before, current, after) = surrounding_records(&mut records, i);
+
+            if let res @ ml::MlResult::Prediction { prediction, .. } =
+                ml.predict(current, before, after)
+            {
+                current.samples[0].machine_learning_prediction =
+                    MachineLearningPrediction(smallvec_inline![Some(prediction)]);
+                if !res.pass() {
+                    current.filters.add(low_ml_score);
+                }
+            }
+
+            // If no filters were added, we're gonna call it
+            if current.filters.is_empty() {
+                current.filters.add(rastair2_vcf::standard_fields::PASS);
+            }
         }
 
         Ok(records)

@@ -1,5 +1,5 @@
 use crate::{
-    call::methylation::threshold::{ThresholdParams, filters::add_filters},
+    call::methylation::{ThresholdParams, filters::add_filters},
     utils::Base::*,
     vcf::{self, Methylated, utils::NoStrandBiasForBaseErrorExt as _},
 };

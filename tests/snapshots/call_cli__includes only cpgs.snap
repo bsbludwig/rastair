@@ -7,8 +7,8 @@ info:
     - "--fasta-file=tests/data/test.fasta.gz"
     - tests/data/test.bam
     - "--region=chr19:6117965-6118004"
-    - "--calling=thresholds"
     - "--cpgs-only"
+    - "--vcf"
   env:
     NO_COLOR: "1"
 ---
@@ -18,7 +18,7 @@ exit_code: 0
 ##fileformat=VCFv4.2
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##rastair2Version=0.1.0
-##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6117965-6118004 --calling=thresholds --cpgs-only
+##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6117965-6118004 --cpgs-only --vcf
 ##reference="tests/data/test.fasta.gz"
 ##FILTER=<ID=lowDp,Description="Low read depth">
 ##FILTER=<ID=dnCpG_lowDp,Description="Low read depth for de-novo CpG candidate">
@@ -29,6 +29,7 @@ exit_code: 0
 ##FILTER=<ID=m_bq_ratio,Description="Low quality ratio for methylation candidate">
 ##FILTER=<ID=m_pos,Description="Alt allele evidence from read edges for methylation candidate">
 ##FILTER=<ID=m_highDp,Description="Excessive coverage for methylation candidate">
+##FILTER=<ID=low_ml_score,Description="Machine Learning module prediction below threshold">
 ##INFO=<ID=AD,Number=R,Type=Integer,Description="Total read depth for each allele">
 ##INFO=<ID=BQ,Number=1,Type=Float,Description="RMS base quality">
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="Combined depth across samples">
@@ -53,6 +54,7 @@ exit_code: 0
 ##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
 ##FORMAT=<ID=M5mC,Number=1,Type=Float,Description="Methylation level at CpG sites">
+##FORMAT=<ID=ML,Number=1,Type=Float,Description="Prediction of methylation/variant likelyhood by Rastair's by machine learning model">
 ##contig=<ID=chr19,length=39>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
 chr19	6117975	.	C	.	30	PASS	AD=23;BQ=35.1617;DP=23;MQ=60;MQ0=0;NS=1;AS_SB=11,12;SC5=AGCGT;ABQ=35.1617;AMQ=60;AS_SS_BQ=35.6549,34.7035;AS_SS_MQ=60,60;PIR=0.631944;ENT100=1.80808;NAB=79.0072;NOI=0;CPG	GT:GL:GC:DP:M5mC	0/0:1:0.999756:23:0

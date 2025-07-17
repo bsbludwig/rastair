@@ -35,6 +35,7 @@ filter!(m_vaf, "Low variant allele frequency for methylation candidate");
 filter!(m_bq_ratio, "Low quality ratio for methylation candidate");
 filter!(m_pos, "Alt allele evidence from read edges for methylation candidate");
 filter!(m_highDp, "Excessive coverage for methylation candidate");
+filter!(low_ml_score, "Machine Learning module prediction below threshold");
 
 info_field!(
     AlleleBaseQuality(f64),
@@ -80,6 +81,12 @@ format_field!(
     "Genotype confidence",
     FormatFieldNumber::OnePerGenotype
 );
+format_field!(
+    MachineLearningPrediction(Option<f64>),
+    "ML",
+    "Prediction of methylation/variant likelyhood by Rastair's by machine learning model",
+    FormatFieldNumber::Num(1)
+);
 
 vcf_record!(
     // pass or why not
@@ -88,6 +95,7 @@ vcf_record!(
         lowDp,
         dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf,
         m_vaf, m_bq_ratio, m_pos, m_highDp,
+        low_ml_score,
     ],
     // general info
     info: [
@@ -114,7 +122,7 @@ vcf_record!(
     // Call data
     //
     // NOTE: The first sub-field must always be the genotype (GT) if it is present.
-    format: [Genotype, GenotypeLikelihood, GenotypeConfidence, SampleReadDepth, Methylated],
+    format: [Genotype, GenotypeLikelihood, GenotypeConfidence, SampleReadDepth, Methylated, MachineLearningPrediction],
     // hint to allocate this many slots for format data
     min_samples: 1
 );

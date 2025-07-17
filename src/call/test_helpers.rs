@@ -1,4 +1,5 @@
 //! Helpers for writing concise tests.
+#![allow(unused, clippy::unwrap_in_result)]
 
 use crate::{
     call::{
@@ -6,7 +7,7 @@ use crate::{
         variant_calling::{ReadFlags, ReadMaskParams},
         variants::VariantCandidatePileup,
     },
-    sequence::{Readers, SegmentationParams, SegmentsParams},
+    sequence::{ReaderParams, Readers, SegmentationParams},
     utils::RegionString,
 };
 use clio::ClioPath;
@@ -16,6 +17,58 @@ use color_eyre::{
 };
 use std::num::NonZeroU32;
 
+impl ReaderParams {
+    pub fn test_data() -> Self {
+        Self {
+            bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
+            fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
+            region: None,
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 0 },
+        }
+    }
+
+    pub fn test_with(bam: &str, fasta: &str) -> Self {
+        Self {
+            bam_file: ClioPath::new(bam).unwrap(),
+            fasta_file: ClioPath::new(fasta).unwrap(),
+            region: None,
+            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 0 },
+        }
+    }
+
+    pub fn pileup(&self, chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
+        let region = RegionString {
+            chromosome: chr.into(),
+            start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
+            end: None,
+        };
+        let params = Self { region: Some(region), ..self.clone() };
+        let mut readers = params.readers().wrap_err("failed to fetch segments")?;
+        let chunk = readers.segments()?.next().wrap_err("failed to fetch segment")?;
+
+        let pileups = chunk
+            .process(
+                &mut readers,
+                &PileupMappingParams {
+                    include_cpgs: IncludeAllCpGs::Yes,
+                    keep_overlapping_reads: false,
+                    read_masking: ReadMaskParams::default(),
+                    read_flags: ReadFlags::default(),
+                },
+            )
+            .wrap_err("failed to process region")?;
+        let pileup = pileups
+            .into_iter()
+            .find(|p| p.pos == pos)
+            .ok_or_else(|| color_eyre::eyre::eyre!("No variant at {chr}:{pos}"))
+            .note(
+                "Variant pileups are only built when at least one base differs from the reference",
+            )?;
+
+        Ok(pileup)
+    }
+}
+
 pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
     let region = RegionString {
         chromosome: chr.into(),
@@ -23,7 +76,7 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
         start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
         end: None,
     };
-    let p = SegmentsParams {
+    let p = ReaderParams {
         bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
         fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
         region: Some(region),
@@ -38,26 +91,5 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
 /// 1-based positions, so the `pos` parameter is off by one compared to what you
 /// see there.
 pub(crate) fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
-    let mut readers = test_readers(chr, pos)?;
-
-    let chunk = readers.segments()?.next().wrap_err("failed to fetch segment")?;
-
-    let pileups = chunk
-        .process(
-            &mut readers,
-            &PileupMappingParams {
-                include_cpgs: IncludeAllCpGs::Yes,
-                keep_overlapping_reads: false,
-                read_masking: ReadMaskParams::default(),
-                read_flags: ReadFlags::default(),
-            },
-        )
-        .wrap_err("failed to process region")?;
-    let pileup = pileups
-        .into_iter()
-        .find(|p| p.pos == pos)
-        .ok_or_else(|| color_eyre::eyre::eyre!("No variant at {chr}:{pos}"))
-        .note("Variant pileups are only built when at least one base differs from the reference")?;
-
-    Ok(pileup)
+    ReaderParams::test_data().pileup(chr, pos)
 }
