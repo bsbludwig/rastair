@@ -3,12 +3,15 @@ use crate::{
     utils::Phred,
     vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
-use bgzip::Compression;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
 use rastair2_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::SmolStr;
-use std::io::{BufWriter, Write};
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+    path::Path,
+};
 use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, clap::Args)]
@@ -64,17 +67,48 @@ pub enum BedFormat {
 pub struct BedWriter {
     pub path: ClioPath,
     pub format: BedFormat,
-    writer: Box<dyn Write + Send + Sync>,
+    writer: Writer,
+}
+
+enum Writer {
+    Bed(Box<dyn Write + Send + Sync>),
+    BedGz(bgzip::BGZFWriter<Box<dyn Write + Send + Sync>>),
+}
+
+impl Write for Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Writer::Bed(writer) => writer.write(buf),
+            Writer::BedGz(writer) => writer.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Writer::Bed(writer) => writer.flush(),
+            Writer::BedGz(writer) => writer.flush(),
+        }
+    }
 }
 
 impl BedWriter {
     #[instrument(level = "debug")]
     pub fn new(path: &ClioPath, format: BedFormat) -> Result<Self> {
         let writer = path.clone().create().wrap_err("Failed to create output")?;
-        let writer = BufWriter::new(writer);
-        let mut writer: Box<dyn Write + Send + Sync> = match format {
-            BedFormat::BedGz => Box::new(bgzip::BGZFWriter::new(writer, Compression::fast())),
-            BedFormat::Bed => Box::new(writer),
+        let writer: Box<dyn Write + Send + Sync> = Box::new(BufWriter::new(writer));
+        let mut writer: Writer = match format {
+            BedFormat::BedGz => {
+                let writer = bgzip::BGZFWriter::with_compress_unit_size(
+                    writer,
+                    bgzip::Compression::fast(),
+                    bgzip::write::DEFAULT_COMPRESS_UNIT_SIZE,
+                    // Write index if the path is a local file
+                    path.is_local(),
+                )
+                .wrap_err("Failed to create BGZF writer")?;
+                Writer::BedGz(writer)
+            }
+            BedFormat::Bed => Writer::Bed(writer),
         };
         writeln!(&mut writer, "{}", Rastair1BedFormat::HEADER)
             .wrap_err("Failed to write header")?;
@@ -88,6 +122,28 @@ impl BedWriter {
         writeln!(self.writer)?;
         Ok(())
     }
+
+    pub fn close(mut self) -> Result<()> {
+        self.writer.flush().wrap_err("Failed to flush writer")?;
+        if let Writer::BedGz(bgzfwriter) = self.writer
+            && let Some(index) = bgzfwriter.close().wrap_err("Failed to close BGZF writer")?
+            && self.path.is_local()
+        {
+            write_index(self.path.path(), index)
+                .wrap_err_with(|| format!("Failed to write index for `{}`", self.path.display()))?;
+        }
+        Ok(())
+    }
+}
+
+fn write_index(original_path: &Path, index: bgzip::index::BGZFIndex) -> Result<()> {
+    let index_path = original_path.with_extension("gz.gzi");
+    let mut index_file = File::create(&index_path)
+        .wrap_err_with(|| format!("Failed to create index file `{}`", index_path.display()))?;
+    index
+        .write(&mut index_file)
+        .wrap_err_with(|| format!("Failed to write index to `{}`", index_path.display()))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

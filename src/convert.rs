@@ -11,7 +11,7 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
     Section as _,
-    eyre::{Result, WrapErr, bail, eyre},
+    eyre::{ContextCompat, Result, WrapErr, bail, eyre},
 };
 use rastair2_vcf::VcfField;
 use rust_htslib::bcf::Read as _;
@@ -147,17 +147,18 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         bail!("MessagePack file does not contain a VCF header");
     };
 
-    let params = vcf_writer::Params {
-        vcf_output: params.output.clone(),
+    let vcf_params = vcf_writer::Params {
+        vcf_output: Some(params.output.clone()),
         vcf_threads: NonZeroUsize::new(4).expect("valid number"),
     };
 
     let (format, compression) = format.into();
-    let mut writer = params
+    let mut writer = vcf_params
         .vcf_writer(&meta.contigs, &meta.samples, &meta.metadata, format, compression)
         .wrap_err_with(|| {
-            format!("Failed to create VCF writer for output file `{}`", params.vcf_output)
-        })?;
+            format!("Failed to create VCF writer for output file `{}`", params.output)
+        })?
+        .wrap_err("No writer requested")?;
 
     for entry in r.entries {
         match entry {

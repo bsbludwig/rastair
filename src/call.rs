@@ -59,14 +59,14 @@ pub struct CallParams {
     /// Note that VCF writing might use additional threads internally for compression.
     /// This can be overwritten with `--vcf-threads`.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
-    threads: usize,
+    total_threads: usize,
 }
 
 /// Read BAM + FASTA and call variants and methylation events
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
     ensure!(
-        Some(&params.vcf.vcf_output) != params.bed.bed_output.as_ref(),
+        params.vcf.vcf_output.as_ref() != params.bed.bed_output.as_ref(),
         "Can't write both VCF and BED output to the same file. Please specify different output files."
     );
 
@@ -102,7 +102,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     // parallel. From there, we send ready-made VCF records to a special writer
     // thread that only deals with writing the VCF file.
     let writer_threads = params.vcf.vcf_threads;
-    let worker_threads = params.threads.saturating_sub(writer_threads.get()).max(1);
+    let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
 
     // The connection between the processing threads and the VCF writer this
     // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
@@ -130,11 +130,12 @@ pub fn call(params: &CallParams) -> Result<()> {
                 ),
                 format!("reference={}", params.segments.fasta_file),
             ];
-            let mut writer =
+            let mut vcf_writer =
                 params.vcf.writer(&regions, &metadata).wrap_err("Failed to create VCF writer")?;
 
             let bed = params.bed.clone();
             let mut bed_writer = bed.writer().wrap_err("Failed to create BED writer")?;
+
             move || -> Result<()> {
                 // The segments we get have some overlap between them, so we
                 // need to ensure that we don't write the same record multiple
@@ -159,12 +160,13 @@ pub fn call(params: &CallParams) -> Result<()> {
                         last_seen_chrom = Some(record.main.chrom.clone());
                         last_seen_pos = Some(record.main.pos);
 
-                        writer.add(record).wrap_err("Failed to write VCF record")?;
+                        if let Some(vcf_writer) = vcf_writer.as_mut() {
+                            vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
+                        }
 
                         if let Some(bed_writer) = bed_writer.as_mut()
                             && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
                         {
-                            // Write the record to the BED file if requested
                             bed_writer
                                 .write_record(
                                     &record
@@ -176,11 +178,14 @@ pub fn call(params: &CallParams) -> Result<()> {
                     }
                 }
 
-                // Ensure all data is flushed to the output file
-                drop(writer);
-
-                info!(file = %vcf_output, "Wrote VCF output");
-                if let Some(bed_output) = bed.bed_output.as_ref() {
+                if let Some(vcf_output) = vcf_output.as_ref() {
+                    drop(vcf_writer);
+                    info!(file = %vcf_output, "Wrote VCF output");
+                }
+                if let Some(bed_output) = bed.bed_output.as_ref()
+                    && let Some(bed_writer) = bed_writer
+                {
+                    bed_writer.close().wrap_err("Failed to close BED writer")?;
                     info!(file = %bed_output, "Wrote BED output");
                 }
                 Ok(())
