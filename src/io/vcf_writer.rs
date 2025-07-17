@@ -163,7 +163,7 @@ impl Params {
             target=?vcf_output.display(), ?format, ?compression,
             "Creating VCF writer",
         );
-        let mut writer = VcfBuilder::new(&vcf_output, format, compression, self.vcf_threads.get())
+        let mut writer = VcfBuilder::new(vcf_output, format, compression, self.vcf_threads.get())
             .wrap_err("Failed to create VCF writer")?;
 
         for line in metadata {
