@@ -172,12 +172,14 @@ Call methylated positions
 
 Convert between different file formats
 
-**Usage:** `rastair2 convert [OPTIONS] --input <INPUT> --output <OUTPUT>`
+**Usage:** `rastair2 convert [OPTIONS]`
 
 ###### **Options:**
 
-* `--input <INPUT>` — Input file
-* `--input-format <INPUT_FORMAT>` — Input file format, guessed from file extension if not specified
+* `-i`, `--input <INPUT>` — Input file
+
+  Default value: `-`
+* `-f`, `--input-format <INPUT_FORMAT>` — Input file format, guessed from file extension if not specified
 
   Possible values:
   - `vcf`:
@@ -189,7 +191,9 @@ Convert between different file formats
   - `mpk.lz4`
 
 * `-o`, `--output <OUTPUT>` — Output file
-* `--output-format <OUTPUT_FORMAT>` — Output file format, guessed from file extension if not specified
+
+  Default value: `-`
+* `-F`, `--output-format <OUTPUT_FORMAT>` — Output file format, guessed from file extension if not specified
 
   Possible values:
   - `vcf`:

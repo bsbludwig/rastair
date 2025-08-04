@@ -2,7 +2,7 @@
 
 In addition to looking at methylation of known @CpG sites,
 i.e. sites that are already present in the @referenceGenome,
-Rastair can also call de-novo CpG sites.
+Rastair can also call @denovo sites.
 These are sites where a `C` and/or `G` @altAllele exists in @read:pl
 followed/preceded by a `G` and/or `C` @refAllele,
 and thus creating new CpG sites.

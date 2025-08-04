@@ -393,3 +393,9 @@
   group: "Programming"
   description: |
     A compiler optimization technique that uses profiling information from previous runs of the program to optimize the code for better performance. This can lead to improved runtime performance and reduced code size.
+
+- key: denovo
+  short: de-novo CpG
+  group: "Genetics"
+  description: |
+    A @CpG site that is not present in the @referenceGenome but seems to occur in the sample when there is a variant that turns a `NG` (or a `CN`) into a `CG`.
