@@ -165,5 +165,17 @@ macro_rules! vcf_record {
                 Ok(())
             }
         }
+
+        #[allow(unused)]
+        impl Record {
+            /// Get description of the VCF record
+            pub fn description() -> $crate::reflect::VcfDescription {
+                $crate::reflect::VcfDescription {
+                    filters: vec![$( $filter::description() ),*],
+                    infos: vec![$( $info::description() ),*],
+                    formats: vec![$( $format::description() ),*],
+                }
+            }
+        }
     }
 }}

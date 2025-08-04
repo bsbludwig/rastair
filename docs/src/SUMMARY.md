@@ -14,6 +14,7 @@
 
 # Formats
 - [VCF/BCF](formats/vcf.md)
+  - [VCF Fields](formats/vcf-fields.md)
 - [BED](formats/bed.md)
 
 # Appendix

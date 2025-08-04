@@ -68,6 +68,8 @@ pub(crate) mod filters;
 pub(crate) mod fixed_fields;
 pub(crate) mod record;
 
+pub mod reflect;
+
 pub mod standard_fields;
 
 use color_eyre::{Result, eyre::Context};

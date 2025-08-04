@@ -228,6 +228,14 @@ fn generate_docs(serve: bool) -> Result<()> {
         .spawn()
         .wrap_err("Failed to generate CLI docs")?;
 
+    let mut vcf_docs = StdCommand::new(env!("CARGO"))
+        .arg("run")
+        .arg("--")
+        .arg("generate-vcf-docs")
+        .arg("docs/src/formats/vcf-fields.md")
+        .spawn()
+        .wrap_err("Failed to generate VCF docs")?;
+
     let mut child = StdCommand::new("mdbook")
         .arg(if serve { "serve" } else { "build" })
         .current_dir("docs")
@@ -237,6 +245,7 @@ fn generate_docs(serve: bool) -> Result<()> {
     let _pls_exit = receiver.recv();
     let _ = child.kill();
     let _ = cli_docs.kill();
+    let _ = vcf_docs.kill();
 
     Ok(())
 }

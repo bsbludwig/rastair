@@ -26,11 +26,23 @@ pub trait FormatField: super::VcfField {
 
     /// Write the field values to the VCF record.
     fn write(&self, record: &mut Record) -> Result<()>;
+
+    /// Description of this field
+    fn description() -> crate::reflect::Format {
+        crate::reflect::Format {
+            name: SmolStr::new_static(Self::ID),
+            description: SmolStr::new_static(Self::DESCRIPTION),
+            number: Self::NUMBER,
+            field_type: SmolStr::new_static(Self::Type::TYPE_NAME),
+            rust_type: SmolStr::new_static(std::any::type_name::<Self::Type>()),
+        }
+    }
 }
 
 /// The number of values that can be included with the FORMAT field
 ///
 /// Very simular to [`crate::InfoFieldNumber`], but with additional variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatFieldNumber {
     /// A flag, no values. Written as "0" in the header.
     Flag,

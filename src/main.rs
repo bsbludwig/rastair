@@ -54,6 +54,13 @@ enum Subcommand {
         #[arg()]
         output: ClioPath,
     },
+    /// Write VCF fields as markdown file
+    #[command(hide = true)]
+    GenerateVcfDocs {
+        /// The output file to write the markdown to
+        #[arg()]
+        output: ClioPath,
+    },
 }
 
 fn main() -> Result<()> {
@@ -126,6 +133,12 @@ fn main() -> Result<()> {
             let markdown = clap_markdown::help_markdown::<Cli>();
             file.write_all(markdown.as_bytes())
                 .wrap_err_with(|| format!("Failed to write CLI help to {output}"))?;
+        }
+        Subcommand::GenerateVcfDocs { output } => {
+            let mut file = output.clone().create().wrap_err("Failed to create output")?;
+            rastair2::vcf::Record::description()
+                .to_markdown(&mut file)
+                .wrap_err("Failed to generate VCF docs")?;
         }
     }
 

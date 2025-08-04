@@ -15,6 +15,8 @@ use smol_str::SmolStr;
 pub trait VcfFilter: Default {
     /// The name of the filter, used in the VCF header
     const NAME: &'static str;
+    /// Description of the filter, used in the VCF header
+    const DESCRIPTION: &'static str;
 
     /// Definition of the filter
     fn header() -> String;
@@ -22,6 +24,14 @@ pub trait VcfFilter: Default {
     /// Returns the filter name as it should appear in the VCF record
     fn filter(&self) -> SmolStr {
         SmolStr::new_static(Self::NAME)
+    }
+
+    /// Returns the filter description
+    fn description() -> crate::reflect::Filter {
+        crate::reflect::Filter {
+            name: SmolStr::new_static(Self::NAME),
+            description: SmolStr::new_static(Self::DESCRIPTION),
+        }
     }
 }
 
@@ -39,9 +49,10 @@ macro_rules! filter {
 
         impl $crate::VcfFilter for $name {
             const NAME: &'static str = stringify!($name);
+            const DESCRIPTION: &'static str = $description;
 
             fn header() -> String {
-                format!("##FILTER=<ID={},Description=\"{}\">\n", stringify!($name), $description)
+                format!("##FILTER=<ID={},Description=\"{}\">\n", Self::NAME, Self::DESCRIPTION)
             }
         }
 
