@@ -1,7 +1,10 @@
 use crate::{
     bed::Rastair1BedFormat,
     utils::Base::{self, *},
-    vcf::{AlleleSpecificStrandBias, ByStrand, GenotypeConfidence, GenotypeLikelihood, Methylated},
+    vcf::{
+        AlleleSpecificStrandBias, ByStrand, DeNovoCpGCandidate, GenotypeConfidence,
+        GenotypeLikelihood, Methylated,
+    },
 };
 use color_eyre::eyre::{Context as _, ContextCompat as _, Report, bail};
 use rastair2_vcf::{
@@ -95,6 +98,7 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
                 None
             }
         }]));
+        let de_novo = r.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
 
         Ok(Rastair1BedFormat {
             contig,
@@ -109,6 +113,7 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             genotype: Genotype(genotype),
             genotype_likelihood,
             genotype_confidence,
+            de_novo,
         })
     }
 }

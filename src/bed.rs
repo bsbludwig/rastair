@@ -160,10 +160,11 @@ pub struct Rastair1BedFormat {
     pub genotype: Genotype,
     pub genotype_likelihood: GenotypeLikelihood,
     pub genotype_confidence: GenotypeConfidence,
+    pub de_novo: bool,
 }
 
 impl Rastair1BedFormat {
-    pub const HEADER: &'static str = "#chr\tstart\tend\tname\tbeta_est\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage\tgenotype\tgt_p_score\tgt_conf_score";
+    pub const HEADER: &'static str = "#chr\tstart\tend\tname\tbeta_est\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage\tgenotype\tgt_p_score\tgt_conf_score\tcpg";
 }
 
 mod internal_to_bed;
@@ -184,6 +185,7 @@ impl Rastair1BedFormat {
             genotype,
             genotype_likelihood,
             genotype_confidence,
+            de_novo,
         } = self;
         let end = start + 1;
         let name = ".";
@@ -195,7 +197,7 @@ impl Rastair1BedFormat {
 
         write!(
             f,
-            "{contig}\t{start}\t{end}\t{name}\t{beta:.2}\t{strand}\t{unmod}\t{mod}\t{no_snp}\t{snp}\t{coverage}\t"
+            "{contig}\t{start}\t{end}\t{name}\t{beta:.2}\t{strand}\t{unmod}\t{mod}\t{no_snp}\t{snp}\t{coverage}"
         )?;
 
         let genotype = genotype_to_rastair1_string(genotype, r#ref);
@@ -211,7 +213,8 @@ impl Rastair1BedFormat {
             .and_then(|x| Phred::new(x).ok())
             .map(|x| *x)
             .unwrap_or_default();
-        write!(f, "{genotype}\t{likelihood:.2}\t{confidence:.2}")?;
+        write!(f, "\t{genotype}\t{likelihood:.2}\t{confidence:.2}")?;
+        write!(f, "\t{}", if *de_novo { "NEW" } else { "REF" })?;
 
         Ok(())
     }

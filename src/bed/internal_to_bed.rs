@@ -43,6 +43,7 @@ impl TryFrom<&Rastair2Record> for Rastair1BedFormat {
             genotype: record.samples[0].genotype.clone(),
             genotype_likelihood: record.samples[0].genotype_likelihood.clone(),
             genotype_confidence: record.samples[0].genotype_confidence.clone(),
+            de_novo: *record.info.de_novo_cp_g_candidate,
         })
     }
 }
