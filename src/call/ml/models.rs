@@ -3,6 +3,8 @@ use color_eyre::{
     Result,
     eyre::{Context, ensure},
 };
+use ndarray::{Array1, Axis};
+use smol_str::SmolStr;
 use std::{fmt, fs, io::Read, path::Path};
 use tracing::{debug, instrument};
 
@@ -18,14 +20,27 @@ pub struct MachineLearning {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum MlResult {
     None,
-    Prediction { prediction: f64, threshold: f64 },
+    Prediction {
+        model: MlModel,
+        prediction: f64,
+        threshold: f64,
+        #[serde(skip)]
+        features: Array1<f64>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MlModel {
+    Cpg,
+    DenovoCpg,
+    Others,
 }
 
 impl MlResult {
     pub fn pass(&self) -> bool {
         match self {
             MlResult::None => false,
-            MlResult::Prediction { prediction, threshold } => prediction >= threshold,
+            MlResult::Prediction { prediction, threshold, .. } => prediction >= threshold,
         }
     }
 }
@@ -34,9 +49,10 @@ impl fmt::Debug for MlResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MlResult::None => f.debug_tuple("MlResult::None").finish(),
-            MlResult::Prediction { prediction, threshold } => f
+            MlResult::Prediction { prediction, threshold, model, .. } => f
                 .debug_tuple(if self.pass() { "MlResult::PASS" } else { "MlResult::FAIL" })
                 .field(prediction)
+                .field(model)
                 .finish(),
         }
     }
@@ -64,12 +80,20 @@ impl MachineLearning {
         before: Option<&Record>,
         after: Option<&Record>,
     ) -> MlResult {
-        let (model, features) = if *record.info.in_cp_g {
-            (self.cpg.as_ref(), super::cpg::params_from_record(record, before, after))
+        let (name, model, features) = if *record.info.in_cp_g {
+            (MlModel::Cpg, self.cpg.as_ref(), super::cpg::params_from_record(record, before, after))
         } else if *record.info.de_novo_cp_g_candidate {
-            (self.denovo_cpg.as_ref(), super::denovo_cpg::params_from_record(record, before, after))
+            (
+                MlModel::DenovoCpg,
+                self.denovo_cpg.as_ref(),
+                super::denovo_cpg::params_from_record(record, before, after),
+            )
         } else {
-            (self.others.as_ref(), super::others::params_from_record(record, before, after))
+            (
+                MlModel::Others,
+                self.others.as_ref(),
+                super::others::params_from_record(record, before, after),
+            )
         };
 
         let Some(model) = self.cpg.as_ref() else {
@@ -79,7 +103,12 @@ impl MachineLearning {
         let features = super::cpg::params_from_record(record, before, after);
         let prediction = model.predict(&features.view());
         match prediction.get(0).copied() {
-            Some(p) => MlResult::Prediction { prediction: p, threshold: self.threshold },
+            Some(p) => MlResult::Prediction {
+                prediction: p,
+                threshold: self.threshold,
+                features: features.row(0).to_owned(),
+                model: name,
+            },
             None => MlResult::None,
         }
     }

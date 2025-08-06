@@ -22,7 +22,7 @@ use tracing::{debug, info, instrument, warn};
 pub mod denovo_cpg;
 pub mod methylation;
 pub mod metrics;
-mod ml;
+pub mod ml;
 pub mod process;
 pub mod variant_calling;
 pub mod variants;
@@ -34,23 +34,23 @@ pub mod test_helpers;
 pub struct CallParams {
     // --- Input parameters ---
     #[command(flatten)]
-    segments: ReaderParams,
+    pub segments: ReaderParams,
 
     // --- Calling parameters ---
     #[command(flatten)]
-    variant_calling: VariantCallingParams,
+    pub variant_calling: VariantCallingParams,
     #[command(flatten)]
-    denovo_cpg: denovo_cpg::DenovoParams,
+    pub denovo_cpg: denovo_cpg::DenovoParams,
     #[command(flatten)]
-    methylation: MethylationCallingParams,
+    pub methylation: MethylationCallingParams,
     #[command(flatten)]
-    ml: ml::MachineLearningParams,
+    pub ml: ml::MachineLearningParams,
 
     // --- Output parameters ---
     #[command(flatten)]
-    vcf: vcf_writer::Params,
+    pub vcf: vcf_writer::Params,
     #[command(flatten)]
-    bed: BedParams,
+    pub bed: BedParams,
 
     // --- Other runtime parameters ---
     /// Number of threads to use for processing the BAM file. Will use all
@@ -59,7 +59,7 @@ pub struct CallParams {
     /// Note that VCF writing might use additional threads internally for compression.
     /// This can be overwritten with `--vcf-threads`.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
-    total_threads: usize,
+    pub total_threads: usize,
 }
 
 /// Read BAM + FASTA and call variants and methylation events
