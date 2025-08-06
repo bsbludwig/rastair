@@ -11,6 +11,7 @@
 # Calling logic
 - [De-novo CpGs](calling/denovo.md)
 - [Methylation calling](calling/methylation.md)
+- [Machine-learning models](calling/ml.md)
 
 # Formats
 - [VCF/BCF](formats/vcf.md)
