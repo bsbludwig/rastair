@@ -1,9 +1,9 @@
 use super::utils::*;
 use crate::{
     utils::Base,
-    vcf::{ByStrand, DeNovoCpGCandidate, Record, utils::NoStrandBiasForBaseErrorExt},
+    vcf::{utils::NoStrandBiasForBaseErrorExt, ByStrand, DeNovoCpGCandidate, Record},
 };
-use ndarray::{Array1, Array2, array};
+use ndarray::{array, Array1, Array2};
 use tracing::{debug, instrument};
 
 /// Extract feature parameters from a VCF record for CpG classification
@@ -44,18 +44,17 @@ pub fn params_from_record(
     let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(Some(target_alt_base));
 
     // Extract normalized allele depths
-    let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64 / depth;
-    let ad_alt =
-        record.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64 / depth;
+    let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64;
+    let ad_alt = record.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
 
     // Extract normalized strand bias counts
     let ref_strand = record.strand_count(Base::from(ref_base)).or_empty();
     let alt_strand = record.strand_count(target_alt_base).or_empty();
 
-    let sb_ot_ref = f64::from(ref_strand.ot) / depth;
-    let sb_ob_ref = f64::from(ref_strand.ob) / depth;
-    let sb_ot_alt = f64::from(alt_strand.ot) / depth;
-    let sb_ob_alt = f64::from(alt_strand.ob) / depth;
+    let sb_ot_ref = f64::from(ref_strand.ot);
+    let sb_ob_ref = f64::from(ref_strand.ob);
+    let sb_ot_alt = f64::from(alt_strand.ot);
+    let sb_ob_alt = f64::from(alt_strand.ob);
 
     // Calculate alt_score based on target alt allele
     let alt_score = if target_alt_base == Base::C {
@@ -96,11 +95,13 @@ pub fn params_from_record(
     let num_indels_alt = record.info.num_indels.get(alt_index + 1).copied().unwrap_or(0.0);
 
     // Calculate adjacent position features specific to denovo CpGs
-    let (ad_alt_adj, alt_score_adj) = calculate_denovo_adjacent_features(record, before, after);
+    let (beta_ratio, ad_alt_adj, alt_score_adj, sb_adj) =
+        calculate_denovo_adjacent_features(record, before, after);
 
     array![[
         ad_alt_adj,
         alt_score_adj,
+        sb_adj,
         ref_a,
         ref_c,
         ref_g,
@@ -128,12 +129,12 @@ pub fn params_from_record(
         p5g,
         p5t,
         region_entropy,
-        ad_ref,
-        ad_alt,
-        sb_ot_ref,
-        sb_ob_ref,
-        sb_ot_alt,
-        sb_ob_alt,
+        ad_ref / depth,
+        ad_alt / depth,
+        sb_ot_ref / depth,
+        sb_ob_ref / depth,
+        sb_ot_alt / depth,
+        sb_ob_alt / depth,
         alt_score,
         bq_ref,
         bq_alt,
@@ -153,6 +154,7 @@ pub fn params_from_record(
         num_aligned_bases_alt,
         num_indels_ref,
         num_indels_alt,
+        beta_ratio
     ]]
 }
 
@@ -161,10 +163,19 @@ fn calculate_denovo_adjacent_features(
     record: &Record,
     before: Option<&Record>,
     after: Option<&Record>,
-) -> (f64, f64) {
+) -> (f64, f64, f64, f64) {
     // Use the DeNovoCpGCandidate enum to determine the adjacent position logic
     match record.info.de_novo_cp_g_candidate {
         DeNovoCpGCandidate::Candidate { alt_base: Base::C, .. } => {
+            let beta_center = {
+                let c_count = record.strand_count(Base::C).or_empty().ot;
+                let t_count = record.strand_count(Base::T).or_empty().ot;
+                if c_count + t_count == 0 {
+                    0.0
+                } else {
+                    f64::from(t_count) / (f64::from(t_count) + f64::from(c_count))
+                }
+            };
             // For C alt alleles (creating CpG with next G): look for G→A at position-1
             if let Some(after) = after
                 && after.main.r#ref == "G"
@@ -182,13 +193,36 @@ fn calculate_denovo_adjacent_features(
                 let bq_ot_ref = get_strand_base_quality(after, Base::G).ot;
                 let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0)
                     / (f64::from(ref_strand.ot) * bq_ot_ref + 1.0);
-
-                (ad_alt_norm, alt_score)
+                let beta_after = {
+                    let g_count = after.strand_count(Base::G).or_empty().ob;
+                    let a_count = after.strand_count(Base::A).or_empty().ob;
+                    if g_count + a_count == 0 {
+                        0.0
+                    } else {
+                        f64::from(a_count) / (f64::from(a_count) + f64::from(g_count))
+                    }
+                };
+                let sb_adj = (f64::from(alt_strand.ob + 1) / f64::from(alt_strand.ot + 1)).log2();
+                (
+                    ((beta_center + 1.0) / (beta_after + 1.0)).log2(),
+                    ad_alt_norm,
+                    alt_score.log2(),
+                    sb_adj,
+                )
             } else {
-                (0.0, 0.0)
+                (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0, 0.0)
             }
         }
         DeNovoCpGCandidate::Candidate { alt_base: Base::G, .. } => {
+            let beta_center = {
+                let g_count = record.strand_count(Base::G).or_empty().ob;
+                let a_count = record.strand_count(Base::A).or_empty().ob;
+                if g_count + a_count == 0 {
+                    0.0
+                } else {
+                    f64::from(a_count) / (f64::from(a_count) + f64::from(g_count))
+                }
+            };
             // For G alt alleles (creating CpG with prev C): look for C→T at position+1
             if let Some(before) = before
                 && before.main.r#ref == "C"
@@ -206,16 +240,30 @@ fn calculate_denovo_adjacent_features(
                 let bq_ot_ref = get_strand_base_quality(before, Base::C).ot;
                 let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0)
                     / (f64::from(ref_strand.ot) * bq_ot_ref + 1.0);
-
-                (ad_alt_norm, alt_score)
+                let beta_before = {
+                    let c_count = ref_strand.ot;
+                    let t_count = alt_strand.ot;
+                    if c_count + t_count == 0 {
+                        0.0
+                    } else {
+                        f64::from(t_count) / (f64::from(t_count) + f64::from(c_count))
+                    }
+                };
+                let sb_adj = (f64::from(alt_strand.ot + 1) / f64::from(alt_strand.ob + 1)).log2();
+                (
+                    ((beta_center + 1.0) / (beta_before + 1.0)).log2(),
+                    ad_alt_norm,
+                    alt_score.log2(),
+                    sb_adj,
+                )
             } else {
-                (0.0, 0.0)
+                (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0, 0.0)
             }
         }
         _ => {
             // Not a denovo CpG candidate or unexpected alt base
             debug!("No denovo CpG context found for adjacent feature calculation");
-            (0.0, 0.0)
+            (0.0, 0.0, 0.0, 0.0)
         }
     }
 }

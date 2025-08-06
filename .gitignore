@@ -1,3 +1,11 @@
 /target
 /tmp
+.ipynb_checkpoints
+**/*.Rproj
+**/*.Rhistory
+**/*.Rproj.user
+**/*.bcf
+**/*.csi
+**/*.vcf.gz
+**/*.vcf.gz.tbi
 .bin/
