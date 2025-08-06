@@ -1,5 +1,3 @@
-use std::io::{BufWriter, Write};
-
 use clap::Parser as _;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
@@ -13,6 +11,7 @@ use rastair2::{
     sequence::ChunkRegion,
     utils::surrounding_records,
 };
+use std::io::{BufWriter, Write};
 
 #[derive(Debug, clap::Parser)]
 struct Cli {

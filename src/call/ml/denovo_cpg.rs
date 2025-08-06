@@ -1,9 +1,9 @@
 use super::utils::*;
 use crate::{
     utils::Base,
-    vcf::{utils::NoStrandBiasForBaseErrorExt, ByStrand, DeNovoCpGCandidate, Record},
+    vcf::{ByStrand, DeNovoCpGCandidate, Record, utils::NoStrandBiasForBaseErrorExt},
 };
-use ndarray::{array, Array1, Array2};
+use ndarray::{Array1, Array2, array};
 use tracing::{debug, instrument};
 
 /// Extract feature parameters from a VCF record for CpG classification
