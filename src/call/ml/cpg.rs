@@ -217,7 +217,7 @@ fn calculate_adjacent_features(
             let beta_ratio = ((beta_center + 1.0) / (beta_before + 1.0)).log2();
             (beta_ratio, ad_alt_norm, alt_score.log2())
         } else {
-            ((beta_center + 1.0 / 1.0).log2(), 0.0, 0.0)
+            (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0)
         }
     } else {
         // No adjacent evidence for methylation, return defaults
