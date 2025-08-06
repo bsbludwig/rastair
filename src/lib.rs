@@ -17,5 +17,8 @@ pub mod utils {
     pub use base_modification::MethylatedPositions;
     mod base_counter;
     pub use base_counter::Counter;
+
+    mod surrounding;
+    pub use surrounding::surrounding_records;
 }
 pub mod sequence;
