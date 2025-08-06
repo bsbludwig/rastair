@@ -12,7 +12,6 @@ use rastair2::{
     io::mpk::viewer::MpkViewParams,
 };
 use tracing::{debug, info, warn};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -70,39 +69,7 @@ fn main() -> Result<()> {
     reset_sigpipe();
 
     let args = Cli::parse();
-
-    let subscriber = {
-        let default_log_settings =
-            if args.verbose { "info,rastair2=debug" } else { "warn,rastair2=info" };
-        let mut env_filter = EnvFilter::new(default_log_settings);
-        if let Ok(env) = std::env::var("RASTAIR_LOG") {
-            for directive in env.split(',') {
-                if directive.is_empty() {
-                    continue;
-                }
-                match directive.parse() {
-                    Ok(parsed_directive) => {
-                        env_filter = env_filter.add_directive(parsed_directive);
-                    }
-                    Err(error) => {
-                        warn!(%error, "Warning: Invalid log directive `{directive}`");
-                    }
-                }
-            }
-        }
-
-        tracing_subscriber::Registry::default()
-            .with(tracing_error::ErrorLayer::default())
-            .with(env_filter)
-            .with(
-                tracing_subscriber::fmt::Layer::default()
-                    .with_target(true)
-                    .with_thread_names(args.verbose)
-                    // .with_span_events(FmtSpan::CLOSE) // maybe enable with flag
-                    .with_writer(std::io::stderr),
-            )
-    };
-    tracing::subscriber::set_global_default(subscriber)?;
+    rastair2::utils::setup_tracing(args.verbose);
 
     match args.command {
         Subcommand::Call(params) => {

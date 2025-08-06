@@ -18,6 +18,9 @@ pub mod utils {
     mod base_counter;
     pub use base_counter::Counter;
 
+    mod logging;
+    pub use logging::setup_tracing;
+
     mod surrounding;
     pub use surrounding::surrounding_records;
 }
