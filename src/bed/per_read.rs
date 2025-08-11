@@ -70,11 +70,11 @@ pub struct PerRead {
     /// Number of modified CpGs
     pub mod_count: u16,
     /// Positions in read  of modified CpGs
-    pub mod_cpgs: Vec<usize>,
+    pub mod_cpgs: SmallVec<u32, 24>,
     /// Positions in read of unmodified CpGs
-    pub unmod_cpgs: Vec<usize>,
+    pub unmod_cpgs: SmallVec<u32, 24>,
     /// Positions in read of CpGs that are mutated
-    pub snp_cpgs: Vec<usize>,
+    pub snp_cpgs: SmallVec<u32, 24>,
 }
 
 impl BedRecord for PerRead {
