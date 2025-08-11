@@ -203,7 +203,7 @@ pub fn call(params: &CallParams) -> Result<()> {
             regions_iter.par_bridge().try_for_each_with(
                 (vcf_sender, params),
                 |(vcf_sender, params), (index, region)| {
-                    process_region(index, region, vcf_sender, params, &ml)
+                    process_region_wrapper(index, region, vcf_sender, params, &ml)
                 },
             )
         })?;
@@ -217,20 +217,21 @@ pub fn call(params: &CallParams) -> Result<()> {
     Ok(())
 }
 
-thread_local! {
-    /// Readers for the BAM and FASTA files, initialized per thread to avoid
-    /// re-opening files or having a lock
-    static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
-}
-
+/// Wrapper function for processing a region in a thread-safe manner.
 #[instrument(level = "debug", skip_all, fields(region=%region.region))]
-fn process_region(
+fn process_region_wrapper(
     index: usize,
     region: &ChunkRegion,
     vcf_sender: &mut ordered_channel::Sender<Vec<vcf::Record>>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<()> {
+    thread_local! {
+        /// Readers for the BAM and FASTA files, initialized per thread to avoid
+        /// re-opening files or having a lock
+        static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+    }
+
     // Use thread-local readers to avoid re-opening files in each thread
     let res = READERS.with(|local_readers| -> Result<Vec<vcf::Record>> {
         let mut local_readers = local_readers.borrow_mut();
@@ -246,60 +247,7 @@ fn process_region(
             local_readers.as_mut().wrap_err("Failed to access thread-local resources")?
         };
 
-        let pileup_mapping_params = process::PileupMappingParams {
-            include_cpgs: params.methylation.should_include_all_cpgs(),
-            keep_overlapping_reads: params.variant_calling.keep_overlapping_reads,
-            read_masking: params.variant_calling.read_masking.clone(),
-            read_flags: params.variant_calling.read_flags.clone(),
-        };
-
-        let piles = region.process(readers, &pileup_mapping_params)?;
-
-        let mut records = piles
-            .iter()
-            .map(|pile| pile.variant_metrics(&params.variant_calling))
-            .collect::<Result<Vec<_>>>()
-            .wrap_err("Failed to collect metrics")?;
-
-        // Call methylation events if requested
-        let record_len = records.len();
-        for i in 0..record_len {
-            let (before, current, after) = surrounding_records(&mut records, i);
-
-            params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
-
-            params
-                .methylation
-                .call(current, before, after) // Might also add filters
-                .wrap_err("Failed to call methylation")?;
-        }
-
-        // Filter out piles that are not CpG if requested
-        if params.variant_calling.cpgs_only {
-            records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
-        }
-
-        let record_len = records.len();
-        for i in 0..record_len {
-            let (before, current, after) = surrounding_records(&mut records, i);
-
-            if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after) {
-                if !predictions.is_empty() && predictions.iter().any(|p| !p.pass()) {
-                    // if none of the predictions pass, we add a low ML score filter
-                    current.filters.add(low_ml_score);
-                }
-                current.samples[0].machine_learning_prediction = MachineLearningPrediction(
-                    predictions.into_iter().map(|p| p.prediction).collect(),
-                );
-            }
-
-            // If no filters were added, we're gonna call it
-            if current.filters.is_empty() {
-                current.filters.add(rastair2_vcf::standard_fields::PASS);
-            }
-        }
-
-        Ok(records)
+        process_region(readers, region, params, ml)
     });
 
     let records = match res {
@@ -318,4 +266,66 @@ fn process_region(
     }
 
     Ok(())
+}
+
+/// Process a region
+fn process_region(
+    readers: &mut Readers,
+    region: &ChunkRegion,
+    params: &CallParams,
+    ml: &MachineLearning,
+) -> Result<Vec<vcf::Record>> {
+    let pileup_mapping_params = process::PileupMappingParams {
+        include_cpgs: params.methylation.should_include_all_cpgs(),
+        keep_overlapping_reads: params.variant_calling.keep_overlapping_reads,
+        read_masking: params.variant_calling.read_masking.clone(),
+        read_flags: params.variant_calling.read_flags.clone(),
+    };
+
+    let piles = region.process(readers, &pileup_mapping_params)?;
+
+    let mut records = piles
+        .iter()
+        .map(|pile| pile.variant_metrics(&params.variant_calling))
+        .collect::<Result<Vec<_>>>()
+        .wrap_err("Failed to collect metrics")?;
+
+    // Call methylation events if requested
+    let record_len = records.len();
+    for i in 0..record_len {
+        let (before, current, after) = surrounding_records(&mut records, i);
+
+        params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
+
+        params
+            .methylation
+            .call(current, before, after) // Might also add filters
+            .wrap_err("Failed to call methylation")?;
+    }
+
+    // Filter out piles that are not CpG if requested
+    if params.variant_calling.cpgs_only {
+        records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
+    }
+
+    let record_len = records.len();
+    for i in 0..record_len {
+        let (before, current, after) = surrounding_records(&mut records, i);
+
+        if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after) {
+            if !predictions.is_empty() && predictions.iter().any(|p| !p.pass()) {
+                // if none of the predictions pass, we add a low ML score filter
+                current.filters.add(low_ml_score);
+            }
+            current.samples[0].machine_learning_prediction =
+                MachineLearningPrediction(predictions.into_iter().map(|p| p.prediction).collect());
+        }
+
+        // If no filters were added, we're gonna call it
+        if current.filters.is_empty() {
+            current.filters.add(rastair2_vcf::standard_fields::PASS);
+        }
+    }
+
+    Ok(records)
 }
