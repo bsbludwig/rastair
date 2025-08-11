@@ -41,8 +41,11 @@ fn main() -> Result<()> {
     let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
     let mut cpg = MlDebugOutput::new(ClioPath::new("CpG_features.tsv.gz")?)?;
+    writeln!(&mut cpg.writer, "{}", CPG_HEADER)?;
     let mut denovo = MlDebugOutput::new(ClioPath::new("denovo_features.tsv.gz")?)?;
+    writeln!(&mut denovo.writer, "{}", DENOVO_HEADER)?;
     let mut other = MlDebugOutput::new(ClioPath::new("other_features.tsv.gz")?)?;
+    writeln!(&mut other.writer, "{}", OTHER_HEADER)?;
 
     for region in regions {
         let pileup_mapping_params = process::PileupMappingParams {
@@ -131,3 +134,8 @@ impl MlDebugOutput {
         Ok(())
     }
 }
+
+// Keep these in sync with the `params_from_record` functions!
+const CPG_HEADER: &str = "chr\tpos\tresult\tad_alt_adj\talt_score_adj\tref_a\tref_c\tref_g\tref_t\talt_a\talt_c\talt_g\talt_t\tmapq\tnum_mapq0\tp1a\tp1c\tp1g\tp1t\tp2a\tp2c\tp2g\tp2t\tp4a\tp4c\tp4g\tp4t\tp5a\tp5c\tp5g\tp5t\tregion_entropy\tad_ref\tad_alt\tsb_ot_ref\tsb_ob_ref\tsb_ot_alt\tsb_ob_alt\talt_score\tbq_ref\tbq_alt\tbq_ot_ref\tbq_ob_ref\tbq_ot_alt\tbq_ob_alt\tmq_ot_ref\tmq_ob_ref\tmq_ot_alt\tmq_ob_alt\tmq_ref\tmq_alt\tpos_in_read_ref\tpos_in_read_alt\tnum_aligned_bases_ref\tnum_aligned_bases_alt\tnum_indels_ref\tnum_indels_alt\tbeta_ratio";
+const DENOVO_HEADER: &str = "chr\tpos\tresult\tad_alt_adj\talt_score_adj\tsb_adj\tref_a\tref_c\tref_g\tref_t\talt_a\talt_c\talt_g\talt_t\tmapq\tnum_mapq0\tp1a\tp1c\tp1g\tp1t\tp2a\tp2c\tp2g\tp2t\tp4a\tp4c\tp4g\tp4t\tp5a\tp5c\tp5g\tp5t\tregion_entropy\tad_ref\tad_alt\tsb_ot_ref\tsb_ob_ref\tsb_ot_alt\tsb_ob_alt\talt_score\tbq_ref\tbq_alt\tbq_ot_ref\tbq_ob_ref\tbq_ot_alt\tbq_ob_alt\tmq_ot_ref\tmq_ob_ref\tmq_ot_alt\tmq_ob_alt\tmq_ref\tmq_alt\tpos_in_read_ref\tpos_in_read_alt\tnum_aligned_bases_ref\tnum_aligned_bases_alt\tnum_indels_ref\tnum_indels_alt\tbeta_ratio";
+const OTHER_HEADER: &str = "chr\tpos\tresult\tref_a\tref_c\tref_g\tref_t\talt_a\talt_c\talt_g\talt_t\t*mapq\tnum_mapq0\tp1a\tp1c\tp1g\tp1t\tp2a\tp2c\tp2g\tp2t\tp4a\tp4c\tp4g\tp4t\tp5a\tp5c\tp5g\tp5t\tregion_entropy\tad_ref\tad_alt\tsb_ot_ref\tsb_ob_ref\tsb_ot_alt\tsb_ob_alt\tsb_alt\tsb_ref\talt_score\tbq_ref\tbq_alt\tbq_ot_ref\tbq_ob_ref\tbq_ot_alt\tbq_ob_alt\tmq_ot_ref\tmq_ob_ref\tmq_ot_alt\tmq_ob_alt\tmq_ref\tmq_alt\tpos_in_read_ref\tpos_in_read_alt\tnum_aligned_bases_ref\tnum_aligned_bases_alt\tnum_indels_ref\tnum_indels_alt";
