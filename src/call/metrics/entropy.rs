@@ -46,7 +46,7 @@ mod tests {
     fn low_entropy() {
         let segment = Segment {
             range: ChunkRegion {
-                region: Region { chromosome: SmolStr::new("chr13"), start: 1, end: 100 },
+                region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
                 last_position: 100,
             },
             sequence: repeat_n(b'A', 100).collect(),
@@ -66,7 +66,7 @@ mod tests {
     fn high_entropy() {
         let segment = Segment {
             range: ChunkRegion {
-                region: Region { chromosome: SmolStr::new("chr13"), start: 1, end: 100 },
+                region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
                 last_position: 100,
             },
             sequence: repeat_n(b"ACTG", 25).flat_map(|x| *x).collect(),
@@ -87,7 +87,7 @@ mod tests {
         fn entropy_is_non_negative(sequence in "[ACTG]{100}") {
             let segment = Segment {
                 range: ChunkRegion {
-                    region: Region { chromosome: SmolStr::new("chr13"), start: 1, end: 100 },
+                    region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
                     last_position: 100,
                 },
                 sequence: sequence.into_bytes(),

@@ -4,7 +4,7 @@ use std::fmt;
 /// A genomic region with chromosome and coordinates
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Region {
-    pub chromosome: SmolStr,
+    pub contig: SmolStr,
     /// 1-based start position (inclusive)
     pub start: u64,
     /// 1-based end position (inclusive)
@@ -32,7 +32,7 @@ impl Region {
 
 #[test]
 fn test_region_contains() {
-    let region = Region { chromosome: "chr1".into(), start: 100, end: 200 };
+    let region = Region { contig: "chr1".into(), start: 100, end: 200 };
     assert!(region.contains(150));
     assert!(!region.contains(50));
     assert!(!region.contains(250));
@@ -41,7 +41,7 @@ fn test_region_contains() {
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for Region {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}-{}", self.chromosome, self.start, self.end)
+        write!(f, "{}:{}-{}", self.contig, self.start, self.end)
     }
 }
 

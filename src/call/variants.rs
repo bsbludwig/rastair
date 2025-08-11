@@ -20,7 +20,7 @@ pub struct VariantCandidatePileup {
 impl VariantCandidatePileup {
     /// Chromosome name of the segment
     pub fn chrom(&self) -> SmolStr {
-        self.segment.range.chromosome.clone()
+        self.segment.range.contig.clone()
     }
 
     /// Position in the segment sequence, 0-based
@@ -192,7 +192,7 @@ mod tests {
     fn fake_segment() -> Rc<Segment> {
         Rc::new(Segment {
             range: ChunkRegion {
-                region: Region { chromosome: "chr19".into(), start: 1000, end: 1100 },
+                region: Region { contig: "chr19".into(), start: 1000, end: 1100 },
                 last_position: 2000,
             },
             sequence: vec![],

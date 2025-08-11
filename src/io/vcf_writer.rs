@@ -120,10 +120,8 @@ impl Params {
             return Ok(None);
         };
 
-        let contigs: BTreeSet<Contig> = regions
-            .iter()
-            .map(|r| Contig { name: r.chromosome.clone(), length: r.len() })
-            .collect();
+        let contigs: BTreeSet<Contig> =
+            regions.iter().map(|r| Contig { name: r.contig.clone(), length: r.len() }).collect();
         let contigs: Vec<Contig> = contigs.into_iter().collect();
         let samples = vec![SmolStr::new("sample")]; // TODO: we have one sample for now
 

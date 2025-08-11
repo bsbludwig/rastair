@@ -32,7 +32,7 @@ impl Iterator for ChunkedRegions {
             let end = self.current_start.saturating_add(self.max_length).min(full_region.0.end);
             let chunk = ChunkRegion {
                 region: Region {
-                    chromosome: full_region.0.chromosome.clone(),
+                    contig: full_region.0.contig.clone(),
                     start: self.current_start,
                     end,
                 },
@@ -66,7 +66,7 @@ mod tests {
         ) {
             let end = start + length;
             let full_regions = vec![FullRegion(Region {
-                chromosome: "chr1".into(),
+                contig: "chr1".into(),
                 start,
                 end,
             })];
@@ -136,12 +136,12 @@ mod tests {
         ) {
             let full_regions = vec![
                 FullRegion(Region {
-                    chromosome: "chr1".into(),
+                    contig: "chr1".into(),
                     start: 1,
                     end: region1_length,
                 }),
                 FullRegion(Region {
-                    chromosome: "chr2".into(),
+                    contig: "chr2".into(),
                     start: 1,
                     end: region2_length,
                 }),
@@ -158,14 +158,14 @@ mod tests {
             let chunks: Vec<_> = chunked.collect();
 
             // Property 1: Should have chunks from both regions
-            let chr1_chunks: Vec<_> = chunks.iter().filter(|c| c.region.chromosome == "chr1").collect();
-            let chr2_chunks: Vec<_> = chunks.iter().filter(|c| c.region.chromosome == "chr2").collect();
+            let chr1_chunks: Vec<_> = chunks.iter().filter(|c| c.region.contig == "chr1").collect();
+            let chr2_chunks: Vec<_> = chunks.iter().filter(|c| c.region.contig == "chr2").collect();
             prop_assert!(!chr1_chunks.is_empty());
             prop_assert!(!chr2_chunks.is_empty());
 
             // Property 2: Chunks should be in order by chromosome
             for pair in chunks.windows(2) {
-                if pair[0].region.chromosome == pair[1].region.chromosome {
+                if pair[0].region.contig == pair[1].region.contig {
                     prop_assert!(pair[0].region.start <= pair[1].region.start);
                 }
             }
@@ -175,7 +175,7 @@ mod tests {
             let mut chr2_covered = HashSet::new();
 
             for chunk in &chunks {
-                let covered = if chunk.region.chromosome == "chr1" {
+                let covered = if chunk.region.contig == "chr1" {
                     &mut chr1_covered
                 } else {
                     &mut chr2_covered

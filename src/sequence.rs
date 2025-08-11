@@ -122,7 +122,7 @@ impl Readers {
         trace!(?region, len, "fetching segment");
         let mut seq = Vec::with_capacity(len);
         self.fasta
-            .fetch(&region.chromosome, region.start, last_position_to_fetch)
+            .fetch(&region.contig, region.start, last_position_to_fetch)
             .wrap_err("Failed to fetch region")
             .and_then(|_| self.fasta.read(&mut seq).wrap_err("Failed to read sequence from region"))
             // chain the calls so we can add this nice error:
@@ -164,7 +164,7 @@ impl<'seg> TryFrom<&'seg Segment> for FetchDefinition<'seg> {
 
     fn try_from(segment: &'seg Segment) -> Result<Self> {
         Ok(FetchDefinition::RegionString(
-            segment.range.region.chromosome.as_bytes(),
+            segment.range.region.contig.as_bytes(),
             i64::try_from(segment.range.region.start).wrap_err("start is invalid i64")?,
             i64::try_from(segment.range.region.end).wrap_err("end is invalid i64")?,
         ))
@@ -203,7 +203,7 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
     );
 
     // Since the user specified this region, we're only returning that one
-    Ok(FullRegion(Region { chromosome: region.chromosome.clone(), start, end }))
+    Ok(FullRegion(Region { contig: region.chromosome.clone(), start, end }))
 }
 
 fn to_u64(value: NonZeroU32) -> u64 {
@@ -228,7 +228,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
                 .wrap_err("Failed to get target length")?;
 
             Ok(FullRegion(Region {
-                chromosome: chr,
+                contig: chr,
                 start: 1, // 1-based coordinates
                 end: length,
             }))
@@ -261,7 +261,7 @@ mod tests {
     fn test_segment_reading() -> Result<()> {
         // Create a test region and params
         let region = ChunkRegion {
-            region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
+            region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
             last_position: 6105900,
         };
 
@@ -301,7 +301,7 @@ mod tests {
 
         // Check segment properties
         for segment in segments {
-            assert_eq!(segment.region.chromosome, "chr19");
+            assert_eq!(segment.region.contig, "chr19");
             assert!(segment.region.start >= 6105700);
             assert!(segment.region.end <= 6105800);
         }
@@ -358,7 +358,7 @@ mod tests {
     fn test_segment_to_fetch_definition() -> Result<()> {
         // Create a test segment
         let region = ChunkRegion {
-            region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
+            region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
             last_position: 6105900,
         };
         let segment = Segment { range: region.clone(), sequence: vec![65, 66, 67] }; // "ABC"
@@ -394,7 +394,7 @@ mod tests {
         let region_chr_only: RegionString = "chr19".parse().unwrap();
         let full_region = get_selected_region(&region_chr_only, header)?;
 
-        assert_eq!(full_region.0.chromosome, "chr19");
+        assert_eq!(full_region.0.contig, "chr19");
         assert_eq!(full_region.0.start, 1); // Should default to 1
 
         // The end should be the chromosome length from the header
@@ -406,7 +406,7 @@ mod tests {
         let region_with_start: RegionString = "chr19:100".parse().unwrap();
         let full_region = get_selected_region(&region_with_start, header)?;
 
-        assert_eq!(full_region.0.chromosome, "chr19");
+        assert_eq!(full_region.0.contig, "chr19");
         assert_eq!(full_region.0.start, 100);
         assert_eq!(full_region.0.end, chr19_len); // Should default to chromosome length
 
@@ -469,7 +469,7 @@ mod tests {
         // Verify that chromosome names match what's in the BAM header
         for (i, region) in full_regions.iter().enumerate() {
             let target_name = std::str::from_utf8(header.target_names()[i]).unwrap();
-            assert_eq!(region.0.chromosome, target_name);
+            assert_eq!(region.0.contig, target_name);
 
             // Start should be 1 (1-based)
             assert_eq!(region.0.start, 1);
@@ -496,7 +496,7 @@ mod tests {
 
         // Test with an invalid region (non-existent chromosome)
         let invalid_region = ChunkRegion {
-            region: Region { chromosome: "nonexistent".into(), start: 100, end: 200 },
+            region: Region { contig: "nonexistent".into(), start: 100, end: 200 },
             last_position: 300,
         };
 
@@ -536,7 +536,7 @@ mod tests {
     fn test_sequence_slice() -> Result<()> {
         let segment = Segment {
             range: ChunkRegion {
-                region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
+                region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
                 last_position: 6105900,
             },
             sequence: b"ATCGG".into(),
@@ -559,7 +559,7 @@ mod tests {
             prop_assume!(start <= end, "Start must be less than or equal to end");
             let segment = Segment {
                 range: ChunkRegion {
-                    region: Region { chromosome: "chr19".into(), start: 6105700, end: 6105800 },
+                    region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
                     last_position: 6105900,
                 },
                 sequence: seq.into_bytes(),
