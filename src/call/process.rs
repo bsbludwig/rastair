@@ -4,7 +4,7 @@ use crate::{
         variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
-    utils::{Base, StrandFromRecord},
+    utils::{Base, ReadDeduplicator, StrandFromRecord},
     vcf::{self, Filters, InCpG},
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
@@ -12,8 +12,6 @@ use rust_htslib::bam::{
     FetchDefinition, Read as _,
     pileup::{Alignment, Pileup},
 };
-use rustc_hash::FxHashSet;
-use smallvec::SmallVec;
 use std::{ops::Deref, rc::Rc};
 use tracing::{Level, debug, instrument, trace, warn};
 
@@ -61,8 +59,7 @@ impl ChunkRegion {
         let segment = Rc::new(segment);
 
         // Allocate a set to track seen read names with enough capacity to avoid reallocation.
-        let mut resusable_seen_names_set =
-            FxHashSet::with_capacity_and_hasher(64, rustc_hash::FxBuildHasher);
+        let mut resusable_seen_names_set = ReadDeduplicator::with_capacity(64);
 
         // Go over each column in the pileup and collect variant candidates
         let piles = readers
@@ -125,9 +122,8 @@ fn collect_candidate(
     segment: Rc<Segment>,
     params: &PileupMappingParams,
     // This set is used to track seen read names. It is reused across calls to
-    // avoid reallocation. The keys are also SmallVec to avoid further
-    // allocations and keep all data inline.
-    resusable_seen_names_set: &mut FxHashSet<SmallVec<u8, 48>>,
+    // avoid reallocation.
+    resusable_seen_names_set: &mut ReadDeduplicator,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
@@ -150,20 +146,8 @@ fn collect_candidate(
 
     let seen_bases = pile
         .alignments()
-        .filter_map(|pile| {
-            if params.keep_overlapping_reads {
-                return Some(pile);
-            }
-
-            let name: SmallVec<u8, 48> = SmallVec::from(pile.record().qname());
-            let new = seen_names.insert(name);
-            if !new {
-                // If we already saw this read, skip it
-                None
-            } else {
-                // Otherwise, keep it
-                Some(pile)
-            }
+        .filter(|pile| {
+            params.keep_overlapping_reads || !seen_names.is_duplicate(pile.record().qname())
         })
         .filter_map(|pile| pileup_mapper(params, pile))
         .filter(|seen_base| params.read_masking.filter(seen_base))

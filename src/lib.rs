@@ -23,5 +23,8 @@ pub mod utils {
 
     mod surrounding;
     pub use surrounding::surrounding_records;
+
+    mod dedupe_reads;
+    pub use dedupe_reads::ReadDeduplicator;
 }
 pub mod sequence;
