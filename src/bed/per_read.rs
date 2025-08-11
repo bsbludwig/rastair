@@ -5,8 +5,9 @@ use crate::{
 };
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, Result};
+use smallvec::SmallVec;
 use std::io::Write;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct BedReadsParams {
@@ -38,6 +39,7 @@ impl BedReadsParams {
         }
     }
 
+    #[instrument(level = "debug")]
     pub fn writer(&self) -> Result<Option<BedWriter<PerRead>>> {
         let Some(path) = &self.bed_reads else {
             return Ok(None);
@@ -69,7 +71,7 @@ pub struct PerRead {
     pub cpg_count: u16,
     /// Number of modified CpGs
     pub mod_count: u16,
-    /// Positions in read  of modified CpGs
+    /// Positions in read of modified CpGs
     pub mod_cpgs: SmallVec<u32, 24>,
     /// Positions in read of unmodified CpGs
     pub unmod_cpgs: SmallVec<u32, 24>,

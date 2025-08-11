@@ -2,6 +2,8 @@ use crate::bed::{BedFormat, BedRecord};
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
 use std::{
+    any::type_name,
+    fmt,
     fs::File,
     io::{BufWriter, Write},
     marker::PhantomData,
@@ -66,6 +68,7 @@ impl<R: BedRecord> BedWriter<R> {
         Ok(())
     }
 
+    #[instrument(level = "debug")]
     pub fn close(mut self) -> Result<()> {
         self.writer.flush().wrap_err("Failed to flush writer")?;
         if let Writer::BedGz(bgzfwriter) = self.writer
@@ -79,6 +82,17 @@ impl<R: BedRecord> BedWriter<R> {
     }
 }
 
+impl<R: BedRecord> fmt::Debug for BedWriter<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BedWriter")
+            .field("type", &type_name::<R>())
+            .field("path", &self.path)
+            .field("format", &self.format)
+            .finish()
+    }
+}
+
+#[instrument(level = "debug")]
 fn write_index(original_path: &Path, index: bgzip::index::BGZFIndex) -> Result<()> {
     let index_path = original_path.with_extension("gz.gzi");
     let mut index_file = File::create(&index_path)

@@ -9,7 +9,7 @@ use color_eyre::{Result, eyre::Context as _};
 use rastair2_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::SmolStr;
 use std::io::Write;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct BedParams {
@@ -41,6 +41,7 @@ impl BedParams {
         }
     }
 
+    #[instrument(level = "debug")]
     pub fn writer(&self) -> Result<Option<BedWriter<Rastair1BedFormat>>> {
         let Some(path) = &self.bed else {
             return Ok(None);
