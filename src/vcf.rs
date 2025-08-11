@@ -82,10 +82,10 @@ format_field!(
     FormatFieldNumber::OnePerGenotype
 );
 format_field!(
-    MachineLearningPrediction(Option<f64>),
+    MachineLearningPrediction(f64),
     "ML",
     "Prediction of methylation/variant likelyhood by Rastair's by machine learning model",
-    FormatFieldNumber::Num(1)
+    FormatFieldNumber::OnePerAlt
 );
 
 vcf_record!(

@@ -11,7 +11,6 @@ use crate::{
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
 use rayon::prelude::*;
-use smallvec::smallvec_inline;
 use smol_str::SmolStr;
 use std::{
     ops::Mul as _,
@@ -284,14 +283,14 @@ fn process_region(
         for i in 0..record_len {
             let (before, current, after) = surrounding_records(&mut records, i);
 
-            if let res @ ml::MlResult::Prediction { prediction, .. } =
-                ml.predict(current, before, after)
-            {
-                current.samples[0].machine_learning_prediction =
-                    MachineLearningPrediction(smallvec_inline![Some(prediction)]);
-                if !res.pass() {
+            if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after) {
+                if !predictions.is_empty() && predictions.iter().any(|p| !p.pass()) {
+                    // if none of the predictions pass, we add a low ML score filter
                     current.filters.add(low_ml_score);
                 }
+                current.samples[0].machine_learning_prediction = MachineLearningPrediction(
+                    predictions.into_iter().map(|p| p.prediction).collect(),
+                );
             }
 
             // If no filters were added, we're gonna call it

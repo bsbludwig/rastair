@@ -54,7 +54,7 @@ exit_code: 0
 ##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
 ##FORMAT=<ID=M5mC,Number=1,Type=Float,Description="Methylation level at CpG sites">
-##FORMAT=<ID=ML,Number=1,Type=Float,Description="Prediction of methylation/variant likelyhood by Rastair's by machine learning model">
+##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelyhood by Rastair's by machine learning model">
 ##contig=<ID=chr19,length=39>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
 chr19	6117985	.	G	T	30	PASS	AD=23,1;BQ=34.359;DP=24;MQ=60;MQ0=0;NS=1;AS_SB=13,10,1,0;SC5=GCGCA;AF=0.0416667;ABQ=34.9764,14;AMQ=60,60;AS_SS_BQ=34.7751,35.2363,14,0;AS_SS_MQ=60,60,60,0;PIR=0.678693,0.075;ENT100=1.80808;NAB=79.0941,72;NOI=0,0;CPG	GT:GL:GC:DP	0/0:1:0.999878:24

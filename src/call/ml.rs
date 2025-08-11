@@ -19,7 +19,7 @@
 
 #![allow(unused)]
 
-pub use models::{MachineLearning, MlModel, MlResult};
+pub use models::{MachineLearning, MlModel, MlResult, Prediction};
 pub use params::MachineLearningParams;
 
 mod models;

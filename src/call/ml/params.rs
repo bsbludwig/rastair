@@ -36,6 +36,7 @@ impl MachineLearningParams {
         };
 
         Ok(MachineLearning {
+            disabled: false,
             threshold,
             cpg: Some(Box::new(
                 load_model(

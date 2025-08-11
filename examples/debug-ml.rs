@@ -5,7 +5,7 @@ use ndarray::ArrayView1;
 use rastair2::{
     call::{
         CallParams,
-        ml::{self, MlModel},
+        ml::{self, MlModel, Prediction},
         process,
     },
     sequence::ChunkRegion,
@@ -83,20 +83,20 @@ fn main() -> Result<()> {
         for i in 0..record_len {
             let (before, current, after) = surrounding_records(&mut records, i);
 
-            if let ml::MlResult::Prediction { model, prediction, features, .. } =
-                ml.predict(current, before, after)
-            {
-                match model {
-                    MlModel::Cpg => &mut cpg,
-                    MlModel::DenovoCpg => &mut denovo,
-                    MlModel::Others => &mut other,
+            if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after) {
+                for Prediction { model, prediction, features, .. } in predictions {
+                    match model {
+                        MlModel::Cpg => &mut cpg,
+                        MlModel::DenovoCpg => &mut denovo,
+                        MlModel::Others => &mut other,
+                    }
+                    .write(
+                        &current.main.chrom,
+                        current.main.pos,
+                        prediction,
+                        features.view(),
+                    )?;
                 }
-                .write(
-                    &current.main.chrom,
-                    current.main.pos,
-                    prediction,
-                    features.view(),
-                )?;
             }
         }
     }
