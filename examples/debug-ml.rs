@@ -41,11 +41,11 @@ fn main() -> Result<()> {
     let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
     let mut cpg = MlDebugOutput::new(ClioPath::new("CpG_features.tsv.gz")?)?;
-    writeln!(&mut cpg.writer, "{}", CPG_HEADER)?;
+    writeln!(&mut cpg.writer, "{CPG_HEADER}")?;
     let mut denovo = MlDebugOutput::new(ClioPath::new("denovo_features.tsv.gz")?)?;
-    writeln!(&mut denovo.writer, "{}", DENOVO_HEADER)?;
+    writeln!(&mut denovo.writer, "{DENOVO_HEADER}")?;
     let mut other = MlDebugOutput::new(ClioPath::new("other_features.tsv.gz")?)?;
-    writeln!(&mut other.writer, "{}", OTHER_HEADER)?;
+    writeln!(&mut other.writer, "{OTHER_HEADER}")?;
 
     for region in regions {
         let pileup_mapping_params = process::PileupMappingParams {

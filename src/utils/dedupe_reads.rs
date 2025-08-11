@@ -20,7 +20,7 @@ impl ReadDeduplicator {
     /// Create a new read deduplicator with estimated capacity
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            suffixes: FxHashSet::with_capacity_and_hasher(capacity, FxBuildHasher::default()),
+            suffixes: FxHashSet::with_capacity_and_hasher(capacity, FxBuildHasher),
             full_strings: Vec::with_capacity(capacity),
         }
     }
@@ -73,7 +73,7 @@ impl ReadDeduplicator {
             // acceptable and faster than inserting into a `HashSet`
             if self.full_strings.iter().any(|stored_name| stored_name.as_slice() == read_name) {
                 // Found exact duplicate
-                return true;
+                true
             } else {
                 // No exact match found, but suffix collision occurred
                 // Store the full read name for future comparisons
