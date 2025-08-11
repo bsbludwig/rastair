@@ -1,5 +1,5 @@
 use crate::{
-    bed::Rastair1BedFormat,
+    bed::rastair1::Rastair1BedFormat,
     utils::Base::{self, *},
     vcf::{
         AlleleSpecificStrandBias, ByStrand, DeNovoCpGCandidate, GenotypeConfidence,

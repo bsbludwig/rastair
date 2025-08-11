@@ -1,5 +1,5 @@
 use crate::{
-    bed::BedParams,
+    bed::{per_read::BedReadsParams, rastair1::BedParams},
     call::{
         methylation::params::MethylationCallingParams, ml::MachineLearning,
         variant_calling::VariantCallingParams,
@@ -50,6 +50,8 @@ pub struct CallParams {
     pub vcf: vcf_writer::Params,
     #[command(flatten)]
     pub bed: BedParams,
+    #[command(flatten)]
+    pub bed_reads: BedReadsParams,
 
     // --- Other runtime parameters ---
     /// Number of threads to use for processing the BAM file. Will use all
@@ -263,6 +265,10 @@ fn process_region_wrapper(
         vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")
     {
         // the channel is closed, because the writer thread has finished
+    }
+
+    if params.bed_reads.bed_reads.is_some() {
+        READERS.with(|_readers| -> Result<Vec<vcf::Record>> { todo!() })?;
     }
 
     Ok(())

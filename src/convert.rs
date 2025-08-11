@@ -1,5 +1,5 @@
 use crate::{
-    bed::{BedFormat, BedWriter, Rastair1BedFormat},
+    bed::{BedFormat, rastair1::Rastair1BedFormat, writer::BedWriter},
     io::{
         formats::{FromFileExtension, InputFormat, OutputFormat},
         mpk::{MessagePackReader, MpkEntry},
