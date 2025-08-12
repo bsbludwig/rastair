@@ -51,12 +51,12 @@ pub fn params_from_record(
         // For C: use "ob" (original bottom) strand data
         let bq_ob_alt = get_strand_base_quality(record, target_alt).ob;
         let bq_ob_ref = get_strand_base_quality(record, ref_base).ob;
-        (sb_ob_alt * bq_ob_alt + 1.0) / (sb_ob_ref * bq_ob_ref + 1.0).log2()
+        (sb_ob_alt * bq_ob_alt + 1.0).log2() - (sb_ob_ref * bq_ob_ref + 1.0).log2()
     } else {
         // For G: use "ot" (original top) strand data
         let bq_ot_alt = get_strand_base_quality(record, target_alt).ot;
         let bq_ot_ref = get_strand_base_quality(record, ref_base).ot;
-        (sb_ot_alt * bq_ot_alt + 1.0) / (sb_ot_ref * bq_ot_ref + 1.0).log2()
+        (sb_ot_alt * bq_ot_alt + 1.0).log2() - (sb_ot_ref * bq_ot_ref + 1.0).log2()
     };
 
     // Extract base quality metrics
@@ -175,12 +175,12 @@ fn calculate_adjacent_features(
             let ref_strand = after.strand_count(Base::G).or_empty();
             let bq_ot_alt = get_strand_base_quality(after, Base::A).ot;
             let bq_ot_ref = get_strand_base_quality(after, Base::G).ot;
-            let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0)
-                / (f64::from(ref_strand.ot) * bq_ot_ref + 1.0);
+            let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0).log2()
+                - (f64::from(ref_strand.ot) * bq_ot_ref + 1.0).log2();
             let beta_after =
                 f64::from(alt_strand.ob) / (f64::from(alt_strand.ob) + f64::from(ref_strand.ob));
             let beta_ratio = ((beta_center + 1.0) / (beta_after + 1.0)).log2();
-            (beta_ratio, ad_alt_norm, alt_score.log2())
+            (beta_ratio, ad_alt_norm, alt_score)
         } else {
             (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0)
         }
@@ -203,12 +203,12 @@ fn calculate_adjacent_features(
             let ref_strand = before.strand_count(Base::C).or_empty();
             let bq_ob_alt = get_strand_base_quality(before, Base::T).ob;
             let bq_ob_ref = get_strand_base_quality(before, Base::C).ob;
-            let alt_score = (f64::from(alt_strand.ob) * bq_ob_alt + 1.0)
-                / (f64::from(ref_strand.ob) * bq_ob_ref + 1.0);
+            let alt_score = (f64::from(alt_strand.ob) * bq_ob_alt + 1.0).log2()
+                - (f64::from(ref_strand.ob) * bq_ob_ref + 1.0).log2();
             let beta_before =
                 f64::from(alt_strand.ot) / (f64::from(alt_strand.ot) + f64::from(ref_strand.ot));
             let beta_ratio = ((beta_center + 1.0) / (beta_before + 1.0)).log2();
-            (beta_ratio, ad_alt_norm, alt_score.log2())
+            (beta_ratio, ad_alt_norm, alt_score)
         } else {
             (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0)
         }

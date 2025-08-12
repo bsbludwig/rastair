@@ -52,7 +52,7 @@ pub fn params_from_record(
     // Calculate alt_score
     let bq_ref = record.info.allele_base_quality.first().copied().unwrap_or(0.0);
     let bq_alt = record.info.allele_base_quality.get(1).copied().unwrap_or(0.0);
-    let alt_score = ((ad_alt * bq_alt + 1.0) / (ad_ref * bq_ref + 1.0)).log2();
+    let alt_score = (ad_alt * bq_alt + 1.0).log2() - (ad_ref * bq_ref + 1.0).log2();
 
     // Extract base quality metrics
     let bq_ot_ref = get_strand_base_quality(record, ref_base).ot;

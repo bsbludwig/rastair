@@ -60,13 +60,13 @@ pub fn params_from_record(
     let alt_score = if target_alt_base == Base::C {
         // For C alt alleles: use "ob" (original bottom) strand data
         let bq_ob_alt = get_strand_base_quality(record, target_alt_base).ob;
-        (sb_ob_alt * bq_ob_alt + 1.0) / (sb_ob_ref * bq_ob_ref + 1.0)
         let bq_ob_ref = get_strand_base_quality(record, ref_base).ob;
+        (sb_ob_alt * bq_ob_alt + 1.0).log2() - (sb_ob_ref * bq_ob_ref + 1.0).log2()
     } else {
         // For G alt alleles: use "ot" (original top) strand data
         let bq_ot_alt = get_strand_base_quality(record, target_alt_base).ot;
-        (sb_ot_alt * bq_ot_alt + 1.0) / (sb_ot_ref * bq_ot_ref + 1.0)
         let bq_ot_ref = get_strand_base_quality(record, ref_base).ot;
+        (sb_ot_alt * bq_ot_alt + 1.0).log2() - (sb_ot_ref * bq_ot_ref + 1.0).log2()
     };
 
     // Extract base quality metrics
@@ -191,8 +191,8 @@ fn calculate_denovo_adjacent_features(
                 let ref_strand = after.strand_count(Base::G).or_empty();
                 let bq_ot_alt = get_strand_base_quality(after, Base::A).ot;
                 let bq_ot_ref = get_strand_base_quality(after, Base::G).ot;
-                let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0)
-                    / (f64::from(ref_strand.ot) * bq_ot_ref + 1.0);
+                let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0).log2()
+                    - (f64::from(ref_strand.ot) * bq_ot_ref + 1.0).log2();
                 let beta_after = {
                     let g_count = after.strand_count(Base::G).or_empty().ob;
                     let a_count = after.strand_count(Base::A).or_empty().ob;
@@ -202,13 +202,8 @@ fn calculate_denovo_adjacent_features(
                         f64::from(a_count) / (f64::from(a_count) + f64::from(g_count))
                     }
                 };
-                let sb_adj = (f64::from(alt_strand.ob + 1) / f64::from(alt_strand.ot + 1)).log2();
-                (
-                    ((beta_center + 1.0) / (beta_after + 1.0)).log2(),
-                    ad_alt_norm,
-                    alt_score.log2(),
-                    sb_adj,
-                )
+                let sb_adj = f64::from(alt_strand.ob + 1) / f64::from(alt_strand.ot + 1);
+                (((beta_center + 1.0) / (beta_after + 1.0)).log2(), ad_alt_norm, alt_score, sb_adj)
             } else {
                 (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0, 0.0)
             }
@@ -238,8 +233,8 @@ fn calculate_denovo_adjacent_features(
                 let ref_strand = before.strand_count(Base::C).or_empty();
                 let bq_ot_alt = get_strand_base_quality(before, Base::T).ot;
                 let bq_ot_ref = get_strand_base_quality(before, Base::C).ot;
-                let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0)
-                    / (f64::from(ref_strand.ot) * bq_ot_ref + 1.0);
+                let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0).log2()
+                    - (f64::from(ref_strand.ot) * bq_ot_ref + 1.0).log2();
                 let beta_before = {
                     let c_count = ref_strand.ot;
                     let t_count = alt_strand.ot;
@@ -249,13 +244,8 @@ fn calculate_denovo_adjacent_features(
                         f64::from(t_count) / (f64::from(t_count) + f64::from(c_count))
                     }
                 };
-                let sb_adj = (f64::from(alt_strand.ot + 1) / f64::from(alt_strand.ob + 1)).log2();
-                (
-                    ((beta_center + 1.0) / (beta_before + 1.0)).log2(),
-                    ad_alt_norm,
-                    alt_score.log2(),
-                    sb_adj,
-                )
+                let sb_adj = f64::from(alt_strand.ot + 1) / f64::from(alt_strand.ob + 1);
+                (((beta_center + 1.0) / (beta_before + 1.0)).log2(), ad_alt_norm, alt_score, sb_adj)
             } else {
                 (((beta_center + 1.0) / 1.0).log2(), 0.0, 0.0, 0.0)
             }
