@@ -175,8 +175,8 @@ fn calculate_adjacent_features(
             let ref_strand = after.strand_count(Base::G).or_empty();
             let bq_ot_alt = get_strand_base_quality(after, Base::A).ot;
             let bq_ot_ref = get_strand_base_quality(after, Base::G).ot;
-            let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0).log2()
-                - (f64::from(ref_strand.ot) * bq_ot_ref + 1.0).log2();
+            let alt_score = (f64::from(alt_strand.ot) / depth * bq_ot_alt + 1.0).log2()
+                - (f64::from(ref_strand.ot) / depth * bq_ot_ref + 1.0).log2();
             let beta_after =
                 f64::from(alt_strand.ob) / (f64::from(alt_strand.ob) + f64::from(ref_strand.ob));
             let beta_ratio = ((beta_center + 1.0) / (beta_after + 1.0)).log2();
@@ -203,8 +203,8 @@ fn calculate_adjacent_features(
             let ref_strand = before.strand_count(Base::C).or_empty();
             let bq_ob_alt = get_strand_base_quality(before, Base::T).ob;
             let bq_ob_ref = get_strand_base_quality(before, Base::C).ob;
-            let alt_score = (f64::from(alt_strand.ob) * bq_ob_alt + 1.0).log2()
-                - (f64::from(ref_strand.ob) * bq_ob_ref + 1.0).log2();
+            let alt_score = (f64::from(alt_strand.ob) / depth * bq_ob_alt + 1.0).log2()
+                - (f64::from(ref_strand.ob) / depth * bq_ob_ref + 1.0).log2();
             let beta_before =
                 f64::from(alt_strand.ot) / (f64::from(alt_strand.ot) + f64::from(ref_strand.ot));
             let beta_ratio = ((beta_center + 1.0) / (beta_before + 1.0)).log2();
