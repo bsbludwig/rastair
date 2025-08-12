@@ -106,6 +106,15 @@ impl PartialEq<Base> for SmolStr {
     }
 }
 
+impl From<Option<Base>> for Base {
+    fn from(value: Option<Base>) -> Self {
+        match value {
+            Some(base) => base,
+            None => Base::Unknown,
+        }
+    }
+}
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

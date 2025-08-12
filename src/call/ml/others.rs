@@ -29,8 +29,8 @@ pub fn params_from_record(
     let (p5a, p5c, p5g, p5t) = one_hot_encode_base(seq_ctx.after_2);
 
     // One-hot encode ref and alt (use the first alt allele)
-    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(Some(ref_base));
-    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(Some(alt));
+    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(ref_base);
+    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(alt);
 
     // Extract normalized allele depths
     let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64;

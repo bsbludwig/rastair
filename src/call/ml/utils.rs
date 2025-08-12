@@ -3,13 +3,13 @@ use crate::{
     vcf::{ByStrand, Record},
 };
 
-pub fn one_hot_encode_base(base: Option<Base>) -> (f64, f64, f64, f64) {
-    match base {
-        Some(Base::A) => (1., 0., 0., 0.),
-        Some(Base::C) => (0., 1., 0., 0.),
-        Some(Base::G) => (0., 0., 1., 0.),
-        Some(Base::T) => (0., 0., 0., 1.),
-        _ => (0., 0., 0., 0.),
+pub fn one_hot_encode_base(base: impl Into<Base>) -> (f64, f64, f64, f64) {
+    match base.into() {
+        Base::A => (1., 0., 0., 0.),
+        Base::C => (0., 1., 0., 0.),
+        Base::G => (0., 0., 1., 0.),
+        Base::T => (0., 0., 0., 1.),
+        Base::Unknown => (0., 0., 0., 0.),
     }
 }
 

@@ -13,7 +13,7 @@ pub fn params_from_record(
     before: Option<&Record>,
     after: Option<&Record>,
 ) -> Array2<f64> {
-    let ref_base = &record.main.r#ref;
+    let ref_base = Base::from(&record.main.r#ref);
     let depth = *record.info.read_depth as f64;
 
     let mapq = *record.info.mapping_quality;
@@ -28,7 +28,7 @@ pub fn params_from_record(
     let (p5a, p5c, p5g, p5t) = one_hot_encode_base(seq_ctx.after_2);
 
     // One-hot encode ref
-    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(Some(Base::from(ref_base)));
+    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(ref_base);
 
     // Use the DeNovoCpGCandidate enum to get denovo CpG information
     let (target_alt_base, alt_index) = match record.info.de_novo_cp_g_candidate {
@@ -41,14 +41,14 @@ pub fn params_from_record(
     };
 
     // One-hot encode alt allele
-    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(Some(target_alt_base));
+    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(target_alt_base);
 
     // Extract normalized allele depths
     let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64;
     let ad_alt = record.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
 
     // Extract normalized strand bias counts
-    let ref_strand = record.strand_count(Base::from(ref_base)).or_empty();
+    let ref_strand = record.strand_count(ref_base).or_empty();
     let alt_strand = record.strand_count(target_alt_base).or_empty();
 
     let sb_ot_ref = f64::from(ref_strand.ot);
@@ -60,28 +60,28 @@ pub fn params_from_record(
     let alt_score = if target_alt_base == Base::C {
         // For C alt alleles: use "ob" (original bottom) strand data
         let bq_ob_alt = get_strand_base_quality(record, target_alt_base).ob;
-        let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base)).ob;
         (sb_ob_alt * bq_ob_alt + 1.0) / (sb_ob_ref * bq_ob_ref + 1.0)
+        let bq_ob_ref = get_strand_base_quality(record, ref_base).ob;
     } else {
         // For G alt alleles: use "ot" (original top) strand data
         let bq_ot_alt = get_strand_base_quality(record, target_alt_base).ot;
-        let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base)).ot;
         (sb_ot_alt * bq_ot_alt + 1.0) / (sb_ot_ref * bq_ot_ref + 1.0)
+        let bq_ot_ref = get_strand_base_quality(record, ref_base).ot;
     };
 
     // Extract base quality metrics
     let bq_ref = record.info.allele_base_quality.first().copied().unwrap_or(0.0);
     let bq_alt = record.info.allele_base_quality.get(alt_index + 1).copied().unwrap_or(0.0);
-    let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base)).ot;
-    let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base)).ob;
+    let bq_ot_ref = get_strand_base_quality(record, ref_base).ot;
+    let bq_ob_ref = get_strand_base_quality(record, ref_base).ob;
     let bq_ot_alt = get_strand_base_quality(record, target_alt_base).ot;
     let bq_ob_alt = get_strand_base_quality(record, target_alt_base).ob;
 
     // Extract mapping quality metrics
     let mq_ref = record.info.allele_map_quality.first().copied().unwrap_or(0.0);
     let mq_alt = record.info.allele_map_quality.get(alt_index + 1).copied().unwrap_or(0.0);
-    let mq_ot_ref = get_strand_map_quality(record, Base::from(ref_base)).ot;
-    let mq_ob_ref = get_strand_map_quality(record, Base::from(ref_base)).ob;
+    let mq_ot_ref = get_strand_map_quality(record, ref_base).ot;
+    let mq_ob_ref = get_strand_map_quality(record, ref_base).ob;
     let mq_ot_alt = get_strand_map_quality(record, target_alt_base).ot;
     let mq_ob_alt = get_strand_map_quality(record, target_alt_base).ob;
 
