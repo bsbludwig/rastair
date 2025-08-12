@@ -93,21 +93,13 @@ impl MachineLearning {
         // check all alts for this record and calculate predictions for each based on which model fits
         let mut predictions = SmallVec::new();
         for alt in &record.main.alt {
-            let (name, model, features) = if let InCpG::C = record.info.in_cp_g
-                && alt == "T"
+            let (name, model, features) = if (record.info.in_cp_g == InCpG::C && alt == "T")
+                || (record.info.in_cp_g == InCpG::G && alt == "A")
             {
                 (
                     MlModel::Cpg,
                     self.cpg.as_ref(),
-                    super::cpg::params_from_record(record, before, after),
-                )
-            } else if let InCpG::G = record.info.in_cp_g
-                && alt == "A"
-            {
-                (
-                    MlModel::Cpg,
-                    self.cpg.as_ref(),
-                    super::cpg::params_from_record(record, before, after),
+                    super::cpg::params_from_record(record, before, after, alt.into()),
                 )
             } else if let DeNovoCpGCandidate::Candidate { ref_base, alt_base, alt_index } =
                 record.info.de_novo_cp_g_candidate
@@ -122,7 +114,7 @@ impl MachineLearning {
                 (
                     MlModel::Others,
                     self.others.as_ref(),
-                    super::others::params_from_record(record, before, after),
+                    super::others::params_from_record(record, before, after, alt.into()),
                 )
             };
 

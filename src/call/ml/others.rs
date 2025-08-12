@@ -12,8 +12,9 @@ pub fn params_from_record(
     record: &Record,
     before: Option<&Record>,
     after: Option<&Record>,
+    alt: Base,
 ) -> Array2<f64> {
-    let ref_base = &record.main.r#ref;
+    let ref_base = Base::from(&record.main.r#ref);
     let depth = *record.info.read_depth as f64;
 
     let mapq = *record.info.mapping_quality;
@@ -28,17 +29,16 @@ pub fn params_from_record(
     let (p5a, p5c, p5g, p5t) = one_hot_encode_base(seq_ctx.after_2);
 
     // One-hot encode ref and alt (use the first alt allele)
-    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(Some(Base::from(ref_base)));
-    let alt_allele = record.main.alt.first().map(|a| a.as_str()).unwrap_or("");
-    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(Some(Base::from(alt_allele)));
+    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(Some(ref_base));
+    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(Some(alt));
 
     // Extract normalized allele depths
     let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64;
     let ad_alt = record.info.allele_read_depth.get(1).copied().unwrap_or(0) as f64;
 
     // Extract normalized strand bias counts
-    let ref_strand = record.strand_count(Base::from(ref_base)).or_empty();
-    let alt_strand = record.strand_count(Base::from(alt_allele)).or_empty();
+    let ref_strand = record.strand_count(ref_base).or_empty();
+    let alt_strand = record.strand_count(alt).or_empty();
 
     let sb_ot_ref = f64::from(ref_strand.ot);
     let sb_ob_ref = f64::from(ref_strand.ob);
@@ -55,18 +55,18 @@ pub fn params_from_record(
     let alt_score = ((ad_alt * bq_alt + 1.0) / (ad_ref * bq_ref + 1.0)).log2();
 
     // Extract base quality metrics
-    let bq_ot_ref = get_strand_base_quality(record, Base::from(ref_base)).ot;
-    let bq_ob_ref = get_strand_base_quality(record, Base::from(ref_base)).ob;
-    let bq_ot_alt = get_strand_base_quality(record, Base::from(alt_allele)).ot;
-    let bq_ob_alt = get_strand_base_quality(record, Base::from(alt_allele)).ob;
+    let bq_ot_ref = get_strand_base_quality(record, ref_base).ot;
+    let bq_ob_ref = get_strand_base_quality(record, ref_base).ob;
+    let bq_ot_alt = get_strand_base_quality(record, alt).ot;
+    let bq_ob_alt = get_strand_base_quality(record, alt).ob;
 
     // Extract mapping quality metrics
     let mq_ref = record.info.allele_map_quality.first().copied().unwrap_or(0.0);
     let mq_alt = record.info.allele_map_quality.get(1).copied().unwrap_or(0.0);
-    let mq_ot_ref = get_strand_map_quality(record, Base::from(ref_base)).ot;
-    let mq_ob_ref = get_strand_map_quality(record, Base::from(ref_base)).ob;
-    let mq_ot_alt = get_strand_map_quality(record, Base::from(alt_allele)).ot;
-    let mq_ob_alt = get_strand_map_quality(record, Base::from(alt_allele)).ob;
+    let mq_ot_ref = get_strand_map_quality(record, ref_base).ot;
+    let mq_ob_ref = get_strand_map_quality(record, ref_base).ob;
+    let mq_ot_alt = get_strand_map_quality(record, alt).ot;
+    let mq_ob_alt = get_strand_map_quality(record, alt).ob;
 
     // Extract other metrics
     let pos_in_read_ref = record.info.position_in_read.first().copied().unwrap_or(0.0);
@@ -158,7 +158,7 @@ mod tests {
         // Test A>G transition at position 10004
         let record =
             reader.pileup("chr12", 10003)?.variant_metrics(&VariantCallingParams::default())?;
-        let fields = params_from_record(&record, None, None);
+        let fields = params_from_record(&record, None, None, Base::G);
         eprintln!(
             "{}:{}_{}\t{}",
             record.main.chrom,
