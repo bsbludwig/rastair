@@ -16,6 +16,7 @@ pub fn params_from_record(
 ) -> Array2<f64> {
     let ref_base = Base::from(&record.main.r#ref);
     let depth = *record.info.read_depth as f64;
+    let alt_index = record.main.alt.iter().position(|a| a == &alt).unwrap_or(0);
 
     let mapq = *record.info.mapping_quality;
     let num_mapq0 = *record.info.mapping_quality0 as f64;
@@ -34,7 +35,7 @@ pub fn params_from_record(
 
     // Extract normalized allele depths
     let ad_ref = record.info.allele_read_depth.first().copied().unwrap_or(0) as f64;
-    let ad_alt = record.info.allele_read_depth.get(1).copied().unwrap_or(0) as f64;
+    let ad_alt = record.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
 
     // Extract normalized strand bias counts
     let ref_strand = record.strand_count(ref_base).or_empty();
@@ -51,7 +52,7 @@ pub fn params_from_record(
 
     // Calculate alt_score
     let bq_ref = record.info.allele_base_quality.first().copied().unwrap_or(0.0);
-    let bq_alt = record.info.allele_base_quality.get(1).copied().unwrap_or(0.0);
+    let bq_alt = record.info.allele_base_quality.get(alt_index + 1).copied().unwrap_or(0.0);
     let alt_score = (ad_alt * bq_alt + 1.0).log2() - (ad_ref * bq_ref + 1.0).log2();
 
     // Extract base quality metrics
@@ -62,7 +63,7 @@ pub fn params_from_record(
 
     // Extract mapping quality metrics
     let mq_ref = record.info.allele_map_quality.first().copied().unwrap_or(0.0);
-    let mq_alt = record.info.allele_map_quality.get(1).copied().unwrap_or(0.0);
+    let mq_alt = record.info.allele_map_quality.get(alt_index + 1).copied().unwrap_or(0.0);
     let mq_ot_ref = get_strand_map_quality(record, ref_base).ot;
     let mq_ob_ref = get_strand_map_quality(record, ref_base).ob;
     let mq_ot_alt = get_strand_map_quality(record, alt).ot;
@@ -70,11 +71,12 @@ pub fn params_from_record(
 
     // Extract other metrics
     let pos_in_read_ref = record.info.position_in_read.first().copied().unwrap_or(0.0);
-    let pos_in_read_alt = record.info.position_in_read.get(1).copied().unwrap_or(0.0);
+    let pos_in_read_alt = record.info.position_in_read.get(alt_index + 1).copied().unwrap_or(0.0);
     let num_aligned_bases_ref = record.info.num_aligned_bases.first().copied().unwrap_or(0.0);
-    let num_aligned_bases_alt = record.info.num_aligned_bases.get(1).copied().unwrap_or(0.0);
+    let num_aligned_bases_alt =
+        record.info.num_aligned_bases.get(alt_index + 1).copied().unwrap_or(0.0);
     let num_indels_ref = record.info.num_indels.first().copied().unwrap_or(0.0);
-    let num_indels_alt = record.info.num_indels.get(1).copied().unwrap_or(0.0);
+    let num_indels_alt = record.info.num_indels.get(alt_index + 1).copied().unwrap_or(0.0);
 
     // Never change the order of these variables, as they are used in the model
     array![[
