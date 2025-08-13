@@ -206,7 +206,7 @@ fn calculate_denovo_adjacent_features(
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_after + 1.0).log2();
                 (beta_ratio, ad_alt_norm, alt_score, sb_adj)
             } else {
-                let beta_ratio = (beta_center + 1.0).log2() - 1_f64.log2();
+                let beta_ratio = (beta_center + 1.0).log2();
                 (beta_ratio, 0.0, 0.0, 0.0)
             }
         }
@@ -250,7 +250,7 @@ fn calculate_denovo_adjacent_features(
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_before + 1.0).log2();
                 (beta_ratio, ad_alt_norm, alt_score, sb_adj)
             } else {
-                let beta_ratio = (beta_center + 1.0).log2() - 1_f64.log2();
+                let beta_ratio = (beta_center + 1.0).log2();
                 (beta_ratio, 0.0, 0.0, 0.0)
             }
         }
