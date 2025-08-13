@@ -2,6 +2,7 @@
 
 pub mod bed;
 pub mod call;
+pub mod call_reads;
 pub mod convert;
 pub mod io {
     pub mod formats;

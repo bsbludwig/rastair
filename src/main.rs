@@ -8,6 +8,7 @@ use color_eyre::{
 };
 use rastair2::{
     call::{CallParams, call},
+    call_reads::{PerReadParams, call_reads},
     convert::ConvertParams,
     io::mpk::viewer::MpkViewParams,
 };
@@ -35,6 +36,11 @@ struct Cli {
 enum Subcommand {
     /// Call methylated positions
     Call(CallParams),
+    /// Call methylation per-read
+    ///
+    /// This will produce a bed file that list the methylation status of all CpGs
+    /// in every read that overlaps a CpG, plus some other metadata
+    PerRead(PerReadParams),
     /// Convert between different file formats
     Convert(ConvertParams),
     /// View internal format as JSON lines
@@ -79,6 +85,14 @@ fn main() -> Result<()> {
             call(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Call finished");
+        }
+        Subcommand::PerRead(params) => {
+            // track execution time
+            let start = std::time::Instant::now();
+            debug!(?params, "Running call reads command");
+            call_reads(&params)?;
+            let duration = start.elapsed();
+            info!(?duration, "Calling reads finished");
         }
         Subcommand::Convert(params) => {
             // track execution time

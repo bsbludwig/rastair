@@ -12,22 +12,21 @@ use tracing::{debug, instrument};
 #[derive(Debug, Clone, clap::Args)]
 pub struct BedReadsParams {
     /// Output BED file with all reads
-    #[arg(long, required = false, default_missing_value = "-", num_args = 0..=1)]
-    pub bed_reads: Option<ClioPath>,
+    #[arg(long, required = false, default_value = "-", num_args = 0..=1)]
+    pub bed: ClioPath,
 
     /// Format of the output BED reads file
     ///
     /// If not specified, the format is guessed based on the file extension.
-    #[arg(long, requires = "bed_reads")]
-    pub bed_reads_format: Option<BedFormat>,
+    #[arg(long, requires = "bed")]
+    pub bed_format: Option<BedFormat>,
 }
 
 impl BedReadsParams {
     pub fn bed_format(&self) -> BedFormat {
-        if let Some(format) = self.bed_reads_format {
+        if let Some(format) = self.bed_format {
             format
-        } else if let Some(path) = &self.bed_reads
-            && let Some(path) = path.path().to_str()
+        } else if let Some(path) = self.bed.path().to_str()
             && let Some(format) = BedFormat::from_file_extension(path)
         {
             format
@@ -40,15 +39,13 @@ impl BedReadsParams {
     }
 
     #[instrument(level = "debug")]
-    pub fn writer(&self) -> Result<Option<BedWriter<PerRead>>> {
-        let Some(path) = &self.bed_reads else {
-            return Ok(None);
-        };
+    pub fn writer(&self) -> Result<BedWriter<PerRead>> {
+        let path = &self.bed;
 
         let format = self.bed_format();
         let writer = BedWriter::new(path, format)
             .wrap_err_with(|| format!("Failed to create BED writer for {path}"))?;
-        Ok(Some(writer))
+        Ok(writer)
     }
 }
 
@@ -62,21 +59,21 @@ pub struct PerRead {
     /// Mapq of read
     pub mapq: u8,
     /// Absolute fragment length (non-directional)
-    pub frag_length: u32,
+    pub frag_length: u64,
     /// Read length
-    pub read_length: u32,
+    pub read_length: usize,
     /// Name of read
     pub read_id: String,
     /// Number of CpGs in a read
     pub cpg_count: u16,
     /// Number of modified CpGs
-    pub mod_count: u16,
+    pub mod_count: usize,
     /// Positions in read of modified CpGs
-    pub mod_cpgs: SmallVec<u32, 24>,
+    pub mod_cpgs: SmallVec<usize, 24>,
     /// Positions in read of unmodified CpGs
-    pub unmod_cpgs: SmallVec<u32, 24>,
+    pub unmod_cpgs: SmallVec<usize, 24>,
     /// Positions in read of CpGs that are mutated
-    pub snp_cpgs: SmallVec<u32, 24>,
+    pub snp_cpgs: SmallVec<usize, 24>,
 }
 
 impl BedRecord for PerRead {
@@ -122,8 +119,6 @@ impl BedRecord for PerRead {
             }
             write!(f, "{pos}")?;
         }
-
-        writeln!(f)?;
 
         Ok(())
     }
