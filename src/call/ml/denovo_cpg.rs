@@ -235,8 +235,8 @@ fn calculate_denovo_adjacent_features(
                 let ref_strand = before.strand_count(Base::C).or_empty();
                 let bq_ot_alt = get_strand_base_quality(before, Base::T).ot;
                 let bq_ot_ref = get_strand_base_quality(before, Base::C).ot;
-                let alt_score = (f64::from(alt_strand.ot) / depth * bq_ot_alt + 1.0).log2()
-                    - (f64::from(ref_strand.ot) / depth * bq_ot_ref + 1.0).log2();
+                let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0).log2()
+                    - (f64::from(ref_strand.ot) * bq_ot_ref + 1.0).log2();
                 let beta_before = {
                     let c_count = ref_strand.ot;
                     let t_count = alt_strand.ot;
