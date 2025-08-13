@@ -1,6 +1,5 @@
 use crate::{
     bed::per_read::{BedReadsParams, PerRead},
-    call::variant_calling::{ReadFlags, ReadMaskParams},
     sequence::{ChunkRegion, ReaderParams, Region, Segment},
 };
 use bio::bio_types::sequence::SequenceReadPairOrientation;
@@ -16,17 +15,82 @@ use tracing::instrument;
 pub struct PerReadParams {
     // --- Input parameters ---
     #[command(flatten)]
-    pub segments: ReaderParams,
+    segments: ReaderParams,
 
     // --- Calling parameters ---
     #[command(flatten)]
-    pub read_masking: ReadMaskParams,
-    #[command(flatten)]
-    pub read_flags: ReadFlags,
+    read_flags: flags::ReadFlags,
+
+    /// expected maximum read length. If set too short, some read positions
+    /// might not get counted. Safest to set this a bit higher than the actual
+    /// read length, to allow for indels in reads.
+    #[arg(short='w', long, default_value_t = 200, value_parser = clap::value_parser!(u32).range(1..))]
+    max_read_length: u32,
+
+    /// Minimum mapping quality per aligned read
+    #[arg(short = 'q', long, default_value_t = 1)]
+    min_mapq: u8,
+
+    /// Report reads with no CpGs in them
+    #[arg(short = 'A', long)]
+    all_reads: bool,
+
+    /// Exclude reads where the orientation cannot be unambiguously determined
+    #[arg(long)]
+    exclude_ambiguous: bool,
 
     // --- Output parameters ---
     #[command(flatten)]
-    pub bed_reads: BedReadsParams,
+    bed_reads: BedReadsParams,
+}
+
+mod flags {
+    #![allow(unused)]
+
+    use clap_num::maybe_hex;
+    use rust_htslib::bam::Record;
+
+    #[derive(Debug, Clone, Default, clap::Args)]
+    pub struct ReadFlags {
+        /// Include reads that match all of these bit-flags
+        #[arg(
+            short = 'f', long,
+            value_parser=maybe_hex::<u16>,
+            default_value_t = IS_PAIRED | IS_PROPERLY_PAIRED
+        )]
+        pub include_flags: u16,
+
+        /// Exclude reads that match any of these bit-flags
+        #[arg(
+            short = 'F', long,
+            value_parser=maybe_hex::<u16>,
+            default_value_t = IS_FAILED | IS_NOT_PRIMARY | IS_UNMAPPED | MATE_IS_UNMAPPED | IS_DUPLICATE | IS_SUPPLEMENTAL
+        )]
+        pub exclude_flags: u16,
+    }
+
+    impl ReadFlags {
+        /// Check if the read matches the include flags and does not match the exclude flags
+        pub fn filter(&self, record: &Record) -> bool {
+            let flags = record.flags();
+            let include = flags & self.include_flags == self.include_flags;
+            let exclude = flags & self.exclude_flags != 0;
+            include && !exclude
+        }
+    }
+
+    pub const IS_PAIRED: u16 = 0x1;
+    pub const IS_PROPERLY_PAIRED: u16 = 0x2;
+    pub const IS_UNMAPPED: u16 = 0x4;
+    pub const MATE_IS_UNMAPPED: u16 = 0x8;
+    pub const IS_REVERSE_STRAND: u16 = 0x10;
+    pub const MATE_IS_REVERSE_STRAND: u16 = 0x20;
+    pub const IS_FIRST_IN_PAIR: u16 = 0x40;
+    pub const IS_SECOND_IN_PAIR: u16 = 0x80;
+    pub const IS_NOT_PRIMARY: u16 = 0x100;
+    pub const IS_FAILED: u16 = 0x200;
+    pub const IS_DUPLICATE: u16 = 0x400;
+    pub const IS_SUPPLEMENTAL: u16 = 0x800;
 }
 
 #[instrument(level = "debug", skip_all)]
@@ -54,10 +118,22 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
             if (record.pos() as u64) < segment.range.start {
                 continue;
             }
+            if !params.read_flags.filter(&record) {
+                continue;
+            }
+            if record.mapq() < params.min_mapq {
+                continue;
+            }
+            if record.seq_len() > params.max_read_length as usize {
+                continue;
+            }
 
             record.cache_cigar();
             let row = record_to_row(&record, &segment).wrap_err("Failed to read record")?;
-            bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
+
+            if params.all_reads || row.cpg_count > 0 {
+                bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
+            }
         }
     }
 
