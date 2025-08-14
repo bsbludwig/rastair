@@ -6,6 +6,7 @@ This document contains the help content for the `rastair2` command-line program.
 
 * [`rastair2`↴](#rastair2)
 * [`rastair2 call`↴](#rastair2-call)
+* [`rastair2 per-read`↴](#rastair2-per-read)
 * [`rastair2 convert`↴](#rastair2-convert)
 * [`rastair2 view`↴](#rastair2-view)
 
@@ -20,6 +21,7 @@ Process TAPS-sequenced BAM files for methylation calling
 ###### **Subcommands:**
 
 * `call` — Call methylated positions
+* `per-read` — Call methylation per-read
 * `convert` — Convert between different file formats
 * `view` — View internal format as JSON lines
 
@@ -165,6 +167,58 @@ Call methylated positions
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
   Default value: `14`
+
+
+
+## `rastair2 per-read`
+
+Call methylation per-read
+
+This will produce a bed file that list the methylation status of all CpGs in every read that overlaps a CpG, plus some other metadata
+
+**Usage:** `rastair2 per-read [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>`
+
+###### **Arguments:**
+
+* `<BAM_FILE>` — Path to sorted and indexed BAM file
+
+###### **Options:**
+
+* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
+* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
+
+  Default value: `100000`
+* `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
+
+  Default value: `100`
+* `-f`, `--include-flags <INCLUDE_FLAGS>` — Include reads that match all of these bit-flags
+
+  Default value: `3`
+* `-F`, `--exclude-flags <EXCLUDE_FLAGS>` — Exclude reads that match any of these bit-flags
+
+  Default value: `3852`
+* `-w`, `--max-read-length <MAX_READ_LENGTH>` — expected maximum read length. If set too short, some read positions might not get counted. Safest to set this a bit higher than the actual read length, to allow for indels in reads
+
+  Default value: `200`
+* `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality per aligned read
+
+  Default value: `1`
+* `-A`, `--all-reads` — Report reads with no CpGs in them
+* `--exclude-ambiguous` — Exclude reads where the orientation cannot be unambiguously determined
+* `--bed <BED>` — Output BED file with all reads
+
+  Default value: `-`
+* `--bed-format <BED_FORMAT>` — Format of the output BED reads file
+
+   If not specified, the format is guessed based on the file extension.
+
+  Possible values:
+  - `bed-gz`:
+    BGZIP compressed file, usually `.bed.gz`
+  - `bed`:
+    Regular BED file, usually `.bed`
+
 
 
 
