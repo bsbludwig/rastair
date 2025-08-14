@@ -36,8 +36,10 @@ fn main() -> Result<()> {
     }
 
     let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
-    let regions: Vec<ChunkRegion> =
-        readers.segments().wrap_err("Could not fetch segments from BAM file")?.collect();
+    let regions: Vec<ChunkRegion> = readers
+        .segments(100_000, 100)
+        .wrap_err("Could not fetch segments from BAM file")?
+        .collect();
     let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
     let mut cpg = MlDebugOutput::new(ClioPath::new("CpG_features.tsv.gz")?)?;

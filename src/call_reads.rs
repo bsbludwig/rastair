@@ -10,7 +10,6 @@ use rastair2_types::{Strand, StrandFromRecord};
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use smallvec::SmallVec;
-use smol_str::SmolStr;
 use std::thread::{self, available_parallelism};
 use tracing::{debug, instrument, warn};
 
@@ -21,6 +20,12 @@ pub struct PerReadParams {
     // --- Input parameters ---
     #[command(flatten)]
     segments: ReaderParams,
+    /// Maximum length of a segment in bases
+    ///
+    /// Used for splitting work between threads. Tweak this to adjust memory
+    /// usage.
+    #[arg(long, default_value_t = 100_000)]
+    pub segment_max_length: u64,
 
     // --- Calling parameters ---
     #[command(flatten)]
@@ -61,8 +66,10 @@ pub struct PerReadParams {
 #[instrument(level = "debug", skip_all)]
 pub fn call_reads(params: &PerReadParams) -> Result<()> {
     let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
-    let regions: Vec<ChunkRegion> =
-        readers.segments().wrap_err("Could not fetch segments from BAM file")?.collect();
+    let regions: Vec<ChunkRegion> = readers
+        .segments(params.segment_max_length, 0)
+        .wrap_err("Could not fetch segments from BAM file")?
+        .collect();
 
     // Process each region and write results to the BED file
     //
@@ -94,25 +101,8 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
                 let mut bed_writer =
                     params.bed_reads.writer().wrap_err("Failed to open BED file")?;
 
-                // The segments we get have some overlap between them, so we
-                // need to ensure that we don't write the same record multiple
-                // times.
-                let mut last_seen_chrom: Option<SmolStr> = None;
-                let mut last_seen_pos: Option<u64> = None;
-
                 for records in receiver {
                     for row in records {
-                        let row: PerRead = row;
-                        // Skip records that are already seen
-                        if last_seen_chrom.as_ref() == Some(&row.region.contig)
-                            && last_seen_pos >= Some(row.region.start)
-                        {
-                            continue;
-                        }
-                        // Seen a new record, update the last seen
-                        last_seen_chrom = Some(row.region.contig.clone());
-                        last_seen_pos = Some(row.region.start);
-
                         bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
                     }
                 }

@@ -7,7 +7,7 @@ use crate::{
         variant_calling::{ReadFlags, ReadMaskParams},
         variants::VariantCandidatePileup,
     },
-    sequence::{ReaderParams, Readers, SegmentationParams},
+    sequence::{ReaderParams, Readers},
     utils::RegionString,
 };
 use clio::ClioPath;
@@ -23,7 +23,6 @@ impl ReaderParams {
             bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
             fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
             region: None,
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 0 },
         }
     }
 
@@ -32,7 +31,6 @@ impl ReaderParams {
             bam_file: ClioPath::new(bam).unwrap(),
             fasta_file: ClioPath::new(fasta).unwrap(),
             region: None,
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 0 },
         }
     }
 
@@ -44,7 +42,7 @@ impl ReaderParams {
         };
         let params = Self { region: Some(region), ..self.clone() };
         let mut readers = params.readers().wrap_err("failed to fetch segments")?;
-        let chunk = readers.segments()?.next().wrap_err("failed to fetch segment")?;
+        let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
         let pileups = chunk
             .process(
@@ -80,7 +78,6 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
         bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
         fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
         region: Some(region),
-        segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 0 },
     };
     p.readers().wrap_err("failed to fetch segments")
 }

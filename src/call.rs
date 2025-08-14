@@ -34,6 +34,8 @@ pub struct CallParams {
     // --- Input parameters ---
     #[command(flatten)]
     pub segments: ReaderParams,
+    #[command(flatten)]
+    pub segmentation: SegmentationParams,
 
     // --- Calling parameters ---
     #[command(flatten)]
@@ -61,6 +63,22 @@ pub struct CallParams {
     pub total_threads: usize,
 }
 
+#[derive(Debug, clap::Args, Clone)]
+pub struct SegmentationParams {
+    /// Maximum length of a segment in bases
+    ///
+    /// Used for splitting work between threads. Tweak this to adjust memory
+    /// usage.
+    #[arg(long, default_value_t = 100_000)]
+    pub segment_max_length: u64,
+
+    /// Number of bases to overlap between segments
+    ///
+    /// Helpful to avoid missing variants at the edges of segments.
+    #[arg(long, default_value_t = 100)]
+    pub segment_overlap: u64,
+}
+
 /// Read BAM + FASTA and call variants and methylation events
 #[instrument(level = "debug", skip(params))]
 pub fn call(params: &CallParams) -> Result<()> {
@@ -77,8 +95,10 @@ pub fn call(params: &CallParams) -> Result<()> {
     let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
 
     // Get segments that are small enough to process in RAM
-    let regions: Vec<ChunkRegion> =
-        readers.segments().wrap_err("Could not fetch segments from BAM file")?.collect();
+    let regions: Vec<ChunkRegion> = readers
+        .segments(params.segmentation.segment_max_length, params.segmentation.segment_overlap)
+        .wrap_err("Could not fetch segments from BAM file")?
+        .collect();
     if regions.is_empty() {
         warn!("No segments found in BAM file, nothing to do");
         return Ok(());

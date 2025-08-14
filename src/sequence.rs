@@ -42,20 +42,6 @@ pub struct ReaderParams {
     /// inclusive.
     #[arg(short = 'l', long)]
     pub region: Option<RegionString>,
-
-    #[command(flatten)]
-    pub segmentation: SegmentationParams,
-}
-
-#[derive(Debug, clap::Args, Clone)]
-pub struct SegmentationParams {
-    /// Maximum length of a segment in bases
-    #[arg(long, default_value_t = 100_000)]
-    pub segment_max_length: u64,
-
-    /// Number of bases to overlap between segments
-    #[arg(long, default_value_t = 100)]
-    pub segment_overlap: u64,
 }
 
 impl ReaderParams {
@@ -84,7 +70,11 @@ pub struct Readers {
 impl Readers {
     /// Calculate segments based on configuration parameters
     #[instrument(level = "debug", skip_all)]
-    pub fn segments(&self) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
+    pub fn segments(
+        &self,
+        segment_max_length: u64,
+        segment_overlap: u64,
+    ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
         let full_regions = if let Some(region) = &self.params.region {
             vec![
                 get_selected_region(region, self.bam.header())
@@ -102,8 +92,8 @@ impl Readers {
             full_regions,
             current_region_idx: 0,
             current_start: initial_start,
-            max_length: self.params.segmentation.segment_max_length,
-            overlap: self.params.segmentation.segment_overlap,
+            max_length: segment_max_length,
+            overlap: segment_overlap,
         };
 
         Ok(chunked)
@@ -265,12 +255,8 @@ mod tests {
             last_position: 6105900,
         };
 
-        let params = ReaderParams {
-            bam_file: get_test_bam(),
-            fasta_file: get_test_fasta(),
-            region: None,
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
-        };
+        let params =
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
 
         // Initialize readers
         let mut readers = params.readers()?;
@@ -290,12 +276,11 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105800".parse().unwrap()),
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
         };
 
         let readers = params.readers()?;
         // Collect all segments into a Vec since we need to verify properties across all segments
-        let segments = readers.segments()?.collect::<Vec<_>>();
+        let segments = readers.segments(1000, 100)?.collect::<Vec<_>>();
 
         assert!(!segments.is_empty(), "Should have at least one segment");
 
@@ -315,14 +300,12 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105900".parse().unwrap()),
-            segmentation: SegmentationParams {
-                segment_max_length: 100, // Small max length to force multiple segments
-                segment_overlap: 20,     // Known overlap amount
-            },
         };
 
         let mut readers = params.readers()?;
-        let segments = readers.segments()?.collect::<Vec<_>>();
+        let segment_max_length = 100; // Small max length to force multiple segments
+        let segment_overlap = 20;
+        let segments = readers.segments(segment_max_length, segment_overlap)?.collect::<Vec<_>>();
 
         assert!(segments.len() > 1, "Should have multiple segments");
 
@@ -333,10 +316,7 @@ mod tests {
 
             // Verify overlap amount
             let overlap = first.range.region.end - second.range.region.start;
-            assert_eq!(
-                overlap, params.segmentation.segment_overlap,
-                "Overlap amount should match configured value"
-            );
+            assert_eq!(overlap, segment_overlap, "Overlap amount should match configured value");
 
             // Calculate overlap regions accounting for 0-based sequence indexing
             let first_start_idx =
@@ -380,12 +360,8 @@ mod tests {
 
     #[test]
     fn test_get_selected_region_variations() -> Result<()> {
-        let params = ReaderParams {
-            bam_file: get_test_bam(),
-            fasta_file: get_test_fasta(),
-            region: None,
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
-        };
+        let params =
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
 
         let readers = params.readers()?;
         let header = readers.bam.header();
@@ -415,12 +391,8 @@ mod tests {
 
     #[test]
     fn test_get_selected_region_errors() -> Result<()> {
-        let params = ReaderParams {
-            bam_file: get_test_bam(),
-            fasta_file: get_test_fasta(),
-            region: None,
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
-        };
+        let params =
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
 
         let readers = params.readers()?;
         let header = readers.bam.header();
@@ -451,12 +423,8 @@ mod tests {
 
     #[test]
     fn test_get_full_regions() -> Result<()> {
-        let params = ReaderParams {
-            bam_file: get_test_bam(),
-            fasta_file: get_test_fasta(),
-            region: None,
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
-        };
+        let params =
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
 
         let readers = params.readers()?;
         let header = readers.bam.header();
@@ -485,12 +453,8 @@ mod tests {
 
     #[test]
     fn test_segment_error_handling() -> Result<()> {
-        let params = ReaderParams {
-            bam_file: get_test_bam(),
-            fasta_file: get_test_fasta(),
-            region: None,
-            segmentation: SegmentationParams { segment_max_length: 1000, segment_overlap: 100 },
-        };
+        let params =
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
 
         let mut readers = params.readers()?;
 
@@ -512,14 +476,13 @@ mod tests {
             bam_file: get_test_bam(),
             fasta_file: get_test_fasta(),
             region: Some("chr19:6105700-6105900".parse().unwrap()),
-            segmentation: SegmentationParams {
-                segment_max_length: 50, // Small max length to force multiple segments
-                segment_overlap: 0,     // No overlap
-            },
         };
 
         let readers = params.readers()?;
-        let segments = readers.segments()?.collect::<Vec<_>>();
+
+        let segment_max_length = 50; // Small max length to force multiple segments
+        let segment_overlap = 0; // No overlap
+        let segments = readers.segments(segment_max_length, segment_overlap)?.collect::<Vec<_>>();
 
         assert!(segments.len() > 1, "Should have multiple segments");
 
