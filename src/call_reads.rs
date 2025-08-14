@@ -126,9 +126,9 @@ fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {
             if next_base == b'G' {
                 cpg_count += 1;
                 match read_base {
-                    b'C' => unmod_cpgs.push(pos_in_ref),
-                    b'T' => mod_cpgs.push(pos_in_ref),
-                    _ => snp_cpgs.push(pos_in_ref),
+                    b'C' => unmod_cpgs.push(pos_in_read),
+                    b'T' => mod_cpgs.push(pos_in_read),
+                    _ => snp_cpgs.push(pos_in_read),
                 }
             }
         } else if orientation == SequenceReadPairOrientation::F2R1 && ref_base == b'G' {
@@ -137,9 +137,9 @@ fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {
             if prev_base == b'C' {
                 cpg_count += 1;
                 match read_base {
-                    b'G' => unmod_cpgs.push(pos_in_ref),
-                    b'A' => mod_cpgs.push(pos_in_ref),
-                    _ => snp_cpgs.push(pos_in_ref),
+                    b'G' => unmod_cpgs.push(pos_in_read),
+                    b'A' => mod_cpgs.push(pos_in_read),
+                    _ => snp_cpgs.push(pos_in_read),
                 }
             }
         }
