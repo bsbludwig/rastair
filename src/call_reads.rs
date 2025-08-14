@@ -2,11 +2,11 @@ use crate::{
     bed::per_read::{BedReadsParams, PerRead},
     sequence::{ChunkRegion, ReaderParams, Region, Segment},
 };
-use bio::bio_types::sequence::SequenceReadPairOrientation;
 use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat},
 };
+use rastair2_types::{Strand, StrandFromRecord};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use smallvec::SmallVec;
 use tracing::instrument;
@@ -114,14 +114,14 @@ fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {
         };
         let pos_in_read = usize::try_from(pos_in_read).expect("position fits in usize");
         let pos_in_ref = usize::try_from(pos_in_ref).expect("position fits in usize");
-        let idx = pos_in_ref.checked_sub(segment_start_pos).wrap_err_with(|| {
-            format!("Failed to calculate index for position {pos_in_ref} - {segment_start_pos}")
-        })?;
+        let idx = pos_in_ref
+            .checked_sub(segment_start_pos)
+            .wrap_err("Failed to calculate index for position")?;
         let read_base = read_seq[pos_in_read];
         let ref_base = ref_seq.get(idx).copied().unwrap_or(b'N');
-        let orientation = record.read_pair_orientation();
+        let orientation = StrandFromRecord::strand(record);
 
-        if orientation == SequenceReadPairOrientation::F1R2 && ref_base == b'C' {
+        if orientation == Strand::OT && ref_base == b'C' {
             let next_base = ref_seq.get(idx + 1).copied().unwrap_or(b'N');
             if next_base == b'G' {
                 cpg_count += 1;
@@ -131,7 +131,7 @@ fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {
                     _ => snp_cpgs.push(pos_in_read),
                 }
             }
-        } else if orientation == SequenceReadPairOrientation::F2R1 && ref_base == b'G' {
+        } else if orientation == Strand::OB && ref_base == b'G' {
             let prev_base =
                 idx.checked_sub(1).and_then(|i| ref_seq.get(i)).copied().unwrap_or(b'N');
             if prev_base == b'C' {
