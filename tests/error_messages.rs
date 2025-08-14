@@ -65,7 +65,7 @@ fn missing_output_choice() -> Result<()> {
        0: [91mNo output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`.[0m
 
     Location:
-       [35msrc/call.rs[0m:[35m69[0m
+       [35msrc/call.rs[0m:[35m67[0m
 
     Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
     Run with RUST_BACKTRACE=full to include source snippets.
@@ -120,7 +120,7 @@ fn different_paths_for_bed_and_vcf() -> Result<()> {
        0: [91mCan't write both VCF and BED output to the same file. Please specify different output files.[0m
 
     Location:
-       [35msrc/call.rs[0m:[35m73[0m
+       [35msrc/call.rs[0m:[35m71[0m
 
     Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
     Run with RUST_BACKTRACE=full to include source snippets.
