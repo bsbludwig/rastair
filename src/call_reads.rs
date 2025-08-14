@@ -1,19 +1,22 @@
 use crate::{
     bed::per_read::{BedReadsParams, PerRead},
-    sequence::{ChunkRegion, ReaderParams, Region, Segment},
+    sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
 };
 use color_eyre::{
     Result,
-    eyre::{Context as _, ContextCompat},
+    eyre::{Context as _, ContextCompat, eyre},
 };
 use rastair2_types::{Strand, StrandFromRecord};
+use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use smallvec::SmallVec;
-use tracing::instrument;
+use smol_str::SmolStr;
+use std::thread::{self, available_parallelism};
+use tracing::{debug, instrument, warn};
 
 mod flags;
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct PerReadParams {
     // --- Input parameters ---
     #[command(flatten)]
@@ -44,53 +47,205 @@ pub struct PerReadParams {
     // --- Output parameters ---
     #[command(flatten)]
     bed_reads: BedReadsParams,
+
+    // --- Other runtime parameters ---
+    /// Number of threads to use for processing the BAM file. Will use all
+    /// available threads when not specified.
+    ///
+    /// Note that VCF writing might use additional threads internally for compression.
+    /// This can be overwritten with `--vcf-threads`.
+    #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(1).max(1))]
+    pub total_threads: usize,
 }
 
 #[instrument(level = "debug", skip_all)]
 pub fn call_reads(params: &PerReadParams) -> Result<()> {
-    let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
+    let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
     let regions: Vec<ChunkRegion> =
         readers.segments().wrap_err("Could not fetch segments from BAM file")?.collect();
 
-    let mut bed_writer = params.bed_reads.writer().wrap_err("Failed to open BED file")?;
+    // Process each region and write results to the BED file
+    //
+    // This is done in parallel to speed up the processing, so here are a few
+    // comments on this works. There are two aspects to this: Collecting the
+    // variant candidates and writing them to the output file.
+    //
+    // To use all CPU available, we use rayon to process the regions in
+    // parallel. From there, we send ready-made BED records to here and write
+    // them in order.
+    let writer_threads = 1; // it's this one
+    let worker_threads = params.total_threads.saturating_sub(writer_threads).max(1);
 
-    for region in regions {
-        let segment = readers.segment(&region).wrap_err("Could not fetch segment from BAM file")?;
-        FetchDefinition::try_from(&segment)
-            .wrap_err("Could not convert region string")
-            .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
-            .wrap_err_with(|| {
-                format!("Could not fetch region `{}` from BAM file", region.region)
-            })?;
+    // The connection between the processing threads and the writer is this
+    // ordered channel. It buffers `Vec<PerReads>`s, alongside the index from
+    // the parallel iterator.
+    let (sender, receiver) = {
+        // At least 10x buffer for records to account for reordering and processing time
+        let buffer_size = worker_threads * 10;
+        ordered_channel::bounded(buffer_size)
+    };
 
-        let mut record = Record::new();
-        while let Some(result) = readers.bam.read(&mut record) {
-            if let Err(e) = result {
-                return Err(e).wrap_err("Failed to read BAM record");
-            }
-            if (record.pos() as u64) < segment.range.start {
-                continue;
-            }
-            if !params.read_flags.filter(&record) {
-                continue;
-            }
-            if record.mapq() < params.min_mapq {
-                continue;
-            }
-            if record.seq_len() > params.max_read_length as usize {
-                continue;
-            }
+    // Create a writer for the output
+    let writer_thread = thread::Builder::new()
+        .name("writer".to_string())
+        .spawn({
+            let params = params.clone();
+            move || -> Result<()> {
+                let mut bed_writer =
+                    params.bed_reads.writer().wrap_err("Failed to open BED file")?;
 
-            record.cache_cigar();
-            let row = record_to_row(&record, &segment).wrap_err("Failed to read record")?;
+                // The segments we get have some overlap between them, so we
+                // need to ensure that we don't write the same record multiple
+                // times.
+                let mut last_seen_chrom: Option<SmolStr> = None;
+                let mut last_seen_pos: Option<u64> = None;
 
-            if params.all_reads || row.cpg_count > 0 {
-                bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
+                for records in receiver {
+                    for row in records {
+                        let row: PerRead = row;
+                        // Skip records that are already seen
+                        if last_seen_chrom.as_ref() == Some(&row.region.contig)
+                            && last_seen_pos >= Some(row.region.start)
+                        {
+                            continue;
+                        }
+                        // Seen a new record, update the last seen
+                        last_seen_chrom = Some(row.region.contig.clone());
+                        last_seen_pos = Some(row.region.start);
+
+                        bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
+                    }
+                }
+
+                debug!("Writer done");
+                Ok(())
             }
+        })
+        .wrap_err("Failed to spawn writer thread")?;
+
+    // Run this in a custom rayon thread pool to control the number of threads
+    // and be able to tweak parameters when profiling
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|idx| format!("worker-{idx}"))
+        .num_threads(worker_threads)
+        .build()
+        .wrap_err("Failed to create thread pool for rayon")?
+        .install(move || {
+            regions.iter().enumerate().par_bridge().try_for_each_with(
+                (sender, params),
+                |(vcf_sender, params), (index, region)| {
+                    process_region_wrapper(index, region, vcf_sender, params)
+                },
+            )
+        })?;
+
+    writer_thread
+        .join()
+        .map_err(|e| eyre!("{e:?}"))
+        .wrap_err("Failed to join writer thread")?
+        .wrap_err("writer thread error")?;
+
+    Ok(())
+}
+
+/// Wrapper function for processing a region in a thread-safe manner.
+#[instrument(level = "debug", skip_all, fields(region=%region.region))]
+fn process_region_wrapper(
+    index: usize,
+    region: &ChunkRegion,
+    sender: &mut ordered_channel::Sender<Vec<PerRead>>,
+    params: &PerReadParams,
+) -> Result<()> {
+    thread_local! {
+        /// Readers for the BAM and FASTA files, initialized per thread to avoid
+        /// re-opening files or having a lock
+        static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+    }
+
+    // Use thread-local readers to avoid re-opening files in each thread
+    let res = READERS.with(|local_readers| -> Result<Vec<PerRead>> {
+        let mut local_readers = local_readers.borrow_mut();
+        let readers = {
+            // Initialize thread-local readers first time the thread accesses them
+            if local_readers.is_none() {
+                let readers = params
+                    .segments
+                    .readers()
+                    .wrap_err("Failed to open readers in worker thread")?;
+                *local_readers = Some(readers);
+            }
+            local_readers.as_mut().wrap_err("Failed to access thread-local resources")?
+        };
+
+        process_region(readers, region, params)
+    });
+
+    let records = match res {
+        Ok(records) => records,
+        Err(e) => {
+            warn!(error = format!("{e:#}"), "Failed to process region");
+            // We still send an empty vector to the channel to increment the index
+            Vec::new()
         }
+    };
+
+    if let Err(_err) = sender.send(index, records).wrap_err("Failed to send records to writer") {
+        // the channel is closed, because the writer thread has finished
     }
 
     Ok(())
+}
+
+fn process_region(
+    readers: &mut Readers,
+    region: &ChunkRegion,
+    params: &PerReadParams,
+) -> Result<Vec<PerRead>> {
+    let segment = readers.segment(region).wrap_err("Could not fetch segment from BAM file")?;
+    FetchDefinition::try_from(&segment)
+        .wrap_err("Could not convert region string")
+        .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
+        .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
+
+    let size = usize::try_from(segment.range.len())
+        .wrap_err("Failed to convert segment range length to usize")?;
+    let capacity_est = if params.all_reads {
+        size
+    } else {
+        // Estimate capacity based on CpG count, assuming 1/10 reads have a CpG
+        size / 10
+    };
+    let mut res = Vec::with_capacity(capacity_est);
+
+    let mut record = Record::new();
+    while let Some(result) = readers.bam.read(&mut record) {
+        if let Err(e) = result {
+            return Err(e).wrap_err("Failed to read BAM record");
+        }
+        if (record.pos() as u64) < segment.range.start {
+            continue;
+        }
+        if !params.read_flags.filter(&record) {
+            continue;
+        }
+        if record.mapq() < params.min_mapq {
+            continue;
+        }
+        if record.seq_len() > params.max_read_length as usize {
+            continue;
+        }
+
+        record.cache_cigar();
+        let row = record_to_row(&record, &segment).wrap_err("Failed to read record")?;
+
+        if params.all_reads || row.cpg_count > 0 {
+            res.push(row);
+        }
+    }
+
+    debug!(records = res.len(), "Processed region with {} records", res.len());
+
+    Ok(res)
 }
 
 fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {

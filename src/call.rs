@@ -103,7 +103,7 @@ pub fn call(params: &CallParams) -> Result<()> {
     let writer_threads = params.vcf.vcf_threads;
     let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
 
-    // The connection between the processing threads and the VCF writer this
+    // The connection between the processing threads and the VCF writer is this
     // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
     // the parallel iterator.
     let (vcf_sender, vcf_receiver) = {
