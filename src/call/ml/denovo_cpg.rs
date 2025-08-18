@@ -178,9 +178,9 @@ fn calculate_denovo_adjacent_features(
             };
             // For C alt alleles (creating CpG with next G): look for G→A at position-1
             if let Some(after) = after
-                && after.main.r#ref == "G"
                 && let Some(alt_index) = after.main.alt.iter().position(|a| a == "A")
             {
+                assert!(after.main.r#ref == "G", "De-novo CpG not followed by G"); // this should always be the case!
                 let ad_alt =
                     after.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
                 let depth = *after.info.read_depth as f64;
@@ -191,8 +191,8 @@ fn calculate_denovo_adjacent_features(
                 let ref_strand = after.strand_count(Base::G).or_empty();
                 let bq_alt = get_strand_base_quality(after, Base::A);
                 let bq_ref = get_strand_base_quality(after, Base::G);
-                let alt_score = (f64::from(alt_strand.ot) / depth * bq_alt.ot + 1.0).log2()
-                    - (f64::from(ref_strand.ot) / depth * bq_ref.ot + 1.0).log2();
+                let alt_score = (f64::from(alt_strand.ot) * bq_alt.ot + 1.0).log2()
+                    - (f64::from(ref_strand.ot) * bq_ref.ot + 1.0).log2();
                 let beta_after = {
                     let g_count = after.strand_count(Base::G).or_empty().ob;
                     let a_count = after.strand_count(Base::A).or_empty().ob;
@@ -222,9 +222,9 @@ fn calculate_denovo_adjacent_features(
             };
             // For G alt alleles (creating CpG with prev C): look for C→T at position+1
             if let Some(before) = before
-                && before.main.r#ref == "C"
                 && let Some(alt_index) = before.main.alt.iter().position(|a| a == "T")
             {
+                assert!(before.main.r#ref == "C", "De-novo CpG not preceded by C`"); // This should always be the case
                 let ad_alt =
                     before.info.allele_read_depth.get(alt_index + 1).copied().unwrap_or(0) as f64;
                 let depth = *before.info.read_depth as f64;
@@ -233,10 +233,10 @@ fn calculate_denovo_adjacent_features(
                 // Calculate alt_score for C→T using ot strand
                 let alt_strand = before.strand_count(Base::T).or_empty();
                 let ref_strand = before.strand_count(Base::C).or_empty();
-                let bq_ot_alt = get_strand_base_quality(before, Base::T).ot;
-                let bq_ot_ref = get_strand_base_quality(before, Base::C).ot;
-                let alt_score = (f64::from(alt_strand.ot) * bq_ot_alt + 1.0).log2()
-                    - (f64::from(ref_strand.ot) * bq_ot_ref + 1.0).log2();
+                let bq_alt = get_strand_base_quality(before, Base::T);
+                let bq_ref = get_strand_base_quality(before, Base::C);
+                let alt_score = (f64::from(alt_strand.ob) * bq_alt.ob + 1.0).log2()
+                    - (f64::from(ref_strand.ob) * bq_ref.ob + 1.0).log2();
                 let beta_before = {
                     let c_count = ref_strand.ot;
                     let t_count = alt_strand.ot;
