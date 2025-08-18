@@ -186,24 +186,27 @@ fn calculate_denovo_adjacent_features(
                 let depth = *after.info.read_depth as f64;
                 let ad_alt_norm = ad_alt / depth;
 
-                // Calculate alt_score for G→A using ot strand
+                // Calculate alt_score for G→A using bottom strand
                 let alt_strand = after.strand_count(Base::A).or_empty();
                 let ref_strand = after.strand_count(Base::G).or_empty();
                 let bq_alt = get_strand_base_quality(after, Base::A);
                 let bq_ref = get_strand_base_quality(after, Base::G);
                 let alt_score = (f64::from(alt_strand.ot) * bq_alt.ot + 1.0).log2()
                     - (f64::from(ref_strand.ot) * bq_ref.ot + 1.0).log2();
+
+                // Calculate beta ratio: beta at the center vs beta at the adjacent position
                 let beta_after = {
-                    let g_count = after.strand_count(Base::G).or_empty().ob;
-                    let a_count = after.strand_count(Base::A).or_empty().ob;
+                    let g_count = alt_strand.ob;
+                    let a_count = ref_strand.ob;
                     if g_count + a_count == 0 {
                         0.0
                     } else {
                         f64::from(a_count) / (f64::from(a_count) + f64::from(g_count))
                     }
                 };
-                let sb_adj = f64::from(alt_strand.ob + 1) / f64::from(alt_strand.ot + 1);
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_after + 1.0).log2();
+
+                let sb_adj = f64::from(alt_strand.ob + 1) / f64::from(alt_strand.ot + 1);
                 (beta_ratio, ad_alt_norm, alt_score, sb_adj)
             } else {
                 let beta_ratio = (beta_center + 1.0).log2();
@@ -220,7 +223,7 @@ fn calculate_denovo_adjacent_features(
                     f64::from(a_count) / (f64::from(a_count) + f64::from(g_count))
                 }
             };
-            // For G alt alleles (creating CpG with prev C): look for C→T at position+1
+            // For G alt alleles (creating CpG with prev C): look for C→T at position-1
             if let Some(before) = before
                 && let Some(alt_index) = before.main.alt.iter().position(|a| a == "T")
             {
@@ -237,6 +240,8 @@ fn calculate_denovo_adjacent_features(
                 let bq_ref = get_strand_base_quality(before, Base::C);
                 let alt_score = (f64::from(alt_strand.ob) * bq_alt.ob + 1.0).log2()
                     - (f64::from(ref_strand.ob) * bq_ref.ob + 1.0).log2();
+
+                // Calculate beta ratio: beta at the center vs beta at the adjacent position
                 let beta_before = {
                     let c_count = ref_strand.ot;
                     let t_count = alt_strand.ot;
@@ -246,8 +251,9 @@ fn calculate_denovo_adjacent_features(
                         f64::from(t_count) / (f64::from(t_count) + f64::from(c_count))
                     }
                 };
-                let sb_adj = f64::from(alt_strand.ot + 1) / f64::from(alt_strand.ob + 1);
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_before + 1.0).log2();
+
+                let sb_adj = f64::from(alt_strand.ot + 1) / f64::from(alt_strand.ob + 1);
                 (beta_ratio, ad_alt_norm, alt_score, sb_adj)
             } else {
                 let beta_ratio = (beta_center + 1.0).log2();
