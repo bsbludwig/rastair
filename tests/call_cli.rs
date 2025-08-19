@@ -1,7 +1,4 @@
-use std::collections::BTreeSet;
-
 mod utils;
-use color_eyre::eyre::eyre;
 use utils::*;
 
 #[test]

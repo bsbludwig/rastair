@@ -1,11 +1,10 @@
 #![allow(unused_imports, dead_code)]
 
-use std::process::Command;
-
-use color_eyre::eyre::bail;
+pub use color_eyre::eyre::{bail, eyre};
 pub use color_eyre::{Result, eyre::Context as _};
 pub use insta::{assert_debug_snapshot, assert_snapshot};
 pub use insta_cmd::assert_cmd_snapshot;
+pub use std::{collections::BTreeSet, process::Command};
 pub use tempfile::TempDir;
 
 pub fn rastair() -> Command {
@@ -25,6 +24,7 @@ macro_rules! apply_common_filters {
         settings.add_filter(r#"file="/.*/test.vcf.gz"#, "file=[PATH]");
         settings.add_filter(r#"file="/.*/test.bcf"#, "file=[PATH]");
         settings.add_filter(r#"file="/.*/test.mpk.lz4"#, "file=[PATH]");
+        settings.add_filter(r#"file="/.*/test.bed"#, "file=[PATH]");
         let _bound = settings.bind_to_scope();
     }
 }

@@ -1,6 +1,4 @@
 mod utils;
-
-use std::process::Command;
 use utils::*;
 
 #[test]
