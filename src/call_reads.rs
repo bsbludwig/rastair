@@ -58,6 +58,16 @@ pub struct PerReadParams {
     // --- Output parameters ---
     #[command(flatten)]
     bed_reads: BedReadsParams,
+    /// Count clipped positions
+    ///
+    /// By default, rastair ignores the leading (soft and hard) clipped
+    /// positions in the "positions in read" columns. The indices written can be
+    /// seen as "position in read relative to the first base actually aligned".
+    ///
+    /// If `--count-clipped` is set, clipped positions will instead be counted.
+    /// The indices written then match the sequence of the read.
+    #[arg(long)]
+    count_clipped: bool,
 
     // --- Other runtime parameters ---
     /// Number of threads to use for processing the BAM file. Will use all
@@ -246,7 +256,7 @@ fn process_region(
         }
 
         record.cache_cigar();
-        let row = record_to_row(&record, &segment, params.exclude_ambiguous)
+        let row = record_to_row(&record, &segment, params.exclude_ambiguous, params.count_clipped)
             .wrap_err("Failed to read record")?;
 
         if params.all_reads || row.cpg_count > 0 {
@@ -259,7 +269,12 @@ fn process_region(
     Ok(res)
 }
 
-fn record_to_row(record: &Record, segment: &Segment, exclude_ambiguous: bool) -> Result<PerRead> {
+fn record_to_row(
+    record: &Record,
+    segment: &Segment,
+    exclude_ambiguous: bool,
+    count_clipped: bool,
+) -> Result<PerRead> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
     let ref_seq = &segment.sequence;
@@ -288,10 +303,15 @@ fn record_to_row(record: &Record, segment: &Segment, exclude_ambiguous: bool) ->
         let read_base = read_seq[pos_in_read];
         let ref_base = ref_seq.get(idx).copied().wrap_err("reading seq")?;
         let orientation = orientation(record, exclude_ambiguous);
-        let pos_rel = pos_in_read
-            .checked_sub(clipping_length)
-            .wrap_err("Can't determine position in read")
-            .note("When subtracting leading clippings, the position would be negative")?;
+        let pos_rel = if count_clipped {
+            pos_in_read
+        } else {
+            // subtract leading clippings to get position relative to the first base aligned
+            pos_in_read
+                .checked_sub(clipping_length)
+                .wrap_err("Can't determine position in read")
+                .note("When subtracting leading clippings, the position would be negative")?
+        };
 
         if orientation == Strand::OT && ref_base == b'C' {
             let next_base = ref_seq.get(idx + 1).copied().wrap_err_with(|| {

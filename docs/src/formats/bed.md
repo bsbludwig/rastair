@@ -4,11 +4,14 @@ Rastair2 can output @BED files of two different kinds:
 
 1. **CpG sites**:
    A file containing all @CpG sites with their @methylation status.
-   Generated using the `call` command and specifying `--bed`
+   Generated using the [`call`] command and specifying `--bed`
    (or using `convert`).
 2. **Per-read methylation**:
    A file containing the methylation status of each CpG site for each @read.
-   Generated using the `per-read` command.
+   Generated using the [`per-read`] command.
+
+[`call`]: ../cli.md#rastair2-call
+[`per-read`]: ../cli.md#rastair2-per-read
 
 ## CpG Sites
 
@@ -55,3 +58,4 @@ The BED file for per-read methylation contains the following columns:
 
 **Note:** The positions in reads take @indel:pl into account,
 meaning that the positions are relative to the read, not the reference genome.
+If `--count-clipped` is set, it will also include leading clipped bases.
