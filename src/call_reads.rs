@@ -4,7 +4,7 @@ use crate::{
 };
 use bio::bio_types::sequence::SequenceReadPairOrientation;
 use color_eyre::{
-    Result,
+    Result, Section,
     eyre::{Context as _, ContextCompat, eyre},
 };
 use rastair2_types::Strand;
@@ -254,6 +254,8 @@ fn record_to_row(record: &Record, segment: &Segment, exclude_ambiguous: bool) ->
     let ref_seq = &segment.sequence;
     let read_seq = record.seq();
     let cigar = record.cigar();
+    let clipping_length = usize::try_from(cigar.leading_softclips() + cigar.leading_hardclips())
+        .expect("clipping length fits in usize");
 
     let mut cpg_count = 0;
     let mut mod_cpgs = SmallVec::new();
@@ -275,6 +277,10 @@ fn record_to_row(record: &Record, segment: &Segment, exclude_ambiguous: bool) ->
         let read_base = read_seq[pos_in_read];
         let ref_base = ref_seq.get(idx).copied().wrap_err("reading seq")?;
         let orientation = orientation(record, exclude_ambiguous);
+        let pos_rel = pos_in_read
+            .checked_sub(clipping_length)
+            .wrap_err("Can't determine position in read")
+            .note("When subtracting leading clippings, the position would be negative")?;
 
         if orientation == Strand::OT && ref_base == b'C' {
             let next_base = ref_seq.get(idx + 1).copied().wrap_err_with(|| {
@@ -288,9 +294,9 @@ fn record_to_row(record: &Record, segment: &Segment, exclude_ambiguous: bool) ->
             if next_base == b'G' {
                 cpg_count += 1;
                 match read_base {
-                    b'C' => unmod_cpgs.push(pos_in_read),
-                    b'T' => mod_cpgs.push(pos_in_read),
-                    _ => snp_cpgs.push(pos_in_read),
+                    b'C' => unmod_cpgs.push(pos_rel),
+                    b'T' => mod_cpgs.push(pos_rel),
+                    _ => snp_cpgs.push(pos_rel),
                 }
             }
         } else if orientation == Strand::OB && ref_base == b'G' {
@@ -299,9 +305,9 @@ fn record_to_row(record: &Record, segment: &Segment, exclude_ambiguous: bool) ->
             if prev_base == b'C' {
                 cpg_count += 1;
                 match read_base {
-                    b'G' => unmod_cpgs.push(pos_in_read),
-                    b'A' => mod_cpgs.push(pos_in_read),
-                    _ => snp_cpgs.push(pos_in_read),
+                    b'G' => unmod_cpgs.push(pos_rel),
+                    b'A' => mod_cpgs.push(pos_rel),
+                    _ => snp_cpgs.push(pos_rel),
                 }
             }
         }
