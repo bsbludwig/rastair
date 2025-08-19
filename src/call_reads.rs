@@ -96,8 +96,12 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
     // To use all CPU available, we use rayon to process the regions in
     // parallel. From there, we send ready-made BED records to here and write
     // them in order.
-    let writer_threads = 1; // it's this one
+    let writer_threads = 1;
     let worker_threads = params.total_threads.saturating_sub(writer_threads).max(1);
+    debug!(
+        "Gonna use {} threads: {} for processing, {} for writing VCF",
+        params.total_threads, worker_threads, writer_threads,
+    );
 
     // The connection between the processing threads and the writer is this
     // ordered channel. It buffers `Vec<PerReads>`s, alongside the index from

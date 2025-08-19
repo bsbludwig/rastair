@@ -122,6 +122,12 @@ pub fn call(params: &CallParams) -> Result<()> {
     // thread that only deals with writing the VCF file.
     let writer_threads = params.vcf.vcf_threads;
     let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
+    debug!(
+        "Gonna use {} threads: {} for processing, {} for writing VCF",
+        params.total_threads,
+        worker_threads,
+        writer_threads.get()
+    );
 
     // The connection between the processing threads and the VCF writer is this
     // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
