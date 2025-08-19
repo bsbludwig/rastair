@@ -100,10 +100,8 @@ impl Readers {
     }
 
     #[instrument(level = "debug", skip_all)]
-    pub fn segment(&mut self, region: &ChunkRegion) -> Result<Segment> {
-        let fetch_some_more = 2;
-        let last_position_to_fetch =
-            region.end.wrapping_add(fetch_some_more).min(region.last_position);
+    pub fn segment(&mut self, region: &ChunkRegion, overfetch: u64) -> Result<Segment> {
+        let last_position_to_fetch = region.end.wrapping_add(overfetch).min(region.last_position);
 
         // Calculate exact capacity needed to avoid reallocations
         let len = usize::try_from(last_position_to_fetch.wrapping_sub(region.start))
@@ -262,7 +260,7 @@ mod tests {
         let mut readers = params.readers()?;
 
         // Test reading a single segment
-        let segment = readers.segment(&region)?;
+        let segment = readers.segment(&region, 2)?;
 
         // Verify segment properties
         assert_eq!(segment.range, region);
@@ -311,8 +309,8 @@ mod tests {
 
         // Check overlaps between adjacent segments
         for pair in segments.windows(2) {
-            let first = readers.segment(&pair[0])?;
-            let second = readers.segment(&pair[1])?;
+            let first = readers.segment(&pair[0], 2)?;
+            let second = readers.segment(&pair[1], 2)?;
 
             // Verify overlap amount
             let overlap = first.range.region.end - second.range.region.start;
@@ -464,7 +462,7 @@ mod tests {
             last_position: 300,
         };
 
-        let result = readers.segment(&invalid_region);
+        let result = readers.segment(&invalid_region, 2);
         assert!(result.is_err());
 
         Ok(())

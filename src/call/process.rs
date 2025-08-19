@@ -47,7 +47,7 @@ impl ChunkRegion {
         readers: &mut Readers,
         params: &PileupMappingParams,
     ) -> Result<Vec<VariantCandidatePileup>> {
-        let segment = readers.segment(self).wrap_err("failed to fetch segment")?;
+        let segment = readers.segment(self, 2).wrap_err("failed to fetch segment")?;
         trace!(len = segment.sequence.len(), "Processing region");
 
         // Fetch the pileups for the segment

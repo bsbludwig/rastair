@@ -26,6 +26,11 @@ pub struct PerReadParams {
     /// usage.
     #[arg(long, default_value_t = 100_000)]
     pub segment_max_length: u64,
+    /// Number of bases to overlap between segments
+    ///
+    /// Helpful to avoid missing variants at the edges of segments.
+    #[arg(long, default_value_t = 500)]
+    pub segment_overlap: u64,
 
     // --- Calling parameters ---
     #[command(flatten)]
@@ -191,8 +196,11 @@ fn process_region(
     region: &ChunkRegion,
     params: &PerReadParams,
 ) -> Result<Vec<PerRead>> {
-    let segment = readers.segment(region).wrap_err("Could not fetch segment from BAM file")?;
-    FetchDefinition::try_from(&segment)
+    let segment = readers
+        .segment(region, params.segment_overlap)
+        .wrap_err("Could not fetch segment from BAM file")?;
+
+    FetchDefinition::try_from(&segment.region)
         .wrap_err("Could not convert region string")
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
