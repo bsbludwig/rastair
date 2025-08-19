@@ -298,6 +298,8 @@ mod tests {
             assert_eq!(segment.region.contig, "chr19");
             assert!(segment.region.start >= 6105700);
             assert!(segment.region.end <= 6105800);
+            // last position is the end of the contig, the same for all segments
+            assert_eq!(segment.last_position, 61431566);
         }
 
         Ok(())

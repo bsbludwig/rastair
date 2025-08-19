@@ -36,7 +36,10 @@ impl Iterator for ChunkedRegions {
                     start: self.current_start,
                     end,
                 },
-                last_position: full_region.end,
+                last_position: match full_region {
+                    SelectedRegion::EntireContig(region) => region.end,
+                    SelectedRegion::UserDefinedSubset { last_position, .. } => *last_position,
+                },
             };
 
             self.current_start = end;
