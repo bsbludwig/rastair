@@ -2,16 +2,17 @@ use crate::{
     bed::per_read::{BedReadsParams, PerRead},
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
 };
+use bio::bio_types::sequence::SequenceReadPairOrientation;
 use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat, eyre},
 };
-use rastair2_types::{Strand, StrandFromRecord};
+use rastair2_types::Strand;
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use smallvec::SmallVec;
 use std::thread::{self, available_parallelism};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 mod flags;
 
@@ -234,7 +235,8 @@ fn process_region(
         }
 
         record.cache_cigar();
-        let row = record_to_row(&record, &segment).wrap_err("Failed to read record")?;
+        let row = record_to_row(&record, &segment, params.exclude_ambiguous)
+            .wrap_err("Failed to read record")?;
 
         if params.all_reads || row.cpg_count > 0 {
             res.push(row);
@@ -246,7 +248,7 @@ fn process_region(
     Ok(res)
 }
 
-fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {
+fn record_to_row(record: &Record, segment: &Segment, exclude_ambiguous: bool) -> Result<PerRead> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
     let ref_seq = &segment.sequence;
@@ -271,11 +273,18 @@ fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {
             .checked_sub(segment_start_pos)
             .wrap_err("Failed to calculate index for position")?;
         let read_base = read_seq[pos_in_read];
-        let ref_base = ref_seq.get(idx).copied().unwrap_or(b'N');
-        let orientation = StrandFromRecord::strand(record);
+        let ref_base = ref_seq.get(idx).copied().wrap_err("reading seq")?;
+        let orientation = orientation(record, exclude_ambiguous);
 
         if orientation == Strand::OT && ref_base == b'C' {
-            let next_base = ref_seq.get(idx + 1).copied().unwrap_or(b'N');
+            let next_base = ref_seq.get(idx + 1).copied().wrap_err_with(|| {
+                format!(
+                    "reading seq + 1 at pos {} in segment {}, seq len {}",
+                    idx + 1,
+                    segment.region,
+                    ref_seq.len()
+                )
+            })?;
             if next_base == b'G' {
                 cpg_count += 1;
                 match read_base {
@@ -315,4 +324,38 @@ fn record_to_row(record: &Record, segment: &Segment) -> Result<PerRead> {
         unmod_cpgs,
         snp_cpgs,
     })
+}
+
+fn orientation(bam_record: &Record, exclude_ambiguous: bool) -> Strand {
+    use SequenceReadPairOrientation::*;
+
+    let read_pair_orientation = bam_record.read_pair_orientation();
+    match read_pair_orientation {
+        F1R2 | R2F1 => Strand::OT,
+        F2R1 | R1F2 => Strand::OB,
+        SequenceReadPairOrientation::None => {
+            if exclude_ambiguous {
+                return Strand::Unknown;
+            }
+            trace!(
+                "Orientation of {} cannot be unambiguously determined",
+                String::from_utf8(Vec::from(bam_record.qname())).unwrap_or_default()
+            );
+
+            if bam_record.is_first_in_template() && bam_record.is_mate_reverse()
+                || bam_record.is_last_in_template() && bam_record.is_reverse()
+            {
+                Strand::OT
+            }
+            // F2R1
+            else if bam_record.is_first_in_template() && bam_record.is_reverse()
+                || bam_record.is_last_in_template() && bam_record.is_mate_reverse()
+            {
+                Strand::OB
+            } else {
+                Strand::Unknown
+            }
+        }
+        _ => Strand::Unknown, // This should be impossible?
+    }
 }
