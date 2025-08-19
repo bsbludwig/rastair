@@ -72,7 +72,7 @@ pub struct PerReadParams {
 pub fn call_reads(params: &PerReadParams) -> Result<()> {
     let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
     let regions: Vec<ChunkRegion> = readers
-        .segments(params.segment_max_length, 0)
+        .segments(params.segment_max_length, params.segment_overlap)
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
 

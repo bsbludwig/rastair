@@ -75,7 +75,7 @@ pub struct SegmentationParams {
     /// Number of bases to overlap between segments
     ///
     /// Helpful to avoid missing variants at the edges of segments.
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 200)]
     pub segment_overlap: u64,
 }
 
