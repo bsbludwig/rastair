@@ -58,10 +58,10 @@ impl std::str::FromStr for RegionString {
             return Err(RegionStringError::InvalidAscii);
         }
         let res = parser.parse(s).map_err(|e| RegionStringError::Malformed(e.to_string()))?;
-        if let RegionString { start: Some(start), end: Some(end), .. } = res {
-            if start > end {
-                return Err(RegionStringError::StartGreaterThanEnd);
-            }
+        if let RegionString { start: Some(start), end: Some(end), .. } = res
+            && start > end
+        {
+            return Err(RegionStringError::StartGreaterThanEnd);
         }
 
         Ok(res)

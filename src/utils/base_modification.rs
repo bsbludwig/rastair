@@ -36,7 +36,8 @@ impl MethylatedPositions {
                 None => *pos,
             };
             let _ = prev_pos.insert(*pos);
-            write!(&mut mod_string, "{steps_between_prev_and_this},").unwrap();
+            write!(&mut mod_string, "{steps_between_prev_and_this},")
+                .expect("Write to String failed");
         }
 
         // replace last comma
