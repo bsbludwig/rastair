@@ -47,10 +47,14 @@ Call methylated positions
 * `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
 * `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
 
+   Used for splitting work between threads. Tweak this to adjust memory usage.
+
   Default value: `100000`
 * `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
 
-  Default value: `100`
+   Helpful to avoid missing variants at the edges of segments.
+
+  Default value: `200`
 * `--error-model <ERROR_MODEL>` — The error model to use
 
    This should match the sequencing platform used to generate the data
@@ -188,10 +192,14 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 * `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
 * `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
 
+   Used for splitting work between threads. Tweak this to adjust memory usage.
+
   Default value: `100000`
 * `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
 
-  Default value: `100`
+   Helpful to avoid missing variants at the edges of segments.
+
+  Default value: `500`
 * `-f`, `--include-flags <INCLUDE_FLAGS>` — Include reads that match all of these bit-flags
 
   Default value: `3`
@@ -219,6 +227,16 @@ This will produce a bed file that list the methylation status of all CpGs in eve
   - `bed`:
     Regular BED file, usually `.bed`
 
+* `--count-clipped` — Count clipped positions
+
+   By default, rastair ignores the leading (soft and hard) clipped positions in the "positions in read" columns. The indices written can be seen as "position in read relative to the first base actually aligned".
+
+   If `--count-clipped` is set, clipped positions will instead be counted. The indices written then match the sequence of the read.
+* `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
+
+   Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
+
+  Default value: `14`
 
 
 
