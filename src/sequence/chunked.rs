@@ -1,9 +1,9 @@
 use super::ChunkRegion;
-use super::FullRegion;
 use super::Region;
+use super::SelectedRegion;
 
 pub(crate) struct ChunkedRegions {
-    pub(crate) full_regions: Vec<FullRegion>,
+    pub(crate) full_regions: Vec<SelectedRegion>,
     pub(crate) current_region_idx: usize,
     pub(crate) current_start: u64,
     pub(crate) max_length: u64,
@@ -20,27 +20,27 @@ impl Iterator for ChunkedRegions {
             }
 
             let full_region = &self.full_regions[self.current_region_idx];
-            if self.current_start >= full_region.0.end {
+            if self.current_start >= full_region.end {
                 // Move to next region when we've finished the current one
                 self.current_region_idx += 1;
                 if self.current_region_idx < self.full_regions.len() {
-                    self.current_start = self.full_regions[self.current_region_idx].0.start;
+                    self.current_start = self.full_regions[self.current_region_idx].start;
                 }
                 continue;
             }
 
-            let end = self.current_start.saturating_add(self.max_length).min(full_region.0.end);
+            let end = self.current_start.saturating_add(self.max_length).min(full_region.end);
             let chunk = ChunkRegion {
                 region: Region {
-                    contig: full_region.0.contig.clone(),
+                    contig: full_region.contig.clone(),
                     start: self.current_start,
                     end,
                 },
-                last_position: full_region.0.end,
+                last_position: full_region.end,
             };
 
             self.current_start = end;
-            if self.current_start < full_region.0.end {
+            if self.current_start < full_region.end {
                 self.current_start = self.current_start.saturating_sub(self.overlap);
             }
 
@@ -65,7 +65,7 @@ mod tests {
             overlap in 10u64..100u64
         ) {
             let end = start + length;
-            let full_regions = vec![FullRegion(Region {
+            let full_regions = vec![SelectedRegion::EntireContig(Region {
                 contig: "chr1".into(),
                 start,
                 end,
@@ -135,12 +135,12 @@ mod tests {
             overlap in 1u64..10u64
         ) {
             let full_regions = vec![
-                FullRegion(Region {
+                SelectedRegion::EntireContig(Region {
                     contig: "chr1".into(),
                     start: 1,
                     end: region1_length,
                 }),
-                FullRegion(Region {
+                SelectedRegion::EntireContig(Region {
                     contig: "chr2".into(),
                     start: 1,
                     end: region2_length,

@@ -51,7 +51,7 @@ impl ChunkRegion {
         trace!(len = segment.sequence.len(), "Processing region");
 
         // Fetch the pileups for the segment
-        FetchDefinition::try_from(&segment)
+        FetchDefinition::try_from(&segment.region)
             .wrap_err("Could not convert region string")
             .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
             .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", self.region))?;

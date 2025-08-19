@@ -47,13 +47,25 @@ impl fmt::Display for Region {
 
 /// A complete genomic region that represents a full chromosome or a user-specified region
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FullRegion(pub Region);
+pub enum SelectedRegion {
+    /// Represents the entire contig, e.g., a full chromosome
+    EntireContig(Region),
+    UserDefinedSubset {
+        /// The region that is a subset of the entire contig
+        region: Region,
+        /// Last position in contig this region covers
+        last_position: u64,
+    },
+}
 
-impl std::ops::Deref for FullRegion {
+impl std::ops::Deref for SelectedRegion {
     type Target = Region;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        match self {
+            SelectedRegion::EntireContig(region) => region,
+            SelectedRegion::UserDefinedSubset { region, .. } => region,
+        }
     }
 }
 

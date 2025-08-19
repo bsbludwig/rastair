@@ -16,11 +16,11 @@ use color_eyre::{
     Result, Section,
     eyre::{Context, ContextCompat, ensure},
 };
-pub use regions::{ChunkRegion, FullRegion, Region};
+pub use regions::{ChunkRegion, Region, SelectedRegion};
 use rust_htslib::bam::{self, FetchDefinition, HeaderView, Read as _};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, ops::Deref};
 use tracing::{debug, instrument, trace};
 
 mod chunked;
@@ -87,7 +87,7 @@ impl Readers {
         };
         ensure!(!full_regions.is_empty(), "No regions found");
 
-        let initial_start = full_regions[0].0.start;
+        let initial_start = full_regions[0].start;
         let chunked = chunked::ChunkedRegions {
             full_regions,
             current_region_idx: 0,
@@ -126,6 +126,14 @@ pub struct Segment {
     pub sequence: Vec<u8>,
 }
 
+impl Deref for Segment {
+    type Target = ChunkRegion;
+
+    fn deref(&self) -> &Self::Target {
+        &self.range
+    }
+}
+
 impl Segment {
     /// Get a slice of the sequence
     pub fn sequence_slice<const N: usize>(
@@ -147,20 +155,20 @@ impl Segment {
     }
 }
 
-impl<'seg> TryFrom<&'seg Segment> for FetchDefinition<'seg> {
+impl<'reg> TryFrom<&'reg Region> for FetchDefinition<'reg> {
     type Error = color_eyre::Report;
 
-    fn try_from(segment: &'seg Segment) -> Result<Self> {
+    fn try_from(region: &'reg Region) -> Result<Self> {
         Ok(FetchDefinition::RegionString(
-            segment.range.region.contig.as_bytes(),
-            i64::try_from(segment.range.region.start).wrap_err("start is invalid i64")?,
-            i64::try_from(segment.range.region.end).wrap_err("end is invalid i64")?,
+            region.contig.as_bytes(),
+            i64::try_from(region.start).wrap_err("start is invalid i64")?,
+            i64::try_from(region.end).wrap_err("end is invalid i64")?,
         ))
     }
 }
 
 #[instrument(level = "debug", skip(bam_header))]
-fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result<FullRegion> {
+fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result<SelectedRegion> {
     let chromosome = region.chromosome.as_str();
     // If no start position is specified, default to beginning of chromosome
     let start = region.start.map(to_u64).unwrap_or(1);
@@ -191,7 +199,10 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
     );
 
     // Since the user specified this region, we're only returning that one
-    Ok(FullRegion(Region { contig: region.chromosome.clone(), start, end }))
+    Ok(SelectedRegion::UserDefinedSubset {
+        region: Region { contig: region.chromosome.clone(), start, end },
+        last_position,
+    })
 }
 
 fn to_u64(value: NonZeroU32) -> u64 {
@@ -199,13 +210,13 @@ fn to_u64(value: NonZeroU32) -> u64 {
 }
 
 #[instrument(level = "debug", skip(header))]
-fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
+fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
     header
         .target_names()
         .iter()
         .enumerate()
         .filter(|(_, name)| !name.is_empty())
-        .map(|(tid, name)| -> Result<FullRegion> {
+        .map(|(tid, name)| -> Result<SelectedRegion> {
             let chr = SmolStr::new(
                 std::str::from_utf8(name).wrap_err("BAM target name not valid UTF-8")
                     .note("This is against the BAM specification, please check with the tool that created this file")?,
@@ -215,7 +226,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<FullRegion>> {
                     .note("The BAM header might be corrupt")?)
                 .wrap_err("Failed to get target length")?;
 
-            Ok(FullRegion(Region {
+            Ok(SelectedRegion::EntireContig(Region {
                 contig: chr,
                 start: 1, // 1-based coordinates
                 end: length,
@@ -342,7 +353,7 @@ mod tests {
         let segment = Segment { range: region.clone(), sequence: vec![65, 66, 67] }; // "ABC"
 
         // Convert to FetchDefinition
-        let fetch_def = FetchDefinition::try_from(&segment)?;
+        let fetch_def = FetchDefinition::try_from(&segment.region)?;
 
         // Verify conversion worked correctly
         if let FetchDefinition::RegionString(chr, start, end) = fetch_def {
@@ -368,21 +379,21 @@ mod tests {
         let region_chr_only: RegionString = "chr19".parse().unwrap();
         let full_region = get_selected_region(&region_chr_only, header)?;
 
-        assert_eq!(full_region.0.contig, "chr19");
-        assert_eq!(full_region.0.start, 1); // Should default to 1
+        assert_eq!(full_region.contig, "chr19");
+        assert_eq!(full_region.start, 1); // Should default to 1
 
         // The end should be the chromosome length from the header
         let chr19_tid = header.tid(b"chr19").unwrap();
         let chr19_len = header.target_len(chr19_tid).unwrap();
-        assert_eq!(full_region.0.end, chr19_len);
+        assert_eq!(full_region.end, chr19_len);
 
         // Test chromosome with start but no end
         let region_with_start: RegionString = "chr19:100".parse().unwrap();
         let full_region = get_selected_region(&region_with_start, header)?;
 
-        assert_eq!(full_region.0.contig, "chr19");
-        assert_eq!(full_region.0.start, 100);
-        assert_eq!(full_region.0.end, chr19_len); // Should default to chromosome length
+        assert_eq!(full_region.contig, "chr19");
+        assert_eq!(full_region.start, 100);
+        assert_eq!(full_region.end, chr19_len); // Should default to chromosome length
 
         Ok(())
     }
@@ -435,15 +446,15 @@ mod tests {
         // Verify that chromosome names match what's in the BAM header
         for (i, region) in full_regions.iter().enumerate() {
             let target_name = std::str::from_utf8(header.target_names()[i]).unwrap();
-            assert_eq!(region.0.contig, target_name);
+            assert_eq!(region.contig, target_name);
 
             // Start should be 1 (1-based)
-            assert_eq!(region.0.start, 1);
+            assert_eq!(region.start, 1);
 
             // End should match the chromosome length
             let tid = u32::try_from(i).unwrap();
             let chr_len = header.target_len(tid).unwrap();
-            assert_eq!(region.0.end, chr_len);
+            assert_eq!(region.end, chr_len);
         }
 
         Ok(())
