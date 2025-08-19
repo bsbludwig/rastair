@@ -9,7 +9,7 @@ use std::{
     marker::PhantomData,
     path::Path,
 };
-use tracing::instrument;
+use tracing::{debug, info, instrument};
 
 pub struct BedWriter<R: BedRecord> {
     pub path: ClioPath,
@@ -40,7 +40,7 @@ impl Write for Writer {
 }
 
 impl<R: BedRecord> BedWriter<R> {
-    #[instrument(level = "debug")]
+    #[instrument(level = "info", name = "BedWriter", skip(path), fields(path = %path))]
     pub fn new(path: &ClioPath, format: BedFormat) -> Result<Self> {
         let writer = path.clone().create().wrap_err("Failed to create output")?;
         let writer: Box<dyn Write + Send + Sync> = Box::new(BufWriter::new(writer));
@@ -59,6 +59,7 @@ impl<R: BedRecord> BedWriter<R> {
             BedFormat::Bed => Writer::Bed(writer),
         };
         writeln!(&mut writer, "{}", R::HEADER).wrap_err("Failed to write header")?;
+        debug!("Writing reads to BED");
         Ok(Self { path: path.clone(), format, writer, record_type: PhantomData })
     }
 
@@ -68,7 +69,7 @@ impl<R: BedRecord> BedWriter<R> {
         Ok(())
     }
 
-    #[instrument(level = "debug")]
+    #[instrument(level = "debug", skip(self))]
     pub fn close(mut self) -> Result<()> {
         self.writer.flush().wrap_err("Failed to flush writer")?;
         if let Writer::BedGz(bgzfwriter) = self.writer
@@ -77,6 +78,7 @@ impl<R: BedRecord> BedWriter<R> {
         {
             write_index(self.path.path(), index)
                 .wrap_err_with(|| format!("Failed to write index for `{}`", self.path.display()))?;
+            info!(path = %self.path.display(), "Wrote bgzip index");
         }
         Ok(())
     }

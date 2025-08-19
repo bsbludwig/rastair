@@ -107,7 +107,7 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
                     }
                 }
 
-                debug!("Writer done");
+                bed_writer.close().wrap_err("Failed to close BED writer")?;
                 Ok(())
             }
         })

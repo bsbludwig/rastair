@@ -38,7 +38,7 @@ impl BedReadsParams {
         }
     }
 
-    #[instrument(level = "debug")]
+    #[instrument(level = "debug", skip(self))]
     pub fn writer(&self) -> Result<BedWriter<PerRead>> {
         let path = &self.bed;
 
