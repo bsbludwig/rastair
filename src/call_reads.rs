@@ -197,6 +197,16 @@ fn process_region(
     region: &ChunkRegion,
     params: &PerReadParams,
 ) -> Result<Vec<PerRead>> {
+    // To avoid missing a CpG at the start, we want to fetch one base before the start of the region.
+    let fetch_before = 1;
+    // but also make sure we don't go before the actual start of the region
+    let start = region.region.start;
+    let region = &{
+        let mut region = region.clone();
+        region.region.start = region.region.start.saturating_sub(fetch_before);
+        region
+    };
+
     let segment = readers
         .segment(region, params.segment_overlap)
         .wrap_err("Could not fetch segment from BAM file")?;
@@ -221,7 +231,8 @@ fn process_region(
         if let Err(e) = result {
             return Err(e).wrap_err("Failed to read BAM record");
         }
-        if (record.pos() as u64) < segment.range.start {
+        // Ignore reads before the start of the region
+        if (record.pos() as u64) < start {
             continue;
         }
         if !params.read_flags.filter(&record) {
