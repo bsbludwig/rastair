@@ -83,6 +83,12 @@ Call methylated positions
 * `--cpgs-only` — Only look at sites that are CpG in the reference
 
   Default value: `false`
+* `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read
+
+  Default value: `1`
+* `-Q`, `--min-baseq <MIN_BASEQ>` — Minimum base quality to consider a base
+
+  Default value: `10`
 * `--nOT <N_OT>` — For OT reads, exclude `[r1_start, r1_end, r2_start, r2_end]` bases from counting.
 
    The coordinates are relative to the read, so start is the distance from the 5' of the read, the end is the distance to the 3', irrespective of which way around the read aligns to the reference.

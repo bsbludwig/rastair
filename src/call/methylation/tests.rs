@@ -199,7 +199,7 @@ fn methylatable_position_not_methylated() -> Result<()> {
             [
                 ByStrand {
                     base: C,
-                    ot: 5,
+                    ot: 4,
                     ob: 4,
                 },
                 ByStrand {

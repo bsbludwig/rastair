@@ -1,5 +1,7 @@
 use super::ErrorModel;
-use crate::call::variant_calling::{read_flags::ReadFlags, read_masking::ReadMaskParams};
+use crate::call::variant_calling::{
+    QualityFilterParams, read_flags::ReadFlags, read_masking::ReadMaskParams,
+};
 
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct VariantCallingParams {
@@ -16,6 +18,9 @@ pub struct VariantCallingParams {
     /// Only look at sites that are CpG in the reference
     #[arg(long, default_value_t = false)]
     pub cpgs_only: bool,
+
+    #[command(flatten)]
+    pub quality: QualityFilterParams,
 
     #[command(flatten)]
     pub read_masking: ReadMaskParams,

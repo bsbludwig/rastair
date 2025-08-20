@@ -14,6 +14,8 @@ mod read_flags;
 pub use read_flags::ReadFlags;
 mod read_masking;
 pub use read_masking::ReadMaskParams;
+mod quality_filters;
+pub use quality_filters::QualityFilterParams;
 
 impl VariantCandidatePileup {
     #[instrument(level="trace", skip_all, fields(chr = %self.chrom(), pos = self.pos))]

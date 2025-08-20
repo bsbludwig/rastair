@@ -1,6 +1,6 @@
 use crate::{
     call::{
-        variant_calling::{ReadFlags, ReadMaskParams, VariantCallingParams},
+        variant_calling::VariantCallingParams,
         variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
@@ -157,6 +157,7 @@ fn collect_candidate(
         })
         .filter_map(|pile| pileup_mapper(params, pile))
         .filter(|seen_base| params.read_masking.filter(seen_base))
+        .filter(|seen_base| params.quality.filter(seen_base))
         .collect();
 
     let bases = SeenBases(seen_bases);
