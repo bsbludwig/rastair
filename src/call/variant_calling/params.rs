@@ -1,7 +1,7 @@
 use super::ErrorModel;
 use crate::call::variant_calling::{read_flags::ReadFlags, read_masking::ReadMaskParams};
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, Default, clap::Args)]
 pub struct VariantCallingParams {
     /// The error model to use
     ///
@@ -22,16 +22,4 @@ pub struct VariantCallingParams {
 
     #[command(flatten)]
     pub read_flags: ReadFlags,
-}
-
-impl Default for VariantCallingParams {
-    fn default() -> Self {
-        Self {
-            error_model: ErrorModel::Novaseq6000,
-            keep_overlapping_reads: false,
-            cpgs_only: false,
-            read_masking: ReadMaskParams::default(),
-            read_flags: ReadFlags::default(),
-        }
-    }
 }

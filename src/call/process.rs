@@ -18,9 +18,15 @@ use tracing::{Level, debug, instrument, trace, warn};
 #[derive(Debug, Clone)]
 pub struct PileupMappingParams {
     pub include_cpgs: IncludeAllCpGs,
-    pub keep_overlapping_reads: bool,
-    pub read_masking: ReadMaskParams,
-    pub read_flags: ReadFlags,
+    pub variant_calling: VariantCallingParams,
+}
+
+impl Deref for PileupMappingParams {
+    type Target = VariantCallingParams;
+
+    fn deref(&self) -> &Self::Target {
+        &self.variant_calling
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
