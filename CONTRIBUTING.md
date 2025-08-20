@@ -5,6 +5,15 @@ Best contact the authors directly if you want to contribute.
 
 See [ARCHITECURE.md](ARCHITECTURE.md) for the architecture of the project.
 
+## Tools
+
+Install tools with
+
+```bash
+cargo bin -s
+cargo bin -i
+```
+
 ## Code checks
 
 Run `cargo xtask test` to run the tests.
