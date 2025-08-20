@@ -8,6 +8,7 @@
 //! <https://github.com/samtools/hts-specs/blob/0d7f8774658f7cee0a4540b0682174e460726432/VCFv4.5.tex>
 //! for the VCF spec.
 
+use rastair2_types::Phred;
 use rastair2_vcf::{standard_fields::*, *};
 
 mod as_strand_bias;
@@ -70,15 +71,15 @@ info_field!(
 info_field!(NumIndels(f64), "NOI", "RMS of number of indels", InfoFieldNumber::OnePerAltAndRef);
 
 format_field!(
-    GenotypeLikelihood(Option<f64>), // todo: Phred scale
+    GenotypeLikelihood(Option<Phred>),
     "GL",
-    "Genotype likelihoods",
+    "Genotype likelihoods, Phred-scaled",
     FormatFieldNumber::OnePerGenotype
 );
 format_field!(
-    GenotypeConfidence(Option<f64>), // todo: Phred scale
+    GenotypeConfidence(Option<Phred>),
     "GC",
-    "Genotype confidence",
+    "Genotype confidence, Phred-scaled",
     FormatFieldNumber::OnePerGenotype
 );
 format_field!(

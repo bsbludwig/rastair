@@ -1,5 +1,6 @@
 use crate::{call::variants::VariantCandidatePileup, vcf::*};
 use color_eyre::eyre::Result;
+use rastair2_types::Phred;
 use rastair2_vcf::standard_fields::*;
 
 mod params;
@@ -24,8 +25,12 @@ impl VariantCandidatePileup {
             if let Some(estimate) = self.estimate_genotype(params.error_model) {
                 (
                     Genotype(<[GenotypeAllele; 2]>::from(estimate.genotype).into()),
-                    GenotypeLikelihood(smallvec![Some(estimate.likelihood)]),
-                    GenotypeConfidence(smallvec![Some(estimate.confidence)]),
+                    GenotypeLikelihood(smallvec![
+                        Phred::from_probability(1.0 - estimate.likelihood).ok()
+                    ]),
+                    GenotypeConfidence(smallvec![
+                        Phred::from_probability(1.0 - estimate.confidence).ok()
+                    ]),
                 )
             } else {
                 (

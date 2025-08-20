@@ -133,7 +133,7 @@ impl VariantCandidatePileup {
         // TODO: Calculate this properly based on the pileup
         let probability_call_wrong = 0.001;
         // self.bases.iter().fold(1.0, |acc, b| acc * (f64::from(b.qual) / 10.0).powf(-1.0));
-        match Phred::new(probability_call_wrong) {
+        match Phred::from_probability(probability_call_wrong) {
             Ok(phred) => Some(*phred as f32),
             Err(error) => {
                 warn!(

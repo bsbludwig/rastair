@@ -30,12 +30,27 @@ pub struct Phred(f64);
 
 impl Phred {
     /// Create a new Phred quality score
-    pub fn new(probability: f64) -> Result<Self> {
+    pub fn from_probability(probability: f64) -> Result<Self> {
         if probability.is_nan() || probability.is_infinite() {
             bail!("Phred quality score must be a finite number");
         }
         let phred = -10.0 * probability.log10();
         Ok(Self(phred))
+    }
+
+    pub fn as_int(self) -> i32 {
+        let phred = self.0;
+        if phred >= 99.0 {
+            return 99;
+        }
+        if phred <= f64::MIN_POSITIVE {
+            return 0;
+        }
+        phred.round() as i32
+    }
+
+    pub fn from_phred(phred: i32) -> Self {
+        Self(phred as f64)
     }
 }
 
@@ -67,24 +82,24 @@ mod tests {
 
     #[test]
     fn test_wikipedia_examples() {
-        assert_eq!(10., Phred::new(0.1).unwrap().0);
-        assert_eq!(20., Phred::new(0.01).unwrap().0);
-        assert_eq!(30., Phred::new(0.001).unwrap().0);
-        assert_eq!(40., Phred::new(0.0001).unwrap().0);
-        assert_eq!(50., Phred::new(0.00001).unwrap().0);
-        assert_eq!(60., Phred::new(0.000001).unwrap().0);
+        assert_eq!(10., Phred::from_probability(0.1).unwrap().0);
+        assert_eq!(20., Phred::from_probability(0.01).unwrap().0);
+        assert_eq!(30., Phred::from_probability(0.001).unwrap().0);
+        assert_eq!(40., Phred::from_probability(0.0001).unwrap().0);
+        assert_eq!(50., Phred::from_probability(0.00001).unwrap().0);
+        assert_eq!(60., Phred::from_probability(0.000001).unwrap().0);
     }
 
     #[test]
     fn test_invalid_phred() {
-        assert!(Phred::new(f64::NAN).is_err());
-        assert!(Phred::new(f64::INFINITY).is_err());
-        assert!(Phred::new(f64::NEG_INFINITY).is_err());
+        assert!(Phred::from_probability(f64::NAN).is_err());
+        assert!(Phred::from_probability(f64::INFINITY).is_err());
+        assert!(Phred::from_probability(f64::NEG_INFINITY).is_err());
     }
 
     #[test]
     fn test_phred_zero() {
         // A probability of 1 (100% certainty) should yield a Phred score of 0
-        assert_eq!(0., Phred::new(1.0).unwrap().0);
+        assert_eq!(0., Phred::from_probability(1.0).unwrap().0);
     }
 }

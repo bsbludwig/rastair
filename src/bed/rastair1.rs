@@ -1,7 +1,6 @@
 use crate::{
     bed::{BedFormat, BedRecord, writer::BedWriter},
     io::formats::FromFileExtension as _,
-    utils::Phred,
     vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
 use clio::ClioPath;
@@ -107,18 +106,10 @@ impl BedRecord for Rastair1BedFormat {
         )?;
 
         let genotype = genotype_to_rastair1_string(genotype, r#ref);
-        let likelihood = genotype_likelihood
-            .first()
-            .and_then(|x| *x)
-            .and_then(|x| Phred::new(x).ok())
-            .map(|x| *x)
-            .unwrap_or_default();
-        let confidence = genotype_confidence
-            .first()
-            .and_then(|x| *x)
-            .and_then(|x| Phred::new(x).ok())
-            .map(|x| *x)
-            .unwrap_or_default();
+        let likelihood =
+            genotype_likelihood.first().and_then(|x| *x).map(|x| x.as_int()).unwrap_or_default();
+        let confidence =
+            genotype_confidence.first().and_then(|x| *x).map(|x| x.as_int()).unwrap_or_default();
         write!(f, "\t{genotype}\t{likelihood:.2}\t{confidence:.2}")?;
         write!(f, "\t{}", if *de_novo { "NEW" } else { "REF" })?;
 

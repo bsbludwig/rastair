@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use color_eyre::eyre::{Context as _, ContextCompat as _, Report, bail};
+use rastair2_types::Phred;
 use rastair2_vcf::{
     VcfField as _,
     standard_fields::{Genotype, ReadDepth},
@@ -79,21 +80,21 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             SmallVec::new()
         };
         let genotype_likelihood = GenotypeLikelihood(SmallVec::from_buf([{
-            if let Ok(buffer) = r.format(GenotypeLikelihood::ID.as_bytes()).float()
+            if let Ok(buffer) = r.format(GenotypeLikelihood::ID.as_bytes()).integer()
                 && let Some(first) = buffer.first()
                 && let Some(val) = first.first()
             {
-                Some(f64::from(*val))
+                Some(Phred::from_phred(*val))
             } else {
                 None
             }
         }]));
         let genotype_confidence = GenotypeConfidence(SmallVec::from_buf([{
-            if let Ok(buffer) = r.format(GenotypeConfidence::ID.as_bytes()).float()
+            if let Ok(buffer) = r.format(GenotypeConfidence::ID.as_bytes()).integer()
                 && let Some(first) = buffer.first()
                 && let Some(val) = first.first()
             {
-                Some(f64::from(*val))
+                Some(Phred::from_phred(*val))
             } else {
                 None
             }
