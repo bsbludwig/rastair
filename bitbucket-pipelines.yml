@@ -1,4 +1,4 @@
-image: rust:1.88 # keep in sync with `rust-toolchain.yml`
+image: rust:1.89 # keep in sync with `rust-toolchain.yml`
 
 options:
   max-time: 30
