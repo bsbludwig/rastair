@@ -27,6 +27,13 @@ Then you can build it with:
 cargo xtask release
 ```
 
+## Contributing
+
+If you want to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.md) file.
+
+To install the necessary tools, run `cargo bin --install`.
+To get started, have a look at what's available in `cargo xtask`.
+
 ## License
 
 This software is made available under the terms of the [GNU Affero General Public License v3](https://www.gnu.org/licenses/agpl-3.0.html). If you require a more restrictive license for commercial purposes, please contact the authors to discuss alternative arrangements.
