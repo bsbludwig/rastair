@@ -5,11 +5,10 @@ use cargo_pgo::{
 use clap::Parser;
 use color_eyre::{
     Result, Section,
-    eyre::{Context, ContextCompat, ensure, eyre},
+    eyre::{Context, ContextCompat, bail, ensure, eyre},
 };
 use std::{
-    env::set_current_dir,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::{Child, Command as StdCommand},
     thread,
@@ -54,8 +53,18 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     tracing_subscriber::fmt().init();
     let workspace_root = workspace_dir().wrap_err("Could not get workspace root path")?;
-    set_current_dir(workspace_root)
+    env::set_current_dir(&workspace_root)
         .wrap_err("Could not change current directory to workspace root")?;
+
+    // add `cargo-bin` shims to PATH
+    let shims_path = workspace_root.join(".bin/.shims");
+    let path = std::env::var("PATH").unwrap_or_else(|_| String::new());
+    // add custom shims
+    let path = format!("{}:{path}", shims_path.display());
+    // SAFETY: This is safe because we are at the beginning of the program
+    unsafe {
+        env::set_var("PATH", path);
+    }
 
     let cli = Cli::parse();
     match cli.command {
@@ -209,10 +218,12 @@ fn run_tests(with_coverage: bool) -> Result<Child> {
 }
 
 fn generate_docs(serve: bool) -> Result<()> {
-    ensure!(
-        StdCommand::new("mdbook").arg("--version").status()?.success(),
-        "mdbook is not installed. Please install it with: cargo install mdbook"
-    );
+    StdCommand::new("mdbook")
+        .arg("--version")
+        .status()
+        .wrap_err("Did not find `mdbook` binary")
+        .and_then(|x| if !x.success() { bail!("Command failed with status: {x}") } else { Ok(()) })
+        .wrap_err("mdbook is not installed. Please install it with: cargo bin -i")?;
 
     let (sender, receiver) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || {
