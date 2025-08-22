@@ -237,7 +237,8 @@ fn generate_docs(serve: bool) -> Result<()> {
         .arg("run")
         .arg("--quiet")
         .arg("--")
-        .arg("generate-cli-docs")
+        .arg("internal")
+        .arg("cli-docs")
         .arg("docs/src/cli.md")
         .is_success()
         .wrap_err("Failed to generate CLI args docs")?;
@@ -247,7 +248,8 @@ fn generate_docs(serve: bool) -> Result<()> {
         .arg("run")
         .arg("--quiet")
         .arg("--")
-        .arg("generate-vcf-docs")
+        .arg("internal")
+        .arg("vcf-docs")
         .arg("docs/src/formats/vcf-fields.md")
         .is_success()
         .wrap_err("Failed to generate VCF format args docs")?;

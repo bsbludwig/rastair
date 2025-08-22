@@ -49,23 +49,32 @@ enum Subcommand {
     Convert(ConvertParams),
     /// View internal format as JSON lines
     View(MpkViewParams),
-    /// Write shell completions
     #[command(hide = true)]
-    GenerateShellCompletions {
+    Internal {
+        /// Generate documentation files
+        #[command(subcommand)]
+        command: Generate,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum Generate {
+    /// Write shell completions
+    ShellCompletions {
         /// The shell to generate the completions for
         #[arg(value_enum)]
         shell: clap_complete_command::Shell,
     },
     /// Write CLI help as markdown file
     #[command(hide = true)]
-    GenerateCliDocs {
+    CliDocs {
         /// The output file to write the markdown to
         #[arg()]
         output: ClioPath,
     },
     /// Write VCF fields as markdown file
     #[command(hide = true)]
-    GenerateVcfDocs {
+    VcfDocs {
         /// The output file to write the markdown to
         #[arg()]
         output: ClioPath,
@@ -110,21 +119,23 @@ fn main() -> Result<()> {
             warn!("This format is for internal use only and may change without notice.");
             rastair2::io::mpk::viewer::view(&params)?;
         }
-        Subcommand::GenerateShellCompletions { shell } => {
-            shell.generate(&mut Cli::command(), &mut std::io::stdout());
-        }
-        Subcommand::GenerateCliDocs { output } => {
-            let mut file = output.clone().create().wrap_err("Failed to create output")?;
-            let markdown = clap_markdown::help_markdown::<Cli>();
-            file.write_all(markdown.as_bytes())
-                .wrap_err_with(|| format!("Failed to write CLI help to {output}"))?;
-        }
-        Subcommand::GenerateVcfDocs { output } => {
-            let mut file = output.clone().create().wrap_err("Failed to create output")?;
-            rastair2::vcf::Record::description()
-                .to_markdown(&mut file)
-                .wrap_err("Failed to generate VCF docs")?;
-        }
+        Subcommand::Internal { command } => match command {
+            Generate::ShellCompletions { shell } => {
+                shell.generate(&mut Cli::command(), &mut std::io::stdout());
+            }
+            Generate::CliDocs { output } => {
+                let mut file = output.clone().create().wrap_err("Failed to create output")?;
+                let markdown = clap_markdown::help_markdown::<Cli>();
+                file.write_all(markdown.as_bytes())
+                    .wrap_err_with(|| format!("Failed to write CLI help to {output}"))?;
+            }
+            Generate::VcfDocs { output } => {
+                let mut file = output.clone().create().wrap_err("Failed to create output")?;
+                rastair2::vcf::Record::description()
+                    .to_markdown(&mut file)
+                    .wrap_err("Failed to generate VCF docs")?;
+            }
+        },
     }
 
     Ok(())
