@@ -12,7 +12,9 @@ even though it is structured as a library for internal organization.
 
 Aside from the main `rastair2` crate, we factored out some functionality into separate crates for better organization and reusability:
 
-- `crates/rastair2_vcf`: A library crate for handling VCF files.
+- `crates/rastair-types`: Library crate with common types.
+- `crates/rastair2-vcf`: Library crate for handling VCF files.
+- `tools/*`: Internal tooling for developing rastair.
 
 ## Testing
 
@@ -35,8 +37,7 @@ Run the tests with `cargo xtask test`.
 The code is tested using [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
 
 ```bash
-cargo install cargo-llvm-cov
-cargo cargo xtask test --coverage
+cargo xtask test --coverage
 ```
 
 This is also run in CI, making the tests fail with insufficient coverage (currently less than 70% of lines covered).
@@ -55,6 +56,14 @@ For the following, we assume you have a good "call" command as `$call`, e.g. `ca
 - You can use [cargo-pgo](https://github.com/Kobzol/cargo-pgo) for building with profile-guided optimizations (PGO):
   `cargo xtask release --pgo -- $call`
 
+### Reducing memory pressure
+
+Rastair uses [mimalloc](https://github.com/microsoft/mimalloc) instead of the system allocator.
+
+To reduce allocations, we use
+- `SmallVec` for lists where we know the maximum number of elements is often small
+- `SmolStr` for short strings or those that are often reused (note that these strings are immutable)
+
 ## Code Style
 
 ### Formatting
@@ -62,6 +71,18 @@ For the following, we assume you have a good "call" command as `$call`, e.g. `ca
 Usage of `rustfmt` is required.
 Best set up formatting code on save.
 Alternatively, run `cargo fmt` before committing.
+
+### Strictly-typed data
+
+We use `struct`s and "newtypes" to represent data
+with a much information in the type system as possible.
+E.g., we use a `RootMeanSquare` type instead of `f64`.
+
+### Multiple `impl` blocks
+
+Instead of putting all logic in one big `impl` block for type,
+we add an `impl` block where the methods are most likely to be used.
+This might seem confusing in some cases, but often leads to better reading locality.
 
 ### CLI argument composition
 
@@ -72,9 +93,3 @@ e.g. in the segmenter, the variant caller, and the methylation caller.
 These structs are then added as fields with `#[command(flatten)]` to the struct for the subcommand.
 This allows us to keep the code modular and maintainable,
 without the need to convert types and arguments.
-
-### Reducing allocations
-
-To reduce allocations, we use
-- `SmallVec` for lists where we know the maximum number of elements is often small
-- `SmolStr` for short strings or those that are often reused (note that these strings are immutable)
