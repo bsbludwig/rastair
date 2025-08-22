@@ -30,9 +30,7 @@ cargo xtask release
 ## Contributing
 
 If you want to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.md) file.
-
-To install the necessary tools, run `cargo bin --install`.
-To get started, have a look at what's available in `cargo xtask`.
+To start coding, have a look at [the `xtask` documentation](tools/xtask/README.md).
 
 ## License
 
