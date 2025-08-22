@@ -332,19 +332,35 @@ fn process_region(
         records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
     }
 
-    let record_len = records.len();
-    for i in 0..record_len {
-        let (before, current, after) = surrounding_records(&mut records, i);
-
-        if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after) {
-            if !predictions.is_empty() && predictions.iter().any(|p| !p.pass()) {
-                // if none of the predictions pass, we add a low ML score filter
-                current.filters.add(low_ml_score);
+    if params.ml.ml.is_some() {
+        let record_len = records.len();
+        for i in 0..record_len {
+            let (before, current, after) = surrounding_records(&mut records, i);
+            // Check if there is any chance of this being a viable candidate. No
+            // point in running slow ML prediction if we 99.99% know it's gonna
+            // be `false`.
+            if !ml_filters(current) {
+                continue;
             }
-            current.samples[0].machine_learning_prediction =
-                MachineLearningPrediction(predictions.into_iter().map(|p| p.prediction).collect());
-        }
 
+            if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after)
+                && !predictions.is_empty()
+            {
+                // Clear filters to re-evaluate them with ML
+                current.filters.clear();
+
+                if predictions.iter().any(|p| !p.pass()) {
+                    // if none of the predictions pass, we add a low ML score filter
+                    current.filters.add(low_ml_score);
+                }
+                current.samples[0].machine_learning_prediction = MachineLearningPrediction(
+                    predictions.into_iter().map(|p| p.prediction).collect(),
+                );
+            }
+        }
+    }
+
+    for current in &mut records {
         // If no filters were added, we're gonna call it
         if current.filters.is_empty() {
             current.filters.add(rastair2_vcf::standard_fields::PASS);
@@ -352,4 +368,8 @@ fn process_region(
     }
 
     Ok(records)
+}
+
+fn ml_filters(record: &mut vcf::Record) -> bool {
+    *record.info.read_depth > 1 && !record.main.alt.is_empty() && **record.info.mapping_quality > 5.
 }
