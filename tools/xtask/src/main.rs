@@ -220,10 +220,11 @@ fn run_tests(with_coverage: bool) -> Result<Child> {
 fn generate_docs(serve: bool) -> Result<()> {
     StdCommand::new("mdbook")
         .arg("--version")
-        .status()
-        .wrap_err("Did not find `mdbook` binary")
-        .and_then(|x| if !x.success() { bail!("Command failed with status: {x}") } else { Ok(()) })
-        .wrap_err("mdbook is not installed. Please install it with: cargo bin -i")?;
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .is_success()
+        .wrap_err("Failed to run mdbook")
+        .suggestion("You might need to install it with: cargo bin --install")?;
 
     let (sender, receiver) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || {
@@ -231,32 +232,38 @@ fn generate_docs(serve: bool) -> Result<()> {
         let _ = sender.send(());
     })?;
 
-    let mut cli_docs = StdCommand::new(env!("CARGO"))
+    info!("Generating CLI docs...");
+    StdCommand::new(env!("CARGO"))
         .arg("run")
+        .arg("--quiet")
         .arg("--")
         .arg("generate-cli-docs")
         .arg("docs/src/cli.md")
-        .spawn()
-        .wrap_err("Failed to generate CLI docs")?;
+        .is_success()
+        .wrap_err("Failed to generate CLI args docs")?;
 
-    let mut vcf_docs = StdCommand::new(env!("CARGO"))
+    info!("Generating format docs...");
+    StdCommand::new(env!("CARGO"))
         .arg("run")
+        .arg("--quiet")
         .arg("--")
         .arg("generate-vcf-docs")
         .arg("docs/src/formats/vcf-fields.md")
-        .spawn()
-        .wrap_err("Failed to generate VCF docs")?;
+        .is_success()
+        .wrap_err("Failed to generate VCF format args docs")?;
 
-    let mut child = StdCommand::new("mdbook")
-        .arg(if serve { "serve" } else { "build" })
-        .current_dir("docs")
-        .spawn()
-        .wrap_err("Failed to start mdbook serve")?;
+    let mut mdbook = StdCommand::new("mdbook");
+    mdbook.current_dir("docs");
+    mdbook.env("CARGO_TERM_QUIET", "true");
 
-    let _pls_exit = receiver.recv();
-    let _ = child.kill();
-    let _ = cli_docs.kill();
-    let _ = vcf_docs.kill();
+    info!("Running mdbook...");
+    if serve {
+        let mut child = mdbook.arg("serve").spawn().wrap_err("Failed to start mdbook serve")?;
+        let _pls_exit = receiver.recv();
+        let _ = child.kill();
+    } else {
+        mdbook.arg("build").is_success().wrap_err("Failed to build mdbook")?;
+    }
 
     Ok(())
 }
@@ -275,4 +282,29 @@ fn build_pgo_release(args: &[String]) -> Result<()> {
     cargo_pgo::pgo::optimize::pgo_optimize(ctx, PgoOptimizeArgs::parse_from(["build"]))
         .map_err(|e| eyre!("{e}"))?;
     Ok(())
+}
+
+pub trait ExitStatusResultExt {
+    fn is_success(&mut self) -> Result<()>;
+}
+
+impl ExitStatusResultExt for StdCommand {
+    #[track_caller]
+    fn is_success(&mut self) -> Result<()> {
+        let status = self.status().wrap_err("Failed to run command")?;
+        if !status.success() {
+            bail!("Command failed with status: {}", status)
+        }
+        Ok(())
+    }
+}
+
+impl ExitStatusResultExt for std::process::ExitStatus {
+    #[track_caller]
+    fn is_success(&mut self) -> Result<()> {
+        if !self.success() {
+            bail!("Command failed with status: {}", self)
+        }
+        Ok(())
+    }
 }
