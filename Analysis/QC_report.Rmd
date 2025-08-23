@@ -1,0 +1,89 @@
+---
+title: "QC Report"
+date: "`r Sys.Date()`"
+output: html_document
+params:
+  input_bgz: "data/test_per-read.bed.gz"
+  region: "bacteriophage_lambda_CpG" # By default there's no region
+  tabix: "tabix" # Assume tabix is available in PATH
+  include_flags: 3
+  exclude_flags: 3852
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+})
+```
+
+```{r transform_data, include=FALSE}
+# Load data
+if (!is.na(params$region) && nchar(params$region) > 0) {
+  data = fread(cmd=paste(params$tabix, "-h", params$input_bgz, params$region), header=TRUE, stringsAsFactors=FALSE)
+} else {
+  data = fread(params$input_bgz, header=TRUE, stringsAsFactors=FALSE)
+}
+setnames(data, 1, "chr")
+data[, chr := as.factor(chr)]
+
+# remove reads without CpGs
+data <- data[num_cpg > 0]
+
+# filter by flags
+data <- data[bitwAnd(flag, params$include_flags) == params$include_flags]
+data <- data[bitwAnd(flag, params$exclude_flags) == 0]
+
+
+split_pos <- function(mod, unmod, snp) {
+  mod_pos <- as.numeric(tstrsplit(mod, ","))
+  unmod_pos <- as.integer(tstrsplit(unmod, ","))
+  snp_pos <- as.integer(tstrsplit(snp, ","))
+  return(list(pos_in_read = c(mod_pos, unmod_pos, snp_pos), type=as.factor(c(rep("mod", length(mod_pos)), rep("unmod", length(unmod_pos)), rep("snp", length(snp_pos))))))
+}
+data <- data[, split_pos(mod_cpgs, unmod_cpgs, snp_cpgs), by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag)]
+```
+
+## M-bias plots
+
+```{r plot_mbias, echo=FALSE, fig.height=3, fig.width=8}
+for (chrom in unique(data$chr)) {
+  p <- ggplot(data[chr==chrom, .(beta=sum(type=="mod")/.N), by=.(chr, `Pos in Read`=pos_in_read, `Read pair`=fifelse(bitwAnd(flag, 64)>0, "First", "Second"), Orientation=fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB"))][order(`Pos in Read`)], aes(x=`Pos in Read`, y=beta, colour = `Read pair`)) + geom_line() + facet_wrap(vars(Orientation)) + ggtitle(chrom)
+  print(p)
+}
+```
+
+## V-bias plots
+
+```{r transform_vbias, include=FALSE}
+merge_pos <- function(dt) {
+  if (nrow(dt) < 2) {
+    return(NULL)
+  }
+  read_len = dt$end-dt$start
+  first_in_pair = dt[, bitwAnd(flag, 64)==64]
+  if (!any(first_in_pair)) {
+    return(NULL)
+  }
+  Orientation = head(dt[, fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB")], 1)
+  pos_in_fragment = fifelse(first_in_pair, dt$pos_in_read, read_len-dt$pos_in_read)
+  new_type <- fifelse(first_in_pair, dt$type, rev(dt$type))
+  pos_in_fragment[!first_in_pair] = pos_in_fragment[!first_in_pair] + dt$insert_size[!first_in_pair]-read_len[!first_in_pair]
+  duplicates <- pos_in_fragment[!first_in_pair] < max(read_len[first_in_pair])
+  pos_in_fragment <- pos_in_fragment[!duplicates]
+  new_type <- new_type[!duplicates]
+  return(dt[, .(type=new_type, pos_in_fragment=pos_in_fragment, insert_size=rep(min(insert_size), length(new_type)), fragment_length=rep(max(dt$end)-min(dt$start), length(new_type)), mapq=rep(mean(mapq), length(new_type)), Orientation=rep(Orientation, length(new_type)))])
+}
+vdata <- data[, merge_pos(.SD), by=.(chr, read_id)]
+```
+
+```{r plot_vbias, echo=FALSE, fig.height=4, fig.width=7}
+for (chrom in unique(data$chr)) {
+  p <- ggplot(vdata[chr==chrom, .(beta=sum(type=="mod")/.N), by=.(`Pos in fragment`=pos_in_fragment, `Insert size`=insert_size, Orientation)], aes(x=`Pos in fragment`, y=`Insert size`, color=beta)) + scale_color_gradient(low="darkblue", high="red") + geom_point(size=0.001, alpha=0.2) + ggtitle(chrom) + facet_wrap(vars(Orientation))
+  print(p)
+}
+```
+
