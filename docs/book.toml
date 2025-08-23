@@ -1,8 +1,8 @@
 [book]
-authors = ["Pascal Hertleif"]
+authors = ["Benjamin Schuster-Boeckler","Pascal Hertleif"]
 language = "en"
 src = "src"
-title = "Rastair2"
+title = "Rastair"
 
 [preprocessor.glossary]
 command = "cargo run -p mdbook-glossary"

@@ -80,7 +80,7 @@ Call methylated positions
 * `--keep-overlapping-reads` — Whether to keep overlapping reads
 
   Default value: `false`
-* `--cpgs-only` — Only look at sites that are CpG in the reference
+* `--cpgs-only` — Only report positions that are CpGs in the reference or variants that would result in a new CpG
 
   Default value: `false`
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read
@@ -176,7 +176,7 @@ Call methylated positions
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `14`
+  Default value: `10`
 
 
 
@@ -242,7 +242,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `14`
+  Default value: `10`
 
 
 
