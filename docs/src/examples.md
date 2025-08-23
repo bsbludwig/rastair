@@ -62,7 +62,12 @@ R2:                         <AC-------------GC-
                              111111111000000000
 ```
 
-This "F1R2" read represents the OT (ie R1 is the OT, and R2 is the reverse complement of the OT). A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it ocurrs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
+This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/360075017111-strand-bias-and-orientation-bias)" read represents the OT (ie R1 is the OT, and R2 is the reverse complement of the OT). A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it ocurrs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
 
 ## 3. Report methylation per-read in bed format
 
+```bash
+rastair2 per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
+```
+
+Again, this will generate a bgzip-compressed bed file that can be indexed with `tabix`. For a description of the per-read bed format, see [formats/bed](formats/bed.md#per-read-methylation).
