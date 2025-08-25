@@ -26,7 +26,7 @@ pipelines:
                 - cargo-git
                 - cargo-target
               script:
-                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake
+                - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake samtools tabix
                 - cargo xtask test
 
   tags:
