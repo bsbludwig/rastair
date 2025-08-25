@@ -143,9 +143,14 @@ Call methylated positions
 * `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
 
   Default value: `1000`
+* `--thresholds` — Only use hard thresholds to call variants and methylation events.
+
+   This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
 * `--ml <ML>` — Use machine learning model with this threshold value to call variants and methylation events
 
    When specified, a ML model will classify positions with a prediction score. Anything above this threshold is considered PASS.
+
+  Default value: `0.8`
 * `--model-cpg <MODEL_CPG>` — Path to the model for CpG positions
 
    Default is the bundled model in the Rastair binary.

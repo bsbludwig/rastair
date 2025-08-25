@@ -7,6 +7,7 @@ info:
     - "--fasta-file=tests/data/test.fasta.gz"
     - tests/data/test.bam
     - "--region=chr19:6105700-6105750"
+    - "--thresholds"
     - "--vcf"
   env:
     NO_COLOR: "1"
@@ -17,7 +18,7 @@ exit_code: 0
 ##fileformat=VCFv4.2
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##rastair2Version=0.1.0
-##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105750 --vcf
+##rastair2Command=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105750 --thresholds --vcf
 ##reference="tests/data/test.fasta.gz"
 ##FILTER=<ID=lowDp,Description="Low read depth">
 ##FILTER=<ID=dnCpG_lowDp,Description="Low read depth for de-novo CpG candidate">

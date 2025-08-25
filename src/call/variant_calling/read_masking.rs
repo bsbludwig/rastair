@@ -49,7 +49,7 @@ impl ReadMaskParams {
                 let too_small = len < mask.from_start + mask.from_end + 1;
 
                 // flipped end/start mask, the read is mapped in reverse
-                let masked_start = pos < mask.from_start;
+                let masked_start = pos < mask.from_end;
                 let masked_end = pos > len - mask.from_start - 1;
 
                 !too_small && !masked_start && !masked_end
@@ -216,5 +216,86 @@ mod tests {
         assert!(ReadMaskSetting::from_str("1,2,3,4,5").is_err());
         assert!(ReadMaskSetting::from_str("1,2,x,4").is_err());
         assert!(ReadMaskSetting::from_str("").is_err());
+    }
+
+    fn read(pos: u32, len: u32, strand: Strand, rev: bool) -> SeenBase {
+        SeenBase {
+            base: crate::utils::Base::A,
+            qual: 30,
+            mapq: 20,
+            strand,
+            reverse: rev,
+            position: crate::call::variants::PositionInRead { pos, read_length: len },
+            matching_bases: 10,
+            indels: 0,
+        }
+    }
+
+    #[test]
+    fn filter_strand_orientation_logic() {
+        let mask = ReadMaskParams {
+            n_ot: ReadMaskSetting::from_str("5,3,2,4").unwrap(),
+            n_ob: ReadMaskSetting::from_str("7,2,3,6").unwrap(),
+        };
+
+        // OT forward: normal masking (start=5, end=3)
+        assert!(mask.filter(&read(10, 100, Strand::OT, false)));
+        assert!(!mask.filter(&read(4, 100, Strand::OT, false))); // < start
+        assert!(!mask.filter(&read(97, 100, Strand::OT, false))); // > len-end-1
+
+        // OT reverse: flipped masking (start=from_end=4, end=from_start=2)
+        assert!(mask.filter(&read(10, 100, Strand::OT, true)));
+        assert!(!mask.filter(&read(3, 100, Strand::OT, true))); // < from_end
+        assert!(!mask.filter(&read(98, 100, Strand::OT, true))); // > len-from_start-1
+
+        // OB reverse: flipped masking (start=from_end=2, end=from_start=7)
+        assert!(mask.filter(&read(10, 100, Strand::OB, true)));
+        assert!(!mask.filter(&read(1, 100, Strand::OB, true))); // < from_end
+        assert!(!mask.filter(&read(93, 100, Strand::OB, true))); // > len-from_start-1
+
+        // OB forward: normal masking (start=3, end=6)
+        assert!(mask.filter(&read(10, 100, Strand::OB, false)));
+        assert!(!mask.filter(&read(2, 100, Strand::OB, false))); // < start
+        assert!(!mask.filter(&read(94, 100, Strand::OB, false))); // > len-end-1
+    }
+
+    #[test]
+    fn filter_size_and_boundary_conditions() {
+        let mask = ReadMaskParams {
+            n_ot: ReadMaskSetting::from_str("1,1,1,1").unwrap(),
+            ..Default::default()
+        };
+
+        // Too small reads
+        assert!(!mask.filter(&read(1, 2, Strand::OT, false))); // 2 < 1+1+1
+
+        // Boundary conditions
+        assert!(!mask.filter(&read(0, 10, Strand::OT, false))); // pos < start
+        assert!(mask.filter(&read(1, 10, Strand::OT, false))); // pos >= start
+        assert!(mask.filter(&read(8, 10, Strand::OT, false))); // pos <= len-end-1
+        assert!(!mask.filter(&read(9, 10, Strand::OT, false))); // pos > len-end-1
+    }
+
+    #[test]
+    fn filter_special_cases() {
+        let mask = ReadMaskParams {
+            n_ot: ReadMaskSetting::from_str("40,40,40,40").unwrap(),
+            n_ob: ReadMaskSetting::from_str("40,40,40,40").unwrap(),
+        };
+
+        // Unknown strand always passes
+        assert!(mask.filter(&read(5, 20, Strand::Unknown, false)));
+        assert!(mask.filter(&read(5, 20, Strand::Unknown, true)));
+
+        // No masking passes everything
+        let no_mask = ReadMaskParams::default();
+        assert!(no_mask.filter(&read(0, 1, Strand::OT, false)));
+        assert!(no_mask.filter(&read(99, 100, Strand::OB, true)));
+
+        // Aggressive masking filters most
+        assert!(mask.filter(&read(50, 100, Strand::OT, false))); // 40 <= 50 <= 59
+        assert!(!mask.filter(&read(39, 100, Strand::OT, false))); // < 40
+        assert!(!mask.filter(&read(60, 100, Strand::OT, false))); // > 59
+        assert!(!mask.filter(&read(50, 80, Strand::OT, false))); // 80 < 81 (too small)
     }
 }

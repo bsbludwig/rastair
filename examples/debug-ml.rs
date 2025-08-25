@@ -28,12 +28,7 @@ fn main() -> Result<()> {
 
     let args = Cli::parse();
     rastair2::utils::setup_tracing(args.verbose);
-    let mut params = args.call;
-
-    if params.ml.ml.is_none() {
-        // Always do ML, that's the point of this command
-        params.ml.ml = Some(0.8);
-    }
+    let params = args.call;
 
     let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
     let regions: Vec<ChunkRegion> = readers

@@ -5,13 +5,19 @@ use color_eyre::{Result, eyre::Context};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct MachineLearningParams {
+    /// Only use hard thresholds to call variants and methylation events.
+    ///
+    /// This disables using the machine learning models. This will make rastair
+    /// much faster, but at the cost of accuracy.
+    #[arg(long = "thresholds")]
+    pub no_ml: bool,
     /// Use machine learning model with this threshold value to call variants
     /// and methylation events
     ///
     /// When specified, a ML model will classify positions with a prediction
     /// score. Anything above this threshold is considered PASS.
-    #[arg(long = "ml", required = false, default_missing_value = "0.8", num_args = 0..=1)]
-    pub ml: Option<f64>,
+    #[arg(long = "ml", default_value_t = 0.8, num_args = 0..=1)]
+    pub ml: f64,
     /// Path to the model for CpG positions
     ///
     /// Default is the bundled model in the Rastair binary.
@@ -31,13 +37,13 @@ pub struct MachineLearningParams {
 
 impl MachineLearningParams {
     pub fn init(&self) -> Result<MachineLearning> {
-        let Some(threshold) = self.ml else {
+        if self.no_ml {
             return Ok(MachineLearning::disabled());
         };
 
         Ok(MachineLearning {
             disabled: false,
-            threshold,
+            threshold: self.ml,
             cpg: Some(Box::new(
                 load_model(
                     self.model_cpg.as_ref().map(|x| x.path()),

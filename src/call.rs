@@ -332,7 +332,7 @@ fn process_region(
         records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
     }
 
-    if params.ml.ml.is_some() {
+    if !ml.disabled {
         let record_len = records.len();
         for i in 0..record_len {
             let (before, current, after) = surrounding_records(&mut records, i);

@@ -4,7 +4,7 @@ info:
   program: bash
   args:
     - "-c"
-    - cargo run -q --release -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --ml --vcf | head -n1000 | cargo run -q --release -- convert -f bcf -F bed | head -n5
+    - cargo run -q --release -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --vcf | head -n1000 | cargo run -q --release -- convert -f bcf -F bed | head -n5
 ---
 success: true
 exit_code: 0
