@@ -64,22 +64,33 @@ impl<R: BedRecord> BedWriter<R> {
     }
 
     pub fn write_record(&mut self, record: &R) -> Result<()> {
-        record.write(&mut self.writer)?;
-        writeln!(self.writer)?;
+        record.write(&mut self.writer).wrap_err("Failed to write record")?;
+        writeln!(self.writer).wrap_err("Failed to write newline after record")?;
         Ok(())
     }
 
+    /// Close the writer and write the index if applicable
     #[instrument(level = "debug", skip(self))]
-    pub fn close(mut self) -> Result<()> {
-        self.writer.flush().wrap_err("Failed to flush writer")?;
+    pub fn close(self) -> Result<()> {
+        // If BGZF, close and write index if we previously requested it.
+        //
+        // Intuitively, we would do this in a Drop impl, but since writing the
+        // index is quite explicit and can fail, we want to do this in a
+        // fallible method.
+        //
+        // We also wanted to first call `flush` here, but it seems that flushing
+        // a BGZF and then closing it cause it to double-write the last block in
+        // the version we tested with. Since closing also flushes, we just do
+        // that.
         if let Writer::BedGz(bgzfwriter) = self.writer
             && let Some(index) = bgzfwriter.close().wrap_err("Failed to close BGZF writer")?
-            && self.path.is_local()
         {
             write_index(self.path.path(), index)
                 .wrap_err_with(|| format!("Failed to write index for `{}`", self.path.display()))?;
             info!(path = %self.path.display(), "Wrote bgzip index");
         }
+        // For non-bgzip writers, self is dropped here, which also flushes the
+        // buffer.
         Ok(())
     }
 }

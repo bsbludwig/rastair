@@ -37,3 +37,30 @@ fn simple_per_read_call() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn can_tabix_files() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let bed_file = temp_dir.path().join("test.bed.gz");
+
+    rastair()
+        .args(["per-read", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam", "--bed"])
+        .arg(&bed_file)
+        .succeeds()
+        .wrap_err("Failed to run per-read")?;
+
+    assert_cmd_snapshot!(Command::new("tabix")
+            .args(["-p", "bed"])
+            .arg(&bed_file)
+            .current_dir(temp_dir.path()), @r"
+        success: true
+        exit_code: 0
+        ----- stdout -----
+
+        ----- stderr -----
+        ");
+
+    Ok(())
+}
