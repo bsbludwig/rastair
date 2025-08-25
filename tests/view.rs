@@ -17,11 +17,10 @@ fn write_mpk_then_view_stdout() -> Result<()> {
             "-o",
         ])
         .arg(&mpk)
-        .status()?
-        .is_success()
+        .succeeds()
         .wrap_err("Failed to run rastair call")?;
 
-    rastair().arg("view").arg(&mpk).status()?.is_success().wrap_err("Failed to view mpk file")?;
+    rastair().arg("view").arg(&mpk).succeeds().wrap_err("Failed to view mpk file")?;
 
     Ok(())
 }
@@ -43,8 +42,7 @@ fn write_mpk_then_view_file() -> Result<()> {
             "--vcf",
         ])
         .arg(&mpk)
-        .status()?
-        .is_success()
+        .succeeds()
         .wrap_err("Failed to run rastair call")?;
 
     rastair()
@@ -52,8 +50,7 @@ fn write_mpk_then_view_file() -> Result<()> {
         .arg(&mpk)
         .arg("--output")
         .arg(&json)
-        .status()?
-        .is_success()
+        .succeeds()
         .wrap_err("Failed to view mpk file")?;
 
     let json_content =

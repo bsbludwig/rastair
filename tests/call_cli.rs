@@ -137,9 +137,7 @@ fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
             "--vcf",
         ])
         .arg(&temp_file)
-        .status()
-        .wrap_err("running rastair2")?
-        .is_success()
+        .succeeds()
         .wrap_err("rastair2 call failed")?;
 
     let text = std::fs::read_to_string(&temp_file).wrap_err("read rastair 2 vcf")?;

@@ -30,12 +30,20 @@ macro_rules! apply_common_filters {
 }
 
 pub trait ExitStatusResultExt {
-    fn is_success(&self) -> Result<()>;
+    fn succeeds(&mut self) -> Result<()>;
+}
+
+impl ExitStatusResultExt for std::process::Command {
+    #[track_caller]
+    fn succeeds(&mut self) -> Result<()> {
+        let mut status = self.status().wrap_err("Failed to run command")?;
+        status.succeeds()
+    }
 }
 
 impl ExitStatusResultExt for std::process::ExitStatus {
     #[track_caller]
-    fn is_success(&self) -> Result<()> {
+    fn succeeds(&mut self) -> Result<()> {
         if !self.success() {
             bail!("Command failed with status: {}", self)
         }
