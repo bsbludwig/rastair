@@ -23,6 +23,10 @@ struct Cli {
     command: Subcommand,
 
     /// Enable more logging
+    ///
+    /// You can also use the `RASTAIR_LOG` environment variable to configure
+    /// logging in a more precise way. See the documentation of the
+    /// `tracing-subscriber` library to learn more.
     #[arg(short, long, global = true)]
     verbose: bool,
 }

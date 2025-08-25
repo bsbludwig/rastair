@@ -29,6 +29,8 @@ Process TAPS-sequenced BAM files for methylation calling
 
 * `-v`, `--verbose` — Enable more logging
 
+   You can also use the `RASTAIR_LOG` environment variable to configure logging in a more precise way. See the documentation of the `tracing-subscriber` library to learn more.
+
 
 
 ## `rastair2 call`
@@ -176,7 +178,7 @@ Call methylated positions
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `10`
+  Default value: `14`
 
 
 
@@ -242,7 +244,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `10`
+  Default value: `14`
 
 
 
