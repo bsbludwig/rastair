@@ -1,5 +1,6 @@
 use crate::{
     bed::per_read::{BedReadsParams, PerRead},
+    call::variant_calling::ReadFlags,
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
 };
 use bio::bio_types::sequence::SequenceReadPairOrientation;
@@ -13,8 +14,6 @@ use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use smallvec::SmallVec;
 use std::thread::{self, available_parallelism};
 use tracing::{debug, instrument, trace, warn};
-
-mod flags;
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct PerReadParams {
@@ -35,7 +34,7 @@ pub struct PerReadParams {
 
     // --- Calling parameters ---
     #[command(flatten)]
-    read_flags: flags::ReadFlags,
+    read_flags: ReadFlags,
 
     /// expected maximum read length. If set too short, some read positions
     /// might not get counted. Safest to set this a bit higher than the actual

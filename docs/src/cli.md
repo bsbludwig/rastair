@@ -106,7 +106,11 @@ Call methylated positions
 
   Default value: `0,0,0,0`
 * `-f`, `--include-flags <INCLUDE_FLAGS>` — Include reads that match all of these bit-flags
+
+  Default value: `3`
 * `-F`, `--exclude-flags <EXCLUDE_FLAGS>` — Exclude reads that match any of these bit-flags
+
+  Default value: `3852`
 * `--cpg-novo-min-depth <CPG_NOVO_MIN_DEPTH>` — Minimum reads needed in support of de-novo CpG
 
   Default value: `2`
