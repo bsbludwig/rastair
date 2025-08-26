@@ -51,6 +51,8 @@ In some cases, you might prefer to write the bed output to `STDOUT` and pipe it 
 rastair2 call -r reference.fa.gz --cpgs-only --bed - test.bam | grep -Fw REF
 ```
 
+### Ignore positions at the edges of reads
+
 Sometimes, it might be desirable to ignore a certain number of bases at the beginning or end of a read when counting methylated positions. This can e.g. account for loss of methylation due to sonication damage. The command-line argument for this was inspired by [MethylDackel](https://github.com/dpryan79/MethylDackel). However, we decided to only have one set of parameters: `--nOT` and `--nOB`. Each of them takes a comma-separated list of 4 integers: `[r1_5',r1_3',r2_5',r2_3']`, denoting the number of bases from the start/end of read 1/2 that should be ignored. **Unlike MethylDackel, rastair's command line arguments always refer to the start/end position of the read in 5' -> 3' direction, not the position in the reference after alignment**. To give an example: imagine the following read pair
 
 ```text
@@ -70,4 +72,4 @@ This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/3600750171
 rastair2 per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 ```
 
-Again, this will generate a bgzip-compressed bed file that can be indexed with `tabix`. For a description of the per-read bed format, see [formats/bed](formats/bed.md#per-read-methylation).
+Again, this will generate a bgzip-compressed bed file that can be indexed with `tabix`. For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
