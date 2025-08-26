@@ -119,7 +119,10 @@ impl BedRecord for Rastair1BedFormat {
 
 pub fn genotype_to_rastair1_string(genotype: &Genotype, ref_base: &str) -> SmolStr {
     match genotype.0.as_slice() {
-        [GenotypeAllele::Phased(0)] | [GenotypeAllele::Unphased(0)] => {
+        [GenotypeAllele::Phased(0)]
+        | [GenotypeAllele::Unphased(0)]
+        | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(0)]
+        | [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)] => {
             if ref_base == "C" {
                 SmolStr::new_static("C/C")
             } else {
@@ -134,7 +137,10 @@ pub fn genotype_to_rastair1_string(genotype: &Genotype, ref_base: &str) -> SmolS
                 SmolStr::new_static("G/A")
             }
         }
-        [GenotypeAllele::Phased(1)] | [GenotypeAllele::Unphased(1)] => {
+        [GenotypeAllele::Phased(1)]
+        | [GenotypeAllele::Unphased(1)]
+        | [GenotypeAllele::Phased(1), GenotypeAllele::Phased(1)]
+        | [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)] => {
             if ref_base == "C" {
                 SmolStr::new_static("T/T")
             } else {
