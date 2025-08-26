@@ -147,6 +147,9 @@ pub fn genotype_to_rastair1_string(genotype: &Genotype, ref_base: &str) -> SmolS
                 SmolStr::new_static("A/A")
             }
         }
-        _ => SmolStr::new_static("."),
+        _ => {
+            // would want to return `SmolStr::new_static(".")` but let's be compatible with rastair1 for now
+            if ref_base == "C" { SmolStr::new_static("C/C") } else { SmolStr::new_static("G/G") }
+        }
     }
 }
