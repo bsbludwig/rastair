@@ -3,7 +3,7 @@ use crate::{
     utils::Base::{self, *},
     vcf::{
         AlleleSpecificStrandBias, ByStrand, DeNovoCpGCandidate, GenotypeConfidence,
-        GenotypeLikelihood, Methylated,
+        GenotypeLikelihood, InCpG, Methylated,
     },
 };
 use color_eyre::eyre::{Context as _, ContextCompat as _, Report, bail};
@@ -99,6 +99,7 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
                 None
             }
         }]));
+        let in_cpg = r.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
         let de_novo = r.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
 
         Ok(Rastair1BedFormat {
@@ -114,7 +115,7 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             genotype: Genotype(genotype),
             genotype_likelihood,
             genotype_confidence,
-            de_novo,
+            de_novo: !in_cpg && de_novo,
         })
     }
 }
