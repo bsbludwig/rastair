@@ -1,7 +1,19 @@
 use std::fmt;
 
 /// The error rates for different Illumina sequencing platforms
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[allow(clippy::doc_markdown)]
 pub enum ErrorModel {
     /// MiSeq <https://support.illumina.com/sequencing/sequencing_instruments/miseq.html>

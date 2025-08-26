@@ -1,6 +1,6 @@
 use crate::call::variants::SeenBase;
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct QualityFilterParams {
     /// Minimum mapping quality to consider a read
     #[arg(short = 'q', long, default_value_t = 1)]

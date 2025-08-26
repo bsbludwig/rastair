@@ -3,7 +3,7 @@ use rust_htslib::bam::Record;
 
 use flags::*;
 
-#[derive(Debug, Clone, Default, clap::Args)]
+#[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct ReadFlags {
     /// Include reads that match all of these bit-flags
     #[arg(

@@ -9,7 +9,10 @@ use crate::{
     utils::surrounding_records,
     vcf::{self, MachineLearningPrediction, low_ml_score},
 };
-use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
+use color_eyre::{
+    Section as _,
+    eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
+};
 use rayon::prelude::*;
 use smol_str::SmolStr;
 use std::{
@@ -29,12 +32,14 @@ pub mod variants;
 #[cfg(test)]
 pub mod test_helpers;
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, clap::Args, serde::Serialize)]
 pub struct CallParams {
     // --- Input parameters ---
     #[command(flatten)]
+    #[serde(skip)]
     pub segments: ReaderParams,
     #[command(flatten)]
+    #[serde(skip)]
     pub segmentation: SegmentationParams,
 
     // --- Calling parameters ---
@@ -49,8 +54,10 @@ pub struct CallParams {
 
     // --- Output parameters ---
     #[command(flatten)]
+    #[serde(skip)]
     pub vcf: vcf_writer::Params,
     #[command(flatten)]
+    #[serde(skip)]
     pub bed: BedParams,
 
     // --- Other runtime parameters ---
@@ -60,6 +67,7 @@ pub struct CallParams {
     /// Note that VCF writing might use additional threads internally for compression.
     /// This can be overwritten with `--vcf-threads`.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
+    #[serde(skip)]
     pub total_threads: usize,
 }
 
@@ -148,10 +156,16 @@ pub fn call(params: &CallParams) -> Result<()> {
         .spawn({
             let vcf_output = params.vcf.vcf.clone();
             let metadata = [
-                format!("rastair2Version={}", env!("CARGO_PKG_VERSION")),
+                format!("rastairVersion={}", env!("CARGO_PKG_VERSION")),
                 format!(
-                    "rastair2Command={}",
+                    "rastairCommand={}",
                     std::env::args().skip(1).collect::<Vec<_>>().join(" ")
+                ),
+                format!(
+                    "rastairConfig={}",
+                    serde_json::to_string(params)
+                        .wrap_err("Failed to serialize config to JSON")
+                        .note("This is a bug in rastair")?
                 ),
                 format!("reference={}", params.segments.fasta_file),
             ];

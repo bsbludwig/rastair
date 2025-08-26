@@ -3,7 +3,7 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context};
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MachineLearningParams {
     /// Only use hard thresholds to call variants and methylation events.
     ///
@@ -22,16 +22,19 @@ pub struct MachineLearningParams {
     ///
     /// Default is the bundled model in the Rastair binary.
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[serde(skip)]
     model_cpg: Option<ClioPath>,
     /// Path to the model for de novo CpG positions
     ///
     /// Default is the bundled model in the Rastair binary.
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[serde(skip)]
     model_denovo_cpg: Option<ClioPath>,
     /// Path to the model for other positions
     ///
     /// Default is the bundled model in the Rastair binary.
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[serde(skip)]
     model_others: Option<ClioPath>,
 }
 

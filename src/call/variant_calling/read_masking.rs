@@ -8,7 +8,7 @@ use crate::{call::variants::SeenBase, utils::Strand};
 use smallvec::SmallVec;
 use std::{num::ParseIntError, str::FromStr};
 
-#[derive(Debug, Clone, Default, clap::Args)]
+#[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct ReadMaskParams {
     /// For OT reads, exclude `[r1_start, r1_end, r2_start, r2_end]` bases from counting.
     ///
@@ -94,7 +94,7 @@ impl ReadMaskParams {
 }
 
 /// Represent a read softmask, to exclude certain portions of the read
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadMask {
     /// Number of bases to exclude from the start of the read
     pub from_start: u32,
@@ -103,7 +103,7 @@ pub struct ReadMask {
 }
 
 /// Mask settings for both read orientations
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadMaskSetting {
     /// Mask for reads in forward orientation
     pub r1: ReadMask,

@@ -2,7 +2,7 @@ use crate::{call::process::IncludeAllCpGs, vcf};
 use color_eyre::{Result, eyre::Context};
 use tracing::instrument;
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MethylationCallingParams {
     /// Calculate threshold values and filters for methylation
     #[arg(long, default_value_t = false)]
@@ -39,7 +39,7 @@ impl MethylationCallingParams {
     }
 }
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct ThresholdParams {
     /// The minimum variant allele frequency
     #[clap(long, default_value_t = 0.2)]

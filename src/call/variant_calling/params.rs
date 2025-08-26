@@ -3,7 +3,7 @@ use crate::call::variant_calling::{
     QualityFilterParams, read_flags::ReadFlags, read_masking::ReadMaskParams,
 };
 
-#[derive(Debug, Clone, Default, clap::Args)]
+#[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct VariantCallingParams {
     /// The error model to use
     ///

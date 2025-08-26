@@ -5,7 +5,7 @@ use crate::{
 };
 use color_eyre::Result;
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct DenovoParams {
     /// Minimum reads needed in support of de-novo CpG
     #[clap(long, default_value_t = 2)]
