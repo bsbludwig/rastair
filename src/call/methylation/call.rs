@@ -308,4 +308,30 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_beta_value_all_mod_a() -> Result<()> {
+        let known_c_pos = variant_pileup("bacteriophage_lambda_CpG", 14987)?
+            .variant_metrics(&VariantCallingParams::default())?;
+        assert_eq!("C", known_c_pos.main.r#ref);
+        let known_g_to_a_pos = variant_pileup("bacteriophage_lambda_CpG", 14988)?
+            .variant_metrics(&VariantCallingParams::default())?;
+        assert_eq!("G", known_g_to_a_pos.main.r#ref);
+
+        let methylation = call_methylation(
+            &ThresholdParams::default(),
+            &known_g_to_a_pos,
+            Some(&known_c_pos),
+            None,
+        )?;
+
+        let mod_count = 3.;
+        let unmod_count = 0.;
+        let expected_beta = mod_count / (mod_count + unmod_count);
+        let actual_beta = dbg!(methylation.beta().wrap_err("No beta value")?);
+
+        assert_eq!(expected_beta, actual_beta);
+
+        Ok(())
+    }
 }
