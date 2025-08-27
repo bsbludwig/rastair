@@ -33,7 +33,8 @@ pub fn params_from_record(
     // Use the DeNovoCpGCandidate enum to get denovo CpG information
     let (target_alt_base, alt_index) = match record.info.de_novo_cp_g_candidate {
         DeNovoCpGCandidate::Candidate { alt_base, alt_index, .. } => (alt_base, alt_index),
-        DeNovoCpGCandidate::NotCandidate => {
+        // TODO: Maybe handle adjecent positions differently?
+        DeNovoCpGCandidate::NotCandidate | DeNovoCpGCandidate::Adjecent { .. } => {
             debug!("Not a denovo CpG candidate");
             // Return default values for non-candidates
             return array![[0.0; 54]];

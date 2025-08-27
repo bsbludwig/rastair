@@ -9,6 +9,7 @@ use std::ops::Deref;
 pub enum DeNovoCpGCandidate {
     NotCandidate,
     Candidate { ref_base: Base, alt_base: Base, alt_index: usize },
+    Adjecent { ref_base: Base },
 }
 
 impl DeNovoCpGCandidate {
@@ -16,6 +17,7 @@ impl DeNovoCpGCandidate {
         match self {
             DeNovoCpGCandidate::NotCandidate => None,
             DeNovoCpGCandidate::Candidate { alt_base, .. } => Some(*alt_base),
+            DeNovoCpGCandidate::Adjecent { ref_base } => Some(*ref_base),
         }
     }
 }
@@ -27,6 +29,7 @@ impl Deref for DeNovoCpGCandidate {
         match self {
             DeNovoCpGCandidate::NotCandidate => &false,
             DeNovoCpGCandidate::Candidate { .. } => &true,
+            DeNovoCpGCandidate::Adjecent { .. } => &true,
         }
     }
 }

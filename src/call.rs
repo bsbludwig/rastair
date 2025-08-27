@@ -334,6 +334,7 @@ fn process_region(
         let (before, current, after) = surrounding_records(&mut records, i);
 
         params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
+        params.denovo_cpg.add_if_adjecent(current, before, after);
 
         params
             .methylation

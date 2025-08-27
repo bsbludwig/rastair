@@ -1,3 +1,10 @@
+//! De-novo CpG calling and filtering
+//!
+//! A "de-novo CpG" is a pair of adjacent nucleotides where in the reference
+//! genome they are not a CpG (i.e. not "C" followed by "G"), but in the sample
+//! they are changed to a CpG by a SNP (i.e. a reference "C" followed by a base
+//! that changed from "A" to "G").
+
 use crate::{
     call::variants::VariantCandidatePileup,
     utils::Base::*,
@@ -65,5 +72,34 @@ impl DenovoParams {
         }
 
         Ok(())
+    }
+
+    pub fn add_if_adjecent(
+        &self,
+        current: &mut vcf::Record,
+        before: Option<&vcf::Record>,
+        after: Option<&vcf::Record>,
+    ) {
+        if *current.info.de_novo_cp_g_candidate {
+            // already a candidate
+        } else if let Some(before) = before
+            && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
+                before.info.de_novo_cp_g_candidate
+            && alt_base == C
+            && current.main.r#ref == G
+        {
+            // previous position has a C alt, so this G is now part of a CpG
+            current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: G };
+        } else if let Some(after) = after
+            && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
+                after.info.de_novo_cp_g_candidate
+            && alt_base == G
+            && current.main.r#ref == C
+        {
+            // next position has a G alt, so this C is now part of a CpG
+            current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: C };
+        }
+        // todo: do both AdjecentRef and AdjecentAlt?
+        // ("alt" means both positions create the cpg with alts… but then who created it and who is adjecent?)
     }
 }
