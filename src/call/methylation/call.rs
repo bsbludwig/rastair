@@ -50,7 +50,11 @@ fn call_methylation(
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
 
-    if record.has_alt(C) && ref_after == G {
+    if ref_base == C {
+        ref_c(config, record)
+    } else if ref_base == G {
+        ref_g(config, record)
+    } else if record.has_alt(C) && ref_after == G {
         // creating new CpG
         if record.main.r#ref == T {
             ref_t_to_c(config, record)
@@ -64,10 +68,6 @@ fn call_methylation(
         } else {
             ref_not_a_to_g(config, record)
         }
-    } else if ref_base == C {
-        ref_c(config, record)
-    } else if ref_base == G {
-        ref_g(config, record)
     } else {
         // Getting here should be impossible by construction
         Err(eyre!("Neither C nor G as ref, but also not a SNP")).note("This is a programming error")
@@ -248,4 +248,64 @@ fn ref_g(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> 
 
 fn f(x: impl Into<f64>) -> f64 {
     x.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use color_eyre::eyre::ContextCompat;
+
+    use super::*;
+    use crate::call::{test_helpers::variant_pileup, variant_calling::VariantCallingParams};
+
+    #[test]
+    fn test_beta_value_c_to_t() -> Result<()> {
+        let known_c_to_t_pos = variant_pileup("bacteriophage_lambda_CpG", 47482)?
+            .variant_metrics(&VariantCallingParams::default())?;
+        assert_eq!("C", known_c_to_t_pos.main.r#ref);
+        let known_g_pos = variant_pileup("bacteriophage_lambda_CpG", 47483)?
+            .variant_metrics(&VariantCallingParams::default())?;
+        assert_eq!("G", known_g_pos.main.r#ref);
+
+        let methylation = call_methylation(
+            &ThresholdParams::default(),
+            &known_c_to_t_pos,
+            None,
+            Some(&known_g_pos),
+        )?;
+
+        let mod_count = 12. / 2.;
+        let unmod_count = 1.;
+        let expected_beta = mod_count / (mod_count + unmod_count);
+        let actual_beta = methylation.beta().wrap_err("No beta value")?;
+
+        assert_eq!(expected_beta, actual_beta);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_beta_value_all_mod() -> Result<()> {
+        let known_c_to_t_pos = variant_pileup("bacteriophage_lambda_CpG", 42236)?
+            .variant_metrics(&VariantCallingParams::default())?;
+        assert_eq!("C", known_c_to_t_pos.main.r#ref);
+        let known_g_pos = variant_pileup("bacteriophage_lambda_CpG", 42237)?
+            .variant_metrics(&VariantCallingParams::default())?;
+        assert_eq!("G", known_g_pos.main.r#ref);
+
+        let methylation = call_methylation(
+            &ThresholdParams::default(),
+            &known_c_to_t_pos,
+            None,
+            Some(&known_g_pos),
+        )?;
+
+        let mod_count = 7.;
+        let unmod_count = 0.;
+        let expected_beta = mod_count / (mod_count + unmod_count);
+        let actual_beta = methylation.beta().wrap_err("No beta value")?;
+
+        assert_eq!(expected_beta, actual_beta);
+
+        Ok(())
+    }
 }
