@@ -10,21 +10,26 @@ use crate::{
     utils::Base::*,
     vcf::{self},
 };
+use better_default::Default;
 use color_eyre::Result;
 
-#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct DenovoParams {
     /// Minimum reads needed in support of de-novo CpG
     #[clap(long, default_value_t = 2)]
+    #[default(2)]
     pub cpg_novo_min_depth: usize,
     /// Minimum base quality for de-novo CpGs
     #[clap(long, default_value_t = 15.)]
+    #[default(15.)]
     pub cpg_novo_min_baseq: f64,
     /// Minimum mapping quality for de-novo CpGs
     #[clap(long, default_value_t = 50.)]
+    #[default(50.)]
     pub cpg_novo_min_mapq: f64,
     /// Minimum variant allele frequency for de-novo CpGs
     #[clap(long, default_value_t = 0.2)]
+    #[default(0.2)]
     pub cpg_novo_min_vaf: f64,
 }
 

@@ -1,3 +1,4 @@
+use better_default::Default;
 use clap_num::maybe_hex;
 use rust_htslib::bam::Record;
 
@@ -11,6 +12,7 @@ pub struct ReadFlags {
         value_parser=maybe_hex::<u16>,
         default_value_t = IS_PAIRED | IS_PROPERLY_PAIRED
     )]
+    #[default(IS_PAIRED | IS_PROPERLY_PAIRED)]
     pub include_flags: u16,
 
     /// Exclude reads that match any of these bit-flags
@@ -19,6 +21,7 @@ pub struct ReadFlags {
         value_parser=maybe_hex::<u16>,
         default_value_t = IS_FAILED | IS_NOT_PRIMARY | IS_UNMAPPED | MATE_IS_UNMAPPED | IS_DUPLICATE | IS_SUPPLEMENTAL
     )]
+    #[default(IS_FAILED | IS_NOT_PRIMARY | IS_UNMAPPED | MATE_IS_UNMAPPED | IS_DUPLICATE | IS_SUPPLEMENTAL)]
     pub exclude_flags: u16,
 }
 

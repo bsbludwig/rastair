@@ -2,6 +2,7 @@ use super::ErrorModel;
 use crate::call::variant_calling::{
     QualityFilterParams, read_flags::ReadFlags, read_masking::ReadMaskParams,
 };
+use better_default::Default;
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct VariantCallingParams {

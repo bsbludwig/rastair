@@ -119,7 +119,7 @@ fn c_but_not_cpg() -> Result<()> {
             [
                 ByStrand {
                     base: C,
-                    ot: 20,
+                    ot: 19,
                     ob: 13,
                 },
                 ByStrand {

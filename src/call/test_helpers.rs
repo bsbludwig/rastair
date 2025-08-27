@@ -13,7 +13,7 @@ use crate::{
 use clio::ClioPath;
 use color_eyre::{
     Section,
-    eyre::{ContextCompat as _, Result, WrapErr},
+    eyre::{ContextCompat as _, Result, WrapErr, eyre},
 };
 use std::num::NonZeroU32;
 
@@ -56,7 +56,7 @@ impl ReaderParams {
         let pileup = pileups
             .into_iter()
             .find(|p| p.pos == pos)
-            .ok_or_else(|| color_eyre::eyre::eyre!("No variant at {chr}:{pos}"))
+            .ok_or_else(|| eyre!("No variant at {chr}:{pos}"))
             .note(
                 "Variant pileups are only built when at least one base differs from the reference",
             )?;
