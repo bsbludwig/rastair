@@ -40,6 +40,17 @@ pub enum GenotypeAllele {
     PhasedMissing,
 }
 
+impl Genotype {
+    /// Checks if the genotype is heterozygous (i.e., contains different alleles).
+    pub fn heterozygous(&self) -> bool {
+        match self.0.as_slice() {
+            [GenotypeAllele::Unphased(i), GenotypeAllele::Unphased(j)]
+            | [GenotypeAllele::Phased(i), GenotypeAllele::Phased(j)] => i != j,
+            _ => false,
+        }
+    }
+}
+
 impl From<GenotypeAllele> for HtslibGenotypeAllele {
     fn from(allele: GenotypeAllele) -> Self {
         match allele {

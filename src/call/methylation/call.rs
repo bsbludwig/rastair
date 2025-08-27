@@ -194,8 +194,7 @@ fn ref_c(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> 
         let mut mod_count = f(t_counts.ot);
         let unmod_count = f(c_counts.ot);
 
-        let snp_count = t_counts.ob;
-        if snp_count > 1 {
+        if record.samples[0].genotype.heterozygous() {
             // divide by 2 assuming diploid genome
             mod_count /= 2.;
         }
@@ -230,9 +229,8 @@ fn ref_g(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> 
 
         let mut mod_count = f(a_counts.ob);
         let unmod_count = f(g_counts.ob);
-        let snp_count = f(a_counts.ot);
 
-        if snp_count > 1. {
+        if record.samples[0].genotype.heterozygous() {
             // divide by 2 assuming diploid genome
             mod_count /= 2.;
         }
