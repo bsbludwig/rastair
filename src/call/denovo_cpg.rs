@@ -108,3 +108,27 @@ impl DenovoParams {
         // ("alt" means both positions create the cpg with alts… but then who created it and who is adjecent?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::call::{test_helpers::variant_pileup, variant_calling::VariantCallingParams};
+
+    use super::*;
+
+    #[test]
+    #[ignore = "wip"]
+    fn denovo_position() -> Result<()> {
+        let now_c = variant_pileup("bacteriophage_lambda_CpG", 2199)?
+            .variant_metrics(&VariantCallingParams::default())?;
+        let ref_g = variant_pileup("bacteriophage_lambda_CpG", 2200)?
+            .variant_metrics(&VariantCallingParams::default())?;
+
+        DenovoParams::default().add_if_adjecent(&mut now_c.clone(), None, Some(&ref_g));
+        assert!(matches!(
+            now_c.info.de_novo_cp_g_candidate,
+            vcf::DeNovoCpGCandidate::Adjecent { ref_base: C }
+        ));
+
+        Ok(())
+    }
+}
