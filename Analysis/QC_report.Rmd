@@ -7,6 +7,7 @@ output:
     theme: united
 params:
   input_bgz: "data/test_per-read.bed.gz"
+  output_dir: NULL
   region: "" # By default there's no region
   tabix: "tabix" # Assume tabix is available in PATH
   include_flags: 3
@@ -123,6 +124,18 @@ setkey(mbias_table, chr, pos)
 for (chrom in unique(mbias_table$chr)) {
   cutoffs <- mbias_table[chr==chrom, calculate_cutoff(as.data.frame(.SD)), by=.(chr, read_pair, strand)]
   print(cutoffs)
+  
+  #write cutoffs to file if requested
+  if (!is.na(params$output_dir) && !is.null(params$output_dir)) {
+    out_table <- cutoffs[, .(l_ot = .SD[read_pair=="First", left],
+                             r_ot = .SD[read_pair=="First", right],
+                             l_ob = .SD[read_pair=="Second", left],
+                             r_ob = .SD[read_pair=="Second", right]), 
+                         by=strand]
+    setDF(out_table)
+    write.table(out_table[,2:5], file.path(params$output_dir, paste0(chrom, "_cutoffs.txt")), row.names = FALSE, col.names = FALSE, quote=FALSE, sep=",")
+  }
+  
   g <- ggplot(mbias_table[chr==chrom], aes(x=pos, y=beta, color=read_pair)) +
         geom_line() +
         geom_ribbon(aes(ymin=lower_ci, ymax=upper_ci, fill=read_pair), alpha=0.2) +
