@@ -89,7 +89,7 @@ macro_rules! vcf_record {
         impl $crate::WriteToVcf for Info {
             fn write_header(header: &mut rust_htslib::bcf::Header) -> color_eyre::Result<()> {
                 $(
-                    header.push_record(<$info as $crate::InfoField>::header().as_bytes());
+                    <$info as $crate::InfoField>::write_header(header)?;
                 )*
                 Ok(())
             }
@@ -115,7 +115,7 @@ macro_rules! vcf_record {
         impl $crate::WriteToVcf for Format {
             fn write_header(header: &mut rust_htslib::bcf::Header) -> color_eyre::Result<()> {
                 $(
-                    header.push_record(<$format as $crate::FormatField>::header().as_bytes());
+                    <$format as $crate::FormatField>::write_header(header)?;
                 )*
                 Ok(())
             }

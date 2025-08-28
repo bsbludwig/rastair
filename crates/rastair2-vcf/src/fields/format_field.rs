@@ -24,6 +24,12 @@ pub trait FormatField: super::VcfField {
         )
     }
 
+    /// Write the field definition to the VCF header.
+    fn write_header(header: &mut rust_htslib::bcf::Header) -> Result<()> {
+        header.push_record(Self::header().as_bytes());
+        Ok(())
+    }
+
     /// Write the field values to the VCF record.
     fn write(&self, record: &mut Record) -> Result<()>;
 
