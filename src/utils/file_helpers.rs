@@ -2,7 +2,7 @@ use bgzip::{BGZFReader, index::BGZFIndex, read::IndexedBGZFReader};
 use bio::io::fasta::IndexedReader;
 use color_eyre::{
     Section,
-    eyre::{Context, Result, eyre},
+    eyre::{Context, ContextCompat, Result, eyre},
 };
 use std::{
     fmt,
@@ -56,6 +56,16 @@ pub fn open_fasta(fasta_path: &Path) -> Result<FastaReader> {
     let fasta_file = open_maybe_bgzip(fasta_path)
         .wrap_err_with(|| format!("Failed to open FASTA file {fasta_path:?}"))?;
     let possible_index_files = [
+        fasta_path.with_file_name({
+            let mut name = fasta_path
+                .file_name()
+                .wrap_err("FASTA file path does not have a name")
+                .note("This happened when looking for the index file")
+                .note("Rastair already opened the FASTA file successfully")?
+                .to_os_string();
+            name.push(".fai");
+            name
+        }),
         fasta_path.with_extension("fai"),
         fasta_path.with_extension("fa.fai"),
         fasta_path.with_extension("gz.fai"),
@@ -69,8 +79,8 @@ pub fn open_fasta(fasta_path: &Path) -> Result<FastaReader> {
     let fasta_index = bio::io::fasta::Index::from_file(&index_path)
         .map_err(|err| eyre!(Box::new(err)))
         .wrap_err_with(|| format!("Failed to read FASTA index file {index_path:?}"))
-        .with_note(|| {
-            format!("You can create a FASTA index using `samtools faidx {fasta_path:?}`.")
+        .with_suggestion(|| {
+            format!("You can recreate the FASTA index using `samtools faidx {fasta_path:?}`.")
         })?;
     Ok(FastaReader {
         reader: IndexedReader::with_index(fasta_file.into_reader(), fasta_index),
@@ -123,6 +133,25 @@ mod fasta_tests {
 
         let result = open_fasta(&fasta_path);
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_open_fasta_with_different_index_names() -> Result<()> {
+        let dir = TempDir::new()?;
+        let fasta_path = dir.path().join("test.fasta");
+        let index_path = dir.path().join("test.fasta.fai");
+
+        // Create a simple FASTA file
+        let mut fasta_file = File::create(&fasta_path)?;
+        fasta_file.write_all(b">seq1\nACGT\n>seq2\nGTCA\n")?;
+
+        // Create a simple FAI index with .fai extension
+        let mut index_file = File::create(&index_path)?;
+        index_file.write_all(b"seq1\t4\t6\t4\t5\nseq2\t4\t16\t4\t5\n")?;
+
+        open_fasta(&fasta_path)?;
 
         Ok(())
     }
