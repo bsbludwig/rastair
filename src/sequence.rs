@@ -48,7 +48,7 @@ impl ReaderParams {
     pub fn readers(&self) -> Result<Readers> {
         let fasta = open_fasta(&self.fasta_file)?;
         let bam_path = self.bam_file.path();
-        let bam = bam::IndexedReader::from_path(bam_path)
+        let mut bam = bam::IndexedReader::from_path(bam_path)
             .with_suggestion(|| {
                 format!(
                     "Ensure the BAM file is sorted and indexed with \
@@ -56,6 +56,9 @@ impl ReaderParams {
                 )
             })
             .note("If you have a .bai file, ensure it is in the same directory as the BAM file.")?;
+        bam.set_reference(self.fasta_file.path())
+            .wrap_err("Failed to set FASTA reference for BAM reader")
+            .note("Rastair itself already opened the FASTA file successfully, this error is from the BAM reader implementation")?;
 
         Ok(Readers { fasta, bam, params: self.clone() })
     }
