@@ -29,7 +29,8 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`AF`** | Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes) | `Float` | `f64` | A |
 | **`ABQ`** | RMS Base quality per allele | `Float` | `f64` | R |
 | **`AMQ`** | RMS Map quality per allele | `Float` | `f64` | R |
-| **`AS_SS_BQ`** | Strand-specific RMS of base quality per allele (tuples of [reads_ot, reads_ob] for each allele) | `Float` | `f32` | . |
+| **`AS_SS_BQ_OT`** | Strand-specific RMS of base quality per allele on the original top strand | `Float` | `f32` | R |
+| **`AS_SS_BQ_OB`** | Strand-specific RMS of base quality per allele on the original bottom strand | `Float` | `f32` | R |
 | **`AS_SS_MQ`** | Strand-specific RMS of mapping quality per allele (tuples of [reads_ot, reads_ob] for each allele) | `Float` | `f32` | . |
 | **`PIR`** | RMS of relative position in read | `Float` | `f64` | R |
 | **`ENT100`** | Shannon entropy of 100bp sequence context around variant position. Value range (0..2) | `Float` | `f64` | 1 |
