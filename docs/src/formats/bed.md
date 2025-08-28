@@ -23,7 +23,7 @@ The BED file for CpG sites contains the following columns:
 | `start`         | Start position of the CpG site (0-based)                                    |
 | `end`           | End position of the CpG site (1-based)                                      |
 | `name`          | Name of the CpG site (e.g., "CpG1")                                         |
-| `beta_est`      | Estimated beta value for methylation                                        |
+| `beta_est`      | Estimated beta value for methylation (empty string if not present)          |
 | `strand`        | Strand information (e.g., "+", "-")                                         |
 | `unmod`         | Number of unmethylated reads                                                |
 | `mod`           | Number of methylated reads                                                  |

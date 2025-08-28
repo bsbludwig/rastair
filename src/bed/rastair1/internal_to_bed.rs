@@ -34,7 +34,7 @@ impl TryFrom<&Rastair2Record> for Rastair1BedFormat {
             contig: record.main.chrom.clone(),
             pos: record.main.pos as usize,
             r#ref,
-            beta: record.samples[0].methylated.beta().unwrap_or_default() as f32,
+            beta: record.samples[0].methylated.beta(),
             unmod,
             r#mod,
             no_snp,

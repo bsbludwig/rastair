@@ -44,9 +44,9 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             && let Some(betas) = buffer.first()
             && let Some(beta) = betas.first()
         {
-            *beta
+            Some(f64::from(*beta))
         } else {
-            0.0
+            None
         };
 
         let read_depth = if let Some(buffer) = r

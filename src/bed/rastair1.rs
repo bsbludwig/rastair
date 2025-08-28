@@ -6,7 +6,7 @@ use crate::{
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
 use rastair2_vcf::standard_fields::{Genotype, GenotypeAllele};
-use smol_str::SmolStr;
+use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
 use tracing::{debug, instrument};
 
@@ -58,7 +58,7 @@ pub struct Rastair1BedFormat {
     pub contig: SmolStr,
     pub pos: usize,
     pub r#ref: SmolStr,
-    pub beta: f32,
+    pub beta: Option<f64>,
     pub unmod: u32,
     pub r#mod: u32,
     pub no_snp: u32,
@@ -99,10 +99,15 @@ impl BedRecord for Rastair1BedFormat {
             "G" => "-",
             _ => ".",
         };
+        let beta = if let Some(beta) = beta {
+            format_smolstr!("{beta:.2}")
+        } else {
+            SmolStr::new_static("")
+        };
 
         write!(
             f,
-            "{contig}\t{start}\t{end}\t{name}\t{beta:.2}\t{strand}\t{unmod}\t{mod}\t{no_snp}\t{snp}\t{coverage}"
+            "{contig}\t{start}\t{end}\t{name}\t{beta}\t{strand}\t{unmod}\t{mod}\t{no_snp}\t{snp}\t{coverage}"
         )?;
 
         let genotype = genotype_to_rastair1_string(genotype, r#ref);
