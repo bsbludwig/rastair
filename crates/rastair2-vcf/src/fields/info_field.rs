@@ -46,6 +46,64 @@ pub trait InfoField: super::VcfField {
     }
 }
 
+/// An INFO field that is strand-specific, i.e., it has two entries in the VCF
+pub trait StrandSpecificInfoField: InfoField {
+    /// ID for the OT strand field
+    const ID_OT: &'static cstr8::CStr8;
+    /// Description for the OT strand field
+    const DESCRIPTION_OT: &'static str;
+
+    /// ID for the OB strand field
+    const ID_OB: &'static cstr8::CStr8;
+    /// Description for the OB strand field
+    const DESCRIPTION_OB: &'static str;
+
+    /// Write the two strand-specific fields to the VCF header.
+    fn write_header(header: &mut rust_htslib::bcf::Header) -> Result<()> {
+        header.push_record(
+            format!(
+                "##INFO=<ID={},Number={},Type={},Description=\"{}\">",
+                Self::ID_OT,
+                Self::NUMBER,
+                Self::Type::TYPE_NAME,
+                Self::DESCRIPTION_OT
+            )
+            .as_bytes(),
+        );
+        header.push_record(
+            format!(
+                "##INFO=<ID={},Number={},Type={},Description=\"{}\">",
+                Self::ID_OB,
+                Self::NUMBER,
+                Self::Type::TYPE_NAME,
+                Self::DESCRIPTION_OB
+            )
+            .as_bytes(),
+        );
+        Ok(())
+    }
+
+    /// Descriptions of this field
+    fn descriptions() -> Vec<crate::reflect::Info> {
+        vec![
+            crate::reflect::Info {
+                name: SmolStr::new_static(Self::ID_OT),
+                description: SmolStr::new_static(Self::DESCRIPTION_OT),
+                number: Self::NUMBER,
+                field_type: SmolStr::new_static(Self::Type::TYPE_NAME),
+                rust_type: SmolStr::new_static(std::any::type_name::<Self::Type>()),
+            },
+            crate::reflect::Info {
+                name: SmolStr::new_static(Self::ID_OB),
+                description: SmolStr::new_static(Self::DESCRIPTION_OB),
+                number: Self::NUMBER,
+                field_type: SmolStr::new_static(Self::Type::TYPE_NAME),
+                rust_type: SmolStr::new_static(std::any::type_name::<Self::Type>()),
+            },
+        ]
+    }
+}
+
 /// The number of values that can be included with the INFO field
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoFieldNumber {

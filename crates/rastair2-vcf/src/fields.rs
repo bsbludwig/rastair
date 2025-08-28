@@ -3,7 +3,7 @@ mod impls_for_wrappers;
 mod info_field;
 
 pub use format_field::{FormatField, FormatFieldNumber, FormatFieldValue};
-pub use info_field::{InfoField, InfoFieldNumber, InfoFieldValue};
+pub use info_field::{InfoField, InfoFieldNumber, InfoFieldValue, StrandSpecificInfoField};
 
 /// A field that can be used in the header section.
 pub trait HeaderField {

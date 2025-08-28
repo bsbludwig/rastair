@@ -84,7 +84,7 @@ use std::{
 
 pub use crate::fields::{
     FormatField, FormatFieldNumber, FormatFieldValue, HeaderField, InfoField, InfoFieldNumber,
-    InfoFieldValue, VcfField,
+    InfoFieldValue, StrandSpecificInfoField, VcfField,
 };
 pub use filters::VcfFilter;
 pub use fixed_fields::VcfFixedFields;
