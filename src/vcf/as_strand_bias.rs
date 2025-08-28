@@ -1,6 +1,6 @@
 use crate::vcf::ByStrand;
 use color_eyre::eyre::{Context as _, Result};
-use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
+use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, StrandSpecificInfoField, VcfField};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
 use std::ops::Deref;
@@ -22,25 +22,57 @@ impl VcfField for AlleleSpecificStrandBias {
 }
 
 impl HeaderField for AlleleSpecificStrandBias {
-    const DESCRIPTION: &'static str =
-        "Strand bias per allele (tuples of [reads_ot, reads_ob] for each allele)";
+    const DESCRIPTION: &'static str = "strand bias per allele";
 }
 
+impl StrandSpecificInfoField for AlleleSpecificStrandBias {
+    const ID_OT: &'static cstr8::CStr8 = cstr8::cstr8!("AS_SB_OT");
+    const DESCRIPTION_OT: &'static str = "OT counts per allele";
+
+    const ID_OB: &'static cstr8::CStr8 = cstr8::cstr8!("AS_SB_OB");
+    const DESCRIPTION_OB: &'static str = "OB counts per allele";
+}
+
+/// This writes two fields to the VCF INFO section, one for OB strand, one for OT
 impl InfoField for AlleleSpecificStrandBias {
-    /// One tuple of two integers for each allele
-    const NUMBER: InfoFieldNumber = InfoFieldNumber::Dot;
+    const NUMBER: InfoFieldNumber = InfoFieldNumber::OnePerAltAndRef;
     type Type = u32;
 
-    fn write(&self, record: &mut Record) -> Result<()> {
-        let tag = Self::ID;
-        let counts: SmallVec<i32, 8> = self
-            .0
-            .iter()
-            .flat_map(|c| [c.ot, c.ob])
-            .map(i32::try_from)
-            .collect::<Result<_, _>>()
-            .wrap_err("strand counts should fit in i32")?;
+    fn write_header(header: &mut rust_htslib::bcf::Header) -> Result<()> {
+        <Self as StrandSpecificInfoField>::write_header(header)
+    }
 
-        record.push_info_integer(tag, &counts).wrap_err("Failed to set field")
+    fn write(&self, record: &mut Record) -> Result<()> {
+        {
+            // Write OT field
+            let tag = Self::ID_OT;
+            let counts: SmallVec<i32, 8> = self
+                .0
+                .iter()
+                .map(|c| c.ot)
+                .map(i32::try_from)
+                .collect::<Result<_, _>>()
+                .wrap_err("strand counts should fit in i32")?;
+            record.push_info_integer(tag, &counts).wrap_err("Failed to set AS_SB_OT field")?;
+        }
+
+        {
+            // Write OB field
+            let tag = Self::ID_OB;
+            let counts: SmallVec<i32, 8> = self
+                .0
+                .iter()
+                .map(|c| c.ob)
+                .map(i32::try_from)
+                .collect::<Result<_, _>>()
+                .wrap_err("strand counts should fit in i32")?;
+            record.push_info_integer(tag, &counts).wrap_err("Failed to set AS_SB_OB field")?;
+        }
+
+        Ok(())
+    }
+
+    fn description() -> Vec<rastair2_vcf::reflect::Info> {
+        Self::descriptions()
     }
 }

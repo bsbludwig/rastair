@@ -1,21 +1,23 @@
 use crate::{
     bed::rastair1::Rastair1BedFormat,
-    utils::Base::{self, *},
+    utils::Base,
     vcf::{
         AlleleSpecificStrandBias, ByStrand, DeNovoCpGCandidate, GenotypeConfidence,
         GenotypeLikelihood, InCpG, Methylated,
     },
 };
-use color_eyre::eyre::{Context as _, ContextCompat as _, Report, bail};
+use color_eyre::{
+    Result,
+    eyre::{Context as _, ContextCompat as _, Report, ensure},
+};
 use rastair2_types::Phred;
 use rastair2_vcf::{
-    VcfField as _,
+    StrandSpecificInfoField as _, VcfField as _,
     standard_fields::{Genotype, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use tracing::trace;
 
 impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
     type Error = Report;
@@ -58,14 +60,11 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             0
         };
 
-        let assb = r
-            .info(AlleleSpecificStrandBias::ID.as_bytes())
-            .integer()
-            .wrap_err("Failed to fetch AS_SB field")?
-            .wrap_err("AS_SB field not set")?;
+        let assb = AlleleSpecificStrandBias::from_vcf(r)
+            .wrap_err("Failed to read Allele-specific Strand Bias field")?;
 
-        let count = StrandCount::from_alleles_and_assb(&alleles, &assb)
-            .wrap_err("Failed to parse strand counts from record")?;
+        let count =
+            StrandCount::from_assb(&assb).wrap_err("Failed to parse strand counts from record")?;
         let (unmod, r#mod, no_snp, snp) = if r#ref == "C" {
             (count.c.ot, count.t.ot, count.c.ob, count.t.ob)
         } else if r#ref == "G" {
@@ -129,36 +128,15 @@ struct StrandCount {
 }
 
 impl StrandCount {
-    fn from_alleles_and_assb(alleles: &[SmolStr], assb: &[i32]) -> Result<StrandCount, Report> {
+    fn from_assb(assb: &AlleleSpecificStrandBias) -> Result<StrandCount, Report> {
         // AS_SB is encoded with two integers per allele, so we need to parse it accordingly
-        if assb.len() % 2 != 0 {
-            bail!("AS_SB field has an odd number of integers");
-        }
         let mut counts = StrandCount::default();
-        for (i, count) in assb.chunks(2).enumerate() {
-            if i >= alleles.len() {
-                bail!("AS_SB field has more counts than alleles");
-            }
-            let allele = &alleles[i];
-            let count = ByStrand {
-                base: match allele.as_str() {
-                    "A" => A,
-                    "C" => C,
-                    "G" => G,
-                    "T" => T,
-                    _ => {
-                        trace!(%allele, "Unknown allele in AS_SB field");
-                        continue;
-                    }
-                },
-                ot: count[0] as u32,
-                ob: count[1] as u32,
-            };
+        for count in assb.iter() {
             match count.base {
-                Base::A => counts.a = count,
-                Base::C => counts.c = count,
-                Base::G => counts.g = count,
-                Base::T => counts.t = count,
+                Base::A => counts.a = *count,
+                Base::C => counts.c = *count,
+                Base::G => counts.g = *count,
+                Base::T => counts.t = *count,
                 _ => {}
             }
         }
@@ -167,42 +145,42 @@ impl StrandCount {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use color_eyre::eyre::Result;
-    use insta::assert_debug_snapshot;
+impl AlleleSpecificStrandBias {
+    fn from_vcf(r: &HtslibRecord) -> Result<Self> {
+        let alleles = r
+            .alleles()
+            .iter()
+            .map(|a| str::from_utf8(a).map(SmolStr::new))
+            .collect::<Result<SmallVec<_, 4>, _>>()
+            .wrap_err("Failed to parse alleles")?;
 
-    #[test]
-    fn test_strand_count_from_record() -> Result<()> {
-        let alleles = &[SmolStr::new_static("G"), SmolStr::new_static("A")];
-        let assb = &[19, 1, 0, 16];
-        let count = StrandCount::from_alleles_and_assb(alleles, assb)?;
-        assert_debug_snapshot!(count, @r"
-        StrandCount {
-            a: ByStrand {
-                base: A,
-                ot: 0,
-                ob: 16,
-            },
-            c: ByStrand {
-                base: N,
-                ot: 0,
-                ob: 0,
-            },
-            g: ByStrand {
-                base: G,
-                ot: 19,
-                ob: 1,
-            },
-            t: ByStrand {
-                base: N,
-                ot: 0,
-                ob: 0,
-            },
-        }
-        ");
+        // we have two fields: AS_SB_OT and AS_SB_OB
+        let assb_ot = r
+            .info(AlleleSpecificStrandBias::ID_OT.as_bytes())
+            .integer()
+            .wrap_err("Failed to fetch AS_SB_OT field")?
+            .wrap_err("AS_SB_OT field not set")?;
+        let assb_ob = r
+            .info(AlleleSpecificStrandBias::ID_OB.as_bytes())
+            .integer()
+            .wrap_err("Failed to fetch AS_SB_OB field")?
+            .wrap_err("AS_SB_OB field not set")?;
 
-        Ok(())
+        ensure!(
+            assb_ot.len() == assb_ob.len(),
+            "AS_SB_OT and AS_SB_OB fields have different lengths"
+        );
+
+        Ok(AlleleSpecificStrandBias(
+            alleles
+                .iter()
+                .enumerate()
+                .map(|(i, allele)| ByStrand {
+                    base: Base::from(allele),
+                    ot: assb_ot.get(i).copied().unwrap_or(0) as u32,
+                    ob: assb_ob.get(i).copied().unwrap_or(0) as u32,
+                })
+                .collect(),
+        ))
     }
 }

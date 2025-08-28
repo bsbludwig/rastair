@@ -23,7 +23,8 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`MQ`** | RMS mapping quality | `Float` | `RootMeanSquare` | 1 |
 | **`MQ0`** | Number of MAPQ == 0 reads | `Integer` | `usize` | 1 |
 | **`NS`** | Number of samples with data | `Integer` | `usize` | 1 |
-| **`AS_SB`** | Strand bias per allele (tuples of [reads_ot, reads_ob] for each allele) | `Integer` | `u32` | . |
+| **`AS_SB_OT`** | OT counts per allele | `Integer` | `u32` | R |
+| **`AS_SB_OB`** | OB counts per allele | `Integer` | `u32` | R |
 | **`SC5`** | 5-base sequence context centered on the variant position | `String` | `SmolStr` | 1 |
 | **`AF`** | Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes) | `Float` | `f64` | A |
 | **`ABQ`** | RMS Base quality per allele | `Float` | `f64` | R |
