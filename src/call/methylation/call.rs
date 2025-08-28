@@ -328,7 +328,7 @@ mod tests {
         let mod_count = 3.;
         let unmod_count = 0.;
         let expected_beta = mod_count / (mod_count + unmod_count);
-        let actual_beta = dbg!(methylation.beta().wrap_err("No beta value")?);
+        let actual_beta = methylation.beta().wrap_err("No beta value")?;
 
         assert_eq!(expected_beta, actual_beta);
 
