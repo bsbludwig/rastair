@@ -35,14 +35,14 @@ pub trait InfoField: super::VcfField {
     fn write(&self, record: &mut Record) -> Result<()>;
 
     /// Description of this field
-    fn description() -> crate::reflect::Info {
-        crate::reflect::Info {
+    fn description() -> Vec<crate::reflect::Info> {
+        vec![crate::reflect::Info {
             name: SmolStr::new_static(Self::ID),
             description: SmolStr::new_static(Self::DESCRIPTION),
             number: Self::NUMBER,
             field_type: SmolStr::new_static(Self::Type::TYPE_NAME),
             rust_type: SmolStr::new_static(std::any::type_name::<Self::Type>()),
-        }
+        }]
     }
 }
 

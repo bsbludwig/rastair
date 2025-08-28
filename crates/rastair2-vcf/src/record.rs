@@ -176,8 +176,16 @@ macro_rules! vcf_record {
             pub fn description() -> $crate::reflect::VcfDescription {
                 $crate::reflect::VcfDescription {
                     filters: vec![$( $filter::description() ),*],
-                    infos: vec![$( $info::description() ),*],
-                    formats: vec![$( $format::description() ),*],
+                    infos: {
+                        let mut res = vec![];
+                        $( res.extend($info::description()); )*
+                        res
+                    },
+                    formats: {
+                        let mut res = vec![];
+                        $( res.extend($format::description()); )*
+                        res
+                    },
                 }
             }
         }
