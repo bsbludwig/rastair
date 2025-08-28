@@ -1,23 +1,80 @@
 ---
 title: "QC Report"
 date: "`r Sys.Date()`"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    theme: united
 params:
   input_bgz: "data/test_per-read.bed.gz"
-  region: "bacteriophage_lambda_CpG" # By default there's no region
+  region: "" # By default there's no region
   tabix: "tabix" # Assume tabix is available in PATH
   include_flags: 3
   exclude_flags: 3852
+  read_len: NULL
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-```{r}
+```{r message=FALSE, warning=FALSE, include=FALSE}
 suppressPackageStartupMessages({
   library(data.table)
   library(ggplot2)
 })
+
+# For a subset of observations of read orientation on one strand,
+# calculate the suggested cutoff points
+calculate_cutoff <- function(mbias_table) {
+  # Ensure we process things in orders
+  mbias_table <- mbias_table[order(mbias_table$pos),]
+  # get the mean beta of the middle 60% of the data
+  n_obs <- nrow(mbias_table)
+  if (n_obs < 3) {
+    stop("Not enough data points to calculate cutoffs")
+  }
+  upper_lim <- min(ceiling(n_obs * 0.8), n_obs-1)
+  lower_lim <- max(floor(n_obs * 0.2), 2)
+  mean_middle <- mean(mbias_table[lower_lim:upper_lim,]$beta)
+  upper_ci_max <- max(mbias_table[lower_lim:upper_lim,]$upper_ci)
+  lower_ci_min <- min(mbias_table[lower_lim:upper_lim,]$lower_ci)
+  
+  # Search from the inside out for the first point left/right that is
+  # either outside the 95% CI bounds of the middle, or the mean of the
+  # middle is outside the CI of the point, or it's more than 0.05 away
+  # from the mean of the middle
+  check_match <- function(row, mean_middle, lower_ci_min, upper_ci_max) {
+    if (is.na(mean_middle) || is.null(mean_middle) || is.na(row$beta) || is.null(row$beta) || is.na(lower_ci_min) || is.null(lower_ci_min) || is.na(upper_ci_max) || is.null(upper_ci_max)) {
+      return(FALSE)
+    }
+    
+    if (!row$beta %between% c(lower_ci_min, upper_ci_max)
+        && abs(row$beta - mean_middle) > 0.05
+        && !mean_middle %between% c(row$lower_ci, row$upper_ci)) {
+      return(TRUE)
+    }
+    
+    return(FALSE)
+  }
+  
+  left_cutoff = 0
+  right_cutoff = 0
+  
+  middle = ceiling(n_obs/2)
+  for (pos in middle:1) {
+    if (check_match(mbias_table[pos,], mean_middle, lower_ci_min, upper_ci_max)) {
+      left_cutoff = pos
+      break
+    }
+  }
+  for (pos in 1:(n_obs-middle)) {
+    if (check_match(mbias_table[middle+pos,], mean_middle, lower_ci_min, upper_ci_max)) {
+      right_cutoff = n_obs - (middle+pos) + 1
+      break
+    }
+  }
+  return(data.frame(left=as.double(left_cutoff), right=as.double(right_cutoff)))
+}
 ```
 
 ```{r transform_data, include=FALSE}
@@ -37,7 +94,12 @@ data <- data[num_cpg > 0]
 data <- data[bitwAnd(flag, params$include_flags) == params$include_flags]
 data <- data[bitwAnd(flag, params$exclude_flags) == 0]
 
-
+if (is.null(params$read_len)) {
+  read_len <- max(data$read_length, na.rm=TRUE)
+} else {
+  read_len = params$read_len
+}
+  
 split_pos <- function(mod, unmod, snp) {
   mod_pos <- as.numeric(tstrsplit(mod, ","))
   unmod_pos <- as.integer(tstrsplit(unmod, ","))
@@ -45,14 +107,38 @@ split_pos <- function(mod, unmod, snp) {
   return(list(pos_in_read = c(mod_pos, unmod_pos, snp_pos), type=as.factor(c(rep("mod", length(mod_pos)), rep("unmod", length(unmod_pos)), rep("snp", length(snp_pos))))))
 }
 data <- data[, split_pos(mod_cpgs, unmod_cpgs, snp_cpgs), by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag)]
+
+mbias_table <- data[, .(mod=sum(type=="mod"), unmod=sum(type=="unmod")), by=.(chr, pos=pos_in_read, read_pair=as.factor(fifelse(bitwAnd(flag, 64)>0, "First", "Second")), strand=as.factor(fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB")))]
+
+# Flip the OB reads so that mbias is always reported 5' -> 3'
+mbias_table[strand=="OT" & read_pair == "Second" | strand=="OB" & read_pair == "First", pos := read_len-pos]
+mbias_table <- mbias_table[, .(beta=mod/(mod+unmod), lower_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[1], 0.0), upper_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[2], 0.0)), by=.(chr, pos, read_pair, strand)]
+mbias_table <- mbias_table[!is.na(beta)]
+setkey(mbias_table, chr, pos)
 ```
 
 ## M-bias plots
 
-```{r plot_mbias, echo=FALSE, fig.height=3, fig.width=8}
-for (chrom in unique(data$chr)) {
-  p <- ggplot(data[chr==chrom, .(beta=sum(type=="mod")/.N), by=.(chr, `Pos in Read`=pos_in_read, `Read pair`=fifelse(bitwAnd(flag, 64)>0, "First", "Second"), Orientation=fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB"))][order(`Pos in Read`)], aes(x=`Pos in Read`, y=beta, colour = `Read pair`)) + geom_line() + facet_wrap(vars(Orientation)) + ggtitle(chrom)
-  print(p)
+```{r plot_mbias, echo=FALSE, fig.height=5, fig.width=7}
+for (chrom in unique(mbias_table$chr)) {
+  cutoffs <- mbias_table[chr==chrom, calculate_cutoff(as.data.frame(.SD)), by=.(chr, read_pair, strand)]
+  print(cutoffs)
+  g <- ggplot(mbias_table[chr==chrom], aes(x=pos, y=beta, color=read_pair)) +
+        geom_line() +
+        geom_ribbon(aes(ymin=lower_ci, ymax=upper_ci, fill=read_pair), alpha=0.2) +
+        labs(color = "Read") +
+        xlab("Position in read (5'->3')") +
+        scale_color_discrete(labels=c('First in pair', 'Second in pair')) +
+        scale_fill_discrete(guide="none") +
+        theme_light()
+  if(!is.null(cutoffs)) {
+    g = g + geom_vline(aes(xintercept=left, color=read_pair), data=cutoffs)
+    g = g + geom_vline(aes(xintercept=read_len-right, color=read_pair), data=cutoffs)
+  }
+  g = g + facet_wrap(vars(strand), nrow = 2, as.table = FALSE)
+  g = g + ggtitle(chrom)
+  
+  print(g)
 }
 ```
 
