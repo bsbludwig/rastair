@@ -13,6 +13,7 @@ fn write_mpk_then_view_stdout() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
+            "--thresholds", // disable ML for faster test
             "--region=chr19:6105700-6105750",
             "-o",
         ])
@@ -38,6 +39,7 @@ fn write_mpk_then_view_file() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
+            "--thresholds", // disable ML for faster test
             "--region=chr19:6105700-6105750",
             "--vcf",
         ])

@@ -10,8 +10,8 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds",
-            "--region=chr19:6105700-6105800", // for fast test
+            "--thresholds", // disable ML for faster test
+            "--region=chr19:6105700-6105800",
         ])
         .output()?;
 
@@ -37,8 +37,8 @@ fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
             "-c",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds",
-            "--region=chr19:6105700-6105800", // for fast test
+            "--thresholds", // disable ML for faster test
+            "--region=chr19:6105700-6105800",
         ])
         .output()?;
 
@@ -65,6 +65,7 @@ fn writing_vcf_to_file() -> Result<()> {
         "call",
         "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
+        "--thresholds", // disable ML for faster test
         "--region=chr19:6105700-6105800",
         "--vcf",
     ]).arg(&temp_file), @r#"
@@ -91,7 +92,8 @@ fn ask_for_cpgs_and_vcf() -> Result<()> {
             "--vcf",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--region=chr19:6105700-6105800", // small region for fast test
+            "--thresholds", // disable ML for faster test
+            "--region=chr19:6105700-6105800",
         ])
         .output()?;
 
@@ -119,8 +121,8 @@ fn write_bcf_to_file_and_bed_to_stdout() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--region=chr19:6105700-6105750",
             "--thresholds", // disable ML for faster test
+            "--region=chr19:6105700-6105750",
             "--bed=-",
             "--vcf",
         ])
@@ -145,8 +147,8 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--region=chr19:6117965-6118004",
             "--thresholds", // disable ML for faster test
+            "--region=chr19:6117965-6118004",
             "--skip-methylation-calling",
             "--vcf"
         ])
@@ -158,8 +160,8 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--region=chr19:6117965-6118004",
             "--thresholds", // disable ML for faster test
+            "--region=chr19:6117965-6118004",
             "--vcf"
         ])
     );
@@ -179,8 +181,8 @@ fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--region=chr19",
             "--thresholds", // disable ML for faster test
+            "--region=chr19",
             "--segment-max-length=10000",
             "--segment-overlap=300",
             "--vcf",
