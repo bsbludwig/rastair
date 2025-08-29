@@ -12,9 +12,9 @@ This document contains the help content for the `rastair2` command-line program.
 
 ## `rastair2`
 
-Rastair2
+Rastair -- detect genetic variants and methylated positions from short-read sequencing data created using TET-Assisted Pyridine-Borane Sequencing.
 
-Process TAPS-sequenced BAM files for methylation calling
+See <https://docs.rastair.com/> for more information.
 
 **Usage:** `rastair2 [OPTIONS] <COMMAND>`
 
@@ -36,6 +36,8 @@ Process TAPS-sequenced BAM files for methylation calling
 ## `rastair2 call`
 
 Call methylated positions
+
+Process TAPS-sequenced BAM files and call methylated positions.
 
 **Usage:** `rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>`
 

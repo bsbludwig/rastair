@@ -31,19 +31,22 @@ struct Cli {
     verbose: bool,
 }
 
-/// Rastair2
+/// Rastair -- detect genetic variants and methylated positions from short-read
+/// sequencing data created using TET-Assisted Pyridine-Borane Sequencing.
 ///
-/// Process TAPS-sequenced BAM files for methylation calling
+/// See <https://docs.rastair.com/> for more information.
 #[derive(Debug, clap::Subcommand)]
-#[command(version, about)]
+#[command(version)]
 #[allow(clippy::large_enum_variant)]
 enum Subcommand {
     /// Call methylated positions
+    ///
+    /// Process TAPS-sequenced BAM files and call methylated positions.
     Call(CallParams),
     /// Call methylation per-read
     ///
-    /// This will produce a bed file that list the methylation status of all CpGs
-    /// in every read that overlaps a CpG, plus some other metadata
+    /// This will produce a bed file that list the methylation status of all
+    /// CpGs in every read that overlaps a CpG, plus some other metadata
     PerRead(PerReadParams),
     /// Convert between different file formats
     Convert(ConvertParams),
