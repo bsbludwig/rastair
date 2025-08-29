@@ -14,8 +14,7 @@ pub fn setup_logging(verbose: bool) {
 
 fn setup_tracing(verbose: bool) {
     let subscriber = {
-        let default_log_settings =
-            if verbose { "info,rastair2=debug" } else { "warn,rastair2=info" };
+        let default_log_settings = if verbose { "info,rastair=debug" } else { "warn,rastair=info" };
         let mut env_filter = EnvFilter::new(default_log_settings);
         if let Ok(env) = std::env::var(LOG_VAR) {
             for directive in env.split(',') {

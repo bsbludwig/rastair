@@ -1,6 +1,6 @@
 //! Message Pack format tooling
 //!
-//! This is just the internal format used by rastair2. We expose it only for
+//! This is just the internal format used by rastair. We expose it only for
 //! debugging.
 
 pub mod format;

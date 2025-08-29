@@ -272,7 +272,7 @@ fn generate_docs(serve: bool) -> Result<()> {
 
 fn build_pgo_release(args: &[String]) -> Result<()> {
     let args = PgoInstrumentShortcutArgs::try_parse_from(
-        ["rastair2"].into_iter().chain(args.iter().map(|x| x.as_str())),
+        ["rastair"].into_iter().chain(args.iter().map(|x| x.as_str())),
     )?;
     let ctx = get_cargo_ctx(&[]).map_err(|e| eyre!("{e}"))?;
     cargo_pgo::pgo::instrument::pgo_instrument(

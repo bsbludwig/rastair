@@ -1,6 +1,6 @@
 # BED Format
 
-Rastair2 can output @BED files of two different kinds:
+Rastair can output @BED files of two different kinds:
 
 1. **CpG sites**:
    A file containing all @CpG sites with their @methylation status.
@@ -10,8 +10,8 @@ Rastair2 can output @BED files of two different kinds:
    A file containing the methylation status of each CpG site for each @read.
    Generated using the [`per-read`] command.
 
-[`call`]: ../cli.md#rastair2-call
-[`per-read`]: ../cli.md#rastair2-per-read
+[`call`]: ../cli.md#rastair-call
+[`per-read`]: ../cli.md#rastair-per-read
 
 ## CpG Sites
 

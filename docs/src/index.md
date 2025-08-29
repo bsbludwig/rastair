@@ -1,4 +1,4 @@
-# Rastair2
+# Rastair
 
 Rastair is a CLI application that allows the simultaneous detection of genetic variants and methylated positions from short-read sequencing data created using [TET-Assisted Pyridine-Borane Sequencing](https://www.nature.com/articles/s41587-019-0041-2).
 

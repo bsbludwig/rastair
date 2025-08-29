@@ -1,6 +1,6 @@
 # Architecture and Code Style
 
-This document describes the architecture and code style of the `rastair2` project.
+This document describes the architecture and code style of the `rastair` project.
 
 ## Structure
 
@@ -10,10 +10,10 @@ even though it is structured as a library for internal organization.
 
 ### Crates
 
-Aside from the main `rastair2` crate, we factored out some functionality into separate crates for better organization and reusability:
+Aside from the main `rastair` crate, we factored out some functionality into separate crates for better organization and reusability:
 
 - `crates/rastair-types`: Library crate with common types.
-- `crates/rastair2-vcf`: Library crate for handling VCF files.
+- `crates/rastair-vcf`: Library crate for handling VCF files.
 - `tools/*`: Internal tooling for developing rastair.
 
 ## Testing
@@ -52,7 +52,7 @@ Good reference for general topics:
 To measure performance, a representative dataset is needed, not just the small test files in this repository.
 For the following, we assume you have a good "call" command as `$call`, e.g. `call test.bam -r test.fa.gz --calling thresholds -o tmp/test.bcf`
 
-- Use [samply](https://github.com/mstange/samply/) to quickly get profiling data: `cargo build --profile profiling && samply record $CARGO_TARGET_DIR/profiling/rastair2 $call`
+- Use [samply](https://github.com/mstange/samply/) to quickly get profiling data: `cargo build --profile profiling && samply record $CARGO_TARGET_DIR/profiling/rastair $call`
 - You can use [cargo-pgo](https://github.com/Kobzol/cargo-pgo) for building with profile-guided optimizations (PGO):
   `cargo xtask release --pgo -- $call`
 

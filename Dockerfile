@@ -18,7 +18,7 @@ RUN cargo xtask release
 ################################################################################
 FROM r-base:4.3.3 AS release
 # Copy the compiled binary from the build stage
-COPY --from=builder /app/rastair/target/release/rastair2 /usr/local/bin/rastair
+COPY --from=builder /app/rastair/target/release/rastair /usr/local/bin/rastair
 
 # Install useful dependencies
 RUN apt update && apt-get -y upgrade && apt-get -y --no-install-recommends install procps bash-completion && apt-get clean && rm -rf /var/lib/apt/lists/*

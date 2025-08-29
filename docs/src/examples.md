@@ -18,13 +18,13 @@ Similarly, you can restrict processing to only one genomic interval using the `-
 By default, rastair will use a built-in machine-learning model to classify variants as real or false. The output should be a `.vcf.gz` or a `.bcf` file:
 
 ```bash
-rastair2 call -r reference.fa.gz -o test.bcf test.bam
+rastair call -r reference.fa.gz -o test.bcf test.bam
 ```
 
 The resulting @VCF output still contains candidate variants that did not pass all filters. If you just want to store high-confidence calls, you can write uncompressed vcf output to `STDOUT` and filter it on the fly with e.g. [bcftools](https://samtools.github.io/bcftools/bcftools.html):
 
 ```bash
-rastair2 call -r reference.fa.gz --vcf - test.bam | bcftools view -f PASS -o test.bcf
+rastair call -r reference.fa.gz --vcf - test.bam | bcftools view -f PASS -o test.bcf
 ```
 
 You can find a description of all custom VCF fields used by rastair [here](formats/vcf-fields.md).
@@ -34,7 +34,7 @@ You can find a description of all custom VCF fields used by rastair [here](forma
 In cases where all you need is a table of methylation counts in genomic - and putatively _de-novo_ - CpG positions, you can use the `--cpgs-only` parameter and use `--bed` output, which will greatly speed up the processing compared to calling all putative genetic variants:
 
 ```bash
-rastair2 call -r reference.fa.gz --cpgs-only --bed test.bed.gz test.bam
+rastair call -r reference.fa.gz --cpgs-only --bed test.bed.gz test.bam
 ```
 
 The reference for the meaning of the different columns in the bed output format can be found [here](formats/bed.md). Rastair will automatically produce [bgzip compressed](https://www.htslib.org/doc/bgzip.html) files if the output file name ends in `.gz`. You can then [index these with tabix](https://www.htslib.org/doc/tabix.html) for rapid access to specific genomic ranges:
@@ -48,7 +48,7 @@ tabix test.bed.gz chr19:6103156-6143156
 In some cases, you might prefer to write the bed output to `STDOUT` and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (ie exclude @denovo):
 
 ```bash
-rastair2 call -r reference.fa.gz --cpgs-only --bed - test.bam | grep -Fw REF
+rastair call -r reference.fa.gz --cpgs-only --bed - test.bam | grep -Fw REF
 ```
 
 ### Ignore positions at the edges of reads
@@ -69,7 +69,7 @@ This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/3600750171
 ## 3. Report methylation per-read in bed format
 
 ```bash
-rastair2 per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
+rastair per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 ```
 
 Again, this will generate a bgzip-compressed bed file that can be indexed with `tabix`. For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.

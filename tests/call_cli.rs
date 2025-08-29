@@ -17,8 +17,8 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
 
     let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
     assert_snapshot!(stderr, @r#"
-    [TIME] INFO rastair2::call: Wrote VCF output file="-"
-    [TIME] INFO rastair2: Call finished [DURATION]
+    [TIME] INFO rastair::call: Wrote VCF output file="-"
+    [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
     let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
@@ -44,8 +44,8 @@ fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
 
     let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
     assert_snapshot!(stderr, @r#"
-    [TIME] INFO rastair2::call: Wrote BED output file="-"
-    [TIME] INFO rastair2: Call finished [DURATION]
+    [TIME] INFO rastair::call: Wrote BED output file="-"
+    [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
     let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
@@ -73,8 +73,8 @@ fn writing_vcf_to_file() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    [TIME] INFO rastair2::call: Wrote VCF output file=[PATH]"
-    [TIME] INFO rastair2: Call finished [DURATION]
+    [TIME] INFO rastair::call: Wrote VCF output file=[PATH]"
+    [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
     Ok(())
@@ -97,8 +97,8 @@ fn ask_for_cpgs_and_vcf() -> Result<()> {
 
     let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
     assert_snapshot!(stderr, @r#"
-    [TIME] INFO rastair2::call: Wrote VCF output file="-"
-    [TIME] INFO rastair2: Call finished [DURATION]
+    [TIME] INFO rastair::call: Wrote VCF output file="-"
+    [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
     let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
@@ -187,7 +187,7 @@ fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
         ])
         .arg(&temp_file)
         .succeeds()
-        .wrap_err("rastair2 call failed")?;
+        .wrap_err("rastair call failed")?;
 
     let text = std::fs::read_to_string(&temp_file).wrap_err("read rastair 2 vcf")?;
     text.lines()

@@ -17,7 +17,7 @@ fn missing_bam() -> Result<()> {
     ----- stderr -----
     error: Invalid value for --fasta-file <FASTA_FILE>: Invalid path "test_data/test.fasta.gz": No such file or directory (os error 2)
 
-    Usage: rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>
+    Usage: rastair call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>
 
     For more information, try '--help'.
     "#);
@@ -40,7 +40,7 @@ fn missing_fasta() -> Result<()> {
     ----- stderr -----
     error: Invalid value for --fasta-file <FASTA_FILE>: Invalid path "tests/data/test_which_doesnt_exist.fasta": No such file or directory (os error 2)
 
-    Usage: rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>
+    Usage: rastair call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>
 
     For more information, try '--help'.
     "#);

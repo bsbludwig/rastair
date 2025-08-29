@@ -31,7 +31,7 @@ impl MessagePackWriter {
         let mut me =
             Self { path: path.clone(), writer: Box::new(BufWriter::with_capacity(one_mb, writer)) };
         me.write(&MpkEntry::Header(MpkHeader {
-            rastair2_version: env!("CARGO_PKG_VERSION").into(),
+            rastair_version: env!("CARGO_PKG_VERSION").into(),
         }))?;
         Ok(me)
     }

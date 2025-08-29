@@ -20,7 +20,7 @@ fn compare_rastair_1_and_2() -> Result<()> {
         ])
         .arg(&temp_file)
         .status()
-        .wrap_err("running rastair2")?;
+        .wrap_err("running rastair")?;
     assert!(call.success());
 
     // bcftools query -i "REF=='C' && CPG==1" -f "%CHROM\\t%POS0\\t%POS\\t%REF\\t%ALT\\t%AS_SB[\\t%M5mC\\t%GT\\t%DP]\n" tmp/test.bcf

@@ -40,4 +40,4 @@ pipelines:
             - apt-get update && apt-get install -y --no-install-recommends libclang-dev
             - cargo xtask release
           artifacts:
-            - target/release/rastair2
+            - target/release/rastair

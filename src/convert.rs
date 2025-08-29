@@ -17,12 +17,12 @@ use rust_htslib::bcf::Read as _;
 use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};
 
-/// Convert between different file formats that rastair2 supports
+/// Convert between different file formats that rastair supports
 ///
 /// Supported input formats include:
 /// - VCF (Variant Call Format)
 /// - BCF (Binary Call Format)
-/// - Message Pack (rastair2's internal format)
+/// - Message Pack (rastair's internal format)
 ///
 /// Supported output formats include:
 /// - The same as input formats

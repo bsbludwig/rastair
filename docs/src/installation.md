@@ -1,6 +1,6 @@
 # Installation
 
-Right now, Rastair2 is not distributed as a pre-built binary.
+Right now, Rastair is not distributed as a pre-built binary.
 You can build it from source from this repository.
 
 ## Building from source
@@ -15,4 +15,4 @@ Clone the repository and build the project using:
 cargo xtask release
 ```
 
-The binary will be located in `target/release/rastair2`.
+The binary will be located in `target/release/rastair`.

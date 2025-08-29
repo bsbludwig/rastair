@@ -2222,40 +2222,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "474c42c904f04dfe2a595a02f71e1a0e5e92ffb5761cc9a4c02140b93b8dd504"
 
 [[package]]
-name = "rastair-types"
-version = "0.1.0"
-dependencies = [
- "color-eyre",
- "insta",
- "proptest",
- "rust-htslib",
- "serde",
- "smol_str",
- "thiserror 2.0.16",
- "winnow 0.7.13",
-]
-
-[[package]]
-name = "rastair-vcf"
-version = "0.1.0"
-dependencies = [
- "color-eyre",
- "cstr8",
- "insta",
- "insta-cmd",
- "pastey",
- "proptest",
- "rastair-types",
- "rust-htslib",
- "serde",
- "smallvec 2.0.0-alpha.11",
- "smol_str",
- "tempfile",
-]
-
-[[package]]
-name = "rastair2"
-version = "0.1.0"
+name = "rastair"
+version = "2.0.0-rc.1"
 dependencies = [
  "better_default",
  "bgzip",
@@ -2295,6 +2263,38 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "winnow 0.7.13",
+]
+
+[[package]]
+name = "rastair-types"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "insta",
+ "proptest",
+ "rust-htslib",
+ "serde",
+ "smol_str",
+ "thiserror 2.0.16",
+ "winnow 0.7.13",
+]
+
+[[package]]
+name = "rastair-vcf"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "cstr8",
+ "insta",
+ "insta-cmd",
+ "pastey",
+ "proptest",
+ "rastair-types",
+ "rust-htslib",
+ "serde",
+ "smallvec 2.0.0-alpha.11",
+ "smol_str",
+ "tempfile",
 ]
 
 [[package]]

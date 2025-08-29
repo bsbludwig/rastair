@@ -16,7 +16,7 @@ There are no official releases yet.
 
 ### From Source
 
-To build rastair2, you'll need:
+To build rastair, you'll need:
 
 - Rust (version 1.88 or later)
 - `libclang-dev` and `cmake`

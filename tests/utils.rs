@@ -8,7 +8,7 @@ pub use std::{collections::BTreeSet, process::Command};
 pub use tempfile::TempDir;
 
 pub fn rastair() -> Command {
-    let mut cmd = Command::new(insta_cmd::get_cargo_bin("rastair2"));
+    let mut cmd = Command::new(insta_cmd::get_cargo_bin("rastair"));
     cmd.env("NO_COLOR", "1");
     cmd
 }

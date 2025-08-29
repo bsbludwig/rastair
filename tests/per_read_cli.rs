@@ -32,7 +32,7 @@ fn simple_per_read_call() -> Result<()> {
     chr19	6105947	6106027	NB502094:69:HN2H2BGX5:2:12207:14946:2414	60	-	241	80	83	3	3	6,37,49		
 
     ----- stderr -----
-    [TIME] INFO rastair2: Calling reads finished [DURATION]
+    [TIME] INFO rastair: Calling reads finished [DURATION]
     ");
 
     Ok(())

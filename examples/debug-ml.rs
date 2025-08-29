@@ -2,7 +2,7 @@ use clap::Parser as _;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
 use ndarray::ArrayView1;
-use rastair2::{
+use rastair::{
     call::{
         CallParams,
         ml::{self, MlModel, Prediction},

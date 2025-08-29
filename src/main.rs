@@ -3,7 +3,7 @@ use std::io::Write as _;
 use clap::{CommandFactory as _, Parser as _};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
-use rastair2::{
+use rastair::{
     call::{CallParams, call},
     call_reads::{PerReadParams, call_reads},
     convert::ConvertParams,
@@ -114,13 +114,13 @@ fn main() -> Result<()> {
             // track execution time
             let start = std::time::Instant::now();
             debug!(?params, "Running convert command");
-            rastair2::convert::convert(&params)?;
+            rastair::convert::convert(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Convert finished");
         }
         Subcommand::View(params) => {
             warn!("This format is for internal use only and may change without notice.");
-            rastair2::io::mpk::viewer::view(&params)?;
+            rastair::io::mpk::viewer::view(&params)?;
         }
         Subcommand::Internal { command } => match command {
             Generate::ShellCompletions { shell } => {
@@ -134,7 +134,7 @@ fn main() -> Result<()> {
             }
             Generate::VcfDocs { output } => {
                 let mut file = output.clone().create().wrap_err("Failed to create output")?;
-                rastair2::vcf::Record::description()
+                rastair::vcf::Record::description()
                     .to_markdown(&mut file)
                     .wrap_err("Failed to generate VCF docs")?;
             }

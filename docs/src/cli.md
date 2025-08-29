@@ -1,22 +1,22 @@
-# Command-Line Help for `rastair2`
+# Command-Line Help for `rastair`
 
-This document contains the help content for the `rastair2` command-line program.
+This document contains the help content for the `rastair` command-line program.
 
 **Command Overview:**
 
-* [`rastair2`↴](#rastair2)
-* [`rastair2 call`↴](#rastair2-call)
-* [`rastair2 per-read`↴](#rastair2-per-read)
-* [`rastair2 convert`↴](#rastair2-convert)
-* [`rastair2 view`↴](#rastair2-view)
+* [`rastair`↴](#rastair)
+* [`rastair call`↴](#rastair-call)
+* [`rastair per-read`↴](#rastair-per-read)
+* [`rastair convert`↴](#rastair-convert)
+* [`rastair view`↴](#rastair-view)
 
-## `rastair2`
+## `rastair`
 
 Rastair -- detect genetic variants and methylated positions from short-read sequencing data created using TET-Assisted Pyridine-Borane Sequencing.
 
 See <https://docs.rastair.com/> for more information.
 
-**Usage:** `rastair2 [OPTIONS] <COMMAND>`
+**Usage:** `rastair [OPTIONS] <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -33,13 +33,13 @@ See <https://docs.rastair.com/> for more information.
 
 
 
-## `rastair2 call`
+## `rastair call`
 
 Call methylated positions
 
 Process TAPS-sequenced BAM files and call methylated positions.
 
-**Usage:** `rastair2 call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>`
+**Usage:** `rastair call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>`
 
 ###### **Arguments:**
 
@@ -84,7 +84,9 @@ Process TAPS-sequenced BAM files and call methylated positions.
 * `--keep-overlapping-reads` — Whether to keep overlapping reads
 
   Default value: `false`
-* `--cpgs-only` — Only report positions that are CpGs in the reference or variants that would result in a new CpG
+* `-c`, `--cpgs-only` — Report CpGs only and default to BED output
+
+   Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
 
   Default value: `false`
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read
@@ -193,13 +195,13 @@ Process TAPS-sequenced BAM files and call methylated positions.
 
 
 
-## `rastair2 per-read`
+## `rastair per-read`
 
 Call methylation per-read
 
 This will produce a bed file that list the methylation status of all CpGs in every read that overlaps a CpG, plus some other metadata
 
-**Usage:** `rastair2 per-read [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>`
+**Usage:** `rastair per-read [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>`
 
 ###### **Arguments:**
 
@@ -259,11 +261,11 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 
 
-## `rastair2 convert`
+## `rastair convert`
 
 Convert between different file formats
 
-**Usage:** `rastair2 convert [OPTIONS]`
+**Usage:** `rastair convert [OPTIONS]`
 
 ###### **Options:**
 
@@ -302,11 +304,11 @@ Convert between different file formats
 
 
 
-## `rastair2 view`
+## `rastair view`
 
 View internal format as JSON lines
 
-**Usage:** `rastair2 view [OPTIONS] <INPUT>`
+**Usage:** `rastair view [OPTIONS] <INPUT>`
 
 ###### **Arguments:**
 

@@ -6,7 +6,7 @@ use std::borrow::Cow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MpkHeader {
-    pub rastair2_version: String,
+    pub rastair_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
