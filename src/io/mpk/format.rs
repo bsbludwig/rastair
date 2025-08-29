@@ -1,5 +1,5 @@
 use crate::vcf;
-use rastair2_vcf::Contig;
+use rastair_vcf::Contig;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::borrow::Cow;

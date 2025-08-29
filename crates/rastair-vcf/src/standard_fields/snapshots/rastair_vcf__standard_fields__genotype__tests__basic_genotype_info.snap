@@ -1,5 +1,5 @@
 ---
-source: crates/rastair2-vcf/src/standard_fields/genotype.rs
+source: crates/rastair-vcf/src/standard_fields/genotype.rs
 expression: result
 ---
 ##fileformat=VCFv4.2

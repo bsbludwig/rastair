@@ -105,6 +105,7 @@ fn can_pipe_through() -> Result<()> {
 
     let mut cmd = Command::new(insta_cmd::get_cargo_bin("/bin/bash"));
     cmd.arg("-c");
+    cmd.env("NO_COLOR", "1");
     cmd.arg("cargo run -q --release -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --thresholds --vcf | head -n1000 | cargo run -q --release -- convert -f bcf -F bed | head -n5");
 
     assert_cmd_snapshot!(cmd);

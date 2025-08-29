@@ -1,7 +1,7 @@
 use crate::{call::variants::VariantCandidatePileup, vcf::*};
 use color_eyre::eyre::Result;
-use rastair2_types::Phred;
-use rastair2_vcf::standard_fields::*;
+use rastair_types::Phred;
+use rastair_vcf::standard_fields::*;
 
 mod params;
 pub use params::VariantCallingParams;

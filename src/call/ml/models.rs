@@ -5,7 +5,7 @@ use color_eyre::{
     eyre::{Context, ensure},
 };
 use ndarray::{Array1, Axis};
-use rastair2_types::Base;
+use rastair_types::Base;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{fmt, fs, io::Read, path::Path};

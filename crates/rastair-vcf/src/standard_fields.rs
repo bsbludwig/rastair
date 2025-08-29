@@ -43,7 +43,7 @@ format_field!(
 filter!(PASS, "All filters pass");
 
 mod strand_bias;
-use rastair2_types::rms::RootMeanSquare;
+use rastair_types::rms::RootMeanSquare;
 pub use strand_bias::StrandBias;
 mod genotype;
 pub use genotype::{Genotype, GenotypeAllele};

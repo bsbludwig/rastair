@@ -7,7 +7,7 @@ use std::{fmt, ops::Deref};
 /// # Examples
 ///
 /// ```rust
-/// # use rastair2_types::RootMeanSquare;
+/// # use rastair_types::RootMeanSquare;
 /// let data = [1, 2, 3, 4, 5];
 /// // Explicitly construct from an iterator
 /// let rms = RootMeanSquare::from_iter(data);

@@ -1,6 +1,6 @@
 use crate::vcf::ByStrand;
 use color_eyre::{Result, eyre::Context as _};
-use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
+use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
 use std::ops::Deref;
@@ -10,7 +10,7 @@ use std::ops::Deref;
 pub struct StrandSpecificBaseQuality(pub SmallVec<ByStrand<f64>, 4>);
 
 mod as_ss_bq {
-    use rastair2_vcf::StrandSpecificInfoField;
+    use rastair_vcf::StrandSpecificInfoField;
 
     use super::*;
 
@@ -57,7 +57,7 @@ mod as_ss_bq {
             Ok(())
         }
 
-        fn description() -> Vec<rastair2_vcf::reflect::Info> {
+        fn description() -> Vec<rastair_vcf::reflect::Info> {
             Self::descriptions()
         }
     }

@@ -8,7 +8,7 @@ use color_eyre::{
     Result, Section,
     eyre::{Context as _, ContextCompat, eyre},
 };
-use rastair2_types::Strand;
+use rastair_types::Strand;
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use smallvec::SmallVec;

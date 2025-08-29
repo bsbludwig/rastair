@@ -315,7 +315,7 @@ impl InfoFieldValue for SmolStr {
 /// # Syntax
 ///
 /// ```rust
-/// use rastair2_vcf::{info_field, InfoFieldNumber};
+/// use rastair_vcf::{info_field, InfoFieldNumber};
 /// # type Type = u32; // or any other type that implements InfoFieldValue
 ///
 /// info_field!(Name(Type), "ID", "Description", InfoFieldNumber::OnePerAlt);

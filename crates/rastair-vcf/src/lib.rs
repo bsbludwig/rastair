@@ -12,7 +12,7 @@
 //! # use std::collections::BTreeSet;
 //! # use smol_str::SmolStr;
 //! # use tempfile::TempDir;
-//! use rastair2_vcf::*;
+//! use rastair_vcf::*;
 //!
 //! info_field!(AlleleFrequency(f64), "AF", "Allele Frequency", InfoFieldNumber::OnePerAlt);
 //! format_field!(ReadDepth(u32), "RD", "Read Depth", FormatFieldNumber::Num(1));

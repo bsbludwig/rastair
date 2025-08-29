@@ -22,7 +22,7 @@ pub fn add_filters(config: &ThresholdParams, record: &mut vcf::Record) -> Result
 }
 
 /// Check if this filter applies to the record.
-trait CheckFilter: rastair2_vcf::VcfFilter {
+trait CheckFilter: rastair_vcf::VcfFilter {
     /// Check if the filter condition is met for the given record.
     fn check(_config: &ThresholdParams, _record: &mut vcf::Record) -> bool;
 

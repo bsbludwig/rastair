@@ -7,7 +7,7 @@ use crate::{
 };
 use color_eyre::eyre::{Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
-use rastair2_vcf::standard_fields::GenotypeAllele;
+use rastair_vcf::standard_fields::GenotypeAllele;
 use tracing::{instrument, trace};
 
 impl VariantCandidatePileup {

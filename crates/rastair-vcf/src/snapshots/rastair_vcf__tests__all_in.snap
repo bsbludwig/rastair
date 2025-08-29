@@ -1,5 +1,5 @@
 ---
-source: crates/rastair2-vcf/src/lib.rs
+source: crates/rastair-vcf/src/lib.rs
 expression: result
 ---
 ##fileformat=VCFv4.2

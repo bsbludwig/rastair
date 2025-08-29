@@ -8,8 +8,8 @@
 //! <https://github.com/samtools/hts-specs/blob/0d7f8774658f7cee0a4540b0682174e460726432/VCFv4.5.tex>
 //! for the VCF spec.
 
-use rastair2_types::Phred;
-use rastair2_vcf::{standard_fields::*, *};
+use rastair_types::Phred;
+use rastair_vcf::{standard_fields::*, *};
 
 mod as_strand_bias;
 pub use as_strand_bias::AlleleSpecificStrandBias;

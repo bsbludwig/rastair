@@ -1,7 +1,7 @@
 use std::fmt;
 
 use color_eyre::{Result, eyre::WrapErr};
-use rastair2_vcf::{FormatFieldNumber, FormatFieldValue, VcfField as _};
+use rastair_vcf::{FormatFieldNumber, FormatFieldValue, VcfField as _};
 use rust_htslib::bcf::Record;
 
 /// Methylation information
@@ -43,15 +43,15 @@ impl fmt::Debug for Methylated {
     }
 }
 
-impl rastair2_vcf::VcfField for Methylated {
+impl rastair_vcf::VcfField for Methylated {
     const ID: &'static cstr8::CStr8 = cstr8::cstr8!("M5mC");
 }
 
-impl rastair2_vcf::HeaderField for Methylated {
+impl rastair_vcf::HeaderField for Methylated {
     const DESCRIPTION: &'static str = "Methylation level at CpG sites";
 }
 
-impl rastair2_vcf::FormatField for Methylated {
+impl rastair_vcf::FormatField for Methylated {
     type Type = Option<f64>;
     const NUMBER: FormatFieldNumber = FormatFieldNumber::Num(1);
 

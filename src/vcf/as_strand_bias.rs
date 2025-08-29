@@ -1,6 +1,6 @@
 use crate::vcf::ByStrand;
 use color_eyre::eyre::{Context as _, Result};
-use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, StrandSpecificInfoField, VcfField};
+use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, StrandSpecificInfoField, VcfField};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
 use std::ops::Deref;
@@ -72,7 +72,7 @@ impl InfoField for AlleleSpecificStrandBias {
         Ok(())
     }
 
-    fn description() -> Vec<rastair2_vcf::reflect::Info> {
+    fn description() -> Vec<rastair_vcf::reflect::Info> {
         Self::descriptions()
     }
 }

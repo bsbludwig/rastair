@@ -4,7 +4,7 @@ use crate::{
 };
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
-use rastair2_vcf::VcfField as _;
+use rastair_vcf::VcfField as _;
 use rust_htslib::bcf::Record;
 use std::fmt;
 use std::ops::Deref;
@@ -67,20 +67,20 @@ impl From<&VariantCandidatePileup> for InCpG {
     }
 }
 
-impl rastair2_vcf::VcfField for InCpG {
+impl rastair_vcf::VcfField for InCpG {
     const ID: &'static cstr8::CStr8 = cstr8::cstr8!("CPG");
 }
 
-impl rastair2_vcf::HeaderField for InCpG {
+impl rastair_vcf::HeaderField for InCpG {
     const DESCRIPTION: &'static str = "Is this a CpG site?";
 }
 
-impl rastair2_vcf::InfoField for InCpG {
+impl rastair_vcf::InfoField for InCpG {
     type Type = bool;
-    const NUMBER: rastair2_vcf::InfoFieldNumber = rastair2_vcf::InfoFieldNumber::Flag;
+    const NUMBER: rastair_vcf::InfoFieldNumber = rastair_vcf::InfoFieldNumber::Flag;
 
     fn write(&self, record: &mut Record) -> Result<()> {
-        <bool as rastair2_vcf::InfoFieldValue>::write(record, Self::ID, &[*self != InCpG::No])
+        <bool as rastair_vcf::InfoFieldValue>::write(record, Self::ID, &[*self != InCpG::No])
             .wrap_err("Failed to write info flag CPG")
     }
 }

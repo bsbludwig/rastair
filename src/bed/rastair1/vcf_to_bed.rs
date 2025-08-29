@@ -10,8 +10,8 @@ use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat as _, Report, ensure},
 };
-use rastair2_types::Phred;
-use rastair2_vcf::{
+use rastair_types::Phred;
+use rastair_vcf::{
     StrandSpecificInfoField as _, VcfField as _,
     standard_fields::{Genotype, ReadDepth},
 };

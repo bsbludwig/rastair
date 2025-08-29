@@ -4,7 +4,7 @@ use crate::{
     vcf::*,
 };
 use color_eyre::Result;
-use rastair2_vcf::standard_fields::*;
+use rastair_vcf::standard_fields::*;
 use smallvec::SmallVec;
 use std::collections::BTreeSet;
 use tracing::warn;
@@ -12,8 +12,8 @@ use tracing::warn;
 mod entropy;
 
 impl VariantCandidatePileup {
-    pub fn fixed_fields(&self) -> rastair2_vcf::VcfFixedFields {
-        rastair2_vcf::VcfFixedFields {
+    pub fn fixed_fields(&self) -> rastair_vcf::VcfFixedFields {
+        rastair_vcf::VcfFixedFields {
             chrom: self.chrom(),
             pos: self.pos,
             id: BTreeSet::default(),

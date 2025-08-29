@@ -392,7 +392,7 @@ fn process_region(
     for current in &mut records {
         // If no filters were added, we're gonna call it
         if current.filters.is_empty() {
-            current.filters.add(rastair2_vcf::standard_fields::PASS);
+            current.filters.add(rastair_vcf::standard_fields::PASS);
         }
     }
 

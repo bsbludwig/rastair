@@ -1,6 +1,6 @@
 use crate::utils::Base;
 use color_eyre::eyre::{Context as _, Result};
-use rastair2_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
+use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
 use smol_str::{SmolStr, SmolStrBuilder};
 

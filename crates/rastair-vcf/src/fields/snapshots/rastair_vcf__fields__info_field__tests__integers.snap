@@ -1,5 +1,5 @@
 ---
-source: crates/rastair2-vcf/src/fields/info_field.rs
+source: crates/rastair-vcf/src/fields/info_field.rs
 expression: result
 ---
 ##fileformat=VCFv4.2

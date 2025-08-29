@@ -12,7 +12,7 @@ use color_eyre::{
     Section as _,
     eyre::{ContextCompat, Result, WrapErr, bail, eyre},
 };
-use rastair2_vcf::VcfField;
+use rastair_vcf::VcfField;
 use rust_htslib::bcf::Read as _;
 use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};

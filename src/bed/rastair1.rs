@@ -5,7 +5,7 @@ use crate::{
 };
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
-use rastair2_vcf::standard_fields::{Genotype, GenotypeAllele};
+use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
 use tracing::{debug, instrument};

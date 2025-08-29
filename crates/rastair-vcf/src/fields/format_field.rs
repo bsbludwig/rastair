@@ -271,7 +271,7 @@ impl FormatFieldValue for SmolStr {
 /// # Syntax
 ///
 /// ```rust
-/// use rastair2_vcf::{format_field, FormatFieldNumber};
+/// use rastair_vcf::{format_field, FormatFieldNumber};
 /// type Type = u32; // or any other type that implements FormatFieldValue
 ///
 /// format_field!(Name(Type), "ID", "Description", FormatFieldNumber::OnePerAlt);

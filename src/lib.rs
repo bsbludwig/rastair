@@ -11,7 +11,7 @@ pub mod io {
 }
 pub mod vcf;
 pub mod utils {
-    pub use rastair2_types::*;
+    pub use rastair_types::*;
 
     mod base_modification;
     pub mod file_helpers;
