@@ -62,13 +62,7 @@ fn missing_output_choice() -> Result<()> {
 
     ----- stderr -----
     Error: 
-       0: [91mNo output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`.[0m
-
-    Location:
-       [35msrc/call.rs[0m:[35m90[0m
-
-    Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
-    Run with RUST_BACKTRACE=full to include source snippets.
+       0: No output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`.
     ");
 
     Ok(())
@@ -117,14 +111,37 @@ fn different_paths_for_bed_and_vcf() -> Result<()> {
 
     ----- stderr -----
     Error: 
-       0: [91mCan't write both VCF and BED output to the same file. Please specify different output files.[0m
-
-    Location:
-       [35msrc/call.rs[0m:[35m94[0m
-
-    Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
-    Run with RUST_BACKTRACE=full to include source snippets.
+       0: Can't write both VCF and BED output to the same file. Please specify different output files.
     ");
+
+    Ok(())
+}
+
+#[test]
+fn invalid_bam_file() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let fake_bam = temp_dir.path().join("test.bam");
+    std::fs::write(&fake_bam, b"This is not a BAM file")?;
+
+    assert_cmd_snapshot!(rastair().args([
+        "call",
+        "--region=chr19:6105700-6105800",
+        "--fasta-file=tests/data/test.fasta.gz",
+    ]).arg(&fake_bam), @r#"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Error: 
+       0: Failed to read BAM/FASTA files
+       1: unable to open SAM/BAM/CRAM file at [PATH]
+
+    Suggestion: Ensure the BAM file is sorted and indexed with `samtools sort "[PATH]"`, respectively.
+    Note: If you have a .bai file, ensure it is in the same directory as the BAM file.
+    "#);
 
     Ok(())
 }

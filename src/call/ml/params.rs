@@ -2,6 +2,7 @@ use crate::call::ml::{MachineLearning, models::load_model};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context};
+use tracing::instrument;
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MachineLearningParams {
@@ -39,6 +40,7 @@ pub struct MachineLearningParams {
 }
 
 impl MachineLearningParams {
+    #[instrument(name = "init_ml", skip(self))]
     pub fn init(&self) -> Result<MachineLearning> {
         if self.no_ml {
             return Ok(MachineLearning::disabled());

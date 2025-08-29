@@ -2,16 +2,13 @@ use std::io::Write as _;
 
 use clap::{CommandFactory as _, Parser as _};
 use clio::ClioPath;
-use color_eyre::{
-    Section,
-    eyre::{Context, Result},
-};
+use color_eyre::eyre::{Context, Result};
 use rastair2::{
     call::{CallParams, call},
     call_reads::{PerReadParams, call_reads},
     convert::ConvertParams,
     io::mpk::viewer::MpkViewParams,
-    utils::logging::{BUG_MESSAGE, setup_tracing},
+    utils::logging::setup_logging,
 };
 use tracing::{debug, info, warn};
 
@@ -87,13 +84,14 @@ enum Generate {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
-    setup_tracing(args.verbose);
-    color_eyre::config::HookBuilder::default()
-        .panic_section(BUG_MESSAGE)
-        .install()
-        .wrap_err("Failed to set up panic handler")
-        .note("Seeing this error message is somewhat ironic, we know")?;
-    reset_sigpipe();
+    setup_logging(args.verbose);
+
+    #[cfg(unix)]
+    // make sure we quit when the pipe closes
+    // SAFETY: Calls libc, but at the start of the program
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
 
     match args.command {
         Subcommand::Call(params) => {
@@ -144,15 +142,4 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-/*
- * some super-hacky sh*t to make this behave like a normal unix program and quit when the pipe ends
- */
-fn reset_sigpipe() {
-    #[cfg(unix)]
-    // SAFETY: Calls libc
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
 }

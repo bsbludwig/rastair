@@ -9,7 +9,7 @@ use rastair2::{
         process,
     },
     sequence::ChunkRegion,
-    utils::surrounding_records,
+    utils::{logging::setup_logging, surrounding_records},
 };
 use std::io::{BufWriter, Write};
 
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
 
     let args = Cli::parse();
-    rastair2::utils::logging::setup_tracing(args.verbose);
+    setup_logging(args.verbose);
     let params = args.call;
 
     let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;

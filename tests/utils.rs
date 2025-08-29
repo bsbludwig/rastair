@@ -25,6 +25,7 @@ macro_rules! apply_common_filters {
         settings.add_filter(r#"file="/.*/test.bcf"#, "file=[PATH]");
         settings.add_filter(r#"file="/.*/test.mpk.lz4"#, "file=[PATH]");
         settings.add_filter(r#"file="/.*/test.bed"#, "file=[PATH]");
+        settings.add_filter(r#"/var/.*/test.bam"#, "[PATH]");
         let _bound = settings.bind_to_scope();
     }
 }
@@ -47,6 +48,14 @@ impl ExitStatusResultExt for std::process::ExitStatus {
         if !self.success() {
             bail!("Command failed with status: {}", self)
         }
+        Ok(())
+    }
+}
+
+impl ExitStatusResultExt for std::process::Output {
+    #[track_caller]
+    fn succeeds(&mut self) -> Result<()> {
+        self.status.succeeds()?;
         Ok(())
     }
 }

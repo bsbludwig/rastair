@@ -1,12 +1,23 @@
-use color_eyre::eyre::Report;
+use color_eyre::{Section as _, eyre::Report};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
-pub fn setup_tracing(verbose: bool) {
+pub static LOG_VAR: &str = "RASTAIR_LOG";
+pub static BUG_MESSAGE: &str = "This is a bug in Rastair, please report it at <https://bitbucket.org/bsblabludwig/rastair/issues/new>";
+
+/// Setup logging and error handling
+///
+/// To be called once at the start of the program.
+pub fn setup_logging(verbose: bool) {
+    setup_tracing(verbose);
+    setup_eyre(verbose);
+}
+
+fn setup_tracing(verbose: bool) {
     let subscriber = {
         let default_log_settings =
             if verbose { "info,rastair2=debug" } else { "warn,rastair2=info" };
         let mut env_filter = EnvFilter::new(default_log_settings);
-        if let Ok(env) = std::env::var("RASTAIR_LOG") {
+        if let Ok(env) = std::env::var(LOG_VAR) {
             for directive in env.split(',') {
                 if directive.is_empty() {
                     continue;
@@ -38,7 +49,26 @@ pub fn setup_tracing(verbose: bool) {
     }
 }
 
-pub static BUG_MESSAGE: &str = "This is a bug in Rastair, please report it at <https://bitbucket.org/bsblabludwig/rastair/issues/new>";
+fn setup_eyre(verbose: bool) {
+    if verbose {
+        // SAFETY: This is set at the very start of the program
+        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
+    }
+    let hook = color_eyre::config::HookBuilder::default()
+        .panic_section(BUG_MESSAGE)
+        .display_env_section(verbose)
+        .display_location_section(verbose)
+        .theme(if std::env::var("NO_COLOR").is_ok() {
+            color_eyre::config::Theme::new()
+        } else {
+            color_eyre::config::Theme::dark()
+        })
+        .install()
+        .note("Seeing this error message is somewhat ironic, we know");
+    if let Err(error) = hook {
+        eprintln!("Failed to register panic handler: {error:#}");
+    }
+}
 
 pub trait ThisIsABug<T> {
     fn this_is_a_bug(self) -> Result<T, Report>;
