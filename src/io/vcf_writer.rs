@@ -1,8 +1,5 @@
 use clio::ClioPath;
-use color_eyre::{
-    Section,
-    eyre::{ContextCompat, Result, WrapErr},
-};
+use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use rastair2_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
 use smol_str::SmolStr;
 use std::{collections::BTreeSet, ffi::OsStr, num::NonZeroUsize};
@@ -14,6 +11,7 @@ use crate::{
         mpk::{MessagePackWriter, format::MpkVcfHeader},
     },
     sequence::ChunkRegion,
+    utils::logging::ThisIsABug as _,
     vcf::Record,
 };
 
@@ -131,7 +129,7 @@ impl Params {
                     .create_mpk_writer(contigs, samples, metadata)
                     .wrap_err("Failed to create MessagePack writer")?;
                 return Ok(Some(Writer::MessagePack(
-                    writer.wrap_err("No VCF output path present").note("This is a bug")?,
+                    writer.wrap_err("No VCF output path present").this_is_a_bug()?,
                 )));
             }
             Format::Vcf(f) => f.into(),
@@ -141,7 +139,7 @@ impl Params {
             self.vcf_writer(&contigs, &samples, metadata, format, compression)
                 .wrap_err("Failed to create VCF writer")?
                 .wrap_err("No VCF output path present")
-                .note("This is a bug")?,
+                .this_is_a_bug()?,
         )))
     }
 

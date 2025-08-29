@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
 
     let args = Cli::parse();
-    rastair2::utils::setup_tracing(args.verbose);
+    rastair2::utils::logging::setup_tracing(args.verbose);
     let params = args.call;
 
     let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;

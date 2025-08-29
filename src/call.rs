@@ -6,13 +6,10 @@ use crate::{
     },
     io::vcf_writer,
     sequence::{ChunkRegion, ReaderParams, Readers},
-    utils::surrounding_records,
+    utils::{logging::ThisIsABug as _, surrounding_records},
     vcf::{self, MachineLearningPrediction, low_ml_score},
 };
-use color_eyre::{
-    Section as _,
-    eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
-};
+use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
 use rayon::prelude::*;
 use smol_str::SmolStr;
 use std::{
@@ -165,7 +162,7 @@ pub fn call(params: &CallParams) -> Result<()> {
                     "rastairConfig={}",
                     serde_json::to_string(params)
                         .wrap_err("Failed to serialize config to JSON")
-                        .note("This is a bug in rastair")?
+                        .this_is_a_bug()?
                 ),
                 format!("reference={}", params.segments.fasta_file),
             ];

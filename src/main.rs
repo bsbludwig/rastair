@@ -11,6 +11,7 @@ use rastair2::{
     call_reads::{PerReadParams, call_reads},
     convert::ConvertParams,
     io::mpk::viewer::MpkViewParams,
+    utils::logging::{BUG_MESSAGE, setup_tracing},
 };
 use tracing::{debug, info, warn};
 
@@ -85,13 +86,14 @@ enum Generate {
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()
+    let args = Cli::parse();
+    setup_tracing(args.verbose);
+    color_eyre::config::HookBuilder::default()
+        .panic_section(BUG_MESSAGE)
+        .install()
         .wrap_err("Failed to set up panic handler")
         .note("Seeing this error message is somewhat ironic, we know")?;
     reset_sigpipe();
-
-    let args = Cli::parse();
-    rastair2::utils::setup_tracing(args.verbose);
 
     match args.command {
         Subcommand::Call(params) => {

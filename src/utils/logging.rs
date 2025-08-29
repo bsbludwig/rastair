@@ -1,3 +1,4 @@
+use color_eyre::eyre::Report;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 pub fn setup_tracing(verbose: bool) {
@@ -34,5 +35,22 @@ pub fn setup_tracing(verbose: bool) {
     };
     if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
         eprintln!("Failed to register logging: {error:#}");
+    }
+}
+
+pub static BUG_MESSAGE: &str = "This is a bug in Rastair, please report it at <https://bitbucket.org/bsblabludwig/rastair/issues/new>";
+
+pub trait ThisIsABug<T> {
+    fn this_is_a_bug(self) -> Result<T, Report>;
+}
+
+impl<T, E> ThisIsABug<T> for Result<T, E>
+where
+    E: Into<Report>,
+{
+    fn this_is_a_bug(self) -> Result<T, Report> {
+        use color_eyre::Help;
+
+        self.map_err(|error| error.into()).map_err(|report| report.note(BUG_MESSAGE))
     }
 }
