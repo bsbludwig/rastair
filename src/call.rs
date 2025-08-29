@@ -9,6 +9,7 @@ use crate::{
     utils::{logging::ThisIsABug as _, surrounding_records},
     vcf::{self, MachineLearningPrediction, low_ml_score},
 };
+use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
 use rayon::prelude::*;
 use smol_str::SmolStr;
@@ -68,6 +69,27 @@ pub struct CallParams {
     pub total_threads: usize,
 }
 
+impl CallParams {
+    fn figure_out_outputs(&mut self) -> Result<()> {
+        let user_chose_output = self.vcf.vcf.is_some() || self.bed.bed.is_some();
+
+        if user_chose_output {
+            ensure!(
+                self.vcf.vcf.as_ref() != self.bed.bed.as_ref(),
+                "Can't write both VCF and BED output to the same file. Please specify different output files."
+            );
+        } else if self.variant_calling.cpgs_only {
+            // Default to BED output if only CpGs are requested
+            self.bed.bed = Some(ClioPath::std());
+        } else {
+            // Default to VCF output if no output is specified
+            self.vcf.vcf = Some(ClioPath::std());
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, clap::Args, Clone)]
 pub struct SegmentationParams {
     /// Maximum length of a segment in bases
@@ -86,15 +108,9 @@ pub struct SegmentationParams {
 
 /// Read BAM + FASTA and call variants and methylation events
 #[instrument(level = "debug", skip(params))]
-pub fn call(params: &CallParams) -> Result<()> {
-    ensure!(
-        params.vcf.vcf.is_some() || params.bed.bed.is_some(),
-        "No output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`."
-    );
-    ensure!(
-        params.vcf.vcf.as_ref() != params.bed.bed.as_ref(),
-        "Can't write both VCF and BED output to the same file. Please specify different output files."
-    );
+pub fn call(mut params: CallParams) -> Result<()> {
+    params.figure_out_outputs().wrap_err("Unclear output choice")?;
+    let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
     let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
@@ -202,6 +218,7 @@ pub fn call(params: &CallParams) -> Result<()> {
 
                         if let Some(bed_writer) = bed_writer.as_mut()
                             && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
+                        // && record.filters.pass()
                         {
                             bed_writer
                                 .write_record(

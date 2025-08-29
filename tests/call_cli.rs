@@ -2,7 +2,60 @@ mod utils;
 use utils::*;
 
 #[test]
-fn random_call() -> Result<()> {
+fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
+    apply_common_filters!();
+
+    let output = rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--thresholds",
+            "--region=chr19:6105700-6105800", // for fast test
+        ])
+        .output()?;
+
+    let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
+    assert_snapshot!(stderr, @r#"
+    [TIME] INFO rastair2::call: Wrote VCF output file="-"
+    [TIME] INFO rastair2: Call finished [DURATION]
+    "#);
+
+    let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
+    assert!(stdout.trim().starts_with("##fileformat=VCF"));
+
+    Ok(())
+}
+
+#[test]
+fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
+    apply_common_filters!();
+
+    let output = rastair()
+        .args([
+            "call",
+            "-c",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--thresholds",
+            "--region=chr19:6105700-6105800", // for fast test
+        ])
+        .output()?;
+
+    let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
+    assert_snapshot!(stderr, @r#"
+    [TIME] INFO rastair2::call: Wrote BED output file="-"
+    [TIME] INFO rastair2: Call finished [DURATION]
+    "#);
+
+    let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
+    assert!(stdout.trim().starts_with("#chr"));
+
+    Ok(())
+}
+
+#[test]
+fn writing_vcf_to_file() -> Result<()> {
     apply_common_filters!();
 
     let temp_dir = TempDir::new()?;
@@ -28,19 +81,28 @@ fn random_call() -> Result<()> {
 }
 
 #[test]
-fn pipe_to_stdout() -> Result<()> {
+fn ask_for_cpgs_and_vcf() -> Result<()> {
     apply_common_filters!();
 
-    // Please manually verify that only the VCF output is printed to stdout and
-    // logging goes to stderr.
-    assert_cmd_snapshot!(rastair().args([
-        "call",
-        "--fasta-file=tests/data/test.fasta.gz",
-        "tests/data/test.bam",
-        "--region=chr19:6105700-6105750",
-        "--thresholds", // disable ML for faster test
-        "--vcf",
-    ]));
+    let output = rastair()
+        .args([
+            "call",
+            "-c",
+            "--vcf",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=chr19:6105700-6105800", // small region for fast test
+        ])
+        .output()?;
+
+    let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
+    assert_snapshot!(stderr, @r#"
+    [TIME] INFO rastair2::call: Wrote VCF output file="-"
+    [TIME] INFO rastair2: Call finished [DURATION]
+    "#);
+
+    let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
+    assert!(stdout.trim().starts_with("##fileformat=VCF"));
 
     Ok(())
 }
@@ -99,25 +161,6 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
             "--region=chr19:6117965-6118004",
             "--thresholds", // disable ML for faster test
             "--vcf"
-        ])
-    );
-
-    Ok(())
-}
-
-#[test]
-fn includes_only_cpgs_when_methylation_calling() -> Result<()> {
-    apply_common_filters!();
-    assert_cmd_snapshot!(
-        "includes only cpgs",
-        rastair().args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--region=chr19:6117965-6118004",
-            "--thresholds", // disable ML for faster test
-            "--cpgs-only",
-            "--vcf",
         ])
     );
 

@@ -98,7 +98,7 @@ fn main() -> Result<()> {
             // track execution time
             let start = std::time::Instant::now();
             debug!(?params, "Running call command");
-            call(&params)?;
+            call(params)?;
             let duration = start.elapsed();
             info!(?duration, "Call finished");
         }

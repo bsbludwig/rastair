@@ -49,26 +49,6 @@ fn missing_fasta() -> Result<()> {
 }
 
 #[test]
-fn missing_output_choice() -> Result<()> {
-    apply_common_filters!();
-    assert_cmd_snapshot!(rastair().args([
-        "call",
-        "--fasta-file=tests/data/test.fasta.gz",
-        "tests/data/test.bam",
-    ]), @r"
-    success: false
-    exit_code: 1
-    ----- stdout -----
-
-    ----- stderr -----
-    Error: 
-       0: No output specified. Please specify at least one of `--vcf[=<PATH>]` or `--bed[=<PATH>]`.
-    ");
-
-    Ok(())
-}
-
-#[test]
 fn validates_region_arg() -> Result<()> {
     apply_common_filters!();
     assert_cmd_snapshot!(rastair().args([
@@ -111,7 +91,8 @@ fn different_paths_for_bed_and_vcf() -> Result<()> {
 
     ----- stderr -----
     Error: 
-       0: Can't write both VCF and BED output to the same file. Please specify different output files.
+       0: Unclear output choice
+       1: Can't write both VCF and BED output to the same file. Please specify different output files.
     ");
 
     Ok(())
