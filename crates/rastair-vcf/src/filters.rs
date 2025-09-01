@@ -47,6 +47,10 @@ macro_rules! filter {
         #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
         pub struct $name;
 
+        impl $name {
+            const IS_PASS: bool = matches!(stringify!($name).as_bytes(), b"PASS");
+        }
+
         impl $crate::VcfFilter for $name {
             const NAME: &'static str = stringify!($name);
             const DESCRIPTION: &'static str = $description;
@@ -65,10 +69,7 @@ macro_rules! filter {
             }
 
             fn is_pass(&self) -> bool {
-                // originally, we would check this:
-                // matches!(stringify!($name).as_bytes(), b"PASS" | b".")
-                // but since we are defining only custom filters, we know they never mean "pass"
-                false
+                Self::IS_PASS
             }
         }
     };

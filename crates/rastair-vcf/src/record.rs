@@ -51,6 +51,10 @@ macro_rules! vcf_record {
             pub fn clear(&mut self) {
                 self.0.clear();
             }
+
+            pub fn pass(&self) -> bool {
+                self.0.is_empty() || (self.0.len() == 1 && self.0[0] == "PASS")
+            }
         }
 
         impl $crate::WriteToVcf for Filters {
