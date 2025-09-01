@@ -6,6 +6,7 @@ use color_eyre::{
 };
 use ndarray::{Array1, Axis};
 use rastair_types::Base;
+use rastair_types::Probability;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{fmt, fs, io::Read, path::Path};
@@ -13,7 +14,7 @@ use tracing::{debug, instrument, warn};
 
 pub struct MachineLearning {
     pub disabled: bool,
-    pub threshold: f64,
+    pub threshold: Probability,
     pub cpg: Option<Box<RandomForest>>,
     pub denovo_cpg: Option<Box<RandomForest>>,
     pub others: Option<Box<RandomForest>>,
@@ -29,8 +30,8 @@ pub enum MlResult {
 pub struct Prediction {
     pub model: MlModel,
     pub allele: Base,
-    pub prediction: f64,
-    pub threshold: f64,
+    pub prediction: Probability,
+    pub threshold: Probability,
     #[serde(skip)]
     pub features: Array1<f64>,
 }
@@ -51,8 +52,8 @@ impl Prediction {
         Self {
             model: MlModel::Others,
             allele: Base::Unknown,
-            prediction: 0.,
-            threshold: 1.,
+            prediction: Probability::new(0.).expect("0 is a valid probability"),
+            threshold: Probability::new(1.).expect("1 is a valid probability"),
             features: Array1::from_elem(0, 0.),
         }
     }
@@ -77,7 +78,13 @@ impl std::ops::Deref for Prediction {
 
 impl MachineLearning {
     pub fn disabled() -> Self {
-        Self { disabled: true, threshold: 1., cpg: None, denovo_cpg: None, others: None }
+        Self {
+            disabled: true,
+            threshold: Probability::new(1.).expect("1 is a valid probability"),
+            cpg: None,
+            denovo_cpg: None,
+            others: None,
+        }
     }
 
     pub fn predict(
@@ -126,7 +133,7 @@ impl MachineLearning {
             let prediction = model.predict(&features.view());
             match prediction.get(0).copied() {
                 Some(p) => predictions.push(Prediction {
-                    prediction: p,
+                    prediction: Probability::new(p).expect("Probability should be valid"),
                     threshold: self.threshold,
                     allele: alt.parse().unwrap_or(Base::Unknown),
                     features: features.row(0).to_owned(),

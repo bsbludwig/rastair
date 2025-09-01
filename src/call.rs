@@ -388,7 +388,7 @@ fn process_region(
                     current.filters.add(low_ml_score);
                 }
                 current.samples[0].machine_learning_prediction = MachineLearningPrediction(
-                    predictions.into_iter().map(|p| p.prediction).collect(),
+                    predictions.into_iter().map(|p| *p.prediction).collect(),
                 );
             }
         }

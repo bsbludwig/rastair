@@ -2,6 +2,7 @@ use crate::call::ml::{MachineLearning, models::load_model};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context};
+use rastair_types::Probability;
 use tracing::instrument;
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
@@ -17,8 +18,8 @@ pub struct MachineLearningParams {
     ///
     /// When specified, a ML model will classify positions with a prediction
     /// score. Anything above this threshold is considered PASS.
-    #[arg(long = "ml", default_value_t = 0.8, num_args = 0..=1)]
-    pub ml: f64,
+    #[arg(long = "ml", default_value_t = Probability::new(0.8).expect("default value is valid probility"), num_args = 0..=1)]
+    pub ml: Probability,
     /// Path to the model for CpG positions
     ///
     /// Default is the bundled model in the Rastair binary.

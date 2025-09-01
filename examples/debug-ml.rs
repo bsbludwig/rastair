@@ -88,7 +88,7 @@ fn main() -> Result<()> {
                     .write(
                         &current.main.chrom,
                         current.main.pos,
-                        prediction,
+                        *prediction,
                         features.view(),
                     )?;
                 }
