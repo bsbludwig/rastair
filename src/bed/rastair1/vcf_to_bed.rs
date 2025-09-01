@@ -104,6 +104,8 @@ impl Rastair1BedFormat {
             return Ok(None);
         }
 
+        let beta = if in_cpg && genotype.homozygous() { Some(0.0) } else { beta };
+
         Ok(Some(Rastair1BedFormat {
             contig,
             pos: r.pos() as usize,

@@ -39,11 +39,18 @@ impl Rastair1BedFormat {
             (0, 0, 0, 0)
         };
 
+        // TODO: Maybe check if the right alt is passing the filters?
+        let beta = if *record.info.in_cp_g && record.samples[0].genotype.homozygous() {
+            Some(0.0)
+        } else {
+            record.samples[0].methylated.beta()
+        };
+
         Ok(Some(super::Rastair1BedFormat {
             contig: record.main.chrom.clone(),
             pos: record.main.pos as usize,
             r#ref,
-            beta: record.samples[0].methylated.beta(),
+            beta,
             unmod,
             r#mod,
             no_snp,
