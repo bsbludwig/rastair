@@ -10,7 +10,10 @@ use crate::{
     vcf::{self, MachineLearningPrediction, low_ml_score},
 };
 use clio::ClioPath;
-use color_eyre::eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre};
+use color_eyre::{
+    Section,
+    eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
+};
 use rayon::prelude::*;
 use smol_str::SmolStr;
 use std::{
@@ -260,13 +263,15 @@ pub fn call(mut params: CallParams) -> Result<()> {
                     process_region_wrapper(index, region, vcf_sender, params, &ml)
                 },
             )
-        })?;
+        })
+        .wrap_err("Failed to process regions in parallel")
+        .note("Rastair might have still written an (incomplete) output file")?;
 
     writer_thread
         .join()
-        .map_err(|e| eyre!("{e:?}"))
-        .wrap_err("Failed to join VCF writer thread")?
-        .wrap_err("writer thread error")?;
+        .map_err(|_e| eyre!("Writer thread crashed"))
+        .this_is_a_bug()? // inner error is panic
+        .wrap_err("Error in writer thread")?; // outer error is actual error
 
     Ok(())
 }
