@@ -3,13 +3,22 @@ use crate::{
     utils::Base::*,
     vcf::{Record as Rastair2Record, utils::NoStrandBiasForBaseErrorExt as _},
 };
-use color_eyre::eyre::Report;
+use color_eyre::Result;
+use tracing::trace;
 
-impl TryFrom<&Rastair2Record> for Rastair1BedFormat {
-    type Error = Report;
-
+impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation)]
-    fn try_from(record: &Rastair2Record) -> Result<Self, Self::Error> {
+    pub fn from_record(record: &Rastair2Record) -> Result<Option<Self>> {
+        if *record.info.de_novo_cp_g_candidate && !record.filters.pass() {
+            // Only report de novo candidates that we are confident about
+            trace!(
+                chr=%record.main.chrom, pos=record.main.pos,
+                ml=?record.samples[0].machine_learning_prediction,
+                "de novo candidate with low score"
+            );
+            return Ok(None);
+        }
+
         let r#ref = record.main.r#ref.clone();
 
         let (unmod, r#mod, no_snp, snp) = if r#ref == "C" {
@@ -30,7 +39,7 @@ impl TryFrom<&Rastair2Record> for Rastair1BedFormat {
             (0, 0, 0, 0)
         };
 
-        Ok(super::Rastair1BedFormat {
+        Ok(Some(super::Rastair1BedFormat {
             contig: record.main.chrom.clone(),
             pos: record.main.pos as usize,
             r#ref,
@@ -44,6 +53,6 @@ impl TryFrom<&Rastair2Record> for Rastair1BedFormat {
             genotype_likelihood: record.samples[0].genotype_likelihood.clone(),
             genotype_confidence: record.samples[0].genotype_confidence.clone(),
             de_novo: !*record.info.in_cp_g && *record.info.de_novo_cp_g_candidate,
-        })
+        }))
     }
 }

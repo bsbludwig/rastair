@@ -13,17 +13,15 @@ use color_eyre::{
 use rastair_types::Phred;
 use rastair_vcf::{
     StrandSpecificInfoField as _, VcfField as _,
-    standard_fields::{Genotype, ReadDepth},
+    standard_fields::{Genotype, PASS, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 
-impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
-    type Error = Report;
-
+impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation)]
-    fn try_from(r: &HtslibRecord) -> Result<Self, Self::Error> {
+    pub fn from_vcf(r: &HtslibRecord) -> Result<Option<Self>> {
         let contig = r
             .rid()
             .wrap_err("Record has no ID")
@@ -78,6 +76,7 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
         } else {
             SmallVec::new()
         };
+        let genotype = Genotype(genotype);
         let genotype_likelihood = GenotypeLikelihood(SmallVec::from_buf([{
             if let Ok(buffer) = r.format(GenotypeLikelihood::ID.as_bytes()).integer()
                 && let Some(first) = buffer.first()
@@ -101,7 +100,11 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
         let in_cpg = r.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
         let de_novo = r.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
 
-        Ok(Rastair1BedFormat {
+        if de_novo && !r.has_filter(&PASS) {
+            return Ok(None);
+        }
+
+        Ok(Some(Rastair1BedFormat {
             contig,
             pos: r.pos() as usize,
             r#ref,
@@ -111,11 +114,11 @@ impl TryFrom<&HtslibRecord> for Rastair1BedFormat {
             no_snp,
             snp,
             coverage: read_depth as usize,
-            genotype: Genotype(genotype),
+            genotype,
             genotype_likelihood,
             genotype_confidence,
             de_novo: !in_cpg && de_novo,
-        })
+        }))
     }
 }
 

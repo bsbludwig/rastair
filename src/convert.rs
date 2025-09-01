@@ -146,8 +146,11 @@ fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
             continue;
         }
 
-        let record = Rastair1BedFormat::try_from(&record)
-            .wrap_err("Failed to convert record to BED format")?;
+        let Some(record) = Rastair1BedFormat::from_vcf(&record)
+            .wrap_err("Failed to convert record to BED format")?
+        else {
+            continue;
+        };
         writer.write_record(&record).wrap_err("Failed to write record")?;
     }
 
@@ -209,8 +212,11 @@ fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
                 if !(*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate) {
                     continue;
                 }
-                let record = Rastair1BedFormat::try_from(record.as_ref())
-                    .wrap_err("Failed to convert record to BED format")?;
+                let Some(record) = Rastair1BedFormat::from_record(record.as_ref())
+                    .wrap_err("Failed to convert record to BED format")?
+                else {
+                    continue;
+                };
                 writer.write_record(&record).wrap_err("Failed to write record")?;
             }
             Ok(x) => {

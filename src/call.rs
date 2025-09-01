@@ -1,5 +1,5 @@
 use crate::{
-    bed::rastair1::BedParams,
+    bed::rastair1::{BedParams, Rastair1BedFormat},
     call::{
         methylation::params::MethylationCallingParams, ml::MachineLearning,
         variant_calling::VariantCallingParams,
@@ -17,7 +17,7 @@ use std::{
     ops::Mul as _,
     thread::{self, available_parallelism},
 };
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 pub mod denovo_cpg;
 pub mod methylation;
@@ -218,14 +218,12 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
                         if let Some(bed_writer) = bed_writer.as_mut()
                             && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
-                        // && record.filters.pass()
+                            && let Some(bed_record) = Rastair1BedFormat::from_record(record)
+                                .wrap_err("Failed to convert VCF record to BED format")
+                                .this_is_a_bug()?
                         {
                             bed_writer
-                                .write_record(
-                                    &record
-                                        .try_into()
-                                        .wrap_err("Failed to convert record to BED format")?,
-                                )
+                                .write_record(&bed_record)
                                 .wrap_err("Failed to write record to BED")?;
                         }
                     }
@@ -251,6 +249,8 @@ pub fn call(mut params: CallParams) -> Result<()> {
     rayon::ThreadPoolBuilder::new()
         .thread_name(|idx| format!("worker-{idx}"))
         .num_threads(worker_threads)
+        .start_handler(|idx| trace!(idx, "Starting worker thread"))
+        .exit_handler(|idx| trace!(idx, "Closing worker thread"))
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {

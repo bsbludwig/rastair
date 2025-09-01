@@ -49,6 +49,11 @@ impl Genotype {
             _ => false,
         }
     }
+
+    /// Checks if the genotype is homozygous (i.e., contains the same alleles).
+    pub fn homozygous(&self) -> bool {
+        !self.heterozygous()
+    }
 }
 
 impl From<GenotypeAllele> for HtslibGenotypeAllele {
