@@ -74,6 +74,7 @@ cat("====================================\n\n")
 # Create parameters list for RMarkdown
 params_list <- list(
   region = args$region,
+  output_dir = normalizePath(args$output_prefix),
   include_flags = args$include_flag,
   exclude_flags = args$exclude_flag,
   read_len = is.na(args$read_length),

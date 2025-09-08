@@ -7,6 +7,7 @@ output:
     theme: united
 params:
   input_bgz: NULL
+  output_dir: "."
   region: NULL # By default there's no region
   tabix: "tabix" # Assume tabix is available in PATH
   include_flags: 3
