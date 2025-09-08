@@ -3,97 +3,99 @@
 # Load required libraries
 suppressMessages({
   library(rmarkdown)
-  library(optparse)
+  library(argparser)
 })
 
 # Define RMarkdown file path (assumes it's in the same directory as this script)
 rmd_file <- "QC_report.Rmd"
 
-# Define command line options
-option_list <- list(
-  make_option(c("-r", "--region"), 
-              type = "character", 
-              default = NULL,
-              help = "Genomic region (optional) [default: %default]"),
-  
-  make_option(c("-i", "--include_flag"), 
-              type = "integer", 
-              default = NULL,
-              help = "Include bitflag as integer (optional) [default: %default]"),
-  
-  make_option(c("-e", "--exclude_flag"), 
-              type = "integer", 
-              default = NULL,
-              help = "Exclude bitflag as integer (optional) [default: %default]"),
-  
-  make_option(c("-l", "--read_length"), 
-              type = "integer", 
-              default = NULL,
-              help = "Read length as integer (optional) [default: %default]"),
-  
-  make_option(c("-t", "--tabix_path"), 
-              type = "character", 
-              default = "tabix",
-              help = "Path to tabix executable (optional) [default: %default]"),
-  
-  make_option(c("-o", "--output_prefix"), 
-              type = "character", 
-              default = ".",
-              help = "Output path prefix (optional) [default: %default]"),
-)
-
-# Parse command line arguments
-opt_parser <- OptionParser(option_list = option_list,
-                           description = "Generate a methylation bias report as HTML")
-opt <- parse_args2(opt_parser)
-
-bed_file = args[1]
-# Check for required arguments
-if (is.null(bed_file)) {
-  cat("Error: Input bed.gz file is required!\n")
-  print_help(opt_parser)
-  quit(status = 1)
+get_script_dir <- function(command_line_args) {
+  command_line = paste(command_line_args, collapse=" ")
+  dir = gsub(".*--file=(.*) --args.*", "\\1", as.character(command_line), perl = TRUE)
+  return(dir)
 }
 
+# Create argument parser
+parser <- arg_parser("Render RMarkdown document with genomic analysis parameters")
+
+# Add positional argument for bed file
+parser <- add_argument(parser, "bed_file", 
+                       help = "Input bed.gz file (required)")
+
+# Add optional arguments
+parser <- add_argument(parser, "--region", 
+                       help = "Genomic region (optional)",
+                       default = NULL)
+
+parser <- add_argument(parser, "--include-flag", 
+                       help = "Include bitflag as integer (optional)",
+                       type = "integer",
+                       default = 3)
+
+parser <- add_argument(parser, "--exclude-flag", 
+                       help = "Exclude bitflag as integer (optional)", 
+                       type = "integer",
+                       default = 3852)
+
+parser <- add_argument(parser, "--read-length", 
+                       help = "Read length as integer (optional)",
+                       type = "integer", 
+                       default = NULL)
+
+parser <- add_argument(parser, "--tabix-path", 
+                       help = "Path to tabix executable (optional)",
+                       default = "tabix")
+
+parser <- add_argument(parser, "--output-prefix", 
+                       help = "Output path prefix (optional)",
+                       default = ".")
+
+# Parse arguments
+args <- parse_args(parser)
+
 # Validate bed file exists
-if (!file.exists(bed_file)) {
-  cat("Error: Input bed.gz file does not exist:", bed_file, "\n")
+if (!file.exists(args$bed_file)) {
+  cat("Error: Input bed.gz file does not exist:", args$bed_file, "\n")
   quit(status = 1)
 }
 
 # Print summary of parameters
 cat("=== RMarkdown Report Generation ===\n")
 cat("Parameters:\n")
-cat("  Genomic region:", ifelse(is.null(opt$region), "Not specified", opt$region), "\n")
-cat("  Include bitflag:", ifelse(is.null(opt$include_flag), "Not specified", opt$include_flag), "\n")
-cat("  Exclude bitflag:", ifelse(is.null(opt$exclude_flag), "Not specified", opt$exclude_flag), "\n")
-cat("  Read length:", ifelse(is.null(opt$read_length), "Not specified", opt$read_length), "\n")
-cat("  Tabix path:", opt$tabix_path, "\n")
-cat("  Output prefix:", opt$output_prefix, "\n")
-cat("  Input bed.gz file:", opt$bed_file, "\n")
+cat("  Genomic region:", ifelse(is.null(args$region), "Not specified", args$region), "\n")
+cat("  Include bitflag:", ifelse(is.null(args$include_flag), "Not specified", args$include_flag), "\n")
+cat("  Exclude bitflag:", ifelse(is.null(args$exclude_flag), "Not specified", args$exclude_flag), "\n")
+cat("  Read length:", ifelse(is.null(args$read_length), "Not specified", args$read_length), "\n")
+cat("  Tabix path:", args$tabix_path, "\n")
+cat("  Output prefix:", args$output_prefix, "\n")
+cat("  Input bed.gz file:", normalizePath(args$bed_file), "\n")
 cat("====================================\n\n")
 
 # Create parameters list for RMarkdown
 params_list <- list(
-  genomic_region = opt$region,
-  include_flags = opt$include_flag,
-  exclude_flags = opt$exclude_flag,
-  read_len = opt$read_length,
-  tabix = opt$tabix_path,
-  output_dir = opt$output_prefix,
-  input_bgz = opt$bed_file
+  region = args$region,
+  include_flags = args$include_flag,
+  exclude_flags = args$exclude_flag,
+  read_len = is.na(args$read_length),
+  tabix = args$tabix_path,
+  input_bgz = normalizePath(args$bed_file)
 )
 
+script_dir = get_script_dir(commandArgs())
+script_dir = dirname(normalizePath(script_dir))
+rmd_file = paste0(script_dir, "/", rmd_file)
+
+cat("Rmd_file: ", rmd_file, "\n")
 # Check if RMarkdown file exists
 if (!file.exists(rmd_file)) {
   cat("Error: RMarkdown file not found:", rmd_file, "\n")
-  cat("Make sure 'genomic_analysis_report.Rmd' is in the same directory as this script.\n")
+  cat("Make sure 'QC_report.Rmd' is in the same directory as this script.\n")
   quit(status = 1)
 }
 
 # Define output file path
-output_file <- paste0(opt$output_prefix, "_report.html")
-
+output_file <- paste0(normalizePath(args$output_prefix), "/mbias.html")
+str(params_list)
 # Render the RMarkdown document
 cat("Rendering RMarkdown document...\n")
 tryCatch({

@@ -6,9 +6,8 @@ output:
     toc: true
     theme: united
 params:
-  input_bgz: "data/test_per-read.bed.gz"
-  output_dir: NULL
-  region: "" # By default there's no region
+  input_bgz: NULL
+  region: NULL # By default there's no region
   tabix: "tabix" # Assume tabix is available in PATH
   include_flags: 3
   exclude_flags: 3852
@@ -95,7 +94,7 @@ data <- data[num_cpg > 0]
 data <- data[bitwAnd(flag, params$include_flags) == params$include_flags]
 data <- data[bitwAnd(flag, params$exclude_flags) == 0]
 
-if (is.null(params$read_len)) {
+if (is.null(params$read_len) || is.na(params$read_len) || !is.numeric(params$read_len)) {
   read_len <- max(data$read_length, na.rm=TRUE)
 } else {
   read_len = params$read_len
