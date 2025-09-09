@@ -8,6 +8,7 @@ use rastair::{
     call_reads::{PerReadParams, call_reads},
     convert::ConvertParams,
     io::mpk::viewer::MpkViewParams,
+    mbias::MBiasParams,
     utils::logging::setup_logging,
 };
 use tracing::{debug, info, warn};
@@ -50,6 +51,15 @@ enum Subcommand {
     Convert(ConvertParams),
     /// View internal format as JSON lines
     View(MpkViewParams),
+    /// Calculate conversion per base position in read
+    ///
+    /// This will produce a `mbias.html` file with information about conversion
+    /// counts relative to read position.
+    ///
+    /// Please note that this is currently implemented as an R script. Unless
+    /// you're using the official Docker image, you need to install R and the
+    /// necessary packages yourself.
+    Mbias(MBiasParams),
     #[command(hide = true)]
     Internal {
         /// Generate documentation files
@@ -121,6 +131,10 @@ fn main() -> Result<()> {
         Subcommand::View(params) => {
             warn!("This format is for internal use only and may change without notice.");
             rastair::io::mpk::viewer::view(&params)?;
+        }
+        Subcommand::Mbias(params) => {
+            debug!(?params, "Running mbias command");
+            rastair::mbias::mbias(&params)?;
         }
         Subcommand::Internal { command } => match command {
             Generate::ShellCompletions { shell } => {
