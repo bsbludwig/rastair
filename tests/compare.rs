@@ -17,6 +17,7 @@ fn compare_rastair_1_and_2() -> Result<()> {
             "-r",
             "tests/data/test.fasta.gz",
             "tests/data/test.bam",
+            "--thresholds", // we compare with rastair1 which does not have ML
             "--cpgs-only",
             "--bed",
         ])

@@ -43,7 +43,16 @@ impl Rastair1BedFormat {
         };
 
         // If this looks like SNP based on the genotype calling, set beta to 0
-        let beta = if *record.info.in_cp_g && record.samples[0].genotype.homozygous_not_ref() {
+        // TODO: make ML threshold configurable
+        let beta = if let Some(alt) = record.info.in_cp_g.alt_base()
+            && let Some(alt_idx) = record.main.alt.iter().position(|b| b == &alt)
+            && let Some(ml_score) = record.samples[0].machine_learning_prediction.get(alt_idx)
+            && *ml_score > 0.8
+        {
+            // ML score indicates this is a SNP
+            trace!(%record.main, %ml_score, "SNP detected at CpG site based on ML score");
+            Some(0.0)
+        } else if *record.info.in_cp_g && record.samples[0].genotype.homozygous_not_ref() {
             Some(0.0)
         } else {
             record.samples[0].methylated.beta()
