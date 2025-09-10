@@ -9,6 +9,12 @@ use tracing::trace;
 impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation)]
     pub fn from_record(record: &Rastair2Record) -> Result<Option<Self>> {
+        // Skip positions without evidence
+        // TODO: make it configurable
+        if *record.info.read_depth == 0 {
+            return Ok(None);
+        }
+
         // If a position is covered by both a ref CpG site and a de-novo CpG
         // site, the ref case should take precedence.
         if !*record.info.in_cp_g && (*record.info.de_novo_cp_g_candidate && !record.filters.pass())
