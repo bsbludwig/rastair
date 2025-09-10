@@ -1,72 +1,86 @@
 mod utils;
+use std::collections::HashSet;
+use std::fs;
+
 use utils::*;
 
 #[test]
-#[ignore = "Depends on bcftools which we don't have on CI"]
+#[ignore = "still some differences"]
 fn compare_rastair_1_and_2() -> Result<()> {
     apply_common_filters!();
     let temp_dir = TempDir::new()?;
-    let temp_file = temp_dir.path().join("test.vcf");
+    let temp_file = temp_dir.path().join("test.bed");
 
-    let call = rastair()
+    rastair()
         .args([
             "call",
             "-r",
             "tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "-l",
-            "chr19",
-            "-o",
+            "--cpgs-only",
+            "--bed",
         ])
         .arg(&temp_file)
-        .status()
+        .succeeds()
         .wrap_err("running rastair")?;
-    assert!(call.success());
 
-    // bcftools query -i "REF=='C' && CPG==1" -f "%CHROM\\t%POS0\\t%POS\\t%REF\\t%ALT\\t%AS_SB[\\t%M5mC\\t%GT\\t%DP]\n" tmp/test.bcf
-    let rastair2 = Command::new("bcftools")
-        .args([
-            "query",
-            "-i",
-            "CPG==1",
-            "-f",
-            "%CHROM\t%POS0\t%POS\t%REF\t%ALT\t%AS_SB[\t%M5mC\t%GT\t%DP]\n",
-        ])
-        .arg(&temp_file)
-        .output()
-        .wrap_err("running bcftools query")?
-        .stdout;
+    let (missing, extra) = compare_bed_files("./tests/data/rastair1.bed", temp_file)?;
 
-    let rastair1 = {
-        let text =
-            std::fs::read_to_string("./tests/data/rastair1.vcf").wrap_err("read rastair 1 vcf")?;
-        text.lines()
-            .filter(|line| !line.starts_with("#"))
-            .filter_map(|line| line.split("\t").nth(1))
-            .filter_map(|x| x.parse::<u32>().ok())
-            .collect::<BTreeSet<u32>>()
-    };
-    let rastair2 = {
-        // let text = std::fs::read_to_string(&temp_file).wrap_err("read rastair 2 vcf")?;
-        // let text =
-        //     std::fs::read_to_string("./tests/data/rastair2.vcf").wrap_err("read rastair 2 vcf")?;
-        let text = String::from_utf8(rastair2).wrap_err("convert rastair 2 output to string")?;
-
-        text.lines()
-            .filter(|line| !line.starts_with("#"))
-            .filter_map(|line| line.split("\t").nth(1))
-            .filter_map(|x| x.parse::<u32>().ok())
-            .collect::<BTreeSet<u32>>()
-    };
-
-    assert_debug_snapshot!(
-        "in_1_but_not_2",
-        rastair1.difference(&rastair2).map(|x| x + 1).collect::<Vec<_>>()
-    );
-    assert_debug_snapshot!(
-        "in_2_but_not_1",
-        rastair2.difference(&rastair1).map(|x| x + 1).collect::<Vec<_>>()
-    );
+    if !missing.is_empty() || !extra.is_empty() {
+        if !missing.is_empty() {
+            eprintln!("Lines in rastair1.bed but not in rastair2.bed:");
+            for line in &missing {
+                eprintln!("{}", line);
+            }
+        }
+        if !extra.is_empty() {
+            eprintln!("Lines in rastair2.bed but not in rastair1.bed:");
+            for line in &extra {
+                eprintln!("{}", line);
+            }
+        }
+        panic!("BED files differ");
+    }
 
     Ok(())
+}
+
+/// Compare BED files ignoring de-novos
+fn compare_bed_files<P1, P2>(old_file: P1, new_file: P2) -> Result<(Vec<String>, Vec<String>)>
+where
+    P1: AsRef<std::path::Path>,
+    P2: AsRef<std::path::Path>,
+{
+    let old_file = old_file.as_ref();
+    let new_file = new_file.as_ref();
+
+    let normalize_row = |line: &str, max_cols: usize| -> String {
+        let cols: Vec<&str> = line.split('\t').collect();
+        cols.iter().take(max_cols).copied().collect::<Vec<_>>().join("\t")
+    };
+
+    let is_denovo =
+        |line: &str| -> bool { line.rsplit('\t').next().expect("content").contains("NEW") };
+
+    let old_content = fs::read_to_string(old_file)
+        .wrap_err_with(|| format!("Failed to read old file: {old_file:?}"))?;
+    let new_content = fs::read_to_string(new_file)
+        .wrap_err_with(|| format!("Failed to read new file: {new_file:?}"))?;
+
+    let old_lines: Vec<_> = old_content.lines().filter(|l| !l.starts_with('#')).collect();
+    let new_lines: Vec<_> = new_content.lines().filter(|l| !l.starts_with('#')).collect();
+
+    let old_col_count = old_lines.first().map(|l| l.split('\t').count()).unwrap_or(0);
+
+    let old_set: HashSet<String> = old_lines.into_iter().map(|l| l.to_string()).collect();
+    let new_normalized: HashSet<String> = new_lines
+        .into_iter()
+        .filter(|l| !is_denovo(l))
+        .map(|l| normalize_row(l, old_col_count))
+        .collect();
+
+    let in_old_not_new: Vec<String> = old_set.difference(&new_normalized).cloned().collect();
+    let in_new_not_old: Vec<String> = new_normalized.difference(&old_set).cloned().collect();
+
+    Ok((in_old_not_new, in_new_not_old))
 }
