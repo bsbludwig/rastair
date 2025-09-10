@@ -31,6 +31,7 @@ impl InCpG {
         }
     }
 
+    /// If this is a CpG site, this is the alternative base indicating methylation
     pub fn alt_base(&self) -> Option<Base> {
         match self {
             InCpG::C => Some(T),

@@ -2,7 +2,7 @@ use color_eyre::{Result, Section as _, eyre::WrapErr as _};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fmt};
 
 /// Fixed fields in a VCF record
 ///
@@ -119,6 +119,25 @@ impl VcfFixedFields {
             record.set_qual(qual);
         }
 
+        Ok(())
+    }
+}
+
+impl fmt::Display for VcfFixedFields {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{} {}", self.chrom, self.pos, self.r#ref)?;
+        if let [alt] = self.alt.as_slice() {
+            write!(f, ">{alt}")?;
+        } else if self.alt.len() > 1 {
+            write!(f, ">[")?;
+            for (idx, alt) in self.alt.iter().enumerate() {
+                if idx > 0 {
+                    write!(f, ",")?;
+                }
+                write!(f, "{}", alt)?;
+            }
+            write!(f, "]")?;
+        }
         Ok(())
     }
 }

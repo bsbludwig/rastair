@@ -181,8 +181,7 @@ fn ref_c(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> 
         && record.has_alts_other_than(T)
     {
         trace!(
-            chr = %record.main.chrom,
-            pos = record.main.pos,
+            pos = %record.main,
             "Possible C->N SNP next to a de-novo G"
         );
     }
@@ -217,8 +216,7 @@ fn ref_g(_config: &ThresholdParams, record: &vcf::Record) -> Result<Methylated> 
         && record.has_alts_other_than(A)
     {
         trace!(
-            chr = %record.main.chrom,
-            pos = record.main.pos,
+            pos = %record.main,
             "Possible G->N SNP next to a de-novo C"
         );
     }

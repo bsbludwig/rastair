@@ -15,7 +15,7 @@ impl Rastair1BedFormat {
         {
             // Only report de novo candidates that we are confident about
             trace!(
-                chr=%record.main.chrom, pos=record.main.pos,
+                pos=%record.main,
                 ml=?record.samples[0].machine_learning_prediction,
                 "de novo candidate with low score"
             );
