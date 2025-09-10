@@ -9,6 +9,7 @@ This document contains the help content for the `rastair` command-line program.
 * [`rastair per-read`↴](#rastair-per-read)
 * [`rastair convert`↴](#rastair-convert)
 * [`rastair view`↴](#rastair-view)
+* [`rastair mbias`↴](#rastair-mbias)
 
 ## `rastair`
 
@@ -24,6 +25,7 @@ See <https://docs.rastair.com/> for more information.
 * `per-read` — Call methylation per-read
 * `convert` — Convert between different file formats
 * `view` — View internal format as JSON lines
+* `mbias` — Calculate conversion per base position in read
 
 ###### **Options:**
 
@@ -158,7 +160,7 @@ Process TAPS-sequenced BAM files and call methylated positions.
 
    When specified, a ML model will classify positions with a prediction score. Anything above this threshold is considered PASS.
 
-  Default value: `0.8`
+  Default value: `0.8000`
 * `--model-cpg <MODEL_CPG>` — Path to the model for CpG positions
 
    Default is the bundled model in the Rastair binary.
@@ -319,6 +321,39 @@ View internal format as JSON lines
 * `-o`, `--output <OUTPUT>` — Message Pack file to view
 
   Default value: `-`
+
+
+
+## `rastair mbias`
+
+Calculate conversion per base position in read
+
+This will produce a `mbias.html` file with information about conversion counts relative to read position.
+
+Please note that this is currently implemented as an R script. Unless you're using the official Docker image, you need to install R and the necessary packages yourself.
+
+**Usage:** `rastair mbias [OPTIONS] <BED_FILE>`
+
+###### **Arguments:**
+
+* `<BED_FILE>` — Input per-read BED file (can be gzipped)
+
+###### **Options:**
+
+* `--region <REGION>` — Genomic region
+* `--include-flag <INCLUDE_FLAG>` — Include bitflag as integer
+
+  Default value: `3`
+* `--exclude-flag <EXCLUDE_FLAG>` — Exclude bitflag as integer
+
+  Default value: `3852`
+* `--read-length <READ_LENGTH>` — Read length as integer
+* `--tabix-path <TABIX_PATH>` — Path to tabix executable
+
+  Default value: `tabix`
+* `--output-prefix <OUTPUT_PREFIX>` — Output path prefix
+
+  Default value: `.`
 
 
 
