@@ -16,3 +16,16 @@ cargo xtask release
 ```
 
 The binary will be located in `target/release/rastair`.
+
+## Building using Docker
+
+You can also build Rastair using Docker.
+Ensure you have Docker installed and running on your system,
+then, build the image:
+
+```bash
+docker build -t rastair .
+```
+
+This image is based on the R base image and includes all necessary dependencies
+to also run the bundled R scripts.
