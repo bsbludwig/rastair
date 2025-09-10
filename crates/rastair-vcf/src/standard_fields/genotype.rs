@@ -54,6 +54,15 @@ impl Genotype {
     pub fn homozygous(&self) -> bool {
         !self.heterozygous()
     }
+
+    /// Checks if the genotype is homozygous and not the reference, i.e. this is SNP
+    pub fn homozygous_not_ref(&self) -> bool {
+        match self.0.as_slice() {
+            [GenotypeAllele::Unphased(i), GenotypeAllele::Unphased(j)]
+            | [GenotypeAllele::Phased(i), GenotypeAllele::Phased(j)] => i == j && *i != 0,
+            _ => false,
+        }
+    }
 }
 
 impl From<GenotypeAllele> for HtslibGenotypeAllele {

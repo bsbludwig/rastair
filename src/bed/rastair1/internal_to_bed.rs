@@ -39,8 +39,8 @@ impl Rastair1BedFormat {
             (0, 0, 0, 0)
         };
 
-        // TODO: Maybe check if the right alt is passing the filters?
-        let beta = if *record.info.in_cp_g && record.samples[0].genotype.homozygous() {
+        // If this looks like SNP based on the genotype calling, set beta to 0
+        let beta = if *record.info.in_cp_g && record.samples[0].genotype.homozygous_not_ref() {
             Some(0.0)
         } else {
             record.samples[0].methylated.beta()
