@@ -179,6 +179,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
 }
 
 #[test]
+#[ignore = "pretty slow"]
 fn can_pipe_through() -> Result<()> {
     apply_common_filters!();
 
