@@ -194,18 +194,6 @@ pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> O
     }
     let (matches, indels) = calc_cigar_data(cigar);
 
-    // if !record.is_proper_pair() {
-    //     // fixme: maybe be more lenient here
-    //     return None;
-    // }
-    // if record.is_quality_check_failed() {
-    //     return None;
-    // }
-    // fixme: understand this better:
-    // if record.cigar().iter().any(|c| matches!(c, Cigar::SoftClip(_))) {
-    //     return None;
-    // }
-
     Some(SeenBase {
         // qname: SmallVec::from(record.qname()),
         // fixme: handle error or at least check usual error modes
