@@ -22,6 +22,9 @@ pub struct BedParams {
     /// If not specified, the format is guessed based on the file extension.
     #[arg(long, requires = "bed")]
     pub bed_format: Option<BedFormat>,
+
+    #[command(flatten)]
+    pub filters: BedRecordsFilterParams,
 }
 
 impl BedParams {
@@ -69,6 +72,31 @@ pub struct Rastair1BedFormat {
     pub genotype_likelihood: GenotypeLikelihood,
     pub genotype_confidence: GenotypeConfidence,
     pub de_novo: bool,
+}
+
+/// Parameters for filtering BED records
+#[derive(Debug, Clone, clap::Args)]
+pub struct BedRecordsFilterParams {
+    /// Include CpG positions with zero coverage
+    ///
+    /// This can be useful to get a complete list of CpG positions in the output BED file.
+    /// Note that this requires the input data to contain a complete list of CpG positions,
+    /// e.g. by using the `--cpgs-only` option when calling methylation.
+    #[arg(long = "bed-include-empty")]
+    pub include_empty: bool,
+}
+
+// Constructed from command line arguments by the `convert` subcommand, or from
+// other existing parameters when used by `call`
+#[derive(Debug, Clone, clap::Args)]
+pub struct BedRecordsConvertParams {
+    /// Minimum ML score to consider a position as variant
+    ///
+    /// This does nothing if the input data does not contain ML scores.
+    #[arg(long = "bed-ml", default_value_t = Probability::new(0.8).expect("valid default probability"))]
+    pub ml_threshold: Probability,
+    #[command(flatten)]
+    pub filters: BedRecordsFilterParams,
 }
 
 mod internal_to_bed;

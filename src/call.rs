@@ -1,5 +1,5 @@
 use crate::{
-    bed::rastair1::{BedParams, Rastair1BedFormat},
+    bed::rastair1::{BedParams, BedRecordsConvertParams, Rastair1BedFormat},
     call::{
         methylation::params::MethylationCallingParams, ml::MachineLearning,
         variant_calling::VariantCallingParams,
@@ -190,6 +190,10 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
             let bed = params.bed.clone();
             let mut bed_writer = bed.writer().wrap_err("Failed to create BED writer")?;
+            let bed_params = BedRecordsConvertParams {
+                ml_threshold: params.ml.ml,
+                filters: bed.filters.clone(),
+            };
 
             move || -> Result<()> {
                 // The segments we get have some overlap between them, so we
@@ -221,9 +225,10 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
                         if let Some(bed_writer) = bed_writer.as_mut()
                             && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
-                            && let Some(bed_record) = Rastair1BedFormat::from_record(record)
-                                .wrap_err("Failed to convert VCF record to BED format")
-                                .this_is_a_bug()?
+                            && let Some(bed_record) =
+                                Rastair1BedFormat::from_record(record, &bed_params)
+                                    .wrap_err("Failed to convert VCF record to BED format")
+                                    .this_is_a_bug()?
                         {
                             bed_writer
                                 .write_record(&bed_record)

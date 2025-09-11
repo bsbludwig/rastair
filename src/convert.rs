@@ -1,5 +1,9 @@
 use crate::{
-    bed::{BedFormat, rastair1::Rastair1BedFormat, writer::BedWriter},
+    bed::{
+        BedFormat,
+        rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
+        writer::BedWriter,
+    },
     io::{
         formats::{FromFileExtension, InputFormat, OutputFormat},
         mpk::{MessagePackReader, MpkEntry},
@@ -44,6 +48,10 @@ pub struct ConvertParams {
     /// Output file format, guessed from file extension if not specified
     #[arg(short = 'F', long)]
     pub output_format: Option<OutputFormat>,
+
+    /// BED-specific parameters
+    #[command(flatten)]
+    pub bed_params: BedRecordsConvertParams,
 }
 
 pub fn convert(params: &ConvertParams) -> Result<()> {
@@ -146,7 +154,7 @@ fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
             continue;
         }
 
-        let Some(record) = Rastair1BedFormat::from_vcf(&record)
+        let Some(record) = Rastair1BedFormat::from_vcf(&record, &params.bed_params)
             .wrap_err("Failed to convert record to BED format")?
         else {
             continue;
@@ -212,8 +220,9 @@ fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
                 if !(*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate) {
                     continue;
                 }
-                let Some(record) = Rastair1BedFormat::from_record(record.as_ref())
-                    .wrap_err("Failed to convert record to BED format")?
+                let Some(record) =
+                    Rastair1BedFormat::from_record(record.as_ref(), &params.bed_params)
+                        .wrap_err("Failed to convert record to BED format")?
                 else {
                     continue;
                 };

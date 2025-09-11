@@ -1,6 +1,6 @@
 use crate::{
-    bed::rastair1::Rastair1BedFormat,
-    utils::Base,
+    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
+    utils::{Base, logging::ThisIsABug},
     vcf::{
         AlleleSpecificStrandBias, ByStrand, DeNovoCpGCandidate, GenotypeConfidence,
         GenotypeLikelihood, InCpG, Methylated,
@@ -21,7 +21,7 @@ use smol_str::SmolStr;
 
 impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation)]
-    pub fn from_vcf(r: &HtslibRecord) -> Result<Option<Self>> {
+    pub fn from_vcf(r: &HtslibRecord, params: &BedRecordsConvertParams) -> Result<Option<Self>> {
         let contig = r
             .rid()
             .wrap_err("Record has no ID")
@@ -57,6 +57,11 @@ impl Rastair1BedFormat {
         } else {
             0
         };
+
+        // Skip positions without evidence
+        if !params.filters.include_empty && read_depth == 0 {
+            return Ok(None);
+        }
 
         let assb = AlleleSpecificStrandBias::from_vcf(r)
             .wrap_err("Failed to read Allele-specific Strand Bias field")?;

@@ -160,7 +160,7 @@ Process TAPS-sequenced BAM files and call methylated positions.
 
    When specified, a ML model will classify positions with a prediction score. Anything above this threshold is considered PASS.
 
-  Default value: `0.8000`
+  Default value: `0.80`
 * `--model-cpg <MODEL_CPG>` — Path to the model for CpG positions
 
    Default is the bundled model in the Rastair binary.
@@ -189,6 +189,9 @@ Process TAPS-sequenced BAM files and call methylated positions.
   - `bed`:
     Regular BED file, usually `.bed`
 
+* `--bed-include-empty` — Include CpG positions with zero coverage
+
+   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
@@ -303,6 +306,14 @@ Convert between different file formats
   - `bed-gz`:
     BGZIP compressed file, usually `.bed.gz`
 
+* `--bed-ml <ML_THRESHOLD>` — Minimum ML score to consider a position as variant
+
+   This does nothing if the input data does not contain ML scores.
+
+  Default value: `0.80`
+* `--bed-include-empty` — Include CpG positions with zero coverage
+
+   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
 
 
 

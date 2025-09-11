@@ -1,24 +1,27 @@
 use crate::{
-    bed::rastair1::Rastair1BedFormat,
-    utils::Base::*,
+    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
+    utils::{Base::*, logging::ThisIsABug as _},
     vcf::{Record as Rastair2Record, utils::NoStrandBiasForBaseErrorExt as _},
 };
-use color_eyre::Result;
+use color_eyre::{Result, eyre::Context as _};
+use rastair_types::Probability;
 use tracing::trace;
 
 impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation)]
-    pub fn from_record(record: &Rastair2Record) -> Result<Option<Self>> {
+    pub fn from_record(
+        record: &Rastair2Record,
+        params: &BedRecordsConvertParams,
+    ) -> Result<Option<Self>> {
         // Skip positions without evidence
-        // TODO: make it configurable
-        if *record.info.read_depth == 0 {
+        if !params.filters.include_empty && *record.info.read_depth == 0 {
             return Ok(None);
         }
 
         // If a position is covered by both a ref CpG site and a de-novo CpG
         // site, the ref case should take precedence.
-        if !*record.info.in_cp_g && (*record.info.de_novo_cp_g_candidate && !record.filters.pass())
-        {
+        let de_novo = !*record.info.in_cp_g && *record.info.de_novo_cp_g_candidate;
+        if de_novo && !record.filters.pass() {
             // Only report de novo candidates that we are confident about
             trace!(
                 pos=%record.main,
@@ -53,7 +56,7 @@ impl Rastair1BedFormat {
         let beta = if let Some(alt) = record.info.in_cp_g.alt_base()
             && let Some(alt_idx) = record.main.alt.iter().position(|b| b == &alt)
             && let Some(ml_score) = record.samples[0].machine_learning_prediction.get(alt_idx)
-            && *ml_score > 0.8
+            && *ml_score > *params.ml_threshold
         {
             // ML score indicates this is a SNP
             trace!(%record.main, %ml_score, "SNP detected at CpG site based on ML score");
@@ -82,7 +85,7 @@ impl Rastair1BedFormat {
             genotype: record.samples[0].genotype.clone(),
             genotype_likelihood: record.samples[0].genotype_likelihood.clone(),
             genotype_confidence: record.samples[0].genotype_confidence.clone(),
-            de_novo: !*record.info.in_cp_g && *record.info.de_novo_cp_g_candidate,
+            de_novo,
         }))
     }
 }
