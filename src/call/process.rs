@@ -4,7 +4,7 @@ use crate::{
         variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
-    utils::{Base, ReadDeduplicator, StrandFromRecord},
+    utils::{Base, StrandFromRecord},
     vcf::{self, Filters, InCpG},
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
@@ -12,6 +12,7 @@ use rust_htslib::bam::{
     FetchDefinition, Read as _,
     pileup::{Alignment, Pileup},
 };
+use smallvec::SmallVec;
 use std::{ops::Deref, rc::Rc};
 use tracing::{Level, debug, instrument, trace, warn};
 
@@ -64,9 +65,6 @@ impl ChunkRegion {
 
         let segment = Rc::new(segment);
 
-        // Allocate a set to track seen read names with enough capacity to avoid reallocation.
-        let mut resusable_seen_names_set = ReadDeduplicator::with_capacity(64);
-
         // Go over each column in the pileup and collect variant candidates
         let piles = readers
             .bam
@@ -89,7 +87,7 @@ impl ChunkRegion {
                 self.contains(u64::from(p.pos()))
             })
             .flat_map(|pile| {
-                collect_candidate(&pile, segment.clone(), params, &mut resusable_seen_names_set)
+                collect_candidate(&pile, segment.clone(), params)
                     .wrap_err_with(|| {
                         format!("Failed to get candidate from pileup at position {}", pile.pos())
                     })
@@ -127,9 +125,6 @@ fn collect_candidate(
     pile: &Pileup,
     segment: Rc<Segment>,
     params: &PileupMappingParams,
-    // This set is used to track seen read names. It is reused across calls to
-    // avoid reallocation.
-    resusable_seen_names_set: &mut ReadDeduplicator,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
@@ -145,22 +140,19 @@ fn collect_candidate(
             )
         })?;
 
-    let seen_names = {
-        resusable_seen_names_set.clear();
-        resusable_seen_names_set
-    };
-
     let seen_bases = pile
         .alignments()
-        .filter(|pile| {
-            params.keep_overlapping_reads || !seen_names.is_duplicate(pile.record().qname())
-        })
         .filter_map(|pile| pileup_mapper(params, pile))
         .filter(|seen_base| params.read_masking.filter(seen_base))
         .filter(|seen_base| params.quality.filter(seen_base))
         .collect();
 
-    let bases = SeenBases(seen_bases);
+    let mut bases = SeenBases(seen_bases);
+
+    if !params.keep_overlapping_reads {
+        bases.remove_overlapping_pairs();
+    }
+
     let reference_base = segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
     let has_alts = !bases.matches(reference_base);
 
@@ -195,14 +187,15 @@ pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> O
     let (matches, indels) = calc_cigar_data(cigar);
 
     Some(SeenBase {
-        // qname: SmallVec::from(record.qname()),
-        // fixme: handle error or at least check usual error modes
+        qname: SmallVec::from(record.qname()),
         base: record.seq()[pos].into(),
         qual: *record.qual().get(pos)?,
         mapq: record.mapq(),
         // Strand of the read, derived from the record. Early return if strand cannot be determined.
+        // TODO: handle "lenient mode"
         strand: StrandFromRecord::strand(&record).ok()?,
         reverse: record.is_reverse(),
+        second: record.is_last_in_template(),
         position: PositionInRead {
             pos: u32::try_from(pos).expect("position fits in u32"),
             read_length: u32::try_from(record.seq_len()).expect("read length fits in u32"),
@@ -250,5 +243,47 @@ impl VariantCandidatePileup {
             info: metrics,
             samples: smallvec::smallvec![calling_metrics],
         })
+    }
+}
+
+impl SeenBases {
+    /// Remove overlapping reads from the same fragment.
+    pub fn remove_overlapping_pairs(&mut self) {
+        // For each read, check if we already saw one with the same name.
+        //
+        // If the bases agree, keep only the first one. If they disagree, keep none.
+        //
+        // But this is rust -- so we can't just remove elements while iterating.
+        // Instead, we keep a little list of indices to remove, and then remove them afterwards.
+        // This should be fine since the amount of items to remove is typically small.
+        let mut to_remove = SmallVec::<usize, 16>::new();
+        for i in 0..self.0.len() {
+            let base_i = &self.0[i];
+            for j in (i + 1)..self.0.len() {
+                let base_j = &self.0[j];
+                if base_i.qname == base_j.qname {
+                    // Same read name
+                    if base_i.base == base_j.base {
+                        // Same base, keep only the first one
+                        to_remove.push(j);
+                    } else {
+                        // Different bases, ignore the second in pair
+                        // NOTE: This is different from rastair1
+                        if base_i.second {
+                            to_remove.push(i);
+                        } else {
+                            to_remove.push(j);
+                        }
+                    }
+                    // No need to check further
+                    break;
+                }
+            }
+        }
+        // Remove duplicates
+        to_remove.sort_unstable();
+        for &idx in to_remove.iter().rev() {
+            self.0.swap_remove(idx);
+        }
     }
 }

@@ -114,39 +114,26 @@ impl Deref for SeenBases {
 /// A base seen in a pileup
 #[derive(Clone)]
 pub struct SeenBase {
+    /// The base seen
     pub base: Base,
+    /// Base quality
     pub qual: u8,
+    /// Mapping quality of the read this base belongs to
     pub mapq: u8,
+    /// Strand the read was mapped to
     pub strand: Strand,
+    /// Whether the read was mapped to the reverse strand
     pub reverse: bool,
+    /// Whether this base was seen in the first or second read of a pair
+    pub second: bool,
+    /// Position of the base in the read
     pub position: PositionInRead,
+    /// Number of matching bases in the read this base belongs to
     pub matching_bases: u32,
+    /// Number of indels in the read this base belongs to
     pub indels: u32,
-    // /// Query Name of the read this base belongs to
-    // ///
-    // /// <!-- LLM explanation -->
-    // /// The `qname` field is the first mandatory field in each alignment record in a BAM/SAM file. It contains:
-    // ///
-    // /// - **Read identifier**: A unique string that identifies the sequencing read
-    // /// - **Paired-end reads**: For paired-end sequencing, both reads in a pair typically share the same `qname` base
-    // /// - **Format**: Usually follows the format from the sequencing instrument
-    // ///
-    // /// For example, in a SAM file (the text version of BAM), you might see:
-    // /// ```text
-    // /// SRR123456.1     99      chr1    1000    60      50M     =       1200    250     AGCTTAGCTAGCTACCTATATCTTGGTCTTGGCCG    *
-    // /// SRR123456.2     147     chr1    1200    60      50M     =       1000    -250    TGCAGGCCTATGCAGCTGACTGCATAGCGTCAGCT    *
-    // /// ```
-    // ///
-    // /// In this example:
-    // /// - `SRR123456.1` and `SRR123456.2` are the `qname` values
-    // /// - These represent a paired-end read pair (same base name, different suffixes)
-    // ///
-    // /// The `qname` is essential for:
-    // /// - Tracking reads through analysis pipelines
-    // /// - Identifying paired reads
-    // /// - Debugging alignment issues
-    // /// - Linking back to original FASTQ files
-    // pub qname: SmallVec<u8, 42>,
+    /// Query Name of the read this base belongs to
+    pub qname: SmallVec<u8, 42>,
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -208,10 +195,11 @@ mod tests {
                 mapq: 20,
                 strand: Strand::OT,
                 reverse: false,
+                second: false,
                 position: PositionInRead { pos: 0, read_length: 100 },
                 matching_bases: 10,
                 indels: 0,
-                // qname: SmallVec::from_vec(b"read1".to_vec()),
+                qname: SmallVec::from_vec(b"read1".to_vec()),
             },
             SeenBase {
                 base: Base::C,
@@ -219,10 +207,11 @@ mod tests {
                 mapq: 20,
                 strand: Strand::OB,
                 reverse: true,
+                second: false,
                 position: PositionInRead { pos: 1, read_length: 100 },
                 matching_bases: 5,
                 indels: 0,
-                // qname: SmallVec::from_vec(b"read2".to_vec()),
+                qname: SmallVec::from_vec(b"read2".to_vec()),
             },
             SeenBase {
                 base: Base::A,
@@ -230,10 +219,11 @@ mod tests {
                 mapq: 20,
                 strand: Strand::OT,
                 reverse: false,
+                second: false,
                 position: PositionInRead { pos: 2, read_length: 100 },
                 matching_bases: 15,
                 indels: 0,
-                // qname: SmallVec::from_vec(b"read3".to_vec()),
+                qname: SmallVec::from_vec(b"read3".to_vec()),
             },
         ]));
 
