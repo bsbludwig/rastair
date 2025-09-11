@@ -5,6 +5,7 @@ use crate::{
 };
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
+use rastair_types::Probability;
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
@@ -58,7 +59,7 @@ pub struct Rastair1BedFormat {
     pub contig: SmolStr,
     pub pos: usize,
     pub r#ref: SmolStr,
-    pub beta: Option<f64>,
+    pub beta: Option<Probability>,
     pub unmod: u32,
     pub r#mod: u32,
     pub no_snp: u32,

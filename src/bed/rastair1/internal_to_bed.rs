@@ -63,6 +63,11 @@ impl Rastair1BedFormat {
         } else {
             record.samples[0].methylated.beta()
         };
+        let beta = if let Some(beta) = beta {
+            Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
+        } else {
+            None
+        };
 
         Ok(Some(super::Rastair1BedFormat {
             contig: record.main.chrom.clone(),

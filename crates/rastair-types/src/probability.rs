@@ -22,7 +22,13 @@ impl Probability {
 
 impl std::fmt::Display for Probability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:.4}", self.0)
+        if let Some(precision) = f.precision() {
+            // If we received a precision, we use it.
+            write!(f, "{1:.*}", precision, self.0)
+        } else {
+            // Otherwise we default to 2.
+            write!(f, "{:.2}", self.0)
+        }
     }
 }
 

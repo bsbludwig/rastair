@@ -10,7 +10,7 @@ use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat as _, Report, ensure},
 };
-use rastair_types::Phred;
+use rastair_types::{Phred, Probability};
 use rastair_vcf::{
     StrandSpecificInfoField as _, VcfField as _,
     standard_fields::{Genotype, PASS, ReadDepth},
@@ -104,7 +104,13 @@ impl Rastair1BedFormat {
             return Ok(None);
         }
 
-        let beta = if in_cpg && genotype.homozygous() { Some(0.0) } else { beta };
+        // TODO: Use ML
+        let beta = if in_cpg && genotype.homozygous_not_ref() { Some(0.0) } else { beta };
+        let beta = if let Some(beta) = beta {
+            Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
+        } else {
+            None
+        };
 
         Ok(Some(Rastair1BedFormat {
             contig,
