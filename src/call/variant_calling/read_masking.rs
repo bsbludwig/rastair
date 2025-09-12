@@ -220,16 +220,10 @@ mod tests {
 
     fn read(pos: u32, len: u32, strand: Strand, rev: bool) -> SeenBase {
         SeenBase {
-            base: crate::utils::Base::A,
-            qual: 30,
-            mapq: 20,
             strand,
             reverse: rev,
-            second: false,
             position: crate::call::variants::PositionInRead { pos, read_length: len },
-            matching_bases: 10,
-            indels: 0,
-            qname: SmallVec::new(),
+            ..Default::default()
         }
     }
 

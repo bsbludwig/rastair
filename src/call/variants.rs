@@ -2,6 +2,7 @@ use crate::{
     sequence::Segment,
     utils::{Base, Counter, Strand},
 };
+use better_default::Default;
 use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -113,24 +114,32 @@ impl Deref for SeenBases {
 
 /// A base seen in a pileup
 #[derive(Clone)]
+#[cfg_attr(test, derive(Default))] // for easier test construction
 pub struct SeenBase {
     /// The base seen
+    #[cfg_attr(test, default(Base::Unknown))]
     pub base: Base,
     /// Base quality
+    #[cfg_attr(test, default(30))]
     pub qual: u8,
     /// Mapping quality of the read this base belongs to
+    #[cfg_attr(test, default(20))]
     pub mapq: u8,
     /// Strand the read was mapped to
+    #[cfg_attr(test, default(Strand::OT))]
     pub strand: Strand,
     /// Whether the read was mapped to the reverse strand
     pub reverse: bool,
     /// Whether this base was seen in the first or second read of a pair
     pub second: bool,
     /// Position of the base in the read
+    #[cfg_attr(test, default(PositionInRead { pos: 50, read_length: 100 }))]
     pub position: PositionInRead,
     /// Number of matching bases in the read this base belongs to
+    #[cfg_attr(test, default(90))]
     pub matching_bases: u32,
     /// Number of indels in the read this base belongs to
+    #[cfg_attr(test, default(2))]
     pub indels: u32,
     /// Query Name of the read this base belongs to
     pub qname: SmallVec<u8, 42>,
@@ -186,44 +195,32 @@ mod tests {
         })
     }
 
+    fn default<T: Default>() -> T {
+        T::default()
+    }
+
     #[test]
     fn test_alleles_in_order() {
         let bases = SeenBases(SmallVec::from_vec(vec![
             SeenBase {
                 base: Base::A,
-                qual: 30,
-                mapq: 20,
                 strand: Strand::OT,
-                reverse: false,
-                second: false,
-                position: PositionInRead { pos: 0, read_length: 100 },
-                matching_bases: 10,
-                indels: 0,
                 qname: SmallVec::from_vec(b"read1".to_vec()),
+                ..default()
             },
             SeenBase {
                 base: Base::C,
-                qual: 30,
-                mapq: 20,
                 strand: Strand::OB,
                 reverse: true,
                 second: false,
-                position: PositionInRead { pos: 1, read_length: 100 },
-                matching_bases: 5,
-                indels: 0,
                 qname: SmallVec::from_vec(b"read2".to_vec()),
+                ..default()
             },
             SeenBase {
                 base: Base::A,
-                qual: 30,
-                mapq: 20,
                 strand: Strand::OT,
-                reverse: false,
-                second: false,
-                position: PositionInRead { pos: 2, read_length: 100 },
-                matching_bases: 15,
-                indels: 0,
                 qname: SmallVec::from_vec(b"read3".to_vec()),
+                ..default()
             },
         ]));
 
