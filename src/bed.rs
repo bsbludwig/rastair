@@ -1,6 +1,7 @@
 use color_eyre::Result;
 use std::io::Write;
 
+pub mod reader;
 pub mod writer;
 
 pub mod per_read;
