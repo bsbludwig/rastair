@@ -24,8 +24,6 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
-
     let args = Cli::parse();
     setup_logging(args.verbose);
     let params = args.call;

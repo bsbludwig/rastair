@@ -82,7 +82,7 @@ pub fn mbias(params: &MBiasParams) -> Result<()> {
     Ok(())
 }
 
-fn ensure_tabix_index_exists(params: &MBiasParams) -> Result<(), color_eyre::eyre::Error> {
+fn ensure_tabix_index_exists(params: &MBiasParams) -> Result<()> {
     let tabix_index = params.bed_file.with_file_name({
         let mut name = params
             .bed_file

@@ -2,7 +2,6 @@ use crate::{
     sequence::Segment,
     utils::{Base, Counter, Strand},
 };
-use better_default::Default;
 use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -114,7 +113,7 @@ impl Deref for SeenBases {
 
 /// A base seen in a pileup
 #[derive(Clone)]
-#[cfg_attr(test, derive(Default))] // for easier test construction
+#[cfg_attr(test, derive(better_default::Default))] // for easier test construction
 pub struct SeenBase {
     /// The base seen
     #[cfg_attr(test, default(Base::Unknown))]
