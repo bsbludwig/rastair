@@ -20,6 +20,11 @@ impl MethylatedPositions {
             .wrap_err("could not apply modification to record")
     }
 
+    /// Write the modification string for this base and positions
+    ///
+    /// See [SAM tags], ch. 1.7 for details
+    ///
+    /// [SAM tags]: https://samtools.github.io/hts-specs/SAMtags.pdf
     pub fn to_mod_string(&self, strand: &str) -> String {
         let mut mod_string = String::new();
         // unmodified "fundamental" base on top strand
