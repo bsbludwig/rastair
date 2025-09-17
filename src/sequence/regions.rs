@@ -1,3 +1,4 @@
+use color_eyre::eyre::{Context as _, ContextCompat};
 use smol_str::SmolStr;
 use std::fmt;
 
@@ -40,8 +41,26 @@ fn test_region_contains() {
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for Region {
+    /// Write 1-based region in the format `contig:start-end`
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}-{}", self.contig, self.start, self.end)
+        write!(f, "{}:{}-{}", self.contig, self.start + 1, self.end)
+    }
+}
+
+impl TryFrom<Region> for noodles::core::Region {
+    type Error = color_eyre::Report;
+
+    fn try_from(value: Region) -> Result<Self, Self::Error> {
+        let start = usize::try_from(value.start).wrap_err("start position too large for usize")?;
+        let start = noodles::core::Position::try_from(
+            start
+                .checked_add(1)
+                .wrap_err("start position overflowed when converting to 1-based")?,
+        )?;
+        let end = usize::try_from(value.end).wrap_err("end position too large for usize")?;
+        let end = noodles::core::Position::try_from(end)
+            .wrap_err("end position too large for noodles")?;
+        Ok(noodles::core::Region::new(value.contig.to_string(), start..=end))
     }
 }
 
