@@ -149,6 +149,18 @@ impl BedRecord for Rastair1BedFormat {
 
         Ok(())
     }
+
+    fn chr(&self) -> &str {
+        &self.contig
+    }
+
+    fn start(&self) -> usize {
+        self.pos
+    }
+
+    fn end(&self) -> usize {
+        self.pos + 1
+    }
 }
 
 pub fn genotype_to_rastair1_string(genotype: &Genotype, ref_base: &str) -> SmolStr {

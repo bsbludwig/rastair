@@ -18,4 +18,8 @@ pub enum BedFormat {
 pub trait BedRecord {
     const HEADER: &'static str;
     fn write<W: Write>(&self, writer: &mut W) -> Result<()>;
+
+    fn chr(&self) -> &str;
+    fn start(&self) -> usize;
+    fn end(&self) -> usize;
 }

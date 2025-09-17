@@ -115,6 +115,18 @@ impl BedRecord for PerRead {
 
         Ok(())
     }
+
+    fn chr(&self) -> &str {
+        &self.region.contig
+    }
+
+    fn start(&self) -> usize {
+        usize::try_from(self.region.start).expect("region start should fit into usize")
+    }
+
+    fn end(&self) -> usize {
+        usize::try_from(self.region.end).expect("region end should fit into usize")
+    }
 }
 
 fn write_list<W: Write>(f: &mut W, list: &[usize]) -> Result<()> {
