@@ -1,13 +1,19 @@
 use crate::{
-    bed::per_read::{BedReadsParams, PerRead},
+    bed::{
+        per_read::{BedReadsParams, PerRead},
+        reader::{RastairBedReader, RastairCall, SimpleRastairBedRecord},
+    },
     call::variant_calling::ReadFlags,
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
+    utils::logging::ThisIsABug,
 };
 use bio::bio_types::sequence::SequenceReadPairOrientation;
+use clio::ClioPath;
 use color_eyre::{
     Result, Section,
     eyre::{Context as _, ContextCompat, eyre},
 };
+
 use rastair_types::Strand;
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
@@ -31,6 +37,10 @@ pub struct PerReadParams {
     /// Helpful to avoid missing variants at the edges of segments.
     #[arg(long, default_value_t = 500)]
     pub segment_overlap: u64,
+
+    /// BED file Rastair wrote with methylation calls per position
+    #[arg(long)]
+    pub calls: Option<ClioPath>,
 
     // --- Calling parameters ---
     #[command(flatten)]
@@ -165,10 +175,15 @@ fn process_region_wrapper(
     sender: &mut ordered_channel::Sender<Vec<PerRead>>,
     params: &PerReadParams,
 ) -> Result<()> {
+    struct LocalReaders {
+        bam: Readers,
+        calls: Option<RastairBedReader>,
+    }
+
     thread_local! {
         /// Readers for the BAM and FASTA files, initialized per thread to avoid
         /// re-opening files or having a lock
-        static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+        static READERS: std::cell::RefCell<Option<LocalReaders>> = const { std::cell::RefCell::new(None) };
     }
 
     // Use thread-local readers to avoid re-opening files in each thread
@@ -181,12 +196,25 @@ fn process_region_wrapper(
                     .segments
                     .readers()
                     .wrap_err("Failed to open readers in worker thread")?;
-                *local_readers = Some(readers);
+                let calls_reader = if let Some(bed_path) = &params.calls {
+                    match RastairBedReader::new(bed_path).wrap_err("Failed to open calls BED file")
+                    {
+                        Ok(r) => Some(r),
+                        Err(error) => {
+                            let error = format!("{error:#}");
+                            warn!(%error, "Failed to read calls");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                *local_readers = Some(LocalReaders { bam: readers, calls: calls_reader });
             }
             local_readers.as_mut().wrap_err("Failed to access thread-local resources")?
         };
 
-        process_region(readers, region, params)
+        process_region(&mut readers.bam, readers.calls.as_mut(), region, params)
     });
 
     let records = match res {
@@ -207,6 +235,7 @@ fn process_region_wrapper(
 
 fn process_region(
     readers: &mut Readers,
+    calls_reader: Option<&mut RastairBedReader>,
     region: &ChunkRegion,
     params: &PerReadParams,
 ) -> Result<Vec<PerRead>> {
@@ -228,6 +257,18 @@ fn process_region(
         .wrap_err("Could not convert region string")
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
+
+    let calls = if let Some(calls_reader) = calls_reader {
+        let region = segment
+            .region
+            .clone()
+            .try_into()
+            .wrap_err("Failed to convert segment region for querying calls")
+            .this_is_a_bug()?;
+        calls_reader.query(&region).wrap_err("Failed to query calls BED file")?
+    } else {
+        Vec::new()
+    };
 
     let size = usize::try_from(segment.range.len())
         .wrap_err("Failed to convert segment range length to usize")?;
@@ -259,8 +300,14 @@ fn process_region(
         }
 
         record.cache_cigar();
-        let row = record_to_row(&record, &segment, params.exclude_ambiguous, params.count_clipped)
-            .wrap_err("Failed to read record")?;
+        let row = record_to_row(
+            &record,
+            &segment,
+            &calls,
+            params.exclude_ambiguous,
+            params.count_clipped,
+        )
+        .wrap_err("Failed to read record")?;
 
         if params.all_reads || row.cpg_count > 0 {
             res.push(row);
@@ -275,6 +322,7 @@ fn process_region(
 fn record_to_row(
     record: &Record,
     segment: &Segment,
+    calls: &[SimpleRastairBedRecord],
     exclude_ambiguous: bool,
     count_clipped: bool,
 ) -> Result<PerRead> {
@@ -290,6 +338,8 @@ fn record_to_row(
     let mut mod_cpgs = SmallVec::new();
     let mut unmod_cpgs = SmallVec::new();
     let mut snp_cpgs = SmallVec::new();
+    let mut mod_denovos = SmallVec::new();
+    let mut unmod_denovos = SmallVec::new();
 
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
         let Some(pos_in_read) = pos_in_read else {
@@ -345,6 +395,17 @@ fn record_to_row(
                 }
             }
         }
+
+        // Check for de-novo CpGs
+        if let Some(call) = calls.iter().find(|x| x.pos as usize == pos_in_ref)
+            && let RastairCall::DeNovoCpg { methylated, .. } = call.call
+        {
+            if methylated {
+                mod_denovos.push(pos_rel);
+            } else {
+                unmod_denovos.push(pos_rel);
+            }
+        }
     }
 
     Ok(PerRead {
@@ -363,6 +424,8 @@ fn record_to_row(
         mod_cpgs,
         unmod_cpgs,
         snp_cpgs,
+        mod_denovos,
+        unmod_denovos,
     })
 }
 

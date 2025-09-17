@@ -226,6 +226,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
    Helpful to avoid missing variants at the edges of segments.
 
   Default value: `500`
+* `--calls <CALLS>` — BED file Rastair wrote with methylation calls per position
 * `-f`, `--include-flags <INCLUDE_FLAGS>` — Include reads that match all of these bit-flags
 
   Default value: `3`

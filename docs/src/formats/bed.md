@@ -39,22 +39,24 @@ The BED file for CpG sites contains the following columns:
 
 The BED file for per-read methylation contains the following columns:
 
-| Column        | Description                                |
-| ------------- | ------------------------------------------ |
-| `chr`         | Chromosome name                            |
-| `start`       | Start position                             |
-| `end`         | End position                               |
-| `read_id`     | Name of read                               |
-| `mapq`        | Mapq of read                               |
-| `orientation` | Orientation of read, either `+` or `-`     |
-| `insert_size` | Absolute fragment length (non-directional) |
-| `read_length` | Read length                                |
-| `flag`        | Flag of read (decimal, same as in @BAM)    |
-| `num_cpg`     | Number of CpGs in a read                   |
-| `num_mod`     | Number of modified CpGs                    |
-| `mod_cpgs`    | Positions in read of modified CpGs         |
-| `unmod_cpgs`  | Positions in read of unmodified CpGs       |
-| `snp_cpgs`    | Positions in read of CpGs that are mutated |
+| Column          | Description                                   |
+| --------------- | --------------------------------------------- |
+| `chr`           | Chromosome name                               |
+| `start`         | Start position                                |
+| `end`           | End position                                  |
+| `read_id`       | Name of read                                  |
+| `mapq`          | Mapq of read                                  |
+| `orientation`   | Orientation of read, either `+` or `-`        |
+| `insert_size`   | Absolute fragment length (non-directional)    |
+| `read_length`   | Read length                                   |
+| `flag`          | Flag of read (decimal, same as in @BAM)       |
+| `num_cpg`       | Number of CpGs in a read                      |
+| `num_mod`       | Number of modified CpGs                       |
+| `mod_cpgs`      | Positions in read of modified CpGs            |
+| `unmod_cpgs`    | Positions in read of unmodified CpGs          |
+| `snp_cpgs`      | Positions in read that are @SNP:pl (mutated)  |
+| `mod_denovos`   | Positions in read of @denovo that are mutated |
+| `unmod_denovos` | Positions in read of @denovo that are mutated |
 
 **Note:** The positions in reads take @indel:pl into account,
 meaning that the positions are relative to the read, not the reference genome.

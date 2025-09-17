@@ -74,10 +74,14 @@ pub struct PerRead {
     pub unmod_cpgs: SmallVec<usize, 24>,
     /// Positions in read of CpGs that are mutated
     pub snp_cpgs: SmallVec<usize, 24>,
+    /// Positions in read of de-novo CpGs that are mutated
+    pub mod_denovos: SmallVec<usize, 10>,
+    /// Positions in read of de-novo CpGs that are unmodified
+    pub unmod_denovos: SmallVec<usize, 10>,
 }
 
 impl BedRecord for PerRead {
-    const HEADER: &'static str = "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tread_length\tflag\tnum_cpg\tnum_mod\tmod_cpgs\tunmod_cpgs\tsnp_cpgs";
+    const HEADER: &'static str = "#chr\tstart\tend\tread_id\tmapq\torientation\tinsert_size\tread_length\tflag\tnum_cpg\tnum_mod\tmod_cpgs\tunmod_cpgs\tsnp_cpgs\tmod_denovos\tunmod_denovos";
 
     fn write<W: Write>(&self, f: &mut W) -> Result<()> {
         write!(
@@ -97,29 +101,28 @@ impl BedRecord for PerRead {
         )?;
 
         write!(f, "\t")?;
-        for (i, pos) in self.mod_cpgs.iter().enumerate() {
-            if i > 0 {
-                write!(f, ",")?;
-            }
-            write!(f, "{pos}")?;
-        }
+        write_list(f, &self.mod_cpgs)?;
+        write!(f, "\t")?;
+        write_list(f, &self.unmod_cpgs)?;
 
         write!(f, "\t")?;
-        for (i, pos) in self.unmod_cpgs.iter().enumerate() {
-            if i > 0 {
-                write!(f, ",")?;
-            }
-            write!(f, "{pos}")?;
-        }
+        write_list(f, &self.snp_cpgs)?;
 
         write!(f, "\t")?;
-        for (i, pos) in self.snp_cpgs.iter().enumerate() {
-            if i > 0 {
-                write!(f, ",")?;
-            }
-            write!(f, "{pos}")?;
-        }
+        write_list(f, &self.mod_denovos)?;
+        write!(f, "\t")?;
+        write_list(f, &self.unmod_denovos)?;
 
         Ok(())
     }
+}
+
+fn write_list<W: Write>(f: &mut W, list: &[usize]) -> Result<()> {
+    for (i, pos) in list.iter().enumerate() {
+        if i > 0 {
+            write!(f, ",")?;
+        }
+        write!(f, "{pos}")?;
+    }
+    Ok(())
 }
