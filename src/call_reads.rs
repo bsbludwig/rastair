@@ -1,7 +1,7 @@
 use crate::{
     bed::{
         per_read::{BedReadsParams, PerRead},
-        reader::{RastairBedReader, RastairCall, SimpleRastairBedRecord},
+        reader::{RastairBedReader, RastairCall},
     },
     call::variant_calling::ReadFlags,
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
@@ -17,6 +17,7 @@ use color_eyre::{
 use rastair_types::Strand;
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::thread::{self, available_parallelism};
 use tracing::{debug, instrument, trace, warn};
@@ -233,6 +234,7 @@ fn process_region_wrapper(
     Ok(())
 }
 
+#[instrument(level = "debug", skip_all, fields(region=%region.region))]
 fn process_region(
     readers: &mut Readers,
     calls_reader: Option<&mut RastairBedReader>,
@@ -265,9 +267,12 @@ fn process_region(
             .try_into()
             .wrap_err("Failed to convert segment region for querying calls")
             .this_is_a_bug()?;
-        calls_reader.query(&region).wrap_err("Failed to query calls BED file")?
+        let vec = calls_reader.query(&region).wrap_err("Failed to query calls BED file")?;
+        let map: FxHashMap<usize, RastairCall> =
+            vec.into_iter().map(|r| (r.pos as usize, r.call)).collect();
+        map
     } else {
-        Vec::new()
+        FxHashMap::default()
     };
 
     let size = usize::try_from(segment.range.len())
@@ -322,7 +327,7 @@ fn process_region(
 fn record_to_row(
     record: &Record,
     segment: &Segment,
-    calls: &[SimpleRastairBedRecord],
+    calls: &FxHashMap<usize, RastairCall>,
     exclude_ambiguous: bool,
     count_clipped: bool,
 ) -> Result<PerRead> {
@@ -397,10 +402,10 @@ fn record_to_row(
         }
 
         // Check for de-novo CpGs
-        if let Some(call) = calls.iter().find(|x| x.pos as usize == pos_in_ref)
-            && let RastairCall::DeNovoCpg { methylated, .. } = call.call
+        if let Some(call) = calls.get(&pos_in_ref)
+            && let RastairCall::DeNovoCpg { methylated, .. } = call
         {
-            if methylated {
+            if *methylated {
                 mod_denovos.push(pos_rel);
             } else {
                 unmod_denovos.push(pos_rel);
