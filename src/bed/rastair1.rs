@@ -146,6 +146,7 @@ impl BedRecord for Rastair1BedFormat {
             genotype_confidence.first().and_then(|x| *x).map(|x| x.as_int()).unwrap_or_default();
         write!(f, "\t{genotype}\t{likelihood:.2}\t{confidence:.2}")?;
         write!(f, "\t{}", if *de_novo { "NEW" } else { "REF" })?;
+        writeln!(f)?;
 
         Ok(())
     }

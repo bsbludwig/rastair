@@ -112,6 +112,7 @@ impl BedRecord for PerRead {
         write_list(f, &self.mod_denovos)?;
         write!(f, "\t")?;
         write_list(f, &self.unmod_denovos)?;
+        writeln!(f)?;
 
         Ok(())
     }

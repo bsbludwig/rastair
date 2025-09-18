@@ -120,7 +120,6 @@ impl<R: BedRecord> BedWriter<R> {
             let start_position = bed.virtual_position();
 
             record.write(bed).wrap_err("Failed to write record")?;
-            writeln!(bed).wrap_err("Failed to write newline after record")?;
 
             let end_position = bed.virtual_position();
             let chunk = Chunk::new(start_position, end_position);
@@ -137,7 +136,6 @@ impl<R: BedRecord> BedWriter<R> {
             )?;
         } else {
             record.write(&mut self.writer).wrap_err("Failed to write record")?;
-            writeln!(self.writer).wrap_err("Failed to write newline after record")?;
         }
         Ok(())
     }
