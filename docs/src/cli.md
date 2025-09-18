@@ -7,6 +7,7 @@ This document contains the help content for the `rastair` command-line program.
 * [`rastair`↴](#rastair)
 * [`rastair call`↴](#rastair-call)
 * [`rastair per-read`↴](#rastair-per-read)
+* [`rastair bam`↴](#rastair-bam)
 * [`rastair convert`↴](#rastair-convert)
 * [`rastair view`↴](#rastair-view)
 * [`rastair mbias`↴](#rastair-mbias)
@@ -23,6 +24,7 @@ See <https://docs.rastair.com/> for more information.
 
 * `call` — Call methylated positions
 * `per-read` — Call methylation per-read
+* `bam` — Add methylation information to BAM files
 * `convert` — Convert between different file formats
 * `view` — View internal format as JSON lines
 * `mbias` — Calculate conversion per base position in read
@@ -264,6 +266,35 @@ This will produce a bed file that list the methylation status of all CpGs in eve
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
   Default value: `14`
+
+
+
+## `rastair bam`
+
+Add methylation information to BAM files
+
+**Usage:** `rastair bam [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE> <CALLS_FILE>`
+
+###### **Arguments:**
+
+* `<BAM_FILE>` — Path to sorted and indexed BAM file
+* `<CALLS_FILE>` — Rastair's calls to determine methylation
+
+###### **Options:**
+
+* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
+* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
+
+   Used for splitting work between threads. Tweak this to adjust memory usage.
+
+  Default value: `100000`
+* `-o`, `--output <OUTPUT>` — Output file
+
+  Default value: `-`
+* `-v`, `--verbose` — Enable more logging
+
+   You can also use the `RASTAIR_LOG` environment variable to configure logging in a more precise way. See the documentation of the `tracing-subscriber` library to learn more.
 
 
 

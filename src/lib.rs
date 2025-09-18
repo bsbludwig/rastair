@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod bam;
 pub mod bed;
 pub mod call;
 pub mod call_reads;
@@ -14,10 +15,8 @@ pub mod vcf;
 pub mod utils {
     pub use rastair_types::*;
 
-    mod base_modification;
-    pub mod file_helpers;
-    pub use base_modification::MethylatedPositions;
     mod base_counter;
+    pub mod file_helpers;
     pub use base_counter::Counter;
 
     pub mod logging;

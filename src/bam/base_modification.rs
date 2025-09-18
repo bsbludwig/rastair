@@ -1,5 +1,5 @@
-use super::Base;
 use color_eyre::eyre::{Context, Result};
+use rastair_types::Base;
 use rust_htslib::bam::{Record, record::Aux};
 use smallvec::SmallVec;
 use std::fmt::Write;

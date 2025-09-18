@@ -1,32 +1,38 @@
-use std::path::Path;
-
+use crate::{
+    bed::reader::{RastairBedReader, RastairCall, SimpleRastairBedRecord},
+    sequence::{ChunkRegion, ReaderParams},
+    utils::logging::ThisIsABug,
+};
 use clap::{Parser, value_parser};
 use clio::ClioPath;
-use color_eyre::eyre::{Context, ContextCompat, Result};
-use rastair::{
-    bed::reader::{RastairBedReader, RastairCall, SimpleRastairBedRecord},
-    utils::{Base, MethylatedPositions, logging::setup_logging},
-};
-use rastair_types::RegionString;
+use color_eyre::eyre::{Context, Result};
 use rust_htslib::bam::{
-    self, Header, Read, Record, Writer, ext::BamRecordExtensions as _, header::HeaderRecord,
+    self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
+    header::HeaderRecord,
 };
 use smallvec::SmallVec;
 
+mod base_modification;
+pub use base_modification::MethylatedPositions;
+
 #[derive(Debug, Parser)]
-struct Cli {
-    /// Input file, SAM or BAM
-    #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
-    bam_file: ClioPath,
+pub struct BamRewriteArgs {
+    #[command(flatten)]
+    segments: ReaderParams,
+    /// Maximum length of a segment in bases
+    ///
+    /// Used for splitting work between threads. Tweak this to adjust memory
+    /// usage.
+    #[arg(long, default_value_t = 100_000)]
+    pub segment_max_length: u64,
+
     /// Rastair's calls to determine methylation
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
     calls_file: ClioPath,
-    /// Output file, BAM
-    output_file: ClioPath,
 
-    /// Region to fetch, e.g. "chr19:6105400-6105410"
-    #[arg(short = 'l', long)]
-    region: Option<RegionString>,
+    /// Output file
+    #[arg(short = 'o', long, default_value = "-")]
+    output: ClioPath,
 
     /// Enable more logging
     ///
@@ -37,48 +43,65 @@ struct Cli {
     verbose: bool,
 }
 
-fn main() -> Result<()> {
-    let args = Cli::parse();
-    setup_logging(args.verbose);
-
-    let region = "chr19";
-    let mut bam =
-        bam::IndexedReader::from_path(args.bam_file.path()).wrap_err("failed to open bam file")?;
-    bam.fetch(region).wrap_err("error fetching range")?;
+#[tracing::instrument(level = "info", skip_all)]
+pub fn rewrite(params: &BamRewriteArgs) -> Result<()> {
+    let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
+    let regions: Vec<ChunkRegion> = readers
+        .segments(params.segment_max_length, 0)
+        .wrap_err("Could not fetch segments from BAM file")?
+        .collect();
 
     let mut calls_reader =
-        RastairBedReader::new(args.calls_file.path()).wrap_err("failed to open calls file")?;
-    let calls = calls_reader.query(&region.parse()?).wrap_err("failed to query calls")?;
+        RastairBedReader::new(params.calls_file.path()).wrap_err("failed to open calls file")?;
 
-    rewrite_bam(&mut bam, &args.output_file, &calls).wrap_err("rewrite")?;
-
-    Ok(())
-}
-
-#[tracing::instrument(skip_all)]
-fn rewrite_bam(
-    bam: &mut bam::IndexedReader,
-    output_file: &ClioPath,
-    calls: &[SimpleRastairBedRecord],
-) -> Result<()> {
-    let header = {
-        let mut header = Header::from_template(bam.header());
-        add_rastair_header(&mut header);
-        header
-    };
+    let output_file = &params.output;
     let mut writer = {
-        if output_file.is_std() {
+        let header = {
+            let mut header = Header::from_template(readers.bam.header());
+            add_rastair_header(&mut header);
+            header
+        };
+
+        let mut writer = if output_file.is_std() {
             Writer::from_stdout(&header, bam::Format::Bam)
         } else {
             Writer::from_path(output_file.path(), &header, bam::Format::Bam)
         }
-    }
-    .wrap_err("failed to create writer")?;
-    writer
-        .set_compression_level(bam::CompressionLevel::Fastest)
-        .wrap_err("failed to set compression level")?;
-    writer.set_threads(3).wrap_err("failed to set threads")?;
+        .wrap_err("failed to create writer")?;
+        writer
+            .set_compression_level(bam::CompressionLevel::Fastest)
+            .wrap_err("failed to set compression level")?;
+        writer.set_threads(3).wrap_err("failed to set threads")?;
+        writer
+    };
 
+    for segment in &regions {
+        FetchDefinition::try_from(&segment.region)
+            .wrap_err("Could not convert region string")
+            .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
+            .wrap_err_with(|| {
+                format!("Could not fetch region `{}` from BAM file", segment.region)
+            })?;
+
+        let noodle_region = segment
+            .region
+            .clone()
+            .try_into()
+            .wrap_err("Failed to convert region representation")
+            .this_is_a_bug()?;
+        let calls = calls_reader.query(&noodle_region).wrap_err("failed to query calls")?;
+
+        rewrite_region(&mut readers.bam, &mut writer, &calls).wrap_err("rewrite")?;
+    }
+
+    Ok(())
+}
+
+fn rewrite_region(
+    bam: &mut bam::IndexedReader,
+    writer: &mut rust_htslib::bam::Writer,
+    calls: &[SimpleRastairBedRecord],
+) -> Result<()> {
     let mut record = Record::new();
     while let Some(result) = bam.read(&mut record) {
         if let Err(e) = result {
@@ -123,7 +146,6 @@ fn rewrite_bam(
         }
         writer.write(&record).wrap_err("failed to write record")?;
     }
-    drop(writer);
 
     Ok(())
 }

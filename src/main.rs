@@ -4,6 +4,7 @@ use clap::{CommandFactory as _, Parser as _};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
 use rastair::{
+    bam::BamRewriteArgs,
     call::{CallParams, call},
     call_reads::{PerReadParams, call_reads},
     convert::ConvertParams,
@@ -47,6 +48,8 @@ enum Subcommand {
     /// This will produce a bed file that list the methylation status of all
     /// CpGs in every read that overlaps a CpG, plus some other metadata
     PerRead(PerReadParams),
+    /// Add methylation information to BAM files
+    Bam(BamRewriteArgs),
     /// Convert between different file formats
     Convert(ConvertParams),
     /// View internal format as JSON lines
@@ -119,6 +122,14 @@ fn main() -> Result<()> {
             call_reads(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Calling reads finished");
+        }
+        Subcommand::Bam(params) => {
+            // track execution time
+            let start = std::time::Instant::now();
+            debug!(?params, "Running bam command");
+            rastair::bam::rewrite(&params)?;
+            let duration = start.elapsed();
+            info!(?duration, "Bam rewrite finished");
         }
         Subcommand::Convert(params) => {
             // track execution time
