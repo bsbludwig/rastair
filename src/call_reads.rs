@@ -41,6 +41,7 @@ pub struct PerReadParams {
 
     /// BED file Rastair wrote with methylation calls per position
     #[arg(long)]
+    #[arg(value_parser=clap::value_parser!(ClioPath).exists().is_file())]
     pub calls: Option<ClioPath>,
 
     // --- Calling parameters ---
@@ -96,6 +97,12 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
         .segments(params.segment_max_length, 0)
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
+
+    if let Some(bed_path) = &params.calls {
+        // if we're gonna try to read a calls file, make sure we can open it
+        let _ = RastairBedReader::new(bed_path)
+            .wrap_err_with(|| format!("Failed to read calls from BED file {bed_path}"))?;
+    }
 
     // Process each region and write results to the BED file
     //

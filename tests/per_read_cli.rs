@@ -81,6 +81,71 @@ fn enhance_with_calls_bed_file_to_add_denovo_counts() -> Result<()> {
 }
 
 #[test]
+fn fails_when_given_a_calls_file_as_stdin() -> Result<()> {
+    apply_common_filters!();
+
+    assert_cmd_snapshot!(rastair()
+        .args([
+            "per-read",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=chr19:6105900-6105950",
+            "--calls=-",
+        ])
+        .pass_stdin("#chr"),
+        @r#"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Error: 
+       0: Failed to read calls from BED file "-"
+       1: Failed to open tabix file
+       2: No such file or directory (os error 2)
+
+    Note: Rastair can only read calls from local .bed.gz files as it also needs to load the tabix index
+    "#
+    );
+
+    Ok(())
+}
+
+#[test]
+fn fails_when_given_a_calls_file_with_no_tbi() -> Result<()> {
+    apply_common_filters!();
+
+    assert_cmd_snapshot!(rastair()
+        .args([
+            "per-read",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=chr19:6105900-6105950",
+            "--calls=tests/data/rastair1.bed", // this file has no .tbi
+        ])
+        .pass_stdin("#chr"),
+        @r#"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Error: 
+       0: Failed to read calls from BED file "tests/data/rastair1.bed"
+       1: Failed to open tabix file
+       2: No such file or directory (os error 2)
+
+    Suggestion: You can compress and index the calls file with:
+
+    bgzip tests/data/rastair1.bed
+    tabix tests/data/rastair1.bed.gz
+    "#
+    );
+
+    Ok(())
+}
+
+#[test]
 fn can_tabix_files() -> Result<()> {
     apply_common_filters!();
 
@@ -97,15 +162,17 @@ fn can_tabix_files() -> Result<()> {
         .wrap_err("Failed to remove existing tabix index")?;
 
     assert_cmd_snapshot!(Command::new("tabix")
-            .args(["-p", "bed"])
-            .arg(&bed_file)
-            .current_dir(temp_dir.path()), @r"
-    success: true
-    exit_code: 0
-    ----- stdout -----
+        .args(["-p", "bed"])
+        .arg(&bed_file)
+        .current_dir(temp_dir.path()),
+        @r"
+        success: true
+        exit_code: 0
+        ----- stdout -----
 
-    ----- stderr -----
-    ");
+        ----- stderr -----
+        "
+    );
 
     Ok(())
 }

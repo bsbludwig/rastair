@@ -1,5 +1,5 @@
 use color_eyre::{
-    Result,
+    Result, Section as _,
     eyre::{Context as _, ContextCompat as _, bail},
 };
 use noodles::{core::Region, tabix};
@@ -20,10 +20,33 @@ pub struct RastairBedReader {
 
 impl RastairBedReader {
     #[instrument(level = "debug")]
-    pub fn new(bed_file: &Path) -> Result<Self> {
+    pub fn new(bed_path: &Path) -> Result<Self> {
         let reader = tabix::io::indexed_reader::Builder::default()
-            .build_from_path(bed_file)
-            .wrap_err("Failed to open tabix file")?;
+            .build_from_path(bed_path)
+            .wrap_err("Failed to open tabix file");
+
+        let reader = if "-" == bed_path.to_string_lossy() {
+            reader.note("Rastair can only read calls from local .bed.gz files as it also needs to load the tabix index")?
+        } else if bed_path.ends_with("gz") {
+            reader.with_suggestion(|| {
+                let path = bed_path.display();
+                format!(
+                    "You can create a tabix index with:\n\
+                     \n\
+                     tabix {path}"
+                )
+            })?
+        } else {
+            reader.with_suggestion(|| {
+                let path = bed_path.display();
+                format!(
+                    "You can compress and index the calls file with:\n\
+                     \n\
+                     bgzip {path}\n\
+                     tabix {path}.gz"
+                )
+            })?
+        };
 
         Ok(RastairBedReader { reader })
     }
