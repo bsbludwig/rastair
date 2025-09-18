@@ -63,14 +63,7 @@ fn rewrite_bam(
 ) -> Result<()> {
     let header = {
         let mut header = Header::from_template(bam.header());
-        header.push_record(
-            HeaderRecord::new(b"PG")
-                .push_tag(b"ID", "rastair.rewrite_bam")
-                .push_tag(b"PN", "rastair")
-                .push_tag(b"VN", env!("CARGO_PKG_VERSION"))
-                .push_tag(b"CL", std::env::args().skip(1).collect::<Vec<_>>().join(" "))
-                .push_tag(b"DS", "Rewrote BAM with methylation information"),
-        );
+        add_rastair_header(&mut header);
         header
     };
     let mut writer = {
@@ -124,8 +117,8 @@ fn rewrite_bam(
             }
         }
 
-        if !methylated_positions.is_empty() {
-            let mods = MethylatedPositions { base: Base::C, positions: methylated_positions };
+        if let Some(mods) = MethylatedPositions::for_cpg_methylation(&record, methylated_positions)
+        {
             mods.apply_to_record(&mut record)?;
         }
         writer.write(&record).wrap_err("failed to write record")?;
@@ -133,4 +126,16 @@ fn rewrite_bam(
     drop(writer);
 
     Ok(())
+}
+
+/// Add a PG header line for rastair
+fn add_rastair_header(header: &mut Header) {
+    header.push_record(
+        HeaderRecord::new(b"PG")
+            .push_tag(b"ID", "rastair.rewrite_bam")
+            .push_tag(b"PN", "rastair")
+            .push_tag(b"VN", env!("CARGO_PKG_VERSION"))
+            .push_tag(b"CL", std::env::args().skip(1).collect::<Vec<_>>().join(" "))
+            .push_tag(b"DS", "Rewrote BAM with methylation information"),
+    );
 }

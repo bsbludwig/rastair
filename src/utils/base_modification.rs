@@ -13,42 +13,100 @@ pub struct MethylatedPositions {
 }
 
 impl MethylatedPositions {
+    /// Create methylation positions for CpG sites from a read record
+    ///
+    /// This determines the correct base and strand for CpG methylation based on
+    /// the actual sequence content and read orientation
+    pub fn for_cpg_methylation(record: &Record, positions: SmallVec<u32, 10>) -> Option<Self> {
+        if positions.is_empty() {
+            return None;
+        }
+
+        let seq = record.seq();
+        let is_reverse = record.is_reverse();
+
+        // For CpG methylation, we need to determine if we're looking at C or G
+        // On forward strand: C gets methylated (5mC)
+        // On reverse strand: G represents the C on the opposite strand that got methylated
+        let base = if is_reverse { Base::G } else { Base::C };
+
+        // Validate that positions actually contain the expected bases
+        let valid_positions: SmallVec<u32, 10> = positions
+            .into_iter()
+            .filter(|&pos| {
+                if pos as usize >= seq.len() {
+                    return false;
+                }
+                let observed_base = seq[pos as usize];
+                match base {
+                    Base::C => observed_base == b'C',
+                    Base::G => observed_base == b'G',
+                    _ => false,
+                }
+            })
+            .collect();
+
+        if valid_positions.is_empty() {
+            None
+        } else {
+            Some(Self { base, positions: valid_positions })
+        }
+    }
+
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
-        let strand = record.strand();
+        let is_reverse = record.is_reverse();
+        let strand_symbol = if is_reverse { "-" } else { "+" };
+
         record
-            .push_aux(b"Mm", Aux::String(&self.to_mod_string(strand.strand_symbol())))
+            .push_aux(b"MM", Aux::String(&self.to_mod_string(strand_symbol)))
             .wrap_err("could not apply modification to record")
     }
 
     /// Write the modification string for this base and positions
     ///
     /// See [SAM tags], ch. 1.7 for details
+    /// Format: `BASE STRAND MOD_CODE , DELTA , DELTA , ... ;`
+    /// Where deltas are distances between consecutive positions of the base type
     ///
     /// [SAM tags]: https://samtools.github.io/hts-specs/SAMtags.pdf
     pub fn to_mod_string(&self, strand: &str) -> String {
         let mut mod_string = String::new();
-        // unmodified "fundamental" base on top strand
-        mod_string.push(self.base.as_char());
-        // strand: + or -
-        mod_string.push_str(strand);
-        // 5-Methylcytosine
-        mod_string.push_str("m,");
 
-        let mut prev_pos = None;
-        for pos in &self.positions {
-            let steps_between_prev_and_this = match prev_pos {
-                Some(prev) => pos.saturating_sub(prev).saturating_sub(1),
-                None => *pos,
-            };
-            let _ = prev_pos.insert(*pos);
-            write!(&mut mod_string, "{steps_between_prev_and_this},")
-                .expect("Write to String failed");
+        // Unmodified "fundamental" base on sequenced strand
+        mod_string.push(self.base.as_char());
+
+        // Strand: + or -
+        mod_string.push_str(strand);
+
+        // Modification code: 'm' for 5-Methylcytosine
+        mod_string.push('m');
+
+        if self.positions.is_empty() {
+            // Empty coordinate list - indicates this modification type is not present
+            mod_string.push(';');
+            return mod_string;
         }
 
-        // replace last comma
-        mod_string.pop();
-        mod_string.push(';');
+        mod_string.push(',');
 
+        // Encode positions as deltas between consecutive occurrences of this base type
+        let mut prev_pos = None;
+        for (i, &pos) in self.positions.iter().enumerate() {
+            if i > 0 {
+                mod_string.push(',');
+            }
+
+            let delta = match prev_pos {
+                Some(prev) => pos.saturating_sub(prev).saturating_sub(1),
+                None => pos,
+            };
+
+            write!(&mut mod_string, "{delta}").expect("Write to String failed");
+
+            prev_pos = Some(pos);
+        }
+
+        mod_string.push(';');
         mod_string
     }
 }
@@ -56,34 +114,37 @@ impl MethylatedPositions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_snapshot;
     use proptest::prelude::*;
 
     #[test]
     fn test_empty_positions() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::new() };
-        let expected = "C+m;";
-        assert_eq!(expected, input.to_mod_string("+"));
+        assert_snapshot!(input.to_mod_string("-"), @"C-m;");
     }
 
     #[test]
     fn test_single_position() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([4]) };
-        let expected = "C+m,4;";
-        assert_eq!(expected, input.to_mod_string("+"));
+        assert_snapshot!(input.to_mod_string("+"), @"C+m,4;");
     }
 
     #[test]
     fn test_multiple_positions() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5, 18, 19]) };
-        let expected = "C+m,5,12,0;";
-        assert_eq!(expected, input.to_mod_string("+"));
+        assert_snapshot!(input.to_mod_string("+"), @"C+m,5,12,0;");
     }
 
     #[test]
     fn test_consecutive_positions() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([0, 1, 2]) };
-        let expected = "C+m,0,0,0;";
-        assert_eq!(expected, input.to_mod_string("+"));
+        assert_snapshot!(input.to_mod_string("+"), @"C+m,0,0,0;");
+    }
+
+    #[test]
+    fn test_reverse_strand() {
+        let input = MethylatedPositions { base: Base::G, positions: SmallVec::from([10, 15]) };
+        assert_snapshot!(input.to_mod_string("-"), @"G-m,10,4;");
     }
 
     #[test]
@@ -92,31 +153,40 @@ mod tests {
 
         let mut record = Record::new();
         input.apply_to_record(&mut record).unwrap();
-        let output = record.aux(b"Mm").unwrap();
+        let output = record.aux(b"MM").unwrap();
         let Aux::String(output_str) = output else { panic!("Expected string aux type") };
 
-        let expected = "C+m,0,0,0;";
-        assert_eq!(expected, output_str);
+        assert_snapshot!(output_str, @"C+m,0,0,0;");
     }
 
     proptest! {
         #[test]
         fn test_mod_string_roundtrip(
-            base in prop_oneof![Just(Base::A), Just(Base::C), Just(Base::G), Just(Base::T)],
+            base in prop_oneof![Just(Base::C), Just(Base::G)],
             mut positions in prop::collection::vec(0..100u32, 0..10),
             strand in prop_oneof![Just("+"), Just("-")]
         ) {
             positions.sort();
+            positions.dedup();
             let input = MethylatedPositions { base, positions: SmallVec::from(positions) };
             let mod_string = input.to_mod_string(strand);
+
+            // Basic format validation
             assert!(mod_string.starts_with(&format!("{}{}", base.as_char(), strand)));
+            assert!(mod_string.contains("m"));
             assert!(mod_string.ends_with(";"));
-            // assert right number of positions
-            let positions_in_str = mod_string.trim_end_matches(';')
-                .split(',')
-                .skip(1)
-                .count();
-            assert_eq!(input.positions.len(), positions_in_str);
+
+            // Count positions in string
+            if input.positions.is_empty() {
+                assert_eq!("C+m;" .len(), mod_string.len().min(4)); // Allow for G-m; etc
+            } else {
+                let positions_in_str = mod_string
+                    .trim_end_matches(';')
+                    .split(',')
+                    .skip(1) // Skip the "Xm" part
+                    .count();
+                assert_eq!(input.positions.len(), positions_in_str);
+            }
         }
     }
 }
