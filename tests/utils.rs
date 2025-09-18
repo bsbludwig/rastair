@@ -27,6 +27,8 @@ macro_rules! apply_common_filters {
         settings.add_filter(r#"file="/.*/test.bed"#, "file=[PATH]");
         settings.add_filter(r#"/var/.*/test.bam"#, "[PATH]");
         settings.add_filter(r#"/tmp/.*/test.bam"#, "[PATH]");
+        settings.add_filter(r#"/var/.*/calls.bed.gz"#, "[PATH]");
+        settings.add_filter(r#"/tmp/.*/calls.bed.gz"#, "[PATH]");
         let _bound = settings.bind_to_scope();
     }
 }

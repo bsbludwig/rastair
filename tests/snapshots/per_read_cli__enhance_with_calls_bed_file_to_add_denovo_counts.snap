@@ -8,7 +8,7 @@ info:
     - tests/data/test.bam
     - "--region=chr19:6105900-6105950"
     - "--calls"
-    - /var/folders/zj/k_pwcqp11rdgjk0l7tgvjmkm0000gn/T/.tmpuw3Qkt/calls.bed.gz
+    - tmp/tests/calls.bed.gz
   env:
     NO_COLOR: "1"
 ---
