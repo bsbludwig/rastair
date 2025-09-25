@@ -176,4 +176,124 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn display_no_alt_alleles() {
+        let fields = VcfFixedFields {
+            chrom: "chr1".into(),
+            pos: 1234,
+            id: BTreeSet::new(),
+            r#ref: "T".into(),
+            alt: SmallVec::new(),
+            qual: None,
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "chr1:1234 T");
+    }
+
+    #[test]
+    fn display_single_alt_allele() {
+        let fields = VcfFixedFields {
+            chrom: "chr2".into(),
+            pos: 5678,
+            id: BTreeSet::new(),
+            r#ref: "A".into(),
+            alt: SmallVec::from(["G".into()]),
+            qual: Some(30.5),
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "chr2:5678 A>G");
+    }
+
+    #[test]
+    fn display_multiple_alt_alleles() {
+        let fields = VcfFixedFields {
+            chrom: "X".into(),
+            pos: 9999,
+            id: BTreeSet::from(["rs456".into()]),
+            r#ref: "C".into(),
+            alt: SmallVec::from(["T".into(), "G".into(), "A".into()]),
+            qual: Some(99.9),
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "X:9999 C>[T,G,A]");
+    }
+
+    #[test]
+    fn display_two_alt_alleles() {
+        let fields = VcfFixedFields {
+            chrom: "22".into(),
+            pos: 12345,
+            id: BTreeSet::new(),
+            r#ref: "GTC".into(),
+            alt: SmallVec::from(["G".into(), "GTCATC".into()]),
+            qual: None,
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "22:12345 GTC>[G,GTCATC]");
+    }
+
+    #[test]
+    fn display_symbolic_alleles() {
+        let fields = VcfFixedFields {
+            chrom: "MT".into(),
+            pos: 1,
+            id: BTreeSet::from(["sv123".into()]),
+            r#ref: "N".into(),
+            alt: SmallVec::from(["<DEL>".into()]),
+            qual: Some(10.0),
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "MT:1 N><DEL>");
+    }
+
+    #[test]
+    fn display_complex_variant() {
+        let fields = VcfFixedFields {
+            chrom: "scaffold_123".into(),
+            pos: 777777,
+            id: BTreeSet::from(["custom_var".into(), "another_id".into()]),
+            r#ref: "ATCGATCG".into(),
+            alt: SmallVec::from(["A".into(), "ATCGATCGATCG".into(), "*".into()]),
+            qual: Some(42.42),
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "scaffold_123:777777 ATCGATCG>[A,ATCGATCGATCG,*]");
+    }
+
+    #[test]
+    fn display_missing_allele() {
+        let fields = VcfFixedFields {
+            chrom: "Y".into(),
+            pos: 100,
+            id: BTreeSet::new(),
+            r#ref: "G".into(),
+            alt: SmallVec::from([".".into()]),
+            qual: None,
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "Y:100 G>.");
+    }
+
+    #[test]
+    fn display_unspecified_allele() {
+        let fields = VcfFixedFields {
+            chrom: "chr3".into(),
+            pos: 2000,
+            id: BTreeSet::new(),
+            r#ref: "AAA".into(),
+            alt: SmallVec::from(["<*>".into(), "AA".into()]),
+            qual: Some(1.5),
+        };
+
+        let display = format!("{}", fields);
+        assert_eq!(display, "chr3:2000 AAA>[<*>,AA]");
+    }
 }

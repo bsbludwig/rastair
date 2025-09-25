@@ -120,7 +120,7 @@ fn rewrite_region(
 /// 4. Rewrite the sequence to un-modify the bases of methylated positions
 ///    (i.e., change T or A that is methylation evidence back to C or G)
 /// 5. Apply the modifications to the record
-#[instrument(level = "debug", skip_all, fields(tid = record.tid(), pos = record.pos()))]
+#[instrument(level = "debug", skip_all, fields(pos = record.pos()))]
 fn rewrite_record(
     bam: &mut bam::IndexedReader,
     calls: &[SimpleRastairBedRecord],
