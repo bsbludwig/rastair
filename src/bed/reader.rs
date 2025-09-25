@@ -104,9 +104,27 @@ struct RefRastairBedRecord<'src> {
 
 #[derive(Debug, Clone)]
 pub enum RastairCall {
-    Cpg { base: Base, methylated: bool },
-    DeNovoCpg { base: Base, methylated: bool },
-    Snp { from: Base, to: Base },
+    /// A CpG site on the reference genome
+    Cpg {
+        /// The base on the reference strand (C or G)
+        base: Base,
+        /// Whether the CpG is methylated
+        methylated: bool,
+    },
+    /// A de novo CpG site not present in the reference genome
+    DeNovoCpg {
+        /// The base on the reference strand (C or G)
+        base: Base,
+        /// Whether the CpG is methylated
+        methylated: bool,
+    },
+    /// A SNP (single nucleotide polymorphism)
+    Snp {
+        /// Reference base
+        from: Base,
+        /// Variant base
+        to: Base,
+    },
 }
 
 impl SimpleRastairBedRecord {

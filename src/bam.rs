@@ -6,6 +6,7 @@ use crate::{
 use clap::{Parser, value_parser};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
+use rastair_types::{Base, Strand, StrandFromRecord};
 use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
@@ -126,7 +127,10 @@ fn rewrite_record(
     calls: &[SimpleRastairBedRecord],
     record: &mut Record,
 ) -> Result<(), color_eyre::eyre::Error> {
+    use Base::*;
+
     let chr = bam.header().tid2name(record.tid() as u32);
+    let strand = StrandFromRecord::strand(record);
     let called_positions: SmallVec<_, 10> = calls
         .iter()
         .filter(|call| chr == call.chrom.as_bytes())
@@ -136,7 +140,10 @@ fn rewrite_record(
             i64::from(call.pos) >= read_start && i64::from(call.pos) < read_end
         })
         .collect();
-    let mut methylated_positions = SmallVec::new();
+
+    let mut seq: Vec<Base> = record.seq().as_bytes().iter().map(Base::from).collect();
+    let mut methylated_positions: SmallVec<u32, 10> = SmallVec::new();
+
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
         let Some(pos_in_read) = pos_in_read else {
             continue;
@@ -151,10 +158,38 @@ fn rewrite_record(
             && let RastairCall::Cpg { methylated, .. } = called_pos.call
             && methylated
         {
-            methylated_positions.push(pos_in_read);
+            let pos = pos_in_read as usize;
+            let observed_base = seq[pos];
+
+            // Let's rewrite the sequence to un-modify the bases and collect
+            // methylated positions
+            match strand {
+                // If we are on the top strand, we expect to see T at methylated
+                // C positions
+                Strand::OT => {
+                    if observed_base == T {
+                        seq[pos] = C;
+                        methylated_positions.push(pos_in_read);
+                    }
+                }
+                // If we are on the bottom strand, we expect to see A at
+                // methylated G
+                Strand::OB => {
+                    if observed_base == A {
+                        seq[pos] = G;
+                        methylated_positions.push(pos_in_read);
+                    }
+                }
+                Strand::Unknown => continue,
+            }
         }
     }
-    let mods = MethylatedPositions::for_cpg_methylation(&*record, methylated_positions);
+
+    let mods = MethylatedPositions::new(strand, &seq, &methylated_positions);
+
+    let new_seq: Vec<u8> = seq.into_iter().map(|b| *b).collect();
+    record.set_seq(&new_seq);
+
     mods.apply_to_record(record)?;
     Ok(())
 }
