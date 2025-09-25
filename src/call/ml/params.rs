@@ -1,4 +1,7 @@
-use crate::call::ml::{MachineLearning, models::load_model};
+use crate::{
+    call::ml::{MachineLearning, models::load_model},
+    utils::cli,
+};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context};
@@ -12,6 +15,7 @@ pub struct MachineLearningParams {
     /// This disables using the machine learning models. This will make rastair
     /// much faster, but at the cost of accuracy.
     #[arg(long = "thresholds")]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub no_ml: bool,
     /// Use machine learning model with this threshold value to call variants
     /// and methylation events
@@ -19,23 +23,27 @@ pub struct MachineLearningParams {
     /// When specified, a ML model will classify positions with a prediction
     /// score. Anything above this threshold is considered PASS.
     #[arg(long = "ml", default_value_t = Probability::new(0.8).expect("default value is valid probility"), num_args = 0..=1)]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub ml: Probability,
     /// Path to the model for CpG positions
     ///
     /// Default is the bundled model in the Rastair binary.
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::FILTER)]
     #[serde(skip)]
     model_cpg: Option<ClioPath>,
     /// Path to the model for de novo CpG positions
     ///
     /// Default is the bundled model in the Rastair binary.
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::FILTER)]
     #[serde(skip)]
     model_denovo_cpg: Option<ClioPath>,
     /// Path to the model for other positions
     ///
     /// Default is the bundled model in the Rastair binary.
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::FILTER)]
     #[serde(skip)]
     model_others: Option<ClioPath>,
 }

@@ -11,7 +11,7 @@ use crate::{
         mpk::{MessagePackWriter, format::MpkVcfHeader},
     },
     sequence::ChunkRegion,
-    utils::logging::ThisIsABug as _,
+    utils::{cli, logging::ThisIsABug as _},
     vcf::Record,
 };
 
@@ -25,6 +25,7 @@ pub struct Params {
     /// `.bcf` for BCF (compressed)
     /// `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
     #[arg(short = 'o', long, required = false, default_missing_value = "-", num_args = 0..=1)]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf: Option<ClioPath>,
 
     /// Number of threads to use for writing (and compressing) VCF files
@@ -34,6 +35,7 @@ pub struct Params {
     /// contain a lot of positions.
     // Default value chosen after profiling on a machine with 14 cores.
     #[arg(long, default_value = "3")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub vcf_threads: NonZeroUsize,
 }
 

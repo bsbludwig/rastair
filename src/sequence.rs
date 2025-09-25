@@ -7,7 +7,7 @@
 //! - Processing segments with configurable overlap between chunks
 
 use crate::utils::{
-    Base, RegionString,
+    Base, RegionString, cli,
     file_helpers::{FastaReader, open_fasta},
 };
 use clap::value_parser;
@@ -30,17 +30,20 @@ mod regions;
 pub struct ReaderParams {
     /// Path to sorted and indexed BAM file
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT)]
     pub bam_file: ClioPath,
 
     /// Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip
     /// compressed, but requires both a gzi index and a fai index
     #[arg(short='r', long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT)]
     pub fasta_file: ClioPath,
 
     /// Restrict to a specific chromosome or region of a chromosome. Format is
     /// "chr", "chr:start" or "chr:start-end", where start is 1-based and end is
     /// inclusive.
     #[arg(short = 'l', long)]
+    #[arg(help_heading = cli::sections::INPUT)]
     pub region: Option<RegionString>,
 }
 

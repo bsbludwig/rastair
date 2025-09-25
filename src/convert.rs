@@ -9,6 +9,7 @@ use crate::{
         mpk::{MessagePackReader, MpkEntry},
         vcf_writer,
     },
+    utils::cli,
     vcf::{DeNovoCpGCandidate, InCpG},
 };
 use clio::ClioPath;
@@ -35,18 +36,22 @@ use tracing::{debug, info, warn};
 pub struct ConvertParams {
     /// Input file
     #[arg(short = 'i', long, default_value = "-")]
+    #[arg(help_heading = cli::sections::INPUT)]
     pub input: ClioPath,
 
     /// Input file format, guessed from file extension if not specified
     #[arg(short = 'f', long)]
+    #[arg(help_heading = cli::sections::INPUT)]
     pub input_format: Option<InputFormat>,
 
     /// Output file
     #[arg(short = 'o', long, default_value = "-")]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub output: ClioPath,
 
     /// Output file format, guessed from file extension if not specified
     #[arg(short = 'F', long)]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub output_format: Option<OutputFormat>,
 
     /// BED-specific parameters

@@ -19,7 +19,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Subcommand,
 
     /// Enable more logging
@@ -83,14 +83,12 @@ enum Generate {
     #[command(hide = true)]
     CliDocs {
         /// The output file to write the markdown to
-        #[arg()]
         output: ClioPath,
     },
     /// Write VCF fields as markdown file
     #[command(hide = true)]
     VcfDocs {
         /// The output file to write the markdown to
-        #[arg()]
         output: ClioPath,
     },
 }

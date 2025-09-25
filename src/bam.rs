@@ -1,7 +1,7 @@
 use crate::{
     bed::reader::{RastairBedReader, RastairCall, SimpleRastairBedRecord},
     sequence::{ChunkRegion, ReaderParams},
-    utils::logging::ThisIsABug,
+    utils::{cli, logging::ThisIsABug},
 };
 use clap::{Parser, value_parser};
 use clio::ClioPath;
@@ -24,23 +24,18 @@ pub struct BamRewriteArgs {
     /// Used for splitting work between threads. Tweak this to adjust memory
     /// usage.
     #[arg(long, default_value_t = 100_000)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_max_length: u64,
 
     /// Rastair's calls to determine methylation
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT)]
     calls_file: ClioPath,
 
     /// Output file
     #[arg(short = 'o', long, default_value = "-")]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     output: ClioPath,
-
-    /// Enable more logging
-    ///
-    /// You can also use the `RASTAIR_LOG` environment variable to configure
-    /// logging in a more precise way. See the documentation of the
-    /// `tracing-subscriber` library to learn more.
-    #[arg(short, long, global = true)]
-    verbose: bool,
 }
 
 #[tracing::instrument(level = "info", skip_all)]

@@ -3,7 +3,10 @@ use std::io::Write as _;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context};
 
-use crate::io::mpk::{MessagePackReader, MpkEntry};
+use crate::{
+    io::mpk::{MessagePackReader, MpkEntry},
+    utils::cli,
+};
 
 #[derive(Debug, clap::Args)]
 pub struct MpkViewParams {
@@ -11,7 +14,8 @@ pub struct MpkViewParams {
     pub input: ClioPath,
 
     /// Message Pack file to view
-    #[clap(short = 'o', long, default_value = "-")]
+    #[arg(short = 'o', long, default_value = "-")]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub output: ClioPath,
 }
 

@@ -1,3 +1,4 @@
+use crate::utils::cli;
 use better_default::Default;
 use clap_num::maybe_hex;
 use rust_htslib::bam::Record;
@@ -13,6 +14,7 @@ pub struct ReadFlags {
         default_value_t = IS_PAIRED | IS_PROPERLY_PAIRED
     )]
     #[default(IS_PAIRED | IS_PROPERLY_PAIRED)]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub include_flags: u16,
 
     /// Exclude reads that match any of these bit-flags
@@ -22,6 +24,7 @@ pub struct ReadFlags {
         default_value_t = IS_FAILED | IS_NOT_PRIMARY | IS_UNMAPPED | MATE_IS_UNMAPPED | IS_DUPLICATE | IS_SUPPLEMENTAL
     )]
     #[default(IS_FAILED | IS_NOT_PRIMARY | IS_UNMAPPED | MATE_IS_UNMAPPED | IS_DUPLICATE | IS_SUPPLEMENTAL)]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub exclude_flags: u16,
 }
 

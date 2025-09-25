@@ -1,3 +1,4 @@
+use crate::utils::cli;
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
@@ -12,30 +13,37 @@ use tracing::info;
 pub struct MBiasParams {
     /// Input per-read BED file (can be gzipped)
     #[arg(value_name="BED_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT)]
     pub bed_file: ClioPath,
 
     /// Genomic region
     #[arg(long)]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub region: Option<RegionString>,
 
     /// Include bitflag as integer
     #[arg(long = "include-flag", default_value_t = 3)]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub include_flag: i32,
 
     /// Exclude bitflag as integer
     #[arg(long = "exclude-flag", default_value_t = 3852)]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub exclude_flag: i32,
 
     /// Read length as integer
     #[arg(long = "read-length")]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub read_length: Option<i32>,
 
     /// Path to tabix executable
     #[arg(long = "tabix-path", default_value = "tabix")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub tabix_path: String,
 
     /// Output path prefix
     #[arg(long = "output-prefix", default_value = ".")]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub output_prefix: String,
 }
 

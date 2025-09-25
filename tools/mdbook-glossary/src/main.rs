@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Option<Command>,
 }
 

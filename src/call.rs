@@ -6,7 +6,7 @@ use crate::{
     },
     io::vcf_writer,
     sequence::{ChunkRegion, ReaderParams, Readers},
-    utils::{logging::ThisIsABug as _, surrounding_records},
+    utils::{cli, logging::ThisIsABug as _, surrounding_records},
     vcf::{self, MachineLearningPrediction, low_ml_score},
 };
 use clio::ClioPath;
@@ -68,6 +68,7 @@ pub struct CallParams {
     /// Note that VCF writing might use additional threads internally for compression.
     /// This can be overwritten with `--vcf-threads`.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     #[serde(skip)]
     pub total_threads: usize,
 }
@@ -100,12 +101,14 @@ pub struct SegmentationParams {
     /// Used for splitting work between threads. Tweak this to adjust memory
     /// usage.
     #[arg(long, default_value_t = 100_000)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_max_length: u64,
 
     /// Number of bases to overlap between segments
     ///
     /// Helpful to avoid missing variants at the edges of segments.
     #[arg(long, default_value_t = 200)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_overlap: u64,
 }
 

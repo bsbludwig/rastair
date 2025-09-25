@@ -15,7 +15,7 @@ use std::io::{BufWriter, Write};
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
-    #[clap(flatten)]
+    #[command(flatten)]
     call: CallParams,
 
     /// Enable more logging

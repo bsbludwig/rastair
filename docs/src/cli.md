@@ -49,41 +49,7 @@ Process TAPS-sequenced BAM files and call methylated positions.
 
 * `<BAM_FILE>` — Path to sorted and indexed BAM file
 
-###### **Options:**
-
-* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
-* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
-
-   Used for splitting work between threads. Tweak this to adjust memory usage.
-
-  Default value: `100000`
-* `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
-
-   Helpful to avoid missing variants at the edges of segments.
-
-  Default value: `200`
-* `--error-model <ERROR_MODEL>` — The error model to use
-
-   This should match the sequencing platform used to generate the data
-
-  Default value: `novaseq6000`
-
-  Possible values:
-  - `miseq`:
-    MiSeq <https://support.illumina.com/sequencing/sequencing_instruments/miseq.html>
-  - `miniseq`:
-    MiniSeq <https://support.illumina.com/sequencing/sequencing_instruments/miniseq.html>
-  - `nextseq500`:
-    NextSeq 500 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-500.html>
-  - `nextseq550`:
-    NextSeq 550 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-550.html>
-  - `hiseq2500`:
-    HiSeq 2500 <https://support.illumina.com/sequencing/sequencing_instruments/hiseq_2500.html>
-  - `novaseq6000`:
-    NovaSeq 6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
-  - `hiseq-x-ten`:
-    HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
+###### **Filter Options:**
 
 * `--keep-overlapping-reads` — Whether to keep overlapping reads
 
@@ -131,9 +97,6 @@ Process TAPS-sequenced BAM files and call methylated positions.
 * `--cpg-novo-min-vaf <CPG_NOVO_MIN_VAF>` — Minimum variant allele frequency for de-novo CpGs
 
   Default value: `0.2`
-* `--skip-methylation-calling` — Calculate threshold values and filters for methylation
-
-  Default value: `false`
 * `--m-vaf-min <M_VAF_MIN>` — The minimum variant allele frequency
 
   Default value: `0.2`
@@ -172,14 +135,20 @@ Process TAPS-sequenced BAM files and call methylated positions.
 * `--model-others <MODEL_OTHERS>` — Path to the model for other positions
 
    Default is the bundled model in the Rastair binary.
+* `--bed-include-empty` — Include CpG positions with zero coverage
+
+   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
+
+###### **Input Options:**
+
+* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
+* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+
+###### **Output Options:**
+
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
-* `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
-
-   This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
-
-  Default value: `3`
 * `--bed <BED>` — Output BED file with the called methylated positions
 * `--bed-format <BED_FORMAT>` — Format of the output BED file
 
@@ -191,9 +160,49 @@ Process TAPS-sequenced BAM files and call methylated positions.
   - `bed`:
     Regular BED file, usually `.bed`
 
-* `--bed-include-empty` — Include CpG positions with zero coverage
 
-   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
+###### **Processing Options:**
+
+* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
+
+   Used for splitting work between threads. Tweak this to adjust memory usage.
+
+  Default value: `100000`
+* `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
+
+   Helpful to avoid missing variants at the edges of segments.
+
+  Default value: `200`
+* `--error-model <ERROR_MODEL>` — The error model to use
+
+   This should match the sequencing platform used to generate the data
+
+  Default value: `novaseq6000`
+
+  Possible values:
+  - `miseq`:
+    MiSeq <https://support.illumina.com/sequencing/sequencing_instruments/miseq.html>
+  - `miniseq`:
+    MiniSeq <https://support.illumina.com/sequencing/sequencing_instruments/miniseq.html>
+  - `nextseq500`:
+    NextSeq 500 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-500.html>
+  - `nextseq550`:
+    NextSeq 550 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-550.html>
+  - `hiseq2500`:
+    HiSeq 2500 <https://support.illumina.com/sequencing/sequencing_instruments/hiseq_2500.html>
+  - `novaseq6000`:
+    NovaSeq 6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
+  - `hiseq-x-ten`:
+    HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
+
+* `--skip-methylation-calling` — Calculate threshold values and filters for methylation
+
+  Default value: `false`
+* `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
+
+   This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
+
+  Default value: `3`
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
@@ -214,21 +223,8 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 * `<BAM_FILE>` — Path to sorted and indexed BAM file
 
-###### **Options:**
+###### **Filter Options:**
 
-* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
-* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
-
-   Used for splitting work between threads. Tweak this to adjust memory usage.
-
-  Default value: `100000`
-* `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
-
-   Helpful to avoid missing variants at the edges of segments.
-
-  Default value: `500`
-* `--calls <CALLS>` — BED file Rastair wrote with methylation calls per position
 * `-f`, `--include-flags <INCLUDE_FLAGS>` — Include reads that match all of these bit-flags
 
   Default value: `3`
@@ -241,8 +237,22 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality per aligned read
 
   Default value: `1`
-* `-A`, `--all-reads` — Report reads with no CpGs in them
 * `--exclude-ambiguous` — Exclude reads where the orientation cannot be unambiguously determined
+* `--count-clipped` — Count clipped positions
+
+   By default, rastair ignores the leading (soft and hard) clipped positions in the "positions in read" columns. The indices written can be seen as "position in read relative to the first base actually aligned".
+
+   If `--count-clipped` is set, clipped positions will instead be counted. The indices written then match the sequence of the read.
+
+###### **Input Options:**
+
+* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
+* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `--calls <CALLS>` — BED file Rastair wrote with methylation calls per position
+
+###### **Output Options:**
+
+* `-A`, `--all-reads` — Report reads with no CpGs in them
 * `--bed <BED>` — Output BED file with all reads
 
   Default value: `-`
@@ -256,11 +266,19 @@ This will produce a bed file that list the methylation status of all CpGs in eve
   - `bed`:
     Regular BED file, usually `.bed`
 
-* `--count-clipped` — Count clipped positions
 
-   By default, rastair ignores the leading (soft and hard) clipped positions in the "positions in read" columns. The indices written can be seen as "position in read relative to the first base actually aligned".
+###### **Processing Options:**
 
-   If `--count-clipped` is set, clipped positions will instead be counted. The indices written then match the sequence of the read.
+* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
+
+   Used for splitting work between threads. Tweak this to adjust memory usage.
+
+  Default value: `100000`
+* `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
+
+   Helpful to avoid missing variants at the edges of segments.
+
+  Default value: `500`
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
@@ -280,21 +298,24 @@ Add methylation information to BAM files
 * `<BAM_FILE>` — Path to sorted and indexed BAM file
 * `<CALLS_FILE>` — Rastair's calls to determine methylation
 
-###### **Options:**
+###### **Input Options:**
 
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
 * `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+
+###### **Output Options:**
+
+* `-o`, `--output <OUTPUT>` — Output file
+
+  Default value: `-`
+
+###### **Processing Options:**
+
 * `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
 
    Used for splitting work between threads. Tweak this to adjust memory usage.
 
   Default value: `100000`
-* `-o`, `--output <OUTPUT>` — Output file
-
-  Default value: `-`
-* `-v`, `--verbose` — Enable more logging
-
-   You can also use the `RASTAIR_LOG` environment variable to configure logging in a more precise way. See the documentation of the `tracing-subscriber` library to learn more.
 
 
 
@@ -304,7 +325,18 @@ Convert between different file formats
 
 **Usage:** `rastair convert [OPTIONS]`
 
-###### **Options:**
+###### **Filter Options:**
+
+* `--bed-ml <ML_THRESHOLD>` — Minimum ML score to consider a position as variant
+
+   This does nothing if the input data does not contain ML scores.
+
+  Default value: `0.80`
+* `--bed-include-empty` — Include CpG positions with zero coverage
+
+   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
+
+###### **Input Options:**
 
 * `-i`, `--input <INPUT>` — Input file
 
@@ -319,6 +351,9 @@ Convert between different file formats
   - `vcf-compressed`:
     Compressed text-based VCF format (.vcf.gz)
   - `mpk.lz4`
+
+
+###### **Output Options:**
 
 * `-o`, `--output <OUTPUT>` — Output file
 
@@ -338,14 +373,6 @@ Convert between different file formats
   - `bed-gz`:
     BGZIP compressed file, usually `.bed.gz`
 
-* `--bed-ml <ML_THRESHOLD>` — Minimum ML score to consider a position as variant
-
-   This does nothing if the input data does not contain ML scores.
-
-  Default value: `0.80`
-* `--bed-include-empty` — Include CpG positions with zero coverage
-
-   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
 
 
 
@@ -359,7 +386,7 @@ View internal format as JSON lines
 
 * `<INPUT>` — Message Pack file to view
 
-###### **Options:**
+###### **Output Options:**
 
 * `-o`, `--output <OUTPUT>` — Message Pack file to view
 
@@ -381,7 +408,7 @@ Please note that this is currently implemented as an R script. Unless you're usi
 
 * `<BED_FILE>` — Input per-read BED file (can be gzipped)
 
-###### **Options:**
+###### **Filter Options:**
 
 * `--region <REGION>` — Genomic region
 * `--include-flag <INCLUDE_FLAG>` — Include bitflag as integer
@@ -391,12 +418,18 @@ Please note that this is currently implemented as an R script. Unless you're usi
 
   Default value: `3852`
 * `--read-length <READ_LENGTH>` — Read length as integer
-* `--tabix-path <TABIX_PATH>` — Path to tabix executable
 
-  Default value: `tabix`
+###### **Output Options:**
+
 * `--output-prefix <OUTPUT_PREFIX>` — Output path prefix
 
   Default value: `.`
+
+###### **Processing Options:**
+
+* `--tabix-path <TABIX_PATH>` — Path to tabix executable
+
+  Default value: `tabix`
 
 
 

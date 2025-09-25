@@ -2,6 +2,7 @@ use crate::{
     bed::{BedFormat, BedRecord, writer::BedWriter},
     io::formats::FromFileExtension as _,
     sequence::Region,
+    utils::cli,
 };
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, Result};
@@ -13,12 +14,14 @@ use tracing::{debug, instrument};
 pub struct BedReadsParams {
     /// Output BED file with all reads
     #[arg(long, required = false, default_value = "-", num_args = 0..=1)]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub bed: ClioPath,
 
     /// Format of the output BED reads file
     ///
     /// If not specified, the format is guessed based on the file extension.
     #[arg(long, requires = "bed")]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub bed_format: Option<BedFormat>,
 }
 

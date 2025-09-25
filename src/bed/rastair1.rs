@@ -1,6 +1,7 @@
 use crate::{
     bed::{BedFormat, BedRecord, writer::BedWriter},
     io::formats::FromFileExtension as _,
+    utils::cli,
     vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
 use clio::ClioPath;
@@ -15,12 +16,14 @@ use tracing::{debug, instrument};
 pub struct BedParams {
     /// Output BED file with the called methylated positions
     #[arg(long = "bed", required = false, default_missing_value = "-", num_args = 0..=1)]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub bed: Option<ClioPath>,
 
     /// Format of the output BED file
     ///
     /// If not specified, the format is guessed based on the file extension.
     #[arg(long, requires = "bed")]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     pub bed_format: Option<BedFormat>,
 
     #[command(flatten)]
@@ -83,6 +86,7 @@ pub struct BedRecordsFilterParams {
     /// Note that this requires the input data to contain a complete list of CpG positions,
     /// e.g. by using the `--cpgs-only` option when calling methylation.
     #[arg(long = "bed-include-empty")]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub include_empty: bool,
 }
 
@@ -94,6 +98,7 @@ pub struct BedRecordsConvertParams {
     ///
     /// This does nothing if the input data does not contain ML scores.
     #[arg(long = "bed-ml", default_value_t = Probability::new(0.8).expect("valid default probability"))]
+    #[arg(help_heading = cli::sections::FILTER)]
     pub ml_threshold: Probability,
     #[command(flatten)]
     pub filters: BedRecordsFilterParams,

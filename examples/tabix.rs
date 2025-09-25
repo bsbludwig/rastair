@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
 struct Cli {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Subcommand,
 
     /// Enable more logging

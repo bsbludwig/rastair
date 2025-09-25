@@ -17,7 +17,7 @@ use tracing::{debug, info};
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Command,
 }
 
@@ -27,24 +27,24 @@ enum Command {
     PreCommit,
     /// Run tests
     Test {
-        #[clap(long)]
+        #[arg(long)]
         coverage: bool,
     },
     /// Accept new snapshots and run doctests
     Insta,
     /// Generate documentation with mdbook
     Docs {
-        #[clap(long)]
+        #[arg(long)]
         serve: bool,
     },
     /// Build a release version using cargo-pgo
     Release {
         /// Enable PGO (Profile-Guided Optimization) instrumentation
-        #[clap(long, requires("args"))]
+        #[arg(long, requires("args"))]
         pgo: bool,
 
         /// Additional arguments to pass to run the binary for profiling
-        #[clap(last = true)]
+        #[arg(last = true)]
         args: Vec<String>,
     },
 }

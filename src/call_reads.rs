@@ -5,7 +5,7 @@ use crate::{
     },
     call::variant_calling::ReadFlags,
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
-    utils::logging::ThisIsABug,
+    utils::{cli, logging::ThisIsABug},
 };
 use bio::bio_types::sequence::SequenceReadPairOrientation;
 use clio::ClioPath;
@@ -32,16 +32,19 @@ pub struct PerReadParams {
     /// Used for splitting work between threads. Tweak this to adjust memory
     /// usage.
     #[arg(long, default_value_t = 100_000)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_max_length: u64,
     /// Number of bases to overlap between segments
     ///
     /// Helpful to avoid missing variants at the edges of segments.
     #[arg(long, default_value_t = 500)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_overlap: u64,
 
     /// BED file Rastair wrote with methylation calls per position
     #[arg(long)]
     #[arg(value_parser=clap::value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT)]
     pub calls: Option<ClioPath>,
 
     // --- Calling parameters ---
@@ -52,18 +55,22 @@ pub struct PerReadParams {
     /// might not get counted. Safest to set this a bit higher than the actual
     /// read length, to allow for indels in reads.
     #[arg(short='w', long, default_value_t = 200, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(help_heading = cli::sections::FILTER)]
     max_read_length: u32,
 
     /// Minimum mapping quality per aligned read
     #[arg(short = 'q', long, default_value_t = 1)]
+    #[arg(help_heading = cli::sections::FILTER)]
     min_mapq: u8,
 
     /// Report reads with no CpGs in them
     #[arg(short = 'A', long)]
+    #[arg(help_heading = cli::sections::OUTPUT)]
     all_reads: bool,
 
     /// Exclude reads where the orientation cannot be unambiguously determined
     #[arg(long)]
+    #[arg(help_heading = cli::sections::FILTER)]
     exclude_ambiguous: bool,
 
     // --- Output parameters ---
@@ -78,6 +85,7 @@ pub struct PerReadParams {
     /// If `--count-clipped` is set, clipped positions will instead be counted.
     /// The indices written then match the sequence of the read.
     #[arg(long)]
+    #[arg(help_heading = cli::sections::FILTER)]
     count_clipped: bool,
 
     // --- Other runtime parameters ---
@@ -87,6 +95,7 @@ pub struct PerReadParams {
     /// Note that VCF writing might use additional threads internally for compression.
     /// This can be overwritten with `--vcf-threads`.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(1).max(1))]
+    #[arg(help_heading = cli::sections::PROCESSING)]
     pub total_threads: usize,
 }
 

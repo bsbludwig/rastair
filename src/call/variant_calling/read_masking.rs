@@ -4,7 +4,10 @@
 //! that comes from the fringes of the read. You can mask out specific areas
 //! from reads to reduce this.
 
-use crate::{call::variants::SeenBase, utils::Strand};
+use crate::{
+    call::variants::SeenBase,
+    utils::{Strand, cli},
+};
 use smallvec::SmallVec;
 use std::{num::ParseIntError, str::FromStr};
 
@@ -19,6 +22,7 @@ pub struct ReadMaskParams {
     /// Also note that the distance is relative to read length, not alignment
     /// length, so soft-clipped bases count, too!
     #[arg(long = "nOT", default_value = "0,0,0,0")]
+    #[arg(help_heading = cli::sections::FILTER)]
     n_ot: ReadMaskSetting,
 
     /// For OB reads, exclude `[r1_start, r1_end, r2_start, r2_end]` bases from counting.
@@ -30,6 +34,7 @@ pub struct ReadMaskParams {
     /// Also note that the distance is relative to read length, not alignment
     /// length, so soft-clipped bases count, too!
     #[arg(long = "nOB", default_value = "0,0,0,0")]
+    #[arg(help_heading = cli::sections::FILTER)]
     n_ob: ReadMaskSetting,
 }
 
