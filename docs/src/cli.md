@@ -293,6 +293,8 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 Add methylation information to BAM files
 
+This will rewrite a BAM file to add methylation information and change the methylated positions in the sequence to their original base.
+
 **Usage:** `rastair bam [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE> <CALLS_FILE>`
 
 ###### **Arguments:**

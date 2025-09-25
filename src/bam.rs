@@ -1,6 +1,6 @@
 use crate::{
     bed::reader::{RastairBedReader, RastairCall, SimpleRastairBedRecord},
-    sequence::{ChunkRegion, ReaderParams},
+    sequence::{ChunkRegion, ReaderParams, Region},
     utils::{cli, logging::ThisIsABug},
 };
 use clap::{Parser, value_parser};
@@ -14,6 +14,7 @@ use smallvec::SmallVec;
 
 mod base_modification;
 pub use base_modification::MethylatedPositions;
+use tracing::instrument;
 
 #[derive(Debug, Parser)]
 pub struct BamRewriteArgs {
@@ -71,77 +72,90 @@ pub fn rewrite(params: &BamRewriteArgs) -> Result<()> {
     };
 
     for segment in &regions {
-        FetchDefinition::try_from(&segment.region)
-            .wrap_err("Could not convert region string")
-            .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
-            .wrap_err_with(|| {
-                format!("Could not fetch region `{}` from BAM file", segment.region)
-            })?;
-
-        let noodle_region = segment
-            .region
-            .clone()
-            .try_into()
-            .wrap_err("Failed to convert region representation")
-            .this_is_a_bug()?;
-        let calls = calls_reader.query(&noodle_region).wrap_err("failed to query calls")?;
-
-        rewrite_region(&mut readers.bam, &mut writer, &calls).wrap_err("rewrite")?;
+        rewrite_region(&mut readers.bam, &mut calls_reader, &mut writer, &segment.region)
+            .wrap_err("rewrite")?;
     }
 
     Ok(())
 }
 
+#[instrument(level = "debug", skip_all, fields(region = %region))]
 fn rewrite_region(
     bam: &mut bam::IndexedReader,
+    calls_reader: &mut RastairBedReader,
     writer: &mut rust_htslib::bam::Writer,
-    calls: &[SimpleRastairBedRecord],
+    region: &Region,
 ) -> Result<()> {
+    FetchDefinition::try_from(region)
+        .wrap_err("Could not convert region string")
+        .and_then(|r| bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
+        .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region))?;
+
+    let noodle_region = region
+        .clone()
+        .try_into()
+        .wrap_err("Failed to convert region representation")
+        .this_is_a_bug()?;
+    let calls = calls_reader.query(&noodle_region).wrap_err("failed to query calls")?;
+
     let mut record = Record::new();
     while let Some(result) = bam.read(&mut record) {
-        if let Err(e) = result {
-            return Err(e).wrap_err("Failed to read BAM record");
+        if let e @ Err(_) = result {
+            return e.wrap_err("Failed to read BAM record");
         }
 
-        // Find calls for this read
-        let chr = bam.header().tid2name(record.tid() as u32);
+        rewrite_record(bam, &calls, &mut record)?;
 
-        let called_positions: SmallVec<_, 10> = calls
-            .iter()
-            .filter(|call| chr == call.chrom.as_bytes())
-            .filter(|call| {
-                let read_start = record.pos();
-                let read_end = read_start + record.insert_size();
-                i64::from(call.pos) >= read_start && i64::from(call.pos) < read_end
-            })
-            .collect();
-
-        let mut methylated_positions = SmallVec::new();
-        for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
-            let Some(pos_in_read) = pos_in_read else {
-                continue;
-            };
-            let Some(pos_in_ref) = pos_in_ref else {
-                continue;
-            };
-            let pos_in_read = u32::try_from(pos_in_read).expect("position fits in u32");
-
-            if let Some(called_pos) =
-                called_positions.iter().find(|call| i64::from(call.pos) == pos_in_ref)
-                && let RastairCall::Cpg { methylated, .. } = called_pos.call
-                && methylated
-            {
-                methylated_positions.push(pos_in_read);
-            }
-        }
-
-        if let Some(mods) = MethylatedPositions::for_cpg_methylation(&record, methylated_positions)
-        {
-            mods.apply_to_record(&mut record)?;
-        }
         writer.write(&record).wrap_err("failed to write record")?;
     }
 
+    Ok(())
+}
+
+/// Rewrite a single BAM record with methylation information from calls
+///
+/// 1. Find all calls that are covered by our record
+/// 2. Find the positions in the read that correspond to the called positions
+/// 3. Build a `MethylatedPositions` struct
+/// 4. Rewrite the sequence to un-modify the bases of methylated positions
+///    (i.e., change T or A that is methylation evidence back to C or G)
+/// 5. Apply the modifications to the record
+#[instrument(level = "debug", skip_all, fields(tid = record.tid(), pos = record.pos()))]
+fn rewrite_record(
+    bam: &mut bam::IndexedReader,
+    calls: &[SimpleRastairBedRecord],
+    record: &mut Record,
+) -> Result<(), color_eyre::eyre::Error> {
+    let chr = bam.header().tid2name(record.tid() as u32);
+    let called_positions: SmallVec<_, 10> = calls
+        .iter()
+        .filter(|call| chr == call.chrom.as_bytes())
+        .filter(|call| {
+            let read_start = record.pos();
+            let read_end = read_start + record.insert_size();
+            i64::from(call.pos) >= read_start && i64::from(call.pos) < read_end
+        })
+        .collect();
+    let mut methylated_positions = SmallVec::new();
+    for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
+        let Some(pos_in_read) = pos_in_read else {
+            continue;
+        };
+        let Some(pos_in_ref) = pos_in_ref else {
+            continue;
+        };
+        let pos_in_read = u32::try_from(pos_in_read).expect("position fits in u32");
+
+        if let Some(called_pos) =
+            called_positions.iter().find(|call| i64::from(call.pos) == pos_in_ref)
+            && let RastairCall::Cpg { methylated, .. } = called_pos.call
+            && methylated
+        {
+            methylated_positions.push(pos_in_read);
+        }
+    }
+    let mods = MethylatedPositions::for_cpg_methylation(&*record, methylated_positions);
+    mods.apply_to_record(record)?;
     Ok(())
 }
 

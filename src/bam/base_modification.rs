@@ -1,5 +1,5 @@
 use color_eyre::eyre::{Context, Result};
-use rastair_types::Base;
+use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
 use smallvec::SmallVec;
 use std::fmt::Write;
@@ -17,18 +17,19 @@ impl MethylatedPositions {
     ///
     /// This determines the correct base and strand for CpG methylation based on
     /// the actual sequence content and read orientation
-    pub fn for_cpg_methylation(record: &Record, positions: SmallVec<u32, 10>) -> Option<Self> {
-        if positions.is_empty() {
-            return None;
-        }
-
-        let seq = record.seq();
+    // FIMXE: This is wrong
+    // - reverse should have seq reversed?
+    // - positions are:  comma separated list of how many seq bases of the stated base type to skip, stored as a delta to the last and starting with 0 as the first (or next) base, starting from the uncomplemented 5’ end of the SEQ field.
+    // work with modkit code -- MmTagInfo, DeltaListConverter, test_get_base_mod_probs
+    pub fn for_cpg_methylation(record: &Record, positions: SmallVec<u32, 10>) -> Self {
         let is_reverse = record.is_reverse();
 
         // For CpG methylation, we need to determine if we're looking at C or G
         // On forward strand: C gets methylated (5mC)
         // On reverse strand: G represents the C on the opposite strand that got methylated
         let base = if is_reverse { Base::G } else { Base::C };
+
+        let seq = record.seq();
 
         // Validate that positions actually contain the expected bases
         let valid_positions: SmallVec<u32, 10> = positions
@@ -47,19 +48,33 @@ impl MethylatedPositions {
             .collect();
 
         if valid_positions.is_empty() {
-            None
+            Self { base, positions: SmallVec::<u32, 10>::new() }
         } else {
-            Some(Self { base, positions: valid_positions })
+            Self { base, positions: valid_positions }
         }
     }
 
+    /// Apply the modification information to a BAM record
+    ///
+    /// There are two steps to this:
+    ///
+    /// 1. Rewrite the sequence to un-modify the methylated bases (T back to C, A back to G)
+    /// 2. Add MM and ML tags to the record
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
+        // WIP - not yet rewriting the sequence
         let is_reverse = record.is_reverse();
         let strand_symbol = if is_reverse { "-" } else { "+" };
 
         record
             .push_aux(b"MM", Aux::String(&self.to_mod_string(strand_symbol)))
-            .wrap_err("could not apply modification to record")
+            .wrap_err("could not apply modification to record")?;
+
+        // also apply ML dummy tag with all 255 (unknown probability)
+        record
+            .push_aux(b"ML", Aux::ArrayU8(vec![255_u8; self.positions.len()].as_slice().into()))
+            .wrap_err("could not apply ML tag to record")?;
+
+        Ok(())
     }
 
     /// Write the modification string for this base and positions
@@ -87,6 +102,7 @@ impl MethylatedPositions {
             return mod_string;
         }
 
+        mod_string.push('.');
         mod_string.push(',');
 
         // Encode positions as deltas between consecutive occurrences of this base type
@@ -126,25 +142,25 @@ mod tests {
     #[test]
     fn test_single_position() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([4]) };
-        assert_snapshot!(input.to_mod_string("+"), @"C+m,4;");
+        assert_snapshot!(input.to_mod_string("+"), @"C+m.,4;");
     }
 
     #[test]
     fn test_multiple_positions() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([5, 18, 19]) };
-        assert_snapshot!(input.to_mod_string("+"), @"C+m,5,12,0;");
+        assert_snapshot!(input.to_mod_string("+"), @"C+m.,5,12,0;");
     }
 
     #[test]
     fn test_consecutive_positions() {
         let input = MethylatedPositions { base: Base::C, positions: SmallVec::from([0, 1, 2]) };
-        assert_snapshot!(input.to_mod_string("+"), @"C+m,0,0,0;");
+        assert_snapshot!(input.to_mod_string("+"), @"C+m.,0,0,0;");
     }
 
     #[test]
     fn test_reverse_strand() {
         let input = MethylatedPositions { base: Base::G, positions: SmallVec::from([10, 15]) };
-        assert_snapshot!(input.to_mod_string("-"), @"G-m,10,4;");
+        assert_snapshot!(input.to_mod_string("-"), @"G-m.,10,4;");
     }
 
     #[test]
@@ -156,7 +172,7 @@ mod tests {
         let output = record.aux(b"MM").unwrap();
         let Aux::String(output_str) = output else { panic!("Expected string aux type") };
 
-        assert_snapshot!(output_str, @"C+m,0,0,0;");
+        assert_snapshot!(output_str, @"C+m.,0,0,0;");
     }
 
     proptest! {

@@ -17,6 +17,7 @@
 - [VCF/BCF](formats/vcf.md)
   - [VCF Fields](formats/vcf-fields.md)
 - [BED](formats/bed.md)
+- [modBAM](formats/modbam.md)
 - [Format converter](convert.md)
 
 # Appendix

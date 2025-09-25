@@ -14,6 +14,8 @@ use rastair::{
 };
 use tracing::{debug, info, warn};
 
+/// Use mimalloc as the global allocator, which proves to be faster than the
+/// default system allocator in our benchmarks.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -49,6 +51,9 @@ enum Subcommand {
     /// CpGs in every read that overlaps a CpG, plus some other metadata
     PerRead(PerReadParams),
     /// Add methylation information to BAM files
+    ///
+    /// This will rewrite a BAM file to add methylation information and change
+    /// the methylated positions in the sequence to their original base.
     Bam(BamRewriteArgs),
     /// Convert between different file formats
     Convert(ConvertParams),

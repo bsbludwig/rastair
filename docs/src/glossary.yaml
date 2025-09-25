@@ -68,9 +68,9 @@
   long: "Sequence Alignment Map"
   group: "File Formats"
   description: |
-    A text-based file format that stores sequence data in a tab-delimited format. [Format Specification for version 1.0]("https://samtools.github.io/hts-specs/SAMv1.pdf"). It is used to store the alignment of sequence reads to a @referenceGenome. SAM files are used to visualize and analyze sequence data in genome browsers like @IGV. @samPaper
+    A text-based file format that stores sequence data in a tab-delimited format. [Format Specification for version 1.0](https://samtools.github.io/hts-specs/SAMv1.pdf). It is used to store the alignment of sequence reads to a @referenceGenome. SAM files are used to visualize and analyze sequence data in genome browsers like @IGV. @samPaper
 
-    Additional keys are defined in the [Optional Fields Specification]("https://samtools.github.io/hts-specs/SAMtags.pdf").
+    Additional keys are defined in the [Optional Fields Specification](https://samtools.github.io/hts-specs/SAMtags.pdf).
 
 - key: BAM
   long: "Binary Alignment Map"
