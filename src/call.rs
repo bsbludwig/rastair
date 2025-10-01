@@ -7,7 +7,7 @@ use crate::{
     io::vcf_writer,
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{cli, logging::ThisIsABug as _, surrounding_records},
-    vcf::{self, MachineLearningPrediction, low_ml_score},
+    vcf::{self, MachineLearningPrediction, Record, low_ml_score},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -15,6 +15,7 @@ use color_eyre::{
     eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
 };
 use rayon::prelude::*;
+use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{
     ops::Mul as _,
@@ -57,6 +58,13 @@ pub struct CallParams {
     #[command(flatten)]
     #[serde(skip)]
     pub vcf: vcf_writer::VcfParams,
+
+    /// Output all positions, even if they are not CpG or de-novo CpG candidates
+    /// or do not pass filters
+    #[arg(long = "all")]
+    #[arg(help_heading = cli::sections::OUTPUT)]
+    pub vcf_all: bool,
+
     #[command(flatten)]
     #[serde(skip)]
     pub bed: BedParams,
@@ -71,6 +79,29 @@ pub struct CallParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[serde(skip)]
     pub total_threads: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum VcfFilter {
+    /// Include all positions
+    All,
+    /// Include positions that are CpG in the reference or variants that would
+    /// result in a de-novo CpG
+    // Lowercase so it becomes `cpgs` and not `cp-gs` in dash-case!
+    Cpgs,
+    /// Include positions that pass all filters
+    Pass,
+}
+
+struct RecordFilter(SmallVec<VcfFilter, 3>);
+
+impl RecordFilter {
+    fn matches(&self, record: &Record) -> bool {
+        self.0.contains(&VcfFilter::All)
+            || (self.0.contains(&VcfFilter::Cpgs)
+                && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate))
+            || (self.0.contains(&VcfFilter::Pass) && record.filters.pass())
+    }
 }
 
 impl CallParams {
@@ -109,6 +140,21 @@ impl CallParams {
         }
 
         Ok(())
+    }
+
+    fn vcf_filters(&self) -> RecordFilter {
+        let mut filters = SmallVec::new();
+        // Default to PASS only
+        filters.push(VcfFilter::Pass);
+
+        if self.variant_calling.cpgs_only {
+            // Users asked for CpGs only, so let's output those for sure
+            filters.push(VcfFilter::Cpgs);
+        } else if self.vcf_all {
+            // User asked for all positions
+            filters.push(VcfFilter::All);
+        }
+        RecordFilter(filters)
     }
 }
 
@@ -192,6 +238,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
         .name("writer".to_string())
         .spawn({
             let vcf_output = params.vcf.vcf.clone();
+            let vcf_filter = params.vcf_filters();
             let metadata = [
                 format!("rastairVersion={}", env!("CARGO_PKG_VERSION")),
                 format!(
@@ -229,6 +276,10 @@ pub fn call(mut params: CallParams) -> Result<()> {
                 for records in vcf_receiver {
                     for record in &records {
                         let record: &vcf::Record = record;
+
+                        if !vcf_filter.matches(record) {
+                            continue;
+                        }
 
                         // Skip records that are already seen
                         if last_seen_chrom.as_ref() == Some(&record.main.chrom)

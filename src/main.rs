@@ -44,6 +44,15 @@ enum Subcommand {
     /// Call methylated positions
     ///
     /// Process TAPS-sequenced BAM files and call methylated positions.
+    ///
+    /// If no output file is specified, the output is written to stdout. You can
+    /// use `--vcf` and `--bed` to write to files instead.
+    ///
+    /// If using `-c` (`--cpgs-only`), all CpG positions in the reference as
+    /// well as de-novo CpGs are written. Stdout will default to BED.
+    ///
+    /// Only variants that pass all filters are written by default. Use `--all`
+    /// to get a full VCF file.
     Call(CallParams),
     /// Call methylation per-read
     ///

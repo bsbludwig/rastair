@@ -43,6 +43,12 @@ Call methylated positions
 
 Process TAPS-sequenced BAM files and call methylated positions.
 
+If no output file is specified, the output is written to stdout. You can use `--vcf` and `--bed` to write to files instead.
+
+If using `-c` (`--cpgs-only`), all CpG positions in the reference as well as de-novo CpGs are written. Stdout will default to BED.
+
+Only variants that pass all filters are written by default. Use `--all` to get a full VCF file.
+
 **Usage:** `rastair call [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE>`
 
 ###### **Arguments:**
@@ -151,6 +157,7 @@ Process TAPS-sequenced BAM files and call methylated positions.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
+* `--all` — Output all positions, even if they are not CpG or de-novo CpG candidates or do not pass filters
 * `--bed <BED>` — Output BED file with the called methylated positions
 * `--bed-format <BED_FORMAT>` — Format of the output BED file
 

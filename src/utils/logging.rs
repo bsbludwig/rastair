@@ -70,6 +70,7 @@ fn setup_eyre(verbose: bool) {
 }
 
 pub trait ThisIsABug<T> {
+    /// Note to user that this is a bug in the program not an expected error
     fn this_is_a_bug(self) -> Result<T, Report>;
 }
 

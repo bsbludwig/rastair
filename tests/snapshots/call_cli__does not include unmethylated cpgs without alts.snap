@@ -20,7 +20,7 @@ exit_code: 0
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##rastairVersion=2.0.0-rc.1
 ##rastairCommand=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --thresholds --region=chr19:6117965-6118004 --skip-methylation-calling --vcf
-##rastairConfig={"variant_calling":{"error_model":"Novaseq6000","keep_overlapping_reads":false,"cpgs_only":false,"quality":{"min_mapq":1,"min_baseq":10},"read_masking":{"n_ot":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}},"n_ob":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}}},"read_flags":{"include_flags":3,"exclude_flags":3852}},"denovo_cpg":{"cpg_novo_min_depth":2,"cpg_novo_min_baseq":15.0,"cpg_novo_min_mapq":50.0,"cpg_novo_min_vaf":0.2},"methylation":{"skip_methylation_calling":true,"thresholds":{"m_vaf_min":0.2,"m_min_depth":3,"m_min_denovo_depth":2,"m_bq_ratio_min":0.27,"m_read_position_min":0.2,"m_read_position_max":0.8,"m_max_coverage":1000}},"ml":{"no_ml":true,"ml":0.8}}
+##rastairConfig={"variant_calling":{"error_model":"Novaseq6000","keep_overlapping_reads":false,"cpgs_only":false,"quality":{"min_mapq":1,"min_baseq":10},"read_masking":{"n_ot":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}},"n_ob":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}}},"read_flags":{"include_flags":3,"exclude_flags":3852}},"denovo_cpg":{"cpg_novo_min_depth":2,"cpg_novo_min_baseq":15.0,"cpg_novo_min_mapq":50.0,"cpg_novo_min_vaf":0.2},"methylation":{"skip_methylation_calling":true,"thresholds":{"m_vaf_min":0.2,"m_min_depth":3,"m_min_denovo_depth":2,"m_bq_ratio_min":0.27,"m_read_position_min":0.2,"m_read_position_max":0.8,"m_max_coverage":1000}},"ml":{"no_ml":true,"ml":0.8},"vcf_all":false}
 ##reference="tests/data/test.fasta.gz"
 ##FILTER=<ID=lowDp,Description="Low read depth">
 ##FILTER=<ID=dnCpG_lowDp,Description="Low read depth for de-novo CpG candidate">
@@ -63,7 +63,6 @@ exit_code: 0
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
 chr19	6117985	.	G	T	30	PASS	AD=23,1;BQ=34.359;DP=24;MQ=60;MQ0=0;NS=1;AS_SB_OT=13,1;AS_SB_OB=10,0;SC5=GCGCA;AF=0.0416667;ABQ=34.9764,14;AMQ=60,60;AS_SS_BQ_OT=34.7751,14;AS_SS_BQ_OB=35.2363,0;AS_SS_MQ=60,60,60,0;PIR=0.678693,0.075;ENT100=1.83505;NAB=79.0941,72;NOI=0,0;CPG	GT:GL:GC:DP	0/0:99:39:24
 chr19	6117986	.	C	A	30	PASS	AD=20,1;BQ=33.7279;DP=21;MQ=60;MQ0=0;NS=1;AS_SB_OT=12,1;AS_SB_OB=8,0;SC5=CGCAG;AF=0.047619;ABQ=34.4187,14;AMQ=60,60;AS_SS_BQ_OT=34.3754,14;AS_SS_BQ_OB=34.4837,0;AS_SS_MQ=60,60,60,0;PIR=0.6305,0.0875;ENT100=1.83505;NAB=79.2569,72;NOI=0,0	GT:GL:GC:DP	0/0:99:24:21
-chr19	6117987	.	A	C	30	dnCpG_vaf	AD=19,2;BQ=31.1165;DP=21;MQ=60;MQ0=0;NS=1;AS_SB_OT=12,1;AS_SB_OB=7,1;SC5=GCAGC;AF=0.0952381;ABQ=32.3964,14;AMQ=60,60;AS_SS_BQ_OT=30.8396,14;AS_SS_BQ_OB=34.9039,14;AS_SS_MQ=60,60,60,60;PIR=0.61011,0.766274;ENT100=1.83505;NAB=78.9697,78.5143;NOI=0,0;CPGnovo	DP	21
 chr19	6117992	.	C	A	30	PASS	AD=19,1;BQ=34.2403;DP=20;MQ=60;MQ0=0;NS=1;AS_SB_OT=12,1;AS_SB_OB=7,0;SC5=CTCCA;AF=0.05;ABQ=34.9827,14;AMQ=60,60;AS_SS_BQ_OT=34.3754,14;AS_SS_BQ_OB=36,0;AS_SS_MQ=60,60,60,0;PIR=0.676053,0.1625;ENT100=1.83505;NAB=79.3739,72;NOI=0,0	GT:GL:GC:DP	0/0:99:21:20
 
 ----- stderr -----
