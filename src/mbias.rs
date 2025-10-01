@@ -3,11 +3,11 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
     Result, Section as _,
-    eyre::{Context, ContextCompat, ensure},
+    eyre::{Context, ContextCompat, ensure, eyre},
 };
 use rastair_types::RegionString;
 use std::{env, path::PathBuf, process::Command};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct MBiasParams {
@@ -45,6 +45,12 @@ pub struct MBiasParams {
     #[arg(long = "output-prefix", default_value = ".")]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub output_prefix: String,
+
+    /// Override directory to find R scripts
+    ///
+    /// When not set, tries to look for `$rastair_path/scripts` and `./scripts`
+    #[arg(long = "r-script-dir", env = "R_SCRIPT_DIR")]
+    pub r_script_dir: Option<ClioPath>,
 }
 
 impl MBiasParams {
@@ -69,12 +75,62 @@ impl MBiasParams {
         }
         params
     }
+
+    fn find_scripts_dir(&self) -> Result<PathBuf> {
+        // User provided directory
+        if let Some(dir) = &self.r_script_dir {
+            let dir = dir.to_path_buf();
+            ensure!(dir.exists(), "Given R script directory not found: {}", dir.display());
+            return Ok(dir);
+        }
+
+        let paths_to_try = [
+            // Check scripts next to this executable
+            env::current_exe()
+                .wrap_err("Could not find path of current executable")
+                .and_then(|exe_path| {
+                    exe_path
+                        .parent()
+                        .wrap_err("Could not determine parent directory of executable")
+                        .map(|p| p.to_path_buf())
+                })
+                .map(|p| p.join("scripts"))
+                .wrap_err("Failed to find scripts directory next to executable"),
+            // Check current working directory ./scripts
+            env::current_dir()
+                .wrap_err("Could not get current working directory")
+                .map(|cwd| cwd.join("scripts"))
+                .wrap_err("Failed to find scripts directory in current working directory"),
+        ];
+
+        for path in &paths_to_try {
+            match path {
+                Err(error) => {
+                    // Log the error and continue
+                    let error = format!("{error:#}");
+                    warn!(error, "Error checking scripts directory");
+                    continue;
+                }
+                Ok(path) => {
+                    if path.exists() {
+                        return Ok(path.clone());
+                    } else {
+                        debug!(?path, "Scripts directory not found");
+                    }
+                }
+            }
+        }
+
+        Err(eyre!(
+            "Could not find R scripts directory. Tried the following paths: {:?}",
+            paths_to_try.iter().flatten().collect::<Vec<_>>()
+        )).suggestion("You can set the R script directory using the --r-script-dir option or the R_SCRIPT_DIR environment variable.")
+    }
 }
 
 // Call R script with right parameters
 pub fn mbias(params: &MBiasParams) -> Result<()> {
-    let scripts_dir =
-        env::var("R_SCRIPT_DIR").map(PathBuf::from).unwrap_or_else(|_| "./scripts".into());
+    let scripts_dir = params.find_scripts_dir().wrap_err("Failed to find R scripts directory")?;
     let r_script = scripts_dir.join("mbias.R");
     ensure!(r_script.exists(), "mbias script not found in {scripts_dir:?}");
 
@@ -86,7 +142,7 @@ pub fn mbias(params: &MBiasParams) -> Result<()> {
         .status()
         .wrap_err("Failed to execute mbias script")?;
 
-    ensure!(status.success(), "R script exited with status: {status}");
+    ensure!(status.success(), "R script exited with {status}");
     Ok(())
 }
 
