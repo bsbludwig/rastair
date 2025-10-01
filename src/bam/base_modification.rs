@@ -27,7 +27,7 @@ impl MethylatedPositions {
     // - reverse should have seq reversed?
     // - positions are:  comma separated list of how many seq bases of the stated base type to skip, stored as a delta to the last and starting with 0 as the first (or next) base, starting from the uncomplemented 5’ end of the SEQ field.
     // work with modkit code -- MmTagInfo, DeltaListConverter, test_get_base_mod_probs
-    pub fn new(strand: Strand, seq: &[Base], methylated_positions: &[u32]) -> Self {
+    pub fn new(strand: Strand, seq: &[u8], methylated_positions: &[u32]) -> Self {
         let (base, strand) = match strand {
             Strand::OT => (Base::C, Strand::OT),
             Strand::OB => (Base::G, Strand::OB),
@@ -45,7 +45,7 @@ impl MethylatedPositions {
             let mut base_count = 0;
             let mut skip_list = SmallVec::new();
             for (i, &b) in seq.iter().enumerate() {
-                if b == base {
+                if base == b {
                     if methylated_positions.contains(&(i as u32)) {
                         skip_list.push(base_count);
                         base_count = 0;

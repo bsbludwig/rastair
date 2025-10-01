@@ -1,5 +1,4 @@
 use crate::{
-    bed::reader::{RastairBedReader, RastairCall, SimpleRastairBedRecord},
     sequence::{ChunkRegion, ReaderParams, Region},
     utils::{cli, logging::ThisIsABug},
 };
@@ -11,6 +10,7 @@ use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
 };
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 mod base_modification;
@@ -40,7 +40,9 @@ pub struct BamRewriteArgs {
     output: ClioPath,
 }
 
-#[tracing::instrument(level = "info", skip_all)]
+#[tracing::instrument(level = "info", skip_all, fields(
+    output = %params.output.path().display(),
+))]
 pub fn rewrite(params: &BamRewriteArgs) -> Result<()> {
     let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
     let regions: Vec<ChunkRegion> = readers
@@ -74,7 +76,7 @@ pub fn rewrite(params: &BamRewriteArgs) -> Result<()> {
 
     for segment in &regions {
         rewrite_region(&mut readers.bam, &mut calls_reader, &mut writer, &segment.region)
-            .wrap_err("rewrite")?;
+            .wrap_err_with(|| format!("Failed to rewrite region {}", segment.region))?;
     }
 
     Ok(())
@@ -97,17 +99,25 @@ fn rewrite_region(
         .try_into()
         .wrap_err("Failed to convert region representation")
         .this_is_a_bug()?;
-    let calls = calls_reader.query(&noodle_region).wrap_err("failed to query calls")?;
+
+    // Load all calls in this region into a map of position -> call
+    // Since we're going region by region, all calls are from the same contig
+    let calls: FxHashMap<u32, RastairCall> = calls_reader
+        .query(&noodle_region)
+        .wrap_err("failed to query calls file")?
+        .iter()
+        .map(|call| (call.pos, call.call.clone()))
+        .collect();
 
     let mut record = Record::new();
     while let Some(result) = bam.read(&mut record) {
-        if let e @ Err(_) = result {
-            return e.wrap_err("Failed to read BAM record");
+        if let Err(error) = result {
+            warn!(%error, "Failed to read BAM record");
         }
 
-        rewrite_record(bam, &calls, &mut record)?;
+        rewrite_record(&calls, &mut record).wrap_err("failed to rewrite record")?;
 
-        writer.write(&record).wrap_err("failed to write record")?;
+        writer.write(&record).wrap_err("failed to write record to new BAM file")?;
     }
 
     Ok(())
@@ -123,25 +133,15 @@ fn rewrite_region(
 /// 5. Apply the modifications to the record
 #[instrument(level = "debug", skip_all, fields(pos = record.pos()))]
 fn rewrite_record(
-    bam: &mut bam::IndexedReader,
-    calls: &[SimpleRastairBedRecord],
+    // All calls in the region of the record (they are all the same contig)
+    calls: &FxHashMap<u32, RastairCall>,
     record: &mut Record,
-) -> Result<(), color_eyre::eyre::Error> {
+) -> Result<()> {
     use Base::*;
 
-    let chr = bam.header().tid2name(record.tid() as u32);
     let strand = StrandFromRecord::strand(record);
-    let called_positions: SmallVec<_, 10> = calls
-        .iter()
-        .filter(|call| chr == call.chrom.as_bytes())
-        .filter(|call| {
-            let read_start = record.pos();
-            let read_end = read_start + record.insert_size();
-            i64::from(call.pos) >= read_start && i64::from(call.pos) < read_end
-        })
-        .collect();
 
-    let mut seq: Vec<Base> = record.seq().as_bytes().iter().map(Base::from).collect();
+    let mut seq = record.seq().as_bytes();
     let mut methylated_positions: SmallVec<u32, 10> = SmallVec::new();
 
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
@@ -151,15 +151,15 @@ fn rewrite_record(
         let Some(pos_in_ref) = pos_in_ref else {
             continue;
         };
+        let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
         let pos_in_read = u32::try_from(pos_in_read).expect("position fits in u32");
 
-        if let Some(called_pos) =
-            called_positions.iter().find(|call| i64::from(call.pos) == pos_in_ref)
-            && let RastairCall::Cpg { methylated, .. } = called_pos.call
-            && methylated
+        if let Some(call) = calls.get(&pos_in_ref)
+            && let RastairCall::Cpg { methylated, .. } = call
+            && *methylated
         {
             let pos = pos_in_read as usize;
-            let observed_base = seq[pos];
+            let observed_base = Base::from(seq[pos]);
 
             // Let's rewrite the sequence to un-modify the bases and collect
             // methylated positions
@@ -168,7 +168,7 @@ fn rewrite_record(
                 // C positions
                 Strand::OT => {
                     if observed_base == T {
-                        seq[pos] = C;
+                        seq[pos] = *C;
                         methylated_positions.push(pos_in_read);
                     }
                 }
@@ -176,7 +176,7 @@ fn rewrite_record(
                 // methylated G
                 Strand::OB => {
                     if observed_base == A {
-                        seq[pos] = G;
+                        seq[pos] = *G;
                         methylated_positions.push(pos_in_read);
                     }
                 }
@@ -187,8 +187,7 @@ fn rewrite_record(
 
     let mods = MethylatedPositions::new(strand, &seq, &methylated_positions);
 
-    let new_seq: Vec<u8> = seq.into_iter().map(|b| *b).collect();
-    record.set_seq(&new_seq);
+    record.set_seq(&seq);
 
     mods.apply_to_record(record)?;
     Ok(())

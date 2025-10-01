@@ -14,7 +14,7 @@ pub enum Base {
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Display for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", (*self) as u8 as char)
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -82,6 +82,18 @@ impl PartialEq<str> for Base {
     }
 }
 
+impl PartialEq<u8> for Base {
+    fn eq(&self, other: &u8) -> bool {
+        match self {
+            Base::A => *other == b'A' || *other == b'a',
+            Base::C => *other == b'C' || *other == b'c',
+            Base::G => *other == b'G' || *other == b'g',
+            Base::T => *other == b'T' || *other == b't',
+            Base::Unknown => false,
+        }
+    }
+}
+
 impl PartialEq<Option<SmolStr>> for Base {
     fn eq(&self, other: &Option<SmolStr>) -> bool {
         if let Some(other) = other { other == self } else { false }
@@ -118,7 +130,7 @@ impl From<Option<Base>> for Base {
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", (*self) as u8 as char)
+        write!(f, "{}", self.as_str())
     }
 }
 

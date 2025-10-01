@@ -21,13 +21,19 @@ impl Strand {
     }
 }
 
+impl AsRef<str> for Strand {
+    fn as_ref(&self) -> &str {
+        match self {
+            Strand::OT => "OT",
+            Strand::OB => "OB",
+            Strand::Unknown => "NA",
+        }
+    }
+}
+
 impl fmt::Display for Strand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Strand::OT => write!(f, "OT"),
-            Strand::OB => write!(f, "OB"),
-            Strand::Unknown => write!(f, "NA"),
-        }
+        write!(f, "{}", self.as_ref())
     }
 }
 
