@@ -180,7 +180,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         bail!("MessagePack file does not contain a VCF header");
     };
 
-    let vcf_params = vcf_writer::Params {
+    let vcf_params = vcf_writer::VcfParams {
         vcf: Some(params.output.clone()),
         vcf_threads: NonZeroUsize::new(4).expect("valid number"),
     };

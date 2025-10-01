@@ -56,7 +56,7 @@ pub struct CallParams {
     // --- Output parameters ---
     #[command(flatten)]
     #[serde(skip)]
-    pub vcf: vcf_writer::Params,
+    pub vcf: vcf_writer::VcfParams,
     #[command(flatten)]
     #[serde(skip)]
     pub bed: BedParams,

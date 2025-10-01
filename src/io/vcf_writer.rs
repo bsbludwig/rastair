@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, clap::Parser)]
-pub struct Params {
+pub struct VcfParams {
     /// VCF/BCF output file path (use - to write to stdout)
     ///
     /// Format is guessed based on the file extension:
@@ -84,7 +84,7 @@ impl From<VcfFormat> for (HtsVcfFormat, Compression) {
     }
 }
 
-impl Params {
+impl VcfParams {
     /// Create a new instance of `Params` with the specified VCF output path.
     pub fn guess_format(&self) -> Format {
         let Some(vcf_output) = &self.vcf else {
