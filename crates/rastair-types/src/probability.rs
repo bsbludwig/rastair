@@ -18,6 +18,13 @@ impl Probability {
             Ok(Self(value))
         }
     }
+
+    pub const fn new_panicky(value: f64) -> Self {
+        match Self::new(value) {
+            Ok(p) => p,
+            Err(_e) => panic!("invalid probability"),
+        }
+    }
 }
 
 impl std::fmt::Display for Probability {

@@ -8,6 +8,8 @@ use color_eyre::{Result, eyre::Context};
 use rastair_types::Probability;
 use tracing::instrument;
 
+pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.8);
+
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MachineLearningParams {
     /// Only use hard thresholds to call variants and methylation events.
@@ -22,7 +24,11 @@ pub struct MachineLearningParams {
     ///
     /// When specified, a ML model will classify positions with a prediction
     /// score. Anything above this threshold is considered PASS.
-    #[arg(long = "ml", default_value_t = Probability::new(0.8).expect("default value is valid probility"), num_args = 0..=1)]
+    ///
+    /// For consistency with `--thresholds`, this option can be also be
+    /// specified as `--ml` without a value, which will use the default
+    /// threshold.
+    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.8", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::FILTER)]
     pub ml: Probability,
     /// Path to the model for CpG positions
