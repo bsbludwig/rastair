@@ -104,6 +104,7 @@ tryCatch({
     input = rmd_file,
     output_file = output_file,
     params = params_list,
+    intermediates_dir = getwd(),
     clean = TRUE,
     quiet = FALSE
   )
