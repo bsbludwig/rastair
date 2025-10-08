@@ -125,6 +125,8 @@ Process TAPS-sequenced BAM files and call methylated positions.
 
    When specified, a ML model will classify positions with a prediction score. Anything above this threshold is considered PASS.
 
+   For consistency with `--thresholds`, this option can be also be specified as `--ml` without a value, which will use the default threshold.
+
   Default value: `0.80`
 * `--model-cpg <MODEL_CPG>` — Path to the model for CpG positions
 

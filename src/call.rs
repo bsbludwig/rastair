@@ -82,6 +82,24 @@ impl CallParams {
                 self.vcf.vcf.as_ref() != self.bed.bed.as_ref(),
                 "Can't write both VCF and BED output to the same file. Please specify different output files."
             );
+
+            // If the user called rastair with something like `-o test.bed` (or
+            // `-o test.bed.gz`), this is technically wrong: `-o` is short for
+            // `--vcf` not for `--bed`.
+            //
+            // But we're gonna be nice about it and not error out but set the
+            // `bed` field with that value instead (if no other `--bed` value is
+            // given).
+            if self.bed.bed.is_none()
+                && let Some(vcf_filename) = self.vcf.vcf.as_ref()
+                && let Some(filename) = vcf_filename.file_name()
+                && let Some(filename) = filename.to_str()
+                && (filename.ends_with(".bed") || filename.ends_with(".bed.gz"))
+            {
+                warn!(file=%vcf_filename, "VCF output file name ends with `.bed`/`.bed.gz`, did you mean to use `--bed` instead of `-o`/`--vcf`? Assuming you meant `--bed` and switching the output accordingly.");
+                debug!(bed=?self.bed.bed, vcf=?self.vcf.vcf, "Switching output from VCF to BED");
+                self.bed.bed = self.vcf.vcf.take();
+            }
         } else if self.variant_calling.cpgs_only {
             // Default to BED output if only CpGs are requested
             self.bed.bed = Some(ClioPath::std());

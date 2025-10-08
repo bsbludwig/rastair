@@ -46,4 +46,4 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`GC`** | Genotype confidence, Phred-scaled | `Integer` | `Phred>` | G |
 | **`DP`** | Read depth | `Integer` | `usize` | 1 |
 | **`M5mC`** | Methylation level at CpG sites | `Float` | `Option<f64>` | 1 |
-| **`ML`** | Prediction of methylation/variant likelyhood by Rastair's by machine learning model | `Float` | `f64` | A |
+| **`ML`** | Prediction of methylation/variant likelihood by rastair's machine learning model | `Float` | `f64` | A |

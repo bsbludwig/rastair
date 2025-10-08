@@ -139,6 +139,34 @@ fn write_bcf_to_file_and_bed_to_stdout() -> Result<()> {
 }
 
 #[test]
+fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let temp_file = temp_dir.path().join("test.bed");
+
+    assert_cmd_snapshot!(rastair().args([
+        "call",
+        "--fasta-file=tests/data/test.fasta.gz",
+        "tests/data/test.bam",
+        "--thresholds", // disable ML for faster test
+        "--region=chr19:6105700-6105800",
+        "--vcf",
+    ]).arg(&temp_file), @r#"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    [TIME] WARN rastair::call: VCF output file name ends with `.bed`/`.bed.gz`, did you mean to use `--bed` instead of `-o`/`--vcf`? Assuming you meant `--bed` and switching the output accordingly. file=[PATH]"
+    [TIME] INFO rastair::call: Wrote BED output file=[PATH]"
+    [TIME] INFO rastair: Call finished [DURATION]
+    "#);
+
+    Ok(())
+}
+
+#[test]
 fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
     apply_common_filters!();
     assert_cmd_snapshot!(

@@ -85,7 +85,7 @@ format_field!(
 format_field!(
     MachineLearningPrediction(f64),
     "ML",
-    "Prediction of methylation/variant likelyhood by Rastair's by machine learning model",
+    "Prediction of methylation/variant likelihood by rastair's machine learning model",
     FormatFieldNumber::OnePerAlt
 );
 
