@@ -1,4 +1,5 @@
 use crate::{
+    bed::reader::{RastairBedReader, RastairCall},
     sequence::{ChunkRegion, ReaderParams, Region},
     utils::{cli, logging::ThisIsABug},
 };
@@ -15,7 +16,7 @@ use smallvec::SmallVec;
 
 mod base_modification;
 pub use base_modification::MethylatedPositions;
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 #[derive(Debug, Parser)]
 pub struct BamRewriteArgs {
