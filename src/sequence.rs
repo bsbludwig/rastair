@@ -29,13 +29,13 @@ mod regions;
 #[derive(Debug, clap::Args, Clone)]
 pub struct ReaderParams {
     /// Path to sorted and indexed BAM file
-    #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub bam_file: ClioPath,
 
     /// Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip
     /// compressed, but requires both a gzi index and a fai index
-    #[arg(short='r', long, value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(short='r', long, value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub fasta_file: ClioPath,
 

@@ -31,7 +31,7 @@ pub struct BamRewriteArgs {
     pub segment_max_length: u64,
 
     /// Rastair's calls to determine methylation
-    #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     calls_file: ClioPath,
 

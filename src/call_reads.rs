@@ -43,7 +43,7 @@ pub struct PerReadParams {
 
     /// BED file Rastair wrote with methylation calls per position
     #[arg(long)]
-    #[arg(value_parser=clap::value_parser!(ClioPath).exists().is_file())]
+    #[arg(value_parser=clap::value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub calls: Option<ClioPath>,
 

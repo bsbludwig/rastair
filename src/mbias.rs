@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone, clap::Args)]
 pub struct MBiasParams {
     /// Input per-read BED file (can be gzipped)
-    #[arg(value_name="BED_FILE", value_parser=value_parser!(ClioPath).exists().is_file())]
+    #[arg(value_name="BED_FILE", value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub bed_file: ClioPath,
 
@@ -49,7 +49,7 @@ pub struct MBiasParams {
     /// Override directory to find R scripts
     ///
     /// When not set, tries to look for `$rastair_path/scripts` and `./scripts`
-    #[arg(long = "r-script-dir", env = "R_SCRIPT_DIR")]
+    #[arg(long = "r-script-dir", env = "R_SCRIPT_DIR", value_hint=clap::ValueHint::DirPath)]
     pub r_script_dir: Option<ClioPath>,
 }
 

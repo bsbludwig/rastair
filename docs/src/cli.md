@@ -430,6 +430,12 @@ Please note that this is currently implemented as an R script. Unless you're usi
   Default value: `3852`
 * `--read-length <READ_LENGTH>` — Read length as integer
 
+###### **Options:**
+
+* `--r-script-dir <R_SCRIPT_DIR>` — Override directory to find R scripts
+
+   When not set, tries to look for `$rastair_path/scripts` and `./scripts`
+
 ###### **Output Options:**
 
 * `--output-prefix <OUTPUT_PREFIX>` — Output path prefix

@@ -36,7 +36,7 @@ use tracing::{debug, info, warn};
 pub struct ConvertParams {
     /// Input file
     #[arg(short = 'i', long, default_value = "-")]
-    #[arg(help_heading = cli::sections::INPUT)]
+    #[arg(help_heading = cli::sections::INPUT, value_hint=clap::ValueHint::FilePath)]
     pub input: ClioPath,
 
     /// Input file format, guessed from file extension if not specified
