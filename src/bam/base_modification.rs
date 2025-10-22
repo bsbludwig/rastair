@@ -6,6 +6,7 @@ use std::fmt::Write;
 use tracing::debug;
 
 /// A struct representing a list of methylated positions in a sequence
+#[derive(Debug, Clone)]
 pub struct MethylatedPositions {
     /// Unmodified "fundamental" base (on top strand)
     pub base: Base,
@@ -116,21 +117,12 @@ impl MethylatedPositions {
         // mod_string.push('.');
         mod_string.push(',');
 
-        // Encode positions as deltas between consecutive occurrences of this base type
-        let mut prev_pos = None;
         for (i, &pos) in self.positions.iter().enumerate() {
             if i > 0 {
                 mod_string.push(',');
             }
 
-            let delta = match prev_pos {
-                Some(prev) => pos.saturating_sub(prev).saturating_sub(1),
-                None => pos,
-            };
-
-            write!(&mut mod_string, "{delta}").expect("Write to String failed");
-
-            prev_pos = Some(pos);
+            write!(&mut mod_string, "{pos}").expect("Write to String failed");
         }
 
         mod_string.push(';');
