@@ -37,6 +37,7 @@ filter!(m_bq_ratio, "Low quality ratio for methylation candidate");
 filter!(m_pos, "Alt allele evidence from read edges for methylation candidate");
 filter!(m_highDp, "Excessive coverage for methylation candidate");
 filter!(low_ml_score, "Machine Learning module prediction below threshold");
+filter!(pre_ml, "Low amount of usable evidence, skipping ML");
 
 info_field!(
     AlleleBaseQuality(f64),

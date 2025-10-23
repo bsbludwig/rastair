@@ -7,7 +7,7 @@ use crate::{
     io::vcf_writer,
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{cli, logging::ThisIsABug as _, surrounding_records},
-    vcf::{self, MachineLearningPrediction, Record, low_ml_score},
+    vcf::{self, MachineLearningPrediction, Record, low_ml_score, lowDp, pre_ml},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -451,6 +451,7 @@ fn process_region(
             // point in running slow ML prediction if we 99.99% know it's gonna
             // be `false`.
             if !ml_filters(current) {
+                current.filters.add(pre_ml);
                 continue;
             }
 
