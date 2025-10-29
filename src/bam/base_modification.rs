@@ -47,7 +47,9 @@ impl MethylatedPositions {
             let mut skip_list = SmallVec::new();
             for (i, &b) in seq.iter().enumerate() {
                 if base == b {
-                    if methylated_positions.contains(&(i as u32)) {
+                    if methylated_positions
+                        .contains(&u32::try_from(i).expect("position fits in u32"))
+                    {
                         skip_list.push(base_count);
                         base_count = 0;
                     } else {
