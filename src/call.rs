@@ -237,6 +237,11 @@ pub fn call(mut params: CallParams) -> Result<()> {
     let writer_thread = thread::Builder::new()
         .name("writer".to_string())
         .spawn({
+            // This block just perpares some variables for the writer thread but
+            // lives on the main thread. This leads to better error messages if
+            // something goes wrong during initialization and means we can
+            // capture just the data we need to move into the thread.
+
             let vcf_output = params.vcf.vcf.clone();
             let vcf_filter = params.vcf_filters();
             let metadata = [
