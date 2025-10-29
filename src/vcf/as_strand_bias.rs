@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 use std::ops::Deref;
 
 /// Allele-specific strand bias information for a variant
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AlleleSpecificStrandBias(pub SmallVec<ByStrand<u32>, 4>);
 
 impl Deref for AlleleSpecificStrandBias {

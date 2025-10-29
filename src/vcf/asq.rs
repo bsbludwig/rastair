@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 use std::ops::Deref;
 
 /// Allele-specific RMS base quality by strand
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StrandSpecificBaseQuality(pub SmallVec<ByStrand<f64>, 4>);
 
 mod as_ss_bq {
@@ -73,7 +73,7 @@ mod as_ss_bq {
 }
 
 /// Allele-specific RMS mapping quality by strand
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StrandSpecificMappingQuality(pub SmallVec<ByStrand<f64>, 4>);
 
 mod as_ss_mq {

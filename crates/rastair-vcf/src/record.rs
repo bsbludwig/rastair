@@ -57,6 +57,12 @@ macro_rules! vcf_record {
             }
         }
 
+        impl Default for Filters {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
         impl $crate::WriteToVcf for Filters {
             fn write_header(header: &mut rust_htslib::bcf::Header) -> color_eyre::Result<()> {
                 $(
@@ -83,7 +89,7 @@ macro_rules! vcf_record {
         }
 
         /// Info fields for a VCF record containing various metadata
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
         pub struct Info {
             $(
                 pub [<$info:snake>] : $info,
@@ -109,7 +115,7 @@ macro_rules! vcf_record {
         /// Format fields for a VCF record containing sample-specific data
         ///
         /// Used to add data that was "called"
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
         pub struct Format {
             $(
                 pub [<$format:snake>]: $format,

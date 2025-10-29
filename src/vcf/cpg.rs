@@ -10,9 +10,10 @@ use std::fmt;
 use std::ops::Deref;
 
 /// Is this a CpG site?
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InCpG {
     /// No, this is not a CpG site.
+    #[default]
     No,
     /// Yes, first position in CpG.
     C,

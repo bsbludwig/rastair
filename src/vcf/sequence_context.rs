@@ -1,4 +1,5 @@
 use crate::utils::Base;
+use better_default::Default;
 use color_eyre::eyre::{Context as _, Result};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
@@ -7,10 +8,11 @@ use smol_str::{SmolStr, SmolStrBuilder};
 /// 5-base sequence context centered on the variant position
 ///
 /// Printed in VCF as string with up to 5 characters.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SequenceContext {
     pub before_2: Option<Base>,
     pub before_1: Option<Base>,
+    #[default(Base::Unknown)]
     pub me: Base,
     pub after_1: Option<Base>,
     pub after_2: Option<Base>,

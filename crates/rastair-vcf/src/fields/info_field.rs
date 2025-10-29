@@ -349,6 +349,12 @@ macro_rules! info_field {
             }
         }
 
+        impl Default for $name {
+            fn default() -> Self {
+                Self(Default::default())
+            }
+        }
+
         impl $crate::VcfField for $name {
             const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);
         }
@@ -385,6 +391,12 @@ macro_rules! info_field {
             }
         }
 
+        impl Default for $name {
+            fn default() -> Self {
+                Self(Default::default())
+            }
+        }
+
         impl $crate::VcfField for $name {
             const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);
         }
@@ -417,6 +429,12 @@ macro_rules! info_field {
         #[doc = "(flag)"]
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub bool);
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self(Default::default())
+            }
+        }
 
         impl $crate::VcfField for $name {
             const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);

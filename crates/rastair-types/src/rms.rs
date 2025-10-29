@@ -16,7 +16,7 @@ use std::{fmt, ops::Deref};
 /// // you can use the value as a float
 /// assert_eq!(rms.round(), 3.0);
 /// ```
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct RootMeanSquare(f64);
 
 impl<T: Into<f64>> FromIterator<T> for RootMeanSquare {

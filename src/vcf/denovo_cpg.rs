@@ -5,9 +5,10 @@ use rust_htslib::bcf::Record;
 use std::ops::Deref;
 
 /// De-novo CPG candidate: Could the alt alleles create a new CpG site?
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum DeNovoCpGCandidate {
     /// No, the variant cannot create a new CpG site
+    #[default]
     NotCandidate,
     /// Yes, the variant could create a new CpG site
     Candidate {

@@ -305,6 +305,12 @@ macro_rules! format_field {
             }
         }
 
+        impl Default for $name {
+            fn default() -> Self {
+                Self(Default::default())
+            }
+        }
+
         impl $crate::VcfField for $name {
             const ID: &'static cstr8::CStr8 = cstr8::cstr8!($id);
         }
@@ -346,6 +352,12 @@ macro_rules! format_field {
 
             fn deref(&self) -> &Self::Target {
                 &self.0.as_slice()
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self(Default::default())
             }
         }
 

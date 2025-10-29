@@ -5,9 +5,10 @@ use rastair_vcf::{FormatFieldNumber, FormatFieldValue, VcfField as _};
 use rust_htslib::bcf::Record;
 
 /// Methylation information
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum Methylated {
     /// Unknown methylation status, i.e., no processing was done
+    #[default]
     Unknown,
     /// No evidence of methylation at this site
     NoEvidence,
