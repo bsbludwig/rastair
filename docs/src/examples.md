@@ -1,37 +1,49 @@
 # Examples
 
 rastair has two main modes:
-1. Call methylation per genomic position
-2. Annotate individual reads with the methylation states of the CpGs they contain
+1. Call @methylation per genomic position
+2. Annotate individual @read:pl with the methylation states of the @CpG:pl they contain
 
 In addition, there are a number of convenience commands, e.g. to convert between different output file formats, and a small set of utility scripts written in R to produce quality-control metrics.
 
 Below we will give some examples that cover common use-cases. You can find an in-depth documentation of the complete command line syntax [here](cli.md).
 
 ## 0. Parameters shared between various sub-commands
-Nearly all rastair sub-commands are capable of multi-threading. If your CPU has multiple cores, you can e.g. use `-@ 4` to parallelise operations across 4 cores.
 
-Similarly, you can restrict processing to only one genomic interval using the `-l` parameter. To only process a specific chromosome, you can do `-l chr19`. You can also chose an interval within the chromosome: `-l chr19:6103156-6143156`.
+Nearly all rastair sub-commands are capable of multi-threading.
+You can e.g. use `-@ 4` to parallelise operations across 4 cores.
+By default, rastair will try to use all available cores on your system.
+
+Similarly, you can restrict processing to only one genomic interval using the `-l` parameter.
+To only process a specific chromosome, you can do `-l chr19`.
+You can also chose an interval within the chromosome: `-l chr19:6103156-6143156`.
 
 ## 1. Call genomic variants and methylated positions
 
-By default, rastair will use a built-in machine-learning model to classify variants as real or false. The output should be a `.vcf.gz` or a `.bcf` file:
+By default, rastair will use a built-in @ML model to classify @variant:pl as real or false.
+
+If writing to a @VCF (give a `.vcf.gz` file name) or @BCF file (give a filename ending in `.bcf`),
+all high-confidence calls will be included:
 
 ```bash
 rastair call -r reference.fa.gz -o test.bcf test.bam
 ```
 
-The resulting @VCF output still contains candidate variants that did not pass all filters. If you just want to store high-confidence calls, you can write uncompressed vcf output to `STDOUT` and filter it on the fly with e.g. [bcftools](https://samtools.github.io/bcftools/bcftools.html):
+If you want all variants, regardless of their confidence, you can use the `--all` flag:
 
 ```bash
-rastair call -r reference.fa.gz --vcf - test.bam | bcftools view -f PASS -o test.bcf
+rastair call -r reference.fa.gz --all -o test.vcf.gz test.bam
 ```
 
 You can find a description of all custom VCF fields used by rastair [here](formats/vcf-fields.md).
 
 ## 2. Only call methylation, do not report genetic variants (very fast)
 
-In cases where all you need is a table of methylation counts in genomic - and putatively _de-novo_ - CpG positions, you can use the `--cpgs-only` parameter and use `--bed` output, which will greatly speed up the processing compared to calling all putative genetic variants:
+In cases where all you need is a table of methylation counts in genomic
+-- and putatively @denovo positions,
+you can use the `--cpgs-only` parameter (or `-c`),
+which will default the output to @BED format.
+This will greatly speed up the processing compared to calling all putative genetic variants:
 
 ```bash
 rastair call -r reference.fa.gz --cpgs-only --bed test.bed.gz test.bam
@@ -53,7 +65,14 @@ rastair call -r reference.fa.gz --cpgs-only --bed - test.bam | grep -Fw REF
 
 ### Ignore positions at the edges of reads
 
-Sometimes, it might be desirable to ignore a certain number of bases at the beginning or end of a read when counting methylated positions. This can e.g. account for loss of methylation due to sonication damage. The command-line argument for this was inspired by [MethylDackel](https://github.com/dpryan79/MethylDackel). However, we decided to only have one set of parameters: `--nOT` and `--nOB`. Each of them takes a comma-separated list of 4 integers: `[r1_5',r1_3',r2_5',r2_3']`, denoting the number of bases from the start/end of read 1/2 that should be ignored. **Unlike MethylDackel, rastair's command line arguments always refer to the start/end position of the read in 5' -> 3' direction, not the position in the reference after alignment**. To give an example: imagine the following read pair
+Sometimes, it might be desirable to ignore a certain number of bases at the beginning or end of a read when counting methylated positions.
+This can e.g. account for loss of methylation due to sonication damage.
+The command-line argument for this was inspired by [MethylDackel](https://github.com/dpryan79/MethylDackel).
+However, we decided to only have one set of parameters: `--nOT` and `--nOB`.
+Each of them takes a comma-separated list of 4 integers: `[r1_5',r1_3',r2_5',r2_3']`, denoting the number of bases from the start/end of read 1/2 that should be ignored.
+
+**Unlike MethylDackel, rastair's command line arguments always refer to the start/end position of the read in 5' -> 3' direction, not the position in the reference after alignment**.
+To give an example: imagine the following read pair
 
 ```text
     000000000111111111122
@@ -64,7 +83,8 @@ R2:                         <AC-------------GC-
                              111111111000000000
 ```
 
-This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/360075017111-strand-bias-and-orientation-bias)" read represents the OT (ie R1 is the OT, and R2 is the reverse complement of the OT). A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it ocurrs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
+This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/360075017111-strand-bias-and-orientation-bias)" read represents the @OT (ie R1 is the OT, and R2 is the reverse complement of the OT).
+A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it ocurrs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
 
 ## 3. Report methylation per-read in bed format
 
@@ -72,4 +92,5 @@ This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/3600750171
 rastair per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 ```
 
-Again, this will generate a bgzip-compressed bed file that can be indexed with `tabix`. For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
+Again, this will generate a bgzip-compressed bed file that can be indexed with `tabix`.
+For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
