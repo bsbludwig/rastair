@@ -1,7 +1,7 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
     utils::{Base::*, logging::ThisIsABug as _},
-    vcf::{Record as Rastair2Record, utils::NoStrandBiasForBaseErrorExt as _},
+    vcf::{DeNovoCpGCandidate, Record as Rastair2Record, utils::NoStrandBiasForBaseErrorExt as _},
 };
 use color_eyre::{Result, eyre::Context as _};
 use rastair_types::Probability;
@@ -21,7 +21,11 @@ impl Rastair1BedFormat {
         // If a position is covered by both a ref CpG site and a de-novo CpG
         // site, the ref case should take precedence.
         let de_novo = !*record.info.in_cp_g && *record.info.de_novo_cp_g_candidate;
-        if de_novo && !record.filters.pass() {
+        if de_novo
+            && let DeNovoCpGCandidate::Candidate { alt_base, .. } =
+                record.info.de_novo_cp_g_candidate
+            && !record.filters.pass_alt(alt_base)
+        {
             // Only report de novo candidates that we are confident about
             trace!(
                 pos=%record.main,

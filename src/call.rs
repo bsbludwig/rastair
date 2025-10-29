@@ -392,7 +392,7 @@ fn process_region(
         let (before, current, after) = surrounding_records(&mut records, i);
 
         if *current.info.read_depth < params.variant_calling.v_min_depth {
-            current.filters.add(vcf::lowDp);
+            current.filters.add_all(vcf::lowDp);
         }
         params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
         params.denovo_cpg.add_if_adjecent(current, before, after);
@@ -415,8 +415,8 @@ fn process_region(
 
     for current in &mut records {
         // If no filters were added, we're gonna call it
-        if current.filters.is_empty() {
-            current.filters.add(rastair_vcf::standard_fields::PASS);
+        if current.filters.pass() {
+            current.filters.add_all(rastair_vcf::standard_fields::PASS);
         }
     }
 
@@ -430,7 +430,7 @@ fn calc_ml(ml: &MachineLearning, records: &mut [vcf::Record]) {
 
         // If there is no chance of this being a viable candidate, skip slow ML
         if !ml_filters(current) {
-            current.filters.add(pre_ml);
+            current.filters.add_all(pre_ml);
             continue;
         }
 
@@ -441,9 +441,10 @@ fn calc_ml(ml: &MachineLearning, records: &mut [vcf::Record]) {
             current.filters.clear();
 
             // TODO: Filter out low-scoring alleles
-            if predictions.iter().all(|p| !p.pass()) {
-                // If none of the predictions pass, we add a low ML score filter
-                current.filters.add(low_ml_score);
+            for pred in &predictions {
+                if !pred.pass() {
+                    current.filters.add_per_allele(pred.allele, low_ml_score);
+                }
             }
             current.samples[0].machine_learning_prediction =
                 MachineLearningPrediction(predictions.into_iter().map(|p| *p.prediction).collect());

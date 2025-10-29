@@ -73,7 +73,7 @@ mod tests {
 
         // record fails filters
         let mut r = default_record();
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(!filters.matches(&r), "should not match record with failing filters");
     }
 
@@ -85,7 +85,7 @@ mod tests {
         let mut r = default_record();
         assert!(!filters.matches(&r), "should not match non-CpG");
 
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(!filters.matches(&r), "should not match non-CpG failing filters");
 
         // explicit non-CpG record
@@ -98,7 +98,7 @@ mod tests {
         r.info.in_cp_g = InCpG::C;
         assert!(filters.matches(&r), "should match CpG record");
 
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(!filters.matches(&r), "should not match CpG record failing filters");
 
         // denovo CpG candidate
@@ -107,7 +107,7 @@ mod tests {
             DeNovoCpGCandidate::Candidate { ref_base: G, alt_base: A, alt_index: 1 };
         assert!(filters.matches(&r), "should match de-novo CpG candidate record");
 
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(
             !filters.matches(&r),
             "should not match de-novo CpG candidate record failing filters"
@@ -122,7 +122,7 @@ mod tests {
         let mut r = default_record();
         assert!(!filters.matches(&r), "should not match non-CpG");
 
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(!filters.matches(&r), "should not match non-CpG failing filters");
 
         // explicit non-CpG record
@@ -135,7 +135,7 @@ mod tests {
         r.info.in_cp_g = InCpG::C;
         assert!(filters.matches(&r), "should match CpG record");
 
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(filters.matches(&r), "should match CpG record failing filters");
 
         // denovo CpG candidate
@@ -144,7 +144,7 @@ mod tests {
             DeNovoCpGCandidate::Candidate { ref_base: G, alt_base: A, alt_index: 1 };
         assert!(filters.matches(&r), "should match de-novo CpG candidate record");
 
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(filters.matches(&r), "should match de-novo CpG candidate record failing filters");
     }
 
@@ -156,10 +156,10 @@ mod tests {
         let mut r = default_record();
         assert!(filters.matches(&r), "should match record");
 
-        r.filters.add(lowDp);
+        r.filters.add_all(lowDp);
         assert!(filters.matches(&r), "should match record failing filters");
 
-        r.filters.add(PASS);
+        r.filters.add_all(PASS);
         assert!(filters.matches(&r), "should match passing record");
     }
 }

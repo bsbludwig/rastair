@@ -9,7 +9,97 @@
 //! > not been applied, then this field must be set to the MISSING value. (String, no whitespace or semicolons
 //! > permitted, duplicate values not allowed.)
 
+use color_eyre::{Result, eyre::Context as _};
+use rastair_types::Base;
+use smallvec::SmallVec;
 use smol_str::SmolStr;
+
+/// A list of filters
+pub type FilterList = SmallVec<SmolStr, 2>;
+
+/// Container for VCF filters holding both filters for entire records and
+/// per-allele filters.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FilterContainer {
+    /// Filters that apply to the whole record
+    all: FilterList,
+    /// Filters that apply per allele
+    per_allele: SmallVec<(Base, FilterList), 2>,
+}
+
+impl FilterContainer {
+    /// Creates a new, empty filter container
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a filter that applies to the whole record
+    pub fn add_all(&mut self, filter: impl VcfFilter) {
+        self.all.push(filter.filter());
+    }
+
+    /// Adds a filter for a specific allele
+    pub fn add_per_allele(&mut self, allele: Base, filter: impl VcfFilter) {
+        if let Some((_, filters)) = self.per_allele.iter_mut().find(|(a, _)| *a == allele) {
+            filters.push(filter.filter());
+        } else {
+            self.per_allele.push((allele, {
+                let mut filters = FilterList::new();
+                filters.push(filter.filter());
+                filters
+            }));
+        }
+    }
+
+    /// Checks if the given allele passes all filters
+    pub fn pass_alt(&self, allele: Base) -> bool {
+        let all_pass = self.all.is_empty()
+            || (self.all.len() == 1 && self.all.first().expect("1 filter exists") == "PASS");
+        let allele_pass =
+            match self.per_allele.iter().find(|(a, _)| *a == allele).map(|(_, f)| f.as_slice()) {
+                Some([]) => true,
+                Some([filter]) => filter == "PASS",
+                None => true,
+                _ => false,
+            };
+        all_pass && allele_pass
+    }
+
+    /// Checks if all record-level filters pass
+    fn pass_all(&self) -> bool {
+        self.all.is_empty()
+            || (self.all.len() == 1 && self.all.first().expect("1 filter exists") == "PASS")
+    }
+
+    /// Checks if all alleles pass all filters
+    pub fn pass(&self) -> bool {
+        self.pass_all() && self.per_allele.iter().all(|(allele, _)| self.pass_alt(*allele))
+    }
+
+    /// Clears all filters
+    pub fn clear(&mut self) {
+        self.all.clear();
+        self.per_allele.clear();
+    }
+
+    /// Write to BCF record
+    pub fn write_to_record(&self, record: &mut rust_htslib::bcf::Record) -> Result<()> {
+        if self.all.is_empty() && self.per_allele.is_empty() {
+            record.set_filters::<[u8]>(&[]).wrap_err("Failed to clear filters")?;
+        } else {
+            self.all
+                .iter()
+                .chain(self.per_allele.iter().flat_map(|(_allele, filters)| filters))
+                .try_for_each(|filter| {
+                    record
+                        .push_filter(filter.as_bytes())
+                        .wrap_err_with(|| format!("Failed to push filter {filter}"))
+                })?;
+        }
+
+        Ok(())
+    }
+}
 
 /// A filter that can be applied to VCF records
 pub trait VcfFilter: Default {

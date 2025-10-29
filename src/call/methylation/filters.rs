@@ -29,7 +29,8 @@ trait CheckFilter: rastair_vcf::VcfFilter {
     /// Apply the filter to the record if the condition is met.
     fn apply(config: &ThresholdParams, record: &mut vcf::Record) {
         if Self::check(config, record) {
-            record.filters.add(Self::default());
+            // TODO: Revisit if this should be per-allele
+            record.filters.add_all(Self::default());
         }
     }
 }

@@ -58,26 +58,26 @@ impl From<&VariantCandidatePileup> for vcf::DeNovoCpGCandidate {
 
 impl DenovoParams {
     pub fn filter(&self, record: &mut vcf::Record) -> Result<()> {
-        let vcf::DeNovoCpGCandidate::Candidate { alt_index: idx, .. } =
+        let vcf::DeNovoCpGCandidate::Candidate { alt_base, alt_index: idx, .. } =
             record.info.de_novo_cp_g_candidate
         else {
             return Ok(());
         };
 
         if record.info.allele_read_depth.get(idx) <= Some(&self.cpg_novo_min_depth) {
-            record.filters.add(vcf::dnCpG_lowDp);
+            record.filters.add_per_allele(alt_base, vcf::dnCpG_lowDp);
         }
 
         if record.info.allele_base_quality.get(idx) <= Some(&self.cpg_novo_min_baseq) {
-            record.filters.add(vcf::dnCpG_bq);
+            record.filters.add_per_allele(alt_base, vcf::dnCpG_bq);
         }
 
         if record.info.allele_map_quality.get(idx) <= Some(&self.cpg_novo_min_mapq) {
-            record.filters.add(vcf::dnCpG_mapq);
+            record.filters.add_per_allele(alt_base, vcf::dnCpG_mapq);
         }
 
         if record.info.allele_frequency.get(idx) <= Some(&self.cpg_novo_min_vaf) {
-            record.filters.add(vcf::dnCpG_vaf);
+            record.filters.add_per_allele(alt_base, vcf::dnCpG_vaf);
         }
 
         Ok(())
