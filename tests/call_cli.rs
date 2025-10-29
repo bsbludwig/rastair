@@ -82,6 +82,42 @@ fn writing_vcf_to_file() -> Result<()> {
 }
 
 #[test]
+fn asking_for_all_variants_includes_non_passing_ones() -> Result<()> {
+    apply_common_filters!();
+
+    let mut call = rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--thresholds", // disable ML for faster test
+            "--region=chr19:6105700-6105800",
+            "--vcf",
+        ])
+        .output()?;
+    call.succeeds()?;
+    let stdout = String::from_utf8(call.stdout).wrap_err("utf8 decode")?;
+    assert!(!stdout.lines().filter(|l| !l.starts_with("#")).any(|l| l.contains("lowDp")));
+
+    let mut call = rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--thresholds", // disable ML for faster test
+            "--region=chr19:6105700-6105800",
+            "--all",
+            "--vcf",
+        ])
+        .output()?;
+    call.succeeds()?;
+    let stdout = String::from_utf8(call.stdout).wrap_err("utf8 decode")?;
+    assert!(stdout.lines().filter(|l| !l.starts_with("#")).any(|l| l.contains("m_vaf;m_bq_ratio")));
+
+    Ok(())
+}
+
+#[test]
 fn ask_for_cpgs_and_vcf() -> Result<()> {
     apply_common_filters!();
 
