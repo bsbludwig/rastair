@@ -97,7 +97,7 @@ vcf_record!(
         lowDp,
         dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf,
         m_vaf, m_bq_ratio, m_pos, m_highDp,
-        low_ml_score,
+        pre_ml, low_ml_score,
     ],
     // general info
     info: [
