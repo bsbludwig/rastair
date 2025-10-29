@@ -60,11 +60,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--keep-overlapping-reads` — Whether to keep overlapping reads
 
   Default value: `false`
-* `-c`, `--cpgs-only` — Report CpGs only and default to BED output
+* `--v-min-depth <V_MIN_DEPTH>`
 
-   Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
-
-  Default value: `false`
+  Default value: `3`
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read
 
   Default value: `1`
@@ -143,6 +141,13 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--model-others <MODEL_OTHERS>` — Path to the model for other positions
 
    Default is the bundled model in the Rastair binary.
+* `-c`, `--cpgs-only` — Report CpGs only and default to BED output
+
+   Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
+
+   Only if combined with `--all`, non-passing CpG positions will also be reported.
+
+  Default value: `false`
 * `--bed-include-empty` — Include CpG positions with zero coverage
 
    This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
@@ -154,10 +159,12 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Output Options:**
 
+* `--all` — Output all positions, even if they do not pass filters.
+
+   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing ones.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
-* `--all` — Output all positions, even if they are not CpG or de-novo CpG candidates or do not pass filters
 * `--bed <BED>` — Output BED file with the called methylated positions
 * `--bed-format <BED_FORMAT>` — Format of the output BED file
 

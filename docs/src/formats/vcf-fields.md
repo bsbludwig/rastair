@@ -13,6 +13,7 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`m_bq_ratio`** | Low quality ratio for methylation candidate |
 | **`m_pos`** | Alt allele evidence from read edges for methylation candidate |
 | **`m_highDp`** | Excessive coverage for methylation candidate |
+| **`pre_ml`** | Low amount of usable evidence, skipping ML |
 | **`low_ml_score`** | Machine Learning module prediction below threshold |
 ## Info Fields
 | Name | Description | VCF Type | Rust Type | Occurance |

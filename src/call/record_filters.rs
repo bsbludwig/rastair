@@ -2,8 +2,10 @@ use crate::{utils::cli, vcf::Record};
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct RecordFilters {
-    /// Output all positions, even if they are not CpG or de-novo CpG candidates
-    /// or do not pass filters
+    /// Output all positions, even if they do not pass filters.
+    ///
+    /// If combined with `--cpgs-only`, only CpG positions will be reported,
+    /// including non-passing ones.
     #[arg(long = "all")]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_all: bool,
@@ -12,6 +14,9 @@ pub struct RecordFilters {
     ///
     /// Only report positions that are CpGs in the reference or variants that
     /// would result in a de-novo CpG.
+    ///
+    /// Only if combined with `--all`, non-passing CpG positions will also be
+    /// reported.
     #[arg(short = 'c', long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
     pub cpgs_only: bool,
