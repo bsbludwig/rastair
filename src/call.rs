@@ -407,32 +407,7 @@ fn process_region(
     }
 
     if !ml.disabled {
-        let record_len = records.len();
-        for i in 0..record_len {
-            let (before, current, after) = surrounding_records(&mut records, i);
-            // Check if there is any chance of this being a viable candidate. No
-            // point in running slow ML prediction if we 99.99% know it's gonna
-            // be `false`.
-            if !ml_filters(current) {
-                current.filters.add(pre_ml);
-                continue;
-            }
-
-            if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after)
-                && !predictions.is_empty()
-            {
-                // Clear filters to re-evaluate them with ML
-                current.filters.clear();
-
-                if predictions.iter().any(|p| !p.pass()) {
-                    // if none of the predictions pass, we add a low ML score filter
-                    current.filters.add(low_ml_score);
-                }
-                current.samples[0].machine_learning_prediction = MachineLearningPrediction(
-                    predictions.into_iter().map(|p| *p.prediction).collect(),
-                );
-            }
-        }
+        calc_ml(ml, &mut records);
     }
 
     for current in &mut records {
@@ -443,6 +418,35 @@ fn process_region(
     }
 
     Ok(records)
+}
+
+fn calc_ml(ml: &MachineLearning, records: &mut [vcf::Record]) {
+    let record_len = records.len();
+    'ml: for i in 0..record_len {
+        let (before, current, after) = surrounding_records(records, i);
+        // Check if there is any chance of this being a viable candidate. No
+        // point in running slow ML prediction if we 99.99% know it's gonna
+        // be `false`.
+        if !ml_filters(current) {
+            // TODO: fix this bug
+            // current.filters.add(pre_ml);
+            continue 'ml;
+        }
+
+        if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after)
+            && !predictions.is_empty()
+        {
+            // Clear filters to re-evaluate them with ML
+            current.filters.clear();
+
+            if predictions.iter().all(|p| !p.pass()) {
+                // if none of the predictions pass, we add a low ML score filter
+                current.filters.add(low_ml_score);
+            }
+            current.samples[0].machine_learning_prediction =
+                MachineLearningPrediction(predictions.into_iter().map(|p| *p.prediction).collect());
+        }
+    }
 }
 
 fn ml_filters(record: &mut vcf::Record) -> bool {
