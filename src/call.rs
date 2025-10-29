@@ -237,22 +237,22 @@ pub fn call(mut params: CallParams) -> Result<()> {
                 // Since we only have the region index to ensure order, each
                 // processing thread will send a vector of VCF records when it's
                 // done with a region.
-                for records in vcf_receiver {
-                    for record in &records {
+                'msgs: for records in vcf_receiver {
+                    'current_batch: for record in &records {
                         let record: &vcf::Record = record;
 
                         // Skip records that are already seen
                         if last_seen_chrom.as_ref() == Some(&record.main.chrom)
                             && last_seen_pos >= Some(record.main.pos)
                         {
-                            continue;
+                            continue 'current_batch;
                         }
                         // Seen a new record, update the last seen
                         last_seen_chrom = Some(record.main.chrom.clone());
                         last_seen_pos = Some(record.main.pos);
 
                         if let Some(vcf_writer) = vcf_writer.as_mut()
-                            && vcf_filter.matches(record)
+                        // && vcf_filter.matches(record)
                         {
                             vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
                         }
@@ -391,6 +391,9 @@ fn process_region(
     for i in 0..record_len {
         let (before, current, after) = surrounding_records(&mut records, i);
 
+        if *current.info.read_depth < params.variant_calling.v_min_depth {
+            current.filters.add(vcf::lowDp);
+        }
         params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
         params.denovo_cpg.add_if_adjecent(current, before, after);
 

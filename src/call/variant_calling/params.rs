@@ -21,6 +21,12 @@ pub struct VariantCallingParams {
     #[arg(help_heading = cli::sections::FILTER)]
     pub keep_overlapping_reads: bool,
 
+    // The minimum number of reads to call a position as a variant
+    #[arg(long, default_value_t = 3)]
+    #[arg(help_heading = cli::sections::FILTER)]
+    #[default(3)]
+    pub v_min_depth: usize,
+
     #[command(flatten)]
     pub quality: QualityFilterParams,
 
