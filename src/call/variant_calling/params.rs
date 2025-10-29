@@ -21,14 +21,6 @@ pub struct VariantCallingParams {
     #[arg(help_heading = cli::sections::FILTER)]
     pub keep_overlapping_reads: bool,
 
-    /// Report CpGs only and default to BED output
-    ///
-    /// Only report positions that are CpGs in the reference or variants that
-    /// would result in a de-novo CpG.
-    #[arg(short = 'c', long, default_value_t = false)]
-    #[arg(help_heading = cli::sections::FILTER)]
-    pub cpgs_only: bool,
-
     #[command(flatten)]
     pub quality: QualityFilterParams,
 

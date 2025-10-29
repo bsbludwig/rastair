@@ -7,7 +7,7 @@ use crate::{
     io::vcf_writer,
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{cli, logging::ThisIsABug as _, surrounding_records},
-    vcf::{self, MachineLearningPrediction, Record, low_ml_score, lowDp, pre_ml},
+    vcf::{self, MachineLearningPrediction, low_ml_score, pre_ml},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -15,7 +15,6 @@ use color_eyre::{
     eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
 };
 use rayon::prelude::*;
-use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{
     ops::Mul as _,
@@ -28,6 +27,7 @@ pub mod methylation;
 pub mod metrics;
 pub mod ml;
 pub mod process;
+mod record_filters;
 pub mod variant_calling;
 pub mod variants;
 
@@ -56,14 +56,11 @@ pub struct CallParams {
 
     // --- Output parameters ---
     #[command(flatten)]
+    pub record_filters: record_filters::RecordFilters,
+
+    #[command(flatten)]
     #[serde(skip)]
     pub vcf: vcf_writer::VcfParams,
-
-    /// Output all positions, even if they are not CpG or de-novo CpG candidates
-    /// or do not pass filters
-    #[arg(long = "all")]
-    #[arg(help_heading = cli::sections::OUTPUT)]
-    pub vcf_all: bool,
 
     #[command(flatten)]
     #[serde(skip)]
@@ -79,29 +76,6 @@ pub struct CallParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[serde(skip)]
     pub total_threads: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum VcfFilter {
-    /// Include all positions
-    All,
-    /// Include positions that are CpG in the reference or variants that would
-    /// result in a de-novo CpG
-    // Lowercase so it becomes `cpgs` and not `cp-gs` in dash-case!
-    Cpgs,
-    /// Include positions that pass all filters
-    Pass,
-}
-
-struct RecordFilter(SmallVec<VcfFilter, 3>);
-
-impl RecordFilter {
-    fn matches(&self, record: &Record) -> bool {
-        self.0.contains(&VcfFilter::All)
-            || (self.0.contains(&VcfFilter::Cpgs)
-                && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate))
-            || (self.0.contains(&VcfFilter::Pass) && record.filters.pass())
-    }
 }
 
 impl CallParams {
@@ -131,7 +105,7 @@ impl CallParams {
                 debug!(bed=?self.bed.bed, vcf=?self.vcf.vcf, "Switching output from VCF to BED");
                 self.bed.bed = self.vcf.vcf.take();
             }
-        } else if self.variant_calling.cpgs_only {
+        } else if self.record_filters.cpgs_only {
             // Default to BED output if only CpGs are requested
             self.bed.bed = Some(ClioPath::std());
         } else {
@@ -140,21 +114,6 @@ impl CallParams {
         }
 
         Ok(())
-    }
-
-    fn vcf_filters(&self) -> RecordFilter {
-        let mut filters = SmallVec::new();
-        // Default to PASS only
-        filters.push(VcfFilter::Pass);
-
-        if self.variant_calling.cpgs_only {
-            // Users asked for CpGs only, so let's output those for sure
-            filters.push(VcfFilter::Cpgs);
-        } else if self.vcf_all {
-            // User asked for all positions
-            filters.push(VcfFilter::All);
-        }
-        RecordFilter(filters)
     }
 }
 
@@ -243,7 +202,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
             // capture just the data we need to move into the thread.
 
             let vcf_output = params.vcf.vcf.clone();
-            let vcf_filter = params.vcf_filters();
+            let vcf_filter = params.record_filters.clone();
             let metadata = [
                 format!("rastairVersion={}", env!("CARGO_PKG_VERSION")),
                 format!(
@@ -282,10 +241,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
                     for record in &records {
                         let record: &vcf::Record = record;
 
-                        if !vcf_filter.matches(record) {
-                            continue;
-                        }
-
                         // Skip records that are already seen
                         if last_seen_chrom.as_ref() == Some(&record.main.chrom)
                             && last_seen_pos >= Some(record.main.pos)
@@ -296,7 +251,9 @@ pub fn call(mut params: CallParams) -> Result<()> {
                         last_seen_chrom = Some(record.main.chrom.clone());
                         last_seen_pos = Some(record.main.pos);
 
-                        if let Some(vcf_writer) = vcf_writer.as_mut() {
+                        if let Some(vcf_writer) = vcf_writer.as_mut()
+                            && vcf_filter.matches(record)
+                        {
                             vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
                         }
 
@@ -443,8 +400,9 @@ fn process_region(
             .wrap_err("Failed to call methylation")?;
     }
 
-    // Filter out piles that are not CpG if requested
-    if params.variant_calling.cpgs_only {
+    // Filter out piles that are not CpG if requested. We're doing this here to
+    // not waste processing time on records we will discard anyway.
+    if params.record_filters.cpgs_only {
         records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
     }
 

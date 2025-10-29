@@ -68,7 +68,7 @@ fn main() -> Result<()> {
         }
 
         // Filter out piles that are not CpG if requested
-        if params.variant_calling.cpgs_only {
+        if params.record_filters.cpgs_only {
             records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
         }
 
