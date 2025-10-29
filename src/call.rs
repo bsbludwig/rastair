@@ -237,7 +237,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
                 // Since we only have the region index to ensure order, each
                 // processing thread will send a vector of VCF records when it's
                 // done with a region.
-                'msgs: for records in vcf_receiver {
+                for records in vcf_receiver {
                     'current_batch: for record in &records {
                         let record: &vcf::Record = record;
 
@@ -252,7 +252,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
                         last_seen_pos = Some(record.main.pos);
 
                         if let Some(vcf_writer) = vcf_writer.as_mut()
-                        // && vcf_filter.matches(record)
+                            && vcf_filter.matches(record)
                         {
                             vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
                         }
@@ -425,15 +425,13 @@ fn process_region(
 
 fn calc_ml(ml: &MachineLearning, records: &mut [vcf::Record]) {
     let record_len = records.len();
-    'ml: for i in 0..record_len {
+    for i in 0..record_len {
         let (before, current, after) = surrounding_records(records, i);
-        // Check if there is any chance of this being a viable candidate. No
-        // point in running slow ML prediction if we 99.99% know it's gonna
-        // be `false`.
+
+        // If there is no chance of this being a viable candidate, skip slow ML
         if !ml_filters(current) {
-            // TODO: fix this bug
-            // current.filters.add(pre_ml);
-            continue 'ml;
+            current.filters.add(pre_ml);
+            continue;
         }
 
         if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after)
@@ -442,12 +440,15 @@ fn calc_ml(ml: &MachineLearning, records: &mut [vcf::Record]) {
             // Clear filters to re-evaluate them with ML
             current.filters.clear();
 
+            // TODO: Filter out low-scoring alleles
             if predictions.iter().all(|p| !p.pass()) {
-                // if none of the predictions pass, we add a low ML score filter
+                // If none of the predictions pass, we add a low ML score filter
                 current.filters.add(low_ml_score);
             }
             current.samples[0].machine_learning_prediction =
                 MachineLearningPrediction(predictions.into_iter().map(|p| *p.prediction).collect());
+        } else {
+            debug!(pos=?current.info, "did not get ML predictions for record");
         }
     }
 }
