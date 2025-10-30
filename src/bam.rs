@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 
 mod base_modification;
 pub use base_modification::MethylatedPositions;
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 #[derive(Debug, Parser)]
 pub struct BamRewriteArgs {
@@ -138,6 +138,17 @@ fn rewrite_record(
     calls: &FxHashMap<u32, RastairCall>,
     record: &mut Record,
 ) -> Result<()> {
+    if record.is_reverse() {
+        // For now, we only handle forward strand reads
+        debug!("Skipping reverse strand read at position {}", record.pos());
+
+        let strand = StrandFromRecord::strand(record);
+        let mods = MethylatedPositions::new(strand, &record.seq().as_bytes(), &[]);
+        mods.apply_to_record(record)?;
+
+        return Ok(());
+    }
+
     let MethylatedInfo { seq, methylated_positions } = get_methylated_positions(calls, record);
 
     let strand = StrandFromRecord::strand(record);

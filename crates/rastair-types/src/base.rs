@@ -82,6 +82,12 @@ impl PartialEq<str> for Base {
     }
 }
 
+impl PartialEq<char> for Base {
+    fn eq(&self, other: &char) -> bool {
+        self.as_char() == *other
+    }
+}
+
 impl PartialEq<u8> for Base {
     fn eq(&self, other: &u8) -> bool {
         match self {

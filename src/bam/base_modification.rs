@@ -1,5 +1,5 @@
 use color_eyre::eyre::{Context, Result};
-use rastair_types::{Base, Strand, StrandFromRecord};
+use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
 use smallvec::SmallVec;
 use std::fmt::Write;
@@ -29,9 +29,9 @@ impl MethylatedPositions {
     // - positions are:  comma separated list of how many seq bases of the stated base type to skip, stored as a delta to the last and starting with 0 as the first (or next) base, starting from the uncomplemented 5’ end of the SEQ field.
     // work with modkit code -- MmTagInfo, DeltaListConverter, test_get_base_mod_probs
     pub fn new(strand: Strand, seq: &[u8], methylated_positions: &[u32]) -> Self {
-        let (base, strand) = match strand {
-            Strand::OT => (Base::C, Strand::OT),
-            Strand::OB => (Base::G, Strand::OB),
+        let base = match strand {
+            Strand::OT => Base::C,
+            Strand::OB => Base::G,
             Strand::Unknown => {
                 debug!("Unknown strand, cannot create MethylatedPositions");
                 return Self { base: Base::C, strand: Strand::Unknown, positions: SmallVec::new() };
@@ -42,23 +42,7 @@ impl MethylatedPositions {
         //
         // e.g., for ACGTACGTACGT there is a C at positions 1, 5, 9. If the
         // second and third are methylated, we write it as 1,0.
-        let positions = {
-            let mut base_count = 0;
-            let mut skip_list = SmallVec::new();
-            for (i, &b) in seq.iter().enumerate() {
-                if base == b {
-                    if methylated_positions
-                        .contains(&u32::try_from(i).expect("position fits in u32"))
-                    {
-                        skip_list.push(base_count);
-                        base_count = 0;
-                    } else {
-                        base_count += 1;
-                    }
-                }
-            }
-            skip_list
-        };
+        let positions = calculate_mm_skips(seq, base, methylated_positions);
 
         Self { base, strand, positions }
     }
@@ -70,17 +54,8 @@ impl MethylatedPositions {
     /// 1. Rewrite the sequence to un-modify the methylated bases (T back to C, A back to G)
     /// 2. Add MM and ML tags to the record
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
-        let strand_symbol = match StrandFromRecord::strand(record) {
-            Strand::OT => "+",
-            Strand::OB => "-",
-            Strand::Unknown => {
-                debug!(flags = record.flags(), "Unknown strand, not modifying record");
-                return Ok(());
-            }
-        };
-
         record
-            .push_aux(b"MM", Aux::String(&self.to_mod_string(strand_symbol)))
+            .push_aux(b"MM", Aux::String(&self.to_mod_string()))
             .wrap_err("could not apply modification to record")?;
 
         // also apply ML dummy tag with all 255 (unknown probability)
@@ -98,8 +73,16 @@ impl MethylatedPositions {
     /// Where deltas are distances between consecutive positions of the base type
     ///
     /// [SAM tags]: https://samtools.github.io/hts-specs/SAMtags.pdf
-    pub fn to_mod_string(&self, strand: &str) -> String {
+    pub fn to_mod_string(&self) -> String {
         let mut mod_string = String::new();
+        let strand = match self.strand {
+            Strand::OT => "+",
+            Strand::OB => "-",
+            Strand::Unknown => {
+                debug!("Unknown strand, cannot create mod string");
+                return mod_string;
+            }
+        };
 
         // Unmodified "fundamental" base on sequenced strand
         mod_string.push(self.base.as_char());
@@ -129,5 +112,87 @@ impl MethylatedPositions {
 
         mod_string.push(';');
         mod_string
+    }
+}
+
+/// Calculate the skip list for MM:Z tag given a sequence and methylated positions
+///
+/// `methylated_indices` contains the 0-based indices of methylated bases in the
+/// sequence.
+fn calculate_mm_skips(seq: &[u8], base: Base, methylated_indices: &[u32]) -> SmallVec<u32, 10> {
+    // Step 1: Find all positions of the target base in the sequence
+    let base_positions: SmallVec<usize, 50> =
+        seq.iter().enumerate().filter(|(_, b)| base == **b).map(|(idx, _)| idx).collect();
+
+    // Step 2: Map methylated indices to their positions in the base-only list
+    let mut methylated_positions: SmallVec<u32, 50> = methylated_indices
+        .iter()
+        .filter_map(|&meth_idx| {
+            // Find where this index appears in the base_positions list
+            base_positions.iter().position(|&pos| pos == meth_idx as usize).map(|base_pos_idx| {
+                u32::try_from(base_pos_idx).expect("base position index fits in u32")
+            })
+        })
+        .collect();
+
+    // Sort to ensure proper ordering
+    methylated_positions.sort_unstable();
+
+    // Step 3: Calculate skip deltas
+    let mut skips = SmallVec::new();
+    let mut last_position = 0;
+
+    for &pos in &methylated_positions {
+        // The skip is the difference from the last position
+        // For the first methylation, it's just the position itself
+        skips.push(pos - last_position);
+        // Update last_position to be one past the current position
+        last_position = pos + 1;
+    }
+
+    skips
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use insta::{assert_compact_debug_snapshot, assert_snapshot};
+    use std::iter::repeat_n;
+
+    #[test]
+    fn skip_list() {
+        // boring seq
+        let skip_list = calculate_mm_skips(b"CCCCC", Base::C, &[1, 2]);
+        assert_compact_debug_snapshot!(skip_list, @"[1, 0]");
+
+        // long seq
+        let skip_list = calculate_mm_skips(
+            &repeat_n(b'A', 10).chain(repeat_n(b'C', 10)).collect::<Vec<u8>>(),
+            Base::C,
+            &[10, 15],
+        );
+        assert_compact_debug_snapshot!(skip_list, @"[0, 4]");
+    }
+
+    #[test]
+    fn skip_list_edge_cases() {
+        // not in seq
+        let skip_list = calculate_mm_skips(b"AAAAAA", Base::C, &[1, 2]);
+        assert_compact_debug_snapshot!(skip_list, @"[]");
+
+        // empty seq
+        let skip_list = calculate_mm_skips(b"", Base::C, &[1, 2]);
+        assert_compact_debug_snapshot!(skip_list, @"[]");
+
+        // empty list
+        let skip_list = calculate_mm_skips(b"CCCCC", Base::C, &[]);
+        assert_compact_debug_snapshot!(skip_list, @"[]");
+    }
+
+    #[test]
+    fn mod_string() {
+        let meth_pos = MethylatedPositions::new(Strand::OT, b"CCCCCCC", &[3, 4]);
+        let mod_str = meth_pos.to_mod_string();
+        assert_snapshot!(mod_str, @"C+m,3,0;");
     }
 }

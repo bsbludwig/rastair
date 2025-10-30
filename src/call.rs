@@ -416,6 +416,9 @@ fn process_region(
         calc_ml(ml, &mut records);
     }
 
+    // TODO: Filter out low-confidence alleles!
+    // TODO: Split into multiple variants, one for each genotype
+
     for current in &mut records {
         // If no filters were added, we're gonna call it
         if current.filters.pass() {
