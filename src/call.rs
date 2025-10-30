@@ -14,6 +14,7 @@ use color_eyre::{
     Section,
     eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
 };
+use ordered_channel::Receiver;
 use rayon::prelude::*;
 use smol_str::SmolStr;
 use std::{
@@ -193,98 +194,8 @@ pub fn call(mut params: CallParams) -> Result<()> {
     let regions_iter = regions.iter().enumerate();
 
     // Create a VCF writer for the output
-    let writer_thread = thread::Builder::new()
-        .name("writer".to_string())
-        .spawn({
-            // This block just perpares some variables for the writer thread but
-            // lives on the main thread. This leads to better error messages if
-            // something goes wrong during initialization and means we can
-            // capture just the data we need to move into the thread.
-
-            let vcf_output = params.vcf.vcf.clone();
-            let vcf_filter = params.record_filters.clone();
-            let metadata = [
-                format!("rastairVersion={}", env!("CARGO_PKG_VERSION")),
-                format!(
-                    "rastairCommand={}",
-                    std::env::args().skip(1).collect::<Vec<_>>().join(" ")
-                ),
-                format!(
-                    "rastairConfig={}",
-                    serde_json::to_string(params)
-                        .wrap_err("Failed to serialize config to JSON")
-                        .this_is_a_bug()?
-                ),
-                format!("reference={}", params.segments.fasta_file),
-            ];
-            let mut vcf_writer =
-                params.vcf.writer(&regions, &metadata).wrap_err("Failed to create VCF writer")?;
-
-            let bed = params.bed.clone();
-            let mut bed_writer = bed.writer().wrap_err("Failed to create BED writer")?;
-            let bed_params = BedRecordsConvertParams {
-                ml_threshold: params.ml.ml,
-                filters: bed.filters.clone(),
-            };
-
-            move || -> Result<()> {
-                // The segments we get have some overlap between them, so we
-                // need to ensure that we don't write the same record multiple
-                // times.
-                let mut last_seen_chrom: Option<SmolStr> = None;
-                let mut last_seen_pos: Option<u32> = None;
-
-                // Since we only have the region index to ensure order, each
-                // processing thread will send a vector of VCF records when it's
-                // done with a region.
-                for records in vcf_receiver {
-                    'current_batch: for record in &records {
-                        let record: &vcf::Record = record;
-
-                        // Skip records that are already seen
-                        if last_seen_chrom.as_ref() == Some(&record.main.chrom)
-                            && last_seen_pos >= Some(record.main.pos)
-                        {
-                            continue 'current_batch;
-                        }
-                        // Seen a new record, update the last seen
-                        last_seen_chrom = Some(record.main.chrom.clone());
-                        last_seen_pos = Some(record.main.pos);
-
-                        if let Some(vcf_writer) = vcf_writer.as_mut()
-                            && vcf_filter.matches(record)
-                        {
-                            vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
-                        }
-
-                        if let Some(bed_writer) = bed_writer.as_mut()
-                            && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
-                            && let Some(bed_record) =
-                                Rastair1BedFormat::from_record(record, &bed_params)
-                                    .wrap_err("Failed to convert VCF record to BED format")
-                                    .this_is_a_bug()?
-                        {
-                            bed_writer
-                                .write_record(&bed_record)
-                                .wrap_err("Failed to write record to BED")?;
-                        }
-                    }
-                }
-
-                if let Some(vcf_output) = vcf_output.as_ref() {
-                    drop(vcf_writer);
-                    info!(file = %vcf_output, "Wrote VCF output");
-                }
-                if let Some(bed_output) = bed.bed.as_ref()
-                    && let Some(bed_writer) = bed_writer
-                {
-                    bed_writer.close().wrap_err("Failed to close BED writer")?;
-                    info!(file = %bed_output, "Wrote BED output");
-                }
-                Ok(())
-            }
-        })
-        .wrap_err("Failed to spawn VCF writer thread")?;
+    let writer_thread =
+        build_writer(params, &regions, vcf_receiver).wrap_err("VCF writer error")?;
 
     // Run this in a custom rayon thread pool to control the number of threads
     // and be able to tweak parameters when profiling
@@ -309,10 +220,102 @@ pub fn call(mut params: CallParams) -> Result<()> {
     writer_thread
         .join()
         .map_err(|_e| eyre!("Writer thread crashed"))
-        .this_is_a_bug()? // inner error is panic
-        .wrap_err("Error in writer thread")?; // outer error is actual error
+        .this_is_a_bug()? // this error is a panic in the thread
+        .wrap_err("Error in writer thread")?; // this error is from actual result returned by the thread
 
     Ok(())
+}
+
+/// Build the VCF writer thread
+fn build_writer(
+    params: &CallParams,
+    regions: &[ChunkRegion],
+    vcf_receiver: Receiver<Vec<vcf::Record>>,
+) -> Result<thread::JoinHandle<Result<()>>> {
+    let vcf_output = params.vcf.vcf.clone();
+    let vcf_filter = params.record_filters.clone();
+    let metadata = [
+        format!("rastairVersion={}", env!("CARGO_PKG_VERSION")),
+        format!("rastairCommand={}", std::env::args().skip(1).collect::<Vec<_>>().join(" ")),
+        format!(
+            "rastairConfig={}",
+            serde_json::to_string(params)
+                .wrap_err("Failed to serialize config to JSON")
+                .this_is_a_bug()?
+        ),
+        format!("reference={}", params.segments.fasta_file),
+    ];
+    let mut vcf_writer =
+        params.vcf.writer(regions, &metadata).wrap_err("Failed to create VCF writer")?;
+
+    let bed = params.bed.clone();
+    let mut bed_writer = bed.writer().wrap_err("Failed to create BED writer")?;
+    let bed_params =
+        BedRecordsConvertParams { ml_threshold: params.ml.ml, filters: bed.filters.clone() };
+
+    // Spawn the actual VCF writer thread. Everything in here is driven by the
+    // incoming records from the processing threads.
+    //
+    // The result returned from this thread is evaluated when the handle is joined.
+    thread::Builder::new()
+        .name("writer".to_string())
+        .spawn(move || -> Result<()> {
+            // The segments we get have some overlap between them, so we
+            // need to ensure that we don't write the same record multiple
+            // times.
+            let mut last_seen_chrom: Option<SmolStr> = None;
+            let mut last_seen_pos: Option<u32> = None;
+
+            // Since we only have the region index to ensure order, each
+            // processing thread will send a vector of VCF records when it's
+            // done with a region.
+            for records in vcf_receiver {
+                'current_batch: for record in &records {
+                    let record: &vcf::Record = record;
+
+                    // Skip records that are already seen
+                    if last_seen_chrom.as_ref() == Some(&record.main.chrom)
+                        && last_seen_pos >= Some(record.main.pos)
+                    {
+                        continue 'current_batch;
+                    }
+                    // Seen a new record, update the last seen
+                    last_seen_chrom = Some(record.main.chrom.clone());
+                    last_seen_pos = Some(record.main.pos);
+
+                    if let Some(vcf_writer) = vcf_writer.as_mut()
+                        && vcf_filter.matches(record)
+                    {
+                        vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
+                    }
+
+                    if let Some(bed_writer) = bed_writer.as_mut()
+                        && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
+                        && let Some(bed_record) =
+                            Rastair1BedFormat::from_record(record, &bed_params)
+                                .wrap_err("Failed to convert VCF record to BED format")
+                                .this_is_a_bug()?
+                    {
+                        bed_writer
+                            .write_record(&bed_record)
+                            .wrap_err("Failed to write record to BED")?;
+                    }
+                }
+            }
+
+            if let Some(vcf_output) = vcf_output.as_ref() {
+                drop(vcf_writer);
+                info!(file = %vcf_output, "Wrote VCF output");
+            }
+            if let Some(bed_output) = bed.bed.as_ref()
+                && let Some(bed_writer) = bed_writer
+            {
+                bed_writer.close().wrap_err("Failed to close BED writer")?;
+                info!(file = %bed_output, "Wrote BED output");
+            }
+            Ok(())
+        })
+        .wrap_err("Failed to spawn VCF writer thread")
 }
 
 /// Wrapper function for processing a region in a thread-safe manner.
