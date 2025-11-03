@@ -319,6 +319,9 @@ fn build_writer(
 }
 
 /// Wrapper function for processing a region in a thread-safe manner.
+///
+/// Calls [`process_region`] with thread-local readers and ships the result to
+/// the VCF writer.
 #[instrument(level = "debug", skip_all, fields(region=%region.region))]
 fn process_region_wrapper(
     index: usize,
@@ -360,10 +363,13 @@ fn process_region_wrapper(
         }
     };
 
-    if let Err(_err) =
+    if let Err(err) =
         vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")
     {
-        // the channel is closed, because the writer thread has finished
+        trace!(
+            error = format!("{err:#}"),
+            "Failed to send records to VCF writer, probably because the channel is closed"
+        );
     }
 
     Ok(())
