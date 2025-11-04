@@ -1,6 +1,6 @@
 use crate::{
-    utils::Base,
-    vcf::{ByStrand, Record},
+    utils::{Base, ByStrand},
+    vcf::Record,
 };
 
 pub fn one_hot_encode_base(base: impl Into<Base>) -> (f64, f64, f64, f64) {

@@ -25,7 +25,6 @@ mod methylation;
 pub use methylation::Methylated;
 
 pub mod utils;
-pub use utils::ByStrand;
 
 mod convert_from_metrics;
 

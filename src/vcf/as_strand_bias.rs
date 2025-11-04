@@ -1,4 +1,4 @@
-use crate::vcf::ByStrand;
+use crate::utils::ByStrand;
 use color_eyre::eyre::{Context as _, Result};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, StrandSpecificInfoField, VcfField};
 use rust_htslib::bcf::Record;

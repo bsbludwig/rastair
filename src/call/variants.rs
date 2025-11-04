@@ -1,6 +1,6 @@
 use crate::{
     sequence::Segment,
-    utils::{Base, Counter, Strand},
+    utils::{Base, ByAllele, Counter, Strand},
 };
 use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
@@ -75,12 +75,12 @@ impl VariantCandidatePileup {
     }
 
     /// Get tuples of alleles (in order) and their corresponding evidence
-    pub fn by_allele(&self) -> SmallVec<(Base, SmallVec<&SimpleRead, 20>), 4> {
+    pub fn by_allele(&self) -> SmallVec<ByAllele<SmallVec<&SimpleRead, 20>>, 4> {
         self.alleles()
             .iter()
             .map(|base| {
                 let matching_bases = self.reads.iter().filter(|b| b.base == *base).collect();
-                (*base, matching_bases)
+                ByAllele { base: *base, value: matching_bases }
             })
             .collect()
     }

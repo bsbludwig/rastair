@@ -1,4 +1,4 @@
-use crate::vcf::ByStrand;
+use crate::utils::ByStrand;
 use color_eyre::{Result, eyre::Context as _};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
@@ -10,9 +10,9 @@ use std::ops::Deref;
 pub struct StrandSpecificBaseQuality(pub SmallVec<ByStrand<f64>, 4>);
 
 mod as_ss_bq {
-    use rastair_vcf::StrandSpecificInfoField;
-
     use super::*;
+    use crate::utils::ByStrand;
+    use rastair_vcf::StrandSpecificInfoField;
 
     impl Deref for StrandSpecificBaseQuality {
         type Target = SmallVec<ByStrand<f64>, 4>;

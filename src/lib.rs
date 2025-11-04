@@ -31,5 +31,8 @@ pub mod utils {
     pub mod cli;
 
     pub mod conversion;
+
+    mod grouping;
+    pub use grouping::{ByAllele, ByStrand};
 }
 pub mod sequence;

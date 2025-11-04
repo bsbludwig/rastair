@@ -1,6 +1,6 @@
 use crate::{
     call::variants::{SimpleReads, VariantCandidatePileup},
-    utils::{Base, Phred, RootMeanSquare, Strand},
+    utils::{Base, ByStrand, Phred, RootMeanSquare, Strand},
     vcf::*,
 };
 use color_eyre::Result;
@@ -58,7 +58,7 @@ impl VariantCandidatePileup {
         NumIndels(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| *seen.iter().map(|b| b.indels).collect::<RootMeanSquare>())
+                .map(|seen| *seen.iter().map(|b| b.indels).collect::<RootMeanSquare>())
                 .collect(),
         )
     }
@@ -67,9 +67,7 @@ impl VariantCandidatePileup {
         NumAlignedBases(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| {
-                    *seen.iter().map(|b| b.matching_bases).collect::<RootMeanSquare>()
-                })
+                .map(|seen| *seen.iter().map(|b| b.matching_bases).collect::<RootMeanSquare>())
                 .collect(),
         )
     }
@@ -78,8 +76,9 @@ impl VariantCandidatePileup {
         PositionInRead(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| {
+                .map(|seen| {
                     *seen
+                        .value
                         .iter()
                         .map(|b| f64::from(b.position.pos) / f64::from(b.position.read_length))
                         .collect::<RootMeanSquare>()
@@ -92,7 +91,7 @@ impl VariantCandidatePileup {
         AlleleMapQuality(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| *seen.iter().map(|b| b.mapq).collect::<RootMeanSquare>())
+                .map(|seen| *seen.iter().map(|b| b.mapq).collect::<RootMeanSquare>())
                 .collect(),
         )
     }
@@ -101,7 +100,7 @@ impl VariantCandidatePileup {
         AlleleBaseQuality(
             self.by_allele()
                 .iter()
-                .map(|(_alt, seen)| *seen.iter().map(|b| b.qual).collect::<RootMeanSquare>())
+                .map(|seen| *seen.iter().map(|b| b.qual).collect::<RootMeanSquare>())
                 .collect(),
         )
     }
@@ -162,11 +161,11 @@ impl VariantCandidatePileup {
         AlleleSpecificStrandBias(
             self.by_allele()
                 .iter()
-                .map(|(alt, seen)| {
+                .map(|seen| {
                     let ots = seen.iter().filter(|b| b.strand == Strand::OT).count();
                     let obs = seen.iter().filter(|b| b.strand == Strand::OB).count();
                     ByStrand {
-                        base: *alt,
+                        base: seen.base,
                         ot: u32::try_from(ots).expect("count should fit in u32"),
                         ob: u32::try_from(obs).expect("count should fit in u32"),
                     }
@@ -179,7 +178,7 @@ impl VariantCandidatePileup {
         StrandSpecificBaseQuality(
             self.by_allele()
                 .iter()
-                .map(|(alt, seen)| {
+                .map(|seen| {
                     let ots = seen
                         .iter()
                         .filter(|b| b.strand == Strand::OT)
@@ -190,7 +189,7 @@ impl VariantCandidatePileup {
                         .filter(|b| b.strand == Strand::OB)
                         .map(|b| b.qual)
                         .collect::<RootMeanSquare>();
-                    ByStrand { base: *alt, ot: *ots, ob: *obs }
+                    ByStrand { base: seen.base, ot: *ots, ob: *obs }
                 })
                 .collect(),
         )
@@ -200,7 +199,7 @@ impl VariantCandidatePileup {
         StrandSpecificMappingQuality(
             self.by_allele()
                 .iter()
-                .map(|(alt, seen)| {
+                .map(|seen| {
                     let ots = seen
                         .iter()
                         .filter(|b| b.strand == Strand::OT)
@@ -211,7 +210,7 @@ impl VariantCandidatePileup {
                         .filter(|b| b.strand == Strand::OB)
                         .map(|b| b.mapq)
                         .collect::<RootMeanSquare>();
-                    ByStrand { base: *alt, ot: *ots, ob: *obs }
+                    ByStrand { base: seen.base, ot: *ots, ob: *obs }
                 })
                 .collect(),
         )

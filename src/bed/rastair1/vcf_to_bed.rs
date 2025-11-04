@@ -1,9 +1,9 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
-    utils::{Base, logging::ThisIsABug},
+    utils::{Base, ByStrand, logging::ThisIsABug},
     vcf::{
-        AlleleSpecificStrandBias, ByStrand, DeNovoCpGCandidate, GenotypeConfidence,
-        GenotypeLikelihood, InCpG, Methylated,
+        AlleleSpecificStrandBias, DeNovoCpGCandidate, GenotypeConfidence, GenotypeLikelihood,
+        InCpG, Methylated,
     },
 };
 use color_eyre::{

@@ -1,7 +1,7 @@
 use super::utils::*;
 use crate::{
     utils::Base,
-    vcf::{ByStrand, DeNovoCpGCandidate, Record, utils::NoStrandBiasForBaseErrorExt},
+    vcf::{DeNovoCpGCandidate, Record, utils::NoStrandBiasForBaseErrorExt},
 };
 use ndarray::{Array1, Array2, array};
 use tracing::{debug, instrument};
