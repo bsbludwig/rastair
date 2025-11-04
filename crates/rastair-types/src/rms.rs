@@ -1,4 +1,7 @@
-use std::{fmt, ops::Deref};
+use std::{
+    fmt,
+    ops::{self, Deref},
+};
 
 /// The root mean square (RMS) of a set of values.
 ///
@@ -46,6 +49,22 @@ impl Deref for RootMeanSquare {
     }
 }
 
+impl ops::Mul<f64> for RootMeanSquare {
+    type Output = f64;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        self.0 * rhs
+    }
+}
+
+impl ops::Mul<RootMeanSquare> for f64 {
+    type Output = f64;
+
+    fn mul(self, rhs: RootMeanSquare) -> Self::Output {
+        self * rhs.0
+    }
+}
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for RootMeanSquare {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,6 +78,34 @@ impl fmt::Display for RootMeanSquare {
         self.0.fmt(f)
     }
 }
+
+/// Extension trait for iterators that adds an `.rms()` method.
+///
+/// This trait provides a convenient way to calculate the root mean square
+/// of an iterator's items without explicitly calling `collect()`.
+///
+/// # Examples
+///
+/// ```rust
+/// # use rastair_types::{RootMeanSquare, RootMeanSquareExt};
+/// let data = [1, 2, 3, 4, 5];
+/// let rms = data.into_iter().rms();
+/// assert_eq!(rms.round(), 3.0);
+/// ```
+pub trait RootMeanSquareExt: Iterator {
+    /// Calculates the root mean square of the iterator's items.
+    ///
+    /// This is equivalent to collecting into a `RootMeanSquare`.
+    fn rms<T>(self) -> RootMeanSquare
+    where
+        Self: Sized + Iterator<Item = T>,
+        T: Into<f64>,
+    {
+        RootMeanSquare::from_iter(self)
+    }
+}
+
+impl<I: Iterator> RootMeanSquareExt for I {}
 
 #[cfg(test)]
 mod tests {
