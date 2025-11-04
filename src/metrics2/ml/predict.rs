@@ -1,9 +1,9 @@
 use crate::{
     call::ml::{MachineLearning, MlModel, Prediction},
     metrics2::{MetricsForAlt, PileupMetrics},
-    vcf::DeNovoCpGCandidate,
+    vcf::{DeNovoCpGCandidate, InCpG},
 };
-use rastair_types::Probability;
+use rastair_types::{Base, Probability};
 use tracing::{instrument, warn};
 
 impl MachineLearning {
@@ -19,9 +19,14 @@ impl MachineLearning {
             return None;
         }
 
-        let (name, model, features) = if current.metrics.pileup.is_cpg {
+        let pos_metrics = &current.metrics.pos_metrics;
+        let alt = current.alt;
+
+        let (name, model, features) = if (pos_metrics.cpg == InCpG::C && alt.base == Base::T)
+            || (pos_metrics.cpg == InCpG::G && current.alt.base == Base::A)
+        {
             (MlModel::Cpg, self.cpg.as_ref(), super::cpg(current, before, after))
-        } else if let DeNovoCpGCandidate::Candidate { .. } = current.alt.denovo {
+        } else if let DeNovoCpGCandidate::Candidate { .. } = alt.denovo {
             (
                 MlModel::DenovoCpg,
                 self.denovo_cpg.as_ref(),

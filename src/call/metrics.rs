@@ -106,7 +106,7 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn allel_frequency(&self) -> AlleleFrequency {
+    pub fn allel_frequency(&self) -> AlleleFrequency {
         AlleleFrequency(
             self.alts()
                 .iter()
@@ -129,7 +129,7 @@ impl VariantCandidatePileup {
     /// NOTE: we are in the case where we have a variant
     #[allow(clippy::cast_possible_truncation)]
     // TODO: return Phred<f32>
-    fn qual(&self) -> Option<f32> {
+    pub fn qual(&self) -> Option<f32> {
         // TODO: Calculate this properly based on the pileup
         let probability_call_wrong = 0.001;
         // self.bases.iter().fold(1.0, |acc, b| acc * (f64::from(b.qual) / 10.0).powf(-1.0));
@@ -145,7 +145,7 @@ impl VariantCandidatePileup {
         }
     }
 
-    fn read_depth_per_allele(&self) -> AlleleReadDepth {
+    pub fn read_depth_per_allele(&self) -> AlleleReadDepth {
         fn count_bases(bases: &SimpleReads, base: Base) -> usize {
             bases.iter().filter(|b| b.base == base).count()
         }
@@ -158,7 +158,7 @@ impl VariantCandidatePileup {
         AlleleReadDepth(depth)
     }
 
-    fn allele_specific_strand_bias(&self) -> AlleleSpecificStrandBias {
+    pub fn allele_specific_strand_bias(&self) -> AlleleSpecificStrandBias {
         AlleleSpecificStrandBias(
             self.by_allele()
                 .iter()
@@ -175,7 +175,7 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn strand_specific_base_quality(&self) -> StrandSpecificBaseQuality {
+    pub fn strand_specific_base_quality(&self) -> StrandSpecificBaseQuality {
         StrandSpecificBaseQuality(
             self.by_allele()
                 .iter()
@@ -196,7 +196,7 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn strand_specific_mapping_quality(&self) -> StrandSpecificMappingQuality {
+    pub fn strand_specific_mapping_quality(&self) -> StrandSpecificMappingQuality {
         StrandSpecificMappingQuality(
             self.by_allele()
                 .iter()

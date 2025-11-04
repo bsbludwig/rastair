@@ -1,8 +1,5 @@
 use crate::{
-    bed::{
-        rastair1::{BedParams, BedRecordsConvertParams, Rastair1BedFormat},
-        writer::BedWriter,
-    },
+    bed::rastair1::{BedParams, BedRecordsConvertParams, Rastair1BedFormat},
     call::{
         methylation::params::MethylationCallingParams, ml::MachineLearning,
         variant_calling::VariantCallingParams,
@@ -30,6 +27,7 @@ use tracing::{debug, info, instrument, trace, warn};
 
 pub mod denovo_cpg;
 pub mod methylation;
+#[deprecated = "Use `crate::metrics2` instead"]
 pub mod metrics;
 pub mod ml;
 pub mod process;
@@ -288,31 +286,6 @@ fn build_writer(
 
             let mut last_seen = LastSeen::default();
 
-            let mut write = |record: &PileupMetrics| -> Result<()> {
-                let vcf_record =
-                    record.to_vcf_record().wrap_err("Failed to convert metrics to VCF record")?;
-
-                if let Some(vcf_writer) = vcf_writer.as_mut()
-                    && vcf_filter.matches(&vcf_record)
-                {
-                    vcf_writer.add(&vcf_record).wrap_err("Failed to write VCF record")?;
-                }
-
-                if let Some(bed_writer) = bed_writer.as_mut()
-                    && (*vcf_record.info.in_cp_g || *vcf_record.info.de_novo_cp_g_candidate)
-                    && let Some(bed_record) =
-                        Rastair1BedFormat::from_record(&vcf_record, &bed_params)
-                            .wrap_err("Failed to convert VCF record to BED format")
-                            .this_is_a_bug()?
-                {
-                    bed_writer
-                        .write_record(&bed_record)
-                        .wrap_err("Failed to write record to BED")?;
-                }
-
-                Ok(())
-            };
-
             // Since we only have the region index to ensure order, each
             // processing thread will send a vector of VCF records when it's
             // done with a region.
@@ -321,8 +294,28 @@ fn build_writer(
                     if !last_seen.is_new(record.contig(), record.pos()) {
                         continue 'current_batch;
                     }
-                    if let Err(e) = write(record) {
-                        warn!(error = format!("{e:#}"), "Failed to write record, skipping");
+
+                    let vcf_record = record
+                        .to_vcf_record()
+                        .wrap_err("Failed to convert metrics to VCF record")
+                        .this_is_a_bug()?;
+
+                    if let Some(vcf_writer) = vcf_writer.as_mut()
+                        && vcf_filter.matches(&vcf_record)
+                    {
+                        vcf_writer.add(&vcf_record).wrap_err("Failed to write VCF record")?;
+                    }
+
+                    if let Some(bed_writer) = bed_writer.as_mut()
+                        && (*vcf_record.info.in_cp_g || *vcf_record.info.de_novo_cp_g_candidate)
+                        && let Some(bed_record) =
+                            Rastair1BedFormat::from_record(&vcf_record, &bed_params)
+                                .wrap_err("Failed to convert VCF record to BED format")
+                                .this_is_a_bug()?
+                    {
+                        bed_writer
+                            .write_record(&bed_record)
+                            .wrap_err("Failed to write record to BED")?;
                     }
                 }
             }
@@ -456,6 +449,11 @@ fn process_region(
         let Surrounding { current, .. } = surrounding;
         // params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
 
+        // Add genotype estimate based on params
+        // FIXME: calculate genotype properly
+        current.pos_metrics.genotype =
+            current.pileup.estimate_genotype(params.variant_calling.error_model);
+
         if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
             current.pos_filters.push(lowDp.filter());
         }
@@ -504,5 +502,5 @@ fn process_region(
     //      - `ml`: The ML prediction that this is a true variant
     // Now, we need to convert these into VCF records.
 
-    Ok(vec![])
+    Ok(pileups)
 }

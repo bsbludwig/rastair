@@ -10,7 +10,7 @@ pub use error_model::ErrorModel;
 use smallvec::smallvec;
 use tracing::instrument;
 mod genotype;
-pub use genotype::GenotypeTag;
+pub use genotype::{EstimatedGenotype, GenotypeTag};
 mod read_flags;
 pub use read_flags::ReadFlags;
 mod read_masking;
@@ -20,9 +20,9 @@ pub use quality_filters::QualityFilterParams;
 
 impl VariantCandidatePileup {
     #[instrument(level="trace", skip_all, fields(chr = %self.chrom(), pos = self.pos))]
-    pub fn calling_metrics(&self, params: &VariantCallingParams) -> Result<Format> {
+    pub fn calling_metrics(&self, error_model: ErrorModel) -> Result<Format> {
         let (genotype, genotype_likelihood, genotype_confidence) =
-            if let Some(estimate) = self.estimate_genotype(params.error_model) {
+            if let Some(estimate) = self.estimate_genotype(error_model) {
                 (
                     Genotype(<[GenotypeAllele; 2]>::from(estimate.genotype).into()),
                     GenotypeLikelihood(smallvec![

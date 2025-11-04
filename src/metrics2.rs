@@ -1,6 +1,9 @@
 use crate::{
-    call::variants::{SimpleRead, VariantCandidatePileup},
-    vcf::{ByStrand, DeNovoCpGCandidate, SequenceContext},
+    call::{
+        variant_calling::EstimatedGenotype,
+        variants::{SimpleRead, VariantCandidatePileup},
+    },
+    vcf::{ByStrand, DeNovoCpGCandidate, InCpG, SequenceContext},
 };
 use color_eyre::{
     Result,
@@ -24,13 +27,13 @@ pub struct PileupMetrics {
     /// Metrics for the reference allele
     pub ref_metrics: AlleleMetrics,
     /// Metrics and filters for each alternative allele
-    alts: SmallVec<Alt, 2>,
+    pub alts: SmallVec<Alt, 2>,
 }
 
-struct Alt {
-    base: Base,
-    metrics: AlleleMetrics,
-    filters: AltFilters,
+pub struct Alt {
+    pub base: Base,
+    pub metrics: AlleleMetrics,
+    pub filters: AltFilters,
 }
 
 impl TryFrom<VariantCandidatePileup> for PileupMetrics {
@@ -105,6 +108,10 @@ impl PileupMetrics {
         self.alts.iter().map(|a| a.base).collect()
     }
 
+    pub fn alts_metrics(&self) -> impl Iterator<Item = &AlleleMetrics> {
+        self.alts.iter().map(|a| &a.metrics)
+    }
+
     pub fn ref_alts_metrics(&self) -> impl Iterator<Item = &AlleleMetrics> {
         std::iter::once(&self.ref_metrics).chain(self.alts.iter().map(|a| &a.metrics))
     }
@@ -122,8 +129,10 @@ pub struct PositionMetrics {
     pub region_entropy: f64,
     /// Sequence context around the position in the reference
     pub sequence_context: SequenceContext,
+    pub cpg: InCpG,
     /// Is this position a de-novo cpg candidate?
     pub de_novo_cpg_candidate: DeNovoCpGCandidate,
+    pub genotype: Option<EstimatedGenotype>,
 }
 
 impl PositionMetrics {
@@ -135,7 +144,10 @@ impl PositionMetrics {
             mapq0: pileup.reads.iter().filter(|x| x.mapq == 0).count(),
             region_entropy: pileup.entropy(),
             sequence_context: SequenceContext::from_pileup(pileup),
+            cpg: InCpG::from(pileup),
             de_novo_cpg_candidate: DeNovoCpGCandidate::from(pileup),
+            // this is set later in `call`
+            genotype: None,
         }
     }
 }
@@ -193,7 +205,24 @@ impl AlleleMetrics {
         use Strand::*;
 
         let allele_depth = u32::try_from(reads.len()).wrap_err("read count fits into u32")?;
-        ensure!(allele_depth > 0, "allele depth must be greater than 0");
+        if allele_depth == 0 {
+            // this should only be the case when we're looking at a canonical CpG site with not evidence
+            #[allow(clippy::default_trait_access)]
+            return Ok(AlleleMetrics {
+                base: pileup.reference_base,
+                depth: Default::default(),
+                baseq: Default::default(),
+                mapq: Default::default(),
+                strand_count: Default::default(),
+                baseq_s: Default::default(),
+                mapq_s: Default::default(),
+                num_aligned_bases: Default::default(),
+                num_indels: Default::default(),
+                position_in_read: Default::default(),
+                denovo: Default::default(),
+            });
+        }
+
         let base = reads[0].base;
 
         let i = || reads.iter();

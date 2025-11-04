@@ -80,7 +80,8 @@ impl EstimatedGenotype {
 
         // First, I calculate the likelihood to observe this many alt_reads
         // under the assumption that ref and alt are equally likely, ie this is a het position.
-        // TODO This assumes a simple diploid sample with no purity issues. For
+
+        // TODO: This assumes a simple diploid sample with no purity issues. For
         // cancer samples, we could make this a setting to allow for different cancer fraction?
 
         let mut binom = Binomial::new(ref_count + alt_count, 0.5); // 0.5 because a het position

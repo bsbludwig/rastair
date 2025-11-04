@@ -232,10 +232,12 @@ fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
 impl VariantCandidatePileup {
     /// Collect metrics
     #[instrument(level = "trace", skip_all)]
+    #[deprecated = "Use `PileupMetrics` instead"]
     pub fn variant_metrics(&self, params: &VariantCallingParams) -> Result<vcf::Record> {
         let metrics = self.metrics().wrap_err("Failed to calculate metrics")?;
-        let calling_metrics =
-            self.calling_metrics(params).wrap_err("Failed to calculate calling metrics")?;
+        let calling_metrics = self
+            .calling_metrics(params.error_model)
+            .wrap_err("Failed to calculate calling metrics")?;
 
         Ok(vcf::Record {
             main: self.fixed_fields(),

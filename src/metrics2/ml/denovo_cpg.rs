@@ -39,11 +39,11 @@ pub fn denovo_cpg(
     let alt_score = if alt.base == C {
         (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.).log2()
             - (r.strand_count.ob.f() * r.baseq_s.ob + 1.).log2()
-    } else if alt.base == A {
+    } else if alt.base == G {
         (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.).log2()
             - (r.strand_count.ot.f() * r.baseq_s.ot + 1.).log2()
     } else {
-        unreachable!("denovo CpG alt base must be A or C")
+        unreachable!("denovo CpG alt base must be C or G")
     };
 
     let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj } =
