@@ -1,13 +1,14 @@
 use smol_str::SmolStr;
 use thiserror::Error;
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum Base {
     A = b'A',
     C = b'C',
     G = b'G',
     T = b'T',
+    #[default]
     Unknown = b'N',
 }
 
