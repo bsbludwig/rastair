@@ -5,14 +5,15 @@ use crate::{
 use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::{fmt, ops::Deref, rc::Rc};
+use std::{fmt, ops::Deref, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct VariantCandidatePileup {
-    pub segment: Rc<Segment>,
+    pub segment: Arc<Segment>,
     /// Position in the sequence, 0-based
     pub pos: u32,
-    pub bases: SeenBases,
+    // if this becomes slow, consider boxing or Rc-ing this
+    pub reads: SimpleReads,
     pub reference_base: Base,
     pub is_cpg: bool,
 }
@@ -65,7 +66,7 @@ impl VariantCandidatePileup {
     pub fn alleles(&self) -> SmallVec<Base, 4> {
         let mut res = SmallVec::new();
         res.push(self.reference_base);
-        self.bases.iter().map(|b| b.base).fold(res, |mut acc, base| {
+        self.reads.iter().map(|b| b.base).fold(res, |mut acc, base| {
             if !acc.contains(&base) {
                 acc.push(base);
             }
@@ -74,11 +75,11 @@ impl VariantCandidatePileup {
     }
 
     /// Get tuples of alleles (in order) and their corresponding evidence
-    pub fn by_allele(&self) -> SmallVec<(Base, SmallVec<&SeenBase, 20>), 4> {
+    pub fn by_allele(&self) -> SmallVec<(Base, SmallVec<&SimpleRead, 20>), 4> {
         self.alleles()
             .iter()
             .map(|base| {
-                let matching_bases = self.bases.iter().filter(|b| b.base == *base).collect();
+                let matching_bases = self.reads.iter().filter(|b| b.base == *base).collect();
                 (*base, matching_bases)
             })
             .collect()
@@ -94,17 +95,17 @@ impl VariantCandidatePileup {
 
 /// A collection of bases seen in a pileup
 #[derive(Clone)]
-pub struct SeenBases(pub(crate) SmallVec<SeenBase, 20>);
+pub struct SimpleReads(pub(crate) SmallVec<SimpleRead, 20>);
 
 #[cfg_attr(coverage_nightly, coverage(off))]
-impl fmt::Debug for SeenBases {
+impl fmt::Debug for SimpleReads {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.0.iter()).finish()
     }
 }
 
-impl Deref for SeenBases {
-    type Target = [SeenBase];
+impl Deref for SimpleReads {
+    type Target = [SimpleRead];
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -114,7 +115,7 @@ impl Deref for SeenBases {
 /// A base seen in a pileup
 #[derive(Clone)]
 #[cfg_attr(test, derive(better_default::Default))] // for easier test construction
-pub struct SeenBase {
+pub struct SimpleRead {
     /// The base seen
     #[cfg_attr(test, default(Base::Unknown))]
     pub base: Base,
@@ -145,14 +146,14 @@ pub struct SeenBase {
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
-impl fmt::Debug for SeenBase {
+impl fmt::Debug for SimpleRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.base)?;
         write!(f, " {} Q{} MQ{}", self.strand, self.qual, self.mapq,)
     }
 }
 
-impl SeenBases {
+impl SimpleReads {
     pub fn matches(&self, base: Base) -> bool {
         self.0.iter().all(|b| b.base == base)
     }
@@ -184,8 +185,8 @@ mod tests {
     use crate::sequence::{ChunkRegion, Region};
     use insta::assert_debug_snapshot;
 
-    fn fake_segment() -> Rc<Segment> {
-        Rc::new(Segment {
+    fn fake_segment() -> Arc<Segment> {
+        Arc::new(Segment {
             range: ChunkRegion {
                 region: Region { contig: "chr19".into(), start: 1000, end: 1100 },
                 last_position: 2000,
@@ -200,14 +201,14 @@ mod tests {
 
     #[test]
     fn test_alleles_in_order() {
-        let bases = SeenBases(SmallVec::from_vec(vec![
-            SeenBase {
+        let bases = SimpleReads(SmallVec::from_vec(vec![
+            SimpleRead {
                 base: Base::A,
                 strand: Strand::OT,
                 qname: SmallVec::from_vec(b"read1".to_vec()),
                 ..default()
             },
-            SeenBase {
+            SimpleRead {
                 base: Base::C,
                 strand: Strand::OB,
                 reverse: true,
@@ -215,7 +216,7 @@ mod tests {
                 qname: SmallVec::from_vec(b"read2".to_vec()),
                 ..default()
             },
-            SeenBase {
+            SimpleRead {
                 base: Base::A,
                 strand: Strand::OT,
                 qname: SmallVec::from_vec(b"read3".to_vec()),
@@ -226,7 +227,7 @@ mod tests {
         let variant_candidate = VariantCandidatePileup {
             segment: fake_segment(),
             pos: 1002, // Corresponds to index in the segment
-            bases,
+            reads: bases,
             reference_base: Base::T, // Assume T is the reference base at this position
             is_cpg: false,
         };

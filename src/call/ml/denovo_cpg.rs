@@ -197,7 +197,7 @@ fn calculate_denovo_adjacent_features(
 
                 // Calculate beta ratio: beta at the center vs beta at the adjacent position
                 let beta_after = {
-                    let g_count = alt_strand.ob;
+                    let g_count = alt_strand.ob; // FIXME: bug! this is flipped!
                     let a_count = ref_strand.ob;
                     if g_count + a_count == 0 {
                         0.0

@@ -27,6 +27,8 @@ pub use methylation::Methylated;
 pub mod utils;
 pub use utils::ByStrand;
 
+mod convert_from_metrics;
+
 filter!(lowDp, "Low read depth");
 filter!(dnCpG_lowDp, "Low read depth for de-novo CpG candidate");
 filter!(dnCpG_bq, "Low base quality for de-novo CpG candidate");

@@ -15,7 +15,7 @@ use color_eyre::{
     Section,
     eyre::{ContextCompat as _, Result, WrapErr, eyre},
 };
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, rc::Rc};
 
 impl ReaderParams {
     pub fn test_data() -> Self {

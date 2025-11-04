@@ -14,13 +14,13 @@ impl VariantCandidatePileup {
     pub fn estimate_genotype(&self, error_model: ErrorModel) -> Option<EstimatedGenotype> {
         let (nosnp, snp) = if self.reference_base == Base::C {
             (
-                self.bases.iter().filter(|b| b.base == Base::C && b.strand == Strand::OB).count(),
-                self.bases.iter().filter(|b| b.base == Base::T && b.strand == Strand::OB).count(),
+                self.reads.iter().filter(|b| b.base == Base::C && b.strand == Strand::OB).count(),
+                self.reads.iter().filter(|b| b.base == Base::T && b.strand == Strand::OB).count(),
             )
         } else if self.reference_base == Base::G {
             (
-                self.bases.iter().filter(|b| b.base == Base::G && b.strand == Strand::OT).count(),
-                self.bases.iter().filter(|b| b.base == Base::A && b.strand == Strand::OT).count(),
+                self.reads.iter().filter(|b| b.base == Base::G && b.strand == Strand::OT).count(),
+                self.reads.iter().filter(|b| b.base == Base::A && b.strand == Strand::OT).count(),
             )
         } else {
             return None;

@@ -1,7 +1,7 @@
 use crate::{
     call::{
         variant_calling::VariantCallingParams,
-        variants::{PositionInRead, SeenBase, SeenBases, VariantCandidatePileup},
+        variants::{PositionInRead, SimpleRead, SimpleReads, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
     utils::{Base, StrandFromRecord},
@@ -13,7 +13,7 @@ use rust_htslib::bam::{
     pileup::{Alignment, Pileup},
 };
 use smallvec::SmallVec;
-use std::{ops::Deref, rc::Rc};
+use std::{ops::Deref, sync::Arc};
 use tracing::{Level, debug, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ impl ChunkRegion {
             .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
             .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", self.region))?;
 
-        let segment = Rc::new(segment);
+        let segment = Arc::new(segment);
 
         // Go over each column in the pileup and collect variant candidates
         let piles = readers
@@ -123,7 +123,7 @@ impl ChunkRegion {
 #[instrument(level = "trace", skip_all)]
 fn collect_candidate(
     pile: &Pileup,
-    segment: Rc<Segment>,
+    segment: Arc<Segment>,
     params: &PileupMappingParams,
 ) -> Result<Option<VariantCandidatePileup>> {
     let segment_start_pos =
@@ -147,21 +147,21 @@ fn collect_candidate(
         .filter(|seen_base| params.quality.filter(seen_base))
         .collect();
 
-    let mut bases = SeenBases(seen_bases);
+    let mut reads = SimpleReads(seen_bases);
 
     if !params.keep_overlapping_reads {
-        bases.remove_overlapping_pairs();
+        reads.remove_overlapping_pairs();
     }
 
     let reference_base = segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
-    let has_alts = !bases.matches(reference_base);
+    let has_alts = !reads.matches(reference_base);
 
     let before = idx.checked_sub(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
     let after = idx.checked_add(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
     let res = VariantCandidatePileup {
         segment: segment.clone(),
         pos: pile.pos(),
-        bases,
+        reads,
         reference_base,
         is_cpg: *InCpG::new(reference_base, before, after),
     };
@@ -176,7 +176,7 @@ fn collect_candidate(
 }
 
 /// Collect info from a pileup alignment
-pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> Option<SeenBase> {
+pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> Option<SimpleRead> {
     let pos = a.qpos()?;
     let record = a.record();
     let cigar = record.raw_cigar();
@@ -186,7 +186,7 @@ pub(crate) fn pileup_mapper(params: &PileupMappingParams, a: Alignment<'_>) -> O
     }
     let (matches, indels) = calc_cigar_data(cigar);
 
-    Some(SeenBase {
+    Some(SimpleRead {
         qname: SmallVec::from(record.qname()),
         base: record.seq()[pos].into(),
         qual: *record.qual().get(pos)?,
@@ -246,7 +246,7 @@ impl VariantCandidatePileup {
     }
 }
 
-impl SeenBases {
+impl SimpleReads {
     /// Remove overlapping reads from the same fragment.
     pub fn remove_overlapping_pairs(&mut self) {
         // For each read, check if we already saw one with the same name.

@@ -5,7 +5,7 @@
 //! from reads to reduce this.
 
 use crate::{
-    call::variants::SeenBase,
+    call::variants::SimpleRead,
     utils::{Strand, cli},
 };
 use smallvec::SmallVec;
@@ -39,7 +39,7 @@ pub struct ReadMaskParams {
 }
 
 impl ReadMaskParams {
-    pub fn filter(&self, read: &SeenBase) -> bool {
+    pub fn filter(&self, read: &SimpleRead) -> bool {
         let len = read.position.read_length;
         let pos = read.position.pos;
 
@@ -223,8 +223,8 @@ mod tests {
         assert!(ReadMaskSetting::from_str("").is_err());
     }
 
-    fn read(pos: u32, len: u32, strand: Strand, rev: bool) -> SeenBase {
-        SeenBase {
+    fn read(pos: u32, len: u32, strand: Strand, rev: bool) -> SimpleRead {
+        SimpleRead {
             strand,
             reverse: rev,
             position: crate::call::variants::PositionInRead { pos, read_length: len },

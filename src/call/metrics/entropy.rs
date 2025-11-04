@@ -1,13 +1,11 @@
 use crate::{
     call::variants::VariantCandidatePileup,
     utils::{Base, Counter},
-    vcf::Entropy,
 };
-use smallvec::smallvec;
 
 impl VariantCandidatePileup {
     ///  Calculate Shannon entropy for 100bp context around variant position
-    pub(crate) fn entropy(&self) -> Entropy {
+    pub(crate) fn entropy(&self) -> f64 {
         let idx = self.idx();
         let seq_context = self
             .segment
@@ -16,7 +14,8 @@ impl VariantCandidatePileup {
 
         let counts: Counter = seq_context.iter().map(|&b| Base::from(b)).collect();
         let total = seq_context.len() as f64;
-        let entropy = counts
+
+        counts
             .entries()
             .iter()
             .filter(|(_base, count)| *count > 0)
@@ -24,21 +23,20 @@ impl VariantCandidatePileup {
                 let p = (*count as f64) / total;
                 -p * p.log2()
             })
-            .sum::<f64>();
-
-        Entropy(smallvec![entropy])
+            .sum::<f64>()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        call::variants::SeenBases,
+        call::variants::SimpleReads,
         sequence::{ChunkRegion, Region, Segment},
     };
     use proptest::proptest;
+    use smallvec::smallvec;
     use smol_str::SmolStr;
-    use std::{iter::repeat_n, rc::Rc};
+    use std::{iter::repeat_n, sync::Arc};
 
     use super::*;
 
@@ -52,14 +50,14 @@ mod tests {
             sequence: repeat_n(b'A', 100).collect(),
         };
         let pileup = VariantCandidatePileup {
-            segment: Rc::new(segment),
+            segment: Arc::new(segment),
             pos: 50,
-            bases: SeenBases(smallvec![]),
+            reads: SimpleReads(smallvec![]),
             reference_base: Base::A,
             is_cpg: false,
         };
         let entropy = pileup.entropy();
-        assert_eq!(entropy.0[0], 0.0);
+        assert_eq!(entropy, 0.0);
     }
 
     #[test]
@@ -72,14 +70,14 @@ mod tests {
             sequence: repeat_n(b"ACTG", 25).flat_map(|x| *x).collect(),
         };
         let pileup = VariantCandidatePileup {
-            segment: Rc::new(segment),
+            segment: Arc::new(segment),
             pos: 50,
-            bases: SeenBases(smallvec![]),
+            reads: SimpleReads(smallvec![]),
             reference_base: Base::A,
             is_cpg: false,
         };
         let entropy = pileup.entropy();
-        assert!(entropy.0[0] > 0.0);
+        assert!(entropy > 0.0);
     }
 
     proptest! {
@@ -93,14 +91,14 @@ mod tests {
                 sequence: sequence.into_bytes(),
             };
             let pileup = VariantCandidatePileup {
-                segment: Rc::new(segment),
+                segment: Arc::new(segment),
                 pos: 50,
-                bases: SeenBases(smallvec![]),
+                reads: SimpleReads(smallvec![]),
                 reference_base: Base::A,
                 is_cpg: false,
             };
             let entropy = pileup.entropy();
-            assert!(entropy.0[0] >= 0.0);
+            assert!(entropy >= 0.0);
         }
     }
 }

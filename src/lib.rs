@@ -6,6 +6,7 @@ pub mod call;
 pub mod call_reads;
 pub mod convert;
 pub mod mbias;
+pub mod metrics2;
 pub mod io {
     pub mod formats;
     pub mod mpk;
@@ -22,7 +23,7 @@ pub mod utils {
     pub mod logging;
 
     mod surrounding;
-    pub use surrounding::surrounding_records;
+    pub use surrounding::{Surrounding, surrounding_pileups, surrounding_records};
 
     mod dedupe_reads;
     pub use dedupe_reads::ReadDeduplicator;

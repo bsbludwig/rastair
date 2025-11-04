@@ -1,11 +1,11 @@
 use crate::{
-    call::variants::{SeenBases, VariantCandidatePileup},
+    call::variants::{SimpleReads, VariantCandidatePileup},
     utils::{Base, Phred, RootMeanSquare, Strand},
     vcf::*,
 };
 use color_eyre::Result;
 use rastair_vcf::standard_fields::*;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec_inline};
 use std::collections::BTreeSet;
 use tracing::warn;
 
@@ -30,13 +30,13 @@ impl VariantCandidatePileup {
             allele_read_depth: self.read_depth_per_allele(),
             allele_specific_strand_bias: self.allele_specific_strand_bias(),
             base_quality: BaseQuality(
-                self.bases.iter().map(|b| b.qual).collect::<RootMeanSquare>(),
+                self.reads.iter().map(|b| b.qual).collect::<RootMeanSquare>(),
             ),
             mapping_quality: MappingQuality(
-                self.bases.iter().map(|b| b.mapq).collect::<RootMeanSquare>(),
+                self.reads.iter().map(|b| b.mapq).collect::<RootMeanSquare>(),
             ),
-            read_depth: ReadDepth(self.bases.len()),
-            mapping_quality0: MappingQuality0(self.bases.iter().filter(|b| b.mapq == 0).count()),
+            read_depth: ReadDepth(self.reads.len()),
+            mapping_quality0: MappingQuality0(self.reads.iter().filter(|b| b.mapq == 0).count()),
             // by construction, we arrived here because we have at least one base
             samples_with_data: SamplesWithData(1),
             sequence_context: self.sequence_context(),
@@ -46,7 +46,7 @@ impl VariantCandidatePileup {
             strand_specific_base_quality: self.strand_specific_base_quality(),
             strand_specific_mapping_quality: self.strand_specific_mapping_quality(),
             position_in_read: self.position_in_read(),
-            entropy: self.entropy(),
+            entropy: Entropy(smallvec_inline!(self.entropy())),
             num_aligned_bases: self.num_aligned_bases(),
             num_indels: self.num_indels(),
             in_cp_g: self.in_cpg(),
@@ -111,8 +111,8 @@ impl VariantCandidatePileup {
             self.alts()
                 .iter()
                 .map(|alt| {
-                    let count = self.bases.iter().filter(|b| b.base == *alt).count();
-                    count as f64 / self.bases.len() as f64
+                    let count = self.reads.iter().filter(|b| b.base == *alt).count();
+                    count as f64 / self.reads.len() as f64
                 })
                 .collect(),
         )
@@ -146,14 +146,14 @@ impl VariantCandidatePileup {
     }
 
     fn read_depth_per_allele(&self) -> AlleleReadDepth {
-        fn count_bases(bases: &SeenBases, base: Base) -> usize {
+        fn count_bases(bases: &SimpleReads, base: Base) -> usize {
             bases.iter().filter(|b| b.base == base).count()
         }
 
         let mut depth = SmallVec::new();
-        depth.push(count_bases(&self.bases, self.reference_base));
+        depth.push(count_bases(&self.reads, self.reference_base));
         for alt in self.alts() {
-            depth.push(count_bases(&self.bases, alt));
+            depth.push(count_bases(&self.reads, alt));
         }
         AlleleReadDepth(depth)
     }
@@ -253,7 +253,7 @@ mod tests {
             pileup.chrom(),
             pileup.pos,
             pileup.reference_base,
-            &pileup.bases,
+            &pileup.reads,
             pileup.allele_specific_strand_bias()
         ), @r#"
         (

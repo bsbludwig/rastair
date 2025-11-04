@@ -1,4 +1,4 @@
-use crate::{call::variants::SeenBase, utils::cli};
+use crate::{call::variants::SimpleRead, utils::cli};
 use better_default::Default;
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
@@ -17,7 +17,7 @@ pub struct QualityFilterParams {
 
 impl QualityFilterParams {
     /// Check if the read and base pass the quality filters
-    pub fn filter(&self, read: &SeenBase) -> bool {
+    pub fn filter(&self, read: &SimpleRead) -> bool {
         read.mapq >= self.min_mapq && read.qual >= self.min_baseq
     }
 }

@@ -1,13 +1,17 @@
 use crate::{
-    bed::rastair1::{BedParams, BedRecordsConvertParams, Rastair1BedFormat},
+    bed::{
+        rastair1::{BedParams, BedRecordsConvertParams, Rastair1BedFormat},
+        writer::BedWriter,
+    },
     call::{
         methylation::params::MethylationCallingParams, ml::MachineLearning,
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
+    metrics2::{MetricsForAlt, PileupMetrics},
     sequence::{ChunkRegion, ReaderParams, Readers},
-    utils::{cli, logging::ThisIsABug as _, surrounding_records},
-    vcf::{self, MachineLearningPrediction, low_ml_score, pre_ml},
+    utils::{Surrounding, cli, logging::ThisIsABug as _, surrounding_pileups},
+    vcf::{self, lowDp},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -15,6 +19,7 @@ use color_eyre::{
     eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
 };
 use ordered_channel::Receiver;
+use rastair_vcf::VcfFilter;
 use rayon::prelude::*;
 use smol_str::SmolStr;
 use std::{
@@ -230,7 +235,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 fn build_writer(
     params: &CallParams,
     regions: &[ChunkRegion],
-    vcf_receiver: Receiver<Vec<vcf::Record>>,
+    vcf_receiver: Receiver<Vec<PileupMetrics>>,
 ) -> Result<thread::JoinHandle<Result<()>>> {
     let vcf_output = params.vcf.vcf.clone();
     let vcf_filter = params.record_filters.clone();
@@ -260,45 +265,64 @@ fn build_writer(
     thread::Builder::new()
         .name("writer".to_string())
         .spawn(move || -> Result<()> {
-            // The segments we get have some overlap between them, so we
-            // need to ensure that we don't write the same record multiple
-            // times.
-            let mut last_seen_chrom: Option<SmolStr> = None;
-            let mut last_seen_pos: Option<u32> = None;
+            /// The segments we get have some overlap between them, so we need
+            /// to ensure that we don't write the same record multiple times.
+            #[derive(Default)]
+            struct LastSeen {
+                contig: Option<SmolStr>,
+                pos: Option<u32>,
+            }
+
+            impl LastSeen {
+                /// If this is new, returns true and updates the last seen record
+                fn is_new(&mut self, contig: SmolStr, pos: u32) -> bool {
+                    if self.contig.as_ref() == Some(&contig) && self.pos >= Some(pos) {
+                        false
+                    } else {
+                        self.contig = Some(contig);
+                        self.pos = Some(pos);
+                        true
+                    }
+                }
+            }
+
+            let mut last_seen = LastSeen::default();
+
+            let mut write = |record: &PileupMetrics| -> Result<()> {
+                let vcf_record =
+                    record.to_vcf_record().wrap_err("Failed to convert metrics to VCF record")?;
+
+                if let Some(vcf_writer) = vcf_writer.as_mut()
+                    && vcf_filter.matches(&vcf_record)
+                {
+                    vcf_writer.add(&vcf_record).wrap_err("Failed to write VCF record")?;
+                }
+
+                if let Some(bed_writer) = bed_writer.as_mut()
+                    && (*vcf_record.info.in_cp_g || *vcf_record.info.de_novo_cp_g_candidate)
+                    && let Some(bed_record) =
+                        Rastair1BedFormat::from_record(&vcf_record, &bed_params)
+                            .wrap_err("Failed to convert VCF record to BED format")
+                            .this_is_a_bug()?
+                {
+                    bed_writer
+                        .write_record(&bed_record)
+                        .wrap_err("Failed to write record to BED")?;
+                }
+
+                Ok(())
+            };
 
             // Since we only have the region index to ensure order, each
             // processing thread will send a vector of VCF records when it's
             // done with a region.
             for records in vcf_receiver {
                 'current_batch: for record in &records {
-                    let record: &vcf::Record = record;
-
-                    // Skip records that are already seen
-                    if last_seen_chrom.as_ref() == Some(&record.main.chrom)
-                        && last_seen_pos >= Some(record.main.pos)
-                    {
+                    if !last_seen.is_new(record.contig(), record.pos()) {
                         continue 'current_batch;
                     }
-                    // Seen a new record, update the last seen
-                    last_seen_chrom = Some(record.main.chrom.clone());
-                    last_seen_pos = Some(record.main.pos);
-
-                    if let Some(vcf_writer) = vcf_writer.as_mut()
-                        && vcf_filter.matches(record)
-                    {
-                        vcf_writer.add(record).wrap_err("Failed to write VCF record")?;
-                    }
-
-                    if let Some(bed_writer) = bed_writer.as_mut()
-                        && (*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate)
-                        && let Some(bed_record) =
-                            Rastair1BedFormat::from_record(record, &bed_params)
-                                .wrap_err("Failed to convert VCF record to BED format")
-                                .this_is_a_bug()?
-                    {
-                        bed_writer
-                            .write_record(&bed_record)
-                            .wrap_err("Failed to write record to BED")?;
+                    if let Err(e) = write(record) {
+                        warn!(error = format!("{e:#}"), "Failed to write record, skipping");
                     }
                 }
             }
@@ -326,7 +350,7 @@ fn build_writer(
 fn process_region_wrapper(
     index: usize,
     region: &ChunkRegion,
-    vcf_sender: &mut ordered_channel::Sender<Vec<vcf::Record>>,
+    vcf_sender: &mut ordered_channel::Sender<Vec<PileupMetrics>>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<()> {
@@ -337,7 +361,7 @@ fn process_region_wrapper(
     }
 
     // Use thread-local readers to avoid re-opening files in each thread
-    let res = READERS.with(|local_readers| -> Result<Vec<vcf::Record>> {
+    let res = READERS.with(|local_readers| -> Result<Vec<PileupMetrics>> {
         let mut local_readers = local_readers.borrow_mut();
         let readers = {
             // Initialize thread-local readers first time the thread accesses them
@@ -375,97 +399,110 @@ fn process_region_wrapper(
     Ok(())
 }
 
-/// Process a region
+/// Analyse pileups in a region
 fn process_region(
     readers: &mut Readers,
     region: &ChunkRegion,
     params: &CallParams,
     ml: &MachineLearning,
-) -> Result<Vec<vcf::Record>> {
+) -> Result<Vec<PileupMetrics>> {
     let pileup_mapping_params = process::PileupMappingParams {
         include_cpgs: params.methylation.should_include_all_cpgs(),
         variant_calling: params.variant_calling.clone(),
     };
 
-    let piles = region.process(readers, &pileup_mapping_params)?;
+    let pileups = region.process(readers, &pileup_mapping_params)?;
+    let mut pileups: Vec<PileupMetrics> = pileups
+        .into_iter()
+        .map(PileupMetrics::try_from)
+        .filter_map(|x: Result<PileupMetrics>| match x {
+            Err(e) => {
+                warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
+                None
+            }
+            Ok(x) => Some(x),
+        })
+        .collect();
 
-    let mut records = piles
-        .iter()
-        .map(|pile| pile.variant_metrics(&params.variant_calling))
-        .collect::<Result<Vec<_>>>()
-        .wrap_err("Failed to collect metrics")?;
+    // let mut records = piles
+    //     .iter()
+    //     .map(|pile| pile.variant_metrics(&params.variant_calling))
+    //     .collect::<Result<Vec<_>>>()
+    //     .wrap_err("Failed to collect metrics")?;
 
     // Call methylation events if requested
-    let record_len = records.len();
-    for i in 0..record_len {
-        let (before, current, after) = surrounding_records(&mut records, i);
+    // let record_len = metrics.len();
+    // for i in 0..record_len {
+    //     let (before, current, after) = surrounding_pileups(&mut metrics, i);
 
-        if *current.info.read_depth < params.variant_calling.v_min_depth {
-            current.filters.add_all(vcf::lowDp);
+    //     if *current.info.read_depth < params.variant_calling.v_min_depth {
+    //         current.filters.add_all(vcf::lowDp);
+    //     }
+    //     params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
+    //     params.denovo_cpg.add_if_adjecent(current, before, after);
+
+    //     params
+    //         .methylation
+    //         .call(current, before, after) // Might also add filters
+    //         .wrap_err("Failed to call methylation")?;
+    // }
+
+    let pileups_len = pileups.len();
+    for i in 0..pileups_len {
+        let surrounding = surrounding_pileups(&mut pileups, i);
+
+        // params.denovo_cpg.add_if_adjecent(&mut surrounding);
+
+        let Surrounding { current, .. } = surrounding;
+        // params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
+
+        if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
+            current.pos_filters.push(lowDp.filter());
         }
-        params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
-        params.denovo_cpg.add_if_adjecent(current, before, after);
-
-        params
-            .methylation
-            .call(current, before, after) // Might also add filters
-            .wrap_err("Failed to call methylation")?;
     }
 
     // Filter out piles that are not CpG if requested. We're doing this here to
     // not waste processing time on records we will discard anyway.
     if params.record_filters.cpgs_only {
-        records.retain(|record| *record.info.in_cp_g || *record.info.de_novo_cp_g_candidate);
+        pileups.retain(|p| p.pileup.is_cpg || *p.pos_metrics.de_novo_cpg_candidate);
     }
 
     if !ml.disabled {
-        calc_ml(ml, &mut records);
-    }
-
-    // TODO: Filter out low-confidence alleles!
-    // TODO: Split into multiple variants, one for each genotype
-
-    for current in &mut records {
-        // If no filters were added, we're gonna call it
-        if current.filters.pass() {
-            current.filters.add_all(rastair_vcf::standard_fields::PASS);
-        }
-    }
-
-    Ok(records)
-}
-
-fn calc_ml(ml: &MachineLearning, records: &mut [vcf::Record]) {
-    let record_len = records.len();
-    for i in 0..record_len {
-        let (before, current, after) = surrounding_records(records, i);
-
-        // If there is no chance of this being a viable candidate, skip slow ML
-        if !ml_filters(current) {
-            current.filters.add_all(pre_ml);
-            continue;
+        /// Filter out very unlikely alts before running slow ML
+        fn pre_ml_filter(c: &MetricsForAlt) -> bool {
+            c.metrics.pos_metrics.read_depth > 1 && *c.metrics.pos_metrics.mapq > 5.
         }
 
-        if let ml::MlResult::Predictions(predictions) = ml.predict(current, before, after)
-            && !predictions.is_empty()
-        {
-            // Clear filters to re-evaluate them with ML
-            current.filters.clear();
+        let pileups_len = pileups.len();
+        for i in 0..pileups_len {
+            let Surrounding { before, current, after } = surrounding_pileups(&mut pileups, i);
 
-            // TODO: Filter out low-scoring alleles
-            for pred in &predictions {
-                if !pred.pass() {
-                    current.filters.add_per_allele(pred.allele, low_ml_score);
+            for alt_base in current.alts() {
+                let alt = current
+                    .alt_metrics(alt_base)
+                    .wrap_err("Failed to get alt metrics")
+                    .this_is_a_bug()?;
+                if pre_ml_filter(&alt)
+                    && let Some(pred) = ml.predict2(&alt, before, after)
+                    && pred.pass()
+                {
+                    let filters = current
+                        .alt_filters_mut(alt_base)
+                        .wrap_err("Failed to get mutable alt metrics")
+                        .this_is_a_bug()?;
+                    filters.ml.replace(pred.prediction);
                 }
             }
-            current.samples[0].machine_learning_prediction =
-                MachineLearningPrediction(predictions.into_iter().map(|p| *p.prediction).collect());
-        } else {
-            debug!(pos=?current.info, "did not get ML predictions for record");
         }
     }
-}
 
-fn ml_filters(record: &mut vcf::Record) -> bool {
-    *record.info.read_depth > 1 && !record.main.alt.is_empty() && **record.info.mapping_quality > 5.
+    // Okay, here is what we have:
+    // - `metrics`: The pileup metrics for each position
+    //   - `pos_metrics`: The position-level metrics
+    //   - `ref_metrics`: The reference allele metrics
+    //   - `alt_metrics`: The alt allele metrics
+    //      - `ml`: The ML prediction that this is a true variant
+    // Now, we need to convert these into VCF records.
+
+    Ok(vec![])
 }

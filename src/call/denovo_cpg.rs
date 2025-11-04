@@ -7,7 +7,8 @@
 
 use crate::{
     call::variants::VariantCandidatePileup,
-    utils::{Base::*, cli},
+    metrics2::PileupMetrics,
+    utils::{Base::*, Surrounding, cli},
     vcf::{self},
 };
 use better_default::Default;
@@ -83,56 +84,53 @@ impl DenovoParams {
         Ok(())
     }
 
-    pub fn add_if_adjecent(
-        &self,
-        current: &mut vcf::Record,
-        before: Option<&vcf::Record>,
-        after: Option<&vcf::Record>,
-    ) {
-        if *current.info.de_novo_cp_g_candidate {
-            // already a candidate
-        } else if let Some(before) = before
-            && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
-                before.info.de_novo_cp_g_candidate
-            && alt_base == C
-            && current.main.r#ref == G
-        {
-            // previous position has a C alt, so this G is now part of a CpG
-            current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: G };
-        } else if let Some(after) = after
-            && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
-                after.info.de_novo_cp_g_candidate
-            && alt_base == G
-            && current.main.r#ref == C
-        {
-            // next position has a G alt, so this C is now part of a CpG
-            current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: C };
-        }
+    pub fn add_if_adjecent(&self, Surrounding { .. }: &mut Surrounding<PileupMetrics>) {
+        todo!()
+
+        // if *current.info.de_novo_cp_g_candidate {
+        //     // already a candidate
+        // } else if let Some(before) = before
+        //     && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
+        //         before.info.de_novo_cp_g_candidate
+        //     && alt_base == C
+        //     && current.main.r#ref == G
+        // {
+        //     // previous position has a C alt, so this G is now part of a CpG
+        //     current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: G };
+        // } else if let Some(after) = after
+        //     && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
+        //         after.info.de_novo_cp_g_candidate
+        //     && alt_base == G
+        //     && current.main.r#ref == C
+        // {
+        //     // next position has a G alt, so this C is now part of a CpG
+        //     current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: C };
+        // }
         // todo: do both AdjecentRef and AdjecentAlt?
         // ("alt" means both positions create the cpg with alts… but then who created it and who is adjecent?)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::call::{test_helpers::variant_pileup, variant_calling::VariantCallingParams};
+// #[cfg(test)]
+// mod tests {
+//     use crate::call::{test_helpers::variant_pileup, variant_calling::VariantCallingParams};
 
-    use super::*;
+//     use super::*;
 
-    #[test]
-    #[ignore = "wip"]
-    fn denovo_position() -> Result<()> {
-        let now_c = variant_pileup("bacteriophage_lambda_CpG", 2199)?
-            .variant_metrics(&VariantCallingParams::default())?;
-        let ref_g = variant_pileup("bacteriophage_lambda_CpG", 2200)?
-            .variant_metrics(&VariantCallingParams::default())?;
+//     #[test]
+//     #[ignore = "wip"]
+//     fn denovo_position() -> Result<()> {
+//         let now_c = variant_pileup("bacteriophage_lambda_CpG", 2199)?
+//             .variant_metrics(&VariantCallingParams::default())?;
+//         let ref_g = variant_pileup("bacteriophage_lambda_CpG", 2200)?
+//             .variant_metrics(&VariantCallingParams::default())?;
 
-        DenovoParams::default().add_if_adjecent(&mut now_c.clone(), None, Some(&ref_g));
-        assert!(matches!(
-            now_c.info.de_novo_cp_g_candidate,
-            vcf::DeNovoCpGCandidate::Adjecent { ref_base: C }
-        ));
+//         DenovoParams::default().add_if_adjecent(&mut now_c.clone(), None, Some(&ref_g));
+//         assert!(matches!(
+//             now_c.info.de_novo_cp_g_candidate,
+//             vcf::DeNovoCpGCandidate::Adjecent { ref_base: C }
+//         ));
 
-        Ok(())
-    }
-}
+//         Ok(())
+//     }
+// }
