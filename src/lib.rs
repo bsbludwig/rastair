@@ -28,5 +28,7 @@ pub mod utils {
     pub use dedupe_reads::ReadDeduplicator;
 
     pub mod cli;
+
+    pub mod conversion;
 }
 pub mod sequence;
