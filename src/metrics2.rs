@@ -3,11 +3,13 @@ use crate::{
         variant_calling::EstimatedGenotype,
         variants::{SimpleRead, VariantCandidatePileup},
     },
-    vcf::{ByStrand, DeNovoCpGCandidate, InCpG, SequenceContext},
+    utils::ByStrand,
+    vcf::{DeNovoCpGCandidate, InCpG, SequenceContext},
 };
+use better_default::Default;
 use color_eyre::{
     Result,
-    eyre::{Context, bail, ensure},
+    eyre::{Context, bail},
 };
 use rastair_types::{Base, Probability, RootMeanSquare, Strand, rms::RootMeanSquareExt};
 use smallvec::SmallVec;
@@ -48,27 +50,32 @@ impl TryFrom<VariantCandidatePileup> for PileupMetrics {
         };
         trace!(
             pos = pileup.pos,
-            ref_base = ?reference.0,
-            alt_bases = ?alts_reads.iter().map(|(b, _)| *b).collect::<Vec<_>>(),
+            ref_base = ?reference.base,
+            alt_bases = ?alts_reads.iter().map(|b| b.base).collect::<Vec<_>>(),
             "Found candidate"
         );
 
-        let ref_base = reference.0;
+        let ref_base = reference.base;
 
         #[derive(Debug, Error)]
         #[error("Failed to compute allele metric for {0}")]
         struct AlleleMetricError(Base);
 
         let pos_metrics = PositionMetrics::from_pileup(&pileup);
-        let ref_metrics = AlleleMetrics::from_bases(&reference.1, &pileup)
-            .wrap_err(AlleleMetricError(ref_base))?;
+        let ref_metrics = if reference.is_empty() {
+            // this can happen at canonical cpg sites with no evidence
+            AlleleMetrics { base: ref_base, ..AlleleMetrics::default() }
+        } else {
+            AlleleMetrics::from_bases(reference, &pileup).wrap_err(AlleleMetricError(ref_base))?
+        };
 
         let alts = alts_reads
             .iter()
-            .map(|(base, pile)| {
+            .map(|pile| {
+                let base = pile.base;
                 AlleleMetrics::from_bases(pile, &pileup)
-                    .wrap_err(AlleleMetricError(*base))
-                    .map(|metrics| Alt { base: *base, metrics, filters: AltFilters::default() })
+                    .wrap_err(AlleleMetricError(base))
+                    .map(|metrics| Alt { base, metrics, filters: AltFilters::default() })
             })
             .collect::<Result<SmallVec<_, 2>>>()
             .wrap_err("Failed to compute allele metrics for alt alleles")?;
@@ -170,6 +177,7 @@ impl SequenceContext {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct AlleleMetrics {
     pub base: Base,
     pub depth: u32,
@@ -206,21 +214,15 @@ impl AlleleMetrics {
 
         let allele_depth = u32::try_from(reads.len()).wrap_err("read count fits into u32")?;
         if allele_depth == 0 {
-            // this should only be the case when we're looking at a canonical CpG site with not evidence
-            #[allow(clippy::default_trait_access)]
-            return Ok(AlleleMetrics {
-                base: pileup.reference_base,
-                depth: Default::default(),
-                baseq: Default::default(),
-                mapq: Default::default(),
-                strand_count: Default::default(),
-                baseq_s: Default::default(),
-                mapq_s: Default::default(),
-                num_aligned_bases: Default::default(),
-                num_indels: Default::default(),
-                position_in_read: Default::default(),
-                denovo: Default::default(),
-            });
+            trace!(
+                %pileup.pos,
+                base=%pileup.reference_base,
+                pileup_reads=?pileup.reads.len(),
+                allele_reads=?reads.len(),
+                "Why are we here? No reads for allele metrics calculation"
+            );
+
+            return Ok(AlleleMetrics { base: pileup.reference_base, ..Default::default() });
         }
 
         let base = reads[0].base;
