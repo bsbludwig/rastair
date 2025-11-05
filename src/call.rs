@@ -141,7 +141,7 @@ pub struct SegmentationParams {
 }
 
 /// Read BAM + FASTA and call variants and methylation events
-#[instrument(level = "debug", skip(params))]
+#[instrument(level = "info", skip(params))]
 pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     let params = &params; // make params immutable for threads
@@ -234,7 +234,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 ///
 /// Calls [`process_region`] with thread-local readers and ships the result to
 /// the VCF writer.
-#[instrument(level = "debug", skip_all, fields(region=%region.region))]
+#[instrument(level = "info", skip_all, fields(region=%region.region))]
 fn process_region_wrapper(
     index: usize,
     region: &ChunkRegion,

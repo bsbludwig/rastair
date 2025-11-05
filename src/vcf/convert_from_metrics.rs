@@ -24,11 +24,7 @@ pub struct VcfOutputFilter {
 }
 
 impl PileupMetrics {
-    pub fn to_vcf_record(mut self, filters: &VcfOutputFilter) -> Result<Record> {
-        if filters.reject_low_quality_variants {
-            self.alts.retain(|alt| alt.filters.filters.is_empty());
-        }
-
+    pub fn to_vcf_record(&self) -> Result<Record> {
         let main = VcfFixedFields {
             chrom: self.contig(),
             pos: self.pos(),

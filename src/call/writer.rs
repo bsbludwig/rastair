@@ -54,13 +54,17 @@ pub fn writer_thread(
             // processing thread will send a vector of VCF records when it's
             // done with a region.
             for records in vcf_receiver {
-                'current_batch: for record in records {
+                'current_batch: for mut record in records {
                     if !last_seen.is_new(record.contig(), record.pos()) {
                         continue 'current_batch;
                     }
 
+                    if filters.reject_low_quality_variants {
+                        record.alts.retain(|alt| alt.filters.filters.is_empty());
+                    }
+
                     let vcf_record = record
-                        .to_vcf_record(&filters)
+                        .to_vcf_record()
                         .wrap_err("Failed to convert metrics to VCF record")
                         .this_is_a_bug()?;
 
