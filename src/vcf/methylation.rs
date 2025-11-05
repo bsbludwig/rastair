@@ -6,6 +6,7 @@ use rust_htslib::bcf::Record;
 
 /// Methylation information
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[must_use]
 pub enum Methylated {
     /// Unknown methylation status, i.e., no processing was done
     #[default]

@@ -3,6 +3,7 @@ use std::{ops::Deref, str::FromStr};
 
 /// A probability value guaranteed to be in the range [0, 1]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[must_use]
 pub struct Probability(f64);
 
 #[derive(Debug, thiserror::Error)]

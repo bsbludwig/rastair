@@ -22,6 +22,7 @@ use winnow::{
 /// let chr17_from_100_to_200 = RegionString::from_str("chr17:100-200").unwrap();
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[must_use]
 pub struct RegionString {
     /// The chromosome name, includes the "chr" prefix.
     // todo: is there always a chr prefix? should we filter it out?

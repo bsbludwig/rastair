@@ -3,6 +3,7 @@ use thiserror::Error;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
+#[must_use]
 pub enum Base {
     A = b'A',
     C = b'C',

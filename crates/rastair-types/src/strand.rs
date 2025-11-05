@@ -3,6 +3,7 @@ use std::fmt;
 
 /// Original top or bottom strand of a read
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub enum Strand {
     /// Original top
     OT,

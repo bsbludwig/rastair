@@ -20,6 +20,7 @@ use std::{
 /// assert_eq!(rms.round(), 3.0);
 /// ```
 #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[must_use]
 pub struct RootMeanSquare(f64);
 
 impl<T: Into<f64>> FromIterator<T> for RootMeanSquare {

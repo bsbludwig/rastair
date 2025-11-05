@@ -36,6 +36,7 @@ impl VariantCandidatePileup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[must_use]
 pub enum GenotypeTag {
     /// Homozygous reference (CC)
     #[default]
@@ -57,6 +58,7 @@ impl From<GenotypeTag> for [GenotypeAllele; 2] {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[must_use]
 pub struct EstimatedGenotype {
     pub genotype: GenotypeTag,
     pub likelihood: f64,

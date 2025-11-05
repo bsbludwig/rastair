@@ -26,6 +26,7 @@ use std::{fmt, ops::Deref};
 /// >
 /// > The phred quality score is the negative ratio of the error probability to the reference level of `P=1` expressed in [Decibel (dB)](https://en.wikipedia.org/wiki/20_log_rule "20 log rule").
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[must_use]
 pub struct Phred(f64);
 
 impl Phred {
