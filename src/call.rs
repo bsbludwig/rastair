@@ -345,7 +345,9 @@ fn process_region(
         current.pos_metrics.genotype =
             current.pileup.estimate_genotype(params.variant_calling.error_model);
 
-        metrics2::methylation::call(&params.methylation.thresholds, current)?;
+        current.pos_metrics.methylated =
+            metrics2::methylation::call(&params.methylation.thresholds, current)?
+                .unwrap_or_default();
 
         if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
             current.pos_filters.push(lowDp.filter());
