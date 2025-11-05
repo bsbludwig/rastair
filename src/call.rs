@@ -5,10 +5,10 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics2::{MetricsForAlt, PileupMetrics},
+    metrics2::{self, MetricsForAlt, PileupMetrics},
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{Surrounding, cli, logging::ThisIsABug as _, surrounding_pileups},
-    vcf::{self, lowDp},
+    vcf::lowDp,
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -453,6 +453,8 @@ fn process_region(
         // FIXME: calculate genotype properly
         current.pos_metrics.genotype =
             current.pileup.estimate_genotype(params.variant_calling.error_model);
+
+        metrics2::methylation::call(&params.methylation.thresholds, current)?;
 
         if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
             current.pos_filters.push(lowDp.filter());

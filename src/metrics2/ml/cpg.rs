@@ -127,10 +127,10 @@ fn calculate_adjacent_features(
 ) -> AdjecentFeatures {
     use Base::*;
 
-    let ref_base = c.metrics.pileup.reference_base;
+    let ref_base = c.metrics.ref_base();
     if ref_base == C
         && let Some(after) = a
-        && after.pileup.reference_base == G
+        && after.ref_base() == G
     {
         let c_alt = c.alt;
         assert_eq!(c_alt.base, T);
@@ -164,7 +164,7 @@ fn calculate_adjacent_features(
         }
     } else if ref_base == G
         && let Some(before) = b
-        && before.pileup.reference_base == C
+        && before.ref_base() == C
     {
         let c_alt = c.alt;
         assert_eq!(c_alt.base, A);

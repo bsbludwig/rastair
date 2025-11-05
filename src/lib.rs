@@ -1,4 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![expect(deprecated)] // TODO: In-progress metrics2 refactor
 
 pub mod bam;
 pub mod bed;

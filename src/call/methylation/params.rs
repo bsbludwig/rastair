@@ -11,7 +11,7 @@ pub struct MethylationCallingParams {
     skip_methylation_calling: bool,
 
     #[command(flatten)]
-    thresholds: ThresholdParams,
+    pub thresholds: ThresholdParams,
 }
 
 impl MethylationCallingParams {

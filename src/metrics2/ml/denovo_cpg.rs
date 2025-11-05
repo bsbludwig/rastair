@@ -138,7 +138,7 @@ fn calculate_adjacent_features(
             if let Some(after) = a
                 && let Some(MetricsForAlt { alt, .. }) = after.alt_metrics(A)
             {
-                assert_eq!(after.pileup.reference_base, G, "De-novo CpG not followed by G");
+                assert_eq!(after.ref_base(), G, "De-novo CpG not followed by G");
                 let r = &after.ref_metrics;
 
                 let beta_after = {
@@ -169,7 +169,7 @@ fn calculate_adjacent_features(
             if let Some(before) = b
                 && let Some(alt) = before.alt(T)
             {
-                assert_eq!(before.pileup.reference_base, C, "De-novo CpG not preceded by C");
+                assert_eq!(before.ref_base(), C, "De-novo CpG not preceded by C");
                 let r = &before.ref_metrics;
 
                 let beta_before = {

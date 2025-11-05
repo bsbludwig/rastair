@@ -216,18 +216,8 @@ impl VariantCandidatePileup {
         )
     }
 
-    fn sequence_context(&self) -> SequenceContext {
-        let (before_2, before_1) = match self.sequence_before::<2>().as_slice() {
-            [b2, b1] => (Some(*b2), Some(*b1)),
-            [b1] => (None, Some(*b1)),
-            _ => (None, None),
-        };
-        let (after_1, after_2) = match self.sequence_after::<2>().as_slice() {
-            [a1, a2] => (Some(*a1), Some(*a2)),
-            [a1] => (None, Some(*a1)),
-            _ => (None, None),
-        };
-        SequenceContext { before_2, before_1, me: self.reference_base, after_1, after_2 }
+    pub fn sequence_context(&self) -> SequenceContext {
+        SequenceContext::from(self)
     }
 
     fn in_cpg(&self) -> InCpG {

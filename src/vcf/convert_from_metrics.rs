@@ -3,9 +3,9 @@ use crate::{
     metrics2::PileupMetrics,
     utils::conversion::IntoF64 as _,
     vcf::{
-        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, Entropy, Filters, Format,
-        GenotypeConfidence, GenotypeLikelihood, InCpG, Info, MachineLearningPrediction, Methylated,
-        NumAlignedBases, NumIndels, PositionInRead,
+        AlleleBaseQuality, AlleleMapQuality, Entropy, Filters, Format, GenotypeConfidence,
+        GenotypeLikelihood, InCpG, Info, MachineLearningPrediction, NumAlignedBases, NumIndels,
+        PositionInRead,
     },
 };
 use color_eyre::Result;
@@ -25,7 +25,7 @@ impl PileupMetrics {
             chrom: self.contig(),
             pos: self.pos(),
             id: Default::default(),
-            r#ref: self.pileup.reference_base.into(),
+            r#ref: self.ref_base().into(),
             alt: self.alts().iter().map(|alt| (*alt).into()).collect::<SmallVec<_, 2>>(),
             qual: self.pileup.qual(),
         };
@@ -34,9 +34,9 @@ impl PileupMetrics {
                 self.ref_alts_metrics().map(|m| m.depth as usize).collect(),
             ),
             base_quality: BaseQuality(self.pos_metrics.baseq),
-            read_depth: ReadDepth(self.pos_metrics.read_depth as usize),
+            read_depth: ReadDepth(self.pos_metrics.read_depth),
             mapping_quality: MappingQuality(self.pos_metrics.mapq),
-            mapping_quality0: MappingQuality0(self.pos_metrics.mapq0 as usize),
+            mapping_quality0: MappingQuality0(self.pos_metrics.mapq0),
             samples_with_data: SamplesWithData(1),
             allele_specific_strand_bias: self.pileup.allele_specific_strand_bias(),
             sequence_context: self.pos_metrics.sequence_context.clone(),
@@ -86,7 +86,7 @@ impl PileupMetrics {
             genotype_confidence,
             sample_read_depth: SampleReadDepth(self.pileup.reads.len()),
             // FIXME: Use real methylation metrics
-            methylated: Methylated::Unknown,
+            methylated: self.pos_metrics.methylated.clone(),
             machine_learning_prediction: MachineLearningPrediction(
                 self.alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect(),
             ),
