@@ -1,4 +1,7 @@
-use color_eyre::{Section as _, eyre::Report};
+use color_eyre::{
+    Section as _,
+    eyre::{Report, eyre},
+};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 pub static LOG_VAR: &str = "RASTAIR_LOG";
@@ -82,5 +85,15 @@ where
         use color_eyre::Help;
 
         self.map_err(|error| error.into()).map_err(|report| report.note(BUG_MESSAGE))
+    }
+}
+
+pub fn any_to_err(e: Box<dyn std::any::Any + Send + 'static>) -> Report {
+    if let Some(s) = e.downcast_ref::<&'static str>() {
+        eyre!("{s}")
+    } else if let Some(s) = e.downcast_ref::<String>() {
+        eyre!("{s}")
+    } else {
+        eyre!("Thread panicked")
     }
 }

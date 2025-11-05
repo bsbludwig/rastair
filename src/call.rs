@@ -7,7 +7,11 @@ use crate::{
     io::vcf_writer,
     metrics2::{self, MetricsForAlt, PileupMetrics},
     sequence::{ChunkRegion, ReaderParams, Readers},
-    utils::{Surrounding, cli, logging::ThisIsABug as _, surrounding_pileups},
+    utils::{
+        Surrounding, cli,
+        logging::{ThisIsABug as _, any_to_err},
+        surrounding_pileups,
+    },
     vcf::{low_ml_score, lowDp, pre_ml},
 };
 use clio::ClioPath;
@@ -219,7 +223,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     writer_thread
         .join()
-        .map_err(|_e| eyre!("Writer thread crashed"))
+        .map_err(|e| any_to_err(e).wrap_err("Writer thread crashed"))
         .this_is_a_bug()? // this error is a panic in the thread
         .wrap_err("Error in writer thread")?; // this error is from actual result returned by the thread
 
