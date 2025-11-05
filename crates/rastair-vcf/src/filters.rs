@@ -34,6 +34,11 @@ impl FilterContainer {
     }
 
     /// Adds a filter that applies to the whole record
+    pub fn add(&mut self, filter: SmolStr) {
+        self.all.push(filter);
+    }
+
+    /// Adds a filter that applies to the whole record
     pub fn add_all(&mut self, filter: impl VcfFilter) {
         self.all.push(filter.filter());
     }

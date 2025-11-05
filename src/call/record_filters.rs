@@ -31,7 +31,17 @@ impl RecordFilters {
         }
 
         // filter for passing records if desired
-        if self.vcf_all { true } else { record.filters.pass() }
+        if self.vcf_all {
+            return true;
+        }
+
+        // reject records without alts
+        if record.main.alt.is_empty() {
+            return false;
+        }
+
+        // okay and now only those that pass
+        record.filters.pass()
     }
 }
 

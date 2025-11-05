@@ -19,8 +19,16 @@ use rastair_vcf::{
 };
 use smallvec::{SmallVec, smallvec, smallvec_inline};
 
+pub struct VcfOutputFilter {
+    pub reject_low_quality_variants: bool,
+}
+
 impl PileupMetrics {
-    pub fn to_vcf_record(&self) -> Result<Record> {
+    pub fn to_vcf_record(mut self, filters: &VcfOutputFilter) -> Result<Record> {
+        if filters.reject_low_quality_variants {
+            self.alts.retain(|alt| alt.filters.filters.is_empty());
+        }
+
         let main = VcfFixedFields {
             chrom: self.contig(),
             pos: self.pos(),
@@ -85,14 +93,20 @@ impl PileupMetrics {
             genotype_likelihood,
             genotype_confidence,
             sample_read_depth: SampleReadDepth(self.pileup.reads.len()),
-            // FIXME: Use real methylation metrics
             methylated: self.pos_metrics.methylated.clone(),
             machine_learning_prediction: MachineLearningPrediction(
                 self.alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect(),
             ),
         };
+
+        // FIXME: Add real filters based on metrics
         let mut filters = Filters::default();
-        filters.add_all(PASS);
+        self.pos_filters.iter().for_each(|f| {
+            filters.add(f.clone());
+        });
+        if filters.pass() {
+            filters.add_all(PASS);
+        }
 
         Ok(Record { main, filters, info, samples: smallvec_inline![format_fields] })
     }

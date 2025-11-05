@@ -8,7 +8,7 @@ use crate::{
     metrics2::{self, MetricsForAlt, PileupMetrics},
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{Surrounding, cli, logging::ThisIsABug as _, surrounding_pileups},
-    vcf::lowDp,
+    vcf::{low_ml_score, lowDp, pre_ml},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -368,20 +368,37 @@ fn process_region(
         for i in 0..pileups_len {
             let Surrounding { before, current, after } = surrounding_pileups(&mut pileups, i);
 
-            for alt_base in current.alts() {
+            'alts: for alt_base in current.alts() {
                 let alt = current
                     .alt_metrics(alt_base)
                     .wrap_err("Failed to get alt metrics")
                     .this_is_a_bug()?;
-                if pre_ml_filter(&alt)
-                    && let Some(pred) = ml.predict2(&alt, before, after)
-                    && pred.pass()
-                {
+
+                if !pre_ml_filter(&alt) {
                     let filters = current
                         .alt_filters_mut(alt_base)
                         .wrap_err("Failed to get mutable alt metrics")
                         .this_is_a_bug()?;
-                    filters.ml.replace(pred.prediction);
+                    filters.filters.push(pre_ml.filter());
+                    continue 'alts;
+                }
+
+                if let Some(prediction) = ml.predict2(&alt, before, after) {
+                    let filters = current
+                        .alt_filters_mut(alt_base)
+                        .wrap_err("Failed to get mutable alt metrics")
+                        .this_is_a_bug()?;
+                    filters.ml.replace(prediction.prediction);
+                    if !prediction.pass() {
+                        filters.filters.push(low_ml_score.filter());
+                    }
+                } else {
+                    debug!(
+                        pos=%current.pos(),
+                        ref_base=%current.ref_base(),
+                        alt_base=%alt_base,
+                        "No ML prediction made"
+                    );
                 }
             }
         }
@@ -393,7 +410,6 @@ fn process_region(
     //   - `ref_metrics`: The reference allele metrics
     //   - `alt_metrics`: The alt allele metrics
     //      - `ml`: The ML prediction that this is a true variant
-    // Now, we need to convert these into VCF records.
 
     Ok(pileups)
 }

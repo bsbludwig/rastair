@@ -27,6 +27,7 @@ pub use methylation::Methylated;
 pub mod utils;
 
 mod convert_from_metrics;
+pub use convert_from_metrics::VcfOutputFilter;
 
 filter!(lowDp, "Low read depth");
 filter!(dnCpG_lowDp, "Low read depth for de-novo CpG candidate");
