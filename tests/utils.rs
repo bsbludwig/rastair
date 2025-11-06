@@ -1,9 +1,11 @@
 #![allow(unused_imports, dead_code)]
 
+use color_eyre::eyre::ensure;
 pub use color_eyre::eyre::{bail, eyre};
 pub use color_eyre::{Result, eyre::Context as _};
 pub use insta::{assert_debug_snapshot, assert_snapshot};
 pub use insta_cmd::assert_cmd_snapshot;
+use std::path::Path;
 pub use std::{collections::BTreeSet, process::Command};
 pub use tempfile::TempDir;
 
@@ -61,4 +63,48 @@ impl ExitStatusResultExt for std::process::Output {
         self.status.succeeds()?;
         Ok(())
     }
+}
+
+pub trait StringOutputExt {
+    fn stdout(&self) -> String;
+    fn stderr(&self) -> String;
+}
+
+impl StringOutputExt for std::process::Output {
+    fn stdout(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).to_string()
+    }
+
+    fn stderr(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).to_string()
+    }
+}
+
+pub trait StrInteratorToStringExt {
+    fn collect_string(&mut self) -> String;
+}
+
+impl<'a, I: Iterator<Item = &'a str>> StrInteratorToStringExt for I {
+    fn collect_string(&mut self) -> String {
+        self.map(|s| s.to_string() + "\n").collect()
+    }
+}
+
+pub fn vcf_content_lines(vcf_text: &str) -> impl Iterator<Item = &str> {
+    vcf_text.lines().filter(|line| !line.starts_with("#"))
+}
+
+/// Read a BCF file and ensure it has contigs and at least one record.
+pub fn read_bcf(path: &Path) -> Result<rust_htslib::bcf::Reader> {
+    use rust_htslib::bcf::{Read, Reader};
+    let mut bcf = Reader::from_path(path).wrap_err("open bcf file")?;
+
+    ensure!(bcf.header().contig_count() > 0, "bcf file has no contigs");
+
+    bcf.records()
+        .next()
+        .ok_or_else(|| eyre!("no records in bcf file"))?
+        .wrap_err("failed to read first record")?;
+
+    Ok(bcf)
 }

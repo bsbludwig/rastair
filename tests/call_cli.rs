@@ -1,27 +1,26 @@
+#![allow(non_snake_case)]
+
 mod utils;
+use insta::assert_compact_debug_snapshot;
 use utils::*;
+
+const CALL_TEST_BAM: [&str; 3] =
+    ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
+const CHR19_SMALL: &str = "--region=chr19:6105700-6105800";
+const NO_ML: &str = "--thresholds"; // disable ML for faster tests
 
 #[test]
 fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
     apply_common_filters!();
 
-    let output = rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6105700-6105800",
-        ])
-        .output()?;
+    let call = rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).output()?;
 
-    let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
-    assert_snapshot!(stderr, @r#"
+    assert_snapshot!(call.stderr(), @r#"
     [TIME] INFO rastair::call: Wrote VCF output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
-    let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
+    let stdout = call.stdout();
     assert!(stdout.trim().starts_with("##fileformat=VCF"));
     assert_snapshot!(stdout);
 
@@ -29,16 +28,13 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
 }
 
 #[test]
+// #[ignore = "slow"]
 fn vcf_with_ml() -> Result<()> {
     apply_common_filters!();
 
-    assert_cmd_snapshot!(rastair().args([
-        "call",
-        "--fasta-file=tests/data/test.fasta.gz",
-        "tests/data/test.bam",
+    assert_cmd_snapshot!(rastair().args(CALL_TEST_BAM).arg(CHR19_SMALL).arg(
         "--ml=0.8", // explicitly set ML threshold
-        "--region=chr19:6105700-6105800",
-    ]));
+    ));
 
     Ok(())
 }
@@ -47,24 +43,14 @@ fn vcf_with_ml() -> Result<()> {
 fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
     apply_common_filters!();
 
-    let output = rastair()
-        .args([
-            "call",
-            "-c",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6105700-6105800",
-        ])
-        .output()?;
+    let call = rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).arg("-c").output()?;
 
-    let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
-    assert_snapshot!(stderr, @r#"
+    assert_snapshot!(call.stderr(), @r#"
     [TIME] INFO rastair::call: Wrote BED output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
-    let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
+    let stdout = call.stdout();
     assert!(stdout.trim().starts_with("#chr"));
     assert_snapshot!(stdout);
 
@@ -75,14 +61,9 @@ fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
 fn bed_with_ml() -> Result<()> {
     apply_common_filters!();
 
-    assert_cmd_snapshot!(rastair().args([
-        "call",
-        "-c",
-        "--fasta-file=tests/data/test.fasta.gz",
-        "tests/data/test.bam",
+    assert_cmd_snapshot!(rastair().args(CALL_TEST_BAM).arg(CHR19_SMALL).arg("-c").arg(
         "--ml=0.8", // explicitly set ML threshold
-        "--region=chr19:6105700-6105800",
-    ]));
+    ));
 
     Ok(())
 }
@@ -94,14 +75,8 @@ fn writing_vcf_to_file() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let temp_file = temp_dir.path().join("test.vcf");
 
-    assert_cmd_snapshot!(rastair().args([
-        "call",
-        "--fasta-file=tests/data/test.fasta.gz",
-        "tests/data/test.bam",
-        "--thresholds", // disable ML for faster test
-        "--region=chr19:6105700-6105800",
-        "--vcf",
-    ]).arg(&temp_file), @r#"
+    assert_cmd_snapshot!(
+        rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).arg("--vcf").arg(&temp_file), @r#"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -111,6 +86,8 @@ fn writing_vcf_to_file() -> Result<()> {
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
+    read_bcf(&temp_file).wrap_err("validate bcf file")?;
+
     Ok(())
 }
 
@@ -118,34 +95,19 @@ fn writing_vcf_to_file() -> Result<()> {
 fn asking_for_all_variants_includes_non_passing_ones() -> Result<()> {
     apply_common_filters!();
 
-    let mut call = rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6105700-6105800",
-            "--vcf",
-        ])
-        .output()?;
+    let mut call =
+        rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).arg("--vcf").output()?;
     call.succeeds()?;
-    let stdout = String::from_utf8(call.stdout).wrap_err("utf8 decode")?;
-    assert!(!stdout.lines().filter(|l| !l.starts_with("#")).any(|l| l.contains("lowDp")));
+    assert!(!call.stdout().lines().filter(|l| !l.starts_with("#")).any(|l| l.contains("lowDp")));
 
     let mut call = rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6105700-6105800",
-            "--all",
-            "--vcf",
-        ])
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML])
+        .arg("--vcf")
+        .arg("--all")
         .output()?;
     call.succeeds()?;
-    let stdout = String::from_utf8(call.stdout).wrap_err("utf8 decode")?;
-    assert!(stdout.lines().filter(|l| !l.starts_with("#")).any(|l| l.contains("m_vaf;m_bq_ratio")));
+    assert!(vcf_content_lines(&call.stdout()).any(|l| l.contains("m_vaf;m_bq_ratio")));
 
     Ok(())
 }
@@ -154,26 +116,15 @@ fn asking_for_all_variants_includes_non_passing_ones() -> Result<()> {
 fn ask_for_cpgs_and_vcf() -> Result<()> {
     apply_common_filters!();
 
-    let output = rastair()
-        .args([
-            "call",
-            "-c",
-            "--vcf",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6105700-6105800",
-        ])
-        .output()?;
+    let call =
+        rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).args(["-c", "--vcf"]).output()?;
 
-    let stderr = String::from_utf8(output.stderr).wrap_err("utf8 decode")?;
-    assert_snapshot!(stderr, @r#"
+    assert_snapshot!(call.stderr(), @r#"
     [TIME] INFO rastair::call: Wrote VCF output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
-    let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
-    assert!(stdout.trim().starts_with("##fileformat=VCF"));
+    assert!(call.stdout().trim().starts_with("##fileformat=VCF"));
 
     Ok(())
 }
@@ -185,23 +136,20 @@ fn write_bcf_to_file_and_bed_to_stdout() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let temp_file = temp_dir.path().join("test.bcf");
 
-    let call = rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6105700-6105750",
-            "--bed=-",
-            "--vcf",
-        ])
+    let mut call = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML])
+        .args(["--bed=-", "--vcf"])
         .arg(&temp_file)
         .output()?;
 
-    assert!(call.status.success(), "rastair call failed");
+    call.succeeds()?;
+
     assert!(temp_file.exists());
 
-    let bed = str::from_utf8(&call.stdout)?;
+    read_bcf(&temp_file).wrap_err("validate bcf file")?;
+
+    let bed = call.stdout();
     assert_snapshot!(bed);
 
     Ok(())
@@ -214,14 +162,9 @@ fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let temp_file = temp_dir.path().join("test.bed");
 
-    assert_cmd_snapshot!(rastair().args([
-        "call",
-        "--fasta-file=tests/data/test.fasta.gz",
-        "tests/data/test.bam",
-        "--thresholds", // disable ML for faster test
-        "--region=chr19:6105700-6105800",
-        "--vcf",
-    ]).arg(&temp_file), @r#"
+    assert_cmd_snapshot!(
+        rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).arg("--vcf").arg(&temp_file),
+        @r#"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -237,30 +180,20 @@ fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
 
 #[test]
 fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
+    const REGION: &str = "--region=chr19:6117965-6118004";
+
     apply_common_filters!();
     assert_cmd_snapshot!(
         "does not include unmethylated cpgs without alts",
-        rastair().args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6117965-6118004",
-            "--skip-methylation-calling",
-            "--vcf"
-        ])
+        rastair()
+            .args(CALL_TEST_BAM)
+            .args([NO_ML, REGION])
+            .args(["--skip-methylation-calling", "--vcf"])
     );
 
     assert_cmd_snapshot!(
         "includes all cpgs",
-        rastair().args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19:6117965-6118004",
-            "--vcf"
-        ])
+        rastair().args(CALL_TEST_BAM).args([NO_ML, REGION]).args(["--vcf"])
     );
 
     Ok(())
@@ -268,29 +201,23 @@ fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
 
 #[test]
 fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
+    const REGION: &str = "--region=chr19";
+
     apply_common_filters!();
 
     let temp_dir = TempDir::new()?;
     let temp_file = temp_dir.path().join("test.vcf");
 
     rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
-            "--region=chr19",
-            "--segment-max-length=10000",
-            "--segment-overlap=300",
-            "--vcf",
-        ])
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, REGION])
+        .args(["--segment-max-length=10000", "--segment-overlap=300", "--vcf"])
         .arg(&temp_file)
         .succeeds()
         .wrap_err("rastair call failed")?;
 
     let text = std::fs::read_to_string(&temp_file).wrap_err("read rastair 2 vcf")?;
-    text.lines()
-        .filter(|line| !line.starts_with("#"))
+    vcf_content_lines(&text)
         .filter_map(|line| line.split("\t").nth(1))
         .filter_map(|x| x.parse::<u32>().ok())
         .try_fold(BTreeSet::new(), |mut set, position| {

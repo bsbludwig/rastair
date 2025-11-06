@@ -4,11 +4,11 @@ info:
   program: rastair
   args:
     - call
-    - "-c"
     - "--fasta-file=tests/data/test.fasta.gz"
     - tests/data/test.bam
-    - "--ml=0.8"
     - "--region=chr19:6105700-6105800"
+    - "-c"
+    - "--ml=0.8"
   env:
     NO_COLOR: "1"
 ---
