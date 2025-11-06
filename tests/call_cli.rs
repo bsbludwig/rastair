@@ -227,3 +227,53 @@ fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn vcf_with_nOT_nOB() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let a = temp_dir.path().join("defaults.bcf");
+    let b = temp_dir.path().join("with_args.bcf");
+
+    rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).arg("--vcf").arg(&a).succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--nOT=12,12,12,12", "--nOB=12,12,12,12"])
+        .arg("--vcf")
+        .arg(&b)
+        .succeeds()?;
+
+    assert_compact_debug_snapshot!(get_depths(&a), @"Ok([18, 18, 17, 16, 16, 20, 23])");
+    assert_compact_debug_snapshot!(get_depths(&b), @"Ok([11, 12, 13, 13, 11, 12, 16])");
+
+    fn get_depths(path: &std::path::Path) -> Result<Vec<i32>> {
+        use rastair_vcf::VcfField as _;
+        use rust_htslib::bcf::Read;
+
+        let mut bcf = read_bcf(path).wrap_err("invalid bcf file")?;
+        let depths = bcf
+            .records()
+            .map(|r| {
+                let field = r
+                    .unwrap()
+                    .info(rastair_vcf::standard_fields::ReadDepth::ID.as_bytes())
+                    .integer()
+                    .unwrap()
+                    .unwrap();
+                *field.first().unwrap()
+            })
+            .collect::<Vec<_>>();
+        Ok(depths)
+    }
+
+    Ok(())
+}
+
+// TODO: add tests that compare default output with output when
+// - mbias (nOT/nOB) are set
+// - min depth is set
+// - max depth is set
+// - min bq is set
+// - min mapq is set
