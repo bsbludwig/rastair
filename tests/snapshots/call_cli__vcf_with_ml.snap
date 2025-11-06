@@ -62,5 +62,5 @@ exit_code: 0
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
 
 ----- stderr -----
-[TIME] INFO rastair::call: Wrote VCF output file="-"
+[TIME] INFO rastair::call::writer: Wrote VCF output file="-"
 [TIME] INFO rastair: Call finished [DURATION]

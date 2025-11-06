@@ -93,6 +93,11 @@ fn different_paths_for_bed_and_vcf() -> Result<()> {
     Error: 
        0: Unclear output choice
        1: Can't write both VCF and BED output to the same file. Please specify different output files.
+
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ SPANTRACE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+       0: rastair::call::call
+          at src/call.rs:144
     ");
 
     Ok(())
@@ -119,6 +124,11 @@ fn invalid_bam_file() -> Result<()> {
     Error: 
        0: Failed to read BAM/FASTA files
        1: unable to open SAM/BAM/CRAM file at [PATH]
+
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ SPANTRACE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+       0: rastair::call::call
+          at src/call.rs:144
 
     Suggestion: Ensure the BAM file is sorted and indexed with `samtools sort "[PATH]"`, respectively.
     Note: If you have a .bai file, ensure it is in the same directory as the BAM file.

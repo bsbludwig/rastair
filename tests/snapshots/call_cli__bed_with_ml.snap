@@ -22,5 +22,5 @@ chr19	6105743	6105744	.	0.80	+	2	8	6	0	16	C/C	99	18	REF
 chr19	6105744	6105745	.	0.50	-	3	3	10	0	16	G/G	99	30	REF
 
 ----- stderr -----
-[TIME] INFO rastair::call: Wrote BED output file="-"
+[TIME] INFO rastair::call::writer: Wrote BED output file="-"
 [TIME] INFO rastair: Call finished [DURATION]
