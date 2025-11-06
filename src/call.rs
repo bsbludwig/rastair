@@ -29,8 +29,8 @@ pub mod process;
 mod record_filters;
 pub mod variant_calling;
 pub mod variants;
-mod writer_thread;
-pub use writer_thread::writer_thread;
+mod writer;
+pub use writer::writer_thread;
 
 #[cfg(test)]
 pub mod test_helpers;
