@@ -23,6 +23,22 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
 
     let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
     assert!(stdout.trim().starts_with("##fileformat=VCF"));
+    assert_snapshot!(stdout);
+
+    Ok(())
+}
+
+#[test]
+fn vcf_with_ml() -> Result<()> {
+    apply_common_filters!();
+
+    assert_cmd_snapshot!(rastair().args([
+        "call",
+        "--fasta-file=tests/data/test.fasta.gz",
+        "tests/data/test.bam",
+        "--ml=0.8", // explicitly set ML threshold
+        "--region=chr19:6105700-6105800",
+    ]));
 
     Ok(())
 }
@@ -50,6 +66,23 @@ fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
 
     let stdout = String::from_utf8(output.stdout).wrap_err("utf8 decode")?;
     assert!(stdout.trim().starts_with("#chr"));
+    assert_snapshot!(stdout);
+
+    Ok(())
+}
+
+#[test]
+fn bed_with_ml() -> Result<()> {
+    apply_common_filters!();
+
+    assert_cmd_snapshot!(rastair().args([
+        "call",
+        "-c",
+        "--fasta-file=tests/data/test.fasta.gz",
+        "tests/data/test.bam",
+        "--ml=0.8", // explicitly set ML threshold
+        "--region=chr19:6105700-6105800",
+    ]));
 
     Ok(())
 }

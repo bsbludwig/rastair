@@ -1,0 +1,26 @@
+---
+source: tests/call_cli.rs
+info:
+  program: rastair
+  args:
+    - call
+    - "-c"
+    - "--fasta-file=tests/data/test.fasta.gz"
+    - tests/data/test.bam
+    - "--ml=0.8"
+    - "--region=chr19:6105700-6105800"
+  env:
+    NO_COLOR: "1"
+---
+success: true
+exit_code: 0
+----- stdout -----
+#chr	start	end	name	beta_est	strand	unmod	mod	no_snp	snp	coverage	genotype	gt_p_score	gt_conf_score	cpg
+chr19	6105711	6105712	.	0.67	+	4	8	6	0	18	C/C	99	18	REF
+chr19	6105712	6105713	.	0.67	-	2	4	12	0	18	G/G	99	36	REF
+chr19	6105743	6105744	.	0.80	+	2	8	6	0	16	C/C	99	18	REF
+chr19	6105744	6105745	.	0.50	-	3	3	10	0	16	G/G	99	30	REF
+
+----- stderr -----
+[TIME] INFO rastair::call: Wrote BED output file="-"
+[TIME] INFO rastair: Call finished [DURATION]
