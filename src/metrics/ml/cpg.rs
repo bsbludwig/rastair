@@ -3,6 +3,10 @@ use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
 };
+use color_eyre::{
+    Result,
+    eyre::{Context as _, ensure},
+};
 use ndarray::{Array2, array};
 use rastair_types::Base;
 use tracing::trace;
@@ -14,15 +18,15 @@ pub fn cpg(
     current: &MetricsForAlt,
     before: Option<&PileupMetrics>,
     after: Option<&PileupMetrics>,
-) -> Array2<f64> {
+) -> Result<Array2<f64>> {
     use Base::*;
 
     let alt = current.alt;
     let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
     let ref_base = pileup.reference_base;
 
-    assert!(pileup.is_cpg, "cpg called on non-CpG position");
-    assert!(
+    ensure!(pileup.is_cpg, "cpg called on non-CpG position");
+    ensure!(
         (ref_base == C && alt.base == T) || (ref_base == G && alt.base == A),
         "cpg called on non-methylation candidate"
     );
@@ -49,10 +53,11 @@ pub fn cpg(
     };
 
     let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj } =
-        calculate_adjacent_features(current, before, after);
+        calculate_adjacent_features(current, before, after)
+            .wrap_err("Failed to calculate adjacent features for CpG")?;
 
     // Never change the order of these variables, as they are used in the model
-    array![[
+    Ok(array![[
         alt_ad_adj,
         alt_score_adj,
         ref_a,
@@ -108,7 +113,7 @@ pub fn cpg(
         r.num_indels.f(),
         alt.num_indels.f(),
         beta_ratio
-    ]]
+    ]])
 }
 
 struct AdjecentFeatures {
@@ -124,16 +129,16 @@ fn calculate_adjacent_features(
     b: Option<&PileupMetrics>,
     // after
     a: Option<&PileupMetrics>,
-) -> AdjecentFeatures {
+) -> Result<AdjecentFeatures> {
     use Base::*;
 
     let ref_base = c.metrics.ref_base();
-    if ref_base == C
+    let res = if ref_base == C
         && let Some(after) = a
         && after.ref_base() == G
     {
         let c_alt = c.alt;
-        assert_eq!(c_alt.base, T);
+        ensure!(c_alt.base == T);
         let c_r = &c.metrics.ref_metrics;
         let r = &after.ref_metrics;
 
@@ -167,7 +172,7 @@ fn calculate_adjacent_features(
         && before.ref_base() == C
     {
         let c_alt = c.alt;
-        assert_eq!(c_alt.base, A);
+        ensure!(c_alt.base == A);
         let c_r = &c.metrics.ref_metrics;
         let r = &before.ref_metrics;
 
@@ -199,5 +204,7 @@ fn calculate_adjacent_features(
     } else {
         trace!(%ref_base, "No adjacent evidence for methylation");
         AdjecentFeatures { beta_ratio: 0., alt_ad_adj: 0., alt_score_adj: 0. }
-    }
+    };
+
+    Ok(res)
 }

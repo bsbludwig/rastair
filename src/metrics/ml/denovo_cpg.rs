@@ -2,10 +2,13 @@ use super::utils::one_hot_encode_base;
 use crate::{
     metrics::{FormsDenovo, MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
-    vcf::DeNovoCpGCandidate,
+};
+use color_eyre::{
+    Result,
+    eyre::{Context as _, bail, ensure},
 };
 use ndarray::{Array2, array};
-use rastair_types::Base::{self, *};
+use rastair_types::Base::*;
 use tracing::trace;
 
 /// Generate features for denovo CpG mutation candidates
@@ -15,9 +18,9 @@ pub fn denovo_cpg(
     current: &MetricsForAlt,
     before: Option<&PileupMetrics>,
     after: Option<&PileupMetrics>,
-) -> Array2<f64> {
+) -> Result<Array2<f64>> {
     let alt = current.alt;
-    assert!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
+    ensure!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
 
     let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
 
@@ -40,14 +43,15 @@ pub fn denovo_cpg(
         (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.).log2()
             - (r.strand_count.ot.f() * r.baseq_s.ot + 1.).log2()
     } else {
-        unreachable!("denovo CpG alt base must be C or G")
+        bail!("denovo CpG alt base must be C or G")
     };
 
     let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj } =
-        calculate_adjacent_features(current, before, after);
+        calculate_adjacent_features(current, before, after)
+            .wrap_err("Failed to calculate adjacent features for de-novo CpG")?;
 
     // Never change the order of these variables, as they are used in the model
-    array![[
+    Ok(array![[
         alt_ad_adj,
         alt_score_adj,
         sb_adj,
@@ -104,7 +108,7 @@ pub fn denovo_cpg(
         r.num_indels.f(),
         alt.num_indels.f(),
         beta_ratio
-    ]]
+    ]])
 }
 
 struct AdjecentFeatures {
@@ -121,10 +125,10 @@ fn calculate_adjacent_features(
     b: Option<&PileupMetrics>,
     // after
     a: Option<&PileupMetrics>,
-) -> AdjecentFeatures {
+) -> Result<AdjecentFeatures> {
     let c_alt = c.alt;
 
-    match c_alt.denovo {
+    Ok(match c_alt.denovo {
         FormsDenovo::ThisBecomesC => {
             let beta_center = {
                 let c_count = c.metrics.alt(C).map(|x| x.strand_count.ot).unwrap_or_default();
@@ -135,7 +139,7 @@ fn calculate_adjacent_features(
             if let Some(after) = a
                 && let Some(MetricsForAlt { alt, .. }) = after.alt_metrics(A)
             {
-                assert_eq!(after.ref_base(), G, "De-novo CpG not followed by G");
+                ensure!(after.ref_base() == G, "De-novo CpG not followed by G");
                 let r = &after.ref_metrics;
 
                 let beta_after = {
@@ -166,7 +170,7 @@ fn calculate_adjacent_features(
             if let Some(before) = b
                 && let Some(alt) = before.alt(T)
             {
-                assert_eq!(before.ref_base(), C, "De-novo CpG not preceded by C");
+                ensure!(before.ref_base() == C, "De-novo CpG not preceded by C");
                 let r = &before.ref_metrics;
 
                 let beta_before = {
@@ -192,5 +196,5 @@ fn calculate_adjacent_features(
             trace!("No denovo CpG context found for adjacent feature calculation");
             AdjecentFeatures { beta_ratio: 0.0, alt_ad_adj: 0.0, alt_score_adj: 0.0, sb_adj: 0.0 }
         }
-    }
+    })
 }

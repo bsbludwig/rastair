@@ -40,6 +40,13 @@ impl MachineLearning {
             warn!(model=?name, "No model found");
             return None;
         };
+        let features = match features {
+            Err(error) => {
+                warn!(%error, "Failed to generate features for ML prediction");
+                return None;
+            }
+            Ok(x) => x,
+        };
         let prediction = model.predict(&features.view());
 
         match prediction.get(0).copied() {

@@ -3,13 +3,14 @@ use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
 };
+use color_eyre::Result;
 use ndarray::{Array2, array};
 
 pub fn others(
     current: &MetricsForAlt,
     _before: Option<&PileupMetrics>,
     _after: Option<&PileupMetrics>,
-) -> Array2<f64> {
+) -> Result<Array2<f64>> {
     let alt = current.alt;
 
     let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
@@ -34,7 +35,7 @@ pub fn others(
     let alt_score = (alt.depth.f() * alt.baseq + 1.).log2() - (r.depth.f() * r.baseq + 1.).log2();
 
     // Never change the order of these variables, as they are used in the model
-    array![[
+    Ok(array![[
         ref_a,
         ref_c,
         ref_g,
@@ -89,5 +90,5 @@ pub fn others(
         alt.num_aligned_bases.f(),
         r.num_indels.f(),
         alt.num_indels.f(),
-    ]]
+    ]])
 }
