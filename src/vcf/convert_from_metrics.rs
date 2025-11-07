@@ -1,6 +1,6 @@
 use super::Record;
 use crate::{
-    metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
+    metrics::PileupMetrics,
     utils::{IntoF64 as _, default, logging::ThisIsABug},
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,

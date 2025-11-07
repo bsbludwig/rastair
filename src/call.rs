@@ -303,7 +303,7 @@ fn process_region(
     let (segment, pileups) = region.process(readers, &pileup_mapping_params)?;
     let mut pileups: Vec<PileupMetrics> = pileups
         .into_iter()
-        .map(|pileup| PileupMetrics::new(pileup))
+        .map(PileupMetrics::new)
         .filter_map(|x: Result<PileupMetrics>| match x {
             Err(e) => {
                 warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
