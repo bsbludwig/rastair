@@ -20,7 +20,11 @@ pub use regions::{ChunkRegion, Region, SelectedRegion};
 use rust_htslib::bam::{self, FetchDefinition, HeaderView, Read as _};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::{num::NonZeroU32, ops::Deref};
+use std::{
+    num::NonZeroU32,
+    ops::{Deref, Range},
+};
+use thiserror::Error;
 use tracing::{debug, instrument, trace};
 
 mod chunked;
@@ -155,11 +159,13 @@ impl Segment {
         let start = start.min(self.sequence.len());
         let end = end.min(self.sequence.len());
 
-        self.sequence
-            .get(start..end)
-            .wrap_err_with(|| format!("Failed to read sequence slice {:?}", start..end))
+        self.sequence.get(start..end).wrap_err_with(|| FailedToReadSequenceSlice(start..end))
     }
 }
+
+#[derive(Debug, Error)]
+#[error("Failed to read sequence slice {0:?}")]
+struct FailedToReadSequenceSlice(Range<usize>);
 
 impl<'reg> TryFrom<&'reg Region> for FetchDefinition<'reg> {
     type Error = color_eyre::Report;
