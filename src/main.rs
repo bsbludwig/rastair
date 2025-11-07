@@ -4,13 +4,8 @@ use clap::{CommandFactory as _, Parser as _};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
 use rastair::{
-    bam::BamRewriteArgs,
-    call::{CallParams, call},
-    call_reads::{PerReadParams, call_reads},
-    convert::ConvertParams,
-    io::mpk::viewer::MpkViewParams,
-    mbias::MBiasParams,
-    utils::logging::setup_logging,
+    CallParams, ConvertParams, MBiasParams, PerReadParams, bam::BamRewriteArgs, call, call_reads,
+    io::mpk::viewer::MpkViewParams, utils::logging::setup_logging,
 };
 use tracing::{debug, info, warn};
 
@@ -147,7 +142,7 @@ fn main() -> Result<()> {
             // track execution time
             let start = std::time::Instant::now();
             debug!(?params, "Running convert command");
-            rastair::convert::convert(&params)?;
+            rastair::convert(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Convert finished");
         }
@@ -157,7 +152,7 @@ fn main() -> Result<()> {
         }
         Subcommand::Mbias(params) => {
             debug!(?params, "Running mbias command");
-            rastair::mbias::mbias(&params)?;
+            rastair::mbias(&params)?;
         }
         Subcommand::Internal { command } => match command {
             Generate::ShellCompletions { shell } => {

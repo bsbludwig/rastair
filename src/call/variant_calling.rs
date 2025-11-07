@@ -13,9 +13,8 @@ mod genotype;
 pub use genotype::{EstimatedGenotype, GenotypeTag};
 mod read_flags;
 pub use read_flags::ReadFlags;
-mod read_masking;
-pub use read_masking::ReadMaskParams;
 mod quality_filters;
+mod read_masking;
 pub use quality_filters::QualityFilterParams;
 
 impl Pileup {

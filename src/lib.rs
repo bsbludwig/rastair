@@ -1,11 +1,17 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+// CLI modules
+mod call;
+pub use call::{CallParams, SegmentationParams, call};
+mod call_reads;
+pub use call_reads::{PerReadParams, call_reads};
+mod convert;
+pub use convert::{ConvertParams, convert};
+mod mbias;
+pub use mbias::{MBiasParams, mbias};
+
 pub mod bam;
 pub mod bed;
-pub mod call;
-pub mod call_reads;
-pub mod convert;
-pub mod mbias;
 pub mod metrics;
 pub mod io {
     pub mod formats;

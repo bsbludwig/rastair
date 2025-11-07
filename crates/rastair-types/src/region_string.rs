@@ -25,7 +25,6 @@ use winnow::{
 #[must_use]
 pub struct RegionString {
     /// The chromosome name, includes the "chr" prefix.
-    // todo: is there always a chr prefix? should we filter it out?
     pub chromosome: SmolStr,
     /// The start position of the region, inclusive.
     pub start: Option<NonZeroU32>,

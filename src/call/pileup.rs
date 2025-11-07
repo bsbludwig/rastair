@@ -3,7 +3,6 @@ use crate::{
     utils::{Base, ByAllele},
     vcf::SequenceContext,
 };
-use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 

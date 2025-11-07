@@ -5,7 +5,7 @@ use crate::{
     call::{
         pileup::Pileup,
         process::{IncludeAllCpGs, PileupMappingParams},
-        variant_calling::{ReadFlags, ReadMaskParams, VariantCallingParams},
+        variant_calling::{ReadFlags, VariantCallingParams},
     },
     sequence::{ReaderParams, Readers},
     utils::RegionString,
