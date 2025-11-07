@@ -1,5 +1,10 @@
 use rastair_types::RootMeanSquare;
 
+/// Shortcut to get the default value of a type.
+pub fn default<T: Default>() -> T {
+    T::default()
+}
+
 pub trait IntoF64 {
     /// Dangerously convert this into f64!
     #[track_caller]

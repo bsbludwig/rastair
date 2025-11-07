@@ -146,6 +146,8 @@ impl FromStr for ReadMaskSetting {
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::default;
+
     use super::*;
 
     use proptest::prelude::*;
@@ -228,7 +230,7 @@ mod tests {
             strand,
             reverse: rev,
             position: crate::call::pileup::PositionInRead { pos, read_length: len },
-            ..Default::default()
+            ..default()
         }
     }
 
@@ -262,10 +264,8 @@ mod tests {
 
     #[test]
     fn filter_size_and_boundary_conditions() {
-        let mask = ReadMaskParams {
-            n_ot: ReadMaskSetting::from_str("1,1,1,1").unwrap(),
-            ..Default::default()
-        };
+        let mask =
+            ReadMaskParams { n_ot: ReadMaskSetting::from_str("1,1,1,1").unwrap(), ..default() };
 
         // Too small reads
         assert!(!mask.filter(&read(1, 2, Strand::OT, false))); // 2 < 1+1+1

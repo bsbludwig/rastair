@@ -1,7 +1,7 @@
 use super::utils::one_hot_encode_base;
 use crate::{
     metrics2::{MetricsForAlt, PileupMetrics},
-    utils::conversion::IntoF64 as _,
+    utils::IntoF64 as _,
     vcf::DeNovoCpGCandidate,
 };
 use ndarray::{Array2, array};

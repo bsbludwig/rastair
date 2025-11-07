@@ -1,7 +1,7 @@
 use super::Record;
 use crate::{
     metrics2::PileupMetrics,
-    utils::conversion::IntoF64 as _,
+    utils::{IntoF64 as _, default},
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, Entropy, Filters, Format, GenotypeConfidence,
         GenotypeLikelihood, InCpG, Info, MachineLearningPrediction, NumAlignedBases, NumIndels,
@@ -28,7 +28,7 @@ impl PileupMetrics {
         let main = VcfFixedFields {
             chrom: self.contig(),
             pos: self.pos(),
-            id: Default::default(),
+            id: default(),
             r#ref: self.ref_base().into(),
             alt: self.alts().iter().map(|alt| (*alt).into()).collect::<SmallVec<_, 2>>(),
             qual: self.pileup.qual(),

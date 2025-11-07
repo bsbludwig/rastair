@@ -1,7 +1,7 @@
 use crate::{
     call::{methylation::ThresholdParams, variant_calling::GenotypeTag},
     metrics2::PileupMetrics,
-    utils::{Base::*, conversion::IntoF64, logging::ThisIsABug},
+    utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::Methylated,
 };
 use color_eyre::{

@@ -31,7 +31,8 @@ pub mod utils {
 
     pub mod cli;
 
-    pub mod conversion;
+    mod conversion;
+    pub use conversion::{IntoF64, default};
 
     mod grouping;
     pub use grouping::{ByAllele, ByStrand};

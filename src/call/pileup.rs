@@ -1,17 +1,15 @@
 use crate::{
-    sequence::{ChunkRegion, Segment},
+    sequence::ChunkRegion,
     utils::{Base, ByAllele, Counter, Strand},
     vcf::SequenceContext,
 };
 use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::{fmt, ops::Deref, sync::Arc};
+use std::{fmt, ops::Deref};
 
 #[derive(Debug, Clone)]
 pub struct Pileup {
-    #[deprecated]
-    pub segment: Arc<Segment>,
     /// Region of the chunk this pileup belongs to
     pub region: ChunkRegion,
     /// Sequence context around the position in the reference
@@ -174,22 +172,11 @@ impl fmt::Display for PositionInRead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sequence::{ChunkRegion, Region};
+    use crate::{
+        sequence::{ChunkRegion, Region, Segment},
+        utils::default,
+    };
     use insta::assert_debug_snapshot;
-
-    fn fake_segment() -> Arc<Segment> {
-        Arc::new(Segment {
-            range: ChunkRegion {
-                region: Region { contig: "chr19".into(), start: 1000, end: 1100 },
-                last_position: 2000,
-            },
-            sequence: vec![],
-        })
-    }
-
-    fn default<T: Default>() -> T {
-        T::default()
-    }
 
     #[test]
     fn test_alleles_in_order() {
@@ -216,11 +203,16 @@ mod tests {
             },
         ]));
 
-        let segment = fake_segment();
+        let segment = Segment {
+            range: ChunkRegion {
+                region: Region { contig: "chr19".into(), start: 1000, end: 1100 },
+                last_position: 2000,
+            },
+            sequence: vec![],
+        };
         let variant_candidate = Pileup {
             region: segment.range.clone(),
             context: SequenceContext::default(),
-            segment,
             pos: 1002, // Corresponds to index in the segment
             reads: bases,
             reference_base: Base::T, // Assume T is the reference base at this position
