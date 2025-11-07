@@ -1,6 +1,6 @@
 use crate::{
     call::ml::{MachineLearning, MlModel, Prediction},
-    metrics2::{MetricsForAlt, PileupMetrics},
+    metrics::{MetricsForAlt, PileupMetrics},
     vcf::{DeNovoCpGCandidate, InCpG},
 };
 use rastair_types::{Base, Probability};

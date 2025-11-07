@@ -5,7 +5,7 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics2::{self, MetricsForAlt, PileupMetrics, PositionMetricsExt},
+    metrics::{self, MetricsForAlt, PileupMetrics, PositionMetricsExt},
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{
         Surrounding, cli,
@@ -311,7 +311,7 @@ fn process_region(
                 let genotype = metrics.pileup.estimate_genotype(params.variant_calling.error_model);
 
                 let methylated =
-                    metrics2::methylation::call(&params.methylation.thresholds, metrics)?
+                    metrics::methylation::call(&params.methylation.thresholds, metrics)?
                         .unwrap_or_default();
 
                 let region_entropy = segment.entropy_around::<100>(metrics.pileup.idx())?;

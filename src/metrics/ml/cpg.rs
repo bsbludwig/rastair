@@ -1,6 +1,6 @@
 use super::utils::one_hot_encode_base;
 use crate::{
-    metrics2::{MetricsForAlt, PileupMetrics},
+    metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
 };
 use ndarray::{Array2, array};

@@ -1,6 +1,6 @@
 use crate::{
     call::{methylation::ThresholdParams, variant_calling::GenotypeTag},
-    metrics2::PileupMetrics,
+    metrics::PileupMetrics,
     utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::Methylated,
 };

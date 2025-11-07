@@ -1,6 +1,6 @@
 use super::Record;
 use crate::{
-    metrics2::PileupMetrics,
+    metrics::PileupMetrics,
     utils::{IntoF64 as _, default, logging::ThisIsABug},
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, Entropy, Filters, Format,

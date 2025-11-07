@@ -7,7 +7,7 @@
 
 use crate::{
     call::pileup::Pileup,
-    metrics2::PileupMetrics,
+    metrics::PileupMetrics,
     utils::{Base::*, Surrounding, cli},
     vcf::{self},
 };

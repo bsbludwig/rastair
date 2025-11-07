@@ -6,7 +6,7 @@ pub mod call;
 pub mod call_reads;
 pub mod convert;
 pub mod mbias;
-pub mod metrics2;
+pub mod metrics;
 pub mod io {
     pub mod formats;
     pub mod mpk;

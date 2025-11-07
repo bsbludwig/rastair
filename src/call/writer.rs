@@ -1,7 +1,7 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
     call::CallParams,
-    metrics2::PileupMetrics,
+    metrics::PileupMetrics,
     sequence::ChunkRegion,
     utils::logging::ThisIsABug as _,
     vcf::VcfOutputFilter,

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{metrics2::PileupMetrics, vcf};
+use crate::{metrics::PileupMetrics, vcf};
 
 /// Struct holding references to current and its surrounding items
 pub struct Surrounding<'a, T> {
