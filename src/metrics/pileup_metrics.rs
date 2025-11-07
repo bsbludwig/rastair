@@ -238,6 +238,8 @@ pub struct AlleleMetrics {
     pub num_indels: RootMeanSquare,
     /// relative position in read
     pub position_in_read: RootMeanSquare,
+    /// Allele frequency
+    pub allele_frequency: Probability,
     /// does this alt form a de-novo cpg?
     pub denovo: FormsDenovo,
 }
@@ -332,6 +334,9 @@ impl AlleleMetrics {
             position_in_read: i()
                 .map(|b| f64::from(b.position.pos) / f64::from(b.position.read_length))
                 .rms(),
+            allele_frequency: Probability::new(allele_depth.f() / pileup.reads.len().f())
+                .wrap_err("allele frequency not in in [0,1]")
+                .this_is_a_bug()?,
             denovo,
         })
     }

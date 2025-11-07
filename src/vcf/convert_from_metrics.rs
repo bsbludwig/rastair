@@ -56,9 +56,7 @@ impl PileupMetrics {
             ),
             sequence_context: self.pileup.context.clone(),
             allele_frequency: AlleleFrequency(
-                self.alts_metrics()
-                    .map(|m| m.depth.f() / self.pos_metrics.read_depth.f())
-                    .collect(),
+                self.alts_metrics().map(|m| m.allele_frequency.f()).collect(),
             ),
             allele_base_quality: AlleleBaseQuality(
                 self.ref_alts_metrics().map(|m| m.baseq.f()).collect(),
