@@ -17,7 +17,7 @@ use crate::{
 use clio::ClioPath;
 use color_eyre::{
     Section,
-    eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
+    eyre::{ContextCompat as _, Result, WrapErr, ensure},
 };
 use rastair_vcf::VcfFilter;
 use rayon::prelude::*;

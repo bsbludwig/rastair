@@ -4,7 +4,7 @@ use crate::{
         variant_calling::EstimatedGenotype,
     },
     utils::ByStrand,
-    vcf::{DeNovoCpGCandidate, InCpG, Methylated, SequenceContext},
+    vcf::{DeNovoCpGCandidate, InCpG, Methylated},
 };
 use better_default::Default;
 use color_eyre::{
@@ -93,7 +93,7 @@ impl PileupMetrics {
     }
 
     pub fn contig(&self) -> SmolStr {
-        self.pileup.segment.contig.clone()
+        self.pileup.region.contig.clone()
     }
 
     pub fn pos(&self) -> u32 {
@@ -137,8 +137,6 @@ pub struct PositionMetrics {
     pub mapq0: usize,
     /// Entropy of the region around the position
     pub region_entropy: f64,
-    /// Sequence context around the position in the reference
-    pub sequence_context: SequenceContext,
     pub cpg: InCpG,
     /// Is this position a de-novo cpg candidate?
     pub de_novo_cpg_candidate: DeNovoCpGCandidate,
@@ -154,7 +152,6 @@ impl PositionMetrics {
             mapq: pileup.reads.iter().map(|x| x.mapq).collect::<RootMeanSquare>(),
             mapq0: pileup.reads.iter().filter(|x| x.mapq == 0).count(),
             region_entropy: pileup.entropy(),
-            sequence_context: SequenceContext::from(pileup),
             cpg: InCpG::from(pileup),
             de_novo_cpg_candidate: DeNovoCpGCandidate::from(pileup),
             // this is set later in `call`

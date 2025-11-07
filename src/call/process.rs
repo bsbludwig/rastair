@@ -4,7 +4,7 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     sequence::{ChunkRegion, Readers, Segment},
-    utils::{Base, StrandFromRecord},
+    utils::{SequenceContext, StrandFromRecord},
     vcf::{self, Filters, InCpG},
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
@@ -152,16 +152,20 @@ fn collect_candidate(
     }
 
     let reference_base = segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
+
+    let context = SequenceContext::new(reference_base, idx, &segment)
+        .wrap_err("failed to get sequence context")?;
+    let is_cpg = *InCpG::new(reference_base, context.before_1, context.after_1);
     let has_alts = !reads.matches(reference_base);
 
-    let before = idx.checked_sub(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
-    let after = idx.checked_add(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
     let res = Pileup {
+        region: segment.range.clone(),
+        context,
         segment: segment.clone(),
         pos: pile.pos(),
         reads,
         reference_base,
-        is_cpg: *InCpG::new(reference_base, before, after),
+        is_cpg,
     };
 
     if has_alts || (*params.include_cpgs && res.is_cpg) {

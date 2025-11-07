@@ -32,6 +32,7 @@ mod tests {
     use crate::{
         call::pileup::SimpleReads,
         sequence::{ChunkRegion, Region, Segment},
+        vcf::SequenceContext,
     };
     use proptest::proptest;
     use smallvec::smallvec;
@@ -42,15 +43,14 @@ mod tests {
 
     #[test]
     fn low_entropy() {
-        let segment = Segment {
-            range: ChunkRegion {
-                region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
-                last_position: 100,
-            },
-            sequence: repeat_n(b'A', 100).collect(),
+        let region = ChunkRegion {
+            region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
+            last_position: 100,
         };
         let pileup = Pileup {
-            segment: Arc::new(segment),
+            region: region.clone(),
+            context: SequenceContext::default(),
+            segment: Arc::new(Segment { range: region, sequence: repeat_n(b'A', 100).collect() }),
             pos: 50,
             reads: SimpleReads(smallvec![]),
             reference_base: Base::A,
@@ -62,15 +62,17 @@ mod tests {
 
     #[test]
     fn high_entropy() {
-        let segment = Segment {
-            range: ChunkRegion {
-                region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
-                last_position: 100,
-            },
-            sequence: repeat_n(b"ACTG", 25).flat_map(|x| *x).collect(),
+        let region = ChunkRegion {
+            region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
+            last_position: 100,
         };
         let pileup = Pileup {
-            segment: Arc::new(segment),
+            region: region.clone(),
+            context: SequenceContext::default(),
+            segment: Arc::new(Segment {
+                range: region,
+                sequence: repeat_n(b"ACTG", 25).flat_map(|x| *x).collect(),
+            }),
             pos: 50,
             reads: SimpleReads(smallvec![]),
             reference_base: Base::A,
@@ -83,15 +85,17 @@ mod tests {
     proptest! {
         #[test]
         fn entropy_is_non_negative(sequence in "[ACTG]{100}") {
-            let segment = Segment {
-                range: ChunkRegion {
-                    region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
-                    last_position: 100,
-                },
-                sequence: sequence.into_bytes(),
+            let region = ChunkRegion {
+                region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
+                last_position: 100,
             };
             let pileup = Pileup {
-                segment: Arc::new(segment),
+                region: region.clone(),
+                context: SequenceContext::default(),
+                segment: Arc::new(Segment {
+                    range: region,
+                    sequence: sequence.into_bytes(),
+                }),
                 pos: 50,
                 reads: SimpleReads(smallvec![]),
                 reference_base: Base::A,

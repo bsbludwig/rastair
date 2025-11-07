@@ -1,6 +1,7 @@
 use crate::{
-    sequence::Segment,
+    sequence::{ChunkRegion, Segment},
     utils::{Base, ByAllele, Counter, Strand},
+    vcf::SequenceContext,
 };
 use color_eyre::eyre::ContextCompat as _;
 use smallvec::SmallVec;
@@ -9,58 +10,49 @@ use std::{fmt, ops::Deref, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct Pileup {
+    #[deprecated]
     pub segment: Arc<Segment>,
+    /// Region of the chunk this pileup belongs to
+    pub region: ChunkRegion,
+    /// Sequence context around the position in the reference
+    pub context: SequenceContext,
     /// Position in the sequence, 0-based
     pub pos: u32,
     // if this becomes slow, consider boxing or Rc-ing this
     pub reads: SimpleReads,
+    /// Reference base at this position
     pub reference_base: Base,
+    /// Whether this position is part of a CpG site in the reference
     pub is_cpg: bool,
 }
 
 impl Pileup {
     /// Chromosome name of the segment
     pub fn chrom(&self) -> SmolStr {
-        self.segment.range.contig.clone()
+        self.region.contig.clone()
     }
 
     /// Position in the segment sequence, 0-based
     pub fn idx(&self) -> usize {
         let pos = usize::try_from(self.pos).expect("pos fits usize");
-        usize::try_from(self.pos)
-            .expect("position fits in usize")
-            .checked_sub(usize::try_from(self.segment.range.start).expect("index fits in usize"))
+        pos.checked_sub(usize::try_from(self.region.start).expect("index fits in usize"))
             .wrap_err_with(|| {
                 format!(
                     "pile position {} is not in segment range {}..{}",
-                    pos, self.segment.range.start, self.segment.range.end
+                    pos, self.region.start, self.region.end
                 )
             })
             .expect("valid index")
     }
 
-    /// Sequence slice before the variant position
-    pub fn sequence_before<const N: usize>(&self) -> SmallVec<Base, N> {
-        let idx = self.idx();
-
-        self.segment.sequence_slice::<N>(idx.saturating_sub(N), idx).unwrap_or_default()
-    }
-
     /// Reference base right before the variant position
     pub fn ref_before(&self) -> Option<Base> {
-        self.sequence_before::<1>().first().copied()
-    }
-
-    /// Sequence slice after the variant position
-    pub fn sequence_after<const N: usize>(&self) -> SmallVec<Base, N> {
-        let idx = self.idx();
-
-        self.segment.sequence_slice::<N>(idx + 1, idx + N + 1).unwrap_or_default()
+        self.context.before_1
     }
 
     /// Reference base right after the variant position
     pub fn ref_after(&self) -> Option<Base> {
-        self.sequence_after::<1>().first().copied()
+        self.context.after_1
     }
 
     pub fn alleles(&self) -> SmallVec<Base, 4> {
@@ -224,8 +216,11 @@ mod tests {
             },
         ]));
 
+        let segment = fake_segment();
         let variant_candidate = Pileup {
-            segment: fake_segment(),
+            region: segment.range.clone(),
+            context: SequenceContext::default(),
+            segment,
             pos: 1002, // Corresponds to index in the segment
             reads: bases,
             reference_base: Base::T, // Assume T is the reference base at this position

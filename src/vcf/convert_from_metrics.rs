@@ -43,7 +43,7 @@ impl PileupMetrics {
             mapping_quality0: MappingQuality0(self.pos_metrics.mapq0),
             samples_with_data: SamplesWithData(1),
             allele_specific_strand_bias: self.pileup.allele_specific_strand_bias(),
-            sequence_context: self.pos_metrics.sequence_context.clone(),
+            sequence_context: self.pileup.context.clone(),
             allele_frequency: self.pileup.allel_frequency(),
             allele_base_quality: AlleleBaseQuality(
                 self.ref_alts_metrics().map(|m| m.baseq.f()).collect(),

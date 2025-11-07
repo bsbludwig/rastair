@@ -27,7 +27,7 @@ pub fn denovo_cpg(
     let ref_base = pileup.reference_base;
     let depth = pos.read_depth as f64;
 
-    let seq_ctx = &pos.sequence_context;
+    let seq_ctx = &pileup.context;
     let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
     let (p2a, p2c, p2g, p2t) = one_hot_encode_base(seq_ctx.before_1);
     let (p4a, p4c, p4g, p4t) = one_hot_encode_base(seq_ctx.after_1);

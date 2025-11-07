@@ -217,7 +217,7 @@ impl Pileup {
     }
 
     pub fn sequence_context(&self) -> SequenceContext {
-        SequenceContext::from(self)
+        self.context.clone()
     }
 
     fn in_cpg(&self) -> InCpG {

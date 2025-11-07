@@ -35,7 +35,7 @@ pub fn call(config: &ThresholdParams, current: &PileupMetrics) -> Result<Option<
 
 fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methylated> {
     let ref_base = p.ref_base();
-    let sequence_context = &p.pos_metrics.sequence_context;
+    let sequence_context = &p.pileup.context;
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
 

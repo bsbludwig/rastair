@@ -1,4 +1,4 @@
-use crate::{call::pileup::Pileup, utils::Base};
+use crate::{sequence::Segment, utils::Base};
 use better_default::Default;
 use color_eyre::eyre::{Context as _, Result};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
@@ -18,24 +18,24 @@ pub struct SequenceContext {
     pub after_2: Option<Base>,
 }
 
-impl From<&Pileup> for SequenceContext {
-    // TODO: write tests for this
-    fn from(pileup: &Pileup) -> Self {
-        let (before_2, before_1) = match pileup.sequence_before::<2>().as_slice() {
-            [b2, b1] => (Some(*b2), Some(*b1)),
-            [b1] => (None, Some(*b1)),
-            _ => (None, None),
-        };
-        let (after_1, after_2) = match pileup.sequence_after::<2>().as_slice() {
+impl SequenceContext {
+    pub fn new(middle: Base, idx: usize, segment: &Segment) -> Result<Self> {
+        const N: usize = 2;
+        let (before_2, before_1) =
+            match segment.sequence_slice::<2>(idx.saturating_sub(N), idx)?.as_slice() {
+                [b2, b1] => (Some(*b2), Some(*b1)),
+                [b1] => (None, Some(*b1)),
+                _ => (None, None),
+            };
+        let (after_1, after_2) = match segment.sequence_slice::<2>(idx + 1, idx + N + 1)?.as_slice()
+        {
             [a1, a2] => (Some(*a1), Some(*a2)),
             [a1] => (None, Some(*a1)),
             _ => (None, None),
         };
-        SequenceContext { before_2, before_1, me: pileup.reference_base, after_1, after_2 }
+        Ok(SequenceContext { before_2, before_1, me: middle, after_1, after_2 })
     }
-}
 
-impl SequenceContext {
     fn to_smol_str(&self) -> SmolStr {
         let mut res = SmolStrBuilder::new();
         if let Some(base) = self.before_2 {
