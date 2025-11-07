@@ -6,7 +6,6 @@
 //! i.e. it is called with an already constructed `Record` object.
 //! If a methylation call is made, the `Record` is updated.
 
-mod call;
 mod filters;
 pub mod params;
 mod utils;
@@ -14,5 +13,4 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
-pub use call::call;
 pub use params::ThresholdParams;

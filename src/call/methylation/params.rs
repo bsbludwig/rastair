@@ -22,23 +22,6 @@ impl MethylationCallingParams {
     pub fn should_include_all_cpgs(&self) -> IncludeAllCpGs {
         if self.methylation_calling() { IncludeAllCpGs::Yes } else { IncludeAllCpGs::No }
     }
-
-    /// Call methylation events based on the configured mode
-    #[instrument(level = "trace", skip_all)]
-    pub fn call(
-        &self,
-        record: &mut vcf::Record,
-        before: Option<&vcf::Record>,
-        after: Option<&vcf::Record>,
-    ) -> Result<()> {
-        if self.methylation_calling() {
-            super::call(&self.thresholds, record, before, after)
-                .wrap_err("Failed to call methylation based on thresholds")
-        } else {
-            // If no methylation calling is configured, just return the record as is
-            Ok(())
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
