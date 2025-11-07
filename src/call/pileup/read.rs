@@ -51,6 +51,7 @@ pub struct SimpleRead {
     #[cfg_attr(test, default(2))]
     pub indels: u32,
     /// Query Name of the read this base belongs to
+    // FIXME: Move out if only used for overlapping reads detection
     pub qname: SmallVec<u8, 42>,
 }
 

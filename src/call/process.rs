@@ -1,20 +1,12 @@
 use crate::{
-    call::{
-        pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
-        variant_calling::VariantCallingParams,
-    },
+    call::{pileup::Pileup, variant_calling::VariantCallingParams},
     sequence::{ChunkRegion, Readers, Segment},
-    utils::{SequenceContext, StrandFromRecord},
-    vcf::{self, Filters, InCpG},
+    vcf::{self, Filters},
 };
-use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
-use rust_htslib::bam::{
-    FetchDefinition, Read as _,
-    pileup::{Alignment, Pileup as HtsPileup},
-};
-use smallvec::SmallVec;
+use color_eyre::eyre::{Result, WrapErr};
+use rust_htslib::bam::{FetchDefinition, Read as _};
 use std::{ops::Deref, sync::Arc};
-use tracing::{Level, debug, instrument, trace, warn};
+use tracing::{Level, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct PileupMappingParams {

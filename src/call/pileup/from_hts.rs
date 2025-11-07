@@ -20,20 +20,16 @@ impl Pileup {
         segment: Arc<Segment>,
         params: &PileupMappingParams,
     ) -> Result<Pileup> {
+        let pos = pile.pos();
         let segment_start_pos = usize::try_from(segment.range.start)
             .wrap_err("segment range fits in usize")
             .this_is_a_bug()?;
-        let idx = usize::try_from(pile.pos())
+        let idx = usize::try_from(pos)
             .wrap_err("position fits in usize")
             .this_is_a_bug()?
             .checked_sub(segment_start_pos)
             .wrap_err_with(|| {
-                format!(
-                    "pile position {} is not in segment range {}..{}",
-                    pile.pos(),
-                    segment.range.start,
-                    segment.range.end
-                )
+                format!("pile position {pos} is not in segment {}", segment.region)
             })?;
 
         let seen_bases = pile
