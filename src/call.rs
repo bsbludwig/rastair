@@ -403,7 +403,7 @@ fn process_region(
                     continue 'alts;
                 }
 
-                if let Some(prediction) = ml.predict2(&alt, before, after) {
+                if let Some(prediction) = ml.predict(&alt, before, after) {
                     let filters = current
                         .alt_filters_mut(alt_base)
                         .wrap_err("Failed to get mutable alt metrics")

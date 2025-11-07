@@ -9,7 +9,7 @@ use tracing::{instrument, warn};
 impl MachineLearning {
     #[instrument(level = "debug", skip_all)]
     #[allow(clippy::unwrap_in_result)] // it's fine
-    pub fn predict2(
+    pub fn predict(
         &self,
         current: &MetricsForAlt,
         before: Option<&PileupMetrics>,
