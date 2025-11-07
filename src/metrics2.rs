@@ -3,3 +3,6 @@ pub mod ml;
 mod pileup_metrics;
 pub use pileup_metrics::*;
 mod entropy;
+
+#[cfg(test)]
+mod tests;

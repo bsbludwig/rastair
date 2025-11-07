@@ -1,7 +1,6 @@
 use crate::{
     call::{pileup::Pileup, variant_calling::VariantCallingParams},
     sequence::{ChunkRegion, Readers, Segment},
-    vcf::{self, Filters},
 };
 use color_eyre::eyre::{Result, WrapErr};
 use rust_htslib::bam::{FetchDefinition, Read as _};

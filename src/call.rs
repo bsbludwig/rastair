@@ -26,8 +26,6 @@ use tracing::{Level, debug, instrument, trace, warn};
 
 pub mod denovo_cpg;
 pub mod methylation;
-#[deprecated = "Use `crate::metrics2` instead"]
-pub mod metrics;
 pub mod ml;
 pub mod pileup;
 pub mod process;
