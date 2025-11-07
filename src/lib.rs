@@ -35,5 +35,8 @@ pub mod utils {
 
     mod grouping;
     pub use grouping::{ByAllele, ByStrand};
+
+    mod sequence_context;
+    pub use sequence_context::SequenceContext;
 }
 pub mod sequence;

@@ -1,4 +1,4 @@
-use crate::{call::variants::VariantCandidatePileup, utils::Base};
+use crate::{call::pileup::Pileup, utils::Base};
 use better_default::Default;
 use color_eyre::eyre::{Context as _, Result};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
@@ -18,9 +18,9 @@ pub struct SequenceContext {
     pub after_2: Option<Base>,
 }
 
-impl From<&VariantCandidatePileup> for SequenceContext {
+impl From<&Pileup> for SequenceContext {
     // TODO: write tests for this
-    fn from(pileup: &VariantCandidatePileup) -> Self {
+    fn from(pileup: &Pileup) -> Self {
         let (before_2, before_1) = match pileup.sequence_before::<2>().as_slice() {
             [b2, b1] => (Some(*b2), Some(*b1)),
             [b1] => (None, Some(*b1)),

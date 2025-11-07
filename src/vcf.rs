@@ -15,8 +15,6 @@ mod as_strand_bias;
 pub use as_strand_bias::AlleleSpecificStrandBias;
 mod asq;
 pub use asq::{StrandSpecificBaseQuality, StrandSpecificMappingQuality};
-mod sequence_context;
-pub use sequence_context::SequenceContext;
 mod cpg;
 pub use cpg::InCpG;
 mod denovo_cpg;
@@ -28,6 +26,8 @@ pub mod utils;
 
 mod convert_from_metrics;
 pub use convert_from_metrics::VcfOutputFilter;
+
+pub use crate::utils::SequenceContext;
 
 filter!(lowDp, "Low read depth");
 filter!(dnCpG_lowDp, "Low read depth for de-novo CpG candidate");
