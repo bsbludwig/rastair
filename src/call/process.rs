@@ -48,12 +48,17 @@ impl Deref for IncludeAllCpGs {
 }
 
 impl ChunkRegion {
+    /// Process the chunk region to collect pileups
+    ///
+    /// # Returns
+    /// - The segment corresponding to the chunk region
+    /// - An iterator over pileups in the region
     #[instrument(level = "info", skip_all)]
     pub fn process(
         &self,
         readers: &mut Readers,
         params: &PileupMappingParams,
-    ) -> Result<Vec<Pileup>> {
+    ) -> Result<(Arc<Segment>, impl Iterator<Item = Pileup>)> {
         let segment = readers.segment(self, 2).wrap_err("failed to fetch segment")?;
         trace!(len = segment.sequence.len(), "Processing region");
 
@@ -64,6 +69,7 @@ impl ChunkRegion {
             .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", self.region))?;
 
         let segment = Arc::new(segment);
+        let segment_clone = segment.clone();
 
         // Go over each column in the pileup and collect variant candidates
         let piles = readers
@@ -86,7 +92,7 @@ impl ChunkRegion {
                 // Filter out pileups that are not in the region of interest
                 self.contains(u64::from(p.pos()))
             })
-            .flat_map(|pile| {
+            .flat_map(move |pile| {
                 collect_candidate(&pile, segment.clone(), params)
                     .wrap_err_with(|| {
                         format!("Failed to get candidate from pileup at position {}", pile.pos())
@@ -99,21 +105,8 @@ impl ChunkRegion {
                     warn!(error = format!("{error:#}"), "Failed to get pileup, skipping");
                     None
                 }
-            })
-            .collect::<Vec<_>>();
-
-        if tracing::enabled!(Level::DEBUG) {
-            if piles.is_empty() {
-                trace!("No candidate piles found in region, skipping");
-                return Ok(piles);
-            } else {
-                let count = readable::num::Unsigned::from(piles.len());
-                let bytes = readable::byte::Byte::from(piles.len() * std::mem::size_of::<Pileup>());
-                debug!(%count, %bytes, "Collected candidates");
-            }
-        }
-
-        Ok(piles)
+            });
+        Ok((segment_clone, piles))
     }
 }
 
@@ -161,7 +154,6 @@ fn collect_candidate(
     let res = Pileup {
         region: segment.range.clone(),
         context,
-        segment: segment.clone(),
         pos: pile.pos(),
         reads,
         reference_base,

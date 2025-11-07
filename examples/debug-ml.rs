@@ -48,10 +48,8 @@ fn main() -> Result<()> {
             variant_calling: params.variant_calling.clone(),
         };
 
-        let piles = region.process(&mut readers, &pileup_mapping_params)?;
-
+        let (_segment, piles) = region.process(&mut readers, &pileup_mapping_params)?;
         let mut records = piles
-            .iter()
             .map(|pile| pile.variant_metrics(&params.variant_calling))
             .collect::<Result<Vec<_>>>()
             .wrap_err("Failed to collect metrics")?;

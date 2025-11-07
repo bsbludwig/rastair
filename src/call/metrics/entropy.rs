@@ -1,45 +1,39 @@
 use crate::{
-    call::pileup::Pileup,
+    sequence::Segment,
     utils::{Base, Counter},
 };
+use color_eyre::Result;
 
-impl Pileup {
-    ///  Calculate Shannon entropy for 100bp context around variant position
-    pub(crate) fn entropy(&self) -> f64 {
-        let idx = self.idx();
-        let seq_context = self
-            .segment
-            .get(idx.saturating_sub(50), idx.saturating_add(51))
-            .expect("sequence context indices are valid");
+impl Segment {
+    pub fn entropy_around<const N: usize>(&self, idx: usize) -> Result<f64> {
+        let seq_context = self.get(idx.saturating_sub(N / 2), idx.saturating_add(N / 2 + 1))?;
 
-        let counts: Counter = seq_context.iter().map(|&b| Base::from(b)).collect();
-        let total = seq_context.len() as f64;
-
-        counts
-            .entries()
-            .iter()
-            .filter(|(_base, count)| *count > 0)
-            .map(|(_base, count)| {
-                let p = (*count as f64) / total;
-                -p * p.log2()
-            })
-            .sum::<f64>()
+        Ok(entropy(&seq_context))
     }
+}
+
+///  Calculate Shannon entropy for sequence context
+pub fn entropy(sequence: &[u8]) -> f64 {
+    let counts: Counter = sequence.iter().map(|&b| Base::from(b)).collect();
+    let total = sequence.len() as f64;
+
+    counts
+        .entries()
+        .iter()
+        .filter(|(_base, count)| *count > 0)
+        .map(|(_base, count)| {
+            let p = (*count as f64) / total;
+            -p * p.log2()
+        })
+        .sum::<f64>()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        call::pileup::SimpleReads,
-        sequence::{ChunkRegion, Region, Segment},
-        vcf::SequenceContext,
-    };
+    use crate::sequence::{ChunkRegion, Region, Segment};
     use proptest::proptest;
-    use smallvec::smallvec;
     use smol_str::SmolStr;
-    use std::{iter::repeat_n, sync::Arc};
-
-    use super::*;
+    use std::iter::repeat_n;
 
     #[test]
     fn low_entropy() {
@@ -47,16 +41,11 @@ mod tests {
             region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
             last_position: 100,
         };
-        let pileup = Pileup {
-            region: region.clone(),
-            context: SequenceContext::default(),
-            segment: Arc::new(Segment { range: region, sequence: repeat_n(b'A', 100).collect() }),
-            pos: 50,
-            reads: SimpleReads(smallvec![]),
-            reference_base: Base::A,
-            is_cpg: false,
-        };
-        let entropy = pileup.entropy();
+        let segment = Segment { range: region, sequence: repeat_n(b'A', 100).collect() };
+        let pos = 50;
+
+        let entropy = segment.entropy_around::<100>(pos).unwrap();
+
         assert_eq!(entropy, 0.0);
     }
 
@@ -66,19 +55,12 @@ mod tests {
             region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
             last_position: 100,
         };
-        let pileup = Pileup {
-            region: region.clone(),
-            context: SequenceContext::default(),
-            segment: Arc::new(Segment {
-                range: region,
-                sequence: repeat_n(b"ACTG", 25).flat_map(|x| *x).collect(),
-            }),
-            pos: 50,
-            reads: SimpleReads(smallvec![]),
-            reference_base: Base::A,
-            is_cpg: false,
-        };
-        let entropy = pileup.entropy();
+        let sequence = repeat_n(b"ACTG", 25).flat_map(|x| *x).collect();
+        let segment = Segment { range: region, sequence };
+        let pos = 50;
+
+        let entropy = segment.entropy_around::<100>(pos).unwrap();
+
         assert!(entropy > 0.0);
     }
 
@@ -89,19 +71,12 @@ mod tests {
                 region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
                 last_position: 100,
             };
-            let pileup = Pileup {
-                region: region.clone(),
-                context: SequenceContext::default(),
-                segment: Arc::new(Segment {
-                    range: region,
-                    sequence: sequence.into_bytes(),
-                }),
-                pos: 50,
-                reads: SimpleReads(smallvec![]),
-                reference_base: Base::A,
-                is_cpg: false,
+            let segment = Segment { range: region, sequence: sequence.into_bytes(),
             };
-            let entropy = pileup.entropy();
+            let pos = 50;
+
+            let entropy = segment.entropy_around::<100>(pos).unwrap();
+
             assert!(entropy >= 0.0);
         }
     }

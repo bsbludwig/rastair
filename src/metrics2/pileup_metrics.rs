@@ -1,9 +1,11 @@
+use std::ops::Deref;
+
 use crate::{
     call::{
         pileup::{Pileup, SimpleRead},
         variant_calling::EstimatedGenotype,
     },
-    utils::ByStrand,
+    utils::{ByStrand, default},
     vcf::{DeNovoCpGCandidate, InCpG, Methylated},
 };
 use better_default::Default;
@@ -17,6 +19,7 @@ use smol_str::SmolStr;
 use thiserror::Error;
 use tracing::trace;
 
+#[derive(Debug)]
 pub struct PileupMetrics {
     /// The underlying pileup
     pub pileup: Pileup,
@@ -30,16 +33,29 @@ pub struct PileupMetrics {
     pub alts: SmallVec<Alt, 2>,
 }
 
+#[derive(Debug)]
 pub struct Alt {
     pub base: Base,
     pub metrics: AlleleMetrics,
     pub filters: AltFilters,
 }
 
-impl TryFrom<Pileup> for PileupMetrics {
-    type Error = color_eyre::eyre::Report;
-
-    fn try_from(pileup: Pileup) -> Result<Self, Self::Error> {
+impl PileupMetrics {
+    /// Create new pileup metrics
+    ///
+    /// # Arguments
+    /// - `pileup`: The pileup to compute metrics for
+    /// - `calculate_extended_metrics`: A function that computes extended metrics given the initial position metrics
+    ///
+    /// We're using a closure here so that we split up the calculation of basic
+    /// and extended metrics but not leave the structure half-initialized. The
+    /// closer can do context-dependent calculations that depend on more than
+    /// just the current pileup (e.g., CLI parameters and the segment with the
+    /// loaded sequence).
+    pub fn new(
+        pileup: Pileup,
+        calculate_extended_metrics: impl FnOnce(&PileupMetrics) -> Result<PositionMetricsExt>,
+    ) -> Result<Self> {
         let by_allele = pileup.by_allele();
         let [reference, alts_reads @ ..] = by_allele.as_slice() else {
             // todo: do we reach this point also when we have no reads covering
@@ -59,7 +75,9 @@ impl TryFrom<Pileup> for PileupMetrics {
         #[error("Failed to compute allele metric for {0}")]
         struct AlleleMetricError(Base);
 
-        let pos_metrics = PositionMetrics::from_pileup(&pileup);
+        // Compute initial metrics but keep extended empty to set later
+        let pos_metrics = PositionMetrics::from_pileup(&pileup, default());
+
         let ref_metrics = if reference.is_empty() {
             // this can happen at canonical cpg sites with no evidence
             AlleleMetrics { base: ref_base, ..AlleleMetrics::default() }
@@ -82,7 +100,14 @@ impl TryFrom<Pileup> for PileupMetrics {
 
         let pos_filters = SmallVec::new();
 
-        Ok(PileupMetrics { pileup, pos_metrics, pos_filters, ref_metrics, alts })
+        let mut metrics = PileupMetrics { pileup, pos_metrics, pos_filters, ref_metrics, alts };
+
+        // Compute extended metrics
+        let extended = calculate_extended_metrics(&metrics)
+            .wrap_err("Failed to compute extended position metrics")?;
+        metrics.pos_metrics.extended = extended;
+
+        Ok(metrics)
     }
 }
 
@@ -127,6 +152,7 @@ impl PileupMetrics {
     }
 }
 
+#[derive(Debug)]
 pub struct PositionMetrics {
     pub read_depth: usize,
     /// Base quality
@@ -136,28 +162,47 @@ pub struct PositionMetrics {
     /// Number of reads with mapping quality 0
     pub mapq0: usize,
     /// Entropy of the region around the position
-    pub region_entropy: f64,
     pub cpg: InCpG,
     /// Is this position a de-novo cpg candidate?
     pub de_novo_cpg_candidate: DeNovoCpGCandidate,
+
+    /// Extended metrics
+    // set by `call` later since they depend on more context
+    // todo: explore using type-state for this
+    pub(crate) extended: PositionMetricsExt,
+}
+
+#[derive(Debug, Default)]
+pub struct PositionMetricsExt {
+    /// Entropy of the surrounding region
+    pub region_entropy: f64,
+    /// Estimated genotype
     pub genotype: Option<EstimatedGenotype>,
+    /// Methylation beta
     pub methylated: Methylated,
 }
 
 impl PositionMetrics {
-    pub fn from_pileup(pileup: &Pileup) -> Self {
+    pub fn from_pileup(pileup: &Pileup, extended: PositionMetricsExt) -> Self {
         PositionMetrics {
             read_depth: pileup.reads.len(),
             baseq: pileup.reads.iter().map(|x| x.qual).collect::<RootMeanSquare>(),
             mapq: pileup.reads.iter().map(|x| x.mapq).collect::<RootMeanSquare>(),
             mapq0: pileup.reads.iter().filter(|x| x.mapq == 0).count(),
-            region_entropy: pileup.entropy(),
             cpg: InCpG::from(pileup),
             de_novo_cpg_candidate: DeNovoCpGCandidate::from(pileup),
-            // this is set later in `call`
-            genotype: None,
-            methylated: Methylated::Unknown,
+
+            // These fields are given by all
+            extended,
         }
+    }
+}
+
+impl Deref for PositionMetrics {
+    type Target = PositionMetricsExt;
+
+    fn deref(&self) -> &Self::Target {
+        &self.extended
     }
 }
 
@@ -182,7 +227,7 @@ pub struct AlleleMetrics {
     pub denovo: DeNovoCpGCandidate,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct AltFilters {
     /// ML prediction: probability this is a true variant
     pub ml: Option<Probability>,
@@ -206,7 +251,7 @@ impl AlleleMetrics {
                 "Why are we here? No reads for allele metrics calculation"
             );
 
-            return Ok(AlleleMetrics { base: pileup.reference_base, ..Default::default() });
+            return Ok(AlleleMetrics { base: pileup.reference_base, ..default() });
         }
 
         let base = reads[0].base;

@@ -46,7 +46,7 @@ impl Pileup {
             strand_specific_base_quality: self.strand_specific_base_quality(),
             strand_specific_mapping_quality: self.strand_specific_mapping_quality(),
             position_in_read: self.position_in_read(),
-            entropy: Entropy(smallvec_inline!(self.entropy())),
+            entropy: Entropy(smallvec_inline!(todo!())),
             num_aligned_bases: self.num_aligned_bases(),
             num_indels: self.num_indels(),
             in_cp_g: self.in_cpg(),

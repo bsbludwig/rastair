@@ -44,14 +44,12 @@ impl ReaderParams {
         let mut readers = params.readers().wrap_err("failed to fetch segments")?;
         let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
-        let pileups = chunk
-            .process(
-                &mut readers,
-                &PileupMappingParams {
-                    include_cpgs: IncludeAllCpGs::Yes,
-                    variant_calling: VariantCallingParams::default(),
-                },
-            )
+        let pileup_mapping_params = PileupMappingParams {
+            include_cpgs: IncludeAllCpGs::Yes,
+            variant_calling: VariantCallingParams::default(),
+        };
+        let (segment, pileups) = chunk
+            .process(&mut readers, &pileup_mapping_params)
             .wrap_err("failed to process region")?;
         let pileup = pileups
             .into_iter()

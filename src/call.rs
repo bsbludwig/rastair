@@ -5,7 +5,7 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics2::{self, MetricsForAlt, PileupMetrics},
+    metrics2::{self, MetricsForAlt, PileupMetrics, PositionMetricsExt},
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{
         Surrounding, cli,
@@ -22,7 +22,7 @@ use color_eyre::{
 use rastair_vcf::VcfFilter;
 use rayon::prelude::*;
 use std::{ops::Mul as _, thread::available_parallelism};
-use tracing::{debug, instrument, trace, warn};
+use tracing::{Level, debug, instrument, trace, warn};
 
 pub mod denovo_cpg;
 pub mod methylation;
@@ -305,10 +305,22 @@ fn process_region(
         variant_calling: params.variant_calling.clone(),
     };
 
-    let pileups = region.process(readers, &pileup_mapping_params)?;
+    let (segment, pileups) = region.process(readers, &pileup_mapping_params)?;
     let mut pileups: Vec<PileupMetrics> = pileups
         .into_iter()
-        .map(PileupMetrics::try_from)
+        .map(|pileup| {
+            PileupMetrics::new(pileup, |metrics| {
+                let genotype = metrics.pileup.estimate_genotype(params.variant_calling.error_model);
+
+                let methylated =
+                    metrics2::methylation::call(&params.methylation.thresholds, metrics)?
+                        .unwrap_or_default();
+
+                let region_entropy = segment.entropy_around::<100>(metrics.pileup.idx())?;
+
+                Ok(PositionMetricsExt { genotype, methylated, region_entropy })
+            })
+        })
         .filter_map(|x: Result<PileupMetrics>| match x {
             Err(e) => {
                 warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
@@ -317,6 +329,17 @@ fn process_region(
             Ok(x) => Some(x),
         })
         .collect();
+
+    if tracing::enabled!(Level::DEBUG) {
+        if pileups.is_empty() {
+            debug!("No candidate pileups found in region");
+        } else {
+            let count = readable::num::Unsigned::from(pileups.len());
+            let bytes =
+                readable::byte::Byte::from(pileups.len() * std::mem::size_of::<PileupMetrics>());
+            debug!(%count, %bytes, "Collected metrics");
+        }
+    }
 
     // let mut records = piles
     //     .iter()
@@ -341,6 +364,7 @@ fn process_region(
     //         .wrap_err("Failed to call methylation")?;
     // }
 
+    // Calculate extended metrics
     let pileups_len = pileups.len();
     for i in 0..pileups_len {
         let surrounding = surrounding_pileups(&mut pileups, i);
@@ -348,16 +372,6 @@ fn process_region(
         // params.denovo_cpg.add_if_adjecent(&mut surrounding);
 
         let Surrounding { current, .. } = surrounding;
-        // params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
-
-        // Add genotype estimate based on params
-        // FIXME: calculate genotype properly
-        current.pos_metrics.genotype =
-            current.pileup.estimate_genotype(params.variant_calling.error_model);
-
-        current.pos_metrics.methylated =
-            metrics2::methylation::call(&params.methylation.thresholds, current)?
-                .unwrap_or_default();
 
         if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
             current.pos_filters.push(lowDp.filter());
