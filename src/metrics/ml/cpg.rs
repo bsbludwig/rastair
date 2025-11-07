@@ -31,7 +31,7 @@ pub fn cpg(
         "cpg called on non-methylation candidate"
     );
 
-    let depth = pos.read_depth as f64;
+    let depth = pos.depth.f();
 
     let seq_ctx = &pileup.context;
     let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
@@ -147,7 +147,7 @@ fn calculate_adjacent_features(
 
         if let Some(MetricsForAlt { alt, .. }) = after.alt_metrics(A) {
             let alt_ad = alt.depth.f();
-            let depth = after.pos_metrics.read_depth.f();
+            let depth = after.pos_metrics.depth.f();
             let alt_ad_adj = alt_ad / depth;
 
             // Calculate alt_score for G→A
@@ -181,7 +181,7 @@ fn calculate_adjacent_features(
 
         if let Some(MetricsForAlt { alt, .. }) = before.alt_metrics(T) {
             let alt_ad = alt.depth.f();
-            let depth = before.pos_metrics.read_depth.f();
+            let depth = before.pos_metrics.depth.f();
             let alt_ad_adj = alt_ad / depth;
 
             // Calculate alt_score for C→T

@@ -47,7 +47,7 @@ impl PileupMetrics {
                 self.ref_alts_metrics().map(|m| m.depth as usize).collect(),
             ),
             base_quality: BaseQuality(self.pos_metrics.baseq),
-            read_depth: ReadDepth(self.pos_metrics.read_depth),
+            read_depth: ReadDepth(self.pos_metrics.depth),
             mapping_quality: MappingQuality(self.pos_metrics.mapq),
             mapping_quality0: MappingQuality0(self.pos_metrics.mapq0),
             samples_with_data: SamplesWithData(1),

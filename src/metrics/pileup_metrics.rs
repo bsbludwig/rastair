@@ -146,7 +146,8 @@ impl PileupMetrics {
 
 #[derive(Debug)]
 pub struct PositionMetrics {
-    pub read_depth: usize,
+    /// Read depth, i.e., number of reads covering this position
+    pub depth: usize,
     /// Base quality
     pub baseq: RootMeanSquare,
     /// Mapping quality
@@ -196,7 +197,7 @@ impl Deref for DenovoAdjecent {
 impl PositionMetrics {
     pub fn from_pileup(pileup: &Pileup, extended: PositionMetricsExt) -> Self {
         PositionMetrics {
-            read_depth: pileup.reads.len(),
+            depth: pileup.reads.len(),
             baseq: pileup.reads.iter().map(|x| x.qual).collect(),
             mapq: pileup.reads.iter().map(|x| x.mapq).collect(),
             mapq0: pileup.reads.iter().filter(|x| x.mapq == 0).count(),
@@ -219,13 +220,17 @@ impl Deref for PositionMetrics {
 #[derive(Debug, Default)]
 pub struct AlleleMetrics {
     pub base: Base,
+    /// Read depth, i.e. number of reads supporting this allele
     pub depth: u32,
     /// base quality for the allele
     pub baseq: RootMeanSquare,
     /// mapping quality for the allele
     pub mapq: RootMeanSquare,
+    /// count of reads by strand, also known as strand bias
     pub strand_count: ByStrand<u32>,
+    /// base quality by strand
     pub baseq_s: ByStrand<RootMeanSquare>,
+    /// mapping quality by strand
     pub mapq_s: ByStrand<RootMeanSquare>,
     /// number of aligned bases in read
     pub num_aligned_bases: RootMeanSquare,

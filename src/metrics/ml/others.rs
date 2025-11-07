@@ -16,7 +16,7 @@ pub fn others(
     let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
 
     let ref_base = pileup.reference_base;
-    let depth = pos.read_depth as f64;
+    let depth = pos.depth.f();
 
     let seq_ctx = &pileup.context;
     let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);

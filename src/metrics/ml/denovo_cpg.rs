@@ -25,7 +25,7 @@ pub fn denovo_cpg(
     let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
 
     let ref_base = pileup.reference_base;
-    let depth = pos.read_depth as f64;
+    let depth = pos.depth.f();
 
     let seq_ctx = &pileup.context;
     let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
@@ -149,7 +149,7 @@ fn calculate_adjacent_features(
                 };
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_after + 1.0).log2();
 
-                let alt_ad_adj = alt.depth.f() / after.pos_metrics.read_depth.f();
+                let alt_ad_adj = alt.depth.f() / after.pos_metrics.depth.f();
                 let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.).log2()
                     - (r.strand_count.ot.f() * r.baseq_s.ot + 1.).log2();
                 let sb_adj = (alt.strand_count.ob + 1).f() / (alt.strand_count.ot + 1).f();
@@ -180,7 +180,7 @@ fn calculate_adjacent_features(
                 };
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_before + 1.0).log2();
 
-                let alt_ad_adj = alt.depth.f() / before.pos_metrics.read_depth.f();
+                let alt_ad_adj = alt.depth.f() / before.pos_metrics.depth.f();
                 let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.).log2()
                     - (r.strand_count.ob.f() * r.baseq_s.ob + 1.).log2();
                 let sb_adj = (alt.strand_count.ot + 1).f() / (alt.strand_count.ob + 1).f();

@@ -352,7 +352,7 @@ fn process_region(
     if !ml.disabled {
         /// Filter out very unlikely alts before running slow ML
         fn pre_ml_filter(c: &MetricsForAlt) -> bool {
-            c.metrics.pos_metrics.read_depth > 1 && *c.metrics.pos_metrics.mapq > 5.
+            c.metrics.pos_metrics.depth > 1 && *c.metrics.pos_metrics.mapq > 5.
         }
 
         let pileups_len = pileups.len();
