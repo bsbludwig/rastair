@@ -6,21 +6,19 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{self, MetricsForAlt, PileupMetrics, PositionMetricsExt, ml::types::MachineLearning},
+    metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{
-        Surrounding, cli,
+        cli,
         logging::{ThisIsABug as _, any_to_err},
-        surrounding_pileups,
     },
-    vcf::{low_ml_score, lowDp, pre_ml},
+    vcf::lowDp,
 };
 use clio::ClioPath;
 use color_eyre::{
     Section,
     eyre::{ContextCompat as _, Result, WrapErr, ensure},
 };
-use rastair_vcf::VcfFilter;
 use rayon::prelude::*;
 use std::{ops::Mul as _, thread::available_parallelism};
 use tracing::{Level, debug, instrument, trace, warn};
@@ -29,11 +27,13 @@ pub mod denovo_cpg;
 pub mod methylation;
 pub mod ml;
 pub mod pileup;
-pub mod process;
 mod record_filters;
 pub mod variant_calling;
 mod writer;
 pub use writer::writer_thread;
+
+// Jump in here if you want to know how the processing of regions works
+pub mod process;
 
 #[cfg(test)]
 pub mod test_helpers;
@@ -339,59 +339,13 @@ fn process_region(
         pileups.retain(|p| p.pileup.is_cpg || p.forms_denovo());
     }
 
-    // TODO: Add all filters
-    // - generic
-    // - methylation
-    // - denovo
     // Maybe these should be optional when using ML? but they are very cheap to calculate
     // TODO: Add denovo filters
     for current in &mut pileups {
         current
             .pos_filters
             .add(lowDp, || current.pos_metrics.depth < params.variant_calling.v_min_depth);
-    }
 
-    if !ml.disabled {
-        /// Filter out very unlikely alts before running slow ML
-        fn pre_ml_filter(c: &MetricsForAlt) -> bool {
-            c.metrics.pos_metrics.depth > 1 && *c.metrics.pos_metrics.mapq > 5.
-        }
-
-        let pileups_len = pileups.len();
-        for i in 0..pileups_len {
-            let Surrounding { before, current, after } = surrounding_pileups(&mut pileups, i);
-
-            'alts: for alt_base in current.alts() {
-                let alt = current
-                    .alt_metrics(alt_base)
-                    .wrap_err("Failed to get alt metrics")
-                    .this_is_a_bug()?;
-
-                if !pre_ml_filter(&alt) {
-                    let filters = current
-                        .alt_filters_mut(alt_base)
-                        .wrap_err("Failed to get mutable alt metrics")
-                        .this_is_a_bug()?;
-                    filters.filters.add(pre_ml, || true);
-                    continue 'alts;
-                }
-
-                if let Some(prediction) = ml.predict(&alt, before, after) {
-                    let filters = current
-                        .alt_filters_mut(alt_base)
-                        .wrap_err("Failed to get mutable alt metrics")
-                        .this_is_a_bug()?;
-                    filters.ml.replace(prediction.prediction);
-                    filters.filters.add(low_ml_score, || !prediction.pass());
-                } else {
-                    debug!(
-                        pos=%current.pos(),
-                        ref_base=%current.ref_base(),
-                        alt_base=%alt_base,
-                        "No ML prediction made"
-                    );
-                }
-            }
         for alt_base in current.alts() {
             let alt = current
                 .alt_metrics(alt_base)
@@ -405,6 +359,8 @@ fn process_region(
             alt_filters.filters.merge(filters);
         }
     }
+
+    process::add_ml_metrics(&mut pileups, ml).wrap_err("Failed to add ML metrics")?;
 
     Ok(pileups)
 }

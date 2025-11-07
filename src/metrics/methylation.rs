@@ -262,6 +262,7 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
     }
 }
 
+// TODO: Rewrite methylation tests
 // #[cfg(test)]
 // mod tests {
 //     use color_eyre::eyre::ContextCompat;
