@@ -8,7 +8,7 @@ use smol_str::SmolStr;
 use std::{fmt, ops::Deref, sync::Arc};
 
 #[derive(Debug, Clone)]
-pub struct VariantCandidatePileup {
+pub struct Pileup {
     pub segment: Arc<Segment>,
     /// Position in the sequence, 0-based
     pub pos: u32,
@@ -18,7 +18,7 @@ pub struct VariantCandidatePileup {
     pub is_cpg: bool,
 }
 
-impl VariantCandidatePileup {
+impl Pileup {
     /// Chromosome name of the segment
     pub fn chrom(&self) -> SmolStr {
         self.segment.range.contig.clone()
@@ -224,7 +224,7 @@ mod tests {
             },
         ]));
 
-        let variant_candidate = VariantCandidatePileup {
+        let variant_candidate = Pileup {
             segment: fake_segment(),
             pos: 1002, // Corresponds to index in the segment
             reads: bases,

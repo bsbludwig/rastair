@@ -1,5 +1,5 @@
 use crate::{
-    call::variants::VariantCandidatePileup,
+    call::pileup::Pileup,
     utils::{Base, Base::*},
 };
 use color_eyre::Result;
@@ -63,8 +63,8 @@ impl Deref for InCpG {
     }
 }
 
-impl From<&VariantCandidatePileup> for InCpG {
-    fn from(pileup: &VariantCandidatePileup) -> Self {
+impl From<&Pileup> for InCpG {
+    fn from(pileup: &Pileup) -> Self {
         InCpG::new(pileup.reference_base, pileup.ref_before(), pileup.ref_after())
     }
 }

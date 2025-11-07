@@ -1,7 +1,7 @@
 use crate::{
     call::{
+        pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
         variant_calling::VariantCallingParams,
-        variants::{PositionInRead, SimpleRead, SimpleReads, VariantCandidatePileup},
     },
     sequence::{ChunkRegion, Readers, Segment},
     utils::{Base, StrandFromRecord},
@@ -10,7 +10,7 @@ use crate::{
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use rust_htslib::bam::{
     FetchDefinition, Read as _,
-    pileup::{Alignment, Pileup},
+    pileup::{Alignment, Pileup as HtsPileup},
 };
 use smallvec::SmallVec;
 use std::{ops::Deref, sync::Arc};
@@ -53,7 +53,7 @@ impl ChunkRegion {
         &self,
         readers: &mut Readers,
         params: &PileupMappingParams,
-    ) -> Result<Vec<VariantCandidatePileup>> {
+    ) -> Result<Vec<Pileup>> {
         let segment = readers.segment(self, 2).wrap_err("failed to fetch segment")?;
         trace!(len = segment.sequence.len(), "Processing region");
 
@@ -108,9 +108,7 @@ impl ChunkRegion {
                 return Ok(piles);
             } else {
                 let count = readable::num::Unsigned::from(piles.len());
-                let bytes = readable::byte::Byte::from(
-                    piles.len() * std::mem::size_of::<VariantCandidatePileup>(),
-                );
+                let bytes = readable::byte::Byte::from(piles.len() * std::mem::size_of::<Pileup>());
                 debug!(%count, %bytes, "Collected candidates");
             }
         }
@@ -122,10 +120,10 @@ impl ChunkRegion {
 /// Is this pileup a candidate for a variant?
 #[instrument(level = "trace", skip_all)]
 fn collect_candidate(
-    pile: &Pileup,
+    pile: &HtsPileup,
     segment: Arc<Segment>,
     params: &PileupMappingParams,
-) -> Result<Option<VariantCandidatePileup>> {
+) -> Result<Option<Pileup>> {
     let segment_start_pos =
         usize::try_from(segment.range.start).expect("segment range fits in usize");
     let idx = usize::try_from(pile.pos())
@@ -158,7 +156,7 @@ fn collect_candidate(
 
     let before = idx.checked_sub(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
     let after = idx.checked_add(1).and_then(|idx| segment.sequence.get(idx)).map(Base::from);
-    let res = VariantCandidatePileup {
+    let res = Pileup {
         segment: segment.clone(),
         pos: pile.pos(),
         reads,
@@ -229,7 +227,7 @@ fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
     (matches, indels)
 }
 
-impl VariantCandidatePileup {
+impl Pileup {
     /// Collect metrics
     #[instrument(level = "trace", skip_all)]
     #[deprecated = "Use `PileupMetrics` instead"]

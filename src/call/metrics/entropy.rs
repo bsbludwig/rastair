@@ -1,9 +1,9 @@
 use crate::{
-    call::variants::VariantCandidatePileup,
+    call::pileup::Pileup,
     utils::{Base, Counter},
 };
 
-impl VariantCandidatePileup {
+impl Pileup {
     ///  Calculate Shannon entropy for 100bp context around variant position
     pub(crate) fn entropy(&self) -> f64 {
         let idx = self.idx();
@@ -30,7 +30,7 @@ impl VariantCandidatePileup {
 #[cfg(test)]
 mod tests {
     use crate::{
-        call::variants::SimpleReads,
+        call::pileup::SimpleReads,
         sequence::{ChunkRegion, Region, Segment},
     };
     use proptest::proptest;
@@ -49,7 +49,7 @@ mod tests {
             },
             sequence: repeat_n(b'A', 100).collect(),
         };
-        let pileup = VariantCandidatePileup {
+        let pileup = Pileup {
             segment: Arc::new(segment),
             pos: 50,
             reads: SimpleReads(smallvec![]),
@@ -69,7 +69,7 @@ mod tests {
             },
             sequence: repeat_n(b"ACTG", 25).flat_map(|x| *x).collect(),
         };
-        let pileup = VariantCandidatePileup {
+        let pileup = Pileup {
             segment: Arc::new(segment),
             pos: 50,
             reads: SimpleReads(smallvec![]),
@@ -90,7 +90,7 @@ mod tests {
                 },
                 sequence: sequence.into_bytes(),
             };
-            let pileup = VariantCandidatePileup {
+            let pileup = Pileup {
                 segment: Arc::new(segment),
                 pos: 50,
                 reads: SimpleReads(smallvec![]),

@@ -1,7 +1,7 @@
 use crate::{
     call::{
+        pileup::{Pileup, SimpleRead},
         variant_calling::EstimatedGenotype,
-        variants::{SimpleRead, VariantCandidatePileup},
     },
     utils::ByStrand,
     vcf::{DeNovoCpGCandidate, InCpG, Methylated, SequenceContext},
@@ -19,7 +19,7 @@ use tracing::trace;
 
 pub struct PileupMetrics {
     /// The underlying pileup
-    pub pileup: VariantCandidatePileup,
+    pub pileup: Pileup,
     /// Metrics about the position itself
     pub pos_metrics: PositionMetrics,
     /// Filters that apply to the entire pileup
@@ -36,10 +36,10 @@ pub struct Alt {
     pub filters: AltFilters,
 }
 
-impl TryFrom<VariantCandidatePileup> for PileupMetrics {
+impl TryFrom<Pileup> for PileupMetrics {
     type Error = color_eyre::eyre::Report;
 
-    fn try_from(pileup: VariantCandidatePileup) -> Result<Self, Self::Error> {
+    fn try_from(pileup: Pileup) -> Result<Self, Self::Error> {
         let by_allele = pileup.by_allele();
         let [reference, alts_reads @ ..] = by_allele.as_slice() else {
             // todo: do we reach this point also when we have no reads covering
@@ -147,7 +147,7 @@ pub struct PositionMetrics {
 }
 
 impl PositionMetrics {
-    pub fn from_pileup(pileup: &VariantCandidatePileup) -> Self {
+    pub fn from_pileup(pileup: &Pileup) -> Self {
         PositionMetrics {
             read_depth: pileup.reads.len(),
             baseq: pileup.reads.iter().map(|x| x.qual).collect::<RootMeanSquare>(),
@@ -195,7 +195,7 @@ pub struct AltFilters {
 }
 
 impl AlleleMetrics {
-    pub fn from_bases(reads: &[&SimpleRead], pileup: &VariantCandidatePileup) -> Result<Self> {
+    pub fn from_bases(reads: &[&SimpleRead], pileup: &Pileup) -> Result<Self> {
         use Base::*;
         use Strand::*;
 

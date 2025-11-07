@@ -1,4 +1,4 @@
-use crate::{call::variants::SimpleRead, utils::cli};
+use crate::{call::pileup::SimpleRead, utils::cli};
 use better_default::Default;
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]

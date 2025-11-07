@@ -5,7 +5,7 @@
 //! from reads to reduce this.
 
 use crate::{
-    call::variants::SimpleRead,
+    call::pileup::SimpleRead,
     utils::{Strand, cli},
 };
 use smallvec::SmallVec;
@@ -227,7 +227,7 @@ mod tests {
         SimpleRead {
             strand,
             reverse: rev,
-            position: crate::call::variants::PositionInRead { pos, read_length: len },
+            position: crate::call::pileup::PositionInRead { pos, read_length: len },
             ..Default::default()
         }
     }

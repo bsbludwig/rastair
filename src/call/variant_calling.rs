@@ -1,4 +1,4 @@
-use crate::{call::variants::VariantCandidatePileup, vcf::*};
+use crate::{call::pileup::Pileup, vcf::*};
 use color_eyre::eyre::Result;
 use rastair_types::Phred;
 use rastair_vcf::standard_fields::*;
@@ -18,7 +18,7 @@ pub use read_masking::ReadMaskParams;
 mod quality_filters;
 pub use quality_filters::QualityFilterParams;
 
-impl VariantCandidatePileup {
+impl Pileup {
     #[instrument(level="trace", skip_all, fields(chr = %self.chrom(), pos = self.pos))]
     pub fn calling_metrics(&self, error_model: ErrorModel) -> Result<Format> {
         let (genotype, genotype_likelihood, genotype_confidence) =

@@ -1,5 +1,5 @@
 use crate::{
-    call::variants::{SimpleReads, VariantCandidatePileup},
+    call::pileup::{Pileup, SimpleReads},
     utils::{Base, ByStrand, Phred, RootMeanSquare, Strand},
     vcf::*,
 };
@@ -11,7 +11,7 @@ use tracing::warn;
 
 mod entropy;
 
-impl VariantCandidatePileup {
+impl Pileup {
     pub fn fixed_fields(&self) -> rastair_vcf::VcfFixedFields {
         rastair_vcf::VcfFixedFields {
             chrom: self.chrom(),

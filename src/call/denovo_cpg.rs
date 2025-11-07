@@ -6,7 +6,7 @@
 //! that changed from "A" to "G").
 
 use crate::{
-    call::variants::VariantCandidatePileup,
+    call::pileup::Pileup,
     metrics2::PileupMetrics,
     utils::{Base::*, Surrounding, cli},
     vcf::{self},
@@ -38,8 +38,8 @@ pub struct DenovoParams {
     pub cpg_novo_min_vaf: f64,
 }
 
-impl From<&VariantCandidatePileup> for vcf::DeNovoCpGCandidate {
-    fn from(pileup: &VariantCandidatePileup) -> Self {
+impl From<&Pileup> for vcf::DeNovoCpGCandidate {
+    fn from(pileup: &Pileup) -> Self {
         let ref_base = pileup.reference_base;
         let (alt_base, alt_index) = if let Some(pos) = pileup.alts().iter().position(|x| *x == C)
             && pileup.ref_after() == G

@@ -2,7 +2,7 @@
 // source: https://bitbucket.org/bsblabludwig/rastair/src/306bf046f14c64992c06b9000c60113e35a0f766/src/operations/count_variants/mod.rs#lines-394
 
 use crate::{
-    call::{variant_calling::ErrorModel, variants::VariantCandidatePileup},
+    call::{pileup::Pileup, variant_calling::ErrorModel},
     utils::{Base, Strand},
 };
 use color_eyre::eyre::{Result, ensure};
@@ -10,7 +10,7 @@ use probability::prelude::{Binomial, Discrete as _, Distribution as _};
 use rastair_vcf::standard_fields::GenotypeAllele;
 use tracing::{instrument, trace};
 
-impl VariantCandidatePileup {
+impl Pileup {
     pub fn estimate_genotype(&self, error_model: ErrorModel) -> Option<EstimatedGenotype> {
         let (nosnp, snp) = if self.reference_base == Base::C {
             (

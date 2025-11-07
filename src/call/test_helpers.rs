@@ -3,9 +3,9 @@
 
 use crate::{
     call::{
+        pileup::Pileup,
         process::{IncludeAllCpGs, PileupMappingParams},
         variant_calling::{ReadFlags, ReadMaskParams, VariantCallingParams},
-        variants::VariantCandidatePileup,
     },
     sequence::{ReaderParams, Readers},
     utils::RegionString,
@@ -34,7 +34,7 @@ impl ReaderParams {
         }
     }
 
-    pub fn pileup(&self, chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
+    pub fn pileup(&self, chr: &str, pos: u32) -> Result<Pileup> {
         let region = RegionString {
             chromosome: chr.into(),
             start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
@@ -85,6 +85,6 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
 /// When comparing this to IGV, please keep in mind that IGV and VCF files use
 /// 1-based positions, so the `pos` parameter is off by one compared to what you
 /// see there.
-pub(crate) fn variant_pileup(chr: &str, pos: u32) -> Result<VariantCandidatePileup> {
+pub(crate) fn variant_pileup(chr: &str, pos: u32) -> Result<Pileup> {
     ReaderParams::test_data().pileup(chr, pos)
 }

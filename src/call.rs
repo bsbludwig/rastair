@@ -29,10 +29,10 @@ pub mod methylation;
 #[deprecated = "Use `crate::metrics2` instead"]
 pub mod metrics;
 pub mod ml;
+pub mod pileup;
 pub mod process;
 mod record_filters;
 pub mod variant_calling;
-pub mod variants;
 mod writer;
 pub use writer::writer_thread;
 
