@@ -9,6 +9,9 @@ use smol_str::SmolStr;
 
 mod read;
 pub use read::*;
+mod overlapping_reads;
+
+mod from_hts;
 
 #[derive(Debug, Clone)]
 pub struct Pileup {
