@@ -304,6 +304,28 @@ fn process_region(
     let mut pileups: Vec<PileupMetrics> = pileups
         .into_iter()
         .map(PileupMetrics::new)
+        .map(|metrics| {
+            // Set "extended" metrics that depend on the pileup and some external params
+            let mut current = metrics?;
+
+            let genotype = current.pileup.estimate_genotype(params.variant_calling.error_model);
+            let methylated = metrics::methylation::call(&params.methylation.thresholds, &current)?
+                .unwrap_or_default();
+
+            let region_entropy = segment
+                .entropy_around::<100>(current.pileup.idx())
+                .wrap_err("Failed to calculate region entropy")?;
+
+            let ext = PositionMetricsExt {
+                genotype,
+                methylated,
+                region_entropy,
+                denovo_adj: metrics::DenovoAdjecent::No,
+            };
+            current.set_extended_metrics(ext);
+
+            Ok(current)
+        })
         .filter_map(|x: Result<PileupMetrics>| match x {
             Err(e) => {
                 warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
@@ -324,58 +346,23 @@ fn process_region(
         }
     }
 
-    // let mut records = piles
-    //     .iter()
-    //     .map(|pile| pile.variant_metrics(&params.variant_calling))
-    //     .collect::<Result<Vec<_>>>()
-    //     .wrap_err("Failed to collect metrics")?;
+    // Filter out pileups that are not CpG if requested.
+    //
+    // We're doing this here since we now have all the metrics and can remove
+    // them based on these to not waste processing time on records we will
+    // discard anyway.
+    if params.record_filters.cpgs_only {
+        pileups.retain(|p| p.pileup.is_cpg || p.forms_denovo());
+    }
 
-    // Call methylation events if requested
-    // let record_len = metrics.len();
-    // for i in 0..record_len {
-    //     let (before, current, after) = surrounding_pileups(&mut metrics, i);
-
-    //     if *current.info.read_depth < params.variant_calling.v_min_depth {
-    //         current.filters.add_all(vcf::lowDp);
-    //     }
-    //     params.denovo_cpg.filter(current).wrap_err("Failed to add filters for de-novo CpGs")?;
-    //     params.denovo_cpg.add_if_adjecent(current, before, after);
-
-    //     params
-    //         .methylation
-    //         .call(current, before, after) // Might also add filters
-    //         .wrap_err("Failed to call methylation")?;
-    // }
-
-    let pileups_len = pileups.len();
-    for i in 0..pileups_len {
-        let surrounding = surrounding_pileups(&mut pileups, i);
-        let Surrounding { current, .. } = surrounding;
-
-        let genotype = current.pileup.estimate_genotype(params.variant_calling.error_model);
-
-        let methylated = metrics::methylation::call(&params.methylation.thresholds, current)?
-            .unwrap_or_default();
-
-        let region_entropy = segment.entropy_around::<100>(current.pileup.idx())?;
-
-        let ext = PositionMetricsExt {
-            genotype,
-            methylated,
-            region_entropy,
-            denovo_adj: metrics::DenovoAdjecent::No,
-        };
-        current.set_extended_metrics(ext);
-
+    // TODO: Add all filters
+    // - generic
+    // - methylation
+    // - denovo
+    for current in &mut pileups {
         if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
             current.pos_filters.push(lowDp.filter());
         }
-    }
-
-    // Filter out piles that are not CpG if requested. We're doing this here to
-    // not waste processing time on records we will discard anyway.
-    if params.record_filters.cpgs_only {
-        pileups.retain(|p| p.pileup.is_cpg || p.forms_denovo());
     }
 
     if !ml.disabled {
@@ -423,13 +410,6 @@ fn process_region(
             }
         }
     }
-
-    // Okay, here is what we have:
-    // - `metrics`: The pileup metrics for each position
-    //   - `pos_metrics`: The position-level metrics
-    //   - `ref_metrics`: The reference allele metrics
-    //   - `alt_metrics`: The alt allele metrics
-    //      - `ml`: The ML prediction that this is a true variant
 
     Ok(pileups)
 }
