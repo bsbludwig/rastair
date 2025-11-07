@@ -13,6 +13,7 @@ mod overlapping_reads;
 
 mod from_hts;
 
+/// Rastair's representation of a pileup at a specific position in the genome
 #[derive(Debug, Clone)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
@@ -37,15 +38,7 @@ impl Pileup {
 
     /// Position in the segment sequence, 0-based
     pub fn idx(&self) -> usize {
-        let pos = usize::try_from(self.pos).expect("pos fits usize");
-        pos.checked_sub(usize::try_from(self.region.start).expect("index fits in usize"))
-            .wrap_err_with(|| {
-                format!(
-                    "pile position {} is not in segment range {}..{}",
-                    pos, self.region.start, self.region.end
-                )
-            })
-            .expect("valid index")
+        self.region.pos_to_idx(self.pos).expect("valid position")
     }
 
     /// Reference base right before the variant position

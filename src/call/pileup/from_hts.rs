@@ -4,7 +4,7 @@ use crate::{
         process::PileupMappingParams,
     },
     sequence::Segment,
-    utils::{SequenceContext, StrandFromRecord, logging::ThisIsABug},
+    utils::{SequenceContext, StrandFromRecord},
     vcf::InCpG,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
@@ -21,16 +21,7 @@ impl Pileup {
         params: &PileupMappingParams,
     ) -> Result<Pileup> {
         let pos = pile.pos();
-        let segment_start_pos = usize::try_from(segment.range.start)
-            .wrap_err("segment range fits in usize")
-            .this_is_a_bug()?;
-        let idx = usize::try_from(pos)
-            .wrap_err("position fits in usize")
-            .this_is_a_bug()?
-            .checked_sub(segment_start_pos)
-            .wrap_err_with(|| {
-                format!("pile position {pos} is not in segment {}", segment.region)
-            })?;
+        let idx = segment.pos_to_idx(pos)?;
 
         let seen_bases = pile
             .alignments()

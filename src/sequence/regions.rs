@@ -1,4 +1,8 @@
-use color_eyre::eyre::{Context as _, ContextCompat};
+use crate::utils::logging::ThisIsABug as _;
+use color_eyre::{
+    Result,
+    eyre::{Context as _, ContextCompat},
+};
 use smol_str::SmolStr;
 use std::fmt;
 
@@ -101,5 +105,18 @@ impl std::ops::Deref for ChunkRegion {
 
     fn deref(&self) -> &Self::Target {
         &self.region
+    }
+}
+
+impl ChunkRegion {
+    pub fn pos_to_idx(&self, pos: u32) -> Result<usize> {
+        let segment_start_pos = usize::try_from(self.region.start)
+            .wrap_err("Segment range does not fit in usize")
+            .this_is_a_bug()?;
+        usize::try_from(pos)
+            .wrap_err("Position does not fit in usize")
+            .this_is_a_bug()?
+            .checked_sub(segment_start_pos)
+            .wrap_err_with(|| format!("Position {pos} is not in segment {}", self.region))
     }
 }
