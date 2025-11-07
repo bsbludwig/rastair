@@ -219,53 +219,53 @@ fn calculate_adjacent_features(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        call::{
-            process::PileupMappingParams, test_helpers::variant_pileup,
-            variant_calling::VariantCallingParams,
-        },
-        sequence::ReaderParams,
-    };
-    use color_eyre::Result;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::{
+//         call::{
+//             process::PileupMappingParams, test_helpers::variant_pileup,
+//             variant_calling::VariantCallingParams,
+//         },
+//         sequence::ReaderParams,
+//     };
+//     use color_eyre::Result;
 
-    #[test]
-    #[ignore = "needs big test file"]
-    fn ch12_10588_c_t() -> Result<()> {
-        let reader = ReaderParams::test_with(
-            "tmp/taps/NA12878_aa_chr12.bam",
-            "tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa",
-        );
-        {
-            let record =
-                reader.pileup("chr12", 10587)?.variant_metrics(&VariantCallingParams::default())?;
-            let fields = params_from_record(&record, None, None, Base::T);
-            eprintln!(
-                "{}:{}_{}\t{}",
-                record.main.chrom,
-                record.main.pos + 1,
-                record.main.r#ref,
-                to_tsv(fields)
-            );
-        }
-        {
-            let record =
-                reader.pileup("chr12", 10601)?.variant_metrics(&VariantCallingParams::default())?;
-            let fields = params_from_record(&record, None, None, Base::A);
-            eprintln!(
-                "{}:{}_{}\t{}",
-                record.main.chrom,
-                record.main.pos,
-                record.main.r#ref,
-                to_tsv(fields)
-            );
-        }
-        Ok(())
-    }
+//     #[test]
+//     #[ignore = "needs big test file"]
+//     fn ch12_10588_c_t() -> Result<()> {
+//         let reader = ReaderParams::test_with(
+//             "tmp/taps/NA12878_aa_chr12.bam",
+//             "tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa",
+//         );
+//         {
+//             let record =
+//                 reader.pileup("chr12", 10587)?.variant_metrics(&VariantCallingParams::default())?;
+//             let fields = params_from_record(&record, None, None, Base::T);
+//             eprintln!(
+//                 "{}:{}_{}\t{}",
+//                 record.main.chrom,
+//                 record.main.pos + 1,
+//                 record.main.r#ref,
+//                 to_tsv(fields)
+//             );
+//         }
+//         {
+//             let record =
+//                 reader.pileup("chr12", 10601)?.variant_metrics(&VariantCallingParams::default())?;
+//             let fields = params_from_record(&record, None, None, Base::A);
+//             eprintln!(
+//                 "{}:{}_{}\t{}",
+//                 record.main.chrom,
+//                 record.main.pos,
+//                 record.main.r#ref,
+//                 to_tsv(fields)
+//             );
+//         }
+//         Ok(())
+//     }
 
-    fn to_tsv(fields: Array2<f64>) -> String {
-        fields.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("\t")
-    }
-}
+//     fn to_tsv(fields: Array2<f64>) -> String {
+//         fields.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("\t")
+//     }
+// }

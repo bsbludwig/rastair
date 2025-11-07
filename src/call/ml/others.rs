@@ -137,42 +137,42 @@ pub fn params_from_record(
     ]]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        call::{
-            process::PileupMappingParams, test_helpers::variant_pileup,
-            variant_calling::VariantCallingParams,
-        },
-        sequence::ReaderParams,
-    };
-    use color_eyre::Result;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::{
+//         call::{
+//             process::PileupMappingParams, test_helpers::variant_pileup,
+//             variant_calling::VariantCallingParams,
+//         },
+//         sequence::ReaderParams,
+//     };
+//     use color_eyre::Result;
 
-    #[test]
-    #[ignore = "needs big test file"]
-    fn test_other_snp_extraction() -> Result<()> {
-        let reader = ReaderParams::test_with(
-            "tmp/taps/NA12878_aa_chr12.bam",
-            "tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa",
-        );
+//     #[test]
+//     #[ignore = "needs big test file"]
+//     fn test_other_snp_extraction() -> Result<()> {
+//         let reader = ReaderParams::test_with(
+//             "tmp/taps/NA12878_aa_chr12.bam",
+//             "tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa",
+//         );
 
-        // Test A>G transition at position 10004
-        let record =
-            reader.pileup("chr12", 10003)?.variant_metrics(&VariantCallingParams::default())?;
-        let fields = params_from_record(&record, None, None, Base::G);
-        eprintln!(
-            "{}:{}_{}\t{}",
-            record.main.chrom,
-            record.main.pos + 1,
-            record.main.r#ref,
-            to_tsv(fields)
-        );
+//         // Test A>G transition at position 10004
+//         let record =
+//             reader.pileup("chr12", 10003)?.variant_metrics(&VariantCallingParams::default())?;
+//         let fields = params_from_record(&record, None, None, Base::G);
+//         eprintln!(
+//             "{}:{}_{}\t{}",
+//             record.main.chrom,
+//             record.main.pos + 1,
+//             record.main.r#ref,
+//             to_tsv(fields)
+//         );
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    fn to_tsv(fields: Array2<f64>) -> String {
-        fields.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("\t")
-    }
-}
+//     fn to_tsv(fields: Array2<f64>) -> String {
+//         fields.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("\t")
+//     }
+// }

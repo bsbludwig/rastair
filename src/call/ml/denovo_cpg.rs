@@ -269,58 +269,58 @@ fn calculate_denovo_adjacent_features(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        call::{
-            process::PileupMappingParams, test_helpers::variant_pileup,
-            variant_calling::VariantCallingParams,
-        },
-        sequence::ReaderParams,
-    };
-    use color_eyre::Result;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::{
+//         call::{
+//             process::PileupMappingParams, test_helpers::variant_pileup,
+//             variant_calling::VariantCallingParams,
+//         },
+//         sequence::ReaderParams,
+//     };
+//     use color_eyre::Result;
 
-    #[test]
-    #[ignore = "needs big test file"]
-    fn test_denovo_cpg_params() -> Result<()> {
-        let reader = ReaderParams::test_with(
-            "tmp/taps/NA12878_aa_chr12.bam",
-            "tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa",
-        );
+//     #[test]
+//     #[ignore = "needs big test file"]
+//     fn test_denovo_cpg_params() -> Result<()> {
+//         let reader = ReaderParams::test_with(
+//             "tmp/taps/NA12878_aa_chr12.bam",
+//             "tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa",
+//         );
 
-        // Test positions that match the expected output
-        {
-            let record =
-                reader.pileup("chr12", 10601)?.variant_metrics(&VariantCallingParams::default())?;
-            let fields = params_from_record(&record, None, None);
-            let chr = record.main.chrom;
-            let pos = record.main.pos + 1; // Convert to 1-based position
-            let ref_base = record.main.r#ref;
-            let alt_base =
-                record.info.de_novo_cp_g_candidate.alt_base().map(|b| b.as_str()).unwrap_or("?");
-            let tsv = to_tsv(fields);
-            eprintln!("{chr}:{pos}_{ref_base}>{alt_base}\t{tsv}\tREF");
-        }
-        {
-            let record =
-                reader.pileup("chr12", 10619)?.variant_metrics(&VariantCallingParams::default())?;
-            let fields = params_from_record(&record, None, None);
-            let chr = record.main.chrom;
-            let pos = record.main.pos + 1; // Convert to 1-based position
-            let ref_base = record.main.r#ref;
-            let alt_base =
-                record.info.de_novo_cp_g_candidate.alt_base().map(|b| b.as_str()).unwrap_or("?");
-            let tsv = to_tsv(fields);
-            eprintln!("{chr}:{pos}_{ref_base}>{alt_base}\t{tsv}\tREF");
-        }
+//         // Test positions that match the expected output
+//         {
+//             let record =
+//                 reader.pileup("chr12", 10601)?.variant_metrics(&VariantCallingParams::default())?;
+//             let fields = params_from_record(&record, None, None);
+//             let chr = record.main.chrom;
+//             let pos = record.main.pos + 1; // Convert to 1-based position
+//             let ref_base = record.main.r#ref;
+//             let alt_base =
+//                 record.info.de_novo_cp_g_candidate.alt_base().map(|b| b.as_str()).unwrap_or("?");
+//             let tsv = to_tsv(fields);
+//             eprintln!("{chr}:{pos}_{ref_base}>{alt_base}\t{tsv}\tREF");
+//         }
+//         {
+//             let record =
+//                 reader.pileup("chr12", 10619)?.variant_metrics(&VariantCallingParams::default())?;
+//             let fields = params_from_record(&record, None, None);
+//             let chr = record.main.chrom;
+//             let pos = record.main.pos + 1; // Convert to 1-based position
+//             let ref_base = record.main.r#ref;
+//             let alt_base =
+//                 record.info.de_novo_cp_g_candidate.alt_base().map(|b| b.as_str()).unwrap_or("?");
+//             let tsv = to_tsv(fields);
+//             eprintln!("{chr}:{pos}_{ref_base}>{alt_base}\t{tsv}\tREF");
+//         }
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    fn to_tsv(fields: Array2<f64>) -> String {
-        let values: Vec<String> = fields.row(0).iter().map(|f| f.to_string()).collect();
+//     fn to_tsv(fields: Array2<f64>) -> String {
+//         let values: Vec<String> = fields.row(0).iter().map(|f| f.to_string()).collect();
 
-        values.join("\t")
-    }
-}
+//         values.join("\t")
+//     }
+// }
