@@ -139,7 +139,7 @@ pub struct SegmentationParams {
 }
 
 /// Read BAM + FASTA and call variants and methylation events
-#[instrument(level = "info", skip(params))]
+#[instrument(level = "debug", skip(params))]
 pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     let params = &params; // make params immutable for threads
