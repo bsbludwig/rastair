@@ -38,7 +38,7 @@ impl Pileup {
             // by construction, we arrived here because we have at least one base
             samples_with_data: SamplesWithData(1),
             sequence_context: self.sequence_context(),
-            allele_frequency: self.allel_frequency(),
+            allele_frequency: self.allele_frequency(),
             allele_base_quality: self.allele_base_quality(),
             allele_map_quality: self.allele_map_quality(),
             strand_specific_base_quality: self.strand_specific_base_quality(),
@@ -103,7 +103,7 @@ impl Pileup {
         )
     }
 
-    pub fn allel_frequency(&self) -> AlleleFrequency {
+    pub fn allele_frequency(&self) -> AlleleFrequency {
         AlleleFrequency(
             self.alts()
                 .iter()
@@ -187,7 +187,7 @@ impl Pileup {
                         .filter(|b| b.strand == Strand::OB)
                         .map(|b| b.qual)
                         .collect::<RootMeanSquare>();
-                    ByStrand { base: seen.base, ot: *ots, ob: *obs }
+                    ByStrand { base: seen.base, ot: ots, ob: obs }
                 })
                 .collect(),
         )
@@ -208,7 +208,7 @@ impl Pileup {
                         .filter(|b| b.strand == Strand::OB)
                         .map(|b| b.mapq)
                         .collect::<RootMeanSquare>();
-                    ByStrand { base: seen.base, ot: *ots, ob: *obs }
+                    ByStrand { base: seen.base, ot: ots, ob: obs }
                 })
                 .collect(),
         )

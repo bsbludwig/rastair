@@ -1,3 +1,5 @@
+use rastair_types::RootMeanSquare;
+
 use crate::{
     utils::{Base, ByStrand},
     vcf::Record,
@@ -13,7 +15,7 @@ pub fn one_hot_encode_base(base: impl Into<Base>) -> (f64, f64, f64, f64) {
     }
 }
 
-pub fn get_strand_base_quality(record: &Record, base: Base) -> ByStrand<f64> {
+pub fn get_strand_base_quality(record: &Record, base: Base) -> ByStrand<RootMeanSquare> {
     record
         .info
         .strand_specific_base_quality
@@ -23,7 +25,7 @@ pub fn get_strand_base_quality(record: &Record, base: Base) -> ByStrand<f64> {
         .unwrap_or_default()
 }
 
-pub fn get_strand_map_quality(record: &Record, base: Base) -> ByStrand<f64> {
+pub fn get_strand_map_quality(record: &Record, base: Base) -> ByStrand<RootMeanSquare> {
     record
         .info
         .strand_specific_mapping_quality

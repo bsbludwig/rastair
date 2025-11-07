@@ -1,5 +1,6 @@
 use crate::utils::ByStrand;
 use color_eyre::{Result, eyre::Context as _};
+use rastair_types::RootMeanSquare;
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
 use smallvec::SmallVec;
@@ -7,7 +8,7 @@ use std::ops::Deref;
 
 /// Allele-specific RMS base quality by strand
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct StrandSpecificBaseQuality(pub SmallVec<ByStrand<f64>, 4>);
+pub struct StrandSpecificBaseQuality(pub SmallVec<ByStrand<RootMeanSquare>, 4>);
 
 mod as_ss_bq {
     use super::*;
@@ -15,7 +16,7 @@ mod as_ss_bq {
     use rastair_vcf::StrandSpecificInfoField;
 
     impl Deref for StrandSpecificBaseQuality {
-        type Target = SmallVec<ByStrand<f64>, 4>;
+        type Target = SmallVec<ByStrand<RootMeanSquare>, 4>;
 
         fn deref(&self) -> &Self::Target {
             &self.0
@@ -44,14 +45,14 @@ mod as_ss_bq {
             {
                 // Write OT field
                 let tag = Self::ID_OT;
-                let counts: SmallVec<f32, 8> = self.0.iter().map(|c| c.ot as f32).collect();
+                let counts: SmallVec<f32, 8> = self.0.iter().map(|c| *c.ot as f32).collect();
                 record.push_info_float(tag, &counts).wrap_err("Failed to set AS_SS_BQ_OT field")?;
             }
 
             {
                 // Write OB field
                 let tag = Self::ID_OB;
-                let counts: SmallVec<f32, 8> = self.0.iter().map(|c| c.ob as f32).collect();
+                let counts: SmallVec<f32, 8> = self.0.iter().map(|c| *c.ob as f32).collect();
                 record.push_info_float(tag, &counts).wrap_err("Failed to set AS_SS_BQ_OB field")?;
             }
             Ok(())
@@ -74,13 +75,13 @@ mod as_ss_bq {
 
 /// Allele-specific RMS mapping quality by strand
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct StrandSpecificMappingQuality(pub SmallVec<ByStrand<f64>, 4>);
+pub struct StrandSpecificMappingQuality(pub SmallVec<ByStrand<RootMeanSquare>, 4>);
 
 mod as_ss_mq {
     use super::*;
 
     impl Deref for StrandSpecificMappingQuality {
-        type Target = SmallVec<ByStrand<f64>, 4>;
+        type Target = SmallVec<ByStrand<RootMeanSquare>, 4>;
 
         fn deref(&self) -> &Self::Target {
             &self.0
@@ -103,7 +104,7 @@ mod as_ss_mq {
         #[allow(clippy::cast_possible_truncation)]
         fn write(&self, record: &mut Record) -> Result<()> {
             let counts: SmallVec<f32, 8> =
-                self.0.iter().flat_map(|c| [c.ot as f32, c.ob as f32]).collect();
+                self.0.iter().flat_map(|c| [*c.ot as f32, *c.ob as f32]).collect();
             record.push_info_float(Self::ID, &counts).wrap_err("Failed to set field")
         }
     }

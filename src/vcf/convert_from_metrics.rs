@@ -1,20 +1,21 @@
 use super::Record;
 use crate::{
     metrics2::PileupMetrics,
-    utils::{IntoF64 as _, default},
+    utils::{IntoF64 as _, default, logging::ThisIsABug},
     vcf::{
-        AlleleBaseQuality, AlleleMapQuality, Entropy, Filters, Format, GenotypeConfidence,
-        GenotypeLikelihood, InCpG, Info, MachineLearningPrediction, NumAlignedBases, NumIndels,
-        PositionInRead,
+        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, Entropy, Filters, Format,
+        GenotypeConfidence, GenotypeLikelihood, InCpG, Info, MachineLearningPrediction,
+        NumAlignedBases, NumIndels, PositionInRead, StrandSpecificBaseQuality,
+        StrandSpecificMappingQuality,
     },
 };
-use color_eyre::Result;
+use color_eyre::{Result, eyre::Context};
 use rastair_types::Phred;
 use rastair_vcf::{
     VcfFixedFields,
     standard_fields::{
-        AlleleReadDepth, BaseQuality, Genotype, GenotypeAllele, MappingQuality, MappingQuality0,
-        PASS, ReadDepth, SampleReadDepth, SamplesWithData,
+        AlleleFrequency, AlleleReadDepth, BaseQuality, Genotype, GenotypeAllele, MappingQuality,
+        MappingQuality0, PASS, ReadDepth, SampleReadDepth, SamplesWithData,
     },
 };
 use smallvec::{SmallVec, smallvec, smallvec_inline};
@@ -31,7 +32,15 @@ impl PileupMetrics {
             id: default(),
             r#ref: self.ref_base().into(),
             alt: self.alts().iter().map(|alt| (*alt).into()).collect::<SmallVec<_, 2>>(),
-            qual: self.pileup.qual(),
+            qual: Some(
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    // FIXME: use real quality
+                    *Phred::from_probability(0.001)
+                        .wrap_err("Failed to create QUAL field")
+                        .this_is_a_bug()? as f32
+                },
+            ),
         };
         let info = Info {
             allele_read_depth: AlleleReadDepth(
@@ -42,17 +51,27 @@ impl PileupMetrics {
             mapping_quality: MappingQuality(self.pos_metrics.mapq),
             mapping_quality0: MappingQuality0(self.pos_metrics.mapq0),
             samples_with_data: SamplesWithData(1),
-            allele_specific_strand_bias: self.pileup.allele_specific_strand_bias(),
+            allele_specific_strand_bias: AlleleSpecificStrandBias(
+                self.ref_alts_metrics().map(|m| m.strand_count).collect(),
+            ),
             sequence_context: self.pileup.context.clone(),
-            allele_frequency: self.pileup.allel_frequency(),
+            allele_frequency: AlleleFrequency(
+                self.alts_metrics()
+                    .map(|m| m.depth.f() / self.pos_metrics.read_depth.f())
+                    .collect(),
+            ),
             allele_base_quality: AlleleBaseQuality(
                 self.ref_alts_metrics().map(|m| m.baseq.f()).collect(),
             ),
             allele_map_quality: AlleleMapQuality(
                 self.ref_alts_metrics().map(|m| m.mapq.f()).collect(),
             ),
-            strand_specific_base_quality: self.pileup.strand_specific_base_quality(),
-            strand_specific_mapping_quality: self.pileup.strand_specific_mapping_quality(),
+            strand_specific_base_quality: StrandSpecificBaseQuality(
+                self.ref_alts_metrics().map(|m| m.baseq_s).collect(),
+            ),
+            strand_specific_mapping_quality: StrandSpecificMappingQuality(
+                self.ref_alts_metrics().map(|m| m.mapq_s).collect(),
+            ),
             position_in_read: PositionInRead(
                 self.ref_alts_metrics().map(|m| m.position_in_read.f()).collect(),
             ),
