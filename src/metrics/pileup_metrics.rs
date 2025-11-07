@@ -6,7 +6,7 @@ use crate::{
         variant_calling::EstimatedGenotype,
     },
     utils::{ByStrand, default},
-    vcf::{DeNovoCpGCandidate, InCpG, Methylated},
+    vcf::{InCpG, Methylated},
 };
 use better_default::Default;
 use color_eyre::{
@@ -41,21 +41,11 @@ pub struct Alt {
 }
 
 impl PileupMetrics {
-    /// Create new pileup metrics
+    /// Create new metrics from pileup
     ///
-    /// # Arguments
-    /// - `pileup`: The pileup to compute metrics for
-    /// - `calculate_extended_metrics`: A function that computes extended metrics given the initial position metrics
-    ///
-    /// We're using a closure here so that we split up the calculation of basic
-    /// and extended metrics but not leave the structure half-initialized. The
-    /// closer can do context-dependent calculations that depend on more than
-    /// just the current pileup (e.g., CLI parameters and the segment with the
-    /// loaded sequence).
-    pub fn new(
-        pileup: Pileup,
-        calculate_extended_metrics: impl FnOnce(&PileupMetrics) -> Result<PositionMetricsExt>,
-    ) -> Result<Self> {
+    /// NOTE: The extended metrics in `PositionMetrics` are not set here and
+    /// need to be set later using `set_extended_metrics`.
+    pub fn new(pileup: Pileup) -> Result<Self> {
         let by_allele = pileup.by_allele();
         let [reference, alts_reads @ ..] = by_allele.as_slice() else {
             // todo: do we reach this point also when we have no reads covering
@@ -76,7 +66,7 @@ impl PileupMetrics {
         struct AlleleMetricError(Base);
 
         // Compute initial metrics but keep extended empty to set later
-        let pos_metrics = PositionMetrics::from_pileup(&pileup, default());
+        let pos_metrics = PositionMetrics::from_pileup(&pileup, PositionMetricsExt::default());
 
         let ref_metrics = if reference.is_empty() {
             // this can happen at canonical cpg sites with no evidence
@@ -100,14 +90,13 @@ impl PileupMetrics {
 
         let pos_filters = SmallVec::new();
 
-        let mut metrics = PileupMetrics { pileup, pos_metrics, pos_filters, ref_metrics, alts };
-
-        // Compute extended metrics
-        let extended = calculate_extended_metrics(&metrics)
-            .wrap_err("Failed to compute extended position metrics")?;
-        metrics.pos_metrics.extended = extended;
+        let metrics = PileupMetrics { pileup, pos_metrics, pos_filters, ref_metrics, alts };
 
         Ok(metrics)
+    }
+
+    pub fn set_extended_metrics(&mut self, ext: PositionMetricsExt) {
+        self.pos_metrics.extended = ext;
     }
 }
 
@@ -150,6 +139,10 @@ impl PileupMetrics {
     pub fn ref_alts_metrics(&self) -> impl Iterator<Item = &AlleleMetrics> {
         std::iter::once(&self.ref_metrics).chain(self.alts.iter().map(|a| &a.metrics))
     }
+
+    pub fn forms_denovo(&self) -> bool {
+        *self.pos_metrics.denovo_adj || self.alts.iter().any(|a| *a.metrics.denovo)
+    }
 }
 
 #[derive(Debug)]
@@ -161,15 +154,13 @@ pub struct PositionMetrics {
     pub mapq: RootMeanSquare,
     /// Number of reads with mapping quality 0
     pub mapq0: usize,
-    /// Entropy of the region around the position
+    /// Is this position in a CpG context in the reference?
     pub cpg: InCpG,
-    /// Is this position a de-novo cpg candidate?
-    pub de_novo_cpg_candidate: DeNovoCpGCandidate,
 
     /// Extended metrics
     // set by `call` later since they depend on more context
     // todo: explore using type-state for this
-    pub(crate) extended: PositionMetricsExt,
+    extended: PositionMetricsExt,
 }
 
 #[derive(Debug, Default)]
@@ -180,6 +171,27 @@ pub struct PositionMetricsExt {
     pub genotype: Option<EstimatedGenotype>,
     /// Methylation beta
     pub methylated: Methylated,
+    /// Is this position a de-novo cpg candidate?
+    pub denovo_adj: DenovoAdjecent,
+}
+
+#[derive(Debug, Default)]
+pub enum DenovoAdjecent {
+    #[default]
+    No,
+    ThisIsTheMatchingC,
+    ThisIsTheMatchingG,
+}
+
+impl Deref for DenovoAdjecent {
+    type Target = bool;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            DenovoAdjecent::No => &false,
+            _ => &true,
+        }
+    }
 }
 
 impl PositionMetrics {
@@ -190,7 +202,6 @@ impl PositionMetrics {
             mapq: pileup.reads.iter().map(|x| x.mapq).collect::<RootMeanSquare>(),
             mapq0: pileup.reads.iter().filter(|x| x.mapq == 0).count(),
             cpg: InCpG::from(pileup),
-            de_novo_cpg_candidate: DeNovoCpGCandidate::from(pileup),
 
             // These fields are given by all
             extended,
@@ -224,7 +235,26 @@ pub struct AlleleMetrics {
     /// relative position in read
     pub position_in_read: RootMeanSquare,
     /// does this alt form a de-novo cpg?
-    pub denovo: DeNovoCpGCandidate,
+    pub denovo: FormsDenovo,
+}
+
+#[derive(Debug, Default)]
+pub enum FormsDenovo {
+    #[default]
+    No,
+    ThisBecomesC,
+    ThisBecomesG,
+}
+
+impl Deref for FormsDenovo {
+    type Target = bool;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            FormsDenovo::No => &false,
+            _ => &true,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -262,21 +292,14 @@ impl AlleleMetrics {
 
         let denovo = {
             if base == pileup.reference_base {
-                DeNovoCpGCandidate::NotCandidate
+                // we are looking at the ref allele
+                FormsDenovo::No
             } else if pileup.ref_before() == C && base == G {
-                DeNovoCpGCandidate::Candidate {
-                    ref_base: base,
-                    alt_base: G,
-                    alt_index: pileup.alts().iter().position(|b| *b == base).unwrap_or(42),
-                }
+                FormsDenovo::ThisBecomesG
             } else if pileup.ref_after() == G && base == C {
-                DeNovoCpGCandidate::Candidate {
-                    ref_base: base,
-                    alt_base: C,
-                    alt_index: pileup.alts().iter().position(|b| *b == base).unwrap_or(42),
-                }
+                FormsDenovo::ThisBecomesC
             } else {
-                DeNovoCpGCandidate::NotCandidate
+                FormsDenovo::No
             }
         };
 

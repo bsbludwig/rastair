@@ -1,6 +1,6 @@
 use super::utils::one_hot_encode_base;
 use crate::{
-    metrics::{MetricsForAlt, PileupMetrics},
+    metrics::{FormsDenovo, MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
     vcf::DeNovoCpGCandidate,
 };
@@ -17,10 +17,7 @@ pub fn denovo_cpg(
     after: Option<&PileupMetrics>,
 ) -> Array2<f64> {
     let alt = current.alt;
-    assert!(
-        matches!(alt.denovo, DeNovoCpGCandidate::Candidate { .. }),
-        "denovo_cpg called on non-denovo candidate"
-    );
+    assert!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
 
     let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
 
@@ -128,7 +125,7 @@ fn calculate_adjacent_features(
     let c_alt = c.alt;
 
     match c_alt.denovo {
-        DeNovoCpGCandidate::Candidate { alt_base: Base::C, .. } => {
+        FormsDenovo::ThisBecomesC => {
             let beta_center = {
                 let c_count = c.metrics.alt(C).map(|x| x.strand_count.ot).unwrap_or_default();
                 let t_count = c.metrics.alt(T).map(|x| x.strand_count.ot).unwrap_or_default();
@@ -159,7 +156,7 @@ fn calculate_adjacent_features(
                 AdjecentFeatures { beta_ratio, alt_ad_adj: 0.0, alt_score_adj: 0.0, sb_adj: 0.0 }
             }
         }
-        DeNovoCpGCandidate::Candidate { alt_base: Base::G, .. } => {
+        FormsDenovo::ThisBecomesG => {
             let beta_center = {
                 let g_count = c.metrics.alt(G).map(|x| x.strand_count.ot).unwrap_or_default();
                 let a_count = c.metrics.alt(A).map(|x| x.strand_count.ot).unwrap_or_default();

@@ -17,7 +17,7 @@ use tracing::{Level, debug, instrument, trace, warn};
     name = "methylation_call"
 )]
 pub fn call(config: &ThresholdParams, current: &PileupMetrics) -> Result<Option<Methylated>> {
-    if current.pileup.is_cpg || *current.pos_metrics.de_novo_cpg_candidate {
+    if current.pileup.is_cpg || *current.pos_metrics.denovo_adj {
         let res = call_methylation(config, current).wrap_err("Failed to call CpG methylation")?;
         if let Some(beta) = res.beta() {
             if !beta.is_finite() {
@@ -56,7 +56,7 @@ fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methy
             ?ref_before,
             ?ref_after,
             cpg=%p.pileup.is_cpg,
-            denovo=?p.pos_metrics.de_novo_cpg_candidate,
+            denovo=?p.pos_metrics.denovo_adj,
             "Position is neither an original CpG nor a de-novo CpG site"
         );
         Ok(Methylated::NoEvidence)
@@ -185,7 +185,7 @@ fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
 
     // Check for non-T alternatives (possible C->N SNP)
     if tracing::enabled!(Level::TRACE)
-        && *record.pos_metrics.de_novo_cpg_candidate
+        && *record.pos_metrics.denovo_adj
         && record.alts().iter().any(|b| *b != T)
     {
         trace!(
@@ -225,7 +225,7 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
 
     // Check for non-A alternatives (possible G->N SNP)
     if tracing::enabled!(Level::TRACE)
-        && *record.pos_metrics.de_novo_cpg_candidate
+        && *record.pos_metrics.denovo_adj
         && record.alts().iter().any(|b| *b != A)
     {
         trace!(

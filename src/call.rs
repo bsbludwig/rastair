@@ -303,19 +303,7 @@ fn process_region(
     let (segment, pileups) = region.process(readers, &pileup_mapping_params)?;
     let mut pileups: Vec<PileupMetrics> = pileups
         .into_iter()
-        .map(|pileup| {
-            PileupMetrics::new(pileup, |metrics| {
-                let genotype = metrics.pileup.estimate_genotype(params.variant_calling.error_model);
-
-                let methylated =
-                    metrics::methylation::call(&params.methylation.thresholds, metrics)?
-                        .unwrap_or_default();
-
-                let region_entropy = segment.entropy_around::<100>(metrics.pileup.idx())?;
-
-                Ok(PositionMetricsExt { genotype, methylated, region_entropy })
-            })
-        })
+        .map(|pileup| PileupMetrics::new(pileup))
         .filter_map(|x: Result<PileupMetrics>| match x {
             Err(e) => {
                 warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
@@ -327,12 +315,12 @@ fn process_region(
 
     if tracing::enabled!(Level::DEBUG) {
         if pileups.is_empty() {
-            debug!("No candidate pileups found in region");
+            warn!("No pileups found in region!");
         } else {
             let count = readable::num::Unsigned::from(pileups.len());
             let bytes =
                 readable::byte::Byte::from(pileups.len() * std::mem::size_of::<PileupMetrics>());
-            debug!(%count, %bytes, "Collected metrics");
+            debug!(%count, %bytes, "Collected pileup metrics");
         }
     }
 
@@ -359,14 +347,25 @@ fn process_region(
     //         .wrap_err("Failed to call methylation")?;
     // }
 
-    // Calculate extended metrics
     let pileups_len = pileups.len();
     for i in 0..pileups_len {
         let surrounding = surrounding_pileups(&mut pileups, i);
-
-        // params.denovo_cpg.add_if_adjecent(&mut surrounding);
-
         let Surrounding { current, .. } = surrounding;
+
+        let genotype = current.pileup.estimate_genotype(params.variant_calling.error_model);
+
+        let methylated = metrics::methylation::call(&params.methylation.thresholds, current)?
+            .unwrap_or_default();
+
+        let region_entropy = segment.entropy_around::<100>(current.pileup.idx())?;
+
+        let ext = PositionMetricsExt {
+            genotype,
+            methylated,
+            region_entropy,
+            denovo_adj: metrics::DenovoAdjecent::No,
+        };
+        current.set_extended_metrics(ext);
 
         if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
             current.pos_filters.push(lowDp.filter());
@@ -376,7 +375,7 @@ fn process_region(
     // Filter out piles that are not CpG if requested. We're doing this here to
     // not waste processing time on records we will discard anyway.
     if params.record_filters.cpgs_only {
-        pileups.retain(|p| p.pileup.is_cpg || *p.pos_metrics.de_novo_cpg_candidate);
+        pileups.retain(|p| p.pileup.is_cpg || p.forms_denovo());
     }
 
     if !ml.disabled {

@@ -1,12 +1,12 @@
 use super::Record;
 use crate::{
-    metrics::PileupMetrics,
+    metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
     utils::{IntoF64 as _, default, logging::ThisIsABug},
     vcf::{
-        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, Entropy, Filters, Format,
-        GenotypeConfidence, GenotypeLikelihood, InCpG, Info, MachineLearningPrediction,
-        NumAlignedBases, NumIndels, PositionInRead, StrandSpecificBaseQuality,
-        StrandSpecificMappingQuality,
+        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
+        Filters, Format, GenotypeConfidence, GenotypeLikelihood, InCpG, Info,
+        MachineLearningPrediction, NumAlignedBases, NumIndels, PositionInRead,
+        StrandSpecificBaseQuality, StrandSpecificMappingQuality,
     },
 };
 use color_eyre::{Result, eyre::Context};
@@ -81,7 +81,25 @@ impl PileupMetrics {
             ),
             num_indels: NumIndels(self.ref_alts_metrics().map(|m| m.num_indels.f()).collect()),
             in_cp_g: InCpG::from(&self.pileup),
-            de_novo_cp_g_candidate: self.pos_metrics.de_novo_cpg_candidate.clone(),
+            de_novo_cp_g_candidate: {
+                let mut res = DeNovoCpGCandidate::NotCandidate;
+                if let Some((alt_index, alt_that_forms_denovo)) =
+                    self.alts.iter().map(|alt| &alt.metrics).enumerate().find(|(_, m)| *m.denovo)
+                {
+                    let alt = alt_that_forms_denovo;
+                    if *alt.denovo {
+                        res = DeNovoCpGCandidate::Candidate {
+                            ref_base: self.ref_base(),
+                            alt_base: alt.base,
+                            alt_index,
+                        }
+                    }
+                }
+                if *self.pos_metrics.denovo_adj {
+                    res = DeNovoCpGCandidate::Adjecent { ref_base: self.ref_base() }
+                }
+                res
+            },
         };
 
         let (genotype, genotype_likelihood, genotype_confidence) =

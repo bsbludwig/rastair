@@ -58,7 +58,7 @@ impl From<&Pileup> for vcf::DeNovoCpGCandidate {
 }
 
 impl DenovoParams {
-    pub fn filter(&self, record: &mut vcf::Record) -> Result<()> {
+    fn filter_vcf(&self, record: &mut vcf::Record) -> Result<()> {
         let vcf::DeNovoCpGCandidate::Candidate { alt_base, alt_index: idx, .. } =
             record.info.de_novo_cp_g_candidate
         else {
@@ -82,32 +82,6 @@ impl DenovoParams {
         }
 
         Ok(())
-    }
-
-    pub fn add_if_adjecent(&self, Surrounding { .. }: &mut Surrounding<PileupMetrics>) {
-        todo!()
-
-        // if *current.info.de_novo_cp_g_candidate {
-        //     // already a candidate
-        // } else if let Some(before) = before
-        //     && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
-        //         before.info.de_novo_cp_g_candidate
-        //     && alt_base == C
-        //     && current.main.r#ref == G
-        // {
-        //     // previous position has a C alt, so this G is now part of a CpG
-        //     current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: G };
-        // } else if let Some(after) = after
-        //     && let vcf::DeNovoCpGCandidate::Candidate { alt_base, .. } =
-        //         after.info.de_novo_cp_g_candidate
-        //     && alt_base == G
-        //     && current.main.r#ref == C
-        // {
-        //     // next position has a G alt, so this C is now part of a CpG
-        //     current.info.de_novo_cp_g_candidate = vcf::DeNovoCpGCandidate::Adjecent { ref_base: C };
-        // }
-        // todo: do both AdjecentRef and AdjecentAlt?
-        // ("alt" means both positions create the cpg with alts… but then who created it and who is adjecent?)
     }
 }
 
