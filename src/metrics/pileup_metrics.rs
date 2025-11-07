@@ -3,7 +3,7 @@ use crate::{
         pileup::{Pileup, SimpleRead},
         variant_calling::EstimatedGenotype,
     },
-    utils::{ByStrand, default},
+    utils::{ByStrand, IntoF64, default, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
 };
 use better_default::Default;
@@ -12,6 +12,7 @@ use color_eyre::{
     eyre::{Context, bail},
 };
 use rastair_types::{Base, Probability, RootMeanSquare, Strand, rms::RootMeanSquareExt};
+use rastair_vcf::VcfFilter;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::ops::Deref;
@@ -25,7 +26,7 @@ pub struct PileupMetrics {
     /// Metrics about the position itself
     pub pos_metrics: PositionMetrics,
     /// Filters that apply to the entire pileup
-    pub pos_filters: SmallVec<SmolStr, 5>,
+    pub pos_filters: Filters,
     /// Metrics for the reference allele
     pub ref_metrics: AlleleMetrics,
     /// Metrics and filters for each alternative allele
@@ -87,7 +88,7 @@ impl PileupMetrics {
 
         drop(by_allele);
 
-        let pos_filters = SmallVec::new();
+        let pos_filters = Filters::default();
 
         let metrics = PileupMetrics { pileup, pos_metrics, pos_filters, ref_metrics, alts };
 
@@ -267,9 +268,26 @@ impl Deref for FormsDenovo {
 pub struct AltFilters {
     /// ML prediction: probability this is a true variant
     pub ml: Option<Probability>,
+    pub filters: Filters,
+}
 
-    // TODO: Turn this into a `struct` that can be const-constructed
-    pub filters: SmallVec<SmolStr, 5>,
+#[derive(Debug, Default)]
+pub struct Filters(SmallVec<SmolStr, 6>);
+
+impl Filters {
+    pub fn add(&mut self, filter: impl VcfFilter, condition: impl FnOnce() -> bool) {
+        if condition() {
+            self.0.push(filter.filter());
+        }
+    }
+}
+
+impl Deref for Filters {
+    type Target = SmallVec<SmolStr, 6>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl AlleleMetrics {

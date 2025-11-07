@@ -344,9 +344,9 @@ fn process_region(
     // - methylation
     // - denovo
     for current in &mut pileups {
-        if current.pos_metrics.read_depth < params.variant_calling.v_min_depth {
-            current.pos_filters.push(lowDp.filter());
-        }
+        current
+            .pos_filters
+            .add(lowDp, || current.pos_metrics.depth < params.variant_calling.v_min_depth);
     }
 
     if !ml.disabled {
@@ -370,7 +370,7 @@ fn process_region(
                         .alt_filters_mut(alt_base)
                         .wrap_err("Failed to get mutable alt metrics")
                         .this_is_a_bug()?;
-                    filters.filters.push(pre_ml.filter());
+                    filters.filters.add(pre_ml, || true);
                     continue 'alts;
                 }
 
@@ -380,9 +380,7 @@ fn process_region(
                         .wrap_err("Failed to get mutable alt metrics")
                         .this_is_a_bug()?;
                     filters.ml.replace(prediction.prediction);
-                    if !prediction.pass() {
-                        filters.filters.push(low_ml_score.filter());
-                    }
+                    filters.filters.add(low_ml_score, || !prediction.pass());
                 } else {
                     debug!(
                         pos=%current.pos(),
