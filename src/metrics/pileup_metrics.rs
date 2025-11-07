@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use crate::{
     call::{
         pileup::{Pileup, SimpleRead},
@@ -16,6 +14,7 @@ use color_eyre::{
 use rastair_types::{Base, Probability, RootMeanSquare, Strand, rms::RootMeanSquareExt};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
+use std::ops::Deref;
 use thiserror::Error;
 use tracing::trace;
 
@@ -83,7 +82,7 @@ impl PileupMetrics {
                     .wrap_err(AlleleMetricError(base))
                     .map(|metrics| Alt { base, metrics, filters: AltFilters::default() })
             })
-            .collect::<Result<SmallVec<_, 2>>>()
+            .collect::<Result<_>>()
             .wrap_err("Failed to compute allele metrics for alt alleles")?;
 
         drop(by_allele);
@@ -198,8 +197,8 @@ impl PositionMetrics {
     pub fn from_pileup(pileup: &Pileup, extended: PositionMetricsExt) -> Self {
         PositionMetrics {
             read_depth: pileup.reads.len(),
-            baseq: pileup.reads.iter().map(|x| x.qual).collect::<RootMeanSquare>(),
-            mapq: pileup.reads.iter().map(|x| x.mapq).collect::<RootMeanSquare>(),
+            baseq: pileup.reads.iter().map(|x| x.qual).collect(),
+            mapq: pileup.reads.iter().map(|x| x.mapq).collect(),
             mapq0: pileup.reads.iter().filter(|x| x.mapq == 0).count(),
             cpg: InCpG::from(pileup),
 
@@ -310,18 +309,18 @@ impl AlleleMetrics {
             mapq: i().map(|x| x.mapq).rms(),
             strand_count: ByStrand {
                 base,
-                ot: u32::try_from(ot().count()).wrap_err("read count fits into u32")?,
-                ob: u32::try_from(ob().count()).wrap_err("read count fits into u32")?,
+                ot: u32::try_from(ot().count()).wrap_err("read count should fit into u32")?,
+                ob: u32::try_from(ob().count()).wrap_err("read count should fit into u32")?,
             },
             baseq_s: ByStrand {
                 base,
-                ot: ot().map(|x| x.qual).collect::<RootMeanSquare>(),
-                ob: ob().map(|x| x.qual).collect::<RootMeanSquare>(),
+                ot: ot().map(|x| x.qual).collect(),
+                ob: ob().map(|x| x.qual).collect(),
             },
             mapq_s: ByStrand {
                 base,
-                ot: ot().map(|x| x.mapq).collect::<RootMeanSquare>(),
-                ob: ob().map(|x| x.mapq).collect::<RootMeanSquare>(),
+                ot: ot().map(|x| x.mapq).collect(),
+                ob: ob().map(|x| x.mapq).collect(),
             },
             num_aligned_bases: i().map(|x| x.matching_bases).rms(),
             num_indels: i().map(|x| x.indels).rms(),

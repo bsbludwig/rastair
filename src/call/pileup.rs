@@ -72,11 +72,9 @@ impl Pileup {
             .collect()
     }
 
+    /// Alternative allele bases
     pub fn alts(&self) -> SmallVec<Base, 4> {
-        self.alleles()
-            .into_iter()
-            .filter(|base| self.reference_base != *base)
-            .collect::<SmallVec<Base, 4>>()
+        self.alleles().into_iter().filter(|base| self.reference_base != *base).collect()
     }
 }
 
