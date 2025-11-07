@@ -9,8 +9,6 @@ use smallvec::{SmallVec, smallvec_inline};
 use std::collections::BTreeSet;
 use tracing::warn;
 
-mod entropy;
-
 impl Pileup {
     pub fn fixed_fields(&self) -> rastair_vcf::VcfFixedFields {
         rastair_vcf::VcfFixedFields {

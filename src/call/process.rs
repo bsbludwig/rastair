@@ -99,22 +99,3 @@ impl ChunkRegion {
         Ok((segment_clone, piles))
     }
 }
-
-impl Pileup {
-    /// Collect metrics
-    #[instrument(level = "trace", skip_all)]
-    #[deprecated = "Use `PileupMetrics` instead"]
-    pub fn variant_metrics(&self, params: &VariantCallingParams) -> Result<vcf::Record> {
-        let metrics = self.metrics().wrap_err("Failed to calculate metrics")?;
-        let calling_metrics = self
-            .calling_metrics(params.error_model)
-            .wrap_err("Failed to calculate calling metrics")?;
-
-        Ok(vcf::Record {
-            main: self.fixed_fields(),
-            filters: Filters::new(),
-            info: metrics,
-            samples: smallvec::smallvec![calling_metrics],
-        })
-    }
-}

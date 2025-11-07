@@ -8,7 +8,7 @@ impl Segment {
     pub fn entropy_around<const N: usize>(&self, idx: usize) -> Result<f64> {
         let seq_context = self.get(idx.saturating_sub(N / 2), idx.saturating_add(N / 2 + 1))?;
 
-        Ok(entropy(&seq_context))
+        Ok(entropy(seq_context))
     }
 }
 
