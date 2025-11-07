@@ -214,6 +214,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
             regions_iter.par_bridge().try_for_each_with(
                 (vcf_sender, params),
                 |(vcf_sender, params), (index, region)| {
+                    // This is where the actual processing happens!
                     process_region_wrapper(index, region, vcf_sender, params, &ml)
                 },
             )
@@ -249,7 +250,7 @@ fn process_region_wrapper(
     }
 
     // Use thread-local readers to avoid re-opening files in each thread
-    let res = READERS.with(|local_readers| -> Result<Vec<PileupMetrics>> {
+    let records = READERS.with(|local_readers| -> Result<Vec<PileupMetrics>> {
         let mut local_readers = local_readers.borrow_mut();
         let readers = {
             // Initialize thread-local readers first time the thread accesses them
@@ -260,20 +261,25 @@ fn process_region_wrapper(
                     .wrap_err("Failed to open readers in worker thread")?;
                 *local_readers = Some(readers);
             }
-            local_readers.as_mut().wrap_err("Failed to access thread-local resources")?
+            local_readers
+                .as_mut()
+                .wrap_err("Failed to access thread-local resources")
+                .this_is_a_bug()?
         };
 
-        process_region(readers, region, params, ml)
-    });
+        // This is the actual processing of the region
+        let res = process_region(readers, region, params, ml);
 
-    let records = match res {
-        Ok(records) => records,
-        Err(e) => {
-            warn!(error = format!("{e:#}"), "Failed to process region");
-            // We still send an empty vector to the channel to increment the index
-            Vec::new()
+        // Handle processing errors gracefully to not crash the whole processing
+        match res {
+            Ok(records) => Ok(records),
+            Err(e) => {
+                warn!(error = format!("{e:#}"), "Failed to process region");
+                // We still send an empty vector to the channel to increment the index
+                Ok(Vec::new())
+            }
         }
-    };
+    })?;
 
     if let Err(err) =
         vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")
