@@ -4,7 +4,7 @@
 use crate::{
     call::{
         pileup::Pileup,
-        process::{IncludeAllCpGs, PileupMappingParams},
+        process::{PileupMappingParams, get_pileups},
         variant_calling::{ReadFlags, VariantCallingParams},
     },
     sequence::{ReaderParams, Readers},
@@ -44,12 +44,9 @@ impl ReaderParams {
         let mut readers = params.readers().wrap_err("failed to fetch segments")?;
         let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
-        let pileup_mapping_params = PileupMappingParams {
-            include_cpgs: IncludeAllCpGs::Yes,
-            variant_calling: VariantCallingParams::default(),
-        };
-        let (segment, pileups) = chunk
-            .process(&mut readers, &pileup_mapping_params)
+        let pileup_mapping_params =
+            PileupMappingParams { variant_calling: VariantCallingParams::default() };
+        let (segment, pileups) = get_pileups(&mut readers, &chunk, &pileup_mapping_params)
             .wrap_err("failed to process region")?;
         let pileup = pileups
             .into_iter()

@@ -1,6 +1,10 @@
 use crate::{
     bed::rastair1::BedParams,
-    call::{methylation::params::MethylationCallingParams, variant_calling::VariantCallingParams},
+    call::{
+        methylation::params::MethylationCallingParams,
+        process::{PileupMetricsParams, calculate_pileup_metrics, get_pileups},
+        variant_calling::VariantCallingParams,
+    },
     io::vcf_writer,
     metrics::{self, MetricsForAlt, PileupMetrics, PositionMetricsExt, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers},
@@ -295,45 +299,25 @@ fn process_region(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    let pileup_mapping_params = process::PileupMappingParams {
-        include_cpgs: params.methylation.should_include_all_cpgs(),
+    let pileup_mapping_params =
+        process::PileupMappingParams { variant_calling: params.variant_calling.clone() };
+
+    let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
+
+    let pileup_metrics_params = PileupMetricsParams {
         variant_calling: params.variant_calling.clone(),
+        methylation: params.methylation.clone(),
     };
-
-    let (segment, pileups) = region.process(readers, &pileup_mapping_params)?;
-    let mut pileups: Vec<PileupMetrics> = pileups
-        .into_iter()
-        .map(PileupMetrics::new)
-        .map(|metrics| {
-            // Set "extended" metrics that depend on the pileup and some external params
-            let mut current = metrics?;
-
-            let genotype = current.pileup.estimate_genotype(params.variant_calling.error_model);
-            let methylated = metrics::methylation::call(&params.methylation.thresholds, &current)?
-                .unwrap_or_default();
-
-            let region_entropy = segment
-                .entropy_around::<100>(current.pileup.idx())
-                .wrap_err("Failed to calculate region entropy")?;
-
-            let ext = PositionMetricsExt {
-                genotype,
-                methylated,
-                region_entropy,
-                denovo_adj: metrics::DenovoAdjecent::No,
-            };
-            current.set_extended_metrics(ext);
-
-            Ok(current)
-        })
-        .filter_map(|x: Result<PileupMetrics>| match x {
-            Err(e) => {
-                warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
-                None
-            }
-            Ok(x) => Some(x),
-        })
-        .collect();
+    let mut pileups: Vec<PileupMetrics> =
+        calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params)
+            .filter_map(|x: Result<PileupMetrics>| match x {
+                Err(e) => {
+                    warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
+                    None
+                }
+                Ok(x) => Some(x),
+            })
+            .collect();
 
     if tracing::enabled!(Level::DEBUG) {
         if pileups.is_empty() {

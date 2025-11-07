@@ -1,25 +1,10 @@
-use crate::{call::process::IncludeAllCpGs, utils::cli};
+use crate::utils::cli;
 use better_default::Default;
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MethylationCallingParams {
-    /// Calculate threshold values and filters for methylation
-    #[arg(long, default_value_t = false)]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    skip_methylation_calling: bool,
-
     #[command(flatten)]
     pub thresholds: ThresholdParams,
-}
-
-impl MethylationCallingParams {
-    pub fn methylation_calling(&self) -> bool {
-        !self.skip_methylation_calling
-    }
-
-    pub fn should_include_all_cpgs(&self) -> IncludeAllCpGs {
-        if self.methylation_calling() { IncludeAllCpGs::Yes } else { IncludeAllCpGs::No }
-    }
 }
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
