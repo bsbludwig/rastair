@@ -6,7 +6,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{Context, ContextCompat},
+    eyre::{Context, ContextCompat, eyre},
 };
 use tracing::{Level, debug, instrument, trace, warn};
 
@@ -18,15 +18,18 @@ use tracing::{Level, debug, instrument, trace, warn};
 )]
 pub fn call(config: &ThresholdParams, current: &PileupMetrics) -> Result<Option<Methylated>> {
     if current.pileup.is_cpg || *current.pos_metrics.denovo_adj {
-        let res = call_methylation(config, current).wrap_err("Failed to call CpG methylation")?;
+        let res = call_methylation(config, current).wrap_err("Failed to call methylation")?;
         if let Some(beta) = res.beta() {
-            if !beta.is_finite() {
-                warn!(?res, "Methylation calling resulted in non-finite beta value")
+            if beta.is_finite() {
+                Ok(Some(res))
+            } else {
+                Err(eyre!("Methylation calling resulted in non-finite beta value `{beta}`"))
+                    .this_is_a_bug()
             }
         } else {
-            warn!(?res, "Methylation calling resulted in no beta value")
+            warn!(?res, "Methylation calling resulted in no beta value");
+            Ok(None)
         }
-        Ok(Some(res))
     } else {
         trace!("Not a CpG site, skipping");
         Ok(None)
