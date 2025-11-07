@@ -19,7 +19,7 @@ mod quality_filters;
 pub use quality_filters::QualityFilterParams;
 
 impl Pileup {
-    #[instrument(level="trace", skip_all, fields(chr = %self.chrom(), pos = self.pos))]
+    #[instrument(level="trace", skip_all, fields(chr = %self.contig(), pos = self.pos))]
     pub fn calling_metrics(&self, error_model: ErrorModel) -> Result<Format> {
         let (genotype, genotype_likelihood, genotype_confidence) =
             if let Some(estimate) = self.estimate_genotype(error_model) {

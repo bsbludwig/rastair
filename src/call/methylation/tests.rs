@@ -19,7 +19,7 @@ fn cpg_c_methylated() -> Result<()> {
     call(&config, &mut metrics, None, None)?;
 
     assert_debug_snapshot!((
-        pileup.chrom(),
+        pileup.contig(),
         pileup.pos,
         pileup.reference_base,
         &metrics.info.in_cp_g,
@@ -61,7 +61,7 @@ fn cpg_g_methylated() -> Result<()> {
     call(&config, &mut metrics, None, None)?;
 
     assert_debug_snapshot!((
-        pileup.chrom(),
+        pileup.contig(),
         pileup.pos,
         pileup.reference_base,
         &metrics.info.in_cp_g,
@@ -103,7 +103,7 @@ fn c_but_not_cpg() -> Result<()> {
     call(&config, &mut metrics, None, None)?;
 
     assert_debug_snapshot!((
-        pileup.chrom(),
+        pileup.contig(),
         pileup.pos,
         pileup.reference_base,
         &metrics.info.in_cp_g,
@@ -143,7 +143,7 @@ fn random_other_variant() -> Result<()> {
     call(&config, &mut metrics, None, None)?;
 
     assert_debug_snapshot!((
-        pileup.chrom(),
+        pileup.contig(),
         pileup.pos,
         pileup.reference_base,
         &metrics.info.in_cp_g,
@@ -183,7 +183,7 @@ fn methylatable_position_not_methylated() -> Result<()> {
     call(&config, &mut metrics, None, None)?;
 
     assert_debug_snapshot!((
-        pileup.chrom(),
+        pileup.contig(),
         pileup.pos,
         pileup.reference_base,
         &metrics.info.in_cp_g,

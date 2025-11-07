@@ -14,7 +14,7 @@ mod entropy;
 impl Pileup {
     pub fn fixed_fields(&self) -> rastair_vcf::VcfFixedFields {
         rastair_vcf::VcfFixedFields {
-            chrom: self.chrom(),
+            chrom: self.contig(),
             pos: self.pos,
             id: BTreeSet::default(),
             r#ref: self.reference_base.into(),
@@ -239,7 +239,7 @@ mod tests {
     fn test_allele_specific_strand_bias_1() -> Result<()> {
         let pileup = variant_pileup("bacteriophage_lambda_CpG", 2636)?;
         assert_debug_snapshot!((
-            pileup.chrom(),
+            pileup.contig(),
             pileup.pos,
             pileup.reference_base,
             &pileup.reads,
@@ -283,7 +283,7 @@ mod tests {
     fn test_in_cpg() -> Result<()> {
         // a CpG site
         let pileup = variant_pileup("chr19", 6105084)?;
-        assert_debug_snapshot!((pileup.chrom(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
+        assert_debug_snapshot!((pileup.contig(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
         (
             "chr19",
             C,
@@ -294,7 +294,7 @@ mod tests {
 
         // a C variant, followed by a C
         let pileup = variant_pileup("chr19", 6104589)?;
-        assert_debug_snapshot!((pileup.chrom(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
+        assert_debug_snapshot!((pileup.contig(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
         (
             "chr19",
             C,
@@ -305,7 +305,7 @@ mod tests {
 
         // some random variant with base G
         let pileup = variant_pileup("chr19", 6105116)?;
-        assert_debug_snapshot!((pileup.chrom(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
+        assert_debug_snapshot!((pileup.contig(), pileup.reference_base, pileup.pos, pileup.in_cpg()), @r#"
         (
             "chr19",
             G,

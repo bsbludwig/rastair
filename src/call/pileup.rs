@@ -28,7 +28,7 @@ pub struct Pileup {
 
 impl Pileup {
     /// Chromosome name of the segment
-    pub fn chrom(&self) -> SmolStr {
+    pub fn contig(&self) -> SmolStr {
         self.region.contig.clone()
     }
 

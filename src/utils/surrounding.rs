@@ -34,11 +34,11 @@ pub fn surrounding_pileups(
     let after = next_slice.first();
     // we might not have the direct neighbors
     let before = before.filter(|p| {
-        p.pileup.chrom() == current.pileup.chrom()
+        p.pileup.contig() == current.pileup.contig()
             && Some(p.pileup.pos) == current.pileup.pos.checked_sub(1)
     });
     let after = after.filter(|p| {
-        p.pileup.chrom() == current.pileup.chrom()
+        p.pileup.contig() == current.pileup.contig()
             && Some(p.pileup.pos) == current.pileup.pos.checked_add(1)
     });
 
