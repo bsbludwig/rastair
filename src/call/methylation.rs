@@ -6,8 +6,8 @@
 //! i.e. it is called with an already constructed `Record` object.
 //! If a methylation call is made, the `Record` is updated.
 
-#[deprecated]
 mod filters;
+pub use filters::add_filters;
 
 #[deprecated]
 mod utils;

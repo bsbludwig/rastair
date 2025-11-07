@@ -19,7 +19,7 @@ pub struct ThresholdParams {
     #[arg(long, default_value_t = 3)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(3)]
-    pub m_min_depth: usize,
+    pub m_min_depth: u32,
 
     /// The minimum number of reads required as evidence for a de novo CpG
     #[arg(long, default_value_t = 2)]
@@ -49,5 +49,5 @@ pub struct ThresholdParams {
     #[arg(long, default_value_t = 1000)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(1000)]
-    pub m_max_coverage: usize,
+    pub m_max_coverage: u32,
 }

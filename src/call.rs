@@ -343,6 +343,8 @@ fn process_region(
     // - generic
     // - methylation
     // - denovo
+    // Maybe these should be optional when using ML? but they are very cheap to calculate
+    // TODO: Add denovo filters
     for current in &mut pileups {
         current
             .pos_filters
@@ -390,6 +392,17 @@ fn process_region(
                     );
                 }
             }
+        for alt_base in current.alts() {
+            let alt = current
+                .alt_metrics(alt_base)
+                .wrap_err("Failed to get alt metrics")
+                .this_is_a_bug()?;
+            let filters = methylation::add_filters(&params.methylation.thresholds, &alt)?;
+            let alt_filters = current
+                .alt_filters_mut(alt_base)
+                .wrap_err("Failed to get mutable alt metrics")
+                .this_is_a_bug()?;
+            alt_filters.filters.merge(filters);
         }
     }
 

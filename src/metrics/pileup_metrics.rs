@@ -280,6 +280,14 @@ impl Filters {
             self.0.push(filter.filter());
         }
     }
+
+    pub fn merge(&mut self, other: Filters) {
+        for filter in other.0 {
+            if !self.0.contains(&filter) {
+                self.0.push(filter);
+            }
+        }
+    }
 }
 
 impl Deref for Filters {
