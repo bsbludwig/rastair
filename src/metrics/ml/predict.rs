@@ -1,9 +1,6 @@
 use super::types::{MachineLearning, MlModel, Prediction};
-use crate::{
-    metrics::{MetricsForAlt, PileupMetrics},
-    vcf::InCpG,
-};
-use rastair_types::{Base, Probability};
+use crate::metrics::{MetricsForAlt, PileupMetrics};
+use rastair_types::Probability;
 use tracing::{instrument, warn};
 
 impl MachineLearning {
@@ -19,14 +16,9 @@ impl MachineLearning {
             return None;
         }
 
-        let pos_metrics = &current.metrics.pos_metrics;
-        let alt = current.alt;
-
-        let (name, model, features) = if (pos_metrics.cpg == InCpG::C && alt.base == Base::T)
-            || (pos_metrics.cpg == InCpG::G && current.alt.base == Base::A)
-        {
+        let (name, model, features) = if current.is_evidence_for_methylation() {
             (MlModel::Cpg, self.cpg.as_ref(), super::cpg(current, before, after))
-        } else if *alt.denovo {
+        } else if *current.alt.denovo {
             (
                 MlModel::DenovoCpg,
                 self.denovo_cpg.as_ref(),
@@ -51,7 +43,8 @@ impl MachineLearning {
 
         match prediction.get(0).copied() {
             Some(p) => Some(Prediction {
-                prediction: Probability::new(p).expect("Probability should be valid"),
+                prediction: Probability::new(p)
+                    .expect("Got invalid probability value in prediction"),
                 threshold: self.threshold,
                 allele: current.alt.base,
                 features: features.row(0).to_owned(),

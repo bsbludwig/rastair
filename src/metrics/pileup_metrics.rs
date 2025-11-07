@@ -337,3 +337,10 @@ pub struct MetricsForAlt<'p> {
     pub metrics: &'p PileupMetrics,
     pub alt: &'p AlleleMetrics,
 }
+
+impl MetricsForAlt<'_> {
+    pub fn is_evidence_for_methylation(&self) -> bool {
+        (self.metrics.pos_metrics.cpg == InCpG::C && self.alt.base == Base::T)
+            || (self.metrics.pos_metrics.cpg == InCpG::G && self.alt.base == Base::A)
+    }
+}
