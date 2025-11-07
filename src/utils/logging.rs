@@ -87,13 +87,3 @@ where
         self.map_err(|error| error.into()).map_err(|report| report.note(BUG_MESSAGE))
     }
 }
-
-pub fn any_to_err(e: Box<dyn std::any::Any + Send + 'static>) -> Report {
-    if let Some(s) = e.downcast_ref::<&'static str>() {
-        eyre!("{s}")
-    } else if let Some(s) = e.downcast_ref::<String>() {
-        eyre!("{s}")
-    } else {
-        eyre!("Thread panicked")
-    }
-}

@@ -8,16 +8,13 @@ use crate::{
     io::vcf_writer,
     metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers},
-    utils::{
-        cli,
-        logging::{ThisIsABug as _, any_to_err},
-    },
+    utils::{cli, logging::ThisIsABug as _},
     vcf::lowDp,
 };
 use clio::ClioPath;
 use color_eyre::{
     Section,
-    eyre::{ContextCompat as _, Result, WrapErr, ensure},
+    eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
 };
 use rayon::prelude::*;
 use std::{ops::Mul as _, thread::available_parallelism};
@@ -223,7 +220,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     writer_thread
         .join()
-        .map_err(|e| any_to_err(e).wrap_err("Writer thread crashed"))
+        .map_err(|e| eyre!("Writer thread crashed"))
         .this_is_a_bug()? // this error is a panic in the thread
         .wrap_err("Error in writer thread")?; // this error is from actual result returned by the thread
 
