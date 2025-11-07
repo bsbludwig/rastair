@@ -1,5 +1,5 @@
+use super::types::{MachineLearning, MlModel, Prediction};
 use crate::{
-    call::ml::{MachineLearning, MlModel, Prediction},
     metrics::{MetricsForAlt, PileupMetrics},
     vcf::{DeNovoCpGCandidate, InCpG},
 };

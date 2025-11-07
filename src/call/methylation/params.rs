@@ -1,7 +1,5 @@
-use crate::{call::process::IncludeAllCpGs, utils::cli, vcf};
+use crate::{call::process::IncludeAllCpGs, utils::cli};
 use better_default::Default;
-use color_eyre::{Result, eyre::Context};
-use tracing::instrument;
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MethylationCallingParams {

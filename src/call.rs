@@ -1,11 +1,8 @@
 use crate::{
     bed::rastair1::BedParams,
-    call::{
-        methylation::params::MethylationCallingParams, ml::MachineLearning,
-        variant_calling::VariantCallingParams,
-    },
+    call::{methylation::params::MethylationCallingParams, variant_calling::VariantCallingParams},
     io::vcf_writer,
-    metrics::{self, MetricsForAlt, PileupMetrics, PositionMetricsExt},
+    metrics::{self, MetricsForAlt, PileupMetrics, PositionMetricsExt, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{
         Surrounding, cli,
