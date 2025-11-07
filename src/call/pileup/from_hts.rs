@@ -10,14 +10,14 @@ use crate::{
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use rust_htslib::bam::pileup::{Alignment, Pileup as HtsPileup};
 use smallvec::SmallVec;
-use std::sync::Arc;
+use std::rc::Rc;
 use tracing::instrument;
 
 impl Pileup {
     #[instrument(level = "trace", skip_all)]
     pub fn from_hts(
         pile: &HtsPileup,
-        segment: Arc<Segment>,
+        segment: Rc<Segment>,
         params: &PileupMappingParams,
     ) -> Result<Pileup> {
         let pos = pile.pos();

@@ -5,7 +5,7 @@ use crate::{
 };
 use color_eyre::eyre::{Result, WrapErr};
 use rust_htslib::bam::{FetchDefinition, Read as _};
-use std::{ops::Deref, sync::Arc};
+use std::{ops::Deref, rc::Rc};
 use tracing::{Level, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -50,7 +50,7 @@ impl ChunkRegion {
         &self,
         readers: &mut Readers,
         params: &PileupMappingParams,
-    ) -> Result<(Arc<Segment>, impl Iterator<Item = Pileup>)> {
+    ) -> Result<(Rc<Segment>, impl Iterator<Item = Pileup>)> {
         let segment = readers.segment(self, 2).wrap_err("failed to fetch segment")?;
         trace!(len = segment.sequence.len(), "Processing region");
 
@@ -60,7 +60,7 @@ impl ChunkRegion {
             .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
             .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", self.region))?;
 
-        let segment = Arc::new(segment);
+        let segment = Rc::new(segment);
         let segment_clone = segment.clone();
 
         // Go over each column in the pileup and collect variant candidates
