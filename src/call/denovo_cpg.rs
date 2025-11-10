@@ -7,8 +7,7 @@
 
 use crate::{
     call::pileup::Pileup,
-    metrics::PileupMetrics,
-    utils::{Base::*, Surrounding, cli},
+    utils::{Base::*, cli},
     vcf::{self},
 };
 use better_default::Default;

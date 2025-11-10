@@ -220,7 +220,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     writer_thread
         .join()
-        .map_err(|e| eyre!("Writer thread crashed"))
+        .map_err(|_| eyre!("Writer thread crashed"))
         .this_is_a_bug()? // this error is a panic in the thread
         .wrap_err("Error in writer thread")?; // this error is from actual result returned by the thread
 
@@ -314,26 +314,29 @@ fn process_region(
                 }
                 Ok(x) => Some(x),
             })
+            .filter(|p| {
+                let has_alts = !p.alts.is_empty();
+                let is_methylation_evidence = p.pileup.is_cpg && p.forms_denovo();
+
+                if params.record_filters.cpgs_only {
+                    // Filter out pileups that are not CpG if requested
+                    has_alts
+                } else {
+                    // Otherwise, keep all variant evidence + methylation evidence
+                    has_alts || is_methylation_evidence
+                }
+            })
             .collect();
 
     if tracing::enabled!(Level::DEBUG) {
         if pileups.is_empty() {
-            warn!("No pileups found in region!");
+            debug!("No relevant pileups found in region");
         } else {
             let count = readable::num::Unsigned::from(pileups.len());
             let bytes =
                 readable::byte::Byte::from(pileups.len() * std::mem::size_of::<PileupMetrics>());
             debug!(%count, %bytes, "Collected pileup metrics");
         }
-    }
-
-    // Filter out pileups that are not CpG if requested.
-    //
-    // We're doing this here since we now have all the metrics and can remove
-    // them based on these to not waste processing time on records we will
-    // discard anyway.
-    if params.record_filters.cpgs_only {
-        pileups.retain(|p| p.pileup.is_cpg || p.forms_denovo());
     }
 
     // Maybe these should be optional when using ML? but they are very cheap to calculate
@@ -353,7 +356,9 @@ fn process_region(
                 .alt_filters_mut(alt_base)
                 .wrap_err("Failed to get mutable alt metrics")
                 .this_is_a_bug()?;
-            alt_filters.filters.merge(filters);
+            if !filters.is_empty() {
+                alt_filters.filters.merge(filters);
+            }
         }
     }
 
