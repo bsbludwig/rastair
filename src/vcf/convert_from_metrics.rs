@@ -119,15 +119,19 @@ impl PileupMetrics {
                 )
             };
 
+        let has_ml = self.alts.iter().any(|alt| alt.filters.ml.is_some());
+
         let format_fields = Format {
             genotype,
             genotype_likelihood,
             genotype_confidence,
             sample_read_depth: SampleReadDepth(self.pileup.reads.len()),
             methylated: self.pos_metrics.methylated.clone(),
-            machine_learning_prediction: MachineLearningPrediction(
-                self.alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect(),
-            ),
+            machine_learning_prediction: MachineLearningPrediction(if has_ml {
+                self.alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect()
+            } else {
+                smallvec![]
+            }),
         };
 
         let mut filters = Filters::default();
