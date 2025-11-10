@@ -296,37 +296,45 @@ fn process_region(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
+    // First, collect pileups.
+    //
+    // NOTE: There are some filters applied here to ignore certain reads.
     let pileup_mapping_params =
         process::PileupMappingParams { variant_calling: params.variant_calling.clone() };
-
     let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
 
+    // Next, calculate metrics for each pileup.
     let pileup_metrics_params = PileupMetricsParams {
         variant_calling: params.variant_calling.clone(),
         methylation: params.methylation.clone(),
     };
-    let mut pileups: Vec<PileupMetrics> =
-        calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params)
-            .filter_map(|x: Result<PileupMetrics>| match x {
-                Err(e) => {
-                    warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
-                    None
-                }
-                Ok(x) => Some(x),
-            })
-            .filter(|p| {
-                let has_alts = !p.alts.is_empty();
-                let is_methylation_evidence = p.pileup.is_cpg && p.forms_denovo();
+    let pileups = calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params);
 
-                if params.record_filters.cpgs_only {
-                    // Filter out pileups that are not CpG if requested
-                    has_alts
-                } else {
-                    // Otherwise, keep all variant evidence + methylation evidence
-                    has_alts || is_methylation_evidence
-                }
-            })
-            .collect();
+    // Collect relevant pileups based on what the caller asked for
+    //
+    // The main reason we filter here is to avoid running ML on pileups that
+    // have no variant or methylation evidence.
+    let mut pileups: Vec<PileupMetrics> = pileups
+        .filter_map(|x: Result<PileupMetrics>| match x {
+            Err(e) => {
+                warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
+                None
+            }
+            Ok(x) => Some(x),
+        })
+        .filter(|p| {
+            let has_alts = !p.alts.is_empty();
+            let is_methylation_evidence = p.pileup.is_cpg && p.forms_denovo();
+
+            if params.record_filters.cpgs_only {
+                // Filter out pileups that are not CpG if requested
+                has_alts
+            } else {
+                // Otherwise, keep all variant evidence + methylation evidence
+                has_alts || is_methylation_evidence
+            }
+        })
+        .collect();
 
     if tracing::enabled!(Level::DEBUG) {
         if pileups.is_empty() {
@@ -339,7 +347,7 @@ fn process_region(
         }
     }
 
-    // Maybe these should be optional when using ML? but they are very cheap to calculate
+    // Add 'simple' filters based on the collected metrics
     for current in &mut pileups {
         current
             .pos_filters
@@ -364,6 +372,7 @@ fn process_region(
         }
     }
 
+    // Finally, add ML metrics if requested
     process::add_ml_metrics(&mut pileups, ml).wrap_err("Failed to add ML metrics")?;
 
     // At this point, we have collected all metrics for the pileups in this

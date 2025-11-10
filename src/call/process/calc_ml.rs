@@ -33,6 +33,8 @@ pub fn add_ml_metrics(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Re
                     .wrap_err("Failed to get mutable alt metrics")
                     .this_is_a_bug()?;
                 filters.filters.add(pre_ml, || true);
+
+                // Skip expensive ML prediction for this low-quality alt
                 continue 'alts;
             }
 
