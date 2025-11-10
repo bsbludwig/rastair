@@ -6,9 +6,10 @@
 //! that changed from "A" to "G").
 
 use crate::{
-    call::pileup::Pileup,
-    utils::{Base::*, cli},
-    vcf::{self},
+    call::{methylation::ThresholdParams, pileup::Pileup},
+    metrics::{Filters, MetricsForAlt},
+    utils::{Base::*, IntoF64 as _, cli},
+    vcf,
 };
 use better_default::Default;
 use color_eyre::Result;
@@ -19,7 +20,7 @@ pub struct DenovoParams {
     #[arg(long, default_value_t = 2)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(2)]
-    pub cpg_novo_min_depth: usize,
+    pub cpg_novo_min_depth: u32,
     /// Minimum base quality for de-novo CpGs
     #[arg(long, default_value_t = 15.)]
     #[arg(help_heading = cli::sections::FILTER)]
@@ -37,51 +38,22 @@ pub struct DenovoParams {
     pub cpg_novo_min_vaf: f64,
 }
 
-impl From<&Pileup> for vcf::DeNovoCpGCandidate {
-    fn from(pileup: &Pileup) -> Self {
-        let ref_base = pileup.reference_base;
-        let (alt_base, alt_index) = if let Some(pos) = pileup.alts().iter().position(|x| *x == C)
-            && pileup.ref_after() == G
-        {
-            (C, pos)
-        } else if let Some(pos) = pileup.alts().iter().position(|x| *x == G)
-            && pileup.ref_before() == C
-        {
-            (G, pos)
-        } else {
-            return vcf::DeNovoCpGCandidate::NotCandidate;
-        };
+pub fn add_filters(config: &DenovoParams, current: &MetricsForAlt) -> Result<Filters> {
+    let mut filters = Filters::default();
 
-        vcf::DeNovoCpGCandidate::Candidate { ref_base, alt_base, alt_index }
+    let alt = &current.alt;
+
+    if !*alt.denovo {
+        // Not a de-novo CpG site, skipping filters
+        return Ok(filters);
     }
-}
 
-impl DenovoParams {
-    fn filter_vcf(&self, record: &mut vcf::Record) -> Result<()> {
-        let vcf::DeNovoCpGCandidate::Candidate { alt_base, alt_index: idx, .. } =
-            record.info.de_novo_cp_g_candidate
-        else {
-            return Ok(());
-        };
+    filters.add(vcf::dnCpG_lowDp, || alt.depth < config.cpg_novo_min_depth);
+    filters.add(vcf::dnCpG_bq, || alt.baseq.f() < config.cpg_novo_min_baseq);
+    filters.add(vcf::dnCpG_mapq, || alt.mapq.f() < config.cpg_novo_min_mapq);
+    filters.add(vcf::dnCpG_vaf, || alt.allele_frequency.f() < config.cpg_novo_min_vaf);
 
-        if record.info.allele_read_depth.get(idx) <= Some(&self.cpg_novo_min_depth) {
-            record.filters.add_per_allele(alt_base, vcf::dnCpG_lowDp);
-        }
-
-        if record.info.allele_base_quality.get(idx) <= Some(&self.cpg_novo_min_baseq) {
-            record.filters.add_per_allele(alt_base, vcf::dnCpG_bq);
-        }
-
-        if record.info.allele_map_quality.get(idx) <= Some(&self.cpg_novo_min_mapq) {
-            record.filters.add_per_allele(alt_base, vcf::dnCpG_mapq);
-        }
-
-        if record.info.allele_frequency.get(idx) <= Some(&self.cpg_novo_min_vaf) {
-            record.filters.add_per_allele(alt_base, vcf::dnCpG_vaf);
-        }
-
-        Ok(())
-    }
+    Ok(filters)
 }
 
 // #[cfg(test)]
