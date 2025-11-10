@@ -13,7 +13,7 @@ fn pre_ml_filter(c: &MetricsForAlt) -> bool {
 
 #[instrument(level = "info", skip_all)]
 pub fn add_ml_metrics(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Result<()> {
-    if !ml.disabled {
+    if ml.disabled {
         return Ok(());
     }
 
