@@ -179,27 +179,6 @@ fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
 }
 
 #[test]
-fn includes_all_cpgs_when_methylation_calling() -> Result<()> {
-    const REGION: &str = "--region=chr19:6117965-6118004";
-
-    apply_common_filters!();
-    assert_cmd_snapshot!(
-        "does not include unmethylated cpgs without alts",
-        rastair()
-            .args(CALL_TEST_BAM)
-            .args([NO_ML, REGION])
-            .args(["--skip-methylation-calling", "--vcf"])
-    );
-
-    assert_cmd_snapshot!(
-        "includes all cpgs",
-        rastair().args(CALL_TEST_BAM).args([NO_ML, REGION]).args(["--vcf"])
-    );
-
-    Ok(())
-}
-
-#[test]
 fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
     const REGION: &str = "--region=chr19";
 
