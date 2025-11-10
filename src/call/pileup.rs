@@ -25,8 +25,6 @@ pub struct Pileup {
     pub reads: SimpleReads,
     /// Reference base at this position
     pub reference_base: Base,
-    /// Whether this position is part of a CpG site in the reference
-    pub is_cpg: bool,
 }
 
 impl Pileup {
@@ -126,7 +124,6 @@ mod tests {
             pos: 1002, // Corresponds to index in the segment
             reads: bases,
             reference_base: Base::T, // Assume T is the reference base at this position
-            is_cpg: false,
         };
 
         let alleles = variant_candidate.alleles();

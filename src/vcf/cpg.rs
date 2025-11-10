@@ -90,6 +90,9 @@ impl rastair_vcf::InfoField for InCpG {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::call::test_helpers::variant_pileup;
+    use color_eyre::Result;
+    use insta::assert_debug_snapshot;
 
     #[test]
     fn test_in_cpg() {
@@ -103,5 +106,16 @@ mod tests {
 
         assert_eq!(InCpG::new(T, Some(C), Some(G)), InCpG::No);
         assert_eq!(InCpG::new(C, Some(T), Some(A)), InCpG::No);
+    }
+
+    #[test]
+    fn test_cpg_detection() -> Result<()> {
+        let pileup = variant_pileup("chr19", 6105711)?;
+        assert_debug_snapshot!(InCpG::from(&pileup), @"CpG::C");
+
+        let pileup = variant_pileup("chr19", 6105712)?;
+        assert_debug_snapshot!(InCpG::from(&pileup), @"CpG::G");
+
+        Ok(())
     }
 }

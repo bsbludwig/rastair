@@ -17,7 +17,7 @@ use tracing::{Level, debug, instrument, trace, warn};
     name = "methylation_call"
 )]
 pub fn call(config: &ThresholdParams, current: &PileupMetrics) -> Result<Option<Methylated>> {
-    if current.pileup.is_cpg || *current.pos_metrics.denovo_adj {
+    if *current.pos_metrics.cpg || *current.pos_metrics.denovo_adj {
         let res = call_methylation(config, current).wrap_err("Failed to call methylation")?;
         if let Some(beta) = res.beta() {
             if beta.is_finite() {
@@ -58,7 +58,7 @@ fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methy
             ?ref_base,
             ?ref_before,
             ?ref_after,
-            cpg=%p.pileup.is_cpg,
+            cpg=?p.pos_metrics.cpg,
             denovo=?p.pos_metrics.denovo_adj,
             "Position is neither an original CpG nor a de-novo CpG site"
         );

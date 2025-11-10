@@ -5,7 +5,6 @@ use crate::{
     },
     sequence::Segment,
     utils::{SequenceContext, StrandFromRecord},
-    vcf::InCpG,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use rust_htslib::bam::pileup::{Alignment, Pileup as HtsPileup};
@@ -41,7 +40,6 @@ impl Pileup {
 
         let context = SequenceContext::new(reference_base, idx, &segment)
             .wrap_err("failed to get sequence context")?;
-        let is_cpg = *InCpG::new(reference_base, context.before_1, context.after_1);
 
         Ok(Pileup {
             region: segment.range.clone(),
@@ -49,7 +47,6 @@ impl Pileup {
             pos: pile.pos(),
             reads,
             reference_base,
-            is_cpg,
         })
     }
 }

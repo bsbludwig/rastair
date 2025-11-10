@@ -324,7 +324,7 @@ fn process_region(
         })
         .filter(|p| {
             let has_alts = !p.alts.is_empty();
-            let is_methylation_evidence = p.pileup.is_cpg && p.forms_denovo();
+            let is_methylation_evidence = *p.pos_metrics.cpg && p.forms_denovo();
 
             if params.record_filters.cpgs_only {
                 // Filter out pileups that are not CpG if requested

@@ -25,7 +25,7 @@ pub fn cpg(
     let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
     let ref_base = pileup.reference_base;
 
-    ensure!(pileup.is_cpg, "cpg called on non-CpG position");
+    ensure!(*pos.cpg, "cpg called on non-CpG position");
     ensure!(
         (ref_base == C && alt.base == T) || (ref_base == G && alt.base == A),
         "cpg called on non-methylation candidate"
