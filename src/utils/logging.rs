@@ -1,7 +1,4 @@
-use color_eyre::{
-    Section as _,
-    eyre::{Report, eyre},
-};
+use color_eyre::{Section as _, eyre::Report};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 pub static LOG_VAR: &str = "RASTAIR_LOG";

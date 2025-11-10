@@ -130,10 +130,14 @@ impl PileupMetrics {
             ),
         };
 
-        // FIXME: Add real filters based on metrics
         let mut filters = Filters::default();
         self.pos_filters.iter().for_each(|f| {
             filters.add(f.clone());
+        });
+        self.alts.iter().for_each(|alt| {
+            alt.filters.filters.iter().for_each(|f| {
+                filters.add(f.clone());
+            });
         });
         if filters.pass() {
             filters.add_all(PASS);
