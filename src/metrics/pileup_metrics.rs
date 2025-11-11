@@ -142,8 +142,11 @@ impl PileupMetrics {
         *self.pos_metrics.denovo_adj || self.alts.iter().any(|a| *a.metrics.denovo)
     }
 
-    pub fn pass(&self) -> bool {
-        self.pos_filters.is_empty() && self.alts.iter().all(|a| a.filters.filters.is_empty())
+    pub fn pass(&self, ml_threshold: Option<Probability>) -> bool {
+        if self.pos_filters.other_pos_in_cpg_passes {
+            return true;
+        }
+        self.pos_filters.pass() && self.alts.iter().all(|a| a.filters.pass(ml_threshold))
     }
 }
 
@@ -249,7 +252,7 @@ pub struct AlleleMetrics {
     pub denovo: FormsDenovo,
 }
 
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FormsDenovo {
     #[default]
     No,
@@ -275,22 +278,38 @@ pub struct AltFilters {
     pub filters: Filters,
 }
 
+impl AltFilters {
+    pub fn pass(&self, ml_threshold: Option<Probability>) -> bool {
+        if self.filters.other_pos_in_cpg_passes {
+            return true;
+        }
+        if ml_threshold.is_some() { self.ml > ml_threshold } else { self.filters.is_empty() }
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct Filters(SmallVec<SmolStr, 6>);
+pub struct Filters {
+    pub other_pos_in_cpg_passes: bool,
+    filters: SmallVec<SmolStr, 6>,
+}
 
 impl Filters {
     pub fn add(&mut self, filter: impl VcfFilter, condition: impl FnOnce() -> bool) {
         if condition() {
-            self.0.push(filter.filter());
+            self.filters.push(filter.filter());
         }
     }
 
     pub fn merge(&mut self, other: Filters) {
-        for filter in other.0 {
-            if !self.0.contains(&filter) {
-                self.0.push(filter);
+        for filter in other.filters {
+            if !self.filters.contains(&filter) {
+                self.filters.push(filter);
             }
         }
+    }
+
+    pub fn pass(&self) -> bool {
+        self.other_pos_in_cpg_passes || self.filters.is_empty()
     }
 }
 
@@ -298,7 +317,7 @@ impl Deref for Filters {
     type Target = SmallVec<SmolStr, 6>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.filters
     }
 }
 

@@ -39,6 +39,8 @@ pub fn writer_thread(
     let bed_params =
         BedRecordsConvertParams { ml_threshold: params.ml.ml, filters: bed.filters.clone() };
 
+    let ml_threshold = params.ml.threshold();
+
     // Spawn the actual VCF writer thread. Everything in here is driven by the
     // incoming records from the processing threads.
     //
@@ -66,7 +68,7 @@ pub fn writer_thread(
                     let mut vcf_record: Option<vcf::Record> = None;
 
                     if let Some(vcf_writer) = vcf_writer.as_mut()
-                        && vcf_filter.matches(&record)
+                        && vcf_filter.matches(&record, ml_threshold)
                     {
                         use crate::io::vcf_writer::Writer;
                         match vcf_writer {

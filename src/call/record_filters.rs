@@ -1,3 +1,5 @@
+use rastair_types::Probability;
+
 use crate::{metrics::PileupMetrics, utils::cli};
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
@@ -24,7 +26,7 @@ pub struct RecordFilters {
 
 impl RecordFilters {
     /// Check if a VCF record matches the filter criteria
-    pub fn matches(&self, record: &PileupMetrics) -> bool {
+    pub fn matches(&self, record: &PileupMetrics, ml_threshold: Option<Probability>) -> bool {
         // filter for CpGs, this takes precedence over "all"
         if self.cpgs_only && !(*record.pos_metrics.cpg || record.forms_denovo()) {
             return false;
@@ -41,7 +43,7 @@ impl RecordFilters {
         }
 
         // okay and now only those that pass
-        record.pass()
+        record.pass(ml_threshold)
     }
 }
 
@@ -91,48 +93,53 @@ mod tests {
     #[test]
     fn test_pass() {
         let filters = RecordFilters { vcf_all: false, cpgs_only: false };
+        let ml_threshold = Some(Probability::new(0.9).unwrap());
 
         // nothing going on, filters are empty
-        assert!(filters.matches(&default_record()), "should match record with not filters");
+        assert!(
+            filters.matches(&default_record(), ml_threshold),
+            "should match record with not filters"
+        );
 
         // record fails filters
         let mut r = default_record();
         r.pos_filters.add(lowDp, || true);
-        assert!(!filters.matches(&r), "should not match record with failing filters");
+        assert!(!filters.matches(&r, ml_threshold), "should not match record with failing filters");
     }
 
     #[test]
     fn test_cpgs() {
         let filters = RecordFilters { vcf_all: false, cpgs_only: true };
+        let ml_threshold = Some(Probability::new(0.9).unwrap());
 
         // empty record is not in CpG
         let mut r = default_record();
-        assert!(!filters.matches(&r), "should not match non-CpG");
+        assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG");
 
         r.pos_filters.add(lowDp, || true);
-        assert!(!filters.matches(&r), "should not match non-CpG failing filters");
+        assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG failing filters");
 
         // explicit non-CpG record
         let mut r = default_record();
         r.pos_metrics.cpg = InCpG::No;
-        assert!(!filters.matches(&r), "should not match non-CpG record");
+        assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG record");
 
         // CpG record
         let mut r = default_record();
         r.pos_metrics.cpg = InCpG::C;
-        assert!(filters.matches(&r), "should match CpG record");
+        assert!(filters.matches(&r, ml_threshold), "should match CpG record");
 
         r.pos_filters.add(lowDp, || true);
-        assert!(!filters.matches(&r), "should not match CpG record failing filters");
+        assert!(!filters.matches(&r, ml_threshold), "should not match CpG record failing filters");
 
         // denovo CpG candidate
         let mut r = default_record();
         r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
-        assert!(filters.matches(&r), "should match de-novo CpG candidate record");
+        assert!(filters.matches(&r, ml_threshold), "should match de-novo CpG candidate record");
 
         r.pos_filters.add(lowDp, || true);
         assert!(
-            !filters.matches(&r),
+            !filters.matches(&r, ml_threshold),
             "should not match de-novo CpG candidate record failing filters"
         );
     }
@@ -140,48 +147,53 @@ mod tests {
     #[test]
     fn test_all_cpgs() {
         let filters = RecordFilters { vcf_all: true, cpgs_only: true };
+        let ml_threshold = Some(Probability::new(0.9).unwrap());
 
         // empty record is not in CpG
         let mut r = default_record();
-        assert!(!filters.matches(&r), "should not match non-CpG");
+        assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG");
 
         r.pos_filters.add(lowDp, || true);
-        assert!(!filters.matches(&r), "should not match non-CpG failing filters");
+        assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG failing filters");
 
         // explicit non-CpG record
         let mut r = default_record();
         r.pos_metrics.cpg = InCpG::No;
-        assert!(!filters.matches(&r), "should not match non-CpG record");
+        assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG record");
 
         // CpG record
         let mut r = default_record();
         r.pos_metrics.cpg = InCpG::C;
-        assert!(filters.matches(&r), "should match CpG record");
+        assert!(filters.matches(&r, ml_threshold), "should match CpG record");
 
         r.pos_filters.add(lowDp, || true);
-        assert!(filters.matches(&r), "should match CpG record failing filters");
+        assert!(filters.matches(&r, ml_threshold), "should match CpG record failing filters");
 
         // denovo CpG candidate
         let mut r = default_record();
         r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
-        assert!(filters.matches(&r), "should match de-novo CpG candidate record");
+        assert!(filters.matches(&r, ml_threshold), "should match de-novo CpG candidate record");
 
         r.pos_filters.add(lowDp, || true);
-        assert!(filters.matches(&r), "should match de-novo CpG candidate record failing filters");
+        assert!(
+            filters.matches(&r, ml_threshold),
+            "should match de-novo CpG candidate record failing filters"
+        );
     }
 
     #[test]
     fn test_all() {
         let filters = RecordFilters { vcf_all: true, cpgs_only: false };
+        let ml_threshold = Some(Probability::new(0.9).unwrap());
 
         // empty record
         let mut r = default_record();
-        assert!(filters.matches(&r), "should match record");
+        assert!(filters.matches(&r, ml_threshold), "should match record");
 
         r.pos_filters.add(lowDp, || true);
-        assert!(filters.matches(&r), "should match record failing filters");
+        assert!(filters.matches(&r, ml_threshold), "should match record failing filters");
 
         r.pos_filters.add(PASS, || true);
-        assert!(filters.matches(&r), "should match passing record");
+        assert!(filters.matches(&r, ml_threshold), "should match passing record");
     }
 }

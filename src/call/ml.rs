@@ -108,6 +108,10 @@ impl MachineLearningParams {
             )),
         })
     }
+
+    pub fn threshold(&self) -> Option<Probability> {
+        if self.no_ml { None } else { Some(self.ml) }
+    }
 }
 
 #[instrument(level = "debug", skip_all)]
