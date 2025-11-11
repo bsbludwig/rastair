@@ -7,7 +7,7 @@ use smol_str::SmolStr;
 use std::fmt;
 
 /// A genomic region with chromosome and coordinates
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Region {
     pub contig: SmolStr,
     /// 1-based start position (inclusive)
@@ -93,7 +93,7 @@ impl std::ops::Deref for SelectedRegion {
 }
 
 /// A chunk of a larger genomic region used for processing data in segments
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ChunkRegion {
     pub region: Region,
     /// The last valid position in the full region this chunk belongs to

@@ -13,7 +13,7 @@ mod overlapping_reads;
 mod from_hts;
 
 /// Rastair's representation of a pileup at a specific position in the genome
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
     pub region: ChunkRegion,

@@ -35,7 +35,7 @@ impl Pileup {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub enum GenotypeTag {
     /// Homozygous reference (CC)
@@ -57,7 +57,7 @@ impl From<GenotypeTag> for [GenotypeAllele; 2] {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct EstimatedGenotype {
     pub genotype: GenotypeTag,

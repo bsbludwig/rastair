@@ -2,7 +2,7 @@ use rust_htslib::bam::Record;
 use std::fmt;
 
 /// Original top or bottom strand of a read
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub enum Strand {
     /// Original top

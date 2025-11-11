@@ -19,7 +19,7 @@ use std::ops::Deref;
 use thiserror::Error;
 use tracing::trace;
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PileupMetrics {
     /// The underlying pileup
     pub pileup: Pileup,
@@ -33,7 +33,7 @@ pub struct PileupMetrics {
     pub alts: SmallVec<Alt, 2>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Alt {
     pub base: Base,
     pub metrics: AlleleMetrics,
@@ -145,7 +145,7 @@ impl PileupMetrics {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PositionMetrics {
     /// Read depth, i.e., number of reads covering this position
     pub depth: usize,
@@ -161,10 +161,11 @@ pub struct PositionMetrics {
     /// Extended metrics
     // set by `call` later since they depend on more context
     // todo: explore using type-state for this
+    #[serde(flatten)]
     extended: PositionMetricsExt,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct PositionMetricsExt {
     /// Entropy of the surrounding region
     pub region_entropy: f64,
@@ -176,7 +177,7 @@ pub struct PositionMetricsExt {
     pub denovo_adj: DenovoAdjecent,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum DenovoAdjecent {
     #[default]
     No,
@@ -218,7 +219,7 @@ impl Deref for PositionMetrics {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct AlleleMetrics {
     pub base: Base,
     /// Read depth, i.e. number of reads supporting this allele
@@ -245,7 +246,7 @@ pub struct AlleleMetrics {
     pub denovo: FormsDenovo,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum FormsDenovo {
     #[default]
     No,
@@ -264,14 +265,14 @@ impl Deref for FormsDenovo {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct AltFilters {
     /// ML prediction: probability this is a true variant
     pub ml: Option<Probability>,
     pub filters: Filters,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Filters(SmallVec<SmolStr, 6>);
 
 impl Filters {

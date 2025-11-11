@@ -3,7 +3,8 @@ use smallvec::SmallVec;
 use std::{fmt, ops::Deref};
 
 /// A collection of bases seen in a pileup
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct SimpleReads(pub(crate) SmallVec<SimpleRead, 20>);
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -22,7 +23,7 @@ impl Deref for SimpleReads {
 }
 
 /// A base seen in a pileup
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(better_default::Default))] // for easier test construction
 pub struct SimpleRead {
     /// The base seen
@@ -74,7 +75,7 @@ impl SimpleReads {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct PositionInRead {
     /// Position in the read, 0-based
     pub pos: u32,
