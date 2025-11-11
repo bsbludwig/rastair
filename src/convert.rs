@@ -9,7 +9,7 @@ use crate::{
         mpk::{MessagePackReader, MpkEntry},
         vcf_writer,
     },
-    utils::cli,
+    utils::{cli, logging::ThisIsABug},
     vcf::{DeNovoCpGCandidate, InCpG},
 };
 use clio::ClioPath;
@@ -196,7 +196,11 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
-                writer.add(&record).wrap_err("Failed to write record")?;
+                let vcf_record = record
+                    .to_vcf_record()
+                    .wrap_err("Failed to convert record to VCF format")
+                    .this_is_a_bug()?;
+                writer.add(&vcf_record).wrap_err("Failed to write record")?;
             }
             Ok(x) => {
                 warn!(?x, "Skipping unsupported entry type in MessagePack file");
@@ -222,12 +226,15 @@ fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
-                if !(*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate) {
+                let vcf_record = record
+                    .to_vcf_record()
+                    .wrap_err("Failed to convert MPK record to VCF record")
+                    .this_is_a_bug()?;
+                if !(*vcf_record.info.in_cp_g || *vcf_record.info.de_novo_cp_g_candidate) {
                     continue;
                 }
-                let Some(record) =
-                    Rastair1BedFormat::from_record(record.as_ref(), &params.bed_params)
-                        .wrap_err("Failed to convert record to BED format")?
+                let Some(record) = Rastair1BedFormat::from_record(&vcf_record, &params.bed_params)
+                    .wrap_err("Failed to convert record to BED format")?
                 else {
                     continue;
                 };

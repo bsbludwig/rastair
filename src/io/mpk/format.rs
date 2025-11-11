@@ -1,4 +1,4 @@
-use crate::vcf;
+use crate::metrics::PileupMetrics;
 use rastair_vcf::Contig;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -21,5 +21,5 @@ pub struct MpkVcfHeader {
 pub enum MpkEntry<'r> {
     Header(MpkHeader),
     VcfHeader(MpkVcfHeader),
-    Record(Cow<'r, vcf::Record>),
+    Record(Cow<'r, PileupMetrics>),
 }

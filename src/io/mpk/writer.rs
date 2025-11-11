@@ -1,6 +1,6 @@
 use crate::{
     io::mpk::format::{MpkEntry, MpkHeader, MpkVcfHeader},
-    vcf,
+    metrics::PileupMetrics,
 };
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, Result};
@@ -42,7 +42,7 @@ impl MessagePackWriter {
     }
 
     /// Write a record to the Message Pack file.
-    pub fn add(&mut self, record: &vcf::Record) -> Result<()> {
+    pub fn add(&mut self, record: &PileupMetrics) -> Result<()> {
         self.write(&MpkEntry::Record(Cow::Borrowed(record))).wrap_err("Failed to write record")
     }
 
