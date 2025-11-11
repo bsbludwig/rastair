@@ -18,9 +18,11 @@ use rastair_vcf::{
 use rust_htslib::bcf::Record as HtslibRecord;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
+use tracing::{instrument, trace};
 
 impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation)]
+    #[instrument(level = "trace", skip_all, fields(pos=%r.pos()))]
     pub fn from_vcf(r: &HtslibRecord, params: &BedRecordsConvertParams) -> Result<Option<Self>> {
         let contig = r
             .rid()
@@ -29,6 +31,10 @@ impl Rastair1BedFormat {
             .and_then(|name| str::from_utf8(name).wrap_err("Contig name is not valid UTF-8"))
             .map(SmolStr::new)
             .wrap_err("Could not fetch contig name")?;
+
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::Span::current().record("contig", tracing::field::display(&contig));
+        }
 
         let alleles = r
             .alleles()
@@ -73,6 +79,10 @@ impl Rastair1BedFormat {
         } else if r#ref == "G" {
             (count.g.ob, count.a.ob, count.g.ot, count.a.ot)
         } else {
+            trace!(
+                %r#ref,
+                "Writing BED but ref is neither C nor G, so this is a de-novo candidate?"
+            );
             (0, 0, 0, 0)
         };
 
@@ -114,6 +124,7 @@ impl Rastair1BedFormat {
         let beta = if let Some(beta) = beta {
             Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
         } else {
+            trace!(pos=%contig, pos=r.pos(), ?in_cpg, ?genotype, "why no beta?");
             None
         };
 

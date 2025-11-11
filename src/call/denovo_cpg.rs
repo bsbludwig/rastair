@@ -6,9 +6,8 @@
 //! that changed from "A" to "G").
 
 use crate::{
-    call::{methylation::ThresholdParams, pileup::Pileup},
     metrics::{Filters, MetricsForAlt},
-    utils::{Base::*, IntoF64 as _, cli},
+    utils::{IntoF64 as _, cli},
     vcf,
 };
 use better_default::Default;

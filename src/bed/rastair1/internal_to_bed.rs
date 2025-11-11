@@ -5,10 +5,11 @@ use crate::{
 };
 use color_eyre::{Result, eyre::Context as _};
 use rastair_types::Probability;
-use tracing::trace;
+use tracing::{instrument, trace};
 
 impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation)]
+    #[instrument(level = "trace", skip_all, fields(pos=%record.main))]
     pub fn from_record(
         record: &Rastair2Record,
         params: &BedRecordsConvertParams,
@@ -28,7 +29,6 @@ impl Rastair1BedFormat {
         {
             // Only report de novo candidates that we are confident about
             trace!(
-                pos=%record.main,
                 ml=?record.samples[0].machine_learning_prediction,
                 "de novo candidate with low score"
             );
@@ -52,6 +52,10 @@ impl Rastair1BedFormat {
                 record.strand_count(A).or_empty().ot,
             )
         } else {
+            trace!(
+                %r#ref,
+                "Writing BED but ref is neither C nor G, so this is a de-novo candidate?"
+            );
             (0, 0, 0, 0)
         };
 
@@ -73,6 +77,7 @@ impl Rastair1BedFormat {
         let beta = if let Some(beta) = beta {
             Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
         } else {
+            trace!(in_cpg=?record.info.in_cp_g, genotype=?record.samples[0].genotype, "why no beta?");
             None
         };
 
