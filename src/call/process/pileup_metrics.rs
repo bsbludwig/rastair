@@ -1,7 +1,6 @@
 use crate::{
     call::{
-        methylation::params::MethylationCallingParams, pileup::Pileup,
-        variant_calling::VariantCallingParams,
+        methylation::params::ThresholdParams, pileup::Pileup, variant_calling::VariantCallingParams,
     },
     metrics::{self, PileupMetrics, PositionMetricsExt},
     sequence::Segment,
@@ -11,7 +10,7 @@ use tracing::instrument;
 
 pub struct PileupMetricsParams {
     pub variant_calling: VariantCallingParams,
-    pub methylation: MethylationCallingParams,
+    pub methylation: ThresholdParams,
 }
 
 #[instrument(level = "info", skip_all)]
@@ -25,8 +24,8 @@ pub fn calculate_pileup_metrics(
         let mut current = metrics?;
 
         let genotype = current.pileup.estimate_genotype(params.variant_calling.error_model);
-        let methylated = metrics::methylation::call(&params.methylation.thresholds, &current)?
-            .unwrap_or_default();
+        let methylated =
+            metrics::methylation::call(&params.methylation, &current)?.unwrap_or_default();
 
         let region_entropy = segment
             .entropy_around::<100>(current.pileup.idx())

@@ -306,7 +306,7 @@ fn process_region(
     // Next, calculate metrics for each pileup.
     let pileup_metrics_params = PileupMetricsParams {
         variant_calling: params.variant_calling.clone(),
-        methylation: params.methylation.clone(),
+        methylation: params.methylation.thresholds.clone(),
     };
     let pileups = calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params);
 
