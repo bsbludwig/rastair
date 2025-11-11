@@ -1,6 +1,65 @@
-// use crate::call::test_helpers::variant_pileup;
-// use color_eyre::Result;
-// use insta::assert_debug_snapshot;
+use crate::{call::process, sequence::ReaderParams, utils::default};
+use color_eyre::{
+    Result,
+    eyre::{Context as _, ContextCompat as _},
+};
+use rastair_types::Probability;
+
+#[test]
+fn test_cpg_detection() -> Result<()> {
+    let ml_threshold = Some(Probability::new_panicky(0.8));
+    let mut readers = ReaderParams::test_data().around("chr19", 6105711).readers()?;
+    let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
+
+    let pileup_mapping_params = process::PileupMappingParams { variant_calling: default() };
+    let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
+        .wrap_err("failed to process region")?;
+    let mut pileups = process::calculate_pileup_metrics(
+        pileups,
+        &segment,
+        &process::PileupMetricsParams { variant_calling: default(), methylation: default() },
+    )
+    .collect::<Result<Vec<_>>>()
+    .wrap_err("failed to calculate pileup metrics")?;
+
+    process::apply_threshold_filters(
+        &mut pileups,
+        &process::ThresholdFilterParams {
+            variant_calling: default(),
+            methylation: default(),
+            denovo_cpg: default(),
+        },
+    )
+    .wrap_err("Failed to apply threshold filters")?;
+
+    process::propagate_cpg_pass_flags(&mut pileups, ml_threshold)
+        .wrap_err("Failed to propagate CpG pass flags")?;
+
+    // get pileups for a CpG site
+    let ref_c =
+        pileups.iter().find(|p| p.pileup.pos == 6105711).wrap_err("Could not find C pileup")?;
+    let ref_g =
+        pileups.iter().find(|p| p.pileup.pos == 6105712).wrap_err("Could not find G pileup")?;
+
+    dbg!(ref_c.pos_filters.other_pos_in_cpg_passes);
+    dbg!(ref_g.pos_filters.other_pos_in_cpg_passes);
+
+    dbg!(ref_c.pos_filters.len());
+    ref_c.alts.iter().for_each(|alt| {
+        dbg!(alt.filters.filters.other_pos_in_cpg_passes);
+        dbg!(alt.filters.filters.len());
+    });
+    dbg!(ref_g.pos_filters.len());
+    ref_g.alts.iter().for_each(|alt| {
+        dbg!(alt.filters.filters.other_pos_in_cpg_passes);
+        dbg!(alt.filters.filters.len());
+    });
+
+    assert!(ref_c.pass(ml_threshold));
+    assert!(ref_g.pass(ml_threshold));
+
+    Ok(())
+}
 
 // #[test]
 // fn test_allele_specific_strand_bias_1() -> Result<()> {

@@ -92,7 +92,6 @@ mod tests {
     use super::*;
     use crate::call::test_helpers::variant_pileup;
     use color_eyre::Result;
-    use insta::assert_debug_snapshot;
 
     #[test]
     fn test_in_cpg() {
@@ -110,11 +109,11 @@ mod tests {
 
     #[test]
     fn test_cpg_detection() -> Result<()> {
-        let pileup = variant_pileup("chr19", 6105711)?;
-        assert_debug_snapshot!(InCpG::from(&pileup), @"CpG::C");
+        let (_, pileup) = variant_pileup("chr19", 6105711)?;
+        assert_eq!(InCpG::from(&pileup), InCpG::C);
 
-        let pileup = variant_pileup("chr19", 6105712)?;
-        assert_debug_snapshot!(InCpG::from(&pileup), @"CpG::G");
+        let (_, pileup) = variant_pileup("chr19", 6105712)?;
+        assert_eq!(InCpG::from(&pileup), InCpG::G);
 
         Ok(())
     }
