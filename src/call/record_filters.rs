@@ -28,12 +28,16 @@ impl RecordFilters {
     /// Check if a VCF record matches the filter criteria
     pub fn matches(&self, record: &PileupMetrics, ml_threshold: Option<Probability>) -> bool {
         // filter for CpGs, this takes precedence over "all"
-        if self.cpgs_only && !(*record.pos_metrics.cpg || record.forms_denovo()) {
-            return false;
+        if self.cpgs_only && (*record.pos_metrics.cpg || record.forms_denovo()) {
+            return true;
         }
 
         // filter for passing records if desired
         if self.vcf_all {
+            return true;
+        }
+
+        if record.pos_filters.other_pos_in_cpg_passes {
             return true;
         }
 

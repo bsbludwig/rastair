@@ -146,7 +146,7 @@ impl PileupMetrics {
         if self.pos_filters.other_pos_in_cpg_passes {
             return true;
         }
-        self.pos_filters.pass() && self.alts.iter().all(|a| a.filters.pass(ml_threshold))
+        self.pos_filters.pass() && self.alts.iter().any(|a| a.filters.pass(ml_threshold))
     }
 }
 
@@ -283,7 +283,13 @@ impl AltFilters {
         if self.filters.other_pos_in_cpg_passes {
             return true;
         }
-        if ml_threshold.is_some() { self.ml > ml_threshold } else { self.filters.is_empty() }
+        if let Some(ml_threshold) = ml_threshold
+            && let Some(ml) = self.ml
+        {
+            ml > ml_threshold
+        } else {
+            self.filters.is_empty()
+        }
     }
 }
 

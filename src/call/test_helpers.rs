@@ -7,7 +7,7 @@ use crate::{
         process::{PileupMappingParams, get_pileups},
         variant_calling::{ReadFlags, VariantCallingParams},
     },
-    sequence::{ReaderParams, Readers},
+    sequence::{ReaderParams, Readers, Segment},
     utils::RegionString,
 };
 use clio::ClioPath;
@@ -26,6 +26,16 @@ impl ReaderParams {
         }
     }
 
+    pub fn around(&mut self, chr: &str, pos: u32) -> &mut Self {
+        let region = RegionString {
+            chromosome: chr.into(),
+            start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
+            end: None,
+        };
+        self.region = Some(region);
+        self
+    }
+
     pub fn test_with(bam: &str, fasta: &str) -> Self {
         Self {
             bam_file: ClioPath::new(bam).unwrap(),
@@ -34,7 +44,7 @@ impl ReaderParams {
         }
     }
 
-    pub fn pileup(&self, chr: &str, pos: u32) -> Result<Pileup> {
+    pub fn pileup(&self, chr: &str, pos: u32) -> Result<(Rc<Segment>, Pileup)> {
         let region = RegionString {
             chromosome: chr.into(),
             start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
@@ -56,7 +66,7 @@ impl ReaderParams {
                 "Variant pileups are only built when at least one base differs from the reference",
             )?;
 
-        Ok(pileup)
+        Ok((segment, pileup))
     }
 }
 
@@ -80,6 +90,6 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
 /// When comparing this to IGV, please keep in mind that IGV and VCF files use
 /// 1-based positions, so the `pos` parameter is off by one compared to what you
 /// see there.
-pub(crate) fn variant_pileup(chr: &str, pos: u32) -> Result<Pileup> {
+pub(crate) fn variant_pileup(chr: &str, pos: u32) -> Result<(Rc<Segment>, Pileup)> {
     ReaderParams::test_data().pileup(chr, pos)
 }
