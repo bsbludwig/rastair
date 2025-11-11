@@ -1,4 +1,4 @@
-use crate::{utils::cli, vcf::Record};
+use crate::{metrics::PileupMetrics, utils::cli};
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct RecordFilters {
@@ -24,9 +24,9 @@ pub struct RecordFilters {
 
 impl RecordFilters {
     /// Check if a VCF record matches the filter criteria
-    pub fn matches(&self, record: &Record) -> bool {
+    pub fn matches(&self, record: &PileupMetrics) -> bool {
         // filter for CpGs, this takes precedence over "all"
-        if self.cpgs_only && !(*record.info.in_cp_g || *record.info.de_novo_cp_g_candidate) {
+        if self.cpgs_only && !(*record.pos_metrics.cpg || record.forms_denovo()) {
             return false;
         }
 
@@ -36,18 +36,23 @@ impl RecordFilters {
         }
 
         // reject records without alts
-        if record.main.alt.is_empty() {
+        if record.alts.is_empty() {
             return false;
         }
 
         // okay and now only those that pass
-        record.filters.pass()
+        record.pass()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::vcf::{DeNovoCpGCandidate, InCpG, lowDp};
+    use crate::{
+        call::pileup::Pileup,
+        metrics::Alt,
+        sequence::{ChunkRegion, Region},
+        vcf::{InCpG, lowDp},
+    };
     use rastair_types::Base::*;
     use rastair_vcf::standard_fields::PASS;
     use smallvec::SmallVec;
@@ -58,19 +63,28 @@ mod tests {
         T::default()
     }
 
-    fn default_record() -> Record {
-        Record {
-            main: rastair_vcf::VcfFixedFields {
-                chrom: "1".into(),
-                pos: 7,
-                id: default(),
-                r#ref: "A".into(),
-                alt: SmallVec::from(["C".into(), "G".into()]),
-                qual: Some(50.0),
+    fn default_record() -> PileupMetrics {
+        PileupMetrics {
+            pileup: Pileup {
+                region: ChunkRegion {
+                    region: Region { contig: "chr6".into(), start: 0, end: 1000 },
+                    last_position: 10_000,
+                },
+                context: crate::vcf::SequenceContext {
+                    before_2: Some(A),
+                    before_1: Some(C),
+                    me: C,
+                    after_1: Some(G),
+                    after_2: Some(A),
+                },
+                pos: 123,
+                reads: crate::call::pileup::SimpleReads(SmallVec::new()),
+                reference_base: C,
             },
-            filters: default(),
-            info: default(),
-            samples: default(),
+            pos_metrics: default(),
+            pos_filters: default(),
+            ref_metrics: default(),
+            alts: [Alt { base: T, filters: default(), metrics: default() }].into(),
         }
     }
 
@@ -83,7 +97,7 @@ mod tests {
 
         // record fails filters
         let mut r = default_record();
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(!filters.matches(&r), "should not match record with failing filters");
     }
 
@@ -95,29 +109,28 @@ mod tests {
         let mut r = default_record();
         assert!(!filters.matches(&r), "should not match non-CpG");
 
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(!filters.matches(&r), "should not match non-CpG failing filters");
 
         // explicit non-CpG record
         let mut r = default_record();
-        r.info.in_cp_g = InCpG::No;
+        r.pos_metrics.cpg = InCpG::No;
         assert!(!filters.matches(&r), "should not match non-CpG record");
 
         // CpG record
         let mut r = default_record();
-        r.info.in_cp_g = InCpG::C;
+        r.pos_metrics.cpg = InCpG::C;
         assert!(filters.matches(&r), "should match CpG record");
 
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(!filters.matches(&r), "should not match CpG record failing filters");
 
         // denovo CpG candidate
         let mut r = default_record();
-        r.info.de_novo_cp_g_candidate =
-            DeNovoCpGCandidate::Candidate { ref_base: G, alt_base: A, alt_index: 1 };
+        r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
         assert!(filters.matches(&r), "should match de-novo CpG candidate record");
 
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(
             !filters.matches(&r),
             "should not match de-novo CpG candidate record failing filters"
@@ -132,29 +145,28 @@ mod tests {
         let mut r = default_record();
         assert!(!filters.matches(&r), "should not match non-CpG");
 
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(!filters.matches(&r), "should not match non-CpG failing filters");
 
         // explicit non-CpG record
         let mut r = default_record();
-        r.info.in_cp_g = InCpG::No;
+        r.pos_metrics.cpg = InCpG::No;
         assert!(!filters.matches(&r), "should not match non-CpG record");
 
         // CpG record
         let mut r = default_record();
-        r.info.in_cp_g = InCpG::C;
+        r.pos_metrics.cpg = InCpG::C;
         assert!(filters.matches(&r), "should match CpG record");
 
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(filters.matches(&r), "should match CpG record failing filters");
 
         // denovo CpG candidate
         let mut r = default_record();
-        r.info.de_novo_cp_g_candidate =
-            DeNovoCpGCandidate::Candidate { ref_base: G, alt_base: A, alt_index: 1 };
+        r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
         assert!(filters.matches(&r), "should match de-novo CpG candidate record");
 
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(filters.matches(&r), "should match de-novo CpG candidate record failing filters");
     }
 
@@ -166,10 +178,10 @@ mod tests {
         let mut r = default_record();
         assert!(filters.matches(&r), "should match record");
 
-        r.filters.add_all(lowDp);
+        r.pos_filters.add(lowDp, || true);
         assert!(filters.matches(&r), "should match record failing filters");
 
-        r.filters.add_all(PASS);
+        r.pos_filters.add(PASS, || true);
         assert!(filters.matches(&r), "should match passing record");
     }
 }

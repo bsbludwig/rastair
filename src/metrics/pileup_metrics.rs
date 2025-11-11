@@ -19,7 +19,7 @@ use std::ops::Deref;
 use thiserror::Error;
 use tracing::trace;
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PileupMetrics {
     /// The underlying pileup
     pub pileup: Pileup,
@@ -33,7 +33,7 @@ pub struct PileupMetrics {
     pub alts: SmallVec<Alt, 2>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Alt {
     pub base: Base,
     pub metrics: AlleleMetrics,
@@ -98,9 +98,7 @@ impl PileupMetrics {
     pub fn set_extended_metrics(&mut self, ext: PositionMetricsExt) {
         self.pos_metrics.extended = ext;
     }
-}
 
-impl PileupMetrics {
     /// Get reference base
     pub fn ref_base(&self) -> Base {
         self.pileup.reference_base
@@ -143,9 +141,14 @@ impl PileupMetrics {
     pub fn forms_denovo(&self) -> bool {
         *self.pos_metrics.denovo_adj || self.alts.iter().any(|a| *a.metrics.denovo)
     }
+
+    pub fn pass(&self) -> bool {
+        self.pos_filters.is_empty() && self.alts.iter().all(|a| a.filters.filters.is_empty())
+    }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(Default))]
 pub struct PositionMetrics {
     /// Read depth, i.e., number of reads covering this position
     pub depth: usize,
@@ -165,7 +168,7 @@ pub struct PositionMetrics {
     extended: PositionMetricsExt,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PositionMetricsExt {
     /// Entropy of the surrounding region
     pub region_entropy: f64,
@@ -177,7 +180,7 @@ pub struct PositionMetricsExt {
     pub denovo_adj: DenovoAdjecent,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum DenovoAdjecent {
     #[default]
     No,
@@ -219,7 +222,7 @@ impl Deref for PositionMetrics {
     }
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AlleleMetrics {
     pub base: Base,
     /// Read depth, i.e. number of reads supporting this allele
@@ -246,7 +249,7 @@ pub struct AlleleMetrics {
     pub denovo: FormsDenovo,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum FormsDenovo {
     #[default]
     No,
@@ -265,14 +268,14 @@ impl Deref for FormsDenovo {
     }
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AltFilters {
     /// ML prediction: probability this is a true variant
     pub ml: Option<Probability>,
     pub filters: Filters,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Filters(SmallVec<SmolStr, 6>);
 
 impl Filters {
