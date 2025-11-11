@@ -211,9 +211,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `hiseq-x-ten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
-* `--skip-methylation-calling` — Calculate threshold values and filters for methylation
-
-  Default value: `false`
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
 
    This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
