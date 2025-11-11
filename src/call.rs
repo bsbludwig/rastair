@@ -361,6 +361,11 @@ fn process_region(
     // More filters: Add ML metrics if requested
     process::add_ml_metrics(&mut pileups, ml).wrap_err("Failed to add ML metrics")?;
 
+    // For CpG sites and de-novo CpG sites, if one position is pass, mark
+    // corresponding as pass as well
+    process::propagate_cpg_pass_flags(&mut pileups, params.ml.threshold())
+        .wrap_err("Failed to propagate CpG pass flags")?;
+
     // At this point, we have collected all metrics for the pileups in this
     // region. The recipient is responsible for further filtering based on
     // filters and writing them to the VCF or BED file.
