@@ -18,6 +18,7 @@
 //! for input to a random forest classifier.
 
 use crate::{metrics::ml::types::MachineLearning, utils::cli};
+use better_default::Default;
 use biosphere::RandomForest;
 use clap::value_parser;
 use clio::ClioPath;
@@ -31,7 +32,7 @@ use tracing::instrument;
 
 pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.8);
 
-#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MachineLearningParams {
     /// Only use hard thresholds to call variants and methylation events.
     ///
@@ -39,6 +40,7 @@ pub struct MachineLearningParams {
     /// much faster, but at the cost of accuracy.
     #[arg(long = "thresholds")]
     #[arg(help_heading = cli::sections::FILTER)]
+    #[default(false)]
     pub no_ml: bool,
     /// Use machine learning model with this threshold value to call variants
     /// and methylation events
@@ -51,6 +53,7 @@ pub struct MachineLearningParams {
     /// threshold.
     #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.8", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::FILTER)]
+    #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,
     /// Path to the model for CpG positions
     ///
