@@ -1,4 +1,8 @@
-use crate::{call::process, sequence::ReaderParams, utils::default};
+use crate::{
+    call::{ml::MachineLearningParams, process},
+    sequence::ReaderParams,
+    utils::default,
+};
 use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat as _},
@@ -57,6 +61,50 @@ fn test_cpg_detection() -> Result<()> {
 
     assert!(ref_c.pass(ml_threshold));
     assert!(ref_g.pass(ml_threshold));
+
+    Ok(())
+}
+
+#[test]
+fn set_filters() -> Result<()> {
+    let ml_threshold = Some(Probability::new_panicky(0.8));
+    let mut readers = ReaderParams::test_data().around("chr19", 6105742).readers()?;
+    let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
+
+    let pileup_mapping_params = process::PileupMappingParams { variant_calling: default() };
+    let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
+        .wrap_err("failed to process region")?;
+    let mut pileups = process::calculate_pileup_metrics(
+        pileups,
+        &segment,
+        &process::PileupMetricsParams { variant_calling: default(), methylation: default() },
+    )
+    .collect::<Result<Vec<_>>>()
+    .wrap_err("failed to calculate pileup metrics")?;
+
+    process::apply_threshold_filters(
+        &mut pileups,
+        &process::ThresholdFilterParams {
+            variant_calling: default(),
+            methylation: default(),
+            denovo_cpg: default(),
+        },
+    )
+    .wrap_err("Failed to apply threshold filters")?;
+
+    process::propagate_cpg_pass_flags(&mut pileups, ml_threshold)
+        .wrap_err("Failed to propagate CpG pass flags")?;
+
+    process::add_ml_metrics(&mut pileups, &MachineLearningParams::default().init()?)?;
+
+    // get pileups for a CpG site
+    let low_dp_on_a =
+        pileups.iter().find(|p| p.pileup.pos == 6105742).wrap_err("Could not find C pileup")?;
+
+    // dbg!(&low_dp_on_a.pos_filters);
+    // dbg!(low_dp_on_a.alts.iter().map(|alt| &alt.filters.filters).collect::<Vec<_>>());
+
+    assert!(!low_dp_on_a.pass(ml_threshold));
 
     Ok(())
 }

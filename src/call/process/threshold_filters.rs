@@ -1,6 +1,6 @@
 use crate::{
     call::{denovo_cpg, methylation, variant_calling::VariantCallingParams},
-    metrics::PileupMetrics,
+    metrics::{Filters, PileupMetrics},
     utils::logging::ThisIsABug as _,
     vcf::lowDp,
 };
@@ -29,6 +29,11 @@ pub fn apply_threshold_filters(
                 .wrap_err("Failed to get alt metrics")
                 .this_is_a_bug()?;
 
+            let generic = {
+                let mut filters = Filters::default();
+                filters.add(lowDp, || alt.alt.depth < params.variant_calling.v_min_depth);
+                filters
+            };
             let m_filters = methylation::add_filters(&params.methylation, &alt)?;
             let denovo_filters = denovo_cpg::add_filters(&params.denovo_cpg, &alt)?;
 
@@ -37,6 +42,7 @@ pub fn apply_threshold_filters(
                 .wrap_err("Failed to get mutable alt metrics")
                 .this_is_a_bug()?;
 
+            alt_filters.filters.merge(generic);
             alt_filters.filters.merge(m_filters);
             alt_filters.filters.merge(denovo_filters);
         }
