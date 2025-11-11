@@ -348,31 +348,17 @@ fn process_region(
     }
 
     // Add 'simple' filters based on the collected metrics
-    for current in &mut pileups {
-        current
-            .pos_filters
-            .add(lowDp, || current.pos_metrics.depth < params.variant_calling.v_min_depth);
+    process::apply_threshold_filters(
+        &mut pileups,
+        &process::ThresholdFilterParams {
+            variant_calling: params.variant_calling.clone(),
+            methylation: params.methylation.thresholds.clone(),
+            denovo_cpg: params.denovo_cpg.clone(),
+        },
+    )
+    .wrap_err("Failed to apply threshold filters")?;
 
-        for alt_base in current.alts() {
-            let alt = current
-                .alt_metrics(alt_base)
-                .wrap_err("Failed to get alt metrics")
-                .this_is_a_bug()?;
-
-            let m_filters = methylation::add_filters(&params.methylation.thresholds, &alt)?;
-            let denovo_filters = denovo_cpg::add_filters(&params.denovo_cpg, &alt)?;
-
-            let alt_filters = current
-                .alt_filters_mut(alt_base)
-                .wrap_err("Failed to get mutable alt metrics")
-                .this_is_a_bug()?;
-
-            alt_filters.filters.merge(m_filters);
-            alt_filters.filters.merge(denovo_filters);
-        }
-    }
-
-    // Finally, add ML metrics if requested
+    // More filters: Add ML metrics if requested
     process::add_ml_metrics(&mut pileups, ml).wrap_err("Failed to add ML metrics")?;
 
     // At this point, we have collected all metrics for the pileups in this
