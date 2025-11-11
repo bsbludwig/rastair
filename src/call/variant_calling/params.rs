@@ -25,7 +25,7 @@ pub struct VariantCallingParams {
     #[arg(long, default_value_t = 3)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(3)]
-    pub v_min_depth: usize,
+    pub v_min_depth: u32,
 
     #[command(flatten)]
     pub quality: QualityFilterParams,

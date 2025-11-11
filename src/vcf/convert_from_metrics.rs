@@ -47,9 +47,9 @@ impl PileupMetrics {
                 self.ref_alts_metrics().map(|m| m.depth as usize).collect(),
             ),
             base_quality: BaseQuality(self.pos_metrics.baseq),
-            read_depth: ReadDepth(self.pos_metrics.depth),
+            read_depth: ReadDepth(self.pos_metrics.depth as usize),
             mapping_quality: MappingQuality(self.pos_metrics.mapq),
-            mapping_quality0: MappingQuality0(self.pos_metrics.mapq0),
+            mapping_quality0: MappingQuality0(self.pos_metrics.mapq0 as usize),
             samples_with_data: SamplesWithData(1),
             allele_specific_strand_bias: AlleleSpecificStrandBias(
                 self.ref_alts_metrics().map(|m| m.strand_count).collect(),

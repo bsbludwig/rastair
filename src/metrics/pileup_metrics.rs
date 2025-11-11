@@ -154,13 +154,13 @@ impl PileupMetrics {
 #[cfg_attr(test, derive(Default))]
 pub struct PositionMetrics {
     /// Read depth, i.e., number of reads covering this position
-    pub depth: usize,
+    pub depth: u32,
     /// Base quality
     pub baseq: RootMeanSquare,
     /// Mapping quality
     pub mapq: RootMeanSquare,
     /// Number of reads with mapping quality 0
-    pub mapq0: usize,
+    pub mapq0: u32,
     /// Is this position in a CpG context in the reference?
     pub cpg: InCpG,
 
@@ -205,10 +205,11 @@ impl Deref for DenovoAdjecent {
 impl PositionMetrics {
     pub fn from_pileup(pileup: &Pileup, extended: PositionMetricsExt) -> Self {
         PositionMetrics {
-            depth: pileup.reads.len(),
+            depth: u32::try_from(pileup.reads.len()).expect("depth fits into u32"),
             baseq: pileup.reads.iter().map(|x| x.qual).collect(),
             mapq: pileup.reads.iter().map(|x| x.mapq).collect(),
-            mapq0: pileup.reads.iter().filter(|x| x.mapq == 0).count(),
+            mapq0: u32::try_from(pileup.reads.iter().filter(|x| x.mapq == 0).count())
+                .expect("mapq0 count fits into u32"),
             cpg: InCpG::from(pileup),
 
             // These fields are given by all
