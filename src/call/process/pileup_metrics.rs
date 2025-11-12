@@ -19,25 +19,29 @@ pub fn calculate_pileup_metrics(
     segment: &Segment,
     params: &PileupMetricsParams,
 ) -> impl Iterator<Item = Result<PileupMetrics>> {
-    pileups.into_iter().map(PileupMetrics::new).map(move |metrics| {
-        // Set "extended" metrics that depend on the pileup and some external params
-        let mut current = metrics?;
+    pileups.into_iter().map(move |pileup| {
+        let mut current =
+            PileupMetrics::new(pileup).wrap_err("Failed to calculate pileup metrics")?;
 
-        let genotype = current.pileup.estimate_genotype(params.variant_calling.error_model);
-        let methylated =
-            metrics::methylation::call(&params.methylation, &current)?.unwrap_or_default();
+        // Set "extended" metrics that depend on the segment and params. This is
+        // done in a separate step since it also uses the pileup we just
+        // constructed.
+        current.set_extended_metrics({
+            let genotype = current.pileup.estimate_genotype(params.variant_calling.error_model);
+            let methylated =
+                metrics::methylation::call(&params.methylation, &current)?.unwrap_or_default();
 
-        let region_entropy = segment
-            .entropy_around::<100>(current.pileup.idx())
-            .wrap_err("Failed to calculate region entropy")?;
+            let region_entropy = segment
+                .entropy_around::<100>(current.pileup.idx())
+                .wrap_err("Failed to calculate region entropy")?;
 
-        let ext = PositionMetricsExt {
-            genotype,
-            methylated,
-            region_entropy,
-            denovo_adj: metrics::DenovoAdjecent::No,
-        };
-        current.set_extended_metrics(ext);
+            PositionMetricsExt {
+                genotype,
+                methylated,
+                region_entropy,
+                denovo_adj: metrics::DenovoAdjecent::No,
+            }
+        });
 
         Ok(current)
     })
