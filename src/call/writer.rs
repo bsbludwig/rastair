@@ -41,6 +41,8 @@ pub fn writer_thread(
 
     let ml_threshold = params.ml.threshold();
 
+    let filters = VcfOutputFilter { reject_low_quality_variants: !vcf_filter.vcf_all };
+
     // Spawn the actual VCF writer thread. Everything in here is driven by the
     // incoming records from the processing threads.
     //
@@ -48,8 +50,6 @@ pub fn writer_thread(
     thread::Builder::new()
         .name("writer".to_string())
         .spawn(move || -> Result<()> {
-            let filters = VcfOutputFilter { reject_low_quality_variants: true };
-
             let mut last_seen = LastSeen::default();
 
             // Since we only have the region index to ensure order, each
