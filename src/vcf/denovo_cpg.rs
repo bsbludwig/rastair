@@ -16,8 +16,6 @@ pub enum DeNovoCpGCandidate {
         ref_base: Base,
         /// The alternative base that creates a new CpG site
         alt_base: Base,
-        /// The index of the alternative allele that creates a new CpG site
-        alt_index: usize,
     },
     /// Yes, the variant is adjacent to a de-novo CpG site
     Adjecent {

@@ -81,15 +81,14 @@ impl PileupMetrics {
             in_cp_g: InCpG::from(&self.pileup),
             de_novo_cp_g_candidate: {
                 let mut res = DeNovoCpGCandidate::NotCandidate;
-                if let Some((alt_index, alt_that_forms_denovo)) =
-                    self.alts.iter().map(|alt| &alt.metrics).enumerate().find(|(_, m)| *m.denovo)
+                if let Some(alt_that_forms_denovo) =
+                    self.alts.iter().map(|alt| &alt.metrics).find(|m| *m.denovo)
                 {
                     let alt = alt_that_forms_denovo;
                     if *alt.denovo {
                         res = DeNovoCpGCandidate::Candidate {
                             ref_base: self.ref_base(),
                             alt_base: alt.base,
-                            alt_index,
                         }
                     }
                 }
