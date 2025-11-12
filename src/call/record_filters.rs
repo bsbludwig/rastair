@@ -2,12 +2,24 @@ use rastair_types::Probability;
 
 use crate::{metrics::PileupMetrics, utils::cli};
 
+/// Filters to apply when deciding whether to output a VCF record
+///
+/// Here's a table with all the combinations:
+///
+/// | `vcf_all` | `cpgs_only` | Output behavior                                  |
+/// | --------- | ----------- | ------------------------------------------------ |
+/// | ``        | ``          | All positions with alts that PASS                |
+/// | ``        | `-c`        | All CpG sites and PASSing de-novo CpG candidates |
+/// | `--all`   | ``          | All positions                                    |
+/// | `--all`   | `-c`        | All CpG and de-novo CpG candidates               |
+///
+/// Note: We alwasy report both positions of a CpG.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct RecordFilters {
     /// Output all positions, even if they do not pass filters.
     ///
     /// If combined with `--cpgs-only`, only CpG positions will be reported,
-    /// including non-passing ones.
+    /// including non-passing de-novo CpGs.
     #[arg(long = "all")]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_all: bool,
@@ -17,8 +29,8 @@ pub struct RecordFilters {
     /// Only report positions that are CpGs in the reference or variants that
     /// would result in a de-novo CpG.
     ///
-    /// Only if combined with `--all`, non-passing CpG positions will also be
-    /// reported.
+    /// Only if combined with `--all`, non-passing de-novo CpG positions will
+    /// also be reported.
     #[arg(short = 'c', long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
     pub cpgs_only: bool,
@@ -27,47 +39,56 @@ pub struct RecordFilters {
 impl RecordFilters {
     /// Check if a VCF record matches the filter criteria
     pub fn matches(&self, record: &PileupMetrics, ml_threshold: Option<Probability>) -> bool {
-        // filter for CpGs, this takes precedence over "all"
-        if self.cpgs_only && (*record.pos_metrics.cpg || record.forms_denovo()) {
-            return true;
+        match (self.vcf_all, self.cpgs_only) {
+            (false, false) => {
+                // default behavior: only passing records with alts
+                record.pass(ml_threshold)
+            }
+            (false, true) => {
+                // passing CpGs and passing de-novo CpG candidates
+                if *record.pos_metrics.cpg {
+                    // - we're a CpG
+                    return true;
+                }
+                if record.forms_denovo() && record.pass(ml_threshold) {
+                    // - we're a passing de-novo CpG candidate
+                    return true;
+                }
+                if record
+                    .alts
+                    .iter()
+                    .any(|alt| *alt.metrics.denovo && alt.filters.filters.other_pos_in_cpg_passes)
+                {
+                    // - other position passes
+                    return true;
+                }
+                false
+            }
+            (true, false) => {
+                // `--all` means all
+                true
+            }
+            (true, true) => {
+                // `--all -c` means all CpGs and de-novo CpG candidates
+                *record.pos_metrics.cpg || record.forms_denovo()
+            }
         }
-
-        // filter for passing records if desired
-        if self.vcf_all {
-            return true;
-        }
-
-        if record.pos_filters.other_pos_in_cpg_passes {
-            return true;
-        }
-
-        // reject records without alts
-        if record.alts.is_empty() {
-            return false;
-        }
-
-        // okay and now only those that pass
-        record.pass(ml_threshold)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         call::pileup::Pileup,
-        metrics::Alt,
+        metrics::{Alt, PositionMetrics},
         sequence::{ChunkRegion, Region},
+        utils::default,
         vcf::{InCpG, lowDp},
     };
     use rastair_types::Base::*;
     use rastair_vcf::standard_fields::PASS;
     use smallvec::SmallVec;
-
-    use super::*;
-
-    fn default<T: Default>() -> T {
-        T::default()
-    }
 
     fn default_record() -> PileupMetrics {
         PileupMetrics {
@@ -79,18 +100,30 @@ mod tests {
                 context: crate::vcf::SequenceContext {
                     before_2: Some(A),
                     before_1: Some(C),
-                    me: C,
+                    me: A,
                     after_1: Some(G),
                     after_2: Some(A),
                 },
                 pos: 123,
                 reads: crate::call::pileup::SimpleReads(SmallVec::new()),
-                reference_base: C,
+                reference_base: A,
             },
-            pos_metrics: default(),
+            pos_metrics: {
+                let mut m = PositionMetrics::default();
+                m.cpg = InCpG::No;
+                m
+            },
             pos_filters: default(),
             ref_metrics: default(),
-            alts: [Alt { base: T, filters: default(), metrics: default() }].into(),
+            alts: [Alt {
+                base: C,
+                filters: default(),
+                metrics: crate::metrics::AlleleMetrics {
+                    denovo: crate::metrics::FormsDenovo::No,
+                    ..default()
+                },
+            }]
+            .into(),
         }
     }
 
@@ -116,17 +149,13 @@ mod tests {
         let filters = RecordFilters { vcf_all: false, cpgs_only: true };
         let ml_threshold = Some(Probability::new(0.9).unwrap());
 
-        // empty record is not in CpG
+        // explicit non-CpG record
         let mut r = default_record();
+        r.pos_metrics.cpg = InCpG::No;
         assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG");
 
         r.pos_filters.add(lowDp, || true);
         assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG failing filters");
-
-        // explicit non-CpG record
-        let mut r = default_record();
-        r.pos_metrics.cpg = InCpG::No;
-        assert!(!filters.matches(&r, ml_threshold), "should not match non-CpG record");
 
         // CpG record
         let mut r = default_record();
@@ -134,17 +163,43 @@ mod tests {
         assert!(filters.matches(&r, ml_threshold), "should match CpG record");
 
         r.pos_filters.add(lowDp, || true);
-        assert!(!filters.matches(&r, ml_threshold), "should not match CpG record failing filters");
+        assert!(filters.matches(&r, ml_threshold), "should match even failing CpG record");
+
+        let mut r = default_record();
+        r.pos_metrics.cpg = InCpG::C;
+        r.pos_filters.add(lowDp, || true);
+        r.pos_filters.other_pos_in_cpg_passes = true; // doesn't really change anything
+        assert!(
+            filters.matches(&r, ml_threshold),
+            "should match CpG record if other position passes"
+        );
 
         // denovo CpG candidate
         let mut r = default_record();
         r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
-        assert!(filters.matches(&r, ml_threshold), "should match de-novo CpG candidate record");
+        assert!(filters.matches(&r, ml_threshold), "should match de-novo CpG candidate");
 
         r.pos_filters.add(lowDp, || true);
         assert!(
             !filters.matches(&r, ml_threshold),
-            "should not match de-novo CpG candidate record failing filters"
+            "should not match de-novo CpG candidate failing pos filters"
+        );
+
+        let mut r = default_record();
+        r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
+        r.alts[0].filters.filters.add(lowDp, || true);
+        assert!(
+            !filters.matches(&r, ml_threshold),
+            "should not match de-novo CpG candidate failing alt filters"
+        );
+
+        let mut r = default_record();
+        r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
+        r.alts[0].filters.filters.add(lowDp, || true);
+        r.alts[0].filters.filters.other_pos_in_cpg_passes = true;
+        assert!(
+            filters.matches(&r, ml_threshold),
+            "should match de-novo CpG candidate failing filters if other position passes"
         );
     }
 
@@ -176,12 +231,12 @@ mod tests {
         // denovo CpG candidate
         let mut r = default_record();
         r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
-        assert!(filters.matches(&r, ml_threshold), "should match de-novo CpG candidate record");
+        assert!(filters.matches(&r, ml_threshold), "should match de-novo CpG candidate");
 
         r.pos_filters.add(lowDp, || true);
         assert!(
             filters.matches(&r, ml_threshold),
-            "should match de-novo CpG candidate record failing filters"
+            "should match de-novo CpG candidate failing filters"
         );
     }
 
