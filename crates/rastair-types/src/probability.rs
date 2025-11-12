@@ -20,6 +20,9 @@ impl Probability {
         }
     }
 
+    /// Creates a new Probability, panicking if the value is outside [0, 1]
+    ///
+    /// Can be used to build Probability in const contexts.
     pub const fn new_panicky(value: f64) -> Self {
         match Self::new(value) {
             Ok(p) => p,

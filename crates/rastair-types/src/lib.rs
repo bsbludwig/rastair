@@ -1,17 +1,19 @@
+//! This crate provides common types used throughout rastair2.
+#![deny(missing_docs)]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
-pub mod base;
-pub mod phred;
-pub mod probability;
-pub mod region_string;
-pub mod rms;
-pub mod strand;
+mod base;
+mod phred;
+mod probability;
+mod region_string;
+mod rms;
+mod strand;
 
 pub use {
     base::Base,
     phred::Phred,
     probability::Probability,
     region_string::RegionString,
-    rms::RootMeanSquare,
+    rms::{RootMeanSquare, RootMeanSquareExt},
     strand::{Strand, StrandFromRecord},
 };

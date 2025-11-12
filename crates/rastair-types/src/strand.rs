@@ -14,6 +14,7 @@ pub enum Strand {
 }
 
 impl Strand {
+    /// Return `Some(self)` if strand is known, otherwise `None`
     pub fn ok(self) -> Option<Self> {
         match self {
             Strand::OT | Strand::OB => Some(self),
@@ -38,6 +39,7 @@ impl fmt::Display for Strand {
     }
 }
 
+/// Extension trait to get strand information from a BCF record
 pub trait StrandFromRecord {
     /// Create a `Strand` from a BCF record
     fn strand(&self) -> Strand;

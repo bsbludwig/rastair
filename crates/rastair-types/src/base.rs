@@ -1,14 +1,20 @@
 use smol_str::SmolStr;
 use thiserror::Error;
 
+/// Represents a DNA base (A, C, G, T, or Unknown)
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 #[must_use]
 pub enum Base {
+    /// Adenine
     A = b'A',
+    /// Cytosine
     C = b'C',
+    /// Guanine
     G = b'G',
+    /// Thymine
     T = b'T',
+    /// Unknown base
     #[default]
     Unknown = b'N',
 }
@@ -21,17 +27,6 @@ impl std::fmt::Display for Base {
 }
 
 impl Base {
-    #[cfg_attr(coverage_nightly, coverage(off))]
-    pub fn display_colored(&self) -> &str {
-        match self {
-            Base::A => "\x1b[32mA\x1b[0m", // green
-            Base::C => "\x1b[34mC\x1b[0m", // blue
-            Base::G => "\x1b[33mG\x1b[0m", // yellow
-            Base::T => "\x1b[31mT\x1b[0m", // red
-            Base::Unknown => "N",          // white
-        }
-    }
-
     /// Get the inverse base (complementary base)
     pub fn inverse(&self) -> Base {
         match self {
@@ -43,6 +38,7 @@ impl Base {
         }
     }
 
+    /// Get the string representation of the base
     pub fn as_str(&self) -> &'static str {
         match self {
             Base::A => "A",
@@ -53,6 +49,7 @@ impl Base {
         }
     }
 
+    /// Get the character representation of the base
     pub fn as_char(&self) -> char {
         (*self) as u8 as char
     }

@@ -11,7 +11,7 @@ use color_eyre::{
     Result,
     eyre::{Context, bail},
 };
-use rastair_types::{Base, Probability, RootMeanSquare, Strand, rms::RootMeanSquareExt};
+use rastair_types::{Base, Probability, RootMeanSquare, RootMeanSquareExt as _, Strand};
 use rastair_vcf::VcfFilter;
 use smallvec::SmallVec;
 use smol_str::SmolStr;

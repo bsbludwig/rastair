@@ -39,6 +39,7 @@ impl Phred {
         Ok(Self(phred))
     }
 
+    /// Get the Phred quality score as an integer
     pub fn as_int(self) -> i32 {
         let phred = self.0;
         if phred >= 99.0 {
@@ -50,6 +51,7 @@ impl Phred {
         phred.round() as i32
     }
 
+    /// Create a Phred quality score from an integer
     pub fn from_phred(phred: i32) -> Self {
         Self(phred as f64)
     }
