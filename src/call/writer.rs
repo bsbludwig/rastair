@@ -51,7 +51,7 @@ pub fn writer_thread(
         .name("writer".to_string())
         .spawn(move || -> Result<()> {
             let span =
-                tracing::info_span!("writer", vcf=%vcf_output.is_some(), bed=%bed_writer.is_some());
+                tracing::debug_span!("writer", vcf=%vcf_output.is_some(), bed=%bed_writer.is_some());
             let _guard = span.enter();
 
             let mut last_seen = LastSeen::default();

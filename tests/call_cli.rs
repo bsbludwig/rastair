@@ -170,7 +170,7 @@ fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    [TIME] WARN call: rastair::call: VCF output file name ends with `.bed`/`.bed.gz`, did you mean to use `--bed` instead of `-o`/`--vcf`? Assuming you meant `--bed` and switching the output accordingly. file=[PATH]"
+    [TIME] WARN rastair::call: VCF output file name ends with `.bed`/`.bed.gz`, did you mean to use `--bed` instead of `-o`/`--vcf`? Assuming you meant `--bed` and switching the output accordingly. file=[PATH]"
     [TIME] INFO rastair::call::writer: Wrote BED output file=[PATH]"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
