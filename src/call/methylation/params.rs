@@ -1,7 +1,7 @@
 use crate::utils::cli;
 use better_default::Default;
 
-#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MethylationCallingParams {
     #[command(flatten)]
     pub thresholds: ThresholdParams,

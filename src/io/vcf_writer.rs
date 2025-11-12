@@ -1,10 +1,3 @@
-use clio::ClioPath;
-use color_eyre::eyre::{ContextCompat, Result, WrapErr};
-use rastair_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
-use smol_str::SmolStr;
-use std::{collections::BTreeSet, ffi::OsStr, num::NonZeroUsize};
-use tracing::{debug, warn};
-
 use crate::{
     io::{
         formats::FromFileExtension,
@@ -14,8 +7,15 @@ use crate::{
     utils::{cli, logging::ThisIsABug as _},
     vcf::Record,
 };
+use better_default::Default;
+use clio::ClioPath;
+use color_eyre::eyre::{ContextCompat, Result, WrapErr};
+use rastair_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
+use smol_str::SmolStr;
+use std::{collections::BTreeSet, ffi::OsStr, num::NonZeroUsize};
+use tracing::{debug, warn};
 
-#[derive(Debug, Clone, clap::Parser)]
+#[derive(Debug, Clone, Default, clap::Parser)]
 pub struct VcfParams {
     /// VCF/BCF output file path (use - to write to stdout)
     ///
@@ -34,8 +34,9 @@ pub struct VcfParams {
     /// you think that VCF writing is a bottleneck, e.g. when the output files
     /// contain a lot of positions.
     // Default value chosen after profiling on a machine with 14 cores.
-    #[arg(long, default_value = "3")]
+    #[arg(long, default_value = "2")]
     #[arg(help_heading = cli::sections::PROCESSING)]
+    #[default(NonZeroUsize::new(1).expect("3 > 0"))]
     pub vcf_threads: NonZeroUsize,
 }
 

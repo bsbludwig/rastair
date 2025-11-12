@@ -10,6 +10,7 @@ use crate::{
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{cli, logging::ThisIsABug as _},
 };
+use better_default::Default;
 use clio::ClioPath;
 use color_eyre::{
     Section,
@@ -33,6 +34,8 @@ pub mod process;
 
 #[cfg(test)]
 pub mod test_helpers;
+#[cfg(test)]
+pub mod tests;
 
 #[derive(Debug, clap::Args, serde::Serialize)]
 pub struct CallParams {
@@ -117,7 +120,7 @@ impl CallParams {
     }
 }
 
-#[derive(Debug, clap::Args, Clone)]
+#[derive(Debug, clap::Args, Clone, Default)]
 pub struct SegmentationParams {
     /// Maximum length of a segment in bases
     ///
@@ -125,6 +128,7 @@ pub struct SegmentationParams {
     /// usage.
     #[arg(long, default_value_t = 100_000)]
     #[arg(help_heading = cli::sections::PROCESSING)]
+    #[default(100_000)]
     pub segment_max_length: u64,
 
     /// Number of bases to overlap between segments
@@ -132,6 +136,7 @@ pub struct SegmentationParams {
     /// Helpful to avoid missing variants at the edges of segments.
     #[arg(long, default_value_t = 200)]
     #[arg(help_heading = cli::sections::PROCESSING)]
+    #[default(200)]
     pub segment_overlap: u64,
 }
 

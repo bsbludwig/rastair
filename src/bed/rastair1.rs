@@ -4,6 +4,7 @@ use crate::{
     utils::cli,
     vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
+use better_default::Default;
 use clio::ClioPath;
 use color_eyre::{
     Result, Section,
@@ -15,7 +16,7 @@ use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
 use tracing::{debug, instrument};
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, clap::Args, Default)]
 pub struct BedParams {
     /// Output BED file with the called methylated positions
     #[arg(long = "bed", required = false, default_missing_value = "-", num_args = 0..=1)]
@@ -117,7 +118,7 @@ impl Rastair1BedFormat {
 }
 
 /// Parameters for filtering BED records
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone, clap::Args, Default)]
 pub struct BedRecordsFilterParams {
     /// Include CpG positions with zero coverage
     ///
