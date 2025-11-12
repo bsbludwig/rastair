@@ -16,6 +16,10 @@ use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
 use tracing::{debug, instrument};
 
+mod internal_to_bed;
+mod metrics_to_bed;
+mod vcf_to_bed;
+
 #[derive(Debug, Clone, clap::Args, Default)]
 pub struct BedParams {
     /// Output BED file with the called methylated positions
@@ -143,9 +147,6 @@ pub struct BedRecordsConvertParams {
     #[command(flatten)]
     pub filters: BedRecordsFilterParams,
 }
-
-mod internal_to_bed;
-mod vcf_to_bed;
 
 impl BedRecord for Rastair1BedFormat {
     const HEADER: &'static str = "#chr\tstart\tend\tname\tbeta_est\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage\tgenotype\tgt_p_score\tgt_conf_score\tcpg";

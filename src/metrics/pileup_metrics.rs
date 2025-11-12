@@ -112,6 +112,15 @@ impl PileupMetrics {
         self.pileup.pos
     }
 
+    pub fn contig_pos(&self) -> SmolStr {
+        use std::fmt::Write as _;
+        let mut res = smol_str::SmolStrBuilder::new();
+
+        write!(&mut res, "{}:{}", self.contig(), self.pos()).expect("works");
+
+        res.finish()
+    }
+
     pub fn alt(&self, alt: Base) -> Option<&AlleleMetrics> {
         self.alts.iter().find(|a| a.base == alt).map(|a| &a.metrics)
     }
@@ -119,6 +128,10 @@ impl PileupMetrics {
     pub fn alt_metrics(&self, alt: Base) -> Option<MetricsForAlt<'_>> {
         let alt = self.alts.iter().find(|a| a.base == alt);
         alt.map(|alt| MetricsForAlt { metrics: self, alt: &alt.metrics })
+    }
+
+    pub fn alt_filters(&self, alt: Base) -> Option<&AltFilters> {
+        self.alts.iter().find(|a| a.base == alt).map(|a| &a.filters)
     }
 
     pub fn alt_filters_mut(&mut self, alt: Base) -> Option<&mut AltFilters> {

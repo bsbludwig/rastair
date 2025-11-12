@@ -4,7 +4,7 @@ use crate::{
     metrics::PileupMetrics,
     sequence::ChunkRegion,
     utils::logging::ThisIsABug as _,
-    vcf::{self, VcfOutputFilter},
+    vcf::VcfOutputFilter,
 };
 use color_eyre::{Result, eyre::Context as _};
 use ordered_channel::Receiver;
@@ -72,8 +72,6 @@ pub fn writer_thread(
                         record.alts.retain(|alt| alt.filters.filters.is_empty());
                     }
 
-                    let mut vcf_record: Option<vcf::Record> = None;
-
                     if let Some(vcf_writer) = vcf_writer.as_mut()
                         && vcf_filter.matches(&record, ml_threshold)
                     {
@@ -85,7 +83,6 @@ pub fn writer_thread(
                                     .wrap_err("Failed to convert metrics to VCF record")
                                     .this_is_a_bug()?;
                                 writer.add(&vcf).wrap_err("Failed to write VCF record")?;
-                                vcf_record = Some(vcf);
                             }
                             Writer::MessagePack(writer) => {
                                 writer
@@ -97,16 +94,7 @@ pub fn writer_thread(
 
                     if let Some(bed_writer) = bed_writer.as_mut()
                         && (*record.pos_metrics.cpg || record.forms_denovo())
-                    {
-                        let vcf = if let Some(vcf) = vcf_record {
-                            vcf
-                        } else {
-                            record
-                                .to_vcf_record()
-                                .wrap_err("Failed to convert metrics to VCF record")
-                                .this_is_a_bug()?
-                        };
-                        if let Some(bed_record) = Rastair1BedFormat::from_record(&vcf, &bed_params)
+                        && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record, &bed_params)
                             .wrap_err("Failed to convert VCF record to BED format")
                             .this_is_a_bug()?
                         {
@@ -114,7 +102,7 @@ pub fn writer_thread(
                                 .write_record(&bed_record)
                                 .wrap_err("Failed to write record to BED")?;
                         }
-                    }
+
                 }
             }
 

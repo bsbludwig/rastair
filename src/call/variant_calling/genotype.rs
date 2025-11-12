@@ -7,7 +7,7 @@ use crate::{
 };
 use color_eyre::eyre::{Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
-use rastair_vcf::standard_fields::GenotypeAllele;
+use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use tracing::{instrument, trace};
 
 impl Pileup {
@@ -51,9 +51,16 @@ impl From<GenotypeTag> for [GenotypeAllele; 2] {
     fn from(value: GenotypeTag) -> Self {
         match value {
             GenotypeTag::CC => [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)],
-            GenotypeTag::CT => [GenotypeAllele::Phased(0), GenotypeAllele::Phased(1)],
-            GenotypeTag::TT => [GenotypeAllele::Phased(1), GenotypeAllele::Phased(1)],
+            GenotypeTag::CT => [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)],
+            GenotypeTag::TT => [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)],
         }
+    }
+}
+
+impl From<GenotypeTag> for Genotype {
+    fn from(value: GenotypeTag) -> Self {
+        let genotype: [GenotypeAllele; 2] = value.into();
+        Genotype(genotype.into())
     }
 }
 
