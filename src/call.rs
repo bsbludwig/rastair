@@ -316,8 +316,8 @@ fn process_region(
 
     // Collect relevant pileups based on what the caller asked for
     //
-    // The main reason we filter here is to avoid running ML on pileups that
-    // have no variant or methylation evidence.
+    // The main reason we filter here is to avoid running ML on some pileups
+    // that we won't report anyway.
     let mut pileups: Vec<PileupMetrics> = pileups
         .filter_map(|x: Result<PileupMetrics>| match x {
             Err(e) => {
@@ -327,15 +327,17 @@ fn process_region(
             Ok(x) => Some(x),
         })
         .filter(|p| {
-            let has_alts = !p.alts.is_empty();
-            let is_methylation_evidence = *p.pos_metrics.cpg && p.forms_denovo();
+            let cpg_only_pls = params.record_filters.cpgs_only;
 
-            if params.record_filters.cpgs_only {
+            let has_alts = !p.alts.is_empty();
+            let cpg = *p.pos_metrics.cpg || p.forms_denovo();
+
+            if cpg_only_pls {
                 // Filter out pileups that are not CpG if requested
-                has_alts
+                cpg
             } else {
                 // Otherwise, keep all variant evidence + methylation evidence
-                has_alts || is_methylation_evidence
+                has_alts || cpg
             }
         })
         .collect();
