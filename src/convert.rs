@@ -226,14 +226,7 @@ fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
-                let vcf_record = record
-                    .to_vcf_record()
-                    .wrap_err("Failed to convert MPK record to VCF record")
-                    .this_is_a_bug()?;
-                if !(*vcf_record.info.in_cp_g || *vcf_record.info.de_novo_cp_g_candidate) {
-                    continue;
-                }
-                let Some(record) = Rastair1BedFormat::from_record(&vcf_record, &params.bed_params)
+                let Some(record) = Rastair1BedFormat::from_metrics(&record, &params.bed_params)
                     .wrap_err("Failed to convert record to BED format")?
                 else {
                     continue;

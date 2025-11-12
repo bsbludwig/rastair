@@ -94,7 +94,7 @@ pub fn writer_thread(
 
                     if let Some(bed_writer) = bed_writer.as_mut()
                         && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record, &bed_params)
-                            .wrap_err("Failed to convert VCF record to BED format")
+                            .wrap_err("Failed to convert record to BED format")
                             .this_is_a_bug()?
                         {
                             bed_writer

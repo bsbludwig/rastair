@@ -16,7 +16,6 @@ use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
 use tracing::{debug, instrument};
 
-mod internal_to_bed;
 mod metrics_to_bed;
 mod vcf_to_bed;
 
