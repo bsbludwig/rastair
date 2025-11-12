@@ -128,7 +128,7 @@ impl Rastair1BedFormat {
             None
         };
 
-        Ok(Some(Rastair1BedFormat {
+        let bed = Rastair1BedFormat {
             contig,
             pos: r.pos() as usize,
             r#ref,
@@ -142,7 +142,13 @@ impl Rastair1BedFormat {
             genotype_likelihood,
             genotype_confidence,
             de_novo: !in_cpg && de_novo,
-        }))
+        };
+
+        if cfg!(debug_assertions) {
+            bed.sanity_check().wrap_err("BED record failed sanity check")?;
+        }
+
+        Ok(Some(bed))
     }
 }
 

@@ -50,12 +50,19 @@ pub fn writer_thread(
     thread::Builder::new()
         .name("writer".to_string())
         .spawn(move || -> Result<()> {
+            let span =
+                tracing::info_span!("writer", vcf=%vcf_output.is_some(), bed=%bed_writer.is_some());
+            let _guard = span.enter();
+
             let mut last_seen = LastSeen::default();
 
             // Since we only have the region index to ensure order, each
             // processing thread will send a vector of VCF records when it's
             // done with a region.
             for records in vcf_receiver {
+                let span = tracing::debug_span!("recv_records", records=%records.len());
+                let _guard = span.enter();
+
                 'current_batch: for mut record in records {
                     if !last_seen.is_new(record.contig(), record.pos()) {
                         continue 'current_batch;
@@ -128,7 +135,7 @@ pub fn writer_thread(
 
 /// The segments we get have some overlap between them, so we need
 /// to ensure that we don't write the same record multiple times.
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct LastSeen {
     contig: Option<SmolStr>,
     pos: Option<u32>,

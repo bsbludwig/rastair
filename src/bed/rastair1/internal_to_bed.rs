@@ -81,7 +81,7 @@ impl Rastair1BedFormat {
             None
         };
 
-        Ok(Some(super::Rastair1BedFormat {
+        let bed = super::Rastair1BedFormat {
             contig: record.main.chrom.clone(),
             pos: record.main.pos as usize,
             r#ref,
@@ -95,6 +95,12 @@ impl Rastair1BedFormat {
             genotype_likelihood: record.samples[0].genotype_likelihood.clone(),
             genotype_confidence: record.samples[0].genotype_confidence.clone(),
             de_novo,
-        }))
+        };
+
+        if cfg!(debug_assertions) {
+            bed.sanity_check().wrap_err("BED record failed sanity check")?;
+        }
+
+        Ok(Some(bed))
     }
 }

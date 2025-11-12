@@ -5,7 +5,10 @@ use crate::{
     vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
 use clio::ClioPath;
-use color_eyre::{Result, eyre::Context as _};
+use color_eyre::{
+    Result, Section,
+    eyre::{Context as _, eyre},
+};
 use rastair_types::Probability;
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};
@@ -47,7 +50,7 @@ impl BedParams {
         }
     }
 
-    #[instrument(level = "debug")]
+    #[instrument(level = "debug", skip(self))]
     pub fn writer(&self) -> Result<Option<BedWriter<Rastair1BedFormat>>> {
         let Some(path) = &self.bed else {
             return Ok(None);
@@ -75,6 +78,42 @@ pub struct Rastair1BedFormat {
     pub genotype_likelihood: GenotypeLikelihood,
     pub genotype_confidence: GenotypeConfidence,
     pub de_novo: bool,
+}
+
+impl Rastair1BedFormat {
+    #[instrument(level = "debug", skip(self), fields(contig=%self.contig, pos=self.pos))]
+    pub fn sanity_check(&self) -> Result<()> {
+        let mut errors = vec![];
+
+        if self.beta.is_none() {
+            errors.push("Missing beta value".to_string());
+        }
+
+        if let Some(beta) = self.beta
+            && *beta > 0.
+            && self.r#mod == 0
+        {
+            errors.push(format!(
+                "Inconsistent beta and mod counts: beta={}, mod={}",
+                beta, self.r#mod
+            ));
+        }
+
+        if self.coverage != (self.unmod + self.r#mod + self.no_snp + self.snp) as usize {
+            errors.push(format!(
+                "Coverage mismatch: coverage={}, unmod+mod+no_snp+snp={}",
+                self.coverage,
+                self.unmod + self.r#mod + self.no_snp + self.snp
+            ));
+        }
+
+        if !errors.is_empty() {
+            let err = errors.into_iter().fold(eyre!("invalid bed record"), |acc, e| acc.warning(e));
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Parameters for filtering BED records
@@ -131,12 +170,14 @@ impl BedRecord for Rastair1BedFormat {
         let strand = match r#ref.as_str() {
             "C" => "+",
             "G" => "-",
-            _ => ".",
+            _ => todo!("why are we here?"),
+            // _ => ".",
         };
         let beta = if let Some(beta) = beta {
             format_smolstr!("{beta:.2}")
         } else {
-            SmolStr::new_static("")
+            todo!("why are we here?");
+            // SmolStr::new_static("")
         };
 
         write!(

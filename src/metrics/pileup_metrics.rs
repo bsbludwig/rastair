@@ -56,7 +56,7 @@ impl PileupMetrics {
             pos = pileup.pos,
             ref_base = ?reference.base,
             alt_bases = ?alts_reads.iter().map(|b| b.base).collect::<Vec<_>>(),
-            "Found candidate"
+            "New pileup"
         );
 
         let ref_base = reference.base;
