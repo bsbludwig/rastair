@@ -9,7 +9,6 @@ use crate::{
     metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers},
     utils::{cli, logging::ThisIsABug as _},
-    vcf::lowDp,
 };
 use clio::ClioPath;
 use color_eyre::{

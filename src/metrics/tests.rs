@@ -45,19 +45,19 @@ fn test_cpg_detection() -> Result<()> {
     let ref_g =
         pileups.iter().find(|p| p.pileup.pos == 6105712).wrap_err("Could not find G pileup")?;
 
-    dbg!(ref_c.pos_filters.other_pos_in_cpg_passes);
-    dbg!(ref_g.pos_filters.other_pos_in_cpg_passes);
+    // dbg!(ref_c.pos_filters.other_pos_in_cpg_passes);
+    // dbg!(ref_g.pos_filters.other_pos_in_cpg_passes);
 
-    dbg!(ref_c.pos_filters.len());
-    ref_c.alts.iter().for_each(|alt| {
-        dbg!(alt.filters.filters.other_pos_in_cpg_passes);
-        dbg!(alt.filters.filters.len());
-    });
-    dbg!(ref_g.pos_filters.len());
-    ref_g.alts.iter().for_each(|alt| {
-        dbg!(alt.filters.filters.other_pos_in_cpg_passes);
-        dbg!(alt.filters.filters.len());
-    });
+    // dbg!(ref_c.pos_filters.len());
+    // ref_c.alts.iter().for_each(|alt| {
+    //     dbg!(alt.filters.filters.other_pos_in_cpg_passes);
+    //     dbg!(alt.filters.filters.len());
+    // });
+    // dbg!(ref_g.pos_filters.len());
+    // ref_g.alts.iter().for_each(|alt| {
+    //     dbg!(alt.filters.filters.other_pos_in_cpg_passes);
+    //     dbg!(alt.filters.filters.len());
+    // });
 
     assert!(ref_c.pass(ml_threshold));
     assert!(ref_g.pass(ml_threshold));

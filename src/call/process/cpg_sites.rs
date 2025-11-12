@@ -1,4 +1,4 @@
-use color_eyre::eyre::{ContextCompat as _, Result};
+use color_eyre::eyre::Result;
 use rastair_types::Probability;
 use tracing::instrument;
 
