@@ -8,7 +8,7 @@ use crate::{
 use color_eyre::{Result, eyre::Context as _};
 use rastair_types::{Phred, Probability};
 use smallvec::smallvec_inline;
-use tracing::{instrument, warn};
+use tracing::{instrument, trace, warn};
 
 impl Rastair1BedFormat {
     #[instrument(level = "trace", skip_all, fields(pos=%pileup.contig_pos()))]
@@ -17,6 +17,11 @@ impl Rastair1BedFormat {
         params: &BedRecordsConvertParams,
     ) -> Result<Option<Self>> {
         if !params.filters.include_empty && pileup.pos_metrics.depth == 0 {
+            trace!("no coverage, skipping");
+            return Ok(None);
+        }
+        if !(*pileup.pos_metrics.cpg || pileup.forms_denovo()) {
+            trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }
 
