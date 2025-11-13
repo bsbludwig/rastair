@@ -107,7 +107,8 @@ fn asking_for_all_variants_includes_non_passing_ones() -> Result<()> {
         .arg("--all")
         .output()?;
     call.succeeds()?;
-    assert!(vcf_content_lines(&call.stdout()).any(|l| l.contains("m_vaf;m_bq_ratio")));
+    let stdout = call.stdout();
+    assert!(vcf_content_lines(&stdout).any(|l| l.contains("lowDp")));
 
     Ok(())
 }
@@ -224,8 +225,8 @@ fn vcf_with_nOT_nOB() -> Result<()> {
         .arg(&b)
         .succeeds()?;
 
-    assert_compact_debug_snapshot!(get_depths(&a), @"Ok([18, 18, 17, 16, 16, 20, 23])");
-    assert_compact_debug_snapshot!(get_depths(&b), @"Ok([11, 12, 13, 13, 11, 12, 16])");
+    assert_compact_debug_snapshot!(get_depths(&a), @"Ok([18, 16, 16])");
+    assert_compact_debug_snapshot!(get_depths(&b), @"Ok([11, 13, 13])");
 
     fn get_depths(path: &std::path::Path) -> Result<Vec<i32>> {
         use rastair_vcf::VcfField as _;

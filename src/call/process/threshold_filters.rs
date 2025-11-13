@@ -31,7 +31,7 @@ pub fn apply_threshold_filters(
 
             let generic = {
                 let mut filters = Filters::default();
-                // filters.add(lowDp, || alt.alt.depth < params.variant_calling.v_min_depth);
+                filters.add(lowDp, || alt.alt.depth < params.variant_calling.v_min_depth);
                 filters
             };
             let m_filters = methylation::add_filters(&params.methylation, &alt)?;
