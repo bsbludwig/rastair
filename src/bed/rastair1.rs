@@ -94,17 +94,10 @@ pub struct BedRecordsFilterParams {
     pub include_empty: bool,
 }
 
-// Constructed from command line arguments by the `convert` subcommand, or from
-// other existing parameters when used by `call`
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone)]
 pub struct BedRecordsConvertParams {
     /// Minimum ML score to consider a position as variant
-    ///
-    /// This does nothing if the input data does not contain ML scores.
-    #[arg(long = "bed-ml", default_value_t = Probability::new(0.8).expect("valid default probability"))]
-    #[arg(help_heading = cli::sections::FILTER)]
     pub ml_threshold: Probability,
-    #[command(flatten)]
     pub filters: BedRecordsFilterParams,
 }
 

@@ -1,7 +1,7 @@
 use crate::{
     bed::{
         BedFormat,
-        rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
+        rastair1::{BedRecordsFilterParams, Rastair1BedFormat},
         writer::BedWriter,
     },
     io::{
@@ -17,6 +17,7 @@ use color_eyre::{
     Section as _,
     eyre::{ContextCompat, Result, WrapErr, bail, eyre},
 };
+use rastair_types::Probability;
 use rastair_vcf::VcfField;
 use rust_htslib::bcf::Read as _;
 use std::num::NonZeroUsize;
@@ -56,7 +57,14 @@ pub struct ConvertParams {
 
     /// BED-specific parameters
     #[command(flatten)]
-    pub bed_params: BedRecordsConvertParams,
+    pub bed_params: BedRecordsFilterParams,
+
+    /// Minimum ML score to consider a position as variant
+    ///
+    /// This does nothing if the input data does not contain ML scores.
+    #[arg(long = "bed-ml", default_value_t = Probability::new_panicky(0.8))]
+    #[arg(help_heading = cli::sections::FILTER)]
+    pub ml_threshold: Probability,
 }
 
 pub fn convert(params: &ConvertParams) -> Result<()> {
@@ -159,7 +167,11 @@ fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
             continue;
         }
 
-        let Some(record) = Rastair1BedFormat::from_vcf(&record, &params.bed_params)
+        let params = crate::bed::rastair1::BedRecordsConvertParams {
+            ml_threshold: params.ml_threshold,
+            filters: params.bed_params.clone(),
+        };
+        let Some(record) = Rastair1BedFormat::from_vcf(&record, &params)
             .wrap_err("Failed to convert record to BED format")?
         else {
             continue;
@@ -197,7 +209,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         match entry {
             Ok(MpkEntry::Record(record)) => {
                 let vcf_record = record
-                    .to_vcf_record(None) // FIXME: add param
+                    .to_vcf_record(Some(params.ml_threshold))
                     .wrap_err("Failed to convert record to VCF format")
                     .this_is_a_bug()?;
                 writer.add(&vcf_record).wrap_err("Failed to write record")?;
@@ -226,7 +238,11 @@ fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
-                let Some(record) = Rastair1BedFormat::from_metrics(&record, &params.bed_params)
+                let params = crate::bed::rastair1::BedRecordsConvertParams {
+                    ml_threshold: params.ml_threshold,
+                    filters: params.bed_params.clone(),
+                };
+                let Some(record) = Rastair1BedFormat::from_metrics(&record, &params)
                     .wrap_err("Failed to convert record to BED format")?
                 else {
                     continue;
