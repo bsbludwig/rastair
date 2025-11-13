@@ -110,11 +110,7 @@ mod tests {
                 reads: crate::call::pileup::SimpleReads(SmallVec::new()),
                 reference_base: A,
             },
-            pos_metrics: {
-                let mut m = PositionMetrics::default();
-                m.cpg = InCpG::No;
-                m
-            },
+            pos_metrics: PositionMetrics::default(),
             pos_filters: default(),
             ref_metrics: default(),
             alts: [Alt {
