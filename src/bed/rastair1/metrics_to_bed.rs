@@ -133,8 +133,9 @@ struct Counts {
     snp: u32,
 }
 
-impl Counts {
-    fn total(&self) -> u32 {
-        self.unmod + self.r#mod + self.no_snp + self.snp
-    }
-}
+// todo: choose whether to use this
+// impl Counts {
+//     fn total(&self) -> u32 {
+//         self.unmod + self.r#mod + self.no_snp + self.snp
+//     }
+// }
