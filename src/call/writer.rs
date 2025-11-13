@@ -68,6 +68,24 @@ pub fn writer_thread(
                         continue 'current_batch;
                     }
 
+                    // Write BED record if requested
+                    if let Some(bed_writer) = bed_writer.as_mut()
+                        && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record, &bed_params)
+                            .wrap_err("Failed to convert record to BED format")
+                            .this_is_a_bug()?
+                        {
+                            bed_writer
+                                .write_record(&bed_record)
+                                .wrap_err("Failed to write record to BED")?;
+                        }
+
+                    // Filter out low-quality variants if requested
+                    //
+                    // NOTE: We do this after BED writing, so that BED output
+                    // is not affected by VCF filtering and stays compatible.
+                    //
+                    // FIXME: This is a hack. Look into filtering these earlier,
+                    // and especially before methylation calling.
                     if filters.reject_low_quality_variants {
                         record.alts.retain(|alt| alt.filters.filters.is_empty());
                     }
@@ -91,17 +109,6 @@ pub fn writer_thread(
                             }
                         }
                     }
-
-                    if let Some(bed_writer) = bed_writer.as_mut()
-                        && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record, &bed_params)
-                            .wrap_err("Failed to convert record to BED format")
-                            .this_is_a_bug()?
-                        {
-                            bed_writer
-                                .write_record(&bed_record)
-                                .wrap_err("Failed to write record to BED")?;
-                        }
-
                 }
             }
 
