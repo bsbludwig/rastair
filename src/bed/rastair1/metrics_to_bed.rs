@@ -4,10 +4,7 @@ use crate::{
     metrics::PileupMetrics,
     utils::{Base::*, logging::ThisIsABug as _},
 };
-use color_eyre::{
-    Result, Section as _, SectionExt as _,
-    eyre::{Context as _, eyre},
-};
+use color_eyre::{Result, Section as _, SectionExt as _, eyre::eyre};
 use rastair_types::{Phred, Probability};
 use tracing::{debug, instrument, trace, warn};
 
@@ -77,7 +74,7 @@ impl Rastair1BedFormat {
                 Some(Probability::ZERO)
             } else if let Some(beta) = pileup.pos_metrics.methylated.beta() {
                 // - ML says not a variant, use beta if available
-                Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
+                Some(beta)
             } else {
                 // - ML says not a variant, but no beta available
                 debug!(%score, %ml_threshold, "ML says not a variant, but no beta available");
@@ -91,7 +88,7 @@ impl Rastair1BedFormat {
             Some(Probability::ZERO)
         } else if let Some(beta) = pileup.pos_metrics.methylated.beta() {
             // - Just use beta if available
-            Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
+            Some(beta)
         } else {
             // - No beta available
             warn!(in_cpg=?pileup.pos_metrics.cpg, ?de_novo, genotype=?pileup.pos_metrics.genotype, "why no beta?");

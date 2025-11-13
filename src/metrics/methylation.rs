@@ -8,6 +8,7 @@ use color_eyre::{
     Result,
     eyre::{Context, ContextCompat, eyre},
 };
+use rastair_types::Probability;
 use tracing::{Level, debug, instrument, trace, warn};
 
 #[instrument(
@@ -84,7 +85,7 @@ fn ref_t_to_c(config: &ThresholdParams, record: &PileupMetrics) -> Result<Methyl
         let mod_count = t_counts.ot.f() / 2.;
         let total = c_counts.ot.f() + mod_count;
         if total > 0. {
-            Ok(Methylated::DeNovoCpG { beta: mod_count / total })
+            Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
         } else {
             Ok(Methylated::NoEvidence)
         }
@@ -92,7 +93,9 @@ fn ref_t_to_c(config: &ThresholdParams, record: &PileupMetrics) -> Result<Methyl
         let mod_count = t_counts.ot;
         let total = c_counts.ot + t_counts.ot;
         if total > 0 {
-            Ok(Methylated::DeNovoCpG { beta: mod_count.f() / total.f() })
+            Ok(Methylated::DeNovoCpG {
+                beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
+            })
         } else {
             Ok(Methylated::NoEvidence)
         }
@@ -121,7 +124,9 @@ fn ref_not_t_to_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<M
 
     let total = mod_count + unmod_count;
     if total > 0 {
-        Ok(Methylated::DeNovoCpG { beta: mod_count.f() / total.f() })
+        Ok(Methylated::DeNovoCpG {
+            beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
+        })
     } else {
         Ok(Methylated::NoEvidence)
     }
@@ -142,7 +147,7 @@ fn ref_a_to_g(config: &ThresholdParams, record: &PileupMetrics) -> Result<Methyl
         let mod_count = a_counts.ob.f() / 2.;
         let total = g_counts.ob.f() + mod_count;
         if total > 0. {
-            Ok(Methylated::DeNovoCpG { beta: mod_count / total })
+            Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
         } else {
             Ok(Methylated::NoEvidence)
         }
@@ -150,7 +155,9 @@ fn ref_a_to_g(config: &ThresholdParams, record: &PileupMetrics) -> Result<Methyl
         let mod_count = a_counts.ob;
         let total = g_counts.ob + mod_count;
         if total > 0 {
-            Ok(Methylated::DeNovoCpG { beta: mod_count.f() / total.f() })
+            Ok(Methylated::DeNovoCpG {
+                beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
+            })
         } else {
             Ok(Methylated::NoEvidence)
         }
@@ -176,7 +183,9 @@ fn ref_not_a_to_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<M
 
     let total = mod_count + unmod_count;
     if total > 0 {
-        Ok(Methylated::DeNovoCpG { beta: mod_count.f() / total.f() })
+        Ok(Methylated::DeNovoCpG {
+            beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
+        })
     } else {
         Ok(Methylated::NoEvidence)
     }
@@ -213,7 +222,9 @@ fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
 
         let total = mod_count + unmod_count;
         if total > 0. {
-            Ok(Methylated::OriginalCpG { beta: mod_count / total })
+            Ok(Methylated::OriginalCpG {
+                beta: Probability::new(mod_count / total).this_is_a_bug()?,
+            })
         } else {
             Ok(Methylated::NoEvidence)
         }
@@ -253,7 +264,9 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
 
         let total = mod_count + unmod_count;
         if total > 0. {
-            Ok(Methylated::OriginalCpG { beta: mod_count / total })
+            Ok(Methylated::OriginalCpG {
+                beta: Probability::new(mod_count / total).this_is_a_bug()?,
+            })
         } else {
             Ok(Methylated::NoEvidence)
         }
