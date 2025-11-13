@@ -6,10 +6,7 @@ use crate::{
 };
 use better_default::Default;
 use clio::ClioPath;
-use color_eyre::{
-    Result, Section,
-    eyre::{Context as _, eyre},
-};
+use color_eyre::{Result, eyre::Context as _};
 use rastair_types::Probability;
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};

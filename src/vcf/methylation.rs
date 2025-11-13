@@ -14,9 +14,9 @@ pub enum Methylated {
     /// No evidence of methylation at this site
     NoEvidence,
     /// Original CpG site
-    OriginalCpG { beta: f64 },
+    OriginalCpG { beta: f64 }, // TODO: Use Probability
     /// De-novo CpG site
-    DeNovoCpG { beta: f64 },
+    DeNovoCpG { beta: f64 }, // TODO: Use Probability
 }
 
 impl Methylated {

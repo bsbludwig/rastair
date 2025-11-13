@@ -31,6 +31,7 @@ pub struct Phred(f64);
 
 impl Phred {
     /// Create a new Phred quality score
+    // TODO: Use Probability type
     pub fn from_probability(probability: f64) -> Result<Self> {
         if probability.is_nan() || probability.is_infinite() {
             bail!("Phred quality score must be a finite number");
