@@ -5,10 +5,13 @@ use crate::{
     utils::{Base::*, ByStrand, logging::ThisIsABug as _},
     vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
-use color_eyre::{Result, eyre::Context as _};
+use color_eyre::{
+    Result, Section as _, SectionExt as _,
+    eyre::{Context as _, eyre},
+};
 use rastair_types::{Phred, Probability};
 use smallvec::smallvec_inline;
-use tracing::{instrument, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 
 impl Rastair1BedFormat {
     #[instrument(level = "trace", skip_all, fields(pos=%pileup.contig_pos()))]
@@ -112,8 +115,10 @@ impl Rastair1BedFormat {
             de_novo,
         };
 
-        if cfg!(debug_assertions) {
-            bed.sanity_check().wrap_err("BED record failed sanity check")?;
+        if cfg!(debug_assertions)
+            && let Some(err) = bed.sanity_check()
+        {
+            Err(eyre!("invalid bed record")).section(err.header("BED errors")).this_is_a_bug()?;
         }
 
         Ok(Some(bed))

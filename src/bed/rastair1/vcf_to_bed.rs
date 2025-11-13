@@ -7,8 +7,8 @@ use crate::{
     },
 };
 use color_eyre::{
-    Result,
-    eyre::{Context as _, ContextCompat as _, Report, ensure},
+    Result, Section as _, SectionExt as _,
+    eyre::{Context as _, ContextCompat as _, Report, ensure, eyre},
 };
 use rastair_types::{Phred, Probability};
 use rastair_vcf::{
@@ -144,8 +144,10 @@ impl Rastair1BedFormat {
             de_novo: !in_cpg && de_novo,
         };
 
-        if cfg!(debug_assertions) {
-            bed.sanity_check().wrap_err("BED record failed sanity check")?;
+        if cfg!(debug_assertions)
+            && let Some(err) = bed.sanity_check()
+        {
+            Err(eyre!("invalid bed record")).section(err.header("BED errors")).this_is_a_bug()?;
         }
 
         Ok(Some(bed))
