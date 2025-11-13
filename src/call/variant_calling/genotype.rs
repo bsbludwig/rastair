@@ -3,10 +3,11 @@
 
 use crate::{
     call::{pileup::Pileup, variant_calling::ErrorModel},
-    utils::{Base, Strand},
+    utils::{Base, IntoF64 as _, Strand},
 };
 use color_eyre::eyre::{Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
+use rastair_types::Probability;
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use tracing::{instrument, trace};
 
@@ -68,8 +69,8 @@ impl From<GenotypeTag> for Genotype {
 #[must_use]
 pub struct EstimatedGenotype {
     pub genotype: GenotypeTag,
-    pub likelihood: f64,
-    pub confidence: f64,
+    pub likelihood: Probability,
+    pub confidence: Probability,
 }
 
 impl EstimatedGenotype {
@@ -95,45 +96,45 @@ impl EstimatedGenotype {
 
         let mut binom = Binomial::new(ref_count + alt_count, 0.5); // 0.5 because a het position
         let p_het = binom.mass(alt_count);
-        let p_het_max = binom.mass(((alt_count + ref_count) as f64 / 2.0).round() as usize);
+        let p_het_max = binom.mass(((alt_count + ref_count).f() / 2.0).round() as usize);
 
         // Then, I calculate the probability that this many or more alt_count/ref_count reads
         // are observed by error, assuming independence of reads and errors.
         binom = Binomial::new(ref_count + alt_count, error_rate);
 
         if ref_count >= alt_count {
-            let p_hom = binom.mass(alt_count) + (1.0 - binom.distribution(alt_count as f64));
+            let p_hom = binom.mass(alt_count) + (1.0 - binom.distribution(alt_count.f()));
 
             if p_het < p_hom {
                 trace!("Assuming CC: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::CC,
-                    likelihood: p_hom,
-                    confidence: (p_hom - p_het) / p_hom,
+                    likelihood: Probability::new(1.0 - p_hom)?,
+                    confidence: Probability::new(1.0 - (p_hom - p_het) / p_hom)?,
                 })
             } else {
                 trace!("Assuming CT: ({ref_count} vs {alt_count}) -> ({p_het:.5} >= {p_hom:.5})");
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::CT,
-                    likelihood: p_het / p_het_max,
-                    confidence: (p_het - p_hom) / p_het,
+                    likelihood: Probability::new(1.0 - p_het / p_het_max)?,
+                    confidence: Probability::new(1.0 - (p_het - p_hom) / p_het)?,
                 })
             }
         } else {
-            let p_hom = binom.mass(ref_count) + (1.0 - binom.distribution(ref_count as f64));
+            let p_hom = binom.mass(ref_count) + (1.0 - binom.distribution(ref_count.f()));
             if p_het < p_hom {
                 trace!("Assuming TT: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::TT,
-                    likelihood: p_hom,
-                    confidence: (p_hom - p_het) / p_hom,
+                    likelihood: Probability::new(1.0 - p_hom)?,
+                    confidence: Probability::new(1.0 - (p_hom - p_het) / p_hom)?,
                 })
             } else {
                 trace!("Assuming TC: ({ref_count} vs {alt_count}) -> ({p_het:.5} >= {p_hom:.5})");
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::CT,
-                    likelihood: p_het / p_het_max,
-                    confidence: (p_het - p_hom) / p_het,
+                    likelihood: Probability::new(1.0 - p_het / p_het_max)?,
+                    confidence: Probability::new((1.0 - p_het - p_hom) / p_het)?,
                 })
             }
         }

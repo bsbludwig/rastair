@@ -103,12 +103,8 @@ impl PileupMetrics {
             if let Some(estimate) = self.pos_metrics.genotype {
                 (
                     Genotype(<[GenotypeAllele; 2]>::from(estimate.genotype).into()),
-                    GenotypeLikelihood(smallvec_inline![
-                        Phred::from_probability(1.0 - estimate.likelihood).ok()
-                    ]),
-                    GenotypeConfidence(smallvec_inline![
-                        Phred::from_probability(1.0 - estimate.confidence).ok()
-                    ]),
+                    GenotypeLikelihood(smallvec_inline![Some(Phred::from(estimate.likelihood))]),
+                    GenotypeConfidence(smallvec_inline![Some(Phred::from(estimate.confidence))]),
                 )
             } else {
                 (

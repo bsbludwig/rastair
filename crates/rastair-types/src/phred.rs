@@ -1,3 +1,4 @@
+use crate::Probability;
 use color_eyre::{Result, eyre::bail};
 use std::{fmt, ops::Deref};
 
@@ -55,6 +56,13 @@ impl Phred {
     /// Create a Phred quality score from an integer
     pub fn from_phred(phred: i32) -> Self {
         Self(phred as f64)
+    }
+}
+
+impl From<Probability> for Phred {
+    fn from(probability: Probability) -> Self {
+        let phred = -10.0 * probability.log10();
+        Self(phred)
     }
 }
 

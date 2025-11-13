@@ -24,12 +24,8 @@ impl Pileup {
             if let Some(estimate) = self.estimate_genotype(error_model) {
                 (
                     Genotype(<[GenotypeAllele; 2]>::from(estimate.genotype).into()),
-                    GenotypeLikelihood(smallvec![
-                        Phred::from_probability(1.0 - estimate.likelihood).ok()
-                    ]),
-                    GenotypeConfidence(smallvec![
-                        Phred::from_probability(1.0 - estimate.confidence).ok()
-                    ]),
+                    GenotypeLikelihood(smallvec![Some(Phred::from(estimate.likelihood))]),
+                    GenotypeConfidence(smallvec![Some(Phred::from(estimate.confidence))]),
                 )
             } else {
                 (
