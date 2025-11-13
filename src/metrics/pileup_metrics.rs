@@ -95,10 +95,6 @@ impl PileupMetrics {
         Ok(metrics)
     }
 
-    pub fn set_extended_metrics(&mut self, ext: PositionMetricsExt) {
-        self.pos_metrics.extended = ext;
-    }
-
     /// Get reference base
     pub fn ref_base(&self) -> Base {
         self.pileup.reference_base
@@ -181,7 +177,7 @@ pub struct PositionMetrics {
     // set by `call` later since they depend on more context
     // todo: explore using type-state for this
     #[serde(flatten)]
-    extended: PositionMetricsExt,
+    pub extended: PositionMetricsExt,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
