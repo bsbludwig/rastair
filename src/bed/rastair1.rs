@@ -2,12 +2,11 @@ use crate::{
     bed::{BedFormat, BedRecord, writer::BedWriter},
     io::formats::FromFileExtension as _,
     utils::cli,
-    vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
 use better_default::Default;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
-use rastair_types::Probability;
+use rastair_types::{Phred, Probability};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
@@ -77,8 +76,8 @@ pub struct Rastair1BedFormat {
     pub snp: u32,
     pub coverage: usize,
     pub genotype: Genotype,
-    pub genotype_likelihood: GenotypeLikelihood,
-    pub genotype_confidence: GenotypeConfidence,
+    pub genotype_likelihood: Phred,
+    pub genotype_confidence: Phred,
     pub de_novo: bool,
 }
 
@@ -149,11 +148,9 @@ impl BedRecord for Rastair1BedFormat {
         )?;
 
         let genotype = genotype_to_rastair1_string(genotype, r#ref);
-        let likelihood =
-            genotype_likelihood.first().and_then(|x| *x).map(|x| x.as_int()).unwrap_or_default();
-        let confidence =
-            genotype_confidence.first().and_then(|x| *x).map(|x| x.as_int()).unwrap_or_default();
-        write!(f, "\t{genotype}\t{likelihood:.2}\t{confidence:.2}")?;
+        let genotype_likelihood = genotype_likelihood.as_int();
+        let genotype_confidence = genotype_confidence.as_int();
+        write!(f, "\t{genotype}\t{genotype_likelihood}\t{genotype_confidence}")?;
         write!(f, "\t{}", if *de_novo { "NEW" } else { "REF" })?;
         writeln!(f)?;
 

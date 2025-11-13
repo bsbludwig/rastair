@@ -92,26 +92,26 @@ impl Rastair1BedFormat {
             SmallVec::new()
         };
         let genotype = Genotype(genotype);
-        let genotype_likelihood = GenotypeLikelihood(SmallVec::from_buf([{
-            if let Ok(buffer) = r.format(GenotypeLikelihood::ID.as_bytes()).integer()
-                && let Some(first) = buffer.first()
-                && let Some(val) = first.first()
-            {
-                Some(Phred::from_phred(*val))
-            } else {
-                None
-            }
-        }]));
-        let genotype_confidence = GenotypeConfidence(SmallVec::from_buf([{
-            if let Ok(buffer) = r.format(GenotypeConfidence::ID.as_bytes()).integer()
-                && let Some(first) = buffer.first()
-                && let Some(val) = first.first()
-            {
-                Some(Phred::from_phred(*val))
-            } else {
-                None
-            }
-        }]));
+        let genotype_likelihood = if let Ok(buffer) =
+            r.format(GenotypeLikelihood::ID.as_bytes()).integer()
+            && let Some(first) = buffer.first()
+            && let Some(val) = first.first()
+        {
+            Phred::from_phred(*val)
+        } else {
+            trace!(?genotype, "No genotype likelihood field found");
+            Phred::from_phred(0)
+        };
+        let genotype_confidence = if let Ok(buffer) =
+            r.format(GenotypeConfidence::ID.as_bytes()).integer()
+            && let Some(first) = buffer.first()
+            && let Some(val) = first.first()
+        {
+            Phred::from_phred(*val)
+        } else {
+            trace!(?genotype, "No genotype confidence field found");
+            Phred::from_phred(0)
+        };
         let in_cpg = r.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
         let de_novo = r.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
 

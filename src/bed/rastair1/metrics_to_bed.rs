@@ -96,12 +96,8 @@ impl Rastair1BedFormat {
             snp: counts.snp,
             coverage: counts.total() as usize,
             genotype: gt.genotype.into(),
-            genotype_likelihood: GenotypeLikelihood(smallvec_inline![Some(Phred::from(
-                gt.likelihood
-            ))]),
-            genotype_confidence: GenotypeConfidence(smallvec_inline![Some(Phred::from(
-                gt.confidence
-            ))]),
+            genotype_likelihood: Phred::from(gt.likelihood),
+            genotype_confidence: Phred::from(gt.confidence),
             de_novo,
         };
 
