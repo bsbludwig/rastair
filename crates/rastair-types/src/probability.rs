@@ -29,6 +29,11 @@ impl Probability {
             Err(_e) => panic!("invalid probability"),
         }
     }
+
+    /// Returns the inverted probability (1 - p)
+    pub const fn inverted(self) -> Self {
+        Self(1.0 - self.0)
+    }
 }
 
 impl std::fmt::Display for Probability {
