@@ -197,7 +197,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         match entry {
             Ok(MpkEntry::Record(record)) => {
                 let vcf_record = record
-                    .to_vcf_record()
+                    .to_vcf_record(None) // FIXME: add param
                     .wrap_err("Failed to convert record to VCF format")
                     .this_is_a_bug()?;
                 writer.add(&vcf_record).wrap_err("Failed to write record")?;

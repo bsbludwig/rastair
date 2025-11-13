@@ -25,7 +25,7 @@ pub struct VcfOutputFilter {
 }
 
 impl PileupMetrics {
-    pub fn to_vcf_record(&self) -> Result<Record> {
+    pub fn to_vcf_record(&self, ml_threshold: Option<Probability>) -> Result<Record> {
         let main = VcfFixedFields {
             chrom: self.contig(),
             pos: self.pos(),
@@ -101,12 +101,8 @@ impl PileupMetrics {
             if let Some(estimate) = self.pos_metrics.genotype {
                 (
                     Genotype(<[GenotypeAllele; 2]>::from(estimate.genotype).into()),
-                    GenotypeLikelihood(smallvec_inline![Some(Phred::from(
-                        estimate.likelihood.inverted()
-                    ))]),
-                    GenotypeConfidence(smallvec_inline![Some(Phred::from(
-                        estimate.confidence.inverted()
-                    ))]),
+                    GenotypeLikelihood(smallvec_inline![Some(Phred::from(estimate.likelihood))]),
+                    GenotypeConfidence(smallvec_inline![Some(Phred::from(estimate.confidence))]),
                 )
             } else {
                 (
@@ -132,16 +128,17 @@ impl PileupMetrics {
         };
 
         let mut filters = Filters::default();
-        self.pos_filters.iter().for_each(|f| {
-            filters.add(f.clone());
-        });
-        self.alts.iter().for_each(|alt| {
-            alt.filters.filters.iter().for_each(|f| {
+        if self.pass(ml_threshold) {
+            filters.add_all(PASS);
+        } else {
+            self.pos_filters.iter().for_each(|f| {
                 filters.add(f.clone());
             });
-        });
-        if filters.pass() {
-            filters.add_all(PASS);
+            self.alts.iter().for_each(|alt| {
+                alt.filters.filters.iter().for_each(|f| {
+                    filters.add(f.clone());
+                });
+            });
         }
 
         Ok(Record { main, filters, info, samples: smallvec_inline![format_fields] })

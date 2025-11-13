@@ -98,7 +98,7 @@ pub fn writer_thread(
                         match vcf_writer {
                             Writer::Vcf(writer) => {
                                 let vcf = record
-                                    .to_vcf_record()
+                                    .to_vcf_record(ml_threshold)
                                     .wrap_err("Failed to convert metrics to VCF record")
                                     .this_is_a_bug()?;
                                 writer.add(&vcf).wrap_err("Failed to write VCF record")?;
