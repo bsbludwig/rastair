@@ -20,7 +20,7 @@ impl super::Rastair1BedFormat {
             ));
         }
 
-        if self.coverage != (self.unmod + self.r#mod + self.no_snp + self.snp) as usize {
+        if self.coverage < (self.unmod + self.r#mod + self.no_snp + self.snp) as usize {
             errors.push(format!(
                 "Coverage mismatch: coverage={}, unmod+mod+no_snp+snp={}",
                 self.coverage,

@@ -65,7 +65,7 @@ impl From<GenotypeTag> for Genotype {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct EstimatedGenotype {
     pub genotype: GenotypeTag,

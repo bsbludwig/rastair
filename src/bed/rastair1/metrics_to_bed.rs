@@ -43,9 +43,15 @@ impl Rastair1BedFormat {
             return Ok(None);
         }
 
-        let Some(gt) = pileup.pos_metrics.genotype else {
+        let gt = if let Some(gt) = pileup.pos_metrics.genotype {
+            gt
+        } else {
             debug!("No genotype for record");
-            return Ok(None);
+            EstimatedGenotype {
+                genotype: GenotypeTag::CC,
+                likelihood: Probability::ONE,
+                confidence: Probability::ONE,
+            }
         };
 
         let counts = if cpg && ref_base == C {
@@ -101,7 +107,8 @@ impl Rastair1BedFormat {
             r#mod: counts.r#mod,
             no_snp: counts.no_snp,
             snp: counts.snp,
-            coverage: counts.total() as usize,
+            // coverage: counts.total() as usize, // TODO: is coverage meant to include other alts?
+            coverage: pileup.pileup.reads.len(),
             genotype: gt.genotype.into(),
             genotype_likelihood: Phred::from(gt.likelihood),
             genotype_confidence: Phred::from(gt.confidence),
