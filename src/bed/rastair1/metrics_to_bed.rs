@@ -68,21 +68,21 @@ impl Rastair1BedFormat {
         {
             if score >= ml_threshold {
                 // - Does ML say this is a true variant?
-                Some(Probability::new_panicky(0.0))
+                Some(Probability::ZERO)
             } else if let Some(beta) = pileup.pos_metrics.methylated.beta() {
                 // - ML says not a variant, use beta if available
                 Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
             } else {
                 // - ML says not a variant, but no beta available
                 debug!(%score, %ml_threshold, "ML says not a variant, but no beta available");
-                Some(Probability::new_panicky(0.0))
+                Some(Probability::ZERO)
             }
         } else if *pileup.pos_metrics.cpg
             && let Some(gt) = pileup.pos_metrics.genotype
             && gt.genotype == GenotypeTag::CT
         {
             // - Is it in a CpG and called as heterozygous?
-            Some(Probability::new_panicky(0.0))
+            Some(Probability::ZERO)
         } else if let Some(beta) = pileup.pos_metrics.methylated.beta() {
             // - Just use beta if available
             Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)

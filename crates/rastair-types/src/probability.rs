@@ -34,6 +34,11 @@ impl Probability {
     pub const fn inverted(self) -> Self {
         Self(1.0 - self.0)
     }
+
+    /// The probability value 0.0
+    pub const ZERO: Self = Self(0.0);
+    /// The probability value 1.0
+    pub const ONE: Self = Self(1.0);
 }
 
 impl std::fmt::Display for Probability {
