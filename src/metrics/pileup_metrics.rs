@@ -175,7 +175,6 @@ pub struct PositionMetrics {
 
     /// Extended metrics
     // set by `call` later since they depend on more context
-    // todo: explore using type-state for this
     #[serde(flatten)]
     pub extended: PositionMetricsExt,
 }

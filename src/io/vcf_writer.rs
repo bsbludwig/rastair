@@ -124,7 +124,7 @@ impl VcfParams {
         let contigs: BTreeSet<Contig> =
             regions.iter().map(|r| Contig { name: r.contig.clone(), length: r.len() }).collect();
         let contigs: Vec<Contig> = contigs.into_iter().collect();
-        let samples = vec![SmolStr::new("sample")]; // TODO: we have one sample for now
+        let samples = vec![SmolStr::new("sample")]; // Note: we only deal with one sample for now
 
         let (format, compression) = match self.guess_format() {
             Format::MessagePack => {
