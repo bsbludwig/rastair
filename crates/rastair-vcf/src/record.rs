@@ -27,27 +27,39 @@ macro_rules! vcf_record {
         min_samples: $min_samples:expr
     ) => {pastey::paste!{
         /// Filters that can be applied to a VCF record
-        #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-        pub struct Filters($crate::FilterContainer);
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        pub struct Filters(smallvec::SmallVec<smol_str::SmolStr, 8>);
 
+        #[allow(unused)]
         impl Filters {
-            /// Create a new, empty set of filters
             pub fn new() -> Self {
-                Self($crate::FilterContainer::new())
+                Self(smallvec::SmallVec::new())
+            }
+
+            pub fn add(&mut self, filter: smol_str::SmolStr) {
+                self.0.push(filter);
+            }
+
+            pub fn len(&self) -> usize {
+                self.0.len()
+            }
+
+            pub fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+
+            pub fn clear(&mut self) {
+                self.0.clear();
+            }
+
+            pub fn pass(&self) -> bool {
+                self.0.is_empty() || (self.0.len() == 1 && self.0[0] == "PASS")
             }
         }
 
-        impl std::ops::Deref for Filters {
-            type Target = $crate::FilterContainer;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl std::ops::DerefMut for Filters {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
+        impl Default for Filters {
+            fn default() -> Self {
+                Self::new()
             }
         }
 
@@ -60,7 +72,19 @@ macro_rules! vcf_record {
             }
 
             fn write(&self, record: &mut rust_htslib::bcf::Record) -> color_eyre::Result<()> {
-                self.0.write_to_record(record)
+                use color_eyre::eyre::WrapErr;
+
+                if self.0.is_empty() {
+                    record.set_filters::<[u8]>(&[]).wrap_err("Failed to clear filters")?;
+                } else {
+                    self.0.iter().try_for_each(|filter| {
+                        record.push_filter(filter.as_bytes()).wrap_err_with(|| {
+                            format!("Failed to push filter {filter}")
+                        })
+                    })?;
+                }
+
+                Ok(())
             }
         }
 

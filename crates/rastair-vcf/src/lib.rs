@@ -44,7 +44,7 @@
 //!             alt: smallvec!["C".into(), "G".into()],
 //!             qual: Some(50.0),
 //!         },
-//!         filters: { let mut f = Filters::new(); f.add_all(q10); f.add_all(s50); f },
+//!         filters: { let mut f = Filters::new(); f.add(q10.filter()); f.add(s50.filter()); f },
 //!         info: Info {
 //!             allele_frequency: AlleleFrequency(smallvec![0.5, 0.75]),
 //!         },
@@ -86,7 +86,7 @@ pub use crate::fields::{
     FormatField, FormatFieldNumber, FormatFieldValue, HeaderField, InfoField, InfoFieldNumber,
     InfoFieldValue, StrandSpecificInfoField, VcfField,
 };
-pub use filters::{FilterContainer, VcfFilter};
+pub use filters::VcfFilter;
 pub use fixed_fields::VcfFixedFields;
 pub use record::WriteToVcf;
 
@@ -246,8 +246,8 @@ mod tests {
                 },
                 filters: {
                     let mut f = Filters::new();
-                    f.add_all(q10);
-                    f.add_all(s50);
+                    f.add(q10.filter());
+                    f.add(s50.filter());
                     f
                 },
                 info: Info { allele_frequency: AlleleFrequency(smallvec![0.5, 0.75]) },

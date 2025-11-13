@@ -12,7 +12,7 @@ use crate::{
 use color_eyre::Result;
 use rastair_types::{Phred, Probability};
 use rastair_vcf::{
-    VcfFixedFields,
+    VcfFilter, VcfFixedFields,
     standard_fields::{
         AlleleFrequency, AlleleReadDepth, BaseQuality, Genotype, GenotypeAllele, MappingQuality,
         MappingQuality0, PASS, ReadDepth, SampleReadDepth, SamplesWithData,
@@ -129,7 +129,7 @@ impl PileupMetrics {
 
         let mut filters = Filters::default();
         if self.pass(ml_threshold) {
-            filters.add_all(PASS);
+            filters.add(PASS.filter());
         } else {
             self.pos_filters.iter().for_each(|f| {
                 filters.add(f.clone());
