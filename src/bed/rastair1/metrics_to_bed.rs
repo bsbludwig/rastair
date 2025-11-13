@@ -1,16 +1,14 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
-    call::variant_calling::GenotypeTag,
+    call::variant_calling::{EstimatedGenotype, GenotypeTag},
     metrics::PileupMetrics,
     utils::{Base::*, logging::ThisIsABug as _},
-    vcf::{GenotypeConfidence, GenotypeLikelihood},
 };
 use color_eyre::{
     Result, Section as _, SectionExt as _,
     eyre::{Context as _, eyre},
 };
 use rastair_types::{Phred, Probability};
-use smallvec::smallvec_inline;
 use tracing::{debug, instrument, trace, warn};
 
 impl Rastair1BedFormat {
