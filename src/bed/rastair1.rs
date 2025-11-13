@@ -5,7 +5,10 @@ use crate::{
 };
 use better_default::Default;
 use clio::ClioPath;
-use color_eyre::{Result, eyre::Context as _};
+use color_eyre::{
+    Result,
+    eyre::{Context as _, bail},
+};
 use rastair_types::{Phred, Probability};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};
@@ -125,14 +128,12 @@ impl BedRecord for Rastair1BedFormat {
         let strand = match r#ref.as_str() {
             "C" => "+",
             "G" => "-",
-            _ => todo!("why are we here?"),
-            // _ => ".",
+            _ => bail!("unknown strand"),
         };
         let beta = if let Some(beta) = beta {
             format_smolstr!("{beta:.2}")
         } else {
-            todo!("why are we here?");
-            // SmolStr::new_static("")
+            bail!("unknown beta")
         };
 
         write!(
