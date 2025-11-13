@@ -1,7 +1,7 @@
 use super::Record;
 use crate::{
     metrics::PileupMetrics,
-    utils::{IntoF64 as _, default, logging::ThisIsABug},
+    utils::{IntoF64 as _, default},
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
         Filters, Format, GenotypeConfidence, GenotypeLikelihood, InCpG, Info,
@@ -9,8 +9,8 @@ use crate::{
         StrandSpecificBaseQuality, StrandSpecificMappingQuality,
     },
 };
-use color_eyre::{Result, eyre::Context};
-use rastair_types::Phred;
+use color_eyre::Result;
+use rastair_types::{Phred, Probability};
 use rastair_vcf::{
     VcfFixedFields,
     standard_fields::{
@@ -36,9 +36,7 @@ impl PileupMetrics {
                 #[allow(clippy::cast_possible_truncation)]
                 {
                     // FIXME: use real quality
-                    *Phred::from_probability(0.001)
-                        .wrap_err("Failed to create QUAL field")
-                        .this_is_a_bug()? as f32
+                    *Phred::from(Probability::new_panicky(0.001)) as f32
                 },
             ),
         };

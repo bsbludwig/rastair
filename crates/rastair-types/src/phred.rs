@@ -1,5 +1,4 @@
 use crate::Probability;
-use color_eyre::{Result, eyre::bail};
 use std::{fmt, ops::Deref};
 
 /// Phred-scaled quality score
@@ -31,16 +30,6 @@ use std::{fmt, ops::Deref};
 pub struct Phred(f64);
 
 impl Phred {
-    /// Create a new Phred quality score
-    // TODO: Use Probability type
-    pub fn from_probability(probability: f64) -> Result<Self> {
-        if probability.is_nan() || probability.is_infinite() {
-            bail!("Phred quality score must be a finite number");
-        }
-        let phred = -10.0 * probability.log10();
-        Ok(Self(phred))
-    }
-
     /// Get the Phred quality score as an integer
     pub fn as_int(self) -> i32 {
         let phred = self.0;
@@ -94,24 +83,17 @@ mod tests {
 
     #[test]
     fn test_wikipedia_examples() {
-        assert_eq!(10., Phred::from_probability(0.1).unwrap().0);
-        assert_eq!(20., Phred::from_probability(0.01).unwrap().0);
-        assert_eq!(30., Phred::from_probability(0.001).unwrap().0);
-        assert_eq!(40., Phred::from_probability(0.0001).unwrap().0);
-        assert_eq!(50., Phred::from_probability(0.00001).unwrap().0);
-        assert_eq!(60., Phred::from_probability(0.000001).unwrap().0);
-    }
-
-    #[test]
-    fn test_invalid_phred() {
-        assert!(Phred::from_probability(f64::NAN).is_err());
-        assert!(Phred::from_probability(f64::INFINITY).is_err());
-        assert!(Phred::from_probability(f64::NEG_INFINITY).is_err());
+        assert_eq!(10., *Phred::from(Probability::new_panicky(0.1)));
+        assert_eq!(20., *Phred::from(Probability::new_panicky(0.01)));
+        assert_eq!(30., *Phred::from(Probability::new_panicky(0.001)));
+        assert_eq!(40., *Phred::from(Probability::new_panicky(0.0001)));
+        assert_eq!(50., *Phred::from(Probability::new_panicky(0.00001)));
+        assert_eq!(60., *Phred::from(Probability::new_panicky(0.000001)));
     }
 
     #[test]
     fn test_phred_zero() {
         // A probability of 1 (100% certainty) should yield a Phred score of 0
-        assert_eq!(0., Phred::from_probability(1.0).unwrap().0);
+        assert_eq!(0., *Phred::from(Probability::new_panicky(1.)));
     }
 }
