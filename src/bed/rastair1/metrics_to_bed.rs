@@ -25,6 +25,7 @@ impl Rastair1BedFormat {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }
+        let ml_threshold = params.ml_threshold;
 
         let ref_base = pileup.ref_base();
 
@@ -32,6 +33,15 @@ impl Rastair1BedFormat {
         // site, the ref case should take precedence.
         let cpg = *pileup.pos_metrics.cpg;
         let de_novo = !cpg && pileup.forms_denovo();
+        if de_novo
+            && !*pileup.pos_metrics.denovo_adj
+            && let Some(alt) = pileup.alts.iter().find(|a| *a.metrics.denovo)
+            && !alt.filters.pass(Some(ml_threshold))
+        {
+            // Only report de novo candidates that we are confident about
+            trace!(%alt.base, "de novo candidate with low score");
+            return Ok(None);
+        }
 
         let Some(gt) = pileup.pos_metrics.genotype else {
             debug!("No genotype for record");
@@ -56,8 +66,7 @@ impl Rastair1BedFormat {
             && let Some(alt) = pileup.alt_filters(alt_base)
             && let Some(score) = alt.ml
         {
-            let threshold = params.ml_threshold;
-            if score >= threshold {
+            if score >= ml_threshold {
                 // - Does ML say this is a true variant?
                 Some(Probability::new_panicky(0.0))
             } else if let Some(beta) = pileup.pos_metrics.methylated.beta() {
@@ -65,7 +74,7 @@ impl Rastair1BedFormat {
                 Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
             } else {
                 // - ML says not a variant, but no beta available
-                debug!(%score, %threshold, "ML says not a variant, but no beta available");
+                debug!(%score, %ml_threshold, "ML says not a variant, but no beta available");
                 Some(Probability::new_panicky(0.0))
             }
         } else if *pileup.pos_metrics.cpg
