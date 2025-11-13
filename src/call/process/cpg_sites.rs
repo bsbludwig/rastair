@@ -3,7 +3,7 @@ use rastair_types::Probability;
 use tracing::instrument;
 
 use crate::{
-    metrics::{FormsDenovo, PileupMetrics},
+    metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
     utils::{Surrounding, surrounding_pileups},
     vcf::InCpG,
 };
@@ -43,11 +43,13 @@ pub fn propagate_cpg_pass_flags(
                 && after.pass(ml_threshold)
             {
                 alt.filters.filters.other_pos_in_cpg_passes = true;
+                current.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingG;
             } else if alt.metrics.denovo == FormsDenovo::ThisBecomesG
                 && let Some(before) = before
                 && before.pass(ml_threshold)
             {
                 alt.filters.filters.other_pos_in_cpg_passes = true;
+                current.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingC;
             }
         }
     }
