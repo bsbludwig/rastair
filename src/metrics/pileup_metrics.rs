@@ -121,6 +121,14 @@ impl PileupMetrics {
         self.alts.iter().find(|a| a.base == alt).map(|a| &a.metrics)
     }
 
+    pub fn allele(&self, base: Base) -> Option<&AlleleMetrics> {
+        if base == self.ref_base() {
+            Some(&self.ref_metrics)
+        } else {
+            self.alts.iter().find(|a| a.base == base).map(|a| &a.metrics)
+        }
+    }
+
     pub fn alt_metrics(&self, alt: Base) -> Option<MetricsForAlt<'_>> {
         let alt = self.alts.iter().find(|a| a.base == alt);
         alt.map(|alt| MetricsForAlt { metrics: self, alt: &alt.metrics })

@@ -53,15 +53,23 @@ impl Rastair1BedFormat {
         };
 
         let counts = if cpg && ref_base == C {
-            let r = pileup.ref_metrics.strand_count;
-            let alt = pileup.alt(T).map(|a| a.strand_count).unwrap_or_default();
-            Counts { unmod: r.ot, r#mod: alt.ot, no_snp: r.ob, snp: alt.ob }
+            Counts::from_c(pileup)
         } else if cpg && ref_base == G {
-            let r = pileup.ref_metrics.strand_count;
-            let alt = pileup.alt(A).map(|a| a.strand_count).unwrap_or_default();
-            Counts { unmod: r.ob, r#mod: alt.ob, no_snp: r.ot, snp: alt.ot }
+            Counts::from_g(pileup)
+        } else if let Some(denovo) = pileup.alts.iter().find(|a| *a.metrics.denovo) {
+            if denovo.metrics.denovo == FormsDenovo::ThisBecomesC {
+                Counts::from_c(pileup)
+            } else if denovo.metrics.denovo == FormsDenovo::ThisBecomesG {
+                Counts::from_g(pileup)
+            } else {
+                // Should be never happen since we filtered above
+                Counts::default()
+            }
+        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
+            Counts::from_c(pileup)
+        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
+            Counts::from_g(pileup)
         } else {
-            // TOOD: Writing BED but ref is neither C nor G, so this is a de-novo candidate? Handle it!
             Counts::default()
         };
 
@@ -134,12 +142,26 @@ struct Counts {
     snp: u32,
 }
 
-// todo: choose whether to use this
-// impl Counts {
-//     fn total(&self) -> u32 {
-//         self.unmod + self.r#mod + self.no_snp + self.snp
-//     }
-// }
+impl Counts {
+    fn from_c(pileup: &PileupMetrics) -> Self {
+        let c = pileup.allele(C).map(|a| a.strand_count).unwrap_or_default();
+        let t = pileup.allele(T).map(|a| a.strand_count).unwrap_or_default();
+
+        Counts { unmod: c.ot, r#mod: t.ot, no_snp: c.ob, snp: t.ob }
+    }
+
+    fn from_g(pileup: &PileupMetrics) -> Self {
+        let g = pileup.allele(G).map(|a| a.strand_count).unwrap_or_default();
+        let a = pileup.allele(A).map(|a| a.strand_count).unwrap_or_default();
+
+        Counts { unmod: g.ob, r#mod: a.ob, no_snp: g.ot, snp: a.ot }
+    }
+
+    //     todo: choose whether to use this
+    //     fn total(&self) -> u32 {
+    //         self.unmod + self.r#mod + self.no_snp + self.snp
+    //     }
+}
 
 fn guess_strand_from_pileup(pileup: &PileupMetrics) -> Strand {
     if pileup.pos_metrics.cpg == InCpG::C {
