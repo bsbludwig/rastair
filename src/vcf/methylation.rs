@@ -27,8 +27,7 @@ impl Methylated {
         match self {
             Methylated::Unknown => None,
             Methylated::NoEvidence => Some(Probability::ZERO),
-            Methylated::OriginalCpG { beta } => Some(*beta),
-            Methylated::DeNovoCpG { beta } => Some(*beta),
+            Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => Some(*beta),
         }
     }
 }

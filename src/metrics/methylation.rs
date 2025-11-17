@@ -6,7 +6,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{Context, ContextCompat, eyre},
+    eyre::{Context, ContextCompat},
 };
 use rastair_types::Probability;
 use tracing::{Level, debug, instrument, trace, warn};
@@ -18,22 +18,10 @@ use tracing::{Level, debug, instrument, trace, warn};
     name = "methylation_call"
 )]
 pub fn call(config: &ThresholdParams, current: &PileupMetrics) -> Result<Option<Methylated>> {
-    if *current.pos_metrics.cpg || current.forms_denovo() {
-        let res = call_methylation(config, current).wrap_err("Failed to call methylation")?;
-        if let Some(beta) = res.beta() {
-            if beta.is_finite() {
-                Ok(Some(res))
-            } else {
-                Err(eyre!("Methylation calling resulted in non-finite beta value `{beta}`"))
-                    .this_is_a_bug()
-            }
-        } else {
-            warn!(?res, "Methylation calling resulted in no beta value");
-            Ok(None)
-        }
-    } else {
-        // Not a CpG site, skipping
-        Ok(None)
+    let res = call_methylation(config, current).wrap_err("Failed to call methylation")?;
+    match res {
+        Methylated::Unknown => Ok(None),
+        _ => Ok(Some(res)),
     }
 }
 
@@ -54,16 +42,8 @@ fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methy
         // creating new CpG
         if ref_base == A { ref_a_to_g(config, p) } else { ref_not_a_to_g(config, p) }
     } else {
-        // Getting here should be impossible by construction
-        warn!(
-            ?ref_base,
-            ?ref_before,
-            ?ref_after,
-            cpg=?p.pos_metrics.cpg,
-            denovo=?p.pos_metrics.denovo_adj,
-            "Position is neither an original CpG nor a de-novo CpG site"
-        );
-        Ok(Methylated::NoEvidence)
+        // Position is neither an original CpG nor a de-novo CpG site
+        Ok(Methylated::Unknown)
     }
 }
 
