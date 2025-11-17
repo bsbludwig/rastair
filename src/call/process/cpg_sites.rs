@@ -8,6 +8,27 @@ use crate::{
     vcf::InCpG,
 };
 
+#[instrument(level = "info", skip_all)]
+pub fn set_denovo_adj(pileups: &mut [PileupMetrics]) {
+    let pileups_len = pileups.len();
+    for i in 0..pileups_len {
+        let Surrounding { before, current, after } = surrounding_pileups(pileups, i);
+        if let Some(before) = before
+            && let Some(denovo) =
+                before.alts.iter().filter_map(|alt| alt.metrics.denovo.some()).next()
+            && denovo == FormsDenovo::ThisBecomesC
+        {
+            current.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingG;
+        } else if let Some(after) = after
+            && let Some(denovo) =
+                after.alts.iter().filter_map(|alt| alt.metrics.denovo.some()).next()
+            && denovo == FormsDenovo::ThisBecomesG
+        {
+            current.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingC;
+        }
+    }
+}
+
 /// If one position of a (de-novo) CpG passes, the entire CpG should pass
 #[instrument(level = "info", skip_all)]
 pub fn propagate_cpg_pass_flags(
@@ -43,13 +64,11 @@ pub fn propagate_cpg_pass_flags(
                 && after.pass(ml_threshold)
             {
                 alt.filters.filters.other_pos_in_cpg_passes = true;
-                current.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingG;
             } else if alt.metrics.denovo == FormsDenovo::ThisBecomesG
                 && let Some(before) = before
                 && before.pass(ml_threshold)
             {
                 alt.filters.filters.other_pos_in_cpg_passes = true;
-                current.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingC;
             }
         }
     }

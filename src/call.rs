@@ -326,21 +326,29 @@ fn process_region(
             }
             Ok(x) => Some(x),
         })
-        .filter(|p| {
-            let cpg_only_pls = params.record_filters.cpgs_only;
-
-            let has_alts = !p.alts.is_empty();
-            let cpg = *p.pos_metrics.cpg || p.forms_denovo();
-
-            if cpg_only_pls {
-                // Filter out pileups that are not CpG if requested
-                cpg
-            } else {
-                // Otherwise, keep all variant evidence + methylation evidence
-                has_alts || cpg
-            }
-        })
         .collect();
+
+    // Mark de-novo CpG adjacent positions
+    //
+    // This is done in a separate step since it needs to look at pileups
+    // before/after
+    process::set_denovo_adj(&mut pileups);
+
+    // Filter out pileups that are not relevant based on caller parameters
+    pileups.retain(|p| {
+        let cpg_only_pls = params.record_filters.cpgs_only;
+
+        let has_alts = !p.alts.is_empty();
+        let cpg = *p.pos_metrics.cpg || p.forms_denovo();
+
+        if cpg_only_pls {
+            // Filter out pileups that are not CpG if requested
+            cpg
+        } else {
+            // Otherwise, keep all variant evidence + methylation evidence
+            has_alts || cpg
+        }
+    });
 
     if tracing::enabled!(Level::DEBUG) {
         if pileups.is_empty() {

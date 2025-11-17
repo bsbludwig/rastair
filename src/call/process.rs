@@ -17,4 +17,4 @@ mod calc_ml;
 pub use calc_ml::add_ml_metrics;
 
 mod cpg_sites;
-pub use cpg_sites::propagate_cpg_pass_flags;
+pub use cpg_sites::{propagate_cpg_pass_flags, set_denovo_adj};
