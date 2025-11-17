@@ -100,6 +100,7 @@ insta = { workspace = true }
 insta-cmd = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
+pastey = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
