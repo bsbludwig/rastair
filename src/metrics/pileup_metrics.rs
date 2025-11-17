@@ -191,7 +191,7 @@ pub struct PositionMetricsExt {
     pub denovo_adj: DenovoAdjecent,
 }
 
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DenovoAdjecent {
     #[default]
     No,
@@ -276,6 +276,15 @@ impl Deref for FormsDenovo {
         match self {
             FormsDenovo::No => &false,
             _ => &true,
+        }
+    }
+}
+
+impl FormsDenovo {
+    pub fn some(&self) -> Option<Self> {
+        match self {
+            FormsDenovo::No => None,
+            _ => Some(*self),
         }
     }
 }

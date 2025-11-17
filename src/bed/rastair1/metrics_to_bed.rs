@@ -1,11 +1,12 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
     call::variant_calling::{EstimatedGenotype, GenotypeTag},
-    metrics::PileupMetrics,
+    metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
     utils::{Base::*, logging::ThisIsABug as _},
+    vcf::InCpG,
 };
 use color_eyre::{Result, Section as _, SectionExt as _, eyre::eyre};
-use rastair_types::{Phred, Probability};
+use rastair_types::{Phred, Probability, Strand};
 use tracing::{debug, instrument, trace, warn};
 
 impl Rastair1BedFormat {
@@ -95,11 +96,14 @@ impl Rastair1BedFormat {
             None
         };
 
+        let strand = guess_strand_from_pileup(pileup);
+
         let bed = super::Rastair1BedFormat {
             contig: pileup.contig(),
             pos: pileup.pos() as usize,
             r#ref: ref_base.into(),
             beta,
+            strand,
             unmod: counts.unmod,
             r#mod: counts.r#mod,
             no_snp: counts.no_snp,
@@ -136,3 +140,26 @@ struct Counts {
 //         self.unmod + self.r#mod + self.no_snp + self.snp
 //     }
 // }
+
+fn guess_strand_from_pileup(pileup: &PileupMetrics) -> Strand {
+    if pileup.pos_metrics.cpg == InCpG::C {
+        Strand::OT
+    } else if pileup.pos_metrics.cpg == InCpG::G {
+        Strand::OB
+    } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
+        Strand::OT
+    } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
+        Strand::OB
+    } else if let Some(denovo) = pileup.alts.iter().filter_map(|a| a.metrics.denovo.some()).next() {
+        if denovo == FormsDenovo::ThisBecomesC {
+            Strand::OT
+        } else if denovo == FormsDenovo::ThisBecomesG {
+            Strand::OB
+        } else {
+            // should never happen since .some above filters these out
+            Strand::Unknown
+        }
+    } else {
+        Strand::Unknown
+    }
+}

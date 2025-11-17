@@ -21,6 +21,15 @@ impl Strand {
             Strand::Unknown => None,
         }
     }
+
+    /// As symbol `+` (OT) or `-` (OB), or `.` (unknown)
+    pub fn as_symbol(&self) -> &'static str {
+        match self {
+            Strand::OT => "+",
+            Strand::OB => "-",
+            Strand::Unknown => ".",
+        }
+    }
 }
 
 impl AsRef<str> for Strand {

@@ -1,6 +1,6 @@
 use crate::bed::BedRecord;
 use color_eyre::{Result, eyre::bail};
-use rastair_types::{Phred, Probability};
+use rastair_types::{Phred, Probability, Strand};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
@@ -11,6 +11,7 @@ pub struct Rastair1BedFormat {
     pub pos: usize,
     pub r#ref: SmolStr,
     pub beta: Option<Probability>,
+    pub strand: Strand,
     pub unmod: u32,
     pub r#mod: u32,
     pub no_snp: u32,
@@ -31,6 +32,7 @@ impl BedRecord for Rastair1BedFormat {
             pos: start,
             r#ref,
             beta,
+            strand,
             unmod,
             r#mod,
             no_snp,
@@ -43,11 +45,7 @@ impl BedRecord for Rastair1BedFormat {
         } = self;
         let end = start + 1;
         let name = ".";
-        let strand = match r#ref.as_str() {
-            "C" => "+",
-            "G" => "-",
-            _ => bail!("unknown strand"),
-        };
+        let strand = strand.as_symbol();
         let beta = if let Some(beta) = beta {
             format_smolstr!("{beta:.2}")
         } else {

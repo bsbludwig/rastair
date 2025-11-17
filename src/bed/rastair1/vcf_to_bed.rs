@@ -128,11 +128,19 @@ impl Rastair1BedFormat {
             None
         };
 
+        let strand = if in_cpg {
+            if r#ref == "C" { rastair_types::Strand::OT } else { rastair_types::Strand::OB }
+        } else {
+            // FIXME: infer from denovo candidate info?
+            rastair_types::Strand::Unknown
+        };
+
         let bed = Rastair1BedFormat {
             contig,
             pos: r.pos() as usize,
             r#ref,
             beta,
+            strand,
             unmod,
             r#mod,
             no_snp,
