@@ -25,10 +25,15 @@ impl MachineLearning {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Prediction {
+    /// The model used for this prediction
     pub model: MlModel,
+    /// The alt base this prediction is for
     pub allele: Base,
+    /// Probability of the alt being a variant
     pub prediction: Probability,
+    /// Threshold for calling a variant
     pub threshold: Probability,
+    /// Features used for this prediction
     #[serde(skip)]
     pub features: Array1<f64>,
 }
