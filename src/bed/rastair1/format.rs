@@ -1,9 +1,10 @@
 use crate::bed::BedRecord;
-use color_eyre::{Result, eyre::bail};
+use color_eyre::Result;
 use rastair_types::{Phred, Probability, Strand};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
+use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct Rastair1BedFormat {
@@ -49,7 +50,8 @@ impl BedRecord for Rastair1BedFormat {
         let beta = if let Some(beta) = beta {
             format_smolstr!("{beta:.2}")
         } else {
-            bail!("unknown beta");
+            debug!("position {contig}:{start} has no beta value");
+            SmolStr::new_inline(".")
         };
 
         write!(
