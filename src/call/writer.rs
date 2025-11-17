@@ -41,7 +41,7 @@ pub fn writer_thread(
 
     let ml_threshold = params.ml.threshold();
 
-    let _filters = VcfOutputFilter { reject_low_quality_variants: !vcf_filter.vcf_all };
+    let filters = VcfOutputFilter { reject_low_quality_variants: !vcf_filter.vcf_all };
 
     // Spawn the actual VCF writer thread. Everything in here is driven by the
     // incoming records from the processing threads.
@@ -63,7 +63,7 @@ pub fn writer_thread(
                 let span = tracing::debug_span!("recv_records", records=%records.len());
                 let _guard = span.enter();
 
-                'current_batch: for record in records {
+                'current_batch: for mut record in records {
                     if !last_seen.is_new(record.contig(), record.pos()) {
                         continue 'current_batch;
                     }
@@ -86,10 +86,9 @@ pub fn writer_thread(
                     //
                     // FIXME: This is a hack. Look into filtering these earlier,
                     // and especially before methylation calling.
-                    // TODO: Re-enable after tests pass
-                    // if filters.reject_low_quality_variants {
-                    //     record.alts.retain(|alt| alt.filters.filters.is_empty());
-                    // }
+                    if filters.reject_low_quality_variants {
+                        record.alts.retain(|alt| alt.filters.filters.is_empty());
+                    }
 
                     if let Some(vcf_writer) = vcf_writer.as_mut()
                         && vcf_filter.matches(&record, ml_threshold)
@@ -97,11 +96,13 @@ pub fn writer_thread(
                         use crate::io::vcf_writer::Writer;
                         match vcf_writer {
                             Writer::Vcf(writer) => {
-                                let vcf = record
-                                    .to_vcf_record(ml_threshold)
+                                let records = record
+                                    .to_vcf_records(ml_threshold)
                                     .wrap_err("Failed to convert metrics to VCF record")
                                     .this_is_a_bug()?;
-                                writer.add(&vcf).wrap_err("Failed to write VCF record")?;
+                                for vcf_record in records {
+                                    writer.add(&vcf_record).wrap_err("Failed to write VCF record")?;
+                                }
                             }
                             Writer::MessagePack(writer) => {
                                 writer

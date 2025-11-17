@@ -208,11 +208,13 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
-                let vcf_record = record
-                    .to_vcf_record(Some(params.ml_threshold))
+                for vcf_record in record
+                    .to_vcf_records(Some(params.ml_threshold))
                     .wrap_err("Failed to convert record to VCF format")
-                    .this_is_a_bug()?;
-                writer.add(&vcf_record).wrap_err("Failed to write record")?;
+                    .this_is_a_bug()?
+                {
+                    writer.add(&vcf_record).wrap_err("Failed to write record")?;
+                }
             }
             Ok(x) => {
                 warn!(?x, "Skipping unsupported entry type in MessagePack file");

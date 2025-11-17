@@ -27,7 +27,7 @@ pub struct VcfOutputFilter {
 }
 
 impl PileupMetrics {
-    pub fn to_vcf_record(&self, ml_threshold: Option<Probability>) -> Result<Record> {
+    pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<Vec<Record>> {
         let main = VcfFixedFields {
             chrom: self.contig(),
             pos: self.pos(),
@@ -143,6 +143,6 @@ impl PileupMetrics {
             });
         }
 
-        Ok(Record { main, filters, info, samples: smallvec_inline![format_fields] })
+        Ok(vec![Record { main, filters, info, samples: smallvec_inline![format_fields] }])
     }
 }

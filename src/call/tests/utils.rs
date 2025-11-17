@@ -322,7 +322,12 @@ impl RecordFilters {
 }
 
 pub(crate) fn metrics_to_vcf(metrics: &[PileupMetrics]) -> Result<Vec<VcfRecord>> {
-    metrics.iter().map(|m| m.to_vcf_record(Some(Probability::ONE))).collect()
+    let mut vcf_records = Vec::new();
+    for metric in metrics {
+        let mut records = metric.to_vcf_records(None)?;
+        vcf_records.append(&mut records);
+    }
+    Ok(vcf_records)
 }
 
 #[cfg(test)]
