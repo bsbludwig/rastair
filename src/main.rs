@@ -4,8 +4,8 @@ use clap::{CommandFactory as _, Parser as _};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
 use rastair::{
-    CallParams, ConvertParams, MBiasParams, PerReadParams, bam::BamRewriteArgs, call, call_reads,
-    io::mpk::viewer::MpkViewParams, utils::logging::setup_logging,
+    BamRewriteArgs, CallParams, ConvertParams, MBiasParams, MpkViewParams, PerReadParams, call,
+    call_reads, setup_logging,
 };
 use tracing::{debug, info, warn};
 
@@ -134,7 +134,7 @@ fn main() -> Result<()> {
             // track execution time
             let start = std::time::Instant::now();
             debug!(?params, "Running bam command");
-            rastair::bam::rewrite(&params)?;
+            rastair::rewrite_bam(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Bam rewrite finished");
         }
@@ -148,7 +148,7 @@ fn main() -> Result<()> {
         }
         Subcommand::View(params) => {
             warn!("This format is for internal use only and may change without notice.");
-            rastair::io::mpk::viewer::view(&params)?;
+            rastair::mpk_view(&params)?;
         }
         Subcommand::Mbias(params) => {
             debug!(?params, "Running mbias command");
@@ -166,7 +166,7 @@ fn main() -> Result<()> {
             }
             Generate::VcfDocs { output } => {
                 let mut file = output.clone().create().wrap_err("Failed to create output")?;
-                rastair::vcf::Record::description()
+                rastair::VcfRecord::description()
                     .to_markdown(&mut file)
                     .wrap_err("Failed to generate VCF docs")?;
             }

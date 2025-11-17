@@ -37,17 +37,3 @@ impl fmt::Display for NoStrandBiasForBaseError {
         write!(f, "No strand bias information for base {}", self.base)
     }
 }
-
-pub trait NoStrandBiasForBaseErrorExt {
-    /// Returns the strand bias counts for the base, or a default value if the error is encountered.
-    fn or_empty(&self) -> ByStrand<u32>;
-}
-
-impl NoStrandBiasForBaseErrorExt for Result<ByStrand<u32>, NoStrandBiasForBaseError> {
-    fn or_empty(&self) -> ByStrand<u32> {
-        match self {
-            Ok(counts) => *counts,
-            Err(NoStrandBiasForBaseError { base }) => ByStrand { base: *base, ot: 0, ob: 0 },
-        }
-    }
-}

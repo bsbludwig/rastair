@@ -5,7 +5,7 @@ use color_eyre::{
     eyre::{Context as _, ensure},
 };
 use noodles::tabix;
-use rastair::utils::logging::setup_logging;
+use rastair::setup_logging;
 use std::io::{Read as _, Write};
 use tracing::{info, warn};
 
