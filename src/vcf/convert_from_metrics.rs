@@ -22,10 +22,6 @@ use rastair_vcf::{
     },
 };
 
-pub struct VcfOutputFilter {
-    pub reject_low_quality_variants: bool,
-}
-
 impl PileupMetrics {
     pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<Vec<Record>> {
         let main = VcfFixedFields {

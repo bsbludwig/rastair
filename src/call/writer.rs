@@ -4,7 +4,6 @@ use crate::{
     metrics::PileupMetrics,
     sequence::ChunkRegion,
     utils::logging::ThisIsABug as _,
-    vcf::VcfOutputFilter,
 };
 use color_eyre::{Result, eyre::Context as _};
 use ordered_channel::Receiver;
@@ -41,8 +40,6 @@ pub fn writer_thread(
 
     let ml_threshold = params.ml.threshold();
 
-    let filters = VcfOutputFilter { reject_low_quality_variants: !vcf_filter.vcf_all };
-
     // Spawn the actual VCF writer thread. Everything in here is driven by the
     // incoming records from the processing threads.
     //
@@ -63,7 +60,7 @@ pub fn writer_thread(
                 let span = tracing::debug_span!("recv_records", records=%records.len());
                 let _guard = span.enter();
 
-                'current_batch: for mut record in records {
+                'current_batch: for record in records {
                     if !last_seen.is_new(record.contig(), record.pos()) {
                         continue 'current_batch;
                     }
@@ -78,17 +75,6 @@ pub fn writer_thread(
                                 .write_record(&bed_record)
                                 .wrap_err("Failed to write record to BED")?;
                         }
-
-                    // Filter out low-quality variants if requested
-                    //
-                    // NOTE: We do this after BED writing, so that BED output
-                    // is not affected by VCF filtering and stays compatible.
-                    //
-                    // FIXME: This is a hack. Look into filtering these earlier,
-                    // and especially before methylation calling.
-                    if filters.reject_low_quality_variants {
-                        record.alts.retain(|alt| alt.filters.filters.is_empty());
-                    }
 
                     if let Some(vcf_writer) = vcf_writer.as_mut()
                         && vcf_filter.matches(&record, ml_threshold)
