@@ -64,7 +64,7 @@ impl ReadDeduplicator {
         // Try to insert the suffix - if successful, it's definitely new
         if self.suffixes.insert(suffix) {
             // New suffix, definitely not a duplicate, add the full string
-            self.full_strings.push(SmallVec::from_slice(read_name));
+            self.full_strings.push(SmallVec::from(read_name));
             false
         } else {
             // Already saw this suffix -- make sure it's a real duplicate
@@ -77,7 +77,7 @@ impl ReadDeduplicator {
             } else {
                 // No exact match found, but suffix collision occurred
                 // Store the full read name for future comparisons
-                self.full_strings.push(SmallVec::from_slice(read_name));
+                self.full_strings.push(SmallVec::from(read_name));
                 false
             }
         }
