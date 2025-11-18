@@ -2,12 +2,13 @@ use crate::{
     bed::rastair1::BedParams,
     call::{
         methylation::params::MethylationCallingParams,
+        pileup::Pileup,
         process::{PileupMetricsParams, calculate_pileup_metrics, get_pileups},
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
     metrics::{PileupMetrics, ml::types::MachineLearning},
-    sequence::{ChunkRegion, ReaderParams, Readers},
+    sequence::{ChunkRegion, ReaderParams, Readers, Segment},
     utils::{cli, logging::ThisIsABug as _},
 };
 use better_default::Default;
@@ -17,7 +18,7 @@ use color_eyre::{
     eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
 };
 use rayon::prelude::*;
-use std::{ops::Mul as _, thread::available_parallelism};
+use std::{ops::Mul as _, rc::Rc, thread::available_parallelism};
 use tracing::{Level, debug, instrument, trace, warn};
 
 pub mod denovo_cpg;
@@ -268,7 +269,13 @@ fn process_region_wrapper(
         };
 
         // This is the actual processing of the region
-        let res = process_region(readers, region, params, ml);
+
+        // NOTE: There are some filters applied here to ignore certain reads.
+        let pileup_mapping_params =
+            process::PileupMappingParams { variant_calling: params.variant_calling.clone() };
+        let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
+
+        let res = process_region(segment, pileups, params, ml);
 
         // Handle processing errors gracefully to not crash the whole processing
         match res {
@@ -295,19 +302,12 @@ fn process_region_wrapper(
 
 /// Analyse pileups in a region
 fn process_region(
-    readers: &mut Readers,
-    region: &ChunkRegion,
+    segment: Rc<Segment>,
+    pileups: impl Iterator<Item = Pileup>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    // First, collect pileups.
-    //
-    // NOTE: There are some filters applied here to ignore certain reads.
-    let pileup_mapping_params =
-        process::PileupMappingParams { variant_calling: params.variant_calling.clone() };
-    let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
-
-    // Next, calculate metrics for each pileup.
+    // Calculate metrics for each pileup.
     let pileup_metrics_params = PileupMetricsParams {
         variant_calling: params.variant_calling.clone(),
         methylation: params.methylation.thresholds.clone(),
