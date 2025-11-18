@@ -35,7 +35,7 @@ impl SequenceContext {
         let (after_1, after_2) = match segment.sequence_slice::<2>(idx + 1, idx + N + 1)?.as_slice()
         {
             [a1, a2] => (Some(*a1), Some(*a2)),
-            [a1] => (None, Some(*a1)),
+            [a1] => (Some(*a1), None),
             _ => (None, None),
         };
         Ok(SequenceContext { before_2, before_1, me, after_1, after_2 })
@@ -129,6 +129,30 @@ mod tests {
                 me: A,
                 after_1: Some(C),
                 after_2: Some(G)
+            },
+            context
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_sequence_context_before_end() -> Result<()> {
+        let segment = Segment {
+            range: ChunkRegion {
+                region: Region { contig: "chr_test".into(), start: 100, end: 105 },
+                last_position: 105,
+            },
+            sequence: b"ACGTA".to_vec(),
+        };
+
+        let context = SequenceContext::new(3, &segment)?;
+        assert_eq!(
+            SequenceContext {
+                before_2: Some(C),
+                before_1: Some(G),
+                me: T,
+                after_1: Some(A),
+                after_2: None,
             },
             context
         );
