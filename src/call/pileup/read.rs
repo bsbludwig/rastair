@@ -5,6 +5,7 @@ use std::{fmt, ops::Deref};
 /// A collection of bases seen in a pileup
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
+#[repr(transparent)]
 pub struct SimpleReads(pub(crate) SmallVec<SimpleRead, 20>);
 
 #[cfg_attr(coverage_nightly, coverage(off))]

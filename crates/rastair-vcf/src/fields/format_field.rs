@@ -295,6 +295,7 @@ macro_rules! format_field {
         #[doc = stringify!($number)]
         #[doc = ")"]
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        #[repr(transparent)]
         pub struct $name(pub $type);
 
         impl std::ops::Deref for $name {
@@ -345,6 +346,7 @@ macro_rules! format_field {
         #[doc = stringify!($number)]
         #[doc = ")"]
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        #[repr(transparent)]
         pub struct $name(pub rastair_types::SmallVec<$type, { $number.guess_num_values() }>);
 
         impl std::ops::Deref for $name {
