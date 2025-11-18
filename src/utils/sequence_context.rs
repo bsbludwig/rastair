@@ -4,9 +4,9 @@ use crate::{
 };
 use better_default::Default;
 use color_eyre::eyre::{Context as _, ContextCompat as _, Result};
+use rastair_types::smol_str::{SmolStr, SmolStrBuilder};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
-use smol_str::{SmolStr, SmolStrBuilder};
 
 /// 5-base sequence context centered on the variant position
 ///

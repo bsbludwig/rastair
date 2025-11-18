@@ -3,8 +3,7 @@ use crate::{
     utils::{Base, ByAllele},
     vcf::SequenceContext,
 };
-use smallvec::SmallVec;
-use smol_str::SmolStr;
+use rastair_types::{SmallVec, SmolStr};
 
 mod read;
 pub use read::*;
@@ -88,11 +87,11 @@ mod tests {
 
     #[test]
     fn test_alleles_in_order() {
-        let bases = SimpleReads(SmallVec::from_vec(vec![
+        let bases = SimpleReads(SmallVec::from(vec![
             SimpleRead {
                 base: Base::A,
                 strand: Strand::OT,
-                qname: SmallVec::from_vec(b"read1".to_vec()),
+                qname: SmallVec::from(b"read1"),
                 ..default()
             },
             SimpleRead {
@@ -100,13 +99,13 @@ mod tests {
                 strand: Strand::OB,
                 reverse: true,
                 second: false,
-                qname: SmallVec::from_vec(b"read2".to_vec()),
+                qname: SmallVec::from(b"read2"),
                 ..default()
             },
             SimpleRead {
                 base: Base::A,
                 strand: Strand::OT,
-                qname: SmallVec::from_vec(b"read3".to_vec()),
+                qname: SmallVec::from(b"read3"),
                 ..default()
             },
         ]));

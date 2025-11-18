@@ -16,10 +16,10 @@ use color_eyre::{
     Result, Section,
     eyre::{Context, ContextCompat, ensure},
 };
+use rastair_types::SmallVec;
+use rastair_types::SmolStr;
 pub use regions::{ChunkRegion, Region, SelectedRegion};
 use rust_htslib::bam::{self, FetchDefinition, HeaderView, Read as _};
-use smallvec::SmallVec;
-use smol_str::SmolStr;
 use std::{
     num::NonZeroU32,
     ops::{Deref, Range},

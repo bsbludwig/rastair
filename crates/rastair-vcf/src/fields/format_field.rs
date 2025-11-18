@@ -1,8 +1,8 @@
 use color_eyre::{Result, eyre::Context as _};
 use cstr8::CStr8;
+use rastair_types::SmallVec;
+use rastair_types::SmolStr;
 use rust_htslib::bcf::Record;
-use smallvec::SmallVec;
-use smol_str::SmolStr;
 use std::fmt;
 
 /// A field that can be used in the INFO section.
@@ -345,7 +345,7 @@ macro_rules! format_field {
         #[doc = stringify!($number)]
         #[doc = ")"]
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-        pub struct $name(pub smallvec::SmallVec<$type, { $number.guess_num_values() }>);
+        pub struct $name(pub rastair_types::SmallVec<$type, { $number.guess_num_values() }>);
 
         impl std::ops::Deref for $name {
             type Target = [$type];
@@ -396,8 +396,8 @@ mod tests {
     use super::super::FormatFieldNumber;
     use super::*;
     use insta::assert_snapshot;
+    use rastair_types::smallvec::smallvec;
     use rust_htslib::bcf::{Format, Header, Writer};
-    use smallvec::smallvec;
     use tempfile::TempDir;
 
     #[test]

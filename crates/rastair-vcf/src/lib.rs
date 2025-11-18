@@ -8,9 +8,9 @@
 //! ```rust
 //! # fn main() -> color_eyre::Result<()> {
 //! # use color_eyre::eyre::WrapErr;
-//! # use smallvec::{SmallVec, smallvec};
+//! # use rastair_types::smallvec::{SmallVec, smallvec};
 //! # use std::collections::BTreeSet;
-//! # use smol_str::SmolStr;
+//! # use rastair_types::SmolStr;
 //! # use tempfile::TempDir;
 //! use rastair_vcf::*;
 //!
@@ -73,9 +73,9 @@ pub mod reflect;
 pub mod standard_fields;
 
 use color_eyre::{Result, eyre::Context};
+use rastair_types::SmolStr;
 pub use rust_htslib::bcf::Format as VcfFormat;
 use rust_htslib::bcf::{Header, Writer};
-use smol_str::SmolStr;
 use std::{
     collections::BTreeMap,
     marker::PhantomData,
@@ -208,7 +208,7 @@ mod tests {
     use color_eyre::{Result, eyre::Context};
     use fields::InfoFieldNumber;
     use insta::assert_snapshot;
-    use smallvec::{SmallVec, smallvec};
+    use rastair_types::smallvec::{SmallVec, smallvec};
     use std::collections::BTreeSet;
     use tempfile::TempDir;
 

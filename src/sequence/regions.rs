@@ -3,7 +3,7 @@ use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat},
 };
-use smol_str::SmolStr;
+use rastair_types::SmolStr;
 use std::fmt;
 
 /// A genomic region with chromosome and coordinates

@@ -6,13 +6,13 @@ use crate::{
 use clap::{Parser, value_parser};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
+use rastair_types::SmallVec;
 use rastair_types::{Base, Strand, StrandFromRecord};
 use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
 };
 use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
 
 mod base_modification;
 pub use base_modification::MethylatedPositions;

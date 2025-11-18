@@ -9,8 +9,6 @@ edition = "2024"
 [dependencies]
 rust-htslib = { workspace = true }
 color-eyre = { workspace = true }
-smallvec = { workspace = true }
-smol_str = { workspace = true }
 serde = { workspace = true }
 cstr8 = { workspace = true }
 rastair-types = { version = "0.1.0", path = "../rastair-types" }
@@ -24,7 +22,7 @@ pastey = "0.1.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(coverage, coverage_nightly)',
+  'cfg(coverage, coverage_nightly)',
 ] }
 
 [lints.clippy]

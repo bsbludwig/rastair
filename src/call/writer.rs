@@ -8,7 +8,7 @@ use crate::{
 };
 use color_eyre::{Result, eyre::Context as _};
 use ordered_channel::Receiver;
-use smol_str::SmolStr;
+use rastair_types::SmolStr;
 use std::thread;
 use tracing::info;
 

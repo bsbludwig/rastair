@@ -1,7 +1,7 @@
 use crate::metrics::PileupMetrics;
+use rastair_types::SmolStr;
 use rastair_vcf::Contig;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

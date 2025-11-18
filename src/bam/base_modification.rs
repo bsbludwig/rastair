@@ -1,7 +1,7 @@
 use color_eyre::eyre::{Context, Result};
+use rastair_types::SmallVec;
 use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
-use smallvec::SmallVec;
 use std::fmt::Write;
 use tracing::debug;
 

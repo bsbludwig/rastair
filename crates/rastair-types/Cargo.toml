@@ -7,9 +7,10 @@ edition = "2024"
 color-eyre.workspace = true
 rust-htslib.workspace = true
 serde.workspace = true
-smol_str.workspace = true
 thiserror = "2.0.12"
 winnow = "0.7.11"
+smallvec = { version = "2.0.0-alpha.11", features = ["serde", "std"] }
+smol_str = { version = "0.3.4", features = ["serde"] }
 
 [dev-dependencies]
 insta.workspace = true
@@ -17,5 +18,5 @@ proptest.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(coverage, coverage_nightly)',
+  'cfg(coverage, coverage_nightly)',
 ] }

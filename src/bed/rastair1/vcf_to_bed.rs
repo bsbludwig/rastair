@@ -10,14 +10,14 @@ use color_eyre::{
     Result, Section as _, SectionExt as _,
     eyre::{Context as _, ContextCompat as _, Report, ensure, eyre},
 };
+use rastair_types::SmallVec;
+use rastair_types::SmolStr;
 use rastair_types::{Phred, Probability};
 use rastair_vcf::{
     StrandSpecificInfoField as _, VcfField as _,
     standard_fields::{Genotype, PASS, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
-use smallvec::SmallVec;
-use smol_str::SmolStr;
 use tracing::{instrument, trace};
 
 impl Rastair1BedFormat {

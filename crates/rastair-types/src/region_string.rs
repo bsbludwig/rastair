@@ -1,5 +1,5 @@
+use crate::SmolStr;
 use rust_htslib::bam::FetchDefinition;
-use smol_str::SmolStr;
 use std::{fmt, num::NonZeroU32};
 use winnow::{
     Parser,

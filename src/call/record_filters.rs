@@ -87,8 +87,8 @@ mod tests {
         vcf::{InCpG, lowDp},
     };
     use rastair_types::Base::*;
+    use rastair_types::SmallVec;
     use rastair_vcf::standard_fields::PASS;
-    use smallvec::SmallVec;
 
     const ML_THRESHOLD: Option<Probability> = Some(Probability::new_panicky(0.9));
 

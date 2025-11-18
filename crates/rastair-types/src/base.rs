@@ -1,4 +1,4 @@
-use smol_str::SmolStr;
+use crate::SmolStr;
 use thiserror::Error;
 
 /// Represents a DNA base (A, C, G, T, or Unknown)

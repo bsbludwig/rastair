@@ -1,8 +1,8 @@
 use crate::utils::ByStrand;
 use color_eyre::eyre::{Context as _, Result};
+use rastair_types::SmallVec;
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, StrandSpecificInfoField, VcfField};
 use rust_htslib::bcf::Record;
-use smallvec::SmallVec;
 use std::ops::Deref;
 
 /// Allele-specific strand bias information for a variant

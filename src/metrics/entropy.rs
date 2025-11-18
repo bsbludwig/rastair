@@ -32,7 +32,7 @@ pub fn entropy(sequence: &[u8]) -> f64 {
 mod tests {
     use crate::sequence::{ChunkRegion, Region, Segment};
     use proptest::proptest;
-    use smol_str::SmolStr;
+    use rastair_types::SmolStr;
     use std::iter::repeat_n;
 
     #[test]

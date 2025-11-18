@@ -10,8 +10,8 @@ use crate::{
 use better_default::Default;
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
+use rastair_types::SmolStr;
 use rastair_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
-use smol_str::SmolStr;
 use std::{collections::BTreeSet, ffi::OsStr, num::NonZeroUsize};
 use tracing::{debug, warn};
 

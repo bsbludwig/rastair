@@ -1,7 +1,7 @@
 use crate::{FormatFieldValue, InfoFieldValue};
 use color_eyre::eyre::{Context as _, Result};
+use rastair_types::SmallVec;
 use rust_htslib::bcf::Record;
-use smallvec::SmallVec;
 
 impl InfoFieldValue for rastair_types::RootMeanSquare {
     const TYPE_NAME: &'static str = "Float";

@@ -10,7 +10,10 @@ use crate::{
     },
 };
 use color_eyre::Result;
-use rastair_types::{Phred, Probability};
+use rastair_types::{
+    Phred, Probability,
+    smallvec::{SmallVec, smallvec, smallvec_inline},
+};
 use rastair_vcf::{
     VcfFilter, VcfFixedFields,
     standard_fields::{
@@ -18,7 +21,6 @@ use rastair_vcf::{
         MappingQuality0, PASS, ReadDepth, SampleReadDepth, SamplesWithData,
     },
 };
-use smallvec::{SmallVec, smallvec, smallvec_inline};
 
 pub struct VcfOutputFilter {
     pub reject_low_quality_variants: bool,

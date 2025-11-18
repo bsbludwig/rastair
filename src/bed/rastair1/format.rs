@@ -1,8 +1,7 @@
 use crate::bed::BedRecord;
 use color_eyre::Result;
-use rastair_types::{Phred, Probability, Strand};
+use rastair_types::{Phred, Probability, SmolStr, Strand, smol_str::format_smolstr};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
-use smol_str::{SmolStr, format_smolstr};
 use std::io::Write;
 use tracing::debug;
 

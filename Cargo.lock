@@ -2356,8 +2356,6 @@ dependencies = [
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
- "smallvec 2.0.0-alpha.12",
- "smol_str",
  "tempfile",
  "thiserror 2.0.17",
  "tracing",
@@ -2375,6 +2373,7 @@ dependencies = [
  "proptest",
  "rust-htslib",
  "serde",
+ "smallvec 2.0.0-alpha.12",
  "smol_str",
  "thiserror 2.0.17",
  "winnow 0.7.13",
@@ -2393,8 +2392,6 @@ dependencies = [
  "rastair-types",
  "rust-htslib",
  "serde",
- "smallvec 2.0.0-alpha.12",
- "smol_str",
  "tempfile",
 ]
 

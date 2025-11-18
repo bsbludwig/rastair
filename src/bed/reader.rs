@@ -3,9 +3,7 @@ use color_eyre::{
     eyre::{Context as _, ContextCompat as _, bail},
 };
 use noodles::{core::Region, tabix};
-use rastair_types::Base;
-use smallvec::SmallVec;
-use smol_str::SmolStr;
+use rastair_types::{Base, SmallVec, SmolStr};
 use std::{fs::File, path::Path};
 use tracing::{instrument, warn};
 

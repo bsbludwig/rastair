@@ -7,8 +7,8 @@ use crate::{
     utils::{SequenceContext, StrandFromRecord},
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
+use rastair_types::SmallVec;
 use rust_htslib::bam::pileup::{Alignment, Pileup as HtsPileup};
-use smallvec::SmallVec;
 use std::rc::Rc;
 use tracing::instrument;
 

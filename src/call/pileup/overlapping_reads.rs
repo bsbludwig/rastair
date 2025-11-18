@@ -4,7 +4,7 @@
 // TODO: Add tests for this module
 
 use super::SimpleReads;
-use smallvec::SmallVec;
+use rastair_types::SmallVec;
 
 impl SimpleReads {
     /// Remove overlapping reads from the same fragment.

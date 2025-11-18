@@ -3,3 +3,7 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 doc-valid-idents = ["CpG", "CpGs", ".."]
+
+[[disallowed-types]]
+path = "smallvec::SmallVec"
+reason = "Use rastair_types::SmallVec rexport instead."

@@ -1,5 +1,5 @@
 use crate::utils::{Base, Counter, Strand};
-use smallvec::SmallVec;
+use rastair_types::SmallVec;
 use std::{fmt, ops::Deref};
 
 /// A collection of bases seen in a pileup

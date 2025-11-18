@@ -1,9 +1,9 @@
 use crate::utils::ByStrand;
 use color_eyre::{Result, eyre::Context as _};
 use rastair_types::RootMeanSquare;
+use rastair_types::SmallVec;
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
-use smallvec::SmallVec;
 use std::ops::Deref;
 
 /// Allele-specific RMS base quality by strand
