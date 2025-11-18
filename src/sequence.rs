@@ -130,7 +130,7 @@ impl Readers {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Segment {
     pub range: ChunkRegion,
     pub sequence: Vec<u8>,
