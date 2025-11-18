@@ -312,7 +312,7 @@ impl AltFilters {
         if let Some(ml_threshold) = ml_threshold
             && let Some(ml) = self.ml
         {
-            ml > ml_threshold
+            ml >= ml_threshold
         } else {
             self.filters.is_empty()
         }
