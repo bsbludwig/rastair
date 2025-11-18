@@ -38,8 +38,8 @@ impl Pileup {
         let reference_base =
             segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
 
-        let context = SequenceContext::new(reference_base, idx, &segment)
-            .wrap_err("failed to get sequence context")?;
+        let context =
+            SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
 
         Ok(Pileup {
             region: segment.range.clone(),

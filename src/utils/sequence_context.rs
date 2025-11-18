@@ -1,6 +1,9 @@
-use crate::{sequence::Segment, utils::Base};
+use crate::{
+    sequence::Segment,
+    utils::{Base, logging::ThisIsABug as _},
+};
 use better_default::Default;
-use color_eyre::eyre::{Context as _, Result};
+use color_eyre::eyre::{Context as _, ContextCompat as _, Result};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
 use smol_str::{SmolStr, SmolStrBuilder};
@@ -8,7 +11,7 @@ use smol_str::{SmolStr, SmolStrBuilder};
 /// 5-base sequence context centered on the variant position
 ///
 /// Printed in VCF as string with up to 5 characters.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SequenceContext {
     pub before_2: Option<Base>,
     pub before_1: Option<Base>,
@@ -19,8 +22,10 @@ pub struct SequenceContext {
 }
 
 impl SequenceContext {
-    pub fn new(middle: Base, idx: usize, segment: &Segment) -> Result<Self> {
+    pub fn new(idx: usize, segment: &Segment) -> Result<Self> {
         const N: usize = 2;
+        let me =
+            segment.sequence.get(idx).wrap_err("Failed to get self base!").this_is_a_bug()?.into();
         let (before_2, before_1) =
             match segment.sequence_slice::<2>(idx.saturating_sub(N), idx)?.as_slice() {
                 [b2, b1] => (Some(*b2), Some(*b1)),
@@ -33,7 +38,7 @@ impl SequenceContext {
             [a1] => (None, Some(*a1)),
             _ => (None, None),
         };
-        Ok(SequenceContext { before_2, before_1, me: middle, after_1, after_2 })
+        Ok(SequenceContext { before_2, before_1, me, after_1, after_2 })
     }
 
     fn to_smol_str(&self) -> SmolStr {
@@ -77,6 +82,97 @@ impl InfoField for SequenceContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        sequence::{ChunkRegion, Region},
+        utils::Base::*,
+    };
+
+    #[test]
+    fn test_new_sequence_context() -> Result<()> {
+        let segment = Segment {
+            range: ChunkRegion {
+                region: Region { contig: "chr_test".into(), start: 100, end: 105 },
+                last_position: 105,
+            },
+            sequence: b"ACGTA".to_vec(),
+        };
+
+        let context = SequenceContext::new(2, &segment)?;
+        assert_eq!(
+            SequenceContext {
+                before_2: Some(A),
+                before_1: Some(C),
+                me: G,
+                after_1: Some(T),
+                after_2: Some(A)
+            },
+            context
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_sequence_context_at_start() -> Result<()> {
+        let segment = Segment {
+            range: ChunkRegion {
+                region: Region { contig: "chr_test".into(), start: 100, end: 105 },
+                last_position: 105,
+            },
+            sequence: b"ACGTA".to_vec(),
+        };
+
+        let context = SequenceContext::new(0, &segment)?;
+        assert_eq!(
+            SequenceContext {
+                before_2: None,
+                before_1: None,
+                me: A,
+                after_1: Some(C),
+                after_2: Some(G)
+            },
+            context
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_sequence_context_at_end() -> Result<()> {
+        let segment = Segment {
+            range: ChunkRegion {
+                region: Region { contig: "chr_test".into(), start: 100, end: 105 },
+                last_position: 105,
+            },
+            sequence: b"ACGTA".to_vec(),
+        };
+
+        let context = SequenceContext::new(4, &segment)?;
+        assert_eq!(
+            SequenceContext {
+                before_2: Some(G),
+                before_1: Some(T),
+                me: A,
+                after_1: None,
+                after_2: None,
+            },
+            context
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_sequence_context_oor() -> Result<()> {
+        let segment = Segment {
+            range: ChunkRegion {
+                region: Region { contig: "chr_test".into(), start: 100, end: 105 },
+                last_position: 105,
+            },
+            sequence: b"ACGTA".to_vec(),
+        };
+
+        let res = SequenceContext::new(12, &segment);
+        assert!(res.is_err());
+        Ok(())
+    }
 
     #[test]
     fn test_to_smol_str_complete_context() {
