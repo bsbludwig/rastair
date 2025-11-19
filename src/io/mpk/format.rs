@@ -17,7 +17,7 @@ pub struct MpkVcfHeader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(clippy::large_enum_variant)] // all but two entries in a file are `Record`s
+#[expect(clippy::large_enum_variant, reason = "headers only occur once")]
 pub enum MpkEntry<'r> {
     Header(MpkHeader),
     VcfHeader(MpkVcfHeader),

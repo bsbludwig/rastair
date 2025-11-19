@@ -32,7 +32,7 @@ pub struct BedWriter<R: BedRecord> {
 
 type BoxedWriter = Box<dyn Write + Send + Sync>;
 
-#[expect(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant, reason = "We construct this only once")]
 enum Writer {
     /// BED as text files
     Bed(BoxedWriter),

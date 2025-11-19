@@ -1,4 +1,4 @@
-#![allow(non_snake_case)]
+#![expect(non_snake_case, reason = "readable test names")]
 
 mod utils;
 use insta::assert_compact_debug_snapshot;

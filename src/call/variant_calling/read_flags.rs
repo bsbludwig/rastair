@@ -38,7 +38,7 @@ impl ReadFlags {
     }
 }
 
-#[allow(unused)]
+#[allow(unused, reason = "list all for documentation purposes")]
 mod flags {
     pub const IS_PAIRED: u16 = 0x1;
     pub const IS_PROPERLY_PAIRED: u16 = 0x2;

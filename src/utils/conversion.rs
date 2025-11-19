@@ -16,7 +16,7 @@ macro_rules! impl_into_f64 {
         $(
             impl IntoF64 for $t {
                 #[track_caller]
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_lossless)]
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_lossless, reason = "macro code")]
                 fn f(self) -> f64 {
                     self as f64
                 }

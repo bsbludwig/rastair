@@ -234,7 +234,7 @@ fn add_rastair_header(header: &mut Header) {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation)] // less noise
+#[allow(clippy::cast_possible_truncation, reason = "lots of noise otherwise for small numbers")]
 mod tests {
     use color_eyre::eyre::{ContextCompat as _, bail};
     use insta::{assert_compact_debug_snapshot, assert_snapshot};

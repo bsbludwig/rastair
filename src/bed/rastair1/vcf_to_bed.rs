@@ -21,7 +21,7 @@ use rust_htslib::bcf::Record as HtslibRecord;
 use tracing::{instrument, trace};
 
 impl Rastair1BedFormat {
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, reason = "htslib likes i64")]
     #[instrument(level = "trace", skip_all, fields(pos=%r.pos()))]
     pub fn from_vcf(r: &HtslibRecord, params: &BedRecordsConvertParams) -> Result<Option<Self>> {
         let contig = r

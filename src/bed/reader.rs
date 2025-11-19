@@ -81,7 +81,7 @@ pub struct SimpleRastairBedRecord {
 }
 
 #[derive(Debug, Clone)]
-#[allow(unused)]
+#[allow(unused, reason = "we list all fields for clarity")]
 struct RefRastairBedRecord<'src> {
     chr: &'src str,
     start: &'src str,

@@ -40,7 +40,7 @@ mod as_ss_bq {
             <Self as StrandSpecificInfoField>::write_header(header)
         }
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation, reason = "vcf float fields")]
         fn write(&self, record: &mut Record) -> Result<()> {
             {
                 // Write OT field
@@ -101,7 +101,7 @@ mod as_ss_mq {
         const NUMBER: InfoFieldNumber = InfoFieldNumber::Dot;
         type Type = f32;
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation, reason = "vcf float fields")]
         fn write(&self, record: &mut Record) -> Result<()> {
             let counts: SmallVec<f32, 8> =
                 self.0.iter().flat_map(|c| [*c.ot as f32, *c.ob as f32]).collect();

@@ -5,7 +5,7 @@ use tracing::{instrument, warn};
 
 impl MachineLearning {
     #[instrument(level = "debug", skip_all)]
-    #[allow(clippy::unwrap_in_result)] // it's fine
+    #[allow(clippy::unwrap_in_result, reason = "it's fine")]
     pub fn predict(
         &self,
         current: &MetricsForAlt,

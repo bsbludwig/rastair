@@ -74,7 +74,6 @@ pub struct EstimatedGenotype {
 }
 
 impl EstimatedGenotype {
-    #[allow(clippy::cast_possible_truncation)]
     #[instrument(level = "trace", name = "calculate_genotype")]
     pub fn calculate(ref_count: usize, alt_count: usize, error_model: ErrorModel) -> Result<Self> {
         let error_rate = error_model.error_rate();
@@ -96,6 +95,10 @@ impl EstimatedGenotype {
 
         let mut binom = Binomial::new(ref_count + alt_count, 0.5); // 0.5 because a het position
         let p_het = binom.mass(alt_count);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "safe: counts are usize, division result fits in usize"
+        )]
         let p_het_max = binom.mass(((alt_count + ref_count).f() / 2.0).round() as usize);
 
         // Then, I calculate the probability that this many or more alt_count/ref_count reads

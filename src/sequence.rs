@@ -248,7 +248,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, reason = "Test code")]
 mod tests {
     use proptest::{prop_assume, proptest};
 

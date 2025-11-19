@@ -14,7 +14,7 @@ use std::fmt;
     serde::Serialize,
     serde::Deserialize,
 )]
-#[allow(clippy::doc_markdown)]
+#[allow(clippy::doc_markdown, reason = "custom names for sequencing platforms")]
 pub enum ErrorModel {
     /// MiSeq <https://support.illumina.com/sequencing/sequencing_instruments/miseq.html>
     Miseq,

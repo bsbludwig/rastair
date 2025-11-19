@@ -6,7 +6,7 @@
 //!
 //! and fetch a cup of coffee.
 
-#![allow(non_snake_case)]
+#![allow(non_snake_case, reason = "generated names")]
 mod utils;
 use utils::*;
 

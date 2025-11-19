@@ -1,4 +1,4 @@
-#![allow(unused_imports, dead_code)]
+#![allow(unused_imports, dead_code, reason = "test code")]
 
 use color_eyre::eyre::ensure;
 pub use color_eyre::eyre::{bail, eyre};

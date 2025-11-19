@@ -35,7 +35,7 @@ impl PileupMetrics {
             r#ref: self.ref_base().into(),
             alt: self.alts().iter().map(|alt| (*alt).into()).collect::<SmallVec<_, 2>>(),
             qual: Some(
-                #[allow(clippy::cast_possible_truncation)]
+                #[allow(clippy::cast_possible_truncation, reason = "const")]
                 {
                     // FIXME: use real quality
                     *Phred::from(Probability::new_panicky(0.001)) as f32
