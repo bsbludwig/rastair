@@ -33,7 +33,7 @@ tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
 
 insta = { version = "1.43.1", features = ["filters"] }
 insta-cmd = "0.6.0"
-pastey = "0.1.1"
+pastey = "0.2.0"
 proptest = "1.7.0"
 tempfile = "3.21.0"
 
@@ -73,7 +73,7 @@ serde_json = { version = "1.0.140", features = ["preserve_order"] }
 # utils
 probability = "0.20.3"
 rustc-hash = "2.1.1"
-pastey = "0.1.0"
+pastey = { workspace = true }
 winnow = { version = "0.7.6", features = ["simd"] }
 
 # error handling and logging
