@@ -4,6 +4,7 @@
 use crate::{
     CallParams,
     call::{
+        ml::MachineLearningParams,
         pileup::{Pileup, SimpleRead, SimpleReads},
         process_region,
     },
@@ -14,6 +15,7 @@ use crate::{
 };
 pub use crate::{call::record_filters::RecordFilters, utils::default};
 use clio::ClioPath;
+use color_eyre::eyre::ContextCompat as _;
 pub(crate) use color_eyre::{Result, eyre::bail};
 use rastair_types::{Base, Probability, SmallVec, Strand};
 use std::{rc::Rc, str::FromStr};
@@ -240,9 +242,8 @@ impl VcfMatcher {
                     // Expect PASS
                     if !actual_passes {
                         errors.push(format!(
-                            "Record {}: Expected PASS, but record did not pass filters (len={})",
-                            idx,
-                            actual_filters.len()
+                            "Record {}: Expected PASS, but record did not pass {:?}",
+                            idx, actual_filters
                         ));
                     }
                 } else {
@@ -257,17 +258,26 @@ impl VcfMatcher {
         }
 
         if !errors.is_empty() {
-            if !actual.is_empty() {
-                errors.push(format!(
-                    "Got these VCF lines: {}",
+            let records = if actual.is_empty() {
+                "[No records]".to_string()
+            } else {
+                format!(
+                    "Got these VCF lines:\n    {}",
                     actual
                         .iter()
-                        .map(|r| format!("ref={} alt={:?}", r.main.r#ref, r.main.alt))
+                        .enumerate()
+                        .map(|(i, r)| format!(
+                            "({i}) ref={} alt={:?} {:?}",
+                            r.main.r#ref, r.main.alt, r.filters
+                        ))
                         .collect::<Vec<_>>()
-                        .join("\n")
-                ));
-            }
-            bail!("VCF matching failed:\n{}", errors.join("\n"));
+                        .join("\n    ")
+                )
+            };
+            bail!(
+                "VCF matching failed.\n    {records}\n    Errors:\n    - {}",
+                errors.join("\n    - ")
+            );
         }
 
         Ok(())
@@ -292,7 +302,11 @@ pub(crate) fn test_call(
         variant_calling: default(),
         denovo_cpg: default(),
         methylation: default(),
-        ml: default(),
+        ml: {
+            let mut ml = MachineLearningParams::default();
+            ml.no_ml = true;
+            ml
+        },
         vcf: default(),
         bed: default(),
         total_threads: 2,
@@ -301,6 +315,22 @@ pub(crate) fn test_call(
     let ml = params.ml.init()?;
 
     process_region(segment, pileups.into_iter(), &params, &ml)
+}
+
+pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
+    if m.ref_base() == base {
+        todo!()
+    }
+    let alt = m.alt_filters_mut(base).wrap_err_with(|| format!("no {base} alt")).unwrap();
+    alt.ml = Some(Probability::ONE);
+}
+
+pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
+    if m.ref_base() == base {
+        todo!()
+    }
+    let alt = m.alt_filters_mut(base).wrap_err_with(|| format!("no {base} alt")).unwrap();
+    alt.ml = Some(Probability::ZERO);
 }
 
 impl RecordFilters {

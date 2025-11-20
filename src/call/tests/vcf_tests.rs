@@ -7,14 +7,14 @@ use rastair_types::{Base::*, Probability};
 fn test_simple_variant() -> Result<()> {
     let (segment, pileups) = pileups!(
         [ A C G T ] Ref,
-        [ A T G T ] OB,
-        [ A T G T ] OB,
+        [ A A G T ] OB,
+        [ A A G T ] OB,
         [ A C G T ] OT,
         [ A C G T ] OT,
     );
 
     let expected_vcf = vcf![
-        (C T),
+        (C A),
         (G .),
     ];
 
@@ -114,8 +114,8 @@ fn test_filter_status_matching() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
 
     // Manipulate ML scores to make some records fail
-    records[0].alt_filters_mut(T).unwrap().ml = Some(Probability::ZERO);
-    records[1].alt_filters_mut(A).unwrap().ml = Some(Probability::ZERO);
+    set_fail(&mut records[0], T);
+    set_fail(&mut records[1], A);
 
     let expected_vcf = vcf![
         (C T) FAIL,
@@ -126,8 +126,8 @@ fn test_filter_status_matching() -> Result<()> {
     expected_vcf.matches(vcf_records)?;
 
     // Now again but passing
-    records[0].alt_filters_mut(T).unwrap().ml = Some(Probability::ONE);
-    records[1].alt_filters_mut(A).unwrap().ml = Some(Probability::ONE);
+    set_pass(&mut records[0], T);
+    set_pass(&mut records[1], A);
 
     let expected_vcf = vcf![
         (C T) PASS,

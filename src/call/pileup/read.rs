@@ -31,10 +31,10 @@ pub struct SimpleRead {
     #[cfg_attr(test, default(Base::Unknown))]
     pub base: Base,
     /// Base quality
-    #[cfg_attr(test, default(30))]
+    #[cfg_attr(test, default(40))]
     pub qual: u8,
     /// Mapping quality of the read this base belongs to
-    #[cfg_attr(test, default(20))]
+    #[cfg_attr(test, default(60))]
     pub mapq: u8,
     /// Strand the read was mapped to
     #[cfg_attr(test, default(Strand::OT))]
