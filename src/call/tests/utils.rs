@@ -302,11 +302,7 @@ pub(crate) fn test_call(
         variant_calling: default(),
         denovo_cpg: default(),
         methylation: default(),
-        ml: {
-            let mut ml = MachineLearningParams::default();
-            ml.no_ml = true;
-            ml
-        },
+        ml: default(),
         vcf: default(),
         bed: default(),
         total_threads: 2,
@@ -325,12 +321,19 @@ pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
     alt.ml = Some(Probability::ONE);
 }
 
+rastair_vcf::filter!(MANUAL, "manual");
+
 pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     if m.ref_base() == base {
         todo!()
     }
+    m.pos_filters.other_pos_in_cpg_passes = false;
+
     let alt = m.alt_filters_mut(base).wrap_err_with(|| format!("no {base} alt")).unwrap();
+    alt.filters.other_pos_in_cpg_passes = false;
     alt.ml = Some(Probability::ZERO);
+
+    alt.filters.add(MANUAL, || true);
 }
 
 impl RecordFilters {
@@ -354,7 +357,7 @@ impl RecordFilters {
 pub(crate) fn metrics_to_vcf(metrics: &[PileupMetrics]) -> Result<Vec<VcfRecord>> {
     let mut vcf_records = Vec::new();
     for metric in metrics {
-        let mut records = metric.to_vcf_records(None)?;
+        let mut records = metric.to_vcf_records(Some(Probability::ONE))?; // set to 1 to make sure only us saying PASS passes
         vcf_records.append(&mut records);
     }
     Ok(vcf_records)
