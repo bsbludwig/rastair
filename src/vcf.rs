@@ -24,7 +24,7 @@ pub use methylation::Methylated;
 
 pub mod utils;
 
-mod convert_from_metrics;
+mod metrics_to_vcf;
 
 pub use crate::utils::SequenceContext;
 
