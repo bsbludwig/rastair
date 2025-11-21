@@ -1,21 +1,22 @@
 use super::Record;
 use crate::{
-    metrics::PileupMetrics,
+    call::pileup::Pileup,
+    metrics::{AlleleMetrics, Alt, Filters, PileupMetrics, PositionMetrics},
     utils::{IntoF64 as _, default},
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
-        Filters, Format, GenotypeConfidence, GenotypeLikelihood, InCpG, Info,
+        Filters as VcfFilter, Format, GenotypeConfidence, GenotypeLikelihood, InCpG, Info,
         MachineLearningPrediction, NumAlignedBases, NumIndels, PositionInRead,
         StrandSpecificBaseQuality, StrandSpecificMappingQuality,
     },
 };
 use color_eyre::Result;
 use rastair_types::{
-    Phred, Probability,
+    Phred, Probability, SmolStr,
     smallvec::{SmallVec, smallvec, smallvec_inline},
 };
 use rastair_vcf::{
-    VcfFilter, VcfFixedFields,
+    VcfFilter as _, VcfFixedFields,
     standard_fields::{
         AlleleFrequency, AlleleReadDepth, BaseQuality, Genotype, GenotypeAllele, MappingQuality,
         MappingQuality0, PASS, ReadDepth, SampleReadDepth, SamplesWithData,
@@ -24,12 +25,47 @@ use rastair_vcf::{
 
 impl PileupMetrics {
     pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<Vec<Record>> {
-        let main = VcfFixedFields {
-            chrom: self.contig(),
-            pos: self.pos(),
+        // TODO: handle deciding methylation vs variant call
+        // TODO: handle multi-allelic sites by writing a row for each genotype
+        let x = MetricsSubset {
+            pileup: &self.pileup,
+            pos_metrics: &self.pos_metrics,
+            pos_filters: &self.pos_filters,
+            ref_metrics: &self.ref_metrics,
+            alts: self.alts.clone(),
+        };
+
+        Ok(vec![x.to_vcf_row(ml_threshold)?])
+    }
+}
+
+/// A subset of metrics needed to write a VCF record
+struct MetricsSubset<'m> {
+    pub pileup: &'m Pileup,
+    pub pos_metrics: &'m PositionMetrics,
+    pub pos_filters: &'m Filters,
+    pub ref_metrics: &'m AlleleMetrics,
+    // Alt positions for this row
+    pub alts: SmallVec<Alt, 2>,
+}
+
+impl MetricsSubset<'_> {
+    pub fn to_vcf_row(&self, ml_threshold: Option<Probability>) -> Result<Record> {
+        let main = self.vcf_main();
+        let info = self.info();
+        let format_fields = self.format();
+        let filters = self.filters(ml_threshold);
+
+        Ok(Record { main, filters, info, samples: smallvec_inline![format_fields] })
+    }
+
+    fn vcf_main(&self) -> VcfFixedFields {
+        VcfFixedFields {
+            chrom: self.pileup.contig().clone(),
+            pos: self.pileup.pos,
             id: default(),
-            r#ref: self.ref_base().into(),
-            alt: self.alts().iter().map(|alt| (*alt).into()).collect::<SmallVec<_, 2>>(),
+            r#ref: self.pileup.reference_base.into(),
+            alt: self.alts.iter().map(|alt| alt.base.into()).collect(),
             qual: Some(
                 #[allow(clippy::cast_possible_truncation, reason = "const")]
                 {
@@ -37,64 +73,104 @@ impl PileupMetrics {
                     *Phred::from(Probability::new_panicky(0.001)) as f32
                 },
             ),
+        }
+    }
+
+    pub fn pass(&self, ml_threshold: Option<Probability>) -> bool {
+        if self.pos_filters.other_pos_in_cpg_passes {
+            return true;
+        }
+        self.pos_filters.pass() && self.alts.iter().any(|a| a.filters.pass(ml_threshold))
+    }
+
+    fn filters(&self, ml_threshold: Option<Probability>) -> VcfFilter {
+        let mut filters = VcfFilter::default();
+
+        if self.pass(ml_threshold) {
+            filters.add(PASS.filter());
+        } else {
+            self.pos_filters.iter().for_each(|f| {
+                filters.add(f.clone());
+            });
+            self.alts.iter().for_each(|alt| {
+                alt.filters.filters.iter().for_each(|f| {
+                    filters.add(f.clone());
+                });
+            });
+        }
+
+        filters
+    }
+
+    fn info(&self) -> Info {
+        let pileup = self.pileup;
+        let pos_metrics = self.pos_metrics;
+        let ref_alts_metrics: SmallVec<&AlleleMetrics, 3> = {
+            let mut xs = smallvec![self.ref_metrics,];
+            for alt in &self.alts {
+                xs.push(&alt.metrics);
+            }
+            xs
         };
-        let info = Info {
+        let alts_metrics = &ref_alts_metrics[1..];
+
+        Info {
             allele_read_depth: AlleleReadDepth(
-                self.ref_alts_metrics().map(|m| m.depth as usize).collect(),
+                ref_alts_metrics.iter().map(|m| m.depth as usize).collect(),
             ),
-            base_quality: BaseQuality(self.pos_metrics.baseq),
-            read_depth: ReadDepth(self.pos_metrics.depth as usize),
-            mapping_quality: MappingQuality(self.pos_metrics.mapq),
-            mapping_quality0: MappingQuality0(self.pos_metrics.mapq0 as usize),
+            base_quality: BaseQuality(pos_metrics.baseq),
+            read_depth: ReadDepth(pos_metrics.depth as usize),
+            mapping_quality: MappingQuality(pos_metrics.mapq),
+            mapping_quality0: MappingQuality0(pos_metrics.mapq0 as usize),
             samples_with_data: SamplesWithData(1),
             allele_specific_strand_bias: AlleleSpecificStrandBias(
-                self.ref_alts_metrics().map(|m| m.strand_count).collect(),
+                ref_alts_metrics.iter().map(|m| m.strand_count).collect(),
             ),
-            sequence_context: self.pileup.context.clone(),
+            sequence_context: pileup.context.clone(),
             allele_frequency: AlleleFrequency(
-                self.alts_metrics().map(|m| m.allele_frequency.f()).collect(),
+                alts_metrics.iter().map(|m| m.allele_frequency.f()).collect(),
             ),
             allele_base_quality: AlleleBaseQuality(
-                self.ref_alts_metrics().map(|m| m.baseq.f()).collect(),
+                ref_alts_metrics.iter().map(|m| m.baseq.f()).collect(),
             ),
             allele_map_quality: AlleleMapQuality(
-                self.ref_alts_metrics().map(|m| m.mapq.f()).collect(),
+                ref_alts_metrics.iter().map(|m| m.mapq.f()).collect(),
             ),
             strand_specific_base_quality: StrandSpecificBaseQuality(
-                self.ref_alts_metrics().map(|m| m.baseq_s).collect(),
+                ref_alts_metrics.iter().map(|m| m.baseq_s).collect(),
             ),
             strand_specific_mapping_quality: StrandSpecificMappingQuality(
-                self.ref_alts_metrics().map(|m| m.mapq_s).collect(),
+                ref_alts_metrics.iter().map(|m| m.mapq_s).collect(),
             ),
             position_in_read: PositionInRead(
-                self.ref_alts_metrics().map(|m| m.position_in_read.f()).collect(),
+                ref_alts_metrics.iter().map(|m| m.position_in_read.f()).collect(),
             ),
-            entropy: Entropy(smallvec_inline![self.pos_metrics.region_entropy]),
+            entropy: Entropy(smallvec_inline![pos_metrics.region_entropy]),
             num_aligned_bases: NumAlignedBases(
-                self.ref_alts_metrics().map(|m| m.num_aligned_bases.f()).collect(),
+                ref_alts_metrics.iter().map(|m| m.num_aligned_bases.f()).collect(),
             ),
-            num_indels: NumIndels(self.ref_alts_metrics().map(|m| m.num_indels.f()).collect()),
-            in_cp_g: InCpG::from(&self.pileup),
+            num_indels: NumIndels(ref_alts_metrics.iter().map(|m| m.num_indels.f()).collect()),
+            in_cp_g: InCpG::from(pileup),
             de_novo_cp_g_candidate: {
                 let mut res = DeNovoCpGCandidate::NotCandidate;
-                if let Some(alt_that_forms_denovo) =
-                    self.alts.iter().map(|alt| &alt.metrics).find(|m| *m.denovo)
-                {
+                if let Some(alt_that_forms_denovo) = alts_metrics.iter().find(|m| *m.denovo) {
                     let alt = alt_that_forms_denovo;
                     if *alt.denovo {
                         res = DeNovoCpGCandidate::Candidate {
-                            ref_base: self.ref_base(),
+                            ref_base: pileup.reference_base,
                             alt_base: alt.base,
                         }
                     }
                 }
-                if *self.pos_metrics.denovo_adj {
-                    res = DeNovoCpGCandidate::Adjecent { ref_base: self.ref_base() }
+                if *pos_metrics.denovo_adj {
+                    res = DeNovoCpGCandidate::Adjecent { ref_base: pileup.reference_base }
                 }
                 res
             },
-        };
+        }
+    }
 
+    fn format(&self) -> Format {
         let (genotype, genotype_likelihood, genotype_confidence) =
             if let Some(estimate) = self.pos_metrics.genotype {
                 (
@@ -112,7 +188,7 @@ impl PileupMetrics {
 
         let has_ml = self.alts.iter().any(|alt| alt.filters.ml.is_some());
 
-        let format_fields = Format {
+        Format {
             genotype,
             genotype_likelihood,
             genotype_confidence,
@@ -123,22 +199,6 @@ impl PileupMetrics {
             } else {
                 smallvec![]
             }),
-        };
-
-        let mut filters = Filters::default();
-        if self.pass(ml_threshold) {
-            filters.add(PASS.filter());
-        } else {
-            self.pos_filters.iter().for_each(|f| {
-                filters.add(f.clone());
-            });
-            self.alts.iter().for_each(|alt| {
-                alt.filters.filters.iter().for_each(|f| {
-                    filters.add(f.clone());
-                });
-            });
         }
-
-        Ok(vec![Record { main, filters, info, samples: smallvec_inline![format_fields] }])
     }
 }
