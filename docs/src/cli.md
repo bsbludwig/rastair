@@ -145,7 +145,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
 
-   Only if combined with `--all`, non-passing CpG positions will also be reported.
+   Only if combined with `--all`, non-passing de-novo CpG positions will also be reported.
 
   Default value: `false`
 * `--bed-include-empty` — Include CpG positions with zero coverage
@@ -161,7 +161,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--all` — Output all positions, even if they do not pass filters.
 
-   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing ones.
+   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
@@ -215,7 +215,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
 
-  Default value: `3`
+  Default value: `2`
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
@@ -342,14 +342,14 @@ Convert between different file formats
 
 ###### **Filter Options:**
 
+* `--bed-include-empty` — Include CpG positions with zero coverage
+
+   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
 * `--bed-ml <ML_THRESHOLD>` — Minimum ML score to consider a position as variant
 
    This does nothing if the input data does not contain ML scores.
 
   Default value: `0.80`
-* `--bed-include-empty` — Include CpG positions with zero coverage
-
-   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
 
 ###### **Input Options:**
 

@@ -76,7 +76,7 @@ pub struct CallParams {
     ///
     /// Note that VCF writing might use additional threads internally for compression.
     /// This can be overwritten with `--vcf-threads`.
-    #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
+    #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[serde(skip)]
     pub total_threads: usize,

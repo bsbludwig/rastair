@@ -8,3 +8,7 @@ fail-fast = false
 
 [profile.ci.junit]
 path = "junit.xml"
+
+[[profile.default.overrides]]
+filter = 'test(/rastair::\w+_cli::/)'
+threads-required = 2

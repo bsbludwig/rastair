@@ -12,6 +12,7 @@ pub use tempfile::TempDir;
 pub fn rastair() -> Command {
     let mut cmd = Command::new(insta_cmd::get_cargo_bin("rastair"));
     cmd.env("NO_COLOR", "1");
+    cmd.env("RASTAIR_THREADS", "2");
     cmd
 }
 
