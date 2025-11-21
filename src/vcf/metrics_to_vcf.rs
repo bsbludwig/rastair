@@ -12,7 +12,7 @@ use crate::{
 };
 use color_eyre::Result;
 use rastair_types::{
-    Phred, Probability, SmolStr,
+    Base, Phred, Probability,
     smallvec::{SmallVec, smallvec, smallvec_inline},
 };
 use rastair_vcf::{
@@ -23,30 +23,80 @@ use rastair_vcf::{
     },
 };
 
-impl PileupMetrics {
-    pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<Vec<Record>> {
-        // TODO: handle deciding methylation vs variant call
-        // TODO: handle multi-allelic sites by writing a row for each genotype
-        let x = MetricsSubset {
-            pileup: &self.pileup,
-            pos_metrics: &self.pos_metrics,
-            pos_filters: &self.pos_filters,
-            ref_metrics: &self.ref_metrics,
-            alts: self.alts.clone(),
-        };
+/// Check if a reference->alt transition represents a methylation signal in TAPS data.
+/// In TAPS, methylated cytosines are protected and show up as C, while unmethylated
+/// cytosines are converted to T. Similarly, on the reverse strand, methylated G stays G
+/// while unmethylated G becomes A.
+fn is_methylation_transition(ref_base: Base, alt_base: Base) -> bool {
+    matches!((ref_base, alt_base), (Base::C, Base::T) | (Base::G, Base::A))
+}
 
-        Ok(vec![x.to_vcf_row(ml_threshold)?])
+impl PileupMetrics {
+    /// Convert the metrics to VCF records
+    ///
+    /// Generates multiple VCF rows from a single pileup position:
+    /// - Writes ref->. when there are no alts or when methylation evidence exists (PASS)
+    /// - Writes separate ref->alt rows for each alt allele with their respective filters
+    /// - Methylation evidence = C->T or G->A transitions with low ML scores
+    pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<Vec<Record>> {
+        let mut records = Vec::new();
+
+        // Check if any alt represents methylation evidence rather than a true variant.
+        // Assumption: C->T or G->A transitions with low ML scores are likely methylation
+        // signals in TAPS data rather than true variants.
+        let has_methylation_evidence = self.alts.iter().any(|alt| {
+            is_methylation_transition(self.pileup.reference_base, alt.base)
+                && !alt.filters.pass(ml_threshold)
+        });
+
+        // Write ref->. (no alt) row when:
+        // 1. There are no alts at this position, OR
+        // 2. There is methylation evidence (the ref base is methylated)
+        // These rows are marked as PASS since they represent the reference allele.
+        if self.alts.is_empty() || has_methylation_evidence {
+            let row = MetricsSubset {
+                pileup: &self.pileup,
+                pos_metrics: &self.pos_metrics,
+                pos_filters: &self.pos_filters,
+                ref_metrics: &self.ref_metrics,
+                alts: smallvec![],
+                is_ref_only_row: true,
+            };
+            records.push(row.to_vcf_row(ml_threshold)?);
+        }
+
+        // Write separate ref->alt row for each alt allele.
+        // Each alt gets its own row with its specific filters applied.
+        for alt in &self.alts {
+            let row = MetricsSubset {
+                pileup: &self.pileup,
+                pos_metrics: &self.pos_metrics,
+                pos_filters: &self.pos_filters,
+                ref_metrics: &self.ref_metrics,
+                alts: smallvec![alt.clone()],
+                is_ref_only_row: false,
+            };
+            records.push(row.to_vcf_row(ml_threshold)?);
+        }
+
+        // TODO: If this is a (de-novo) CpG site, consider writing both positions (C and G).
+        // This would help maintain CpG context information in the output.
+
+        Ok(records)
     }
 }
 
-/// A subset of metrics needed to write a VCF record
+/// A subset of metrics needed to write a VCF record.
+/// Each instance represents one row in the VCF output.
 struct MetricsSubset<'m> {
     pub pileup: &'m Pileup,
     pub pos_metrics: &'m PositionMetrics,
     pub pos_filters: &'m Filters,
     pub ref_metrics: &'m AlleleMetrics,
-    // Alt positions for this row
+    /// Alt alleles for this row. Empty for ref-only rows (ref->.).
     pub alts: SmallVec<Alt, 2>,
+    /// True if this is a ref-only row (ref->.) representing methylation evidence or no variants.
+    pub is_ref_only_row: bool,
 }
 
 impl MetricsSubset<'_> {
@@ -80,6 +130,13 @@ impl MetricsSubset<'_> {
         if self.pos_filters.other_pos_in_cpg_passes {
             return true;
         }
+
+        // Ref-only rows (ref->.) always pass - they represent methylation evidence or reference calls
+        if self.is_ref_only_row {
+            return true;
+        }
+
+        // For alt rows, check position filters and that at least one alt passes
         self.pos_filters.pass() && self.alts.iter().any(|a| a.filters.pass(ml_threshold))
     }
 
@@ -89,9 +146,11 @@ impl MetricsSubset<'_> {
         if self.pass(ml_threshold) {
             filters.add(PASS.filter());
         } else {
+            // Add position-level filters
             self.pos_filters.iter().for_each(|f| {
                 filters.add(f.clone());
             });
+            // Add alt-specific filters
             self.alts.iter().for_each(|alt| {
                 alt.filters.filters.iter().for_each(|f| {
                     filters.add(f.clone());

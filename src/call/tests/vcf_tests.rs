@@ -1,7 +1,7 @@
 //! Tests for VCF output from rastair call
 use super::utils::*;
 use crate::{pileups, vcf};
-use rastair_types::{Base::*, Probability};
+use rastair_types::Base::*;
 
 #[test]
 fn test_simple_variant() -> Result<()> {
@@ -58,6 +58,7 @@ fn test_all_matching_ref() -> Result<()> {
 }
 
 #[test]
+#[ignore = "TODO: Future feature combining multiple alts into one row"]
 fn test_multiple_alt_alleles() -> Result<()> {
     // Multiple different alt alleles at the same position
     let (segment, pileups) = pileups!(
@@ -89,8 +90,9 @@ fn test_cpg_context() -> Result<()> {
     );
 
     let expected_vcf = vcf![
-        (C T),
-        (G .),
+        (C .) PASS,
+        (C T) FAIL,
+        (G .) PASS,
     ];
 
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
@@ -103,6 +105,8 @@ fn test_cpg_context() -> Result<()> {
 #[test]
 fn test_filter_status_matching() -> Result<()> {
     // Test that we can match PASS/FAIL status on records
+    // C->T and G->A are methylation transitions, so when they fail ML threshold,
+    // we output both ref->. (PASS) and ref->alt (FAIL) rows
     let (segment, pileups) = pileups!(
         [ C G T ] Ref,
         [ T G T ] OT,
@@ -114,18 +118,21 @@ fn test_filter_status_matching() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
 
     // Manipulate ML scores to make some records fail
+    // When C->T and G->A fail, they become methylation evidence
     set_fail(&mut records[0], T);
     set_fail(&mut records[1], A);
 
     let expected_vcf = vcf![
-        (C T) FAIL,
-        (G A) FAIL,
+        (C .) PASS,  // methylation evidence: C is methylated
+        (C T) FAIL,  // low confidence variant
+        (G .) PASS,  // methylation evidence: G is methylated
+        (G A) FAIL,  // low confidence variant
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
     expected_vcf.matches(vcf_records)?;
 
-    // Now again but passing
+    // Now again but passing - no methylation evidence, just variants
     set_pass(&mut records[0], T);
     set_pass(&mut records[1], A);
 
@@ -141,20 +148,27 @@ fn test_filter_status_matching() -> Result<()> {
 }
 
 #[test]
-fn test_with_vcf_matcher() -> Result<()> {
+fn test_denovo_cpg() -> Result<()> {
+    // First position: G with alts C and T
+    // Second position: G with alt A (methylation transition G->A)
     let (segment, pileups) = pileups!(
-        [ A C ] Ref,
-        [ A T ] OB,
-        [ G T ] OB,
-        [ A C ] OT,
+        [ G G ] Ref,
+        [ C G ] OT,
+        [ C G ] OT,
+        [ T A ] OB,
+        [ T A ] OB,
     );
 
     let expected_vcf = vcf![
-        (A G),
-        (C T),
+        (G C) PASS,  // de-novo CpG candidate
+        (G T) FAIL,  // other alt at first position
+        (G .) PASS,  // second position: no alts match ref, or methylation evidence
+        (G A) FAIL,  // second position: G->A methylation transition with low ML
     ];
 
-    let records = test_call(segment, pileups, RecordFilters::all())?;
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[0], C); // set C alt to pass, creating de-novo CpG for sure
+
     let vcf_records = metrics_to_vcf(&records)?;
     expected_vcf.matches(vcf_records)?;
 

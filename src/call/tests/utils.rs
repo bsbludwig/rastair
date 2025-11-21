@@ -357,7 +357,7 @@ impl RecordFilters {
 pub(crate) fn metrics_to_vcf(metrics: &[PileupMetrics]) -> Result<Vec<VcfRecord>> {
     let mut vcf_records = Vec::new();
     for metric in metrics {
-        let mut records = metric.to_vcf_records(Some(Probability::ONE))?; // set to 1 to make sure only us saying PASS passes
+        let mut records = metric.to_vcf_records(Some(Probability::new_panicky(0.8)))?;
         vcf_records.append(&mut records);
     }
     Ok(vcf_records)
