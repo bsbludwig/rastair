@@ -255,84 +255,521 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
     }
 }
 
-// TODO: Rewrite methylation tests
-// #[cfg(test)]
-// mod tests {
-//     use color_eyre::eyre::ContextCompat;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        call::{pileup::Pileup, variant_calling::EstimatedGenotype},
+        pileups,
+        sequence::Segment,
+    };
+    use rastair_types::Probability;
 
-//     use super::*;
-//     use crate::call::{test_helpers::variant_pileup, variant_calling::VariantCallingParams};
+    fn to_metrics(
+        pileup: &Pileup,
+        _segment: &Segment,
+        genotype: Option<EstimatedGenotype>,
+    ) -> PileupMetrics {
+        let mut metrics = PileupMetrics::new(pileup.clone()).unwrap();
+        if let Some(gt) = genotype {
+            metrics.pos_metrics.extended.genotype = Some(gt);
+        }
+        metrics
+    }
 
-//     #[test]
-//     fn test_beta_value_c_to_t() -> Result<()> {
-//         let known_c_to_t_pos = variant_pileup("bacteriophage_lambda_CpG", 47482)?
-//             .variant_metrics(&VariantCallingParams::default())?;
-//         assert_eq!("C", known_c_to_t_pos.main.r#ref);
-//         let known_g_pos = variant_pileup("bacteriophage_lambda_CpG", 47483)?
-//             .variant_metrics(&VariantCallingParams::default())?;
-//         assert_eq!("G", known_g_pos.main.r#ref);
+    #[track_caller]
+    fn assert_original_cpg(result: Option<Methylated>, expected_beta: f64) {
+        match result {
+            Some(Methylated::OriginalCpG { beta }) => {
+                assert!(
+                    (*beta - expected_beta).abs() < 0.001,
+                    "Expected beta {}, got {}",
+                    expected_beta,
+                    *beta
+                );
+            }
+            other => panic!("Expected OriginalCpG, got {:?}", other),
+        }
+    }
 
-//         let methylation = call_methylation(
-//             &ThresholdParams::default(),
-//             &known_c_to_t_pos,
-//             None,
-//             Some(&known_g_pos),
-//         )?;
+    #[track_caller]
+    fn assert_denovo_cpg(result: Option<Methylated>, expected_beta: f64) {
+        match result {
+            Some(Methylated::DeNovoCpG { beta }) => {
+                assert!(
+                    (*beta - expected_beta).abs() < 0.001,
+                    "Expected beta {}, got {}",
+                    expected_beta,
+                    *beta
+                );
+            }
+            other => panic!("Expected DeNovoCpG, got {:?}", other),
+        }
+    }
 
-//         let mod_count = 12. / 2.;
-//         let unmod_count = 1.;
-//         let expected_beta = mod_count / (mod_count + unmod_count);
-//         let actual_beta = methylation.beta().wrap_err("No beta value")?;
+    #[track_caller]
+    fn assert_no_evidence(result: Option<Methylated>) {
+        match result {
+            Some(Methylated::NoEvidence) => {}
+            other => panic!("Expected NoEvidence, got {:?}", other),
+        }
+    }
 
-//         assert_eq!(expected_beta, actual_beta);
+    #[track_caller]
+    fn assert_none(result: Option<Methylated>) {
+        assert!(result.is_none(), "Expected None (Unknown), got {:?}", result);
+    }
 
-//         Ok(())
-//     }
+    fn ct_genotype() -> EstimatedGenotype {
+        EstimatedGenotype {
+            genotype: GenotypeTag::CT,
+            likelihood: Probability::new(0.99).unwrap(),
+            confidence: Probability::new(0.99).unwrap(),
+        }
+    }
 
-//     #[test]
-//     fn test_beta_value_all_mod() -> Result<()> {
-//         let known_c_to_t_pos = variant_pileup("bacteriophage_lambda_CpG", 42236)?
-//             .variant_metrics(&VariantCallingParams::default())?;
-//         assert_eq!("C", known_c_to_t_pos.main.r#ref);
-//         let known_g_pos = variant_pileup("bacteriophage_lambda_CpG", 42237)?
-//             .variant_metrics(&VariantCallingParams::default())?;
-//         assert_eq!("G", known_g_pos.main.r#ref);
+    mod original_cpg_ref_c {
+        use super::*;
 
-//         let methylation = call_methylation(&ThresholdParams::default(), &known_c_to_t_pos)?;
+        #[test]
+        fn fully_methylated() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [T A] OT,
+                [T A] OT,
+                [T A] OT,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-//         let mod_count = 7.;
-//         let unmod_count = 0.;
-//         let expected_beta = mod_count / (mod_count + unmod_count);
-//         let actual_beta = methylation.beta().wrap_err("No beta value")?;
+            assert_original_cpg(result, 1.0);
+        }
 
-//         assert_eq!(expected_beta, actual_beta);
+        #[test]
+        fn unmethylated() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-//         Ok(())
-//     }
+            assert_no_evidence(result);
+        }
 
-//     #[test]
-//     fn test_beta_value_all_mod_a() -> Result<()> {
-//         let known_c_pos = variant_pileup("bacteriophage_lambda_CpG", 14987)?
-//             .variant_metrics(&VariantCallingParams::default())?;
-//         assert_eq!("C", known_c_pos.main.r#ref);
-//         let known_g_to_a_pos = variant_pileup("bacteriophage_lambda_CpG", 14988)?
-//             .variant_metrics(&VariantCallingParams::default())?;
-//         assert_eq!("G", known_g_to_a_pos.main.r#ref);
+        #[test]
+        fn partially_methylated() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [T A] OT,
+                [T A] OT,
+                [T A] OT,
+                [C G] OT,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-//         let methylation = call_methylation(
-//             &ThresholdParams::default(),
-//             &known_g_to_a_pos,
-//             Some(&known_c_pos),
-//             None,
-//         )?;
+            assert_original_cpg(result, 0.6);
+        }
 
-//         let mod_count = 3.;
-//         let unmod_count = 0.;
-//         let expected_beta = mod_count / (mod_count + unmod_count);
-//         let actual_beta = methylation.beta().wrap_err("No beta value")?;
+        #[test]
+        fn het_snp() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [T A] OT,
+                [T A] OT,
+                [T A] OT,
+                [T A] OT,
+                [T A] OT,
+                [T A] OT,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, Some(ct_genotype()));
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-//         assert_eq!(expected_beta, actual_beta);
+            assert_original_cpg(result, 0.75);
+        }
 
-//         Ok(())
-//     }
-// }
+        #[test]
+        fn no_evidence() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_no_evidence(result);
+        }
+
+        #[test]
+        fn no_alt_t() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C G] OT,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_no_evidence(result);
+        }
+    }
+
+    mod original_cpg_ref_g {
+        use super::*;
+
+        #[test]
+        fn fully_methylated() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_original_cpg(result, 1.0);
+        }
+
+        #[test]
+        fn unmethylated() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_no_evidence(result);
+        }
+
+        #[test]
+        fn partially_methylated() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_original_cpg(result, 0.7);
+        }
+
+        #[test]
+        fn het_snp() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[1], &seg, Some(ct_genotype()));
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_original_cpg(result, 0.75);
+        }
+
+        #[test]
+        fn no_evidence() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_no_evidence(result);
+        }
+
+        #[test]
+        fn no_alt_a() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C G] OB,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_no_evidence(result);
+        }
+    }
+
+    mod denovo_t_to_c {
+        use super::*;
+
+        #[test]
+        fn standard() {
+            let (seg, ps) = pileups!(
+                [T G] Ref,
+                [T G] OT,
+                [T G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.2);
+        }
+
+        #[test]
+        fn het_snp_adjustment() {
+            let (seg, ps) = pileups!(
+                [T G] Ref,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [C G] OT,
+                [T G] OB,
+                [T G] OB,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.667);
+        }
+
+        #[test]
+        fn no_evidence() {
+            let (seg, ps) = pileups!(
+                [T G] Ref,
+                [T G] OB,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_none(result);
+        }
+    }
+
+    mod denovo_a_to_g {
+        use super::*;
+
+        #[test]
+        fn standard() {
+            let (seg, ps) = pileups!(
+                [C A] Ref,
+                [C A] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.1);
+        }
+
+        #[test]
+        fn het_snp_adjustment() {
+            let (seg, ps) = pileups!(
+                [C A] Ref,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C G] OB,
+                [C A] OT,
+                [C A] OT,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.667);
+        }
+
+        #[test]
+        fn no_evidence() {
+            let (seg, ps) = pileups!(
+                [C A] Ref,
+                [C A] OT,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_none(result);
+        }
+    }
+
+    mod denovo_other_to_c {
+        use super::*;
+
+        #[test]
+        fn standard_a_to_c() {
+            let (seg, ps) = pileups!(
+                [A G] Ref,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.5);
+        }
+
+        #[test]
+        fn multi_allelic_warning() {
+            let (seg, ps) = pileups!(
+                [A G] Ref,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+                [T G] OB,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.3);
+        }
+
+        #[test]
+        fn no_evidence() {
+            let (seg, ps) = pileups!(
+                [A G] Ref,
+                [A G] OB,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_none(result);
+        }
+    }
+
+    mod denovo_other_to_g {
+        use super::*;
+
+        #[test]
+        fn standard_t_to_g() {
+            let (seg, ps) = pileups!(
+                [C T] Ref,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.4);
+        }
+
+        #[test]
+        fn multi_allelic_warning() {
+            let (seg, ps) = pileups!(
+                [C T] Ref,
+                [C A] OB,
+                [C A] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+                [C A] OT,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.2);
+        }
+
+        #[test]
+        fn no_evidence() {
+            let (seg, ps) = pileups!(
+                [C T] Ref,
+                [C T] OT,
+            );
+            let metrics = to_metrics(&ps[1], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_none(result);
+        }
+    }
+
+    mod non_methylation {
+        use super::*;
+
+        #[test]
+        fn non_cpg_context() {
+            let (seg, ps) = pileups!(
+                [A T] Ref,
+                [A T] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_none(result);
+        }
+
+        #[test]
+        fn wrong_context() {
+            let (seg, ps) = pileups!(
+                [C A] Ref,
+                [C A] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, None);
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            assert_no_evidence(result);
+        }
+    }
+}

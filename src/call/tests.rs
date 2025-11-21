@@ -1,4 +1,4 @@
 mod debug;
-mod utils;
+pub mod utils;
 
 mod vcf_tests;
