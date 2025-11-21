@@ -607,7 +607,6 @@ fn test_strand_bias_in_methylation() -> Result<()> {
 }
 
 #[test]
-#[ignore = "TODO: write both CpG positions"]
 fn test_cpg_both_positions_written() -> Result<()> {
     // - C has variant C->A (passes)
     // - G has no alts (matches reference)
@@ -622,10 +621,10 @@ fn test_cpg_both_positions_written() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
     set_pass(&mut records[0], A);
 
-    // What should we expect?
+    // Always write both CpG positions
     let expected_vcf = vcf![
         (C A) PASS,  // C has variant
-        (G .) PASS   // Should write G to maintain CpG context?
+        (G .) PASS   // Should write G to maintain CpG context
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -677,7 +676,6 @@ fn test_other_pos_in_cpg_passes_flag() -> Result<()> {
 }
 
 #[test]
-#[ignore = "TODO"]
 fn test_denovo_cpg_both_positions_with_methylation() -> Result<()> {
     // Test complex scenario combining multiple TODOs:
     // - A->C creates de-novo CpG (now have CG)
@@ -695,7 +693,7 @@ fn test_denovo_cpg_both_positions_with_methylation() -> Result<()> {
         [ A G ] Ref,
         [ C G ] OT,  // Creates de-novo CpG
         [ C G ] OT,
-        [ T G ] OB,  // Methylation evidence (unmethylated C->T)
+        [ T G ] OB,  // Methylation evidence
         [ T G ] OB,
     );
 
@@ -704,13 +702,85 @@ fn test_denovo_cpg_both_positions_with_methylation() -> Result<()> {
     set_pass(&mut records[0], C);
     // A->T is methylation transition with low ML
     set_fail(&mut records[0], T);
-
-    // What should we expect?
     let expected_vcf = vcf![
-        // (A .) ???,  // Should we show unmethylated A?
-        // (A C) PASS,  // De-novo CpG creation
-        // (A T) FAIL,  // Methylation evidence
-        // (G .) ???,  // Should we write the G from the de-novo CpG?
+        (A C) PASS,  // De-novo CpG creation
+        (A T) FAIL,  // Methylation evidence
+        (G .) PASS,  // Write the G from the de-novo CpG
+    ];
+
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_denovo_cpg_that_is_variant_hg96_chr20_75254() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C C ] Ref,
+        [ C C ] OT,
+        [ C C ] OB,
+        [ A C ] OT,
+        [ A C ] OB,
+        [ A C ] OB,
+        [ A G ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[0], A);
+    set_fail(&mut records[1], G);
+
+    // Todo: Does this make sense?
+    let expected_vcf = vcf![
+        (C A) PASS,
+        (C G) FAIL,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_denovo_cpg_hg96_chr20_76962() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T G ] Ref,
+        [ C G ] OT,
+        [ C G ] OT,
+        [ C G ] OT,
+        [ C G ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[0], C);
+
+    let expected_vcf = vcf![
+        (T C) PASS,  // De-novo CpG creation
+        (G .) PASS,  // Write the G from the de-novo CpG
+    ];
+
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_cpg_variant_hg96_chr20_65899() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ C A ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+    );
+
+    let records = test_call(segment, pileups, RecordFilters::cpgs())?;
+
+    let expected_vcf = vcf![
+        (C .) PASS,
+        (G A) PASS,  // Actual variant
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
