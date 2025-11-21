@@ -26,19 +26,9 @@ pub fn calculate_pileup_metrics(
         let mut current =
             PileupMetrics::new(pileup).wrap_err("Failed to calculate pileup metrics")?;
 
-        // Set "extended" metrics that depend on the segment and params. This is
-        // done in a separate step since it also uses the pileup we just
-        // constructed.
-        current.pos_metrics.extended.genotype =
-            current.pileup.estimate_genotype(params.variant_calling.error_model);
-        current.pos_metrics.extended.methylated =
-            metrics::methylation::call(&params.methylation, &current)?.unwrap_or_default();
-
         current.pos_metrics.extended.region_entropy = segment
             .entropy_around::<100>(current.pileup.idx())
             .wrap_err("Failed to calculate region entropy")?;
-
-        current.pos_metrics.extended.denovo_adj = metrics::DenovoAdjecent::No;
 
         Ok(current)
     })

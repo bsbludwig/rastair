@@ -7,7 +7,7 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{PileupMetrics, ml::types::MachineLearning},
+    metrics::{self, PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers, Segment},
     utils::{cli, logging::ThisIsABug as _},
 };
@@ -315,9 +315,6 @@ fn process_region(
     let pileups = calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params);
 
     // Collect relevant pileups based on what the caller asked for
-    //
-    // The main reason we filter here is to avoid running ML on some pileups
-    // that we won't report anyway.
     let mut pileups: Vec<PileupMetrics> = pileups
         .filter_map(|x: Result<PileupMetrics>| match x {
             Err(e) => {
@@ -361,6 +358,22 @@ fn process_region(
         }
     }
 
+    // More filters: Add ML metrics if requested
+    process::add_ml_metrics(&mut pileups, ml).wrap_err("Failed to add ML metrics")?;
+
+    // Set "extended" metrics that depend on the segment and params. This is
+    // done in a separate step since it uses the pileup as well as the ML score.
+    for pileup in &mut pileups {
+        let span = tracing::trace_span!("extended_metrics", pos=%pileup.pos());
+        let _guard = span.enter();
+
+        // TODO: Use ML score for genotyping
+        pileup.pos_metrics.extended.genotype =
+            pileup.pileup.estimate_genotype(params.variant_calling.error_model);
+        pileup.pos_metrics.extended.methylated =
+            metrics::methylation::call(&params.methylation.thresholds, pileup)?.unwrap_or_default();
+    }
+
     // Add 'simple' filters based on the collected metrics
     process::apply_threshold_filters(
         &mut pileups,
@@ -371,9 +384,6 @@ fn process_region(
         },
     )
     .wrap_err("Failed to apply threshold filters")?;
-
-    // More filters: Add ML metrics if requested
-    process::add_ml_metrics(&mut pileups, ml).wrap_err("Failed to add ML metrics")?;
 
     // For CpG sites and de-novo CpG sites, if one position is pass, mark
     // corresponding as pass as well
