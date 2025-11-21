@@ -155,6 +155,11 @@ rand_chacha.opt-level = 3
 proptest.opt-level = 3
 insta.opt-level = 3
 similar.opt-level = 3
+biosphere.opt-level = 3
+ndarray.opt-level = 3
+bgzip.opt-level = 3
+lz4.opt-level = 3
+rust_htslib.opt-level = 3
 
 [profile.profiling]
 inherits = "release"
