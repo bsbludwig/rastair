@@ -8,7 +8,7 @@ use crate::{
         pileup::{Pileup, SimpleRead, SimpleReads},
         process_region,
     },
-    metrics::PileupMetrics,
+    metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, Region, Segment},
     utils::SequenceContext,
     vcf::Record as VcfRecord,
@@ -18,7 +18,7 @@ use clio::ClioPath;
 use color_eyre::eyre::ContextCompat as _;
 pub(crate) use color_eyre::{Result, eyre::bail};
 use rastair_types::{Base, Probability, SmallVec, Strand};
-use std::{rc::Rc, str::FromStr};
+use std::{rc::Rc, str::FromStr, sync::OnceLock};
 
 #[macro_export]
 macro_rules! pileups {
@@ -308,9 +308,10 @@ pub(crate) fn test_call(
         total_threads: 2,
     };
 
-    let ml = params.ml.init()?;
+    static ML: OnceLock<MachineLearning> = OnceLock::new();
+    let ml = ML.get_or_init(|| params.ml.init().unwrap());
 
-    process_region(segment, pileups.into_iter(), &params, &ml)
+    process_region(segment, pileups.into_iter(), &params, ml)
 }
 
 pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
