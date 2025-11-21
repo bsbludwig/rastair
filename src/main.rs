@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 
 /// Use mimalloc as the global allocator, which proves to be faster than the
 /// default system allocator in our benchmarks.
+#[cfg(not(debug_assertions))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
