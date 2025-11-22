@@ -1,3 +1,20 @@
+//! This is the most complex part of Rastair
+//!
+//! Its data flow is as follows:
+//!
+//! - Input: Paths for BAM and FASTA, config parameters, output path and format
+//! - Split the genome into segments and process them in parallel:
+//!   1. Load reads from BAM overlapping the segment
+//!   2. Build pileups for each position in the segment
+//!   3. Calculate metrics for each pileup
+//!   4. Pre-filter positions (e.g. only keep CpG sites)
+//!   5. Call variants based on the metrics
+//! - Output: Write variants to output file in specified format (VCF/BCF)
+//!   1. One output thread collects records for each segment
+//!   2. Filter be given criteria
+//!   3. Convert to the output format
+//!   4. Write to file in order
+
 use crate::{
     bed::rastair1::BedParams,
     call::{
