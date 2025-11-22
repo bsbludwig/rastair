@@ -6,7 +6,7 @@ use std::{fmt, ops::Deref};
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 #[repr(transparent)]
-pub struct SimpleReads(pub(crate) SmallVec<SimpleRead, 20>);
+pub struct SimpleReads(pub(crate) Vec<SimpleRead>);
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for SimpleReads {
