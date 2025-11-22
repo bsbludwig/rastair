@@ -88,26 +88,15 @@ mod tests {
     #[test]
     fn test_alleles_in_order() {
         let bases = SimpleReads(SmallVec::from(vec![
-            SimpleRead {
-                base: Base::A,
-                strand: Strand::OT,
-                qname: SmallVec::from(b"read1"),
-                ..default()
-            },
+            SimpleRead { base: Base::A, strand: Strand::OT, ..default() },
             SimpleRead {
                 base: Base::C,
                 strand: Strand::OB,
                 reverse: true,
                 second: false,
-                qname: SmallVec::from(b"read2"),
                 ..default()
             },
-            SimpleRead {
-                base: Base::A,
-                strand: Strand::OT,
-                qname: SmallVec::from(b"read3"),
-                ..default()
-            },
+            SimpleRead { base: Base::A, strand: Strand::OT, ..default() },
         ]));
 
         let segment = Segment {

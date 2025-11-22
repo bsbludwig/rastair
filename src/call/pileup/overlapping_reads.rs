@@ -3,47 +3,280 @@
 //  - use a FxHashMap for quick lookup by qname suffix
 // TODO: Add tests for this module
 
-use super::SimpleReads;
+use std::cell::RefCell;
+
+use crate::call::pileup::ReadName;
+
+use super::{SimpleRead, SimpleReads};
 use rastair_types::SmallVec;
 
 impl SimpleReads {
     /// Remove overlapping reads from the same fragment.
-    pub fn remove_overlapping_pairs(&mut self) {
-        // For each read, check if we already saw one with the same name.
-        //
-        // If the bases agree, keep only the first one. If they disagree, keep none.
-        //
-        // But this is rust -- so we can't just remove elements while iterating.
-        // Instead, we keep a little list of indices to remove, and then remove them afterwards.
-        // This should be fine since the amount of items to remove is typically small.
-        let mut to_remove = SmallVec::<usize, 16>::new();
-        for i in 0..self.0.len() {
-            let base_i = &self.0[i];
-            for j in (i + 1)..self.0.len() {
-                let base_j = &self.0[j];
-                if base_i.qname == base_j.qname {
-                    // Same read name
-                    if base_i.base == base_j.base {
-                        // Same base, keep only the first one
-                        to_remove.push(j);
-                    } else {
-                        // Different bases, ignore the second in pair
-                        // NOTE: This is different from rastair1
-                        if base_i.second {
-                            to_remove.push(i);
-                        } else {
-                            to_remove.push(j);
-                        }
-                    }
-                    // No need to check further
-                    break;
-                }
-            }
-        }
+    pub fn remove_overlapping_pairs(&mut self, names: &[ReadName]) {
+        // let mut to_remove = remove_dupes_simple(&self.0);
+        let mut to_remove = remove_dupes_clever(&self.0, names);
         // Remove duplicates
         to_remove.sort_unstable();
         for &idx in to_remove.iter().rev() {
             self.0.swap_remove(idx);
         }
+    }
+}
+
+/// Idea: For each read, check if we already saw one with the same name suffix.
+///
+/// If the bases agree, keep only the first one. If they disagree, keep the
+/// first in pair.
+///
+/// But this is rust -- so we can't just remove elements while iterating.
+/// Instead, we keep a little list of indices to remove, and then remove them
+/// afterwards. This should be fine since the amount of items to remove is
+/// typically small.
+#[inline(never)]
+fn remove_dupes_clever(reads: &[SimpleRead], names: &[ReadName]) -> SmallVec<usize, 16> {
+    const SUFFIX_SIZE: usize = 4;
+    thread_local! {
+        /// Temporary storage for seen suffixes
+        static SUFFIX_LIST: RefCell<Vec<[u8; SUFFIX_SIZE]>> = RefCell::new(Vec::with_capacity(128));
+    }
+
+    SUFFIX_LIST.with(|map_cell| {
+        let mut seen = map_cell.borrow_mut();
+        seen.clear(); // Reuse existing allocation
+
+        let mut to_remove = SmallVec::<usize, 16>::new();
+
+        for this_idx in 0..reads.len() {
+            let this_read = &reads[this_idx];
+            let this_name = &names[this_idx];
+            let suffix = extract_suffix::<SUFFIX_SIZE>(this_name);
+
+            // Search for matching suffix in ALREADY SEEN reads (0..this_idx)
+            // then verify the full qname matches
+            let matching_read =
+                seen.iter().position(|s| *s == suffix).and_then(|_suffix_match_idx| {
+                    names[..this_idx].iter().position(|name| name == this_name)
+                });
+
+            // Push the current suffix AFTER checking for matches
+            seen.push(suffix);
+
+            if let Some(other_idx) = matching_read {
+                // Another read with same qname was seen before
+                let other_read = &reads[other_idx];
+                if this_read.base == other_read.base {
+                    // Same base, keep only the first one
+                    to_remove.push(this_idx);
+                } else {
+                    // Different bases, ignore the second in pair
+                    // NOTE: This is different from rastair1
+                    if this_read.second {
+                        to_remove.push(this_idx);
+                    } else {
+                        to_remove.push(other_idx);
+                    }
+                }
+            }
+        }
+        to_remove
+    })
+}
+
+/// Extract the last N bytes of a qname as a fixed-size array.
+fn extract_suffix<const N: usize>(qname: &[u8]) -> [u8; N] {
+    let mut suffix = [0u8; N];
+    let len = qname.len();
+
+    if len >= N {
+        suffix.copy_from_slice(&qname[len - N..]);
+    } else {
+        // Pad with zeros
+        suffix[N - len..].copy_from_slice(qname);
+    }
+
+    suffix
+}
+
+// random tests generated by claude
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call::pileup::read::SimpleRead;
+    use crate::utils::Base;
+
+    fn make_read(qname: &str, base: Base, second: bool) -> (ReadName, SimpleRead) {
+        (qname.as_bytes().to_vec(), SimpleRead { base, second, ..Default::default() })
+    }
+
+    fn make_reads(reads: Vec<(ReadName, SimpleRead)>) -> (Vec<ReadName>, SimpleReads) {
+        let (names, reads) =
+            reads.into_iter().fold((Vec::new(), Vec::new()), |(mut n_acc, mut r_acc), (n, r)| {
+                n_acc.push(n);
+                r_acc.push(r);
+                (n_acc, r_acc)
+            });
+        (names, SimpleReads(reads))
+    }
+
+    #[test]
+    fn test_extract_suffix_full_length() {
+        let qname = b"read1234";
+        let suffix = extract_suffix::<4>(qname);
+        assert_eq!(suffix, [b'1', b'2', b'3', b'4']);
+    }
+
+    #[test]
+    fn test_extract_suffix_longer_than_needed() {
+        let qname = b"instrument:run:flowcell:lane:tile:x:y/1";
+        let suffix = extract_suffix::<4>(qname);
+        // Last 4 bytes should be "y/1" plus the byte before 'y'
+        assert_eq!(suffix, [b':', b'y', b'/', b'1']);
+    }
+
+    #[test]
+    fn test_extract_suffix_short_qname() {
+        let qname = b"AB";
+        let suffix = extract_suffix::<4>(qname);
+        assert_eq!(suffix, [0, 0, b'A', b'B']);
+    }
+
+    #[test]
+    fn test_extract_suffix_empty() {
+        let qname = b"";
+        let suffix = extract_suffix::<4>(qname);
+        assert_eq!(suffix, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_extract_suffix_different_sizes() {
+        let qname = b"test12345678";
+        let suffix4 = extract_suffix::<4>(qname);
+        let suffix8 = extract_suffix::<8>(qname);
+        assert_eq!(suffix4, [b'5', b'6', b'7', b'8']);
+        assert_eq!(suffix8, [b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8']);
+    }
+
+    #[test]
+    fn test_no_duplicates() {
+        let (names, mut reads) = make_reads(vec![
+            make_read("read1", Base::A, false),
+            make_read("read2", Base::C, false),
+            make_read("read3", Base::G, false),
+        ]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.len(), 3);
+    }
+
+    #[test]
+    fn test_duplicate_same_base() {
+        let (names, mut reads) =
+            make_reads(vec![make_read("read1", Base::A, false), make_read("read1", Base::A, true)]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 1);
+        assert_eq!(reads.0[0].base, Base::A);
+        assert!(!reads.0[0].second); // First one kept
+    }
+
+    #[test]
+    fn test_duplicate_different_base_remove_second() {
+        let (names, mut reads) =
+            make_reads(vec![make_read("read1", Base::A, false), make_read("read1", Base::C, true)]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 1);
+        assert_eq!(reads.0[0].base, Base::A);
+        assert!(!reads.0[0].second); // Non-second kept
+    }
+
+    #[test]
+    fn test_duplicate_different_base_first_is_second() {
+        let (names, mut reads) =
+            make_reads(vec![make_read("read1", Base::A, true), make_read("read1", Base::C, false)]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 1);
+        assert_eq!(reads.0[0].base, Base::C);
+        assert!(!reads.0[0].second); // Non-second kept
+    }
+
+    #[test]
+    fn test_multiple_duplicate_pairs() {
+        let (names, mut reads) = make_reads(vec![
+            make_read("read1", Base::A, false),
+            make_read("read2", Base::C, false),
+            make_read("read1", Base::A, true),
+            make_read("read3", Base::G, false),
+            make_read("read2", Base::C, true),
+        ]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 3);
+    }
+
+    #[test]
+    fn test_same_suffix_different_qname() {
+        // Create reads with same suffix but different full qnames
+        let (names, mut reads) = make_reads(vec![
+            make_read("prefix_AAA", Base::A, false),
+            make_read("other__AAA", Base::C, false), // Same suffix, different prefix
+        ]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 2); // Both should be kept (not duplicates)
+    }
+
+    #[test]
+    fn test_three_reads_same_qname() {
+        let (names, mut reads) = make_reads(vec![
+            make_read("read1", Base::A, false),
+            make_read("read1", Base::A, true),
+            make_read("read1", Base::A, true),
+        ]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 1); // Only first should remain
+    }
+
+    #[test]
+    fn test_empty_reads() {
+        let mut reads = SimpleReads(SmallVec::new());
+        let names = Vec::new();
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 0);
+    }
+
+    #[test]
+    fn test_single_read() {
+        let (names, mut reads) = make_reads(vec![make_read("read1", Base::A, false)]);
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 1);
+    }
+
+    #[test]
+    fn test_realistic_qnames() {
+        // Simulate realistic paired-end read names
+        // Note: /1 and /2 suffixes make these DIFFERENT qnames (not duplicates)
+        let (names, mut reads) = make_reads(vec![
+            make_read("instrument:1:flowcell:1:1234:5678:9012/1", Base::A, false),
+            make_read("instrument:1:flowcell:1:1234:5678:9012/2", Base::A, true),
+            make_read("instrument:1:flowcell:1:1234:9999:8888/1", Base::C, false),
+        ]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 3); // All three should remain (different qnames)
+    }
+
+    #[test]
+    fn test_short_qnames() {
+        let (names, mut reads) = make_reads(vec![
+            make_read("A", Base::A, false),
+            make_read("A", Base::A, true),
+            make_read("B", Base::C, false),
+        ]);
+
+        reads.remove_overlapping_pairs(&names);
+        assert_eq!(reads.0.len(), 2);
     }
 }

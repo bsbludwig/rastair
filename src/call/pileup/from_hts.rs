@@ -1,6 +1,6 @@
 use crate::{
     call::{
-        pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
+        pileup::{Pileup, PositionInRead, ReadName, SimpleRead, SimpleReads},
         process::PileupMappingParams,
     },
     sequence::Segment,
@@ -21,19 +21,24 @@ impl Pileup {
     ) -> Result<Pileup> {
         let pos = pile.pos();
         let idx = segment.pos_to_idx(pos)?;
+        let depth = usize::try_from(pile.depth()).wrap_err("depth exceeds usize")?;
 
-        let seen_bases = pile
-            .alignments()
+        let mut reads = Vec::with_capacity(depth);
+        let mut names = Vec::with_capacity(depth);
+
+        pile.alignments()
             .filter_map(|pile| alignment_to_read(params, pile))
-            .filter(|seen_base| params.read_masking.filter(seen_base))
-            .filter(|seen_base| params.quality.filter(seen_base))
-            .take(1000)
-            .collect();
+            .filter(|(_, seen_base)| params.read_masking.filter(seen_base))
+            .filter(|(_, seen_base)| params.quality.filter(seen_base))
+            .for_each(|(name, seen_base)| {
+                names.push(name);
+                reads.push(seen_base);
+            });
 
-        let mut reads = SimpleReads(seen_bases);
+        let mut reads = SimpleReads(reads);
 
         if !params.keep_overlapping_reads {
-            reads.remove_overlapping_pairs();
+            reads.remove_overlapping_pairs(&names);
         }
 
         let reference_base =
@@ -53,7 +58,10 @@ impl Pileup {
 }
 
 /// Collect info from a pileup alignment
-fn alignment_to_read(params: &PileupMappingParams, a: Alignment<'_>) -> Option<SimpleRead> {
+fn alignment_to_read(
+    params: &PileupMappingParams,
+    a: Alignment<'_>,
+) -> Option<(ReadName, SimpleRead)> {
     let pos = a.qpos()?;
     let record = a.record();
     let cigar = record.raw_cigar();
@@ -63,23 +71,26 @@ fn alignment_to_read(params: &PileupMappingParams, a: Alignment<'_>) -> Option<S
     }
     let (matches, indels) = calc_cigar_data(cigar);
 
-    Some(SimpleRead {
-        qname: SmallVec::from(record.qname()),
-        base: record.seq()[pos].into(),
-        qual: *record.qual().get(pos)?,
-        mapq: record.mapq(),
-        // Strand of the read, derived from the record. Early return if strand cannot be determined.
-        // TODO: handle "lenient mode"
-        strand: StrandFromRecord::strand(&record).ok()?,
-        reverse: record.is_reverse(),
-        second: record.is_last_in_template(),
-        position: PositionInRead {
-            pos: u32::try_from(pos).expect("position fits in u32"),
-            read_length: u32::try_from(record.seq_len()).expect("read length fits in u32"),
+    Some((
+        SmallVec::from(record.qname()),
+        SimpleRead {
+            // qname: SmallVec::from(record.qname()),
+            base: record.seq()[pos].into(),
+            qual: *record.qual().get(pos)?,
+            mapq: record.mapq(),
+            // Strand of the read, derived from the record. Early return if strand cannot be determined.
+            // TODO: handle "lenient mode"
+            strand: StrandFromRecord::strand(&record).ok()?,
+            reverse: record.is_reverse(),
+            second: record.is_last_in_template(),
+            position: PositionInRead {
+                pos: u32::try_from(pos).expect("position fits in u32"),
+                read_length: u32::try_from(record.seq_len()).expect("read length fits in u32"),
+            },
+            matching_bases: matches,
+            indels,
         },
-        matching_bases: matches,
-        indels,
-    })
+    ))
 }
 
 /// Calculate the number of matches and indels from a packed CIGAR array.

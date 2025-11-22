@@ -52,11 +52,9 @@ pub struct SimpleRead {
     /// Number of indels in the read this base belongs to
     #[cfg_attr(test, default(2))]
     pub indels: u32,
-    /// Query Name of the read this base belongs to
-    // FIXME: Move out if only used for overlapping reads detection
-    #[serde(skip_serializing, default)]
-    pub qname: SmallVec<u8, 42>,
 }
+
+pub type ReadName = SmallVec<u8, 48>;
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for SimpleRead {

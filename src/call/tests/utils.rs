@@ -78,11 +78,9 @@ pub(crate) fn create_pileups(
 
             let reads = read_lines
                 .iter()
-                .enumerate()
-                .map(|(read_idx, read_line)| SimpleRead {
+                .map(|read_line| SimpleRead {
                     base: read_line.bases[pos_idx],
                     strand: read_line.strand,
-                    qname: SmallVec::from(format!("read{}", read_idx).into_bytes()),
                     ..default()
                 })
                 .collect();
