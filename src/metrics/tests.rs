@@ -26,20 +26,16 @@ fn test_cpg_detection() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let pileups = process::calculate_pileup_metrics(
-        pileups,
-        &segment,
-        &process::PileupMetricsParams { variant_calling: default(), methylation: default() },
-    )
-    .map(|x: Result<PileupMetrics>| -> PileupMetrics {
-        let mut x = x.unwrap();
-        process::apply_threshold_filters(&mut x, &threshold_filters)
-            .wrap_err("Failed to apply threshold filters")
-            .unwrap();
-        x
-    })
-    .map_surrounding(|b, c, a| process::propagate_cpg_pass_flags(b, c, a, ml_threshold))
-    .collect::<Result<Vec<_>>>()?;
+    let pileups = process::calculate_pileup_metrics(pileups, &segment)
+        .map(|x: Result<PileupMetrics>| -> PileupMetrics {
+            let mut x = x.unwrap();
+            process::apply_threshold_filters(&mut x, &threshold_filters)
+                .wrap_err("Failed to apply threshold filters")
+                .unwrap();
+            x
+        })
+        .map_surrounding(|b, c, a| process::propagate_cpg_pass_flags(b, c, a, ml_threshold))
+        .collect::<Result<Vec<_>>>()?;
 
     // get pileups for a CpG site
     let ref_c =
@@ -85,20 +81,16 @@ fn set_filters() -> Result<()> {
 
     let ml = MachineLearningParams::default().init()?;
 
-    let pileups = process::calculate_pileup_metrics(
-        pileups,
-        &segment,
-        &process::PileupMetricsParams { variant_calling: default(), methylation: default() },
-    )
-    .map(|x: Result<PileupMetrics>| -> PileupMetrics {
-        let mut x = x.unwrap();
-        process::apply_threshold_filters(&mut x, &threshold_filters)
-            .wrap_err("Failed to apply threshold filters")
-            .unwrap();
-        x
-    })
-    .map_surrounding(|b, c, a| process::propagate_cpg_pass_flags(b, c, a, ml_threshold))
-    .collect::<Result<Vec<_>>>()?;
+    let pileups = process::calculate_pileup_metrics(pileups, &segment)
+        .map(|x: Result<PileupMetrics>| -> PileupMetrics {
+            let mut x = x.unwrap();
+            process::apply_threshold_filters(&mut x, &threshold_filters)
+                .wrap_err("Failed to apply threshold filters")
+                .unwrap();
+            x
+        })
+        .map_surrounding(|b, c, a| process::propagate_cpg_pass_flags(b, c, a, ml_threshold))
+        .collect::<Result<Vec<_>>>()?;
 
     let pileups = pileups
         .into_iter()

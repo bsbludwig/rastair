@@ -6,7 +6,7 @@ pub use pileups::{PileupMappingParams, get_pileups};
 
 // Next, we calculate various metrics based on the generated pileups
 mod pileup_metrics;
-pub use pileup_metrics::{PileupMetricsParams, calculate_pileup_metrics};
+pub use pileup_metrics::calculate_pileup_metrics;
 
 // Then, we apply filters to the calculated pileup metrics
 mod threshold_filters;

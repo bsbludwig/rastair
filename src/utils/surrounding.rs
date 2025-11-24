@@ -1,6 +1,5 @@
 use crate::metrics::PileupMetrics;
 use color_eyre::Result;
-use std::fmt;
 
 /// Iterator adapter that processes elements with access to their validated neighbors.
 ///

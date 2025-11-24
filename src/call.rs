@@ -19,12 +19,12 @@ use crate::{
     bed::rastair1::BedParams,
     call::{
         methylation::params::MethylationCallingParams,
-        pileup::Pileup,
-        process::{PileupMetricsParams, calculate_pileup_metrics, get_pileups},
+        pileup::{Pileup, SimpleRead},
+        process::{calculate_pileup_metrics, get_pileups},
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{self, DenovoAdjecent, FormsDenovo, PileupMetrics, ml::types::MachineLearning},
+    metrics::{self, PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers, Segment},
     utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
 };
@@ -325,10 +325,6 @@ fn process_region(
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
     // Calculate metrics for each pileup.
-    let pileup_metrics_params = PileupMetricsParams {
-        variant_calling: params.variant_calling.clone(),
-        methylation: params.methylation.thresholds.clone(),
-    };
     let threshold_filters = process::ThresholdFilterParams {
         variant_calling: params.variant_calling.clone(),
         methylation: params.methylation.thresholds.clone(),
@@ -347,54 +343,53 @@ fn process_region(
         };
     }
 
-    let pileups: Vec<PileupMetrics> =
-        calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params)
-            .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
-            .map_surrounding(process::set_denovo_adj)
-            .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
-            .filter(|p| {
-                // Filter out pileups that are not relevant based on caller parameters
-                let cpg_only_pls = params.record_filters.cpgs_only;
+    let pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
+        .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
+        .map_surrounding(process::set_denovo_adj)
+        .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
+        .filter(|p| {
+            // Filter out pileups that are not relevant based on caller parameters
+            let cpg_only_pls = params.record_filters.cpgs_only;
 
-                let has_alts = !p.alts.is_empty();
-                let cpg = *p.pos_metrics.cpg || p.forms_denovo();
+            let has_alts = !p.alts.is_empty();
+            let cpg = *p.pos_metrics.cpg || p.forms_denovo();
 
-                if cpg_only_pls {
-                    // Filter out pileups that are not CpG if requested
-                    cpg
-                } else {
-                    // Otherwise, keep all variant evidence + methylation evidence
-                    has_alts || cpg
-                }
-            })
-            .map_surrounding(|b, c, a| {
-                // More filters: Add ML metrics if requested
-                process::add_ml_metrics(b, c, a, ml)
-            })
-            .filter_map(log_failed_and_skip!("failed to calculate ML score, skipping"))
-            .map(|mut pileup| {
-                // Set "extended" metrics that depend on the segment and params. This is
-                // done in a separate step since it uses the pileup as well as the ML score.
-                // TODO: Use ML score for genotyping
-                pileup.pos_metrics.extended.genotype =
-                    pileup.pileup.estimate_genotype(params.variant_calling.error_model);
-                pileup.pos_metrics.extended.methylated =
-                    metrics::methylation::call(&params.methylation.thresholds, &pileup)?
-                        .unwrap_or_default();
+            if cpg_only_pls {
+                // Filter out pileups that are not CpG if requested
+                cpg
+            } else {
+                // Otherwise, keep all variant evidence + methylation evidence
+                has_alts || cpg
+            }
+        })
+        .map_surrounding(|b, c, a| {
+            // More filters: Add ML metrics if requested
+            process::add_ml_metrics(b, c, a, ml)
+        })
+        .filter_map(log_failed_and_skip!("failed to calculate ML score, skipping"))
+        .map(|mut pileup| {
+            // Set "extended" metrics that depend on the segment and params. This is
+            // done in a separate step since it uses the pileup as well as the ML score.
+            // TODO: Use ML score for genotyping
+            pileup.pos_metrics.extended.genotype =
+                pileup.pileup.estimate_genotype(params.variant_calling.error_model);
+            pileup.pos_metrics.extended.methylated =
+                metrics::methylation::call(&params.methylation.thresholds, &pileup)?
+                    .unwrap_or_default();
 
-                // Add 'simple' filters based on the collected metrics
-                process::apply_threshold_filters(&mut pileup, &threshold_filters)
-                    .wrap_err("Failed to apply threshold filters")?;
-                Ok(pileup)
-            })
-            .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))
-            .map_surrounding(|b, c, a| {
-                // For CpG sites and de-novo CpG sites, if one position is pass, mark
-                // corresponding as pass as well
-                process::propagate_cpg_pass_flags(b, c, a, params.ml.threshold())
-            })
-            .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
-            .collect();
+            // Add 'simple' filters based on the collected metrics
+            process::apply_threshold_filters(&mut pileup, &threshold_filters)
+                .wrap_err("Failed to apply threshold filters")?;
+            Ok(pileup)
+        })
+        .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))
+        .map_surrounding(|b, c, a| {
+            // For CpG sites and de-novo CpG sites, if one position is pass, mark
+            // corresponding as pass as well
+            process::propagate_cpg_pass_flags(b, c, a, params.ml.threshold())
+        })
+        .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
+        .collect();
 
     // At this point, we have collected all metrics for the pileups in this
     // region. The recipient is responsible for further filtering based on
@@ -404,10 +399,12 @@ fn process_region(
         if pileups.is_empty() {
             debug!("No relevant pileups found in region");
         } else {
-            let count = readable::num::Unsigned::from(pileups.len());
-            let bytes =
-                readable::byte::Byte::from(pileups.len() * std::mem::size_of::<PileupMetrics>());
-            debug!(%count, %bytes, "Collected pileup metrics");
+            let count_piles = readable::num::Unsigned::from(pileups.len());
+            let pile_size = pileups.len() * std::mem::size_of::<PileupMetrics>();
+            let read_size = pileups.iter().map(|p| p.pileup.reads.len()).sum::<usize>()
+                * std::mem::size_of::<SimpleRead>();
+            let bytes = readable::byte::Byte::from(pile_size + read_size);
+            debug!(%count_piles, %bytes, "Collected pileup metrics");
         }
     }
 
