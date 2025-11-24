@@ -153,13 +153,7 @@ fn can_tabix_files() -> Result<()> {
     let bed_file = temp_dir.path().join("test.bed.gz");
 
     rastair()
-        .args([
-            "per-read",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--bed-index",
-            "--bed",
-        ])
+        .args(["per-read", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam", "--bed"])
         .arg(&bed_file)
         .succeeds()
         .wrap_err("Failed to run per-read")?;

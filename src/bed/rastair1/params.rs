@@ -23,11 +23,6 @@ pub struct BedParams {
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub bed_format: Option<BedFormat>,
 
-    /// Write tabix index for the BED output file
-    #[arg(long)]
-    #[arg(help_heading = cli::sections::OUTPUT)]
-    pub bed_index: bool,
-
     #[command(flatten)]
     pub filters: BedRecordsFilterParams,
 }
@@ -56,7 +51,7 @@ impl BedParams {
         };
 
         let format = self.bed_format();
-        let writer = BedWriter::new(path, format, self.bed_index)
+        let writer = BedWriter::new(path, format)
             .wrap_err_with(|| format!("Failed to create BED writer for {path}"))?;
         Ok(Some(writer))
     }

@@ -65,7 +65,7 @@ impl Write for Writer {
 
 impl<R: BedRecord> BedWriter<R> {
     #[instrument(level = "info", name = "BedWriter", skip(path), fields(path = %path))]
-    pub fn new(path: &ClioPath, format: BedFormat, write_index: bool) -> Result<Self> {
+    pub fn new(path: &ClioPath, format: BedFormat) -> Result<Self> {
         let writer = path.clone().create().wrap_err("Failed to create output")?;
         let writer: Box<dyn Write + Send + Sync> = Box::new(BufWriter::new(writer));
         let mut writer: Writer = match format {
@@ -73,7 +73,7 @@ impl<R: BedRecord> BedWriter<R> {
                 let writer = bgzf::io::writer::Builder::default()
                     .set_compression_level(CompressionLevel::default())
                     .build_from_writer(writer);
-                let tabix = if write_index && path.is_file() {
+                let tabix = if path.is_file() {
                     let mut indexer = tabix::index::Indexer::default();
                     indexer.set_header(csi::binning_index::index::header::Builder::bed().build());
 

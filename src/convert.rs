@@ -59,11 +59,6 @@ pub struct ConvertParams {
     #[command(flatten)]
     pub bed_params: BedRecordsFilterParams,
 
-    /// Write tabix index for the BED output file
-    #[arg(long)]
-    #[arg(help_heading = cli::sections::OUTPUT)]
-    pub bed_index: bool,
-
     /// Minimum ML score to consider a position as variant
     ///
     /// This does nothing if the input data does not contain ML scores.
@@ -155,10 +150,9 @@ fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     };
     reader.set_threads(2).wrap_err("Failed to set VCF reader threads")?;
 
-    let mut writer =
-        BedWriter::new(&params.output, format, params.bed_index).wrap_err_with(|| {
-            format!("Failed to create BED writer for output file `{}`", params.output)
-        })?;
+    let mut writer = BedWriter::new(&params.output, format).wrap_err_with(|| {
+        format!("Failed to create BED writer for output file `{}`", params.output)
+    })?;
 
     let mut record = reader.empty_record();
     while let Some(res) = reader.read(&mut record) {
@@ -239,10 +233,9 @@ fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
         .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
         .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
 
-    let mut writer =
-        BedWriter::new(&params.output, format, params.bed_index).wrap_err_with(|| {
-            format!("Failed to create BED writer for output file `{}`", params.output)
-        })?;
+    let mut writer = BedWriter::new(&params.output, format).wrap_err_with(|| {
+        format!("Failed to create BED writer for output file `{}`", params.output)
+    })?;
 
     for entry in r.entries {
         match entry {
