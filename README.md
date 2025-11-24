@@ -34,6 +34,4 @@ To start coding, have a look at [the `xtask` documentation](tools/xtask/README.m
 
 ## License
 
-This software is made available under the terms of the [GNU Affero General Public License v3](https://www.gnu.org/licenses/agpl-3.0.html). If you require a more restrictive license for commercial purposes, please contact the authors to discuss alternative arrangements.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+This software is made available under a "non-commercial-use" license. Please refer to LICENSE.txt for details.
