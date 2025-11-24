@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 
 mod base_modification;
 pub use base_modification::MethylatedPositions;
-use tracing::{debug, instrument, warn};
+use tracing::{instrument, warn};
 
 #[derive(Debug, Parser)]
 pub struct BamRewriteArgs {
@@ -138,21 +138,17 @@ fn rewrite_record(
     calls: &FxHashMap<u32, RastairCall>,
     record: &mut Record,
 ) -> Result<()> {
-    if record.is_reverse() {
-        // For now, we only handle forward strand reads
-        debug!("Skipping reverse strand read at position {}", record.pos());
-
-        let strand = StrandFromRecord::strand(record);
-        let mods = MethylatedPositions::new(strand, &record.seq().as_bytes(), &[]);
-        mods.apply_to_record(record)?;
-
-        return Ok(());
-    }
-
-    let MethylatedInfo { seq, methylated_positions } = get_methylated_positions(calls, record);
+    let is_reverse = record.is_reverse();
+    let MethylatedInfo { seq, methylated_positions } =
+        get_methylated_positions(calls, record, is_reverse);
 
     let strand = StrandFromRecord::strand(record);
-    let mods = MethylatedPositions::new(strand, &seq, &methylated_positions);
+
+    // For reverse reads, we need to work with the original sequence for MM tag generation
+    // but keep the SEQ in reverse complement form
+    let seq_for_mm_tag = if is_reverse { reverse_complement(&seq) } else { seq.clone() };
+
+    let mods = MethylatedPositions::new(strand, &seq_for_mm_tag, &methylated_positions);
 
     record.set_seq(&seq);
 
@@ -169,12 +165,17 @@ fn get_methylated_positions(
     // All calls in the region of the record (they are all the same contig)
     calls: &FxHashMap<u32, RastairCall>,
     record: &Record,
+    is_reverse: bool,
 ) -> MethylatedInfo {
     use Base::*;
 
     let strand = StrandFromRecord::strand(record);
 
-    let mut seq = record.seq().as_bytes();
+    // For reverse reads, we need to work with the original sequence
+    let current_seq = record.seq().as_bytes();
+    let mut seq = if is_reverse { reverse_complement(&current_seq) } else { current_seq };
+
+    let seq_len = seq.len();
     let mut methylated_positions: SmallVec<u32, 10> = SmallVec::new();
 
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
@@ -191,7 +192,14 @@ fn get_methylated_positions(
             && let RastairCall::Cpg { methylated, .. } = call
             && *methylated
         {
-            let pos = pos_in_read as usize;
+            // For reverse reads, map current position to original position
+            let original_pos = if is_reverse {
+                u32::try_from(seq_len - 1 - pos_in_read as usize).expect("position fits in u32")
+            } else {
+                pos_in_read
+            };
+
+            let pos = original_pos as usize;
             let observed_base = Base::from(seq[pos]);
 
             // Let's rewrite the sequence to un-modify the bases and collect
@@ -202,7 +210,7 @@ fn get_methylated_positions(
                 Strand::OT => {
                     if observed_base == T {
                         seq[pos] = *C;
-                        methylated_positions.push(pos_in_read);
+                        methylated_positions.push(original_pos);
                     }
                 }
                 // If we are on the bottom strand, we expect to see A at
@@ -210,7 +218,7 @@ fn get_methylated_positions(
                 Strand::OB => {
                     if observed_base == A {
                         seq[pos] = *G;
-                        methylated_positions.push(pos_in_read);
+                        methylated_positions.push(original_pos);
                     }
                 }
                 Strand::Unknown => continue,
@@ -218,7 +226,26 @@ fn get_methylated_positions(
         }
     }
 
+    // For reverse reads, reverse complement back to get the modified SEQ
+    if is_reverse {
+        seq = reverse_complement(&seq);
+    }
+
     MethylatedInfo { seq, methylated_positions }
+}
+
+/// Reverse complement a DNA sequence
+fn reverse_complement(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|&base| match base {
+            b'A' | b'a' => b'T',
+            b'T' | b't' => b'A',
+            b'C' | b'c' => b'G',
+            b'G' | b'g' => b'C',
+            _ => b'N',
+        })
+        .collect()
 }
 
 /// Add a PG header line for rastair
@@ -297,7 +324,7 @@ mod tests {
             calls
         };
 
-        let data = get_methylated_positions(&calls, &record);
+        let data = get_methylated_positions(&calls, &record, false);
         let new_seq = &data.seq;
 
         // for human comparison
@@ -341,5 +368,27 @@ mod tests {
 
     fn as_base_string(seq: &[u8]) -> String {
         seq.iter().map(|b| Base::from(*b).as_str()).collect()
+    }
+
+    #[test]
+    fn test_reverse_complement() {
+        // Simple test
+        assert_eq!(reverse_complement(b"ACGT"), b"ACGT");
+        assert_eq!(reverse_complement(b"AAAA"), b"TTTT");
+        assert_eq!(reverse_complement(b"CCCC"), b"GGGG");
+
+        // More complex sequence
+        assert_eq!(reverse_complement(b"ATCGATCG"), b"CGATCGAT");
+
+        // With unknown bases
+        assert_eq!(reverse_complement(b"ANTN"), b"NANT");
+
+        // Empty sequence
+        assert_eq!(reverse_complement(b""), b"");
+
+        // Real-world example: forward sequence with methylation evidence
+        let forward = b"ATTGT"; // Original with T at position 2 (methylated C)
+        let reverse = reverse_complement(forward);
+        assert_eq!(reverse, b"ACAAT");
     }
 }

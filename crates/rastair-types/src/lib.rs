@@ -20,7 +20,7 @@ pub mod smallvec {
     pub type SmallVec<T, const _N: usize> = Vec<T>;
 }
 #[cfg(not(debug_assertions))]
-pub use smallvec::smallvec;
+pub use smallvec;
 
 pub use smallvec::SmallVec;
 
