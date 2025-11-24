@@ -4,7 +4,7 @@ description = "Fast and flexible extraction of methylation information from BAM 
 version = "2.0.0-rc.1"
 edition = "2024"
 rust-version = "1.89.0"
-license = "AGPL-3.0-only"
+license-file = "LICENSE.txt"
 authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"
 

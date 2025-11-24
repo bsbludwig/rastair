@@ -3,7 +3,7 @@ name = "rastair-vcf"
 version = "0.1.0"
 description = "A VCF writer for Rastair."
 authors = ["Pascal Hertleif <pascal@softleif.se>"]
-license = "MIT OR Apache-2.0"
+license-file = "../LICENSE.txt"
 edition = "2024"
 
 [dependencies]
