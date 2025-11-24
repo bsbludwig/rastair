@@ -63,6 +63,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--v-min-depth <V_MIN_DEPTH>`
 
   Default value: `3`
+* `--max-coverage <MAX_COVERAGE>`
+
+  Default value: `1000`
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read
 
   Default value: `1`

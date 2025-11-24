@@ -27,6 +27,12 @@ pub struct VariantCallingParams {
     #[default(3)]
     pub v_min_depth: u32,
 
+    // The minimum number of reads to call a position as a variant
+    #[arg(long, default_value_t = 1000)]
+    #[arg(help_heading = cli::sections::FILTER)]
+    #[default(1000)]
+    pub max_coverage: u32,
+
     #[command(flatten)]
     pub quality: QualityFilterParams,
 
