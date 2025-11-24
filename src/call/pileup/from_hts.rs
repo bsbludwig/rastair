@@ -22,14 +22,16 @@ impl Pileup {
         let pos = pile.pos();
         let idx = segment.pos_to_idx(pos)?;
         let depth = usize::try_from(pile.depth()).wrap_err("depth exceeds usize")?;
+        let max_reads = depth.min(1000);
 
-        let mut reads = Vec::with_capacity(depth);
-        let mut names = Vec::with_capacity(depth);
+        let mut reads = Vec::with_capacity(max_reads);
+        let mut names = Vec::with_capacity(max_reads);
 
         pile.alignments()
             .filter_map(|pile| alignment_to_read(params, pile))
             .filter(|(_, seen_base)| params.read_masking.filter(seen_base))
             .filter(|(_, seen_base)| params.quality.filter(seen_base))
+            .take(max_reads)
             .for_each(|(name, seen_base)| {
                 names.push(name);
                 reads.push(seen_base);
