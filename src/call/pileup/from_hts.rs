@@ -10,7 +10,7 @@ use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use rastair_types::SmallVec;
 use rust_htslib::bam::pileup::{Alignment, Pileup as HtsPileup};
 use std::rc::Rc;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 impl Pileup {
     #[instrument(level = "trace", skip_all)]
@@ -23,6 +23,9 @@ impl Pileup {
         let idx = segment.pos_to_idx(pos)?;
         let depth = usize::try_from(pile.depth()).wrap_err("depth exceeds usize")?;
         let max_reads = depth.min(1000);
+        if depth > max_reads {
+            debug!(pos, depth, "Capping number of reads in pileup to {max_reads}");
+        }
 
         let mut reads = Vec::with_capacity(max_reads);
         let mut names = Vec::with_capacity(max_reads);
