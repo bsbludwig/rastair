@@ -1,7 +1,8 @@
 use crate::{
     call::{ml::MachineLearningParams, process},
+    metrics::PileupMetrics,
     sequence::ReaderParams,
-    utils::default,
+    utils::{PileupMetricsIteratorExt, default},
 };
 use color_eyre::{
     Result,
@@ -18,26 +19,27 @@ fn test_cpg_detection() -> Result<()> {
     let pileup_mapping_params = process::PileupMappingParams { variant_calling: default() };
     let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
         .wrap_err("failed to process region")?;
-    let mut pileups = process::calculate_pileup_metrics(
+
+    let threshold_filters = process::ThresholdFilterParams {
+        variant_calling: default(),
+        methylation: default(),
+        denovo_cpg: default(),
+    };
+
+    let pileups = process::calculate_pileup_metrics(
         pileups,
         &segment,
         &process::PileupMetricsParams { variant_calling: default(), methylation: default() },
     )
-    .collect::<Result<Vec<_>>>()
-    .wrap_err("failed to calculate pileup metrics")?;
-
-    process::apply_threshold_filters(
-        &mut pileups,
-        &process::ThresholdFilterParams {
-            variant_calling: default(),
-            methylation: default(),
-            denovo_cpg: default(),
-        },
-    )
-    .wrap_err("Failed to apply threshold filters")?;
-
-    process::propagate_cpg_pass_flags(&mut pileups, ml_threshold)
-        .wrap_err("Failed to propagate CpG pass flags")?;
+    .map(|x: Result<PileupMetrics>| -> PileupMetrics {
+        let mut x = x.unwrap();
+        process::apply_threshold_filters(&mut x, &threshold_filters)
+            .wrap_err("Failed to apply threshold filters")
+            .unwrap();
+        x
+    })
+    .map_surrounding(|b, c, a| process::propagate_cpg_pass_flags(b, c, a, ml_threshold))
+    .collect::<Result<Vec<_>>>()?;
 
     // get pileups for a CpG site
     let ref_c =
@@ -74,28 +76,34 @@ fn set_filters() -> Result<()> {
     let pileup_mapping_params = process::PileupMappingParams { variant_calling: default() };
     let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
         .wrap_err("failed to process region")?;
-    let mut pileups = process::calculate_pileup_metrics(
+
+    let threshold_filters = process::ThresholdFilterParams {
+        variant_calling: default(),
+        methylation: default(),
+        denovo_cpg: default(),
+    };
+
+    let ml = MachineLearningParams::default().init()?;
+
+    let pileups = process::calculate_pileup_metrics(
         pileups,
         &segment,
         &process::PileupMetricsParams { variant_calling: default(), methylation: default() },
     )
-    .collect::<Result<Vec<_>>>()
-    .wrap_err("failed to calculate pileup metrics")?;
+    .map(|x: Result<PileupMetrics>| -> PileupMetrics {
+        let mut x = x.unwrap();
+        process::apply_threshold_filters(&mut x, &threshold_filters)
+            .wrap_err("Failed to apply threshold filters")
+            .unwrap();
+        x
+    })
+    .map_surrounding(|b, c, a| process::propagate_cpg_pass_flags(b, c, a, ml_threshold))
+    .collect::<Result<Vec<_>>>()?;
 
-    process::apply_threshold_filters(
-        &mut pileups,
-        &process::ThresholdFilterParams {
-            variant_calling: default(),
-            methylation: default(),
-            denovo_cpg: default(),
-        },
-    )
-    .wrap_err("Failed to apply threshold filters")?;
-
-    process::propagate_cpg_pass_flags(&mut pileups, ml_threshold)
-        .wrap_err("Failed to propagate CpG pass flags")?;
-
-    process::add_ml_metrics(&mut pileups, &MachineLearningParams::default().init()?)?;
+    let pileups = pileups
+        .into_iter()
+        .map_surrounding(|b, c, a| process::add_ml_metrics(b, c, a, &ml))
+        .collect::<Result<Vec<_>>>()?;
 
     // get pileups for a CpG site
     let low_dp_on_a =

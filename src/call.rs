@@ -24,9 +24,9 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{self, PileupMetrics, ml::types::MachineLearning},
+    metrics::{self, DenovoAdjecent, FormsDenovo, PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers, Segment},
-    utils::{cli, logging::ThisIsABug as _},
+    utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
 };
 use better_default::Default;
 use clio::ClioPath;
@@ -329,40 +329,76 @@ fn process_region(
         variant_calling: params.variant_calling.clone(),
         methylation: params.methylation.thresholds.clone(),
     };
-    let pileups = calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params);
+    let threshold_filters = process::ThresholdFilterParams {
+        variant_calling: params.variant_calling.clone(),
+        methylation: params.methylation.thresholds.clone(),
+        denovo_cpg: params.denovo_cpg.clone(),
+    };
 
-    // Collect relevant pileups based on what the caller asked for
-    let mut pileups: Vec<PileupMetrics> = pileups
-        .filter_map(|x: Result<PileupMetrics>| match x {
-            Err(e) => {
-                warn!(error = format!("{e:#}"), "failed to calculate metric, skipping");
-                None
+    macro_rules! log_failed_and_skip {
+        ($msg:expr) => {
+            |x: Result<PileupMetrics>| match x {
+                Err(e) => {
+                    warn!(error = format!("{e:#}"), $msg);
+                    None
+                }
+                Ok(x) => Some(x),
             }
-            Ok(x) => Some(x),
-        })
-        .collect();
+        };
+    }
 
-    // Mark de-novo CpG adjacent positions
-    //
-    // This is done in a separate step since it needs to look at pileups
-    // before/after
-    process::set_denovo_adj(&mut pileups);
+    let pileups: Vec<PileupMetrics> =
+        calculate_pileup_metrics(pileups, &segment, &pileup_metrics_params)
+            .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
+            .map_surrounding(process::set_denovo_adj)
+            .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
+            .filter(|p| {
+                // Filter out pileups that are not relevant based on caller parameters
+                let cpg_only_pls = params.record_filters.cpgs_only;
 
-    // Filter out pileups that are not relevant based on caller parameters
-    pileups.retain(|p| {
-        let cpg_only_pls = params.record_filters.cpgs_only;
+                let has_alts = !p.alts.is_empty();
+                let cpg = *p.pos_metrics.cpg || p.forms_denovo();
 
-        let has_alts = !p.alts.is_empty();
-        let cpg = *p.pos_metrics.cpg || p.forms_denovo();
+                if cpg_only_pls {
+                    // Filter out pileups that are not CpG if requested
+                    cpg
+                } else {
+                    // Otherwise, keep all variant evidence + methylation evidence
+                    has_alts || cpg
+                }
+            })
+            .map_surrounding(|b, c, a| {
+                // More filters: Add ML metrics if requested
+                process::add_ml_metrics(b, c, a, ml)
+            })
+            .filter_map(log_failed_and_skip!("failed to calculate ML score, skipping"))
+            .map(|mut pileup| {
+                // Set "extended" metrics that depend on the segment and params. This is
+                // done in a separate step since it uses the pileup as well as the ML score.
+                // TODO: Use ML score for genotyping
+                pileup.pos_metrics.extended.genotype =
+                    pileup.pileup.estimate_genotype(params.variant_calling.error_model);
+                pileup.pos_metrics.extended.methylated =
+                    metrics::methylation::call(&params.methylation.thresholds, &pileup)?
+                        .unwrap_or_default();
 
-        if cpg_only_pls {
-            // Filter out pileups that are not CpG if requested
-            cpg
-        } else {
-            // Otherwise, keep all variant evidence + methylation evidence
-            has_alts || cpg
-        }
-    });
+                // Add 'simple' filters based on the collected metrics
+                process::apply_threshold_filters(&mut pileup, &threshold_filters)
+                    .wrap_err("Failed to apply threshold filters")?;
+                Ok(pileup)
+            })
+            .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))
+            .map_surrounding(|b, c, a| {
+                // For CpG sites and de-novo CpG sites, if one position is pass, mark
+                // corresponding as pass as well
+                process::propagate_cpg_pass_flags(b, c, a, params.ml.threshold())
+            })
+            .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
+            .collect();
+
+    // At this point, we have collected all metrics for the pileups in this
+    // region. The recipient is responsible for further filtering based on
+    // filters and writing them to the VCF or BED file.
 
     if tracing::enabled!(Level::DEBUG) {
         if pileups.is_empty() {
@@ -375,40 +411,5 @@ fn process_region(
         }
     }
 
-    // More filters: Add ML metrics if requested
-    process::add_ml_metrics(&mut pileups, ml).wrap_err("Failed to add ML metrics")?;
-
-    // Set "extended" metrics that depend on the segment and params. This is
-    // done in a separate step since it uses the pileup as well as the ML score.
-    for pileup in &mut pileups {
-        let span = tracing::trace_span!("extended_metrics", pos=%pileup.pos());
-        let _guard = span.enter();
-
-        // TODO: Use ML score for genotyping
-        pileup.pos_metrics.extended.genotype =
-            pileup.pileup.estimate_genotype(params.variant_calling.error_model);
-        pileup.pos_metrics.extended.methylated =
-            metrics::methylation::call(&params.methylation.thresholds, pileup)?.unwrap_or_default();
-    }
-
-    // Add 'simple' filters based on the collected metrics
-    process::apply_threshold_filters(
-        &mut pileups,
-        &process::ThresholdFilterParams {
-            variant_calling: params.variant_calling.clone(),
-            methylation: params.methylation.thresholds.clone(),
-            denovo_cpg: params.denovo_cpg.clone(),
-        },
-    )
-    .wrap_err("Failed to apply threshold filters")?;
-
-    // For CpG sites and de-novo CpG sites, if one position is pass, mark
-    // corresponding as pass as well
-    process::propagate_cpg_pass_flags(&mut pileups, params.ml.threshold())
-        .wrap_err("Failed to propagate CpG pass flags")?;
-
-    // At this point, we have collected all metrics for the pileups in this
-    // region. The recipient is responsible for further filtering based on
-    // filters and writing them to the VCF or BED file.
     Ok(pileups)
 }

@@ -1,48 +1,6 @@
 use crate::metrics::PileupMetrics;
+use color_eyre::Result;
 use std::fmt;
-
-/// Struct holding references to current and its surrounding items
-pub struct Surrounding<'a, T> {
-    pub before: Option<&'a T>,
-    pub current: &'a mut T,
-    pub after: Option<&'a T>,
-}
-
-impl<'a, T: fmt::Debug> fmt::Debug for Surrounding<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Surrounding")
-            .field("before", &self.before)
-            .field("current", &self.current)
-            .field("after", &self.after)
-            .finish()
-    }
-}
-
-/// Get the pileup metrics for the record at `index` and its direct neighbors, if they exist
-pub fn surrounding_pileups(
-    records: &mut [PileupMetrics],
-    index: usize,
-) -> Surrounding<'_, PileupMetrics> {
-    // To appease the borrow checker and get a mutable reference to the current record,
-    // we split the records into three parts.
-    let (left, right) = records.split_at_mut(index);
-    let (current_slice, next_slice) = right.split_at_mut(1);
-    let current = &mut current_slice[0];
-
-    let before = left.last();
-    let after = next_slice.first();
-    // we might not have the direct neighbors
-    let before = before.filter(|p| {
-        p.pileup.contig() == current.pileup.contig()
-            && Some(p.pileup.pos) == current.pileup.pos.checked_sub(1)
-    });
-    let after = after.filter(|p| {
-        p.pileup.contig() == current.pileup.contig()
-            && Some(p.pileup.pos) == current.pileup.pos.checked_add(1)
-    });
-
-    Surrounding { before, current, after }
-}
 
 /// Iterator adapter that processes elements with access to their validated neighbors.
 ///
@@ -52,7 +10,7 @@ pub fn surrounding_pileups(
 pub struct SurroundingMap<I, F>
 where
     I: Iterator<Item = PileupMetrics>,
-    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>),
+    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
 {
     iter: I,
     window: [Option<PileupMetrics>; 3],
@@ -63,7 +21,7 @@ where
 impl<I, F> SurroundingMap<I, F>
 where
     I: Iterator<Item = PileupMetrics>,
-    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>),
+    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
 {
     fn new(iter: I, mapper: F) -> Self {
         Self { iter, window: [None, None, None], mapper, started: false }
@@ -90,9 +48,9 @@ where
 impl<I, F> Iterator for SurroundingMap<I, F>
 where
     I: Iterator<Item = PileupMetrics>,
-    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>),
+    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
 {
-    type Item = PileupMetrics;
+    type Item = Result<PileupMetrics>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if !self.started {
@@ -125,12 +83,20 @@ where
         let before_ref = if before_valid { self.window[0].as_ref() } else { None };
         let after_ref = if after_valid { self.window[2].as_ref() } else { None };
 
-        (self.mapper)(before_ref, &mut current, after_ref);
-
-        // Phase 4: Clone the result to return, then put current back in window for next slide
-        let result = current.clone();
-        self.window[1] = Some(current);
-        Some(result)
+        // Phase 4: Call mapper and handle the result
+        match (self.mapper)(before_ref, &mut current, after_ref) {
+            Ok(()) => {
+                // Clone the result to return, then put current back in window for next slide
+                let result = current.clone();
+                self.window[1] = Some(current);
+                Some(Ok(result))
+            }
+            Err(e) => {
+                // Put current back in window before returning error
+                self.window[1] = Some(current);
+                Some(Err(e))
+            }
+        }
     }
 }
 
@@ -145,25 +111,27 @@ pub trait PileupMetricsIteratorExt: Iterator<Item = PileupMetrics> + Sized {
     /// - `after`: Reference to the next element if it exists and is adjacent
     ///   (same contig, position + 1)
     ///
-    /// The function should mutate `current` in place. The modified element is
-    /// then yielded by the iterator.
+    /// The function should mutate `current` in place and return `Result<()>`.
+    /// The iterator will yield `Result<PileupMetrics>` - `Ok(current)` if the
+    /// function succeeds, or `Err` if it fails.
     ///
     /// # Example
     /// ```ignore
     /// use rastair::utils::surrounding::PileupMetricsIteratorExt;
     ///
-    /// let processed = pileups
+    /// let processed: Result<Vec<_>> = pileups
     ///     .map_surrounding(|before, current, after| {
     ///         // Mutate current based on neighbors
     ///         if before.is_some() && after.is_some() {
     ///             current.has_both_neighbors = true;
     ///         }
+    ///         Ok(())
     ///     })
-    ///     .collect::<Vec<_>>();
+    ///     .collect();
     /// ```
     fn map_surrounding<F>(self, f: F) -> SurroundingMap<Self, F>
     where
-        F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>),
+        F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
     {
         SurroundingMap::new(self, f)
     }
@@ -221,8 +189,10 @@ mod tests {
                 calls += 1;
                 assert!(before.is_none());
                 assert!(after.is_none());
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 0);
         assert_eq!(calls, 0);
@@ -240,8 +210,10 @@ mod tests {
                 assert!(before.is_none(), "Single element should have no before");
                 assert!(after.is_none(), "Single element should have no after");
                 assert_eq!(current.pileup.pos, 100);
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(calls, 1);
@@ -268,8 +240,10 @@ mod tests {
                     assert!(after.is_none());
                     assert_eq!(current.pileup.pos, 101);
                 }
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 2);
     }
@@ -281,22 +255,26 @@ mod tests {
 
         let result: Vec<_> = items
             .into_iter()
-            .map_surrounding(|before, current, after| match current.pileup.pos {
-                100 => {
-                    assert!(before.is_none());
-                    assert_eq!(after.unwrap().pileup.pos, 101);
+            .map_surrounding(|before, current, after| {
+                match current.pileup.pos {
+                    100 => {
+                        assert!(before.is_none());
+                        assert_eq!(after.unwrap().pileup.pos, 101);
+                    }
+                    101 => {
+                        assert_eq!(before.unwrap().pileup.pos, 100);
+                        assert_eq!(after.unwrap().pileup.pos, 102);
+                    }
+                    102 => {
+                        assert_eq!(before.unwrap().pileup.pos, 101);
+                        assert!(after.is_none());
+                    }
+                    _ => panic!("Unexpected position"),
                 }
-                101 => {
-                    assert_eq!(before.unwrap().pileup.pos, 100);
-                    assert_eq!(after.unwrap().pileup.pos, 102);
-                }
-                102 => {
-                    assert_eq!(before.unwrap().pileup.pos, 101);
-                    assert!(after.is_none());
-                }
-                _ => panic!("Unexpected position"),
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 3);
     }
@@ -312,22 +290,26 @@ mod tests {
 
         let result: Vec<_> = items
             .into_iter()
-            .map_surrounding(|before, current, after| match current.pileup.pos {
-                100 => {
-                    assert!(before.is_none());
-                    assert!(after.is_none(), "105 is not consecutive to 100");
+            .map_surrounding(|before, current, after| {
+                match current.pileup.pos {
+                    100 => {
+                        assert!(before.is_none());
+                        assert!(after.is_none(), "105 is not consecutive to 100");
+                    }
+                    105 => {
+                        assert!(before.is_none(), "100 is not consecutive to 105");
+                        assert_eq!(after.unwrap().pileup.pos, 106);
+                    }
+                    106 => {
+                        assert_eq!(before.unwrap().pileup.pos, 105);
+                        assert!(after.is_none());
+                    }
+                    _ => panic!("Unexpected position"),
                 }
-                105 => {
-                    assert!(before.is_none(), "100 is not consecutive to 105");
-                    assert_eq!(after.unwrap().pileup.pos, 106);
-                }
-                106 => {
-                    assert_eq!(before.unwrap().pileup.pos, 105);
-                    assert!(after.is_none());
-                }
-                _ => panic!("Unexpected position"),
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 3);
     }
@@ -358,8 +340,10 @@ mod tests {
                     }
                     _ => panic!("Unexpected contig/position"),
                 }
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 3);
     }
@@ -374,8 +358,10 @@ mod tests {
             .map_surrounding(|_before, current, _after| {
                 // Mutate the position by adding 1000
                 current.pileup.pos += 1000;
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].pileup.pos, 1100);
@@ -404,8 +390,10 @@ mod tests {
                     assert_eq!(before.unwrap().pileup.pos, pos - 1);
                     assert_eq!(after.unwrap().pileup.pos, pos + 1);
                 }
+                Ok(())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         assert_eq!(result.len(), 10);
     }
@@ -446,9 +434,55 @@ mod tests {
                     }
                     _ => panic!("Unexpected combination"),
                 }
+                Ok(())
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(result.len(), 5);
+    }
+
+    #[test]
+    fn test_error_propagation() {
+        let items =
+            vec![make_pileup("chr1", 100), make_pileup("chr1", 101), make_pileup("chr1", 102)];
+
+        let result: Result<Vec<_>> = items
+            .into_iter()
+            .map_surrounding(|_before, current, _after| {
+                // Fail on position 101
+                if current.pileup.pos == 101 {
+                    color_eyre::eyre::bail!("Simulated error at position 101")
+                } else {
+                    Ok(())
+                }
             })
             .collect();
 
-        assert_eq!(result.len(), 5);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Simulated error at position 101"));
+    }
+
+    #[test]
+    fn test_error_stops_iteration() {
+        let items: Vec<_> = (0..10).map(|i| make_pileup("chr1", 100 + i)).collect();
+        let mut processed_count = 0;
+
+        let result: Result<Vec<_>> = items
+            .into_iter()
+            .map_surrounding(|_before, current, _after| {
+                processed_count += 1;
+                // Fail on position 105
+                if current.pileup.pos == 105 {
+                    color_eyre::eyre::bail!("Error at position 105")
+                } else {
+                    Ok(())
+                }
+            })
+            .collect();
+
+        assert!(result.is_err());
+        // Should have processed elements up to and including 105
+        assert_eq!(processed_count, 6); // positions 100-105
     }
 }

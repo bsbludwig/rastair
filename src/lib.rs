@@ -35,7 +35,7 @@ pub(crate) mod utils {
     pub mod logging;
 
     mod surrounding;
-    pub use surrounding::{Surrounding, surrounding_pileups};
+    pub use surrounding::PileupMetricsIteratorExt;
 
     pub mod cli;
 
