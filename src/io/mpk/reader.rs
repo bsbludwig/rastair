@@ -9,7 +9,6 @@ use std::{
 use tracing::{instrument, trace};
 
 pub struct MessagePackReader {
-    pub path: ClioPath,
     reader: Box<dyn Read + Send>,
 }
 
@@ -26,7 +25,7 @@ impl MessagePackReader {
         let file = path.clone().open().wrap_err_with(|| format!("Failed to open {path}"))?;
         let reader =
             lz4::Decoder::new(BufReader::new(file)).wrap_err("Failed to create LZ4 decoder")?;
-        Ok(Self { path: path.clone(), reader: Box::new(reader) })
+        Ok(Self { reader: Box::new(reader) })
     }
 
     #[instrument(level = "debug", skip(self))]

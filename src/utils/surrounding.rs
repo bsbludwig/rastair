@@ -140,6 +140,7 @@ pub trait PileupMetricsIteratorExt: Iterator<Item = PileupMetrics> + Sized {
 impl<I> PileupMetricsIteratorExt for I where I: Iterator<Item = PileupMetrics> {}
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation, reason = "test code")]
 mod tests {
     use super::*;
     use crate::{
@@ -150,7 +151,7 @@ mod tests {
     use rastair_types::Base;
     use std::rc::Rc;
 
-    /// Helper to create a minimal PileupMetrics for testing
+    /// Helper to create a minimal `PileupMetrics` for testing
     fn make_pileup(contig: &str, pos: u64) -> PileupMetrics {
         // Create a minimal segment with enough context
         let start = pos.saturating_sub(10);

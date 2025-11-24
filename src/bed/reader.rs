@@ -74,6 +74,7 @@ impl RastairBedReader {
 }
 
 #[derive(Debug, Clone)]
+#[expect(unused, reason = "for completeness")]
 pub struct SimpleRastairBedRecord {
     pub chrom: SmolStr,
     pub pos: u32,
@@ -101,6 +102,7 @@ struct RefRastairBedRecord<'src> {
 }
 
 #[derive(Debug, Clone)]
+#[expect(unused, reason = "for completeness")]
 pub enum RastairCall {
     /// A CpG site on the reference genome
     Cpg {

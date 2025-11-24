@@ -1,10 +1,4 @@
-use crate::{
-    call::{
-        methylation::params::ThresholdParams, pileup::Pileup, variant_calling::VariantCallingParams,
-    },
-    metrics::PileupMetrics,
-    sequence::Segment,
-};
+use crate::{call::pileup::Pileup, metrics::PileupMetrics, sequence::Segment};
 use color_eyre::eyre::{Result, WrapErr};
 use tracing::instrument;
 

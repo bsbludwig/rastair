@@ -4,7 +4,6 @@
 use crate::{
     CallParams,
     call::{
-        ml::MachineLearningParams,
         pileup::{Pileup, SimpleRead, SimpleReads},
         process_region,
     },
@@ -17,7 +16,7 @@ pub use crate::{call::record_filters::RecordFilters, utils::default};
 use clio::ClioPath;
 use color_eyre::eyre::ContextCompat as _;
 pub(crate) use color_eyre::{Result, eyre::bail};
-use rastair_types::{Base, Probability, SmallVec, Strand};
+use rastair_types::{Base, Probability, Strand};
 use std::{rc::Rc, str::FromStr, sync::OnceLock};
 
 #[macro_export]
@@ -348,6 +347,7 @@ impl RecordFilters {
         Self { vcf_all: false, cpgs_only: true }
     }
 
+    #[expect(unused, reason = "for completeness")]
     pub(crate) fn all_cpgs() -> Self {
         Self { vcf_all: true, cpgs_only: true }
     }
