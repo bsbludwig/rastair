@@ -180,6 +180,46 @@ fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
 }
 
 #[test]
+fn segmentation_does_not_change_bed_output() -> Result<()> {
+    const REGION: &str = "--region=chr19";
+
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let temp_file1 = temp_dir.path().join("test1.bed");
+    let temp_file2 = temp_dir.path().join("test2.bed");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, REGION])
+        .args(["--segment-max-length=10000", "--segment-overlap=300", "--threads=7", "--bed"])
+        .arg(&temp_file1)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, REGION])
+        .args(["--segment-max-length=11111", "--segment-overlap=111", "--threads=4", "--bed"])
+        .arg(&temp_file2)
+        .succeeds()?;
+
+    // Check that both files have the same hash
+    fn hash(content: &[u8]) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        content.hash(&mut hasher);
+        hasher.finish()
+    }
+    let hash1 = hash(&std::fs::read(&temp_file1)?);
+    let hash2 = hash(&std::fs::read(&temp_file2)?);
+
+    assert_eq!(hash1, hash2, "Files should have identical content");
+
+    Ok(())
+}
+
+#[test]
 #[ignore = "TODO: Fix after changing vcf output"]
 fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
     const REGION: &str = "--region=chr19";
@@ -226,8 +266,8 @@ fn vcf_with_nOT_nOB() -> Result<()> {
         .arg(&b)
         .succeeds()?;
 
-    assert_compact_debug_snapshot!(get_depths(&a), @"Ok([18, 18, 16, 16, 16])");
-    assert_compact_debug_snapshot!(get_depths(&b), @"Ok([12, 11, 13, 13, 13])");
+    assert_compact_debug_snapshot!(get_depths(&a), @"Ok([18, 18, 18, 16, 16, 16, 16])");
+    assert_compact_debug_snapshot!(get_depths(&b), @"Ok([12, 11, 11, 13, 13, 13, 13])");
 
     fn get_depths(path: &std::path::Path) -> Result<Vec<i32>> {
         use rastair_vcf::VcfField as _;
