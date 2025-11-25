@@ -53,9 +53,11 @@ pub fn get_pileups(
             }
         })
         .filter(|p| {
-            // Sometimes we get pileups that are not in the region of interest.
-            // TODO: figure out why and when this happens
-            // TODO: Write test for this
+            // We might get pileups from htslib that are not in the region of
+            // interest (but actually before it). Since our segments only cover
+            // the specified region, we can just skip these (we won't have the
+            // reference sequence for this anyway). They'll be part of the
+            // next/previous segment anyway.
             region.contains(u64::from(p.pos()))
         })
         .map(move |pile| {
@@ -71,4 +73,32 @@ pub fn get_pileups(
             }
         });
     Ok((segment_clone, piles))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{sequence::ReaderParams, utils::default};
+
+    #[test]
+    fn test_reading_bounds() -> Result<()> {
+        // check that we can read exactly the right positions
+        let params = ReaderParams {
+            region: Some("chr19:6105700-6105800".parse().unwrap()),
+            ..ReaderParams::test_data()
+        };
+        let mut readers = params.readers()?;
+        let segments: Vec<_> = readers.segments(10_000, 100)?.collect();
+        readers.segment(&segments[0], 0)?;
+
+        let pileup_mapping_params = PileupMappingParams { variant_calling: default() };
+        let (_segment, pileups) = get_pileups(&mut readers, &segments[0], &pileup_mapping_params)?;
+        let pileups: Vec<_> = pileups.collect();
+
+        assert!(!pileups.is_empty());
+        assert_eq!(pileups.first().unwrap().pos, 6_105_700);
+        assert_eq!(pileups.last().unwrap().pos, 6_105_800);
+
+        Ok(())
+    }
 }

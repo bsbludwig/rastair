@@ -10,15 +10,15 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Region {
     pub contig: SmolStr,
-    /// 1-based start position (inclusive)
+    /// 0-based start position (inclusive)
     pub start: u64,
-    /// 1-based end position (inclusive)
+    /// 0-based end position (inclusive)
     pub end: u64,
 }
 
 impl Region {
-    pub fn range(&self) -> std::ops::Range<u64> {
-        self.start..self.end
+    pub fn range(&self) -> std::ops::RangeInclusive<u64> {
+        self.start..=self.end
     }
 
     /// Returns true if the given position falls within this region's bounds
@@ -38,7 +38,9 @@ impl Region {
 #[test]
 fn test_region_contains() {
     let region = Region { contig: "chr1".into(), start: 100, end: 200 };
+    assert!(region.contains(100));
     assert!(region.contains(150));
+    assert!(region.contains(200));
     assert!(!region.contains(50));
     assert!(!region.contains(250));
 }

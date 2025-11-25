@@ -246,11 +246,10 @@ impl<'reg> TryFrom<&'reg Region> for FetchDefinition<'reg> {
     type Error = color_eyre::Report;
 
     fn try_from(region: &'reg Region) -> Result<Self> {
-        Ok(FetchDefinition::RegionString(
-            region.contig.as_bytes(),
-            i64::try_from(region.start).wrap_err("start is invalid i64")?,
-            i64::try_from(region.end).wrap_err("end is invalid i64")?,
-        ))
+        let start = i64::try_from(region.start).wrap_err("start is invalid i64")?;
+        let end = i64::try_from(region.end.saturating_add(1)).wrap_err("end is invalid i64")?;
+
+        Ok(FetchDefinition::RegionString(region.contig.as_bytes(), start, end))
     }
 }
 
@@ -448,7 +447,7 @@ mod tests {
         if let FetchDefinition::RegionString(chr, start, end) = fetch_def {
             assert_eq!(chr, b"chr19");
             assert_eq!(start, 6105700);
-            assert_eq!(end, 6105800);
+            assert_eq!(end, 6105801); // this is exclusive end
         } else {
             panic!("Unexpected FetchDefinition variant");
         }
