@@ -311,6 +311,7 @@ pub(crate) fn test_call(
     process_region(segment, pileups.into_iter(), &params, ml)
 }
 
+#[track_caller]
 pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
     if m.ref_base() == base {
         todo!()
@@ -321,6 +322,7 @@ pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
 
 rastair_vcf::filter!(MANUAL, "manual");
 
+#[track_caller]
 pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     if m.ref_base() == base {
         todo!()

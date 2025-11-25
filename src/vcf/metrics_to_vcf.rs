@@ -1,4 +1,4 @@
-use super::Record;
+use super::{Methylated, Record};
 use crate::{
     call::pileup::Pileup,
     metrics::{AlleleMetrics, Alt, Filters, PileupMetrics, PositionMetrics},
@@ -12,7 +12,7 @@ use crate::{
 };
 use color_eyre::Result;
 use rastair_types::{
-    Base, Phred, Probability,
+    Phred, Probability,
     smallvec::{SmallVec, smallvec, smallvec_inline},
 };
 use rastair_vcf::{
@@ -23,14 +23,6 @@ use rastair_vcf::{
     },
 };
 
-/// Check if a reference->alt transition represents a methylation signal in TAPS data.
-/// In TAPS, methylated cytosines are protected and show up as C, while unmethylated
-/// cytosines are converted to T. Similarly, on the reverse strand, methylated G stays G
-/// while unmethylated G becomes A.
-fn is_methylation_transition(ref_base: Base, alt_base: Base) -> bool {
-    matches!((ref_base, alt_base), (Base::C, Base::T) | (Base::G, Base::A))
-}
-
 impl PileupMetrics {
     /// Convert the metrics to VCF records
     ///
@@ -39,30 +31,23 @@ impl PileupMetrics {
     /// - Writes separate ref->alt rows for each alt allele with their respective filters
     /// - Methylation evidence = C->T or G->A transitions with low ML scores
     pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<Vec<Record>> {
-        let mut records = Vec::new();
-
-        // Check if any alt represents methylation evidence rather than a true variant.
-        // Assumption: C->T or G->A transitions with low ML scores are likely methylation
-        // signals in TAPS data rather than true variants.
-        let has_methylation_evidence = self.alts.iter().any(|alt| {
-            is_methylation_transition(self.pileup.reference_base, alt.base)
-                && !alt.filters.pass(ml_threshold)
-        });
+        let mut rows = Vec::new();
+        let empty_filters = Filters::default();
 
         // Write ref->. (no alt) row when:
         // 1. There are no alts at this position, OR
         // 2. There is methylation evidence (the ref base is methylated)
         // These rows are marked as PASS since they represent the reference allele.
-        if self.alts.is_empty() || has_methylation_evidence {
+        if self.alts.is_empty() || *self.pos_metrics.cpg {
             let row = MetricsSubset {
                 pileup: &self.pileup,
                 pos_metrics: &self.pos_metrics,
-                pos_filters: &self.pos_filters,
+                pos_filters: &empty_filters,
                 ref_metrics: &self.ref_metrics,
                 alts: smallvec![],
                 is_ref_only_row: true,
             };
-            records.push(row.to_vcf_row(ml_threshold)?);
+            rows.push(row);
         }
 
         // Write separate ref->alt row for each alt allele.
@@ -76,13 +61,13 @@ impl PileupMetrics {
                 alts: smallvec![alt.clone()],
                 is_ref_only_row: false,
             };
-            records.push(row.to_vcf_row(ml_threshold)?);
+            rows.push(row);
         }
 
-        // TODO: If this is a (de-novo) CpG site, consider writing both positions (C and G).
-        // This would help maintain CpG context information in the output.
+        // TODO: If this is a (de-novo) CpG site, make sure we're writing both
+        // positions (C and G).
 
-        Ok(records)
+        Ok(rows.into_iter().map(|row| row.to_vcf_row(ml_threshold)).collect())
     }
 }
 
@@ -100,13 +85,13 @@ struct MetricsSubset<'m> {
 }
 
 impl MetricsSubset<'_> {
-    pub fn to_vcf_row(&self, ml_threshold: Option<Probability>) -> Result<Record> {
+    pub fn to_vcf_row(&self, ml_threshold: Option<Probability>) -> Record {
         let main = self.vcf_main();
         let info = self.info();
         let format_fields = self.format();
         let filters = self.filters(ml_threshold);
 
-        Ok(Record { main, filters, info, samples: smallvec_inline![format_fields] })
+        Record { main, filters, info, samples: smallvec_inline![format_fields] }
     }
 
     fn vcf_main(&self) -> VcfFixedFields {
@@ -247,12 +232,21 @@ impl MetricsSubset<'_> {
 
         let has_ml = self.alts.iter().any(|alt| alt.filters.ml.is_some());
 
+        // FIXME: only add for ref->. rows
+        let methylated = if self.alts.is_empty() {
+            // For ref->. rows, indicate methylation status based on position metrics
+            self.pos_metrics.methylated.clone()
+        } else {
+            // For alt rows, no methylation info
+            Methylated::Unknown
+        };
+
         Format {
             genotype,
             genotype_likelihood,
             genotype_confidence,
             sample_read_depth: SampleReadDepth(self.pileup.reads.len()),
-            methylated: self.pos_metrics.methylated.clone(),
+            methylated,
             machine_learning_prediction: MachineLearningPrediction(if has_ml {
                 self.alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect()
             } else {
