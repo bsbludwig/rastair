@@ -25,10 +25,9 @@ use crate::{
     },
     io::vcf_writer,
     metrics::{self, PileupMetrics, ml::types::MachineLearning},
-    sequence::{ChunkRegion, ReaderParams, Readers, Segment},
+    sequence::{ChunkRegion, ReaderParams, Readers, Segment, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
 };
-use better_default::Default;
 use clio::ClioPath;
 use color_eyre::{
     Section,
@@ -138,30 +137,11 @@ impl CallParams {
     }
 }
 
-#[derive(Debug, clap::Args, Clone, Default)]
-pub struct SegmentationParams {
-    /// Maximum length of a segment in bases
-    ///
-    /// Used for splitting work between threads. Tweak this to adjust memory
-    /// usage.
-    #[arg(long, default_value_t = 100_000)]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    #[default(100_000)]
-    pub segment_max_length: u64,
-
-    /// Number of bases to overlap between segments
-    ///
-    /// Helpful to avoid missing variants at the edges of segments.
-    #[arg(long, default_value_t = 200)]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    #[default(200)]
-    pub segment_overlap: u64,
-}
-
 /// Read BAM + FASTA and call variants and methylation events
 #[instrument(level = "debug", skip(params))]
 pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
+    params.segmentation.sanitize();
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files

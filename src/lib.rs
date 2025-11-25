@@ -2,7 +2,7 @@
 
 // CLI modules
 mod call;
-pub use call::{CallParams, SegmentationParams, call};
+pub use call::{CallParams, call};
 mod call_reads;
 pub use call_reads::{PerReadParams, call_reads};
 mod convert;

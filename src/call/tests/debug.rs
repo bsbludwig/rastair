@@ -1,12 +1,7 @@
 use crate::{
-    CallParams, SegmentationParams,
-    bed::rastair1::BedParams,
-    call::{
-        call, denovo_cpg::DenovoParams, methylation::params::MethylationCallingParams,
-        ml::MachineLearningParams, record_filters::RecordFilters,
-        variant_calling::VariantCallingParams,
-    },
-    io::vcf_writer::VcfParams,
+    CallParams,
+    call::{call, record_filters::RecordFilters},
+    utils::default,
 };
 use clio::ClioPath;
 use color_eyre::Result;
@@ -27,13 +22,13 @@ fn call_default_bed() -> Result<()> {
             region: Some("chr19:6103000-6103100".parse()?),
         },
         record_filters: RecordFilters { vcf_all: false, cpgs_only: true },
-        segmentation: SegmentationParams::default(),
-        variant_calling: VariantCallingParams::default(),
-        denovo_cpg: DenovoParams::default(),
-        methylation: MethylationCallingParams::default(),
-        ml: MachineLearningParams::default(),
-        vcf: VcfParams::default(),
-        bed: BedParams::default(),
+        segmentation: default(),
+        variant_calling: default(),
+        denovo_cpg: default(),
+        methylation: default(),
+        ml: default(),
+        vcf: default(),
+        bed: default(),
         total_threads: 2,
     })
 }

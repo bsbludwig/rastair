@@ -181,7 +181,7 @@ fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
 
 #[test]
 fn segmentation_does_not_change_bed_output() -> Result<()> {
-    const REGION: &str = "--region=chr19";
+    const REGION: &str = "--region=chr19:6000000-7000000";
 
     apply_common_filters!();
 
@@ -192,14 +192,14 @@ fn segmentation_does_not_change_bed_output() -> Result<()> {
     rastair()
         .args(CALL_TEST_BAM)
         .args([NO_ML, REGION])
-        .args(["--segment-max-length=10000", "--segment-overlap=300", "--threads=7", "--bed"])
+        .args(["--segment-max-length=1000", "--segment-overlap=100", "--threads=7", "--bed"])
         .arg(&temp_file1)
         .succeeds()?;
 
     rastair()
         .args(CALL_TEST_BAM)
         .args([NO_ML, REGION])
-        .args(["--segment-max-length=11111", "--segment-overlap=111", "--threads=4", "--bed"])
+        .args(["--segment-max-length=1001", "--segment-overlap=1", "--threads=4", "--bed"])
         .arg(&temp_file2)
         .succeeds()?;
 
