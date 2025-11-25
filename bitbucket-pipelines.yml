@@ -5,9 +5,10 @@ options:
 
 definitions:
   caches:
-    cargo-registry: /usr/local/cargo/registry/
+    cargo-index: /usr/local/cargo/registry/index
+    cargo-cache: /usr/local/cargo/registry/cache
     cargo-git: /usr/local/cargo/git/
-    cargo-target: target/debug//
+    cargo-local-bin: .bin/
 
 pipelines:
   default:
@@ -22,9 +23,10 @@ pipelines:
           - step:
               name: Test
               caches:
-                - cargo-registry
+                - cargo-index
+                - cargo-cache
                 - cargo-git
-                - cargo-target
+                - cargo-local-bin
               script:
                 - apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake samtools tabix
                 - cargo xtask test
@@ -34,8 +36,10 @@ pipelines:
       - step:
           name: Release Build
           caches:
-            - cargo-registry
+            - cargo-index
+            - cargo-cache
             - cargo-git
+            - cargo-local-bin
           script:
             - apt-get update && apt-get install -y --no-install-recommends libclang-dev
             - cargo xtask release
