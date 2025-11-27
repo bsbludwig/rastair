@@ -12,7 +12,11 @@ use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use rastair_types::SmolStr;
 use rastair_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
-use std::{collections::BTreeSet, ffi::OsStr, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
+    num::NonZeroUsize,
+};
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Default, clap::Parser)]
@@ -121,8 +125,13 @@ impl VcfParams {
             return Ok(None);
         };
 
-        let contigs: BTreeSet<Contig> =
-            regions.iter().map(|r| Contig { name: r.contig.clone(), length: r.len() }).collect();
+        let contigs: BTreeSet<Contig> = {
+            let mut contig_lengths: BTreeMap<SmolStr, u64> = BTreeMap::new();
+            for region in regions {
+                *contig_lengths.entry(region.contig.clone()).or_insert(0) += region.len();
+            }
+            contig_lengths.into_iter().map(|(name, length)| Contig { name, length }).collect()
+        };
         let contigs: Vec<Contig> = contigs.into_iter().collect();
         let samples = vec![SmolStr::new("sample")]; // Note: we only deal with one sample for now
 
