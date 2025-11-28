@@ -4,6 +4,7 @@ use color_eyre::{
     eyre::{Context as _, ContextCompat},
 };
 use rastair_types::SmolStr;
+use rust_htslib::bam::FetchDefinition;
 use std::fmt;
 
 /// A genomic region with chromosome and coordinates
@@ -35,14 +36,15 @@ impl Region {
     }
 }
 
-#[test]
-fn test_region_contains() {
-    let region = Region { contig: "chr1".into(), start: 100, end: 200 };
-    assert!(region.contains(100));
-    assert!(region.contains(150));
-    assert!(region.contains(200));
-    assert!(!region.contains(50));
-    assert!(!region.contains(250));
+impl<'reg> TryFrom<&'reg Region> for FetchDefinition<'reg> {
+    type Error = color_eyre::Report;
+
+    fn try_from(region: &'reg Region) -> Result<Self> {
+        let start = i64::try_from(region.start).wrap_err("start is invalid i64")?;
+        let end = i64::try_from(region.end.saturating_add(1)).wrap_err("end is invalid i64")?;
+
+        Ok(FetchDefinition::RegionString(region.contig.as_bytes(), start, end))
+    }
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -120,5 +122,20 @@ impl ChunkRegion {
             .this_is_a_bug()?
             .checked_sub(segment_start_pos)
             .wrap_err_with(|| format!("Position {pos} is not in segment {}", self.region))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_region_contains() {
+        let region = Region { contig: "chr1".into(), start: 100, end: 200 };
+        assert!(region.contains(100));
+        assert!(region.contains(150));
+        assert!(region.contains(200));
+        assert!(!region.contains(50));
+        assert!(!region.contains(250));
     }
 }
