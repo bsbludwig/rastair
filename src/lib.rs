@@ -19,6 +19,8 @@ pub use vcf::Record as VcfRecord;
 pub(crate) mod bam;
 pub(crate) mod bed;
 pub(crate) mod metrics;
+pub(crate) mod train;
+pub use train::{TrainModelParams, train_model};
 pub(crate) mod io {
     pub mod formats;
     pub mod mpk;

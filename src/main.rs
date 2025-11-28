@@ -1,12 +1,8 @@
-use std::io::Write as _;
-
 use clap::{CommandFactory as _, Parser as _};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
-use rastair::{
-    BamRewriteArgs, CallParams, ConvertParams, MBiasParams, MpkViewParams, PerReadParams, call,
-    call_reads, setup_logging,
-};
+use rastair::*;
+use std::io::Write as _;
 use tracing::{debug, info, warn};
 
 /// Use mimalloc as the global allocator, which proves to be faster than the
@@ -62,6 +58,8 @@ enum Subcommand {
     Bam(BamRewriteArgs),
     /// Convert between different file formats
     Convert(ConvertParams),
+    /// Train machine learning models
+    Train(TrainModelParams),
     /// View internal format as JSON lines
     View(MpkViewParams),
     /// Calculate conversion per base position in read
@@ -138,6 +136,14 @@ fn main() -> Result<()> {
             rastair::rewrite_bam(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Bam rewrite finished");
+        }
+        Subcommand::Train(params) => {
+            // track execution time
+            let start = std::time::Instant::now();
+            debug!(?params, "Running train command");
+            rastair::train_model(&params)?;
+            let duration = start.elapsed();
+            info!(?duration, "Training finished");
         }
         Subcommand::Convert(params) => {
             // track execution time
