@@ -1,5 +1,6 @@
 use super::types::{MachineLearning, MlModel, Prediction};
 use crate::metrics::{MetricsForAlt, PileupMetrics};
+use color_eyre::eyre::ensure;
 use rastair_types::Probability;
 use tracing::{instrument, warn};
 
@@ -32,6 +33,10 @@ impl MachineLearning {
             warn!(model=?name, "No model found");
             return None;
         };
+        let features = features.and_then(|x| {
+            ensure!(!x.is_any_nan(), "Failed to calculate features (one metric was NaN)");
+            Ok(x)
+        });
         let features = match features {
             Err(error) => {
                 warn!(%error, "Failed to generate features for ML prediction");

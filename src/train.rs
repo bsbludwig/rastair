@@ -378,15 +378,23 @@ fn collect_training_data_from_segment(
 
                 if let Some(alt_m) = alt_metrics_for_ml {
                     // Generate features based on position type
+                    // NOTE: We filter out any examples with NaN features here
+                    // FIXME: We should ensure no NaNs are ever produced in the first place
                     if alt_m.is_evidence_for_methylation() {
-                        if let Ok(features) = ml::cpg(&alt_m, before, after) {
+                        if let Ok(features) = ml::cpg(&alt_m, before, after)
+                            && !features.is_any_nan()
+                        {
                             cpg_data.add_example(features, label);
                         }
                     } else if *alt.metrics.denovo {
-                        if let Ok(features) = ml::denovo_cpg(&alt_m, before, after) {
+                        if let Ok(features) = ml::denovo_cpg(&alt_m, before, after)
+                            && !features.is_any_nan()
+                        {
                             denovo_data.add_example(features, label);
                         }
-                    } else if let Ok(features) = ml::others(&alt_m, before, after) {
+                    } else if let Ok(features) = ml::others(&alt_m, before, after)
+                        && !features.is_any_nan()
+                    {
                         other_data.add_example(features, label);
                     }
                 }
