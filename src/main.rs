@@ -60,6 +60,11 @@ enum Subcommand {
     Convert(ConvertParams),
     /// Train machine learning models
     Train(TrainModelParams),
+    /// Verify trained models against ground truth
+    ///
+    /// Compare predictions from a rastair2 call against a ground truth VCF
+    /// and calculate classification metrics (sensitivity, specificity, etc.)
+    Verify(VerifyParams),
     /// View internal format as JSON lines
     View(MpkViewParams),
     /// Calculate conversion per base position in read
@@ -144,6 +149,14 @@ fn main() -> Result<()> {
             rastair::train_model(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Training finished");
+        }
+        Subcommand::Verify(params) => {
+            // track execution time
+            let start = std::time::Instant::now();
+            debug!(?params, "Running verify command");
+            rastair::verify(&params)?;
+            let duration = start.elapsed();
+            info!(?duration, "Verification finished");
         }
         Subcommand::Convert(params) => {
             // track execution time

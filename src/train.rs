@@ -76,10 +76,10 @@ struct ModelParameters {
 
 /// Key for indexing positions in truth set
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-struct PositionKey {
-    pos: u64,
-    ref_base: Base,
-    alt_base: Base,
+pub struct PositionKey {
+    pub pos: u64,
+    pub ref_base: Base,
+    pub alt_base: Base,
 }
 
 /// Training data for a specific model type (CpG, denovo, or other)
@@ -251,7 +251,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 }
 
 /// Load truth VCF and create an index of variant positions
-fn load_truth_vcf(
+pub fn load_truth_vcf(
     vcf_path: &ClioPath,
     region: &RegionString,
     threads: usize,
