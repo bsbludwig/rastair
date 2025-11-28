@@ -54,6 +54,7 @@ biosphere = { git = "https://github.com/DaGaMs/biosphere.git", version = "0.4.0"
   "serde",
 ] }
 ndarray = "0.16.1"
+rand = "0.8.5"
 
 # cli stuff
 clap = { version = "4.5.35", features = ["derive", "env"] }
