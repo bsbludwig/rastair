@@ -15,12 +15,13 @@ use lz4::EncoderBuilder;
 use ndarray::{Array1, Array2, Axis};
 use rand::prelude::*;
 use rastair_types::{Base, Probability, RegionString};
+use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
 use std::{
     collections::HashSet, fs::File, io::Write, num::NonZeroU64, path::PathBuf,
     thread::available_parallelism,
 };
-use tracing::{info, instrument, warn};
+use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
 pub struct TrainModelParams {
@@ -97,6 +98,11 @@ impl TrainingData {
         self.labels.push(label);
     }
 
+    fn merge(&mut self, other: TrainingData) {
+        self.features.extend(other.features);
+        self.labels.extend(other.labels);
+    }
+
     fn len(&self) -> usize {
         self.labels.len()
     }
@@ -118,15 +124,16 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         start: None,
         end: None,
     });
-    let truth_variants =
-        load_truth_vcf(&params.truth, &region).wrap_err("Failed to load truth VCF")?;
+    let truth_variants = load_truth_vcf(&params.truth, &region, params.threads)
+        .wrap_err("Failed to load truth VCF")?;
     info!("Loaded {} true variants from truth VCF", truth_variants.len());
-
-    let mut readers = params.reader.readers().wrap_err("Failed to read BAM/FASTA files")?;
 
     // Get segments to process
     let segmentation = SegmentationParams::default();
-    let regions: Vec<ChunkRegion> = readers
+    let regions: Vec<ChunkRegion> = params
+        .reader
+        .readers()
+        .wrap_err("Failed to read BAM/FASTA files")?
         .segments(segmentation.segment_max_length, segmentation.segment_overlap)
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
@@ -137,25 +144,90 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     info!("Processing {} segments to collect training data", regions.len());
 
-    // Collect training data from all segments
+    // Process segments in parallel to collect training data
+    let results: Vec<(TrainingData, TrainingData, TrainingData)> =
+        rayon::ThreadPoolBuilder::new()
+            .thread_name(|idx| format!("training-worker-{idx}"))
+            .num_threads(params.threads)
+            .start_handler(|idx| trace!(idx, "Starting training worker thread"))
+            .exit_handler(|idx| trace!(idx, "Closing training worker thread"))
+            .build()
+            .wrap_err("Failed to create thread pool for rayon")?
+            .install(move || {
+                thread_local! {
+                    /// Readers for the BAM and FASTA files, initialized per thread to avoid
+                    /// re-opening files or having a lock
+                    static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+                }
+
+                regions
+                    .par_iter()
+                    .map(|chunk_region| {
+                        // Use thread-local readers to avoid re-opening files in each thread
+                        READERS.with(|local_readers| -> (TrainingData, TrainingData, TrainingData) {
+                            let mut local_readers = local_readers.borrow_mut();
+                            let readers = {
+                                // Initialize thread-local readers first time the thread accesses them
+                                if local_readers.is_none() {
+                                    match params.reader.readers() {
+                                        Ok(readers) => {
+                                            *local_readers = Some(readers);
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                error = format!("{e:#}"),
+                                                "Failed to open readers in worker thread"
+                                            );
+                                            return (
+                                                TrainingData::new(),
+                                                TrainingData::new(),
+                                                TrainingData::new(),
+                                            );
+                                        }
+                                    }
+                                }
+                                match local_readers.as_mut() {
+                                    Some(readers) => readers,
+                                    None => {
+                                        warn!("Failed to access thread-local readers");
+                                        return (
+                                            TrainingData::new(),
+                                            TrainingData::new(),
+                                            TrainingData::new(),
+                                        );
+                                    }
+                                }
+                            };
+
+                            // Collect training data from this segment
+                            match collect_training_data_from_segment(
+                                chunk_region,
+                                readers,
+                                &truth_variants,
+                            ) {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    warn!(
+                                        error = format!("{e:#}"),
+                                        "Failed to collect training data from segment"
+                                    );
+                                    (TrainingData::new(), TrainingData::new(), TrainingData::new())
+                                }
+                            }
+                        })
+                    })
+                    .collect()
+            });
+
+    // Merge all results from parallel processing
     let mut cpg_data = TrainingData::new();
     let mut denovo_data = TrainingData::new();
     let mut other_data = TrainingData::new();
 
-    for (i, chunk_region) in regions.iter().enumerate() {
-        if i % 10 == 0 {
-            info!("Processing segment {}/{}", i + 1, regions.len());
-        }
-
-        collect_training_data_from_segment(
-            chunk_region,
-            &mut readers,
-            &truth_variants,
-            &mut cpg_data,
-            &mut denovo_data,
-            &mut other_data,
-        )
-        .wrap_err_with(|| format!("Failed to collect data from segment {}", i))?;
+    for (cpg, denovo, other) in results {
+        cpg_data.merge(cpg);
+        denovo_data.merge(denovo);
+        other_data.merge(other);
     }
 
     info!(
@@ -179,9 +251,14 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 }
 
 /// Load truth VCF and create an index of variant positions
-fn load_truth_vcf(vcf_path: &ClioPath, region: &RegionString) -> Result<HashSet<PositionKey>> {
+fn load_truth_vcf(
+    vcf_path: &ClioPath,
+    region: &RegionString,
+    threads: usize,
+) -> Result<HashSet<PositionKey>> {
     let mut reader = bcf::IndexedReader::from_path(vcf_path.path())
         .wrap_err_with(|| format!("Failed to open truth VCF file: {}", vcf_path.display()))?;
+    reader.set_threads(threads.max(2)).wrap_err("Failed to set threads for truth VCF reader")?;
 
     let mut variants = HashSet::new();
     let header = reader.header().clone();
@@ -218,7 +295,8 @@ fn load_truth_vcf(vcf_path: &ClioPath, region: &RegionString) -> Result<HashSet<
 /// Returns None if the record should be filtered out
 fn process_truth_record(record: &bcf::Record) -> Result<Option<PositionKey>> {
     // Filter: only PASS variants
-    if record.has_filter("PASS".as_bytes()) {
+    // Note: has_filter returns true if the filter is NOT PASS
+    if !record.has_filter("PASS".as_bytes()) {
         return Ok(None);
     }
 
@@ -253,10 +331,11 @@ fn collect_training_data_from_segment(
     chunk_region: &ChunkRegion,
     readers: &mut Readers,
     truth_variants: &HashSet<PositionKey>,
-    cpg_data: &mut TrainingData,
-    denovo_data: &mut TrainingData,
-    other_data: &mut TrainingData,
-) -> Result<()> {
+) -> Result<(TrainingData, TrainingData, TrainingData)> {
+    // Create local training data for this segment
+    let mut cpg_data = TrainingData::new();
+    let mut denovo_data = TrainingData::new();
+    let mut other_data = TrainingData::new();
     // Build pileups
     let mapping_params = PileupMappingParams { variant_calling: VariantCallingParams::default() };
     let (segment, pileup_iter) =
@@ -317,7 +396,7 @@ fn collect_training_data_from_segment(
         })
         .for_each(|_x| {});
 
-    Ok(())
+    Ok((cpg_data, denovo_data, other_data))
 }
 
 /// Train a model and save it to disk
