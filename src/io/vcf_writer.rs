@@ -38,9 +38,9 @@ pub struct VcfParams {
     /// you think that VCF writing is a bottleneck, e.g. when the output files
     /// contain a lot of positions.
     // Default value chosen after profiling on a machine with 14 cores.
-    #[arg(long, default_value = "2")]
+    #[arg(long, default_value = "1")]
     #[arg(help_heading = cli::sections::PROCESSING)]
-    #[default(NonZeroUsize::new(1).expect("3 > 0"))]
+    #[default(NonZeroUsize::new(1).expect("1 > 0"))]
     pub vcf_threads: NonZeroUsize,
 }
 
