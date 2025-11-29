@@ -29,12 +29,18 @@ impl Iterator for ChunkedRegions {
                 continue;
             }
 
-            let end = self.current_start.saturating_add(self.max_length).min(full_region.end);
+            let chunk_start =
+                self.current_start.saturating_sub(self.overlap).max(full_region.start);
+            let chunk_end = self
+                .current_start
+                .saturating_add(self.max_length)
+                .saturating_add(self.overlap)
+                .min(full_region.end);
             let chunk = ChunkRegion {
                 region: Region {
                     contig: full_region.contig.clone(),
-                    start: self.current_start,
-                    end,
+                    start: chunk_start,
+                    end: chunk_end,
                 },
                 last_position: match full_region {
                     SelectedRegion::EntireContig(region) => region.end,
@@ -42,10 +48,7 @@ impl Iterator for ChunkedRegions {
                 },
             };
 
-            self.current_start = end;
-            if self.current_start < full_region.end {
-                self.current_start = self.current_start.saturating_sub(self.overlap);
-            }
+            self.current_start = self.current_start.saturating_add(self.max_length);
 
             return Some(chunk);
         }
@@ -94,22 +97,23 @@ mod tests {
             // Property 3: Last chunk should end at the end
             prop_assert_eq!(chunks.last().unwrap().region.end, end);
 
-            // Property 4: No chunk should exceed max_length
+            // Property 4: No chunk should exceed max_length + 2*overlap
             for chunk in &chunks {
-                prop_assert!(chunk.region.end - chunk.region.start <= max_length);
+                prop_assert!(chunk.region.end - chunk.region.start <= max_length + 2 * overlap);
             }
 
-            // Property 5: Adjacent chunks should overlap by the specified amount (except possibly the last one)
+            // Property 5: Adjacent chunks should overlap by at least the specified amount
             for pair in chunks.windows(2) {
                 let current = &pair[0];
                 let next = &pair[1];
 
                 // The overlap between chunks
-                let actual_overlap = current.region.end - next.region.start;
-
-                // If this isn't the last chunk leading to the end, it should have the specified overlap
-                if next.region.end < end {
-                    prop_assert_eq!(actual_overlap, overlap);
+                if current.region.end > next.region.start {
+                    let actual_overlap = current.region.end - next.region.start;
+                    // With overlap on both sides, overlap should be at least the specified amount
+                    // (could be more near boundaries)
+                    prop_assert!(actual_overlap >= overlap,
+                        "Overlap {} is less than required {}", actual_overlap, overlap);
                 }
             }
 

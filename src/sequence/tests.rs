@@ -89,9 +89,13 @@ fn test_overlapping_segments() -> Result<()> {
         let first = readers.segment(&pair[0], 2)?;
         let second = readers.segment(&pair[1], 2)?;
 
-        // Verify overlap amount
+        // Verify overlap amount - with overlap on both sides, adjacent chunks overlap by 2x
         let overlap = first.range.region.end - second.range.region.start;
-        assert_eq!(overlap, segment_overlap, "Overlap amount should match configured value");
+        assert_eq!(
+            overlap,
+            2 * segment_overlap,
+            "Overlap amount should be 2x configured value (overlap on both sides)"
+        );
 
         // Calculate overlap regions accounting for 0-based sequence indexing
         let first_start_idx =
