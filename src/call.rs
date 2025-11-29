@@ -369,6 +369,7 @@ fn process_region(
             process::propagate_cpg_pass_flags(b, c, a, params.ml.threshold())
         })
         .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
+        .filter(|p| only_core_positions(&segment, p))
         .collect();
 
     // At this point, we have collected all metrics for the pileups in this
@@ -389,4 +390,12 @@ fn process_region(
     }
 
     Ok(pileups)
+}
+
+fn only_core_positions(segment: &Segment, p: &PileupMetrics) -> bool {
+    let pos = u64::from(p.pos());
+    let core_start = segment.region.start + segment.overlap_start;
+    let core_end = segment.region.end.saturating_sub(segment.overlap_end);
+    
+    pos >= core_start && pos <= core_end
 }
