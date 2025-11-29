@@ -1,0 +1,30 @@
+---
+source: src/sequence/tests.rs
+expression: segment_infos
+---
+[
+    SegmentInfo {
+        start: 6105700,
+        end: 6105800,
+        overlap_start: 0,
+        overlap_end: 25,
+        is_first: true,
+        is_last: false,
+    },
+    SegmentInfo {
+        start: 6105750,
+        end: 6105875,
+        overlap_start: 25,
+        overlap_end: 25,
+        is_first: false,
+        is_last: false,
+    },
+    SegmentInfo {
+        start: 6105825,
+        end: 6105900,
+        overlap_start: 25,
+        overlap_end: 0,
+        is_first: false,
+        is_last: true,
+    },
+]

@@ -93,8 +93,12 @@ mod tests {
             range: ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: b"ACGTA".to_vec(),
+            overlap_start: 0,
+            overlap_end: 0,
         };
 
         let context = SequenceContext::new(2, &segment)?;
@@ -117,8 +121,12 @@ mod tests {
             range: ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: b"ACGTA".to_vec(),
+            overlap_start: 0,
+            overlap_end: 0,
         };
 
         let context = SequenceContext::new(0, &segment)?;
@@ -141,8 +149,12 @@ mod tests {
             range: ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: b"ACGTA".to_vec(),
+            overlap_start: 0,
+            overlap_end: 0,
         };
 
         let context = SequenceContext::new(3, &segment)?;
@@ -165,8 +177,12 @@ mod tests {
             range: ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: b"ACGTA".to_vec(),
+            overlap_start: 0,
+            overlap_end: 0,
         };
 
         let context = SequenceContext::new(4, &segment)?;
@@ -189,8 +205,12 @@ mod tests {
             range: ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: b"ACGTA".to_vec(),
+            overlap_start: 0,
+            overlap_end: 0,
         };
 
         let res = SequenceContext::new(12, &segment);

@@ -84,6 +84,10 @@ impl SegmentationParams {
 pub struct Segment {
     pub range: ChunkRegion,
     pub sequence: Vec<u8>,
+    /// Number of bases of overlap at the start of this segment
+    pub overlap_start: u64,
+    /// Number of bases of overlap at the end of this segment
+    pub overlap_end: u64,
 }
 
 impl Deref for Segment {

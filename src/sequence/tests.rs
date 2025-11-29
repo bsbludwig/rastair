@@ -26,6 +26,8 @@ fn test_segment_reading() -> Result<()> {
     let region = ChunkRegion {
         region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
         last_position: 6105900,
+        overlap_start: 0,
+        overlap_end: 0,
     };
 
     let params =
@@ -119,8 +121,15 @@ fn test_segment_to_fetch_definition() -> Result<()> {
     let region = ChunkRegion {
         region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
         last_position: 6105900,
+        overlap_start: 0,
+        overlap_end: 0,
     };
-    let segment = Segment { range: region.clone(), sequence: vec![65, 66, 67] }; // "ABC"
+    let segment = Segment {
+        range: region.clone(),
+        sequence: vec![65, 66, 67],
+        overlap_start: 0,
+        overlap_end: 0,
+    }; // "ABC"
 
     // Convert to FetchDefinition
     let fetch_def = FetchDefinition::try_from(&segment.region)?;
@@ -148,6 +157,8 @@ fn test_segment_error_handling() -> Result<()> {
     let invalid_region = ChunkRegion {
         region: Region { contig: "nonexistent".into(), start: 100, end: 200 },
         last_position: 300,
+        overlap_start: 0,
+        overlap_end: 0,
     };
 
     let result = readers.segment(&invalid_region, 2);
@@ -187,8 +198,12 @@ fn test_sequence_slice() -> Result<()> {
         range: ChunkRegion {
             region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
             last_position: 6105900,
+            overlap_start: 0,
+            overlap_end: 0,
         },
         sequence: b"ATCGG".into(),
+        overlap_start: 0,
+        overlap_end: 0,
     };
 
     // Test valid slice
@@ -210,11 +225,141 @@ proptest!(
             range: ChunkRegion {
                 region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
                 last_position: 6105900,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: seq.into_bytes(),
+            overlap_start: 0,
+            overlap_end: 0,
         };
 
         // Ensure we don't panic on out-of-bounds slices
         segment.sequence_slice::<5>(start, end).unwrap();
     }
 );
+
+#[test]
+fn test_overlap_values_in_segments() -> Result<()> {
+    use insta::assert_debug_snapshot;
+
+    #[derive(Debug)]
+    #[allow(unused, reason = "for snapshot test")]
+    struct SegmentInfo {
+        contig: String,
+        start: u64,
+        end: u64,
+        overlap_start: u64,
+        overlap_end: u64,
+        length: u64,
+    }
+
+    let params = ReaderParams {
+        bam_file: get_test_bam(),
+        fasta_file: get_test_fasta(),
+        region: Some("chr19:6105700-6106000".parse().unwrap()),
+    };
+
+    let readers = params.readers()?;
+    let segment_max_length = 100;
+    let segment_overlap = 20;
+    let segments = readers.segments(segment_max_length, segment_overlap)?.collect::<Vec<_>>();
+
+    let segment_infos: Vec<SegmentInfo> = segments
+        .iter()
+        .map(|s| SegmentInfo {
+            contig: s.region.contig.to_string(),
+            start: s.region.start,
+            end: s.region.end,
+            overlap_start: s.overlap_start,
+            overlap_end: s.overlap_end,
+            length: s.region.end - s.region.start,
+        })
+        .collect();
+
+    assert_debug_snapshot!(segment_infos);
+
+    Ok(())
+}
+
+#[test]
+fn test_overlap_values_small_region() -> Result<()> {
+    use insta::assert_debug_snapshot;
+
+    #[derive(Debug)]
+    #[allow(unused, reason = "for snapshot test")]
+    struct SegmentInfo {
+        start: u64,
+        end: u64,
+        overlap_start: u64,
+        overlap_end: u64,
+    }
+
+    let params = ReaderParams {
+        bam_file: get_test_bam(),
+        fasta_file: get_test_fasta(),
+        region: Some("chr19:6105700-6105850".parse().unwrap()),
+    };
+
+    let readers = params.readers()?;
+    let segment_max_length = 50;
+    let segment_overlap = 10;
+    let segments = readers.segments(segment_max_length, segment_overlap)?.collect::<Vec<_>>();
+
+    let segment_infos: Vec<SegmentInfo> = segments
+        .iter()
+        .map(|s| SegmentInfo {
+            start: s.region.start,
+            end: s.region.end,
+            overlap_start: s.overlap_start,
+            overlap_end: s.overlap_end,
+        })
+        .collect();
+
+    assert_debug_snapshot!(segment_infos);
+
+    Ok(())
+}
+
+#[test]
+fn test_overlap_at_boundaries() -> Result<()> {
+    use insta::assert_debug_snapshot;
+
+    #[derive(Debug)]
+    #[allow(unused, reason = "for snapshot test")]
+    struct SegmentInfo {
+        start: u64,
+        end: u64,
+        overlap_start: u64,
+        overlap_end: u64,
+        is_first: bool,
+        is_last: bool,
+    }
+
+    let params = ReaderParams {
+        bam_file: get_test_bam(),
+        fasta_file: get_test_fasta(),
+        region: Some("chr19:6105700-6105900".parse().unwrap()),
+    };
+
+    let readers = params.readers()?;
+    let segment_max_length = 75;
+    let segment_overlap = 25;
+    let segments = readers.segments(segment_max_length, segment_overlap)?.collect::<Vec<_>>();
+
+    let segment_infos: Vec<SegmentInfo> = segments
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| SegmentInfo {
+            start: s.region.start,
+            end: s.region.end,
+            overlap_start: s.overlap_start,
+            overlap_end: s.overlap_end,
+            is_first: idx == 0,
+            is_last: idx == segments.len() - 1,
+        })
+        .collect();
+
+    assert_debug_snapshot!(segment_infos);
+
+    Ok(())
+}

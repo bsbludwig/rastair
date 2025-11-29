@@ -115,7 +115,12 @@ impl Readers {
             // chain the calls so we can add this nice error:
             .wrap_err_with(|| format!("Failed to get region {} from FASTA file", region.region))?;
 
-        Ok(Segment { range: region.clone(), sequence: seq })
+        Ok(Segment {
+            range: region.clone(),
+            sequence: seq,
+            overlap_start: region.overlap_start,
+            overlap_end: region.overlap_end,
+        })
     }
 }
 

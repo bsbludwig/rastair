@@ -1,0 +1,30 @@
+---
+source: src/sequence/tests.rs
+expression: segment_infos
+---
+[
+    SegmentInfo {
+        contig: "chr19",
+        start: 6105700,
+        end: 6105820,
+        overlap_start: 0,
+        overlap_end: 20,
+        length: 120,
+    },
+    SegmentInfo {
+        contig: "chr19",
+        start: 6105780,
+        end: 6105920,
+        overlap_start: 20,
+        overlap_end: 20,
+        length: 140,
+    },
+    SegmentInfo {
+        contig: "chr19",
+        start: 6105880,
+        end: 6106000,
+        overlap_start: 20,
+        overlap_end: 0,
+        length: 120,
+    },
+]

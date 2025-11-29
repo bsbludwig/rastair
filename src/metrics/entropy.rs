@@ -40,8 +40,15 @@ mod tests {
         let region = ChunkRegion {
             region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
             last_position: 100,
+            overlap_start: 0,
+            overlap_end: 0,
         };
-        let segment = Segment { range: region, sequence: repeat_n(b'A', 100).collect() };
+        let segment = Segment {
+            range: region,
+            sequence: repeat_n(b'A', 100).collect(),
+            overlap_start: 0,
+            overlap_end: 0,
+        };
         let pos = 50;
 
         let entropy = segment.entropy_around::<100>(pos).unwrap();
@@ -54,9 +61,11 @@ mod tests {
         let region = ChunkRegion {
             region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
             last_position: 100,
+            overlap_start: 0,
+            overlap_end: 0,
         };
         let sequence = repeat_n(b"ACTG", 25).flat_map(|x| *x).collect();
-        let segment = Segment { range: region, sequence };
+        let segment = Segment { range: region, sequence, overlap_start: 0, overlap_end: 0 };
         let pos = 50;
 
         let entropy = segment.entropy_around::<100>(pos).unwrap();
@@ -70,8 +79,12 @@ mod tests {
             let region = ChunkRegion {
                 region: Region { contig: SmolStr::new("chr13"), start: 1, end: 100 },
                 last_position: 100,
+                overlap_start: 0,
+                overlap_end: 0,
             };
             let segment = Segment { range: region, sequence: sequence.into_bytes(),
+                overlap_start: 0,
+                overlap_end: 0,
             };
             let pos = 50;
 

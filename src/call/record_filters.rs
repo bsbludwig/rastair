@@ -98,6 +98,8 @@ mod tests {
                 region: ChunkRegion {
                     region: Region { contig: "chr6".into(), start: 0, end: 1000 },
                     last_position: 10_000,
+                    overlap_start: 0,
+                    overlap_end: 0,
                 },
                 context: crate::vcf::SequenceContext {
                     before_2: Some(A),

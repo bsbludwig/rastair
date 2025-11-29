@@ -160,8 +160,12 @@ mod tests {
             range: ChunkRegion {
                 region: Region { contig: contig.into(), start, end },
                 last_position: end,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: vec![b'C'; (end - start) as usize],
+            overlap_start: 0,
+            overlap_end: 0,
         });
 
         let pos_idx = (pos - start) as usize;

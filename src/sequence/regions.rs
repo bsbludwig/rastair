@@ -102,6 +102,10 @@ pub struct ChunkRegion {
     pub region: Region,
     /// The last valid position in the full region this chunk belongs to
     pub last_position: u64,
+    /// Number of bases of overlap at the start of this chunk
+    pub overlap_start: u64,
+    /// Number of bases of overlap at the end of this chunk
+    pub overlap_end: u64,
 }
 
 impl std::ops::Deref for ChunkRegion {

@@ -103,8 +103,12 @@ mod tests {
             range: ChunkRegion {
                 region: Region { contig: "chr19".into(), start: 1000, end: 1100 },
                 last_position: 2000,
+                overlap_start: 0,
+                overlap_end: 0,
             },
             sequence: vec![],
+            overlap_start: 0,
+            overlap_end: 0,
         };
         let variant_candidate = Pileup {
             region: segment.range.clone(),

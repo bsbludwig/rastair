@@ -29,6 +29,10 @@ impl Iterator for ChunkedRegions {
                 continue;
             }
 
+            let logical_start = self.current_start;
+            let logical_end =
+                self.current_start.saturating_add(self.max_length).min(full_region.end);
+
             let chunk_start =
                 self.current_start.saturating_sub(self.overlap).max(full_region.start);
             let chunk_end = self
@@ -36,6 +40,10 @@ impl Iterator for ChunkedRegions {
                 .saturating_add(self.max_length)
                 .saturating_add(self.overlap)
                 .min(full_region.end);
+
+            let overlap_start = logical_start - chunk_start;
+            let overlap_end = chunk_end - logical_end;
+
             let chunk = ChunkRegion {
                 region: Region {
                     contig: full_region.contig.clone(),
@@ -46,6 +54,8 @@ impl Iterator for ChunkedRegions {
                     SelectedRegion::EntireContig(region) => region.end,
                     SelectedRegion::UserDefinedSubset { last_position, .. } => *last_position,
                 },
+                overlap_start,
+                overlap_end,
             };
 
             self.current_start = self.current_start.saturating_add(self.max_length);
