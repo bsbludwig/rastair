@@ -7,7 +7,6 @@ use crate::{
 };
 use color_eyre::{Result, eyre::Context as _};
 use ordered_channel::Receiver;
-use rastair_types::SmolStr;
 use std::thread;
 use tracing::info;
 
@@ -51,8 +50,6 @@ pub fn writer_thread(
                 tracing::debug_span!("writer", vcf=%vcf_output.is_some(), bed=%bed_writer.is_some());
             let _guard = span.enter();
 
-            let mut last_seen = LastSeen::default();
-
             // Since we only have the region index to ensure order, each
             // processing thread will send a vector of VCF records when it's
             // done with a region.
@@ -60,11 +57,7 @@ pub fn writer_thread(
                 let span = tracing::debug_span!("recv_records", records=%records.len());
                 let _guard = span.enter();
 
-                'current_batch: for record in records {
-                    if !last_seen.is_new(record.contig(), record.pos()) {
-                        continue 'current_batch;
-                    }
-
+                for record in records {
                     // Write BED record if requested
                     if let Some(bed_writer) = bed_writer.as_mut()
                         && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record, &bed_params)
@@ -115,23 +108,4 @@ pub fn writer_thread(
         .wrap_err("Failed to spawn VCF writer thread")
 }
 
-/// The segments we get have some overlap between them, so we need
-/// to ensure that we don't write the same record multiple times.
-#[derive(Default, Debug)]
-struct LastSeen {
-    contig: Option<SmolStr>,
-    pos: Option<u32>,
-}
 
-impl LastSeen {
-    /// If this is new, returns true and updates the last seen record
-    fn is_new(&mut self, contig: SmolStr, pos: u32) -> bool {
-        if self.contig.as_ref() == Some(&contig) && self.pos >= Some(pos) {
-            false
-        } else {
-            self.contig = Some(contig);
-            self.pos = Some(pos);
-            true
-        }
-    }
-}
