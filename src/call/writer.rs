@@ -107,5 +107,3 @@ pub fn writer_thread(
         })
         .wrap_err("Failed to spawn VCF writer thread")
 }
-
-

@@ -396,6 +396,6 @@ fn only_core_positions(segment: &Segment, p: &PileupMetrics) -> bool {
     let pos = u64::from(p.pos());
     let core_start = segment.region.start + segment.overlap_start;
     let core_end = segment.region.end.saturating_sub(segment.overlap_end);
-    
-    pos >= core_start && pos <= core_end
+
+    pos >= core_start && pos < core_end
 }
