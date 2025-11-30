@@ -7,7 +7,7 @@ use utils::*;
 const CALL_TEST_BAM: [&str; 3] =
     ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
 const CHR19_SMALL: &str = "--region=chr19:6105700-6105800";
-const NO_ML: &str = "--thresholds"; // disable ML for faster tests
+const NO_ML: &str = "--no-ml"; // disable ML for faster tests
 
 #[test]
 fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {

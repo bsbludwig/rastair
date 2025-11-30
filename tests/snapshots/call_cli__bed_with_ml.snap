@@ -11,6 +11,7 @@ info:
     - "--ml=0.8"
   env:
     NO_COLOR: "1"
+    RASTAIR_THREADS: "2"
 ---
 success: true
 exit_code: 0

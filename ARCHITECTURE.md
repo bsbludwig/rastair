@@ -50,7 +50,7 @@ Good reference for general topics:
 [The Rust Performance Book](https://nnethercote.github.io/perf-book/build-configuration.html)
 
 To measure performance, a representative dataset is needed, not just the small test files in this repository.
-For the following, we assume you have a good "call" command as `$call`, e.g. `call test.bam -r test.fa.gz --calling thresholds -o tmp/test.bcf`
+For the following, we assume you have a good "call" command as `$call`, e.g. `call test.bam -r test.fa.gz -o tmp/test.bcf`
 
 - Use [samply](https://github.com/mstange/samply/) to quickly get profiling data: `cargo build --profile profiling && samply record $CARGO_TARGET_DIR/profiling/rastair $call`
 - You can use [cargo-pgo](https://github.com/Kobzol/cargo-pgo) for building with profile-guided optimizations (PGO):

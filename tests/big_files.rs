@@ -47,7 +47,7 @@ macro_rules! test_files {
                     #[test]
                     #[ignore = "big file test"]
                     fn thresholds() -> Result<()> {
-                        call(&["--thresholds"])
+                        call(&["--no-ml"])
                     }
 
                     #[test]
@@ -59,19 +59,19 @@ macro_rules! test_files {
                     #[test]
                     #[ignore = "big file test"]
                     fn c_thresholds() -> Result<()> {
-                        call(&["-c", "--thresholds"])
+                        call(&["-c", "--no-ml"])
                     }
 
                     #[test]
                     #[ignore = "big file test"]
                     fn all_thresholds() -> Result<()> {
-                        call(&["--all", "--thresholds"])
+                        call(&["--all", "--no-ml"])
                     }
 
                     #[test]
                     #[ignore = "big file test"]
                     fn c_all_thresholds() -> Result<()> {
-                        call(&["-c", "--all", "--thresholds"])
+                        call(&["-c", "--all", "--no-ml"])
                     }
                 }
             }

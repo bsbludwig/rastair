@@ -56,7 +56,7 @@ fn enhance_with_calls_bed_file_to_add_denovo_counts() -> Result<()> {
             "tests/data/test.bam",
             "-c",
             "--region=chr19:6105900-6105950",
-            "--thresholds",
+            "--no-ml",
             "--bed",
         ])
         .arg(&calls_bed)

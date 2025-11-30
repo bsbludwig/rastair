@@ -13,7 +13,7 @@ fn write_mpk_then_convert_to_bcf() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
+            "--no-ml", // disable ML for faster test
             "--region=chr19:6105700-6105800",
             "-o",
         ])
@@ -52,7 +52,7 @@ fn write_mpk_then_convert_to_bed() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
+            "--no-ml", // disable ML for faster test
             "--region=chr19:6105700-6105800",
             "-o",
         ])
@@ -84,7 +84,7 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
+            "--no-ml", // disable ML for faster test
             "--region=chr19:6105700-6105800",
             "-o",
         ])
@@ -118,7 +118,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
+            "--no-ml", // disable ML for faster test
             "--region=chr19:6105700-6105800",
             "-o",
         ])
@@ -131,7 +131,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
+            "--no-ml", // disable ML for faster test
             "--region=chr19:6105700-6105800",
             "-o",
         ])
@@ -144,7 +144,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--thresholds", // disable ML for faster test
+            "--no-ml", // disable ML for faster test
             "--region=chr19:6105700-6105800",
             "--bed",
         ])

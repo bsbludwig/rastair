@@ -38,8 +38,7 @@ pub struct MachineLearningParams {
     ///
     /// This disables using the machine learning models. This will make rastair
     /// much faster, but at the cost of accuracy.
-    #[arg(long = "thresholds")]
-    #[arg(help_heading = cli::sections::FILTER)]
+    #[arg(long, help_heading = cli::sections::FILTER)]
     #[default(false)]
     pub no_ml: bool,
     /// Use machine learning model with this threshold value to call variants
@@ -48,9 +47,8 @@ pub struct MachineLearningParams {
     /// When specified, a ML model will classify positions with a prediction
     /// score. Anything above this threshold is considered PASS.
     ///
-    /// For consistency with `--thresholds`, this option can be also be
-    /// specified as `--ml` without a value, which will use the default
-    /// threshold.
+    /// For consistency with `--no-ml`, this option can be also be specified as
+    /// `--ml` without a value, which will use the default threshold.
     #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.8", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(DEFAULT_ML_THRESHOLD)]
