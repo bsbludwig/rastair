@@ -1,4 +1,4 @@
-use super::shared::{CommonFeatures, alt_score_generic};
+use super::super::shared::{CommonFeatures, alt_score_generic};
 use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,

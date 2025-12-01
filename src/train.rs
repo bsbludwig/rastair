@@ -4,7 +4,8 @@ use crate::{
         process::{PileupMappingParams, calculate_pileup_metrics, get_pileups},
         variant_calling::VariantCallingParams,
     },
-    metrics::{PileupMetrics, ml},
+    metrics::PileupMetrics,
+    metrics::ml::features::standard,
     sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli},
 };
@@ -382,18 +383,18 @@ fn collect_training_data_from_segment(
                     // NOTE: We filter out any examples with NaN features here
                     // FIXME: We should ensure no NaNs are ever produced in the first place
                     if alt_m.is_evidence_for_methylation() {
-                        if let Ok(features) = ml::cpg(&alt_m, before, after)
+                        if let Ok(features) = standard::cpg(&alt_m, before, after)
                             && !features.is_any_nan()
                         {
                             cpg_data.add_example(features, label);
                         }
                     } else if *alt.metrics.denovo {
-                        if let Ok(features) = ml::denovo_cpg(&alt_m, before, after)
+                        if let Ok(features) = standard::denovo_cpg(&alt_m, before, after)
                             && !features.is_any_nan()
                         {
                             denovo_data.add_example(features, label);
                         }
-                    } else if let Ok(features) = ml::others(&alt_m, before, after)
+                    } else if let Ok(features) = standard::others(&alt_m, before, after)
                         && !features.is_any_nan()
                     {
                         other_data.add_example(features, label);

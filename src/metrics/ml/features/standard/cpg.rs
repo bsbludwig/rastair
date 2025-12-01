@@ -1,4 +1,4 @@
-use super::shared::{CommonFeatures, alt_score_methylation_aware};
+use super::super::shared::{CommonFeatures, alt_score_methylation_aware};
 use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,

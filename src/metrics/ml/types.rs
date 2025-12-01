@@ -1,3 +1,4 @@
+use super::features::FeatureCalculator;
 use biosphere::RandomForest;
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
@@ -16,6 +17,7 @@ pub struct MachineLearning {
     pub cpg: Option<Box<RandomForest>>,
     pub denovo_cpg: Option<Box<RandomForest>>,
     pub others: Option<Box<RandomForest>>,
+    pub feature_calculator: Box<dyn FeatureCalculator>,
 }
 
 impl MachineLearning {
@@ -27,7 +29,10 @@ impl MachineLearning {
             cpg: None,
             denovo_cpg: None,
             others: None,
+            feature_calculator: Box::new(super::StandardFeatures),
         }
+    }
+
     }
 }
 

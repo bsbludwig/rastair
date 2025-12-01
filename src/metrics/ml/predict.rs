@@ -18,15 +18,23 @@ impl MachineLearning {
         }
 
         let (name, model, features) = if current.is_evidence_for_methylation() {
-            (MlModel::Cpg, self.cpg.as_ref(), super::cpg(current, before, after))
+            (
+                MlModel::Cpg,
+                self.cpg.as_ref(),
+                self.feature_calculator.calculate_cpg(current, before, after),
+            )
         } else if *current.alt.denovo {
             (
                 MlModel::DenovoCpg,
                 self.denovo_cpg.as_ref(),
-                super::denovo_cpg(current, before, after),
+                self.feature_calculator.calculate_denovo_cpg(current, before, after),
             )
         } else {
-            (MlModel::Others, self.others.as_ref(), super::others(current, before, after))
+            (
+                MlModel::Others,
+                self.others.as_ref(),
+                self.feature_calculator.calculate_others(current, before, after),
+            )
         };
 
         let Some(model) = model else {

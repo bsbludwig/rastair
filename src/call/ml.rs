@@ -83,6 +83,7 @@ impl MachineLearningParams {
             cpg: Some(Box::new(combined.cpg)),
             denovo_cpg: Some(Box::new(combined.denovo)),
             others: Some(Box::new(combined.others)),
+            feature_calculator: Box::new(crate::metrics::ml::StandardFeatures),
         })
     }
 
