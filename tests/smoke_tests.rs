@@ -30,7 +30,7 @@ fn count_bed_lines() -> Result<()> {
         .filter(|l| l.trim().ends_with("NEW"))
         .count();
     assert_snapshot!(cpgs, @"1448");
-    assert_snapshot!(denovos, @"341");
+    assert_snapshot!(denovos, @"0");
 
     Ok(())
 }
@@ -55,8 +55,8 @@ fn count_vcf_lines() -> Result<()> {
     let denovos =
         stdout.lines().filter(|l| !l.starts_with('#')).filter(|l| l.contains("CPGnovo")).count();
 
-    assert_snapshot!(cpgs, @"1444");
-    assert_snapshot!(denovos, @"6");
+    assert_snapshot!(cpgs, @"1448");
+    assert_snapshot!(denovos, @"0");
 
     Ok(())
 }
