@@ -13,6 +13,7 @@ expression: stdout
 ##FILTER=<ID=dnCpG_bq,Description="Low base quality for de-novo CpG candidate">
 ##FILTER=<ID=dnCpG_mapq,Description="Low mapping quality for de-novo CpG candidate">
 ##FILTER=<ID=dnCpG_vaf,Description="Low variant allele frequency for de-novo CpG candidate">
+##FILTER=<ID=dnCpG_adj,Description="Included as adjacent position for de-novo CpG candidate, but other position did not pass filters">
 ##FILTER=<ID=m_vaf,Description="Low variant allele frequency for methylation candidate">
 ##FILTER=<ID=m_bq_ratio,Description="Low quality ratio for methylation candidate">
 ##FILTER=<ID=m_pos,Description="Alt allele evidence from read edges for methylation candidate">

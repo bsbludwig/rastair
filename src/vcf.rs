@@ -33,6 +33,10 @@ filter!(dnCpG_lowDp, "Low read depth for de-novo CpG candidate");
 filter!(dnCpG_bq, "Low base quality for de-novo CpG candidate");
 filter!(dnCpG_mapq, "Low mapping quality for de-novo CpG candidate");
 filter!(dnCpG_vaf, "Low variant allele frequency for de-novo CpG candidate");
+filter!(
+    dnCpG_adj,
+    "Included as adjacent position for de-novo CpG candidate, but other position did not pass filters"
+);
 filter!(m_vaf, "Low variant allele frequency for methylation candidate");
 filter!(m_bq_ratio, "Low quality ratio for methylation candidate");
 filter!(m_pos, "Alt allele evidence from read edges for methylation candidate");
@@ -96,7 +100,7 @@ vcf_record!(
     filters: [
         PASS,
         lowDp,
-        dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf,
+        dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf, dnCpG_adj,
         m_vaf, m_bq_ratio, m_pos, m_highDp,
         pre_ml, low_ml_score,
     ],

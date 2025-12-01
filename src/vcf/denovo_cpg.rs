@@ -63,7 +63,7 @@ impl rastair_vcf::InfoField for DeNovoCpGCandidate {
     const NUMBER: InfoFieldNumber = InfoFieldNumber::Flag;
 
     fn write(&self, record: &mut Record) -> Result<()> {
-        let is_candidate = matches!(self, DeNovoCpGCandidate::Candidate { .. });
+        let is_candidate: bool = **self;
         <bool as rastair_vcf::InfoFieldValue>::write(record, Self::ID, &[is_candidate])
             .wrap_err("Failed to write info flag CPGnovo")
     }

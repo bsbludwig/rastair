@@ -31,14 +31,17 @@ impl Rastair1BedFormat {
         // site, the ref case should take precedence.
         let cpg = *pileup.pos_metrics.cpg;
         let de_novo = !cpg && pileup.forms_denovo();
-        if de_novo
-            && !*pileup.pos_metrics.denovo_adj
-            && let Some(alt) = pileup.alts.iter().find(|a| *a.metrics.denovo)
-            && !alt.filters.pass(Some(ml_threshold))
-        {
-            // Only report de novo candidates that we are confident about
-            trace!(%alt.base, "de novo candidate with low score");
-            return Ok(None);
+        if de_novo {
+            if *pileup.pos_metrics.denovo_adj && !pileup.pos_filters.other_pos_in_denovo_passes {
+                // This is an adjacent de-novo CpG site, but the other position did not pass filters
+                return Ok(None);
+            } else if let Some(alt) = pileup.alts.iter().find(|a| *a.metrics.denovo)
+                && !alt.filters.pass(Some(ml_threshold))
+            {
+                // Only report de novo candidates that we are confident about
+                trace!(%alt.base, "de novo candidate with low score");
+                return Ok(None);
+            }
         }
 
         let gt = if let Some(gt) = pileup.pos_metrics.genotype {

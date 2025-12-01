@@ -165,6 +165,7 @@ fn test_denovo_cpg() -> Result<()> {
     let expected_vcf = vcf![
         (G C) PASS,  // de-novo CpG candidate
         (G T) FAIL,  // other alt at first position
+        (G .) FAIL,  // other de-novo CpG position
         (G A) FAIL,  // second position: G->A methylation transition with low ML
     ];
 
@@ -709,6 +710,9 @@ fn test_denovo_cpg_both_positions_with_methylation() -> Result<()> {
     set_pass(&mut records[0], C);
     // A->T is methylation transition with low ML
     set_fail(&mut records[0], T);
+
+    let records = reprocess(records)?; // to propagate de-novo CpG flags
+
     let expected_vcf = vcf![
         (A C) PASS,  // De-novo CpG creation
         (A T) FAIL,  // Methylation evidence
@@ -739,6 +743,7 @@ fn test_denovo_cpg_that_is_variant_hg96_chr20_75254() -> Result<()> {
 
     // Todo: Does this make sense?
     let expected_vcf = vcf![
+        (C .) FAIL,
         (C A) PASS,
         (C G) FAIL,
     ];

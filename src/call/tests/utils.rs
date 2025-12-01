@@ -5,11 +5,11 @@ use crate::{
     CallParams,
     call::{
         pileup::{Pileup, SimpleRead, SimpleReads},
-        process_region,
+        process, process_region,
     },
     metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, Region, Segment},
-    utils::SequenceContext,
+    utils::{PileupMetricsIteratorExt as _, SequenceContext},
     vcf::Record as VcfRecord,
 };
 pub use crate::{call::record_filters::RecordFilters, utils::default};
@@ -18,6 +18,8 @@ use color_eyre::eyre::ContextCompat as _;
 pub(crate) use color_eyre::{Result, eyre::bail};
 use rastair_types::{Base, Probability, Strand};
 use std::{rc::Rc, str::FromStr, sync::OnceLock};
+
+pub const ML_THRESHOLD: Probability = Probability::new_panicky(0.8);
 
 #[macro_export]
 macro_rules! pileups {
@@ -340,6 +342,15 @@ pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     alt.filters.add(MANUAL, || true);
 }
 
+pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics>> {
+    records
+        .into_iter()
+        .map_surrounding(|before, current, after| {
+            process::propagate_denovo_pass_flags(before, current, after, Some(ML_THRESHOLD))
+        })
+        .collect()
+}
+
 impl RecordFilters {
     pub(crate) fn variants() -> Self {
         Self { vcf_all: false, cpgs_only: false }
@@ -362,7 +373,7 @@ impl RecordFilters {
 pub(crate) fn metrics_to_vcf(metrics: &[PileupMetrics]) -> Result<Vec<VcfRecord>> {
     let mut vcf_records = Vec::new();
     for metric in metrics {
-        let records = metric.to_vcf_records(Some(Probability::new_panicky(0.8)))?;
+        let records = metric.to_vcf_records(Some(ML_THRESHOLD))?;
         vcf_records.extend(records.iter());
     }
     Ok(vcf_records)

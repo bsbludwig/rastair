@@ -7,7 +7,7 @@ use crate::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
         Filters as VcfFilter, Format, GenotypeConfidence, GenotypeLikelihood, Info,
         MachineLearningPrediction, NumAlignedBases, NumIndels, PositionInRead,
-        StrandSpecificBaseQuality, StrandSpecificMappingQuality,
+        StrandSpecificBaseQuality, StrandSpecificMappingQuality, dnCpG_adj,
     },
 };
 use color_eyre::Result;
@@ -40,9 +40,11 @@ impl VcfRecordSet {
         match (filters.vcf_all, filters.cpgs_only) {
             (false, false) => {
                 // default behavior: only passing records with alts
+                self.reference_line = self.reference_line.take().filter(|r| r.filters.pass());
                 self.alt_lines.retain(|r| r.filters.pass());
             }
             (false, true) => {
+                self.reference_line = self.reference_line.take().filter(|r| r.filters.pass());
                 // passing CpGs (in ref line, untouched) and passing de-novo CpG candidates
                 self.alt_lines.retain(|r| *r.info.de_novo_cp_g_candidate && r.filters.pass());
             }
@@ -70,17 +72,52 @@ impl PileupMetrics {
             alt_lines: Vec::new(),
             is_cpg_site: *self.pos_metrics.cpg,
         };
-        let empty_filters = Filters::default();
+        let pass_filters = {
+            let mut filters = Filters::default();
+            filters.add(PASS, || true);
+            filters
+        };
 
         // Write ref->. (no alt) row when:
-        // 1. There are no alts at this position, OR
-        // 2. There is methylation evidence (the ref base is methylated)
-        // These rows are marked as PASS since they represent the reference allele.
-        if self.alts.is_empty() || *self.pos_metrics.cpg {
+        if *self.pos_metrics.cpg {
+            // 1. There might be methylation evidence (the ref base is methylated)
             let row = MetricsSubset {
                 pileup: &self.pileup,
                 pos_metrics: &self.pos_metrics,
-                pos_filters: &empty_filters,
+                // This row is PASS since it represent the reference allele.
+                pos_filters: &pass_filters,
+                ref_metrics: &self.ref_metrics,
+                alts: smallvec![],
+                is_ref_only_row: true,
+            };
+            let row = row.to_vcf_row(ml_threshold);
+            res.reference_line = Some(row);
+        } else if *self.pos_metrics.denovo_adj {
+            // 2. This is the matching position of a passing de-novo CpG
+            let row = MetricsSubset {
+                pileup: &self.pileup,
+                pos_metrics: &self.pos_metrics,
+                // This row is PASS when the other position in the de-novo CpG passes filters.
+                pos_filters: &{
+                    let mut filters = self.pos_filters.clone();
+                    filters.other_pos_in_denovo_passes =
+                        self.pos_filters.other_pos_in_denovo_passes;
+                    filters.add(dnCpG_adj, || !self.pos_filters.other_pos_in_denovo_passes);
+                    filters
+                },
+                ref_metrics: &self.ref_metrics,
+                alts: smallvec![],
+                is_ref_only_row: true,
+            };
+            let row = row.to_vcf_row(ml_threshold);
+            res.reference_line = Some(row);
+        } else if self.alts.is_empty() {
+            // 3. There are no alts at this position
+            let row = MetricsSubset {
+                pileup: &self.pileup,
+                pos_metrics: &self.pos_metrics,
+                // This row is PASS since it represent the reference allele.
+                pos_filters: &pass_filters,
                 ref_metrics: &self.ref_metrics,
                 alts: smallvec![],
                 is_ref_only_row: true,
@@ -150,11 +187,6 @@ impl MetricsSubset<'_> {
 
     pub fn pass(&self, ml_threshold: Option<Probability>) -> bool {
         if self.pos_filters.other_pos_in_denovo_passes {
-            return true;
-        }
-
-        // Ref-only rows (ref->.) always pass - they represent methylation evidence or reference calls
-        if self.is_ref_only_row {
             return true;
         }
 
@@ -233,16 +265,16 @@ impl MetricsSubset<'_> {
             num_indels: NumIndels(ref_alts_metrics.iter().map(|m| m.num_indels.f()).collect()),
             in_cp_g: self.pos_metrics.cpg,
             de_novo_cp_g_candidate: {
-                let mut res = DeNovoCpGCandidate::NotCandidate;
                 if let Some(alt) = alts_metrics.iter().find(|m| *m.denovo) {
-                    res = DeNovoCpGCandidate::Candidate {
+                    DeNovoCpGCandidate::Candidate {
                         ref_base: pileup.reference_base,
                         alt_base: alt.base,
                     }
-                } else if *pos_metrics.denovo_adj {
-                    res = DeNovoCpGCandidate::Adjecent { ref_base: pileup.reference_base }
+                } else if self.is_ref_only_row && *pos_metrics.denovo_adj {
+                    DeNovoCpGCandidate::Adjecent { ref_base: pileup.reference_base }
+                } else {
+                    DeNovoCpGCandidate::NotCandidate
                 }
-                res
             },
         }
     }

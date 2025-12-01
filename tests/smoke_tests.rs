@@ -78,8 +78,8 @@ fn every_bed_line_should_be_in_vcf() -> Result<()> {
                 let fields: Vec<&str> = line.trim().split('\t').collect();
                 let pos: u32 = fields[1].parse().unwrap();
                 let info_field = fields[7];
-                let is_cpg = line.contains("CPG");
-                let is_denovo = info_field.contains("CPGnovo");
+                let is_cpg = info_field.ends_with("CPG");
+                let is_denovo = info_field.ends_with("CPGnovo");
                 if is_cpg {
                     cpg_set.insert(pos);
                 }
