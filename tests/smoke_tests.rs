@@ -4,7 +4,7 @@ use utils::*;
 const CALL_TEST_BAM: [&str; 3] =
     ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
 const CHR19: &str = "--region=chr19";
-const NO_ML: &str = "--thresholds"; // disable ML for faster tests
+const NO_ML: &str = "--no-ml"; // disable ML for faster tests
 
 #[test]
 fn count_bed_lines() -> Result<()> {
