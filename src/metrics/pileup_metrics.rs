@@ -160,7 +160,7 @@ impl PileupMetrics {
     }
 
     pub fn pass(&self, ml_threshold: Option<Probability>) -> bool {
-        if self.pos_filters.other_pos_in_cpg_passes {
+        if self.pos_filters.other_pos_in_denovo_passes {
             return true;
         }
         self.pos_filters.pass() && self.alts.iter().any(|a| a.filters.pass(ml_threshold))
@@ -306,7 +306,7 @@ pub struct AltFilters {
 
 impl AltFilters {
     pub fn pass(&self, ml_threshold: Option<Probability>) -> bool {
-        if self.filters.other_pos_in_cpg_passes {
+        if self.filters.other_pos_in_denovo_passes {
             return true;
         }
         if let Some(ml_threshold) = ml_threshold
@@ -321,7 +321,7 @@ impl AltFilters {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Filters {
-    pub other_pos_in_cpg_passes: bool,
+    pub other_pos_in_denovo_passes: bool,
     filters: SmallVec<SmolStr, 6>,
 }
 
@@ -341,7 +341,7 @@ impl Filters {
     }
 
     pub fn pass(&self) -> bool {
-        self.other_pos_in_cpg_passes || self.filters.is_empty()
+        self.other_pos_in_denovo_passes || self.filters.is_empty()
     }
 }
 

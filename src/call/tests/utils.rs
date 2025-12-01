@@ -331,10 +331,10 @@ pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     if m.ref_base() == base {
         todo!()
     }
-    m.pos_filters.other_pos_in_cpg_passes = false;
+    m.pos_filters.other_pos_in_denovo_passes = false;
 
     let alt = m.alt_filters_mut(base).wrap_err_with(|| format!("no {base} alt")).unwrap();
-    alt.filters.other_pos_in_cpg_passes = false;
+    alt.filters.other_pos_in_denovo_passes = false;
     alt.ml = Some(Probability::ZERO);
 
     alt.filters.add(MANUAL, || true);

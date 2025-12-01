@@ -371,7 +371,7 @@ fn process_region(
         .map_surrounding(|b, c, a| {
             // For CpG sites and de-novo CpG sites, if one position is pass, mark
             // corresponding as pass as well
-            process::propagate_cpg_pass_flags(b, c, a, params.ml.threshold())
+            process::propagate_denovo_pass_flags(b, c, a, params.ml.threshold())
         })
         .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
         .filter(|p| only_core_positions(&segment, p))

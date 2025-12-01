@@ -112,7 +112,7 @@ impl MetricsSubset<'_> {
     }
 
     pub fn pass(&self, ml_threshold: Option<Probability>) -> bool {
-        if self.pos_filters.other_pos_in_cpg_passes {
+        if self.pos_filters.other_pos_in_denovo_passes {
             return true;
         }
 
