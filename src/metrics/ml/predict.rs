@@ -2,7 +2,7 @@ use super::types::{MachineLearning, MlModel, Prediction};
 use crate::metrics::{MetricsForAlt, PileupMetrics};
 use color_eyre::eyre::ensure;
 use rastair_types::Probability;
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 impl MachineLearning {
     #[instrument(level = "debug", skip_all)]
@@ -39,7 +39,7 @@ impl MachineLearning {
         });
         let features = match features {
             Err(error) => {
-                warn!(%error, "Failed to generate features for ML prediction");
+                debug!(%error, "Failed to generate features for ML prediction");
                 return None;
             }
             Ok(x) => x,
