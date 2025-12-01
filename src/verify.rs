@@ -235,35 +235,35 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
     let uncallable = truth_variants.par_iter().filter(|key| !prediction_keys.contains(key)).count();
 
     // Output results
-    println!("\n=== Model Verification Results ===\n");
-    println!("Region: {}", region);
-    println!("ML Threshold: {:.2}", params.ml_threshold);
-    println!("True variants in truth set: {}", truth_variants.len());
-    println!("Positions with evidence in predictions: {}", predictions.len());
-    println!("Truth variants without evidence (uncallable): {}\n", uncallable);
+    println!("# Model Verification Results\n");
+    println!("- **Region**: {}", region);
+    println!("- **ML Threshold**: {:.2}", params.ml_threshold);
+    println!("- **True variants in truth set**: {}", truth_variants.len());
+    println!("- **Positions with evidence in predictions**: {}", predictions.len());
+    println!("- **Truth variants without evidence (uncallable)**: {}\n", uncallable);
 
-    println!("=== Overall Performance ===\n");
+    println!("## Overall Performance\n");
     print_metrics(&overall);
 
-    println!("\n=== Performance by Variant Category ===\n");
+    println!("\n## Performance by Variant Category\n");
     for category in [VariantCategory::CpG, VariantCategory::DeNovo, VariantCategory::Other] {
         if let Some(matrix) = matrices.get(&category)
             && matrix.total() > 0
         {
-            println!("--- {} ---", category);
+            println!("### {}\n", category);
             print_metrics(matrix);
             println!();
         }
     }
 
     // Additional breakdown: true variants by category
-    println!("=== True Variants Called by Category ===\n");
+    println!("## True Variants Called by Category\n");
     for category in [VariantCategory::CpG, VariantCategory::DeNovo, VariantCategory::Other] {
         if let Some(matrix) = matrices.get(&category) {
             let total_true = matrix.true_positives + matrix.false_negatives;
             if total_true > 0 {
                 println!(
-                    "{}: {}/{} called ({:.2}%)",
+                    "- **{}**: {}/{} called ({:.2}%)",
                     category,
                     matrix.true_positives,
                     total_true,
@@ -273,13 +273,13 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
         }
     }
 
-    println!("\n=== False Positives by Category ===\n");
+    println!("\n## False Positives by Category\n");
     for category in [VariantCategory::CpG, VariantCategory::DeNovo, VariantCategory::Other] {
         if let Some(matrix) = matrices.get(&category) {
             let total_ref = matrix.true_negatives + matrix.false_positives;
             if total_ref > 0 {
                 println!(
-                    "{}: {}/{} false positives ({:.4}%)",
+                    "- **{}**: {}/{} false positives ({:.4}%)",
                     category,
                     matrix.false_positives,
                     total_ref,
@@ -293,19 +293,23 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 }
 
 fn print_metrics(matrix: &ConfusionMatrix) {
-    println!("Confusion Matrix:");
-    println!("  True Positives:  {}", matrix.true_positives);
-    println!("  True Negatives:  {}", matrix.true_negatives);
-    println!("  False Positives: {}", matrix.false_positives);
-    println!("  False Negatives: {}", matrix.false_negatives);
+    println!("**Confusion Matrix:**\n");
+    println!("| Metric | Count |");
+    println!("| --- | --- |");
+    println!("| True Positives | {} |", matrix.true_positives);
+    println!("| True Negatives | {} |", matrix.true_negatives);
+    println!("| False Positives | {} |", matrix.false_positives);
+    println!("| False Negatives | {} |", matrix.false_negatives);
     println!();
-    println!("Metrics:");
-    println!("  Accuracy:    {:.4}", matrix.accuracy());
-    println!("  Sensitivity: {:.4} (recall for variants)", matrix.sensitivity());
-    println!("  Specificity: {:.4} (recall for reference)", matrix.specificity());
-    println!("  Precision:   {:.4} (PPV)", matrix.precision());
-    println!("  NPV:         {:.4}", matrix.negative_predictive_value());
-    println!("  F1 Score:    {:.4}", matrix.f1_score());
+    println!("**Performance Metrics:**\n");
+    println!("| Metric | Value | Description |");
+    println!("| --- | --- | --- |");
+    println!("| Accuracy | {:.4} | Overall correctness |", matrix.accuracy());
+    println!("| Sensitivity | {:.4} | Recall for variants |", matrix.sensitivity());
+    println!("| Specificity | {:.4} | Recall for reference |", matrix.specificity());
+    println!("| Precision | {:.4} | PPV |", matrix.precision());
+    println!("| NPV | {:.4} | Negative predictive value |", matrix.negative_predictive_value());
+    println!("| F1 Score | {:.4} | Harmonic mean of precision & recall |", matrix.f1_score());
 }
 
 #[instrument(level = "info", skip_all)]
