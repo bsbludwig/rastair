@@ -8,7 +8,7 @@ This repository contains the code for the **in-progress** development of Rastair
 
 ## Status
 
-The code is in the early stages of development.
+We're working on a release candidate for version 2.0 at the moment.
 
 ## Installation
 
