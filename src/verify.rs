@@ -7,7 +7,7 @@ use crate::{
     vcf::{DeNovoCpGCandidate, InCpG},
 };
 use clio::ClioPath;
-use color_eyre::eyre::{Context as _, Result};
+use color_eyre::eyre::{Context as _, Result, ensure};
 use rastair_types::{Base, Probability, RegionString};
 use rastair_vcf::VcfField as _;
 use rayon::prelude::*;
@@ -16,6 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     num::NonZeroU64,
     ops::{Add, AddAssign},
+    path::PathBuf,
     thread::available_parallelism,
 };
 use tracing::{info, instrument, warn};
@@ -307,11 +308,21 @@ fn print_metrics(matrix: &ConfusionMatrix) {
     println!("  F1 Score:    {:.4}", matrix.f1_score());
 }
 
+#[instrument(level = "info", skip_all)]
 fn load_predictions_vcf(
     vcf_path: &ClioPath,
     region: &RegionString,
     threads: usize,
 ) -> Result<Vec<PredictionRecord>> {
+    // Ensure index file exists
+    let index_path = PathBuf::from(format!("{}.csi", vcf_path.path().display()));
+    ensure!(
+        index_path.exists(),
+        "Predictions VCF file `{}` not found. Please create an index with `bcftools index {}`",
+        index_path.display(),
+        vcf_path.display(),
+    );
+
     let mut reader = bcf::IndexedReader::from_path(vcf_path.path())
         .wrap_err_with(|| format!("Failed to open predictions VCF file: {}", vcf_path.display()))?;
     reader

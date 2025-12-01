@@ -251,6 +251,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 }
 
 /// Load truth VCF and create an index of variant positions
+#[instrument(level = "info", skip_all)]
 pub fn load_truth_vcf(
     vcf_path: &ClioPath,
     region: &RegionString,
@@ -261,7 +262,7 @@ pub fn load_truth_vcf(
     reader.set_threads(threads.max(2)).wrap_err("Failed to set threads for truth VCF reader")?;
 
     let mut variants = HashSet::new();
-    let header = reader.header().clone();
+    let header = reader.header();
 
     reader
         .fetch(
