@@ -266,8 +266,8 @@ fn vcf_with_nOT_nOB() -> Result<()> {
         .arg(&b)
         .succeeds()?;
 
-    assert_compact_debug_snapshot!(get_depths(&a), @"Ok([18, 18, 18, 16, 16, 16, 16])");
-    assert_compact_debug_snapshot!(get_depths(&b), @"Ok([12, 11, 11, 13, 13, 13, 13])");
+    assert_compact_debug_snapshot!(get_depths(&a), @"Ok([18, 18, 16, 16, 16])");
+    assert_compact_debug_snapshot!(get_depths(&b), @"Ok([11, 11, 13, 13, 13])");
 
     fn get_depths(path: &std::path::Path) -> Result<Vec<i32>> {
         use rastair_vcf::VcfField as _;

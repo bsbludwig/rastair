@@ -1,7 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 // CLI modules
-mod call;
+pub(crate) mod call;
 pub use call::{CallParams, call};
 mod call_reads;
 pub use call_reads::{PerReadParams, call_reads};

@@ -1,6 +1,6 @@
 use super::{Methylated, Record};
 use crate::{
-    call::pileup::Pileup,
+    call::{RecordFilters, pileup::Pileup},
     metrics::{AlleleMetrics, Alt, Filters, PileupMetrics, PositionMetrics},
     utils::{IntoF64 as _, default},
     vcf::{
@@ -34,6 +34,26 @@ impl VcfRecordSet {
         // If there is a reference line, yield it first
         // Then yield all alt lines
         self.reference_line.into_iter().chain(self.alt_lines)
+    }
+
+    pub fn filter(&mut self, filters: &RecordFilters) {
+        match (filters.vcf_all, filters.cpgs_only) {
+            (false, false) => {
+                // default behavior: only passing records with alts
+                self.alt_lines.retain(|r| r.filters.pass());
+            }
+            (false, true) => {
+                // passing CpGs (in ref line, untouched) and passing de-novo CpG candidates
+                self.alt_lines.retain(|r| *r.info.de_novo_cp_g_candidate && r.filters.pass());
+            }
+            (true, false) => {
+                // `--all` means all, do nothing
+            }
+            (true, true) => {
+                // `--all -c` means all CpGs and de-novo CpG candidates
+                self.alt_lines.retain(|r| *r.info.de_novo_cp_g_candidate);
+            }
+        }
     }
 }
 

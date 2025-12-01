@@ -44,6 +44,8 @@ pub mod pileup;
 mod record_filters;
 pub mod variant_calling;
 mod writer;
+
+pub use record_filters::RecordFilters;
 pub use writer::writer_thread;
 
 // Jump in here if you want to know how the processing of regions works
