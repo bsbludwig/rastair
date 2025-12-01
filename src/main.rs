@@ -58,13 +58,11 @@ enum Subcommand {
     Bam(BamRewriteArgs),
     /// Convert between different file formats
     Convert(ConvertParams),
-    /// Train machine learning models
-    Train(TrainModelParams),
-    /// Verify trained models against ground truth
-    ///
-    /// Compare predictions from a rastair2 call against a ground truth VCF
-    /// and calculate classification metrics (sensitivity, specificity, etc.)
-    Verify(VerifyParams),
+    /// Machine learning commands for training and verifying models
+    Ml {
+        #[command(subcommand)]
+        command: MlSubcommand,
+    },
     /// View internal format as JSON lines
     View(MpkViewParams),
     /// Calculate conversion per base position in read
@@ -82,6 +80,18 @@ enum Subcommand {
         #[command(subcommand)]
         command: Generate,
     },
+}
+
+/// Machine learning commands for training and verifying models
+#[derive(Debug, clap::Subcommand)]
+enum MlSubcommand {
+    /// Train machine learning models
+    Train(TrainModelParams),
+    /// Verify trained models against ground truth
+    ///
+    /// Compare predictions from a rastair2 call against a ground truth VCF
+    /// and calculate classification metrics (sensitivity, specificity, etc.)
+    Verify(VerifyParams),
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -142,22 +152,24 @@ fn main() -> Result<()> {
             let duration = start.elapsed();
             info!(?duration, "Bam rewrite finished");
         }
-        Subcommand::Train(params) => {
-            // track execution time
-            let start = std::time::Instant::now();
-            debug!(?params, "Running train command");
-            rastair::train_model(&params)?;
-            let duration = start.elapsed();
-            info!(?duration, "Training finished");
-        }
-        Subcommand::Verify(params) => {
-            // track execution time
-            let start = std::time::Instant::now();
-            debug!(?params, "Running verify command");
-            rastair::verify(&params)?;
-            let duration = start.elapsed();
-            info!(?duration, "Verification finished");
-        }
+        Subcommand::Ml { command } => match command {
+            MlSubcommand::Train(params) => {
+                // track execution time
+                let start = std::time::Instant::now();
+                debug!(?params, "Running train command");
+                rastair::train_model(&params)?;
+                let duration = start.elapsed();
+                info!(?duration, "Training finished");
+            }
+            MlSubcommand::Verify(params) => {
+                // track execution time
+                let start = std::time::Instant::now();
+                debug!(?params, "Running verify command");
+                rastair::verify(&params)?;
+                let duration = start.elapsed();
+                info!(?duration, "Verification finished");
+            }
+        },
         Subcommand::Convert(params) => {
             // track execution time
             let start = std::time::Instant::now();
