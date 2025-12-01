@@ -19,13 +19,23 @@ fn count_bed_lines() -> Result<()> {
     "#);
 
     let stdout = call.stdout();
-    assert_snapshot!(stdout.lines().count(), @"1790");
+    let cpgs = stdout
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter(|l| l.trim().ends_with("REF"))
+        .count();
+    let denovos = stdout
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter(|l| l.trim().ends_with("NEW"))
+        .count();
+    assert_snapshot!(cpgs, @"1448");
+    assert_snapshot!(denovos, @"341");
 
     Ok(())
 }
 
 #[test]
-#[ignore = "fix when vcf output is stable again"]
 fn count_vcf_lines() -> Result<()> {
     apply_common_filters!();
 
@@ -37,7 +47,16 @@ fn count_vcf_lines() -> Result<()> {
     "#);
 
     let stdout = call.stdout();
-    assert_snapshot!(stdout.lines().count(), @"1497");
+    let cpgs = stdout
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter(|l| l.contains("CPG") && !l.contains("CPGnovo"))
+        .count();
+    let denovos =
+        stdout.lines().filter(|l| !l.starts_with('#')).filter(|l| l.contains("CPGnovo")).count();
+
+    assert_snapshot!(cpgs, @"1444");
+    assert_snapshot!(denovos, @"6");
 
     Ok(())
 }
