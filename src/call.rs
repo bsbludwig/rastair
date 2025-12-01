@@ -133,6 +133,11 @@ impl CallParams {
             self.vcf.vcf = Some(ClioPath::std());
         }
 
+        if self.bed.bed.is_some() && self.vcf.vcf.is_none() {
+            debug!("Only BED output requested, filtering for CpG/de-novo CpG sites only");
+            self.record_filters.cpgs_only = true;
+        }
+
         Ok(())
     }
 }
