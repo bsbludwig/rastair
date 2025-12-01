@@ -12,11 +12,8 @@ pub struct RastairModel {
 }
 
 pub struct MachineLearning {
-    pub disabled: bool,
     pub threshold: Probability,
-    pub cpg: Option<Box<RandomForest>>,
-    pub denovo_cpg: Option<Box<RandomForest>>,
-    pub others: Option<Box<RandomForest>>,
+    pub model: Option<Box<RastairModel>>,
     pub feature_calculator: Box<dyn FeatureCalculator>,
 }
 
@@ -24,15 +21,14 @@ impl MachineLearning {
     /// Create a disabled ML instance
     pub fn disabled() -> Self {
         Self {
-            disabled: true,
             threshold: Probability::new(1.).expect("1 is a valid probability"),
-            cpg: None,
-            denovo_cpg: None,
-            others: None,
+            model: None,
             feature_calculator: Box::new(super::StandardFeatures),
         }
     }
 
+    pub fn enabled(&self) -> bool {
+        self.model.is_some()
     }
 }
 

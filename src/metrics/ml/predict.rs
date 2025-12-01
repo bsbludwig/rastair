@@ -13,33 +13,33 @@ impl MachineLearning {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Option<Prediction> {
-        if self.disabled {
+        if !self.enabled() {
             return None;
         }
+
+        let Some(rastair_model) = self.model.as_ref() else {
+            warn!("No model available");
+            return None;
+        };
 
         let (name, model, features) = if current.is_evidence_for_methylation() {
             (
                 MlModel::Cpg,
-                self.cpg.as_ref(),
+                &rastair_model.cpg,
                 self.feature_calculator.calculate_cpg(current, before, after),
             )
         } else if *current.alt.denovo {
             (
                 MlModel::DenovoCpg,
-                self.denovo_cpg.as_ref(),
+                &rastair_model.denovo,
                 self.feature_calculator.calculate_denovo_cpg(current, before, after),
             )
         } else {
             (
                 MlModel::Others,
-                self.others.as_ref(),
+                &rastair_model.others,
                 self.feature_calculator.calculate_others(current, before, after),
             )
-        };
-
-        let Some(model) = model else {
-            warn!(model=?name, "No model found");
-            return None;
         };
         let features = features.and_then(|x| {
             ensure!(!x.is_any_nan(), "Failed to calculate features (one metric was NaN)");

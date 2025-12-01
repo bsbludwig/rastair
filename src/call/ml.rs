@@ -78,11 +78,8 @@ impl MachineLearningParams {
         .wrap_err("Failed to load combined RF model")?;
 
         Ok(MachineLearning {
-            disabled: false,
             threshold: self.ml,
-            cpg: Some(Box::new(combined.cpg)),
-            denovo_cpg: Some(Box::new(combined.denovo)),
-            others: Some(Box::new(combined.others)),
+            model: Some(Box::new(combined)),
             feature_calculator: Box::new(crate::metrics::ml::StandardFeatures),
         })
     }

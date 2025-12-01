@@ -18,7 +18,7 @@ pub fn add_ml_metrics(
     after: Option<&PileupMetrics>,
     ml: &MachineLearning,
 ) -> Result<()> {
-    if ml.disabled {
+    if !ml.enabled() {
         return Ok(());
     }
 

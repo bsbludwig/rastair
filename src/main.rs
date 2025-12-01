@@ -31,7 +31,6 @@ struct Cli {
 /// See <https://docs.rastair.com/> for more information.
 #[derive(Debug, clap::Subcommand)]
 #[command(version)]
-#[expect(clippy::large_enum_variant, reason = "only constructed once")]
 enum Subcommand {
     /// Call methylated positions
     ///
