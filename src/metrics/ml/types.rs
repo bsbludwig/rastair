@@ -2,6 +2,14 @@ use biosphere::RandomForest;
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
 
+/// Combined model file containing all three random forest models
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct RastairModel {
+    pub cpg: RandomForest,
+    pub denovo: RandomForest,
+    pub others: RandomForest,
+}
+
 pub struct MachineLearning {
     pub disabled: bool,
     pub threshold: Probability,

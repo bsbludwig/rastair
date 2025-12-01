@@ -139,13 +139,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    For consistency with `--thresholds`, this option can be also be specified as `--ml` without a value, which will use the default threshold.
 
   Default value: `0.80`
-* `--model-cpg <MODEL_CPG>` — Path to the model for CpG positions
-
-   Default is the bundled model in the Rastair binary.
-* `--model-denovo-cpg <MODEL_DENOVO_CPG>` — Path to the model for de novo CpG positions
-
-   Default is the bundled model in the Rastair binary.
-* `--model-others <MODEL_OTHERS>` — Path to the model for other positions
+* `--model <MODEL>` — Path to the combined model file containing CpG, denovo, and others models
 
    Default is the bundled model in the Rastair binary.
 * `-c`, `--cpgs-only` — Report CpGs only and default to BED output

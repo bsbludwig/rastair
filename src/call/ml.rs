@@ -17,9 +17,11 @@
 //! The extracted features are returned as an ndarray Array1<f64> suitable
 //! for input to a random forest classifier.
 
-use crate::{metrics::ml::types::MachineLearning, utils::cli};
+use crate::{
+    metrics::ml::types::{MachineLearning, RastairModel},
+    utils::cli,
+};
 use better_default::Default;
-use biosphere::RandomForest;
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
@@ -53,27 +55,13 @@ pub struct MachineLearningParams {
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,
-    /// Path to the model for CpG positions
+    /// Path to the combined model file containing CpG, denovo, and others models
     ///
     /// Default is the bundled model in the Rastair binary.
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
     #[arg(help_heading = cli::sections::FILTER)]
     #[serde(skip)]
-    model_cpg: Option<ClioPath>,
-    /// Path to the model for de novo CpG positions
-    ///
-    /// Default is the bundled model in the Rastair binary.
-    #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
-    #[arg(help_heading = cli::sections::FILTER)]
-    #[serde(skip)]
-    model_denovo_cpg: Option<ClioPath>,
-    /// Path to the model for other positions
-    ///
-    /// Default is the bundled model in the Rastair binary.
-    #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file())]
-    #[arg(help_heading = cli::sections::FILTER)]
-    #[serde(skip)]
-    model_others: Option<ClioPath>,
+    model: Option<ClioPath>,
 }
 
 impl MachineLearningParams {
@@ -83,30 +71,18 @@ impl MachineLearningParams {
             return Ok(MachineLearning::disabled());
         };
 
+        let combined = load_combined_model(
+            self.model.as_ref().map(|x| x.path()),
+            &include_bytes!("../../models/rastair_default.rf.mpk.lz4")[..],
+        )
+        .wrap_err("Failed to load combined RF model")?;
+
         Ok(MachineLearning {
             disabled: false,
             threshold: self.ml,
-            cpg: Some(Box::new(
-                load_model(
-                    self.model_cpg.as_ref().map(|x| x.path()),
-                    &include_bytes!("../../models/BS_RF_800-2_CpG.rf.mpk.lz4")[..],
-                )
-                .wrap_err("Failed to load CpG RF model")?,
-            )),
-            denovo_cpg: Some(Box::new(
-                load_model(
-                    self.model_denovo_cpg.as_ref().map(|x| x.path()),
-                    &include_bytes!("../../models/BS_RF_800-2_denovo.rf.mpk.lz4")[..],
-                )
-                .wrap_err("Failed to load DeNovo CpG RF model")?,
-            )),
-            others: Some(Box::new(
-                load_model(
-                    self.model_others.as_ref().map(|x| x.path()),
-                    &include_bytes!("../../models/BS_RF_800-2_other.rf.mpk.lz4")[..],
-                )
-                .wrap_err("Failed to load Others RF model")?,
-            )),
+            cpg: Some(Box::new(combined.cpg)),
+            denovo_cpg: Some(Box::new(combined.denovo)),
+            others: Some(Box::new(combined.others)),
         })
     }
 
@@ -116,26 +92,26 @@ impl MachineLearningParams {
 }
 
 #[instrument(level = "debug", skip_all)]
-pub fn load_model(path: Option<&Path>, built_in: &[u8]) -> Result<RandomForest> {
-    fn load_model_from_file(path: &Path) -> Result<RandomForest> {
+pub fn load_combined_model(path: Option<&Path>, built_in: &[u8]) -> Result<RastairModel> {
+    fn load_model_from_file(path: &Path) -> Result<RastairModel> {
         ensure!(path.exists(), "Model file does not exist");
         let file = fs::read(path).wrap_err("Failed to read model file")?;
-        load_rf(&file[..]).wrap_err("Failed to load model")
+        load_combined(&file[..]).wrap_err("Failed to load combined model")
     }
 
-    fn load_rf(reader: impl Read) -> Result<RandomForest> {
+    fn load_combined(reader: impl Read) -> Result<RastairModel> {
         let decompress = lz4::Decoder::new(reader).wrap_err("Failed to create LZ4 decoder")?;
-        rmp_serde::from_read(decompress).wrap_err("Failed to deserialize random forest")
+        rmp_serde::from_read(decompress).wrap_err("Failed to deserialize combined model")
     }
 
     if let Some(path) = path {
         let model = load_model_from_file(path)
-            .wrap_err_with(|| format!("Failed to load model from {path:?}"));
-        debug!(?path, "Loaded model from file");
+            .wrap_err_with(|| format!("Failed to load combined model from {path:?}"));
+        debug!(?path, "Loaded combined model from file");
         model
     } else {
-        let model = load_rf(built_in);
-        debug!("Loaded built-in model");
+        let model = load_combined(built_in);
+        debug!("Loaded built-in combined model");
         model
     }
 }
