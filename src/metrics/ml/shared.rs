@@ -36,6 +36,8 @@ impl CommonFeatures {
 
         let ref_base = pileup.reference_base;
         let depth = pos.depth.f();
+        // Prevent division by zero resulting in NaN values
+        let depth = if depth > 0.0 { depth } else { 1.0 };
 
         let seq_ctx = &pileup.context;
         let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
