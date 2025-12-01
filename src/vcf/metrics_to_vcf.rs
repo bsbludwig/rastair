@@ -5,7 +5,7 @@ use crate::{
     utils::{IntoF64 as _, default},
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
-        Filters as VcfFilter, Format, GenotypeConfidence, GenotypeLikelihood, InCpG, Info,
+        Filters as VcfFilter, Format, GenotypeConfidence, GenotypeLikelihood, Info,
         MachineLearningPrediction, NumAlignedBases, NumIndels, PositionInRead,
         StrandSpecificBaseQuality, StrandSpecificMappingQuality,
     },
@@ -23,6 +23,20 @@ use rastair_vcf::{
     },
 };
 
+pub struct VcfRecordSet {
+    reference_line: Option<Record>,
+    alt_lines: Vec<Record>,
+    is_cpg_site: bool,
+}
+
+impl VcfRecordSet {
+    pub fn iter(self) -> impl Iterator<Item = Record> {
+        // If there is a reference line, yield it first
+        // Then yield all alt lines
+        self.reference_line.into_iter().chain(self.alt_lines)
+    }
+}
+
 impl PileupMetrics {
     /// Convert the metrics to VCF records
     ///
@@ -30,8 +44,12 @@ impl PileupMetrics {
     /// - Writes ref->. when there are no alts or when methylation evidence exists (PASS)
     /// - Writes separate ref->alt rows for each alt allele with their respective filters
     /// - Methylation evidence = C->T or G->A transitions with low ML scores
-    pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<Vec<Record>> {
-        let mut rows = Vec::new();
+    pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<VcfRecordSet> {
+        let mut res = VcfRecordSet {
+            reference_line: None,
+            alt_lines: Vec::new(),
+            is_cpg_site: *self.pos_metrics.cpg,
+        };
         let empty_filters = Filters::default();
 
         // Write ref->. (no alt) row when:
@@ -47,7 +65,8 @@ impl PileupMetrics {
                 alts: smallvec![],
                 is_ref_only_row: true,
             };
-            rows.push(row);
+            let row = row.to_vcf_row(ml_threshold);
+            res.reference_line = Some(row);
         }
 
         // Write separate ref->alt row for each alt allele.
@@ -58,16 +77,14 @@ impl PileupMetrics {
                 pos_metrics: &self.pos_metrics,
                 pos_filters: &self.pos_filters,
                 ref_metrics: &self.ref_metrics,
-                alts: smallvec![alt.clone()],
+                alts: smallvec![alt],
                 is_ref_only_row: false,
             };
-            rows.push(row);
+            let row = row.to_vcf_row(ml_threshold);
+            res.alt_lines.push(row);
         }
 
-        // TODO: If this is a (de-novo) CpG site, make sure we're writing both
-        // positions (C and G).
-
-        Ok(rows.into_iter().map(|row| row.to_vcf_row(ml_threshold)).collect())
+        Ok(res)
     }
 }
 
@@ -79,7 +96,7 @@ struct MetricsSubset<'m> {
     pub pos_filters: &'m Filters,
     pub ref_metrics: &'m AlleleMetrics,
     /// Alt alleles for this row. Empty for ref-only rows (ref->.).
-    pub alts: SmallVec<Alt, 2>,
+    pub alts: SmallVec<&'m Alt, 2>,
     /// True if this is a ref-only row (ref->.) representing methylation evidence or no variants.
     pub is_ref_only_row: bool,
 }
@@ -194,19 +211,15 @@ impl MetricsSubset<'_> {
                 ref_alts_metrics.iter().map(|m| m.num_aligned_bases.f()).collect(),
             ),
             num_indels: NumIndels(ref_alts_metrics.iter().map(|m| m.num_indels.f()).collect()),
-            in_cp_g: InCpG::from(pileup),
+            in_cp_g: self.pos_metrics.cpg,
             de_novo_cp_g_candidate: {
                 let mut res = DeNovoCpGCandidate::NotCandidate;
-                if let Some(alt_that_forms_denovo) = alts_metrics.iter().find(|m| *m.denovo) {
-                    let alt = alt_that_forms_denovo;
-                    if *alt.denovo {
-                        res = DeNovoCpGCandidate::Candidate {
-                            ref_base: pileup.reference_base,
-                            alt_base: alt.base,
-                        }
+                if let Some(alt) = alts_metrics.iter().find(|m| *m.denovo) {
+                    res = DeNovoCpGCandidate::Candidate {
+                        ref_base: pileup.reference_base,
+                        alt_base: alt.base,
                     }
-                }
-                if *pos_metrics.denovo_adj {
+                } else if *pos_metrics.denovo_adj {
                     res = DeNovoCpGCandidate::Adjecent { ref_base: pileup.reference_base }
                 }
                 res
@@ -232,8 +245,7 @@ impl MetricsSubset<'_> {
 
         let has_ml = self.alts.iter().any(|alt| alt.filters.ml.is_some());
 
-        // FIXME: only add for ref->. rows
-        let methylated = if self.alts.is_empty() {
+        let methylated = if self.alts.is_empty() || self.is_ref_only_row {
             // For ref->. rows, indicate methylation status based on position metrics
             self.pos_metrics.methylated.clone()
         } else {

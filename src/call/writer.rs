@@ -79,7 +79,7 @@ pub fn writer_thread(
                                     .to_vcf_records(ml_threshold)
                                     .wrap_err("Failed to convert metrics to VCF record")
                                     .this_is_a_bug()?;
-                                for vcf_record in records {
+                                for vcf_record in records.iter() {
                                     writer.add(&vcf_record).wrap_err("Failed to write VCF record")?;
                                 }
                             }

@@ -212,6 +212,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
                     .to_vcf_records(Some(params.ml_threshold))
                     .wrap_err("Failed to convert record to VCF format")
                     .this_is_a_bug()?
+                    .iter()
                 {
                     writer.add(&vcf_record).wrap_err("Failed to write record")?;
                 }
