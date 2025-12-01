@@ -28,7 +28,7 @@ use color_eyre::{
 };
 use rastair_types::Probability;
 use std::{fs, io::Read, path::Path};
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.8);
 
@@ -95,14 +95,14 @@ impl MachineLearningParams {
             )),
             denovo_cpg: Some(Box::new(
                 load_model(
-                    self.model_cpg.as_ref().map(|x| x.path()),
+                    self.model_denovo_cpg.as_ref().map(|x| x.path()),
                     &include_bytes!("../../models/BS_RF_800-2_denovo.rf.mpk.lz4")[..],
                 )
                 .wrap_err("Failed to load DeNovo CpG RF model")?,
             )),
             others: Some(Box::new(
                 load_model(
-                    self.model_cpg.as_ref().map(|x| x.path()),
+                    self.model_others.as_ref().map(|x| x.path()),
                     &include_bytes!("../../models/BS_RF_800-2_other.rf.mpk.lz4")[..],
                 )
                 .wrap_err("Failed to load Others RF model")?,
@@ -128,8 +128,14 @@ pub fn load_model(path: Option<&Path>, built_in: &[u8]) -> Result<RandomForest> 
         rmp_serde::from_read(decompress).wrap_err("Failed to deserialize random forest")
     }
 
-    let Some(path) = path else {
-        return load_rf(built_in);
-    };
-    load_model_from_file(path).wrap_err_with(|| format!("Failed to load model from {path:?}"))
+    if let Some(path) = path {
+        let model = load_model_from_file(path)
+            .wrap_err_with(|| format!("Failed to load model from {path:?}"));
+        debug!(?path, "Loaded model from file");
+        model
+    } else {
+        let model = load_rf(built_in);
+        debug!("Loaded built-in model");
+        model
+    }
 }
