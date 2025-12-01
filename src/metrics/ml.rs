@@ -1,4 +1,5 @@
 mod predict;
+mod shared;
 pub mod types;
 mod utils;
 

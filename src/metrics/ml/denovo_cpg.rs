@@ -1,4 +1,4 @@
-use super::utils::one_hot_encode_base;
+use super::shared::{CommonFeatures, alt_score_methylation_aware};
 use crate::{
     metrics::{FormsDenovo, MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
@@ -7,7 +7,7 @@ use color_eyre::{
     Result,
     eyre::{Context as _, bail, ensure},
 };
-use ndarray::{Array2, array};
+use ndarray::Array2;
 use rastair_types::Base::*;
 use tracing::trace;
 
@@ -22,93 +22,35 @@ pub fn denovo_cpg(
     let alt = current.alt;
     ensure!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
 
-    let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
+    let PileupMetrics { ref_metrics: r, .. } = &current.metrics;
 
-    let ref_base = pileup.reference_base;
-    let depth = pos.depth.f();
-
-    let seq_ctx = &pileup.context;
-    let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
-    let (p2a, p2c, p2g, p2t) = one_hot_encode_base(seq_ctx.before_1);
-    let (p4a, p4c, p4g, p4t) = one_hot_encode_base(seq_ctx.after_1);
-    let (p5a, p5c, p5g, p5t) = one_hot_encode_base(seq_ctx.after_2);
-
-    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(ref_base);
-    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(alt.base);
-
-    let alt_score = if alt.base == C {
-        (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.).log2()
-            - (r.strand_count.ob.f() * r.baseq_s.ob + 1.).log2()
-    } else if alt.base == G {
-        (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.).log2()
-            - (r.strand_count.ot.f() * r.baseq_s.ot + 1.).log2()
-    } else {
+    if alt.base != C && alt.base != G {
         bail!("denovo CpG alt base must be C or G")
-    };
+    }
+
+    let common = CommonFeatures::extract(current);
+    let alt_score = alt_score_methylation_aware(alt, r, alt.base);
 
     let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj } =
         calculate_adjacent_features(current, before, after)
             .wrap_err("Failed to calculate adjacent features for de-novo CpG")?;
 
     // Never change the order of these variables, as they are used in the model
-    Ok(array![[
-        alt_ad_adj,
-        alt_score_adj,
-        sb_adj,
-        ref_a,
-        ref_c,
-        ref_g,
-        ref_t,
-        alt_a,
-        alt_c,
-        alt_g,
-        alt_t,
-        pos.mapq.f(),
-        pos.mapq0.f(),
-        p1a,
-        p1c,
-        p1g,
-        p1t,
-        p2a,
-        p2c,
-        p2g,
-        p2t,
-        p4a,
-        p4c,
-        p4g,
-        p4t,
-        p5a,
-        p5c,
-        p5g,
-        p5t,
-        pos.region_entropy,
-        r.depth.f() / depth,
-        alt.depth.f() / depth,
-        r.strand_count.ot.f() / depth,
-        r.strand_count.ob.f() / depth,
-        alt.strand_count.ot.f() / depth,
-        alt.strand_count.ob.f() / depth,
-        alt_score,
-        r.baseq.f(),
-        alt.baseq.f(),
-        r.baseq_s.ot.f(),
-        r.baseq_s.ob.f(),
-        alt.baseq_s.ot.f(),
-        alt.baseq_s.ob.f(),
-        r.mapq_s.ot.f(),
-        r.mapq_s.ob.f(),
-        alt.mapq_s.ot.f(),
-        alt.mapq_s.ob.f(),
-        r.mapq.f(),
-        alt.mapq.f(),
-        r.position_in_read.f(),
-        alt.position_in_read.f(),
-        r.num_aligned_bases.f(),
-        alt.num_aligned_bases.f(),
-        r.num_indels.f(),
-        alt.num_indels.f(),
-        beta_ratio
-    ]])
+    let mut features = Vec::with_capacity(57);
+    features.extend_from_slice(&[alt_ad_adj, alt_score_adj, sb_adj]);
+    features.extend_from_slice(&common.base_encoding);
+    features.extend_from_slice(&common.position_metrics);
+    features.extend_from_slice(&common.context_encoding);
+    features.push(common.region_entropy);
+    features.extend_from_slice(&common.depth_ratios);
+    features.push(alt_score);
+    features.extend_from_slice(&common.base_quality_metrics);
+    features.extend_from_slice(&common.mapping_quality_metrics);
+    features.extend_from_slice(&common.read_metrics);
+    features.push(beta_ratio);
+
+    Array2::from_shape_vec((1, features.len()), features)
+        .wrap_err("Failed to create denovo CpG feature array")
 }
 
 struct AdjecentFeatures {
