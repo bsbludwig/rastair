@@ -1,4 +1,4 @@
-use super::features::FeatureCalculator;
+use super::features::MlFeatureCalculator;
 use biosphere::RandomForest;
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
@@ -14,16 +14,16 @@ pub struct RastairModel {
 pub struct MachineLearning {
     pub threshold: Probability,
     pub model: Option<Box<RastairModel>>,
-    pub feature_calculator: Box<dyn FeatureCalculator>,
+    pub feature_calculator: MlFeatureCalculator,
 }
 
 impl MachineLearning {
     /// Create a disabled ML instance
     pub fn disabled() -> Self {
         Self {
-            threshold: Probability::new(1.).expect("1 is a valid probability"),
+            threshold: Probability::ZERO,
             model: None,
-            feature_calculator: Box::new(super::StandardFeatures),
+            feature_calculator: MlFeatureCalculator::Standard,
         }
     }
 

@@ -4,24 +4,26 @@ use crate::{
         process::{PileupMappingParams, calculate_pileup_metrics, get_pileups},
         variant_calling::VariantCallingParams,
     },
-    metrics::PileupMetrics,
-    metrics::ml::features::standard,
+    metrics::{
+        PileupMetrics,
+        ml::{
+            features::{FeatureCalculator, MlFeatureCalculator},
+            types::RastairModel,
+        },
+    },
     sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli},
 };
 use biosphere::{MaxFeatures, RandomForest, RandomForestParameters};
 use clio::ClioPath;
-use color_eyre::eyre::{Context as _, Result, bail, ensure};
+use color_eyre::eyre::{Context as _, ContextCompat, Result, bail, ensure};
 use lz4::EncoderBuilder;
 use ndarray::{Array1, Array2, Axis};
 use rand::prelude::*;
 use rastair_types::{Base, Probability, RegionString};
 use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
-use std::{
-    collections::HashSet, fs::File, io::Write, num::NonZeroU64, path::PathBuf,
-    thread::available_parallelism,
-};
+use std::{collections::HashSet, num::NonZeroU64, thread::available_parallelism};
 use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
@@ -34,9 +36,9 @@ pub struct TrainModelParams {
     truth: ClioPath,
 
     /// Output directory for trained models
-    #[arg(short = 'o', long = "output-dir", default_value = "./models")]
-    #[arg(help_heading = cli::sections::OUTPUT)]
-    output_dir: PathBuf,
+    #[arg(short = 'o', long = "output", default_value = "./models")]
+    #[arg(help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::FilePath)]
+    output: ClioPath,
 
     #[command(flatten)]
     model_params: ModelParameters,
@@ -45,6 +47,9 @@ pub struct TrainModelParams {
     #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.8", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::TRAINING)]
     ml: Probability,
+
+    #[arg(long, default_value_t = MlFeatureCalculator::Standard)]
+    ml_features: MlFeatureCalculator,
 
     /// Number of threads to use
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
@@ -116,7 +121,16 @@ impl TrainingData {
 #[instrument(level = "info", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
     // Create output directory if it doesn't exist
-    std::fs::create_dir_all(&params.output_dir).wrap_err("Failed to create output directory")?;
+    params
+        .output
+        .parent()
+        .wrap_err("output path invalid")
+        .and_then(|p| {
+            std::fs::create_dir_all(p).wrap_err("Failed to create output parent directory")
+        })
+        .wrap_err_with(|| {
+            format!("Failed to create output directory: {}", params.output.display())
+        })?;
 
     // Load truth VCF and index variants
     info!("Loading truth VCF from {}", params.truth.display());
@@ -205,6 +219,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
                                 chunk_region,
                                 readers,
                                 &truth_variants,
+                                params.ml_features.get_calculator(),
                             ) {
                                 Ok(data) => data,
                                 Err(e) => {
@@ -232,21 +247,24 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     }
 
     info!(
-        "Collected training examples - CpG: {}, De-novo: {}, Other: {}",
-        cpg_data.len(),
-        denovo_data.len(),
-        other_data.len()
+        cpg = cpg_data.len(),
+        denovo = denovo_data.len(),
+        other = other_data.len(),
+        "Collected training examples",
     );
 
-    // Train and save models
-    train_and_save_model("cpg", cpg_data, params).wrap_err("Failed to train CpG model")?;
+    let model = RastairModel {
+        cpg: train_and_save_model("cpg", cpg_data, params).wrap_err("Failed to train CpG model")?,
+        denovo: train_and_save_model("denovo", denovo_data, params)
+            .wrap_err("Failed to train de-novo CpG model")?,
+        others: train_and_save_model("other", other_data, params)
+            .wrap_err("Failed to train other model")?,
+    };
 
-    train_and_save_model("denovo", denovo_data, params)
-        .wrap_err("Failed to train de-novo CpG model")?;
+    serialize_model(&model, params.output.clone())
+        .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
 
-    train_and_save_model("other", other_data, params).wrap_err("Failed to train other model")?;
-
-    info!("Training complete! Models saved to {}", params.output_dir.display());
+    info!(path=%params.output, "Saved model");
 
     Ok(())
 }
@@ -333,6 +351,7 @@ fn collect_training_data_from_segment(
     chunk_region: &ChunkRegion,
     readers: &mut Readers,
     truth_variants: &HashSet<PositionKey>,
+    calculator: Box<dyn FeatureCalculator>,
 ) -> Result<(TrainingData, TrainingData, TrainingData)> {
     // Create local training data for this segment
     let mut cpg_data = TrainingData::new();
@@ -383,18 +402,18 @@ fn collect_training_data_from_segment(
                     // NOTE: We filter out any examples with NaN features here
                     // FIXME: We should ensure no NaNs are ever produced in the first place
                     if alt_m.is_evidence_for_methylation() {
-                        if let Ok(features) = standard::cpg(&alt_m, before, after)
+                        if let Ok(features) = calculator.calculate_cpg(&alt_m, before, after)
                             && !features.is_any_nan()
                         {
                             cpg_data.add_example(features, label);
                         }
                     } else if *alt.metrics.denovo {
-                        if let Ok(features) = standard::denovo_cpg(&alt_m, before, after)
+                        if let Ok(features) = calculator.calculate_denovo_cpg(&alt_m, before, after)
                             && !features.is_any_nan()
                         {
                             denovo_data.add_example(features, label);
                         }
-                    } else if let Ok(features) = standard::others(&alt_m, before, after)
+                    } else if let Ok(features) = calculator.calculate_others(&alt_m, before, after)
                         && !features.is_any_nan()
                     {
                         other_data.add_example(features, label);
@@ -414,11 +433,8 @@ fn train_and_save_model(
     model_name: &str,
     data: TrainingData,
     params: &TrainModelParams,
-) -> Result<()> {
-    if data.is_empty() {
-        warn!("No training data for {} model, skipping", model_name);
-        return Ok(());
-    }
+) -> Result<RandomForest> {
+    ensure!(!data.is_empty(), "No training data for {model_name} model, skipping");
 
     info!("Training {} model with {} examples", model_name, data.len());
 
@@ -441,20 +457,14 @@ fn train_and_save_model(
         .with_max_features(MaxFeatures::Value(params.model_params.max_features))
         .with_n_estimators(params.model_params.n_trees)
         .with_max_depth(None)
-        .with_n_jobs(Some(i32::try_from(params.threads).unwrap_or(i32::MAX)));
+        .with_n_jobs(i32::try_from(params.threads).ok());
 
     let mut model = RandomForest::new(rf_params);
     model.fit(&features.view(), &labels.view());
 
     info!("Finished training {} model", model_name);
 
-    // Serialize model
-    let output_path = params.output_dir.join(format!("{}.rf.mpk.lz4", model_name));
-    serialize_model(&model, &output_path)?;
-
-    info!("Saved {} model to {}", model_name, output_path.display());
-
-    Ok(())
+    Ok(model)
 }
 
 /// Subsample training data to balance positive and negative examples
@@ -515,16 +525,12 @@ fn subsample_training_data(
 }
 
 /// Serialize a model to disk with LZ4 compression
-fn serialize_model(model: &RandomForest, path: &PathBuf) -> Result<()> {
-    let serialized = rmp_serde::to_vec(&model).wrap_err("Failed to serialize model")?;
-
-    let file = File::create(path)
-        .wrap_err_with(|| format!("Failed to create file: {}", path.display()))?;
-
+fn serialize_model(model: &RastairModel, path: ClioPath) -> Result<()> {
+    let file = path.create().wrap_err("Failed to create output file for model serialization")?;
     let mut encoder =
-        EncoderBuilder::new().level(4).build(file).wrap_err("Failed to create LZ4 encoder")?;
+        EncoderBuilder::new().level(16).build(file).wrap_err("Failed to create LZ4 encoder")?;
 
-    encoder.write_all(&serialized).wrap_err("Failed to write serialized model")?;
+    rmp_serde::encode::write(&mut encoder, &model).wrap_err("Failed to serialize model")?;
 
     let (_output, result) = encoder.finish();
     result.wrap_err("Failed to finalize LZ4 compression")?;
