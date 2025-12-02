@@ -18,6 +18,7 @@ fn write_mpk_then_convert_to_bcf() -> Result<()> {
             "-o",
         ])
         .arg(&mpk)
+        .silent()
         .succeeds()
         .wrap_err("Failed to run rastair call")?;
 
@@ -26,6 +27,7 @@ fn write_mpk_then_convert_to_bcf() -> Result<()> {
         .arg(&mpk)
         .arg("--output")
         .arg(temp_dir.path().join("test.bcf"))
+        .silent()
         .succeeds()
         .wrap_err("Failed to convert to bcf")?;
 
@@ -34,6 +36,7 @@ fn write_mpk_then_convert_to_bcf() -> Result<()> {
         .arg(&mpk)
         .arg("--output")
         .arg(temp_dir.path().join("test.vcf.gz"))
+        .silent()
         .succeeds()
         .wrap_err("Failed to convert to vcf.gz")?;
 
@@ -57,6 +60,7 @@ fn write_mpk_then_convert_to_bed() -> Result<()> {
             "-o",
         ])
         .arg(&mpk)
+        .silent()
         .succeeds()
         .wrap_err("Failed to run rastair call")?;
 
@@ -65,6 +69,7 @@ fn write_mpk_then_convert_to_bed() -> Result<()> {
         .arg(&mpk)
         .arg("--output")
         .arg(temp_dir.path().join("test.bed"))
+        .silent()
         .succeeds()
         .wrap_err("Failed to convert to bed")?;
 
@@ -89,6 +94,7 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
             "-o",
         ])
         .arg(&bcf)
+        .silent()
         .succeeds()
         .wrap_err("Failed to run rastair call")?;
 
@@ -97,6 +103,7 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
         .arg(&bcf)
         .arg("--output")
         .arg(temp_dir.path().join("test.bed"))
+        .silent()
         .succeeds()
         .wrap_err("Failed to convert to bed")?;
 
@@ -123,6 +130,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
             "-o",
         ])
         .arg(&mpk)
+        .silent()
         .succeeds()
         .wrap_err("Failed to run rastair call to mpk")?;
 
@@ -136,6 +144,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
             "-o",
         ])
         .arg(&vcf)
+        .silent()
         .succeeds()
         .wrap_err("Failed to run rastair call to vcf")?;
 
@@ -149,6 +158,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
             "--bed",
         ])
         .arg(&bed)
+        .silent()
         .succeeds()
         .wrap_err("Failed to run rastair call to bed")?;
 
@@ -157,6 +167,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
         .arg(&mpk)
         .arg("--output")
         .arg(temp_dir.path().join("from_mpk.bed"))
+        .silent()
         .succeeds()
         .wrap_err("Failed to convert mpk to bed")?;
 
@@ -165,6 +176,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
         .arg(&mpk)
         .arg("--output")
         .arg(temp_dir.path().join("from_vcf.bed"))
+        .silent()
         .succeeds()
         .wrap_err("Failed to convert vcf to bed")?;
 

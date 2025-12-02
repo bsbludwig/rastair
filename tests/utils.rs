@@ -1,12 +1,10 @@
 #![allow(unused_imports, dead_code, reason = "test code")]
 
-use color_eyre::eyre::ensure;
-pub use color_eyre::eyre::{bail, eyre};
+pub use color_eyre::eyre::{bail, ensure, eyre};
 pub use color_eyre::{Result, eyre::Context as _};
 pub use insta::{assert_debug_snapshot, assert_snapshot};
 pub use insta_cmd::assert_cmd_snapshot;
-use std::path::Path;
-pub use std::{collections::BTreeSet, process::Command};
+pub use std::{collections::BTreeSet, path::Path, process::Command};
 pub use tempfile::TempDir;
 
 pub fn rastair() -> Command {
@@ -108,4 +106,14 @@ pub fn read_bcf(path: &Path) -> Result<rust_htslib::bcf::Reader> {
         .wrap_err("failed to read first record")?;
 
     Ok(bcf)
+}
+
+pub trait CommandStdioExt {
+    fn silent(&mut self) -> &mut Self;
+}
+
+impl CommandStdioExt for std::process::Command {
+    fn silent(&mut self) -> &mut Self {
+        self.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+    }
 }
