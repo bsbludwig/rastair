@@ -1,4 +1,4 @@
-use crate::metrics::PileupMetrics;
+use crate::metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics};
 use color_eyre::eyre::{Context, Result};
 use cstr8::{CStr8, cstr8};
 use rastair_types::Base::*;
@@ -30,14 +30,40 @@ pub struct MethylationEvidenceStrandInfo {
 }
 
 impl MethylationEvidenceStrandInfo {
-    pub fn from_c(pileup: &PileupMetrics) -> Self {
+    pub fn from_pileup(pileup: &PileupMetrics) -> Self {
+        let ref_base = pileup.ref_base();
+        let cpg = *pileup.pos_metrics.cpg;
+
+        if cpg && ref_base == C {
+            MethylationEvidenceStrandInfo::from_c(pileup)
+        } else if cpg && ref_base == G {
+            MethylationEvidenceStrandInfo::from_g(pileup)
+        } else if let Some(denovo) = pileup.alts.iter().find(|a| *a.metrics.denovo) {
+            if denovo.metrics.denovo == FormsDenovo::ThisBecomesC {
+                MethylationEvidenceStrandInfo::from_c(pileup)
+            } else if denovo.metrics.denovo == FormsDenovo::ThisBecomesG {
+                MethylationEvidenceStrandInfo::from_g(pileup)
+            } else {
+                // Should be never happen since we filtered above
+                MethylationEvidenceStrandInfo::default()
+            }
+        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
+            MethylationEvidenceStrandInfo::from_c(pileup)
+        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
+            MethylationEvidenceStrandInfo::from_g(pileup)
+        } else {
+            MethylationEvidenceStrandInfo::default()
+        }
+    }
+
+    fn from_c(pileup: &PileupMetrics) -> Self {
         let c = pileup.allele(C).map(|a| a.strand_count).unwrap_or_default();
         let t = pileup.allele(T).map(|a| a.strand_count).unwrap_or_default();
 
         Self { unmod: c.ot, modified: t.ot, no_snp: c.ob, snp: t.ob }
     }
 
-    pub fn from_g(pileup: &PileupMetrics) -> Self {
+    fn from_g(pileup: &PileupMetrics) -> Self {
         let g = pileup.allele(G).map(|a| a.strand_count).unwrap_or_default();
         let a = pileup.allele(A).map(|a| a.strand_count).unwrap_or_default();
 

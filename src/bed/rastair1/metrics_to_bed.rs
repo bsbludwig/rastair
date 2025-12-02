@@ -55,26 +55,7 @@ impl Rastair1BedFormat {
             }
         };
 
-        let counts = if cpg && ref_base == C {
-            MethylationEvidenceStrandInfo::from_c(pileup)
-        } else if cpg && ref_base == G {
-            MethylationEvidenceStrandInfo::from_g(pileup)
-        } else if let Some(denovo) = pileup.alts.iter().find(|a| *a.metrics.denovo) {
-            if denovo.metrics.denovo == FormsDenovo::ThisBecomesC {
-                MethylationEvidenceStrandInfo::from_c(pileup)
-            } else if denovo.metrics.denovo == FormsDenovo::ThisBecomesG {
-                MethylationEvidenceStrandInfo::from_g(pileup)
-            } else {
-                // Should be never happen since we filtered above
-                MethylationEvidenceStrandInfo::default()
-            }
-        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
-            MethylationEvidenceStrandInfo::from_c(pileup)
-        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
-            MethylationEvidenceStrandInfo::from_g(pileup)
-        } else {
-            MethylationEvidenceStrandInfo::default()
-        };
+        let counts = MethylationEvidenceStrandInfo::from_pileup(pileup);
 
         // If this looks like SNP, set beta to 0
         let beta = if let Some(alt_base) = pileup.pos_metrics.cpg.alt_base()
