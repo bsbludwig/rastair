@@ -24,7 +24,7 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{self, PileupMetrics, ml::types::MachineLearning},
+    metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers, Segment, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
 };
@@ -334,6 +334,11 @@ fn process_region(
         .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
         .map_surrounding(process::set_denovo_adj)
         .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
+        .map(|mut current| {
+            current.pos_metrics.extended.methylation_strand_info =
+                MethylationEvidenceStrandInfo::from_pileup(&current);
+            current
+        })
         .filter(|p| {
             // Filter out pileups that are not relevant based on caller parameters
             let cpg_only_pls = params.record_filters.cpgs_only;

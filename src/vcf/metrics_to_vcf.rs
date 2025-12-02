@@ -264,6 +264,7 @@ impl MetricsSubset<'_> {
             ),
             num_indels: NumIndels(ref_alts_metrics.iter().map(|m| m.num_indels.f()).collect()),
             in_cp_g: self.pos_metrics.cpg,
+            methylation_evidence_strand_info: pos_metrics.extended.methylation_strand_info,
             de_novo_cp_g_candidate: {
                 if let Some(alt) = alts_metrics.iter().find(|m| *m.denovo) {
                     DeNovoCpGCandidate::Candidate {

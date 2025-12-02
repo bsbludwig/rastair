@@ -2,7 +2,7 @@ use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
     call::variant_calling::{EstimatedGenotype, GenotypeTag},
     metrics::{DenovoAdjecent, FormsDenovo, MethylationEvidenceStrandInfo, PileupMetrics},
-    utils::{Base::*, logging::ThisIsABug as _},
+    utils::logging::ThisIsABug as _,
     vcf::InCpG,
 };
 use color_eyre::{Result, Section as _, SectionExt as _, eyre::eyre};
@@ -55,7 +55,7 @@ impl Rastair1BedFormat {
             }
         };
 
-        let counts = MethylationEvidenceStrandInfo::from_pileup(pileup);
+        let counts = pileup.pos_metrics.extended.methylation_strand_info;
 
         // If this looks like SNP, set beta to 0
         let beta = if let Some(alt_base) = pileup.pos_metrics.cpg.alt_base()

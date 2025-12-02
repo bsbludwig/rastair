@@ -3,6 +3,7 @@ use crate::{
         pileup::{Pileup, SimpleRead},
         variant_calling::EstimatedGenotype,
     },
+    metrics::MethylationEvidenceStrandInfo,
     utils::{ByStrand, IntoF64, default, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
 };
@@ -193,6 +194,8 @@ pub struct PositionMetricsExt {
     pub region_entropy: f64,
     /// Estimated genotype
     pub genotype: Option<EstimatedGenotype>,
+    /// Methylation strand info
+    pub methylation_strand_info: MethylationEvidenceStrandInfo,
     /// Methylation beta
     pub methylated: Methylated,
     /// Is this position a de-novo cpg candidate?

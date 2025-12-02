@@ -1,5 +1,6 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
+    metrics::MethylationEvidenceStrandInfo,
     utils::{Base, ByStrand, logging::ThisIsABug},
     vcf::{
         AlleleSpecificStrandBias, DeNovoCpGCandidate, GenotypeConfidence, GenotypeLikelihood,
@@ -81,19 +82,8 @@ impl Rastair1BedFormat {
         let assb = AlleleSpecificStrandBias::from_vcf(r)
             .wrap_err("Failed to read Allele-specific Strand Bias field")?;
 
-        let count =
-            StrandCount::from_assb(&assb).wrap_err("Failed to parse strand counts from record")?;
-        let (unmod, r#mod, no_snp, snp) = if r#ref == "C" {
-            (count.c.ot, count.t.ot, count.c.ob, count.t.ob)
-        } else if r#ref == "G" {
-            (count.g.ob, count.a.ob, count.g.ot, count.a.ot)
-        } else {
-            trace!(
-                %r#ref,
-                "Writing BED but ref is neither C nor G, so this is a de-novo candidate?"
-            );
-            (0, 0, 0, 0)
-        };
+        let count = MethylationEvidenceStrandInfo::from_vcf(r)
+            .wrap_err("Failed to read methylation evidence strand info")?;
 
         let genotype = if let Ok(gs) = r.genotypes() {
             gs.get(0).iter().map(|x| (*x).into()).collect()
@@ -144,10 +134,10 @@ impl Rastair1BedFormat {
             r#ref,
             beta,
             strand,
-            unmod,
-            r#mod,
-            no_snp,
-            snp,
+            unmod: count.unmod,
+            r#mod: count.modified,
+            no_snp: count.no_snp,
+            snp: count.snp,
             coverage: read_depth as usize,
             genotype,
             genotype_likelihood,
@@ -192,6 +182,24 @@ impl StrandCount {
         }
 
         Ok(counts)
+    }
+}
+
+impl MethylationEvidenceStrandInfo {
+    fn from_vcf(r: &HtslibRecord) -> Result<Self> {
+        let nums = r
+            .info(MethylationEvidenceStrandInfo::ID.as_bytes())
+            .integer()
+            .wrap_err("Failed to fetch field")?
+            .wrap_err("field not set")?;
+        ensure!(nums.len() == 4, "field has invalid length");
+
+        Ok(MethylationEvidenceStrandInfo {
+            unmod: nums[0] as u32,
+            modified: nums[1] as u32,
+            no_snp: nums[2] as u32,
+            snp: nums[3] as u32,
+        })
     }
 }
 

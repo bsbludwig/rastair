@@ -26,6 +26,7 @@ pub mod utils;
 
 mod metrics_to_vcf;
 
+use crate::metrics::MethylationEvidenceStrandInfo;
 pub use crate::utils::SequenceContext;
 
 filter!(lowDp, "Low read depth");
@@ -123,6 +124,7 @@ vcf_record!(
         Entropy,
         NumAlignedBases,
         NumIndels,
+        MethylationEvidenceStrandInfo,
         InCpG,
         DeNovoCpGCandidate,
     ],
