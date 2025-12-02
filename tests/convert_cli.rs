@@ -1,4 +1,6 @@
 mod utils;
+use clio::ClioPath;
+use rastair_types::Probability;
 use utils::*;
 
 #[test]
@@ -103,9 +105,17 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
         .arg(&bcf)
         .arg("--output")
         .arg(temp_dir.path().join("test.bed"))
-        .silent()
         .succeeds()
         .wrap_err("Failed to convert to bed")?;
+
+    // rastair::convert(&rastair::ConvertParams {
+    //     input: ClioPath::new(&bcf)?,
+    //     input_format: None,
+    //     output: ClioPath::new(temp_dir.path().join("test.bed"))?,
+    //     output_format: None,
+    //     bed_params: Default::default(),
+    //     ml_threshold: Probability::new_panicky(0.8),
+    // })?;
 
     Ok(())
 }

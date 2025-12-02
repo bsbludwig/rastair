@@ -10,7 +10,6 @@ use crate::{
         vcf_writer,
     },
     utils::{cli, logging::ThisIsABug},
-    vcf::{DeNovoCpGCandidate, InCpG},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -18,8 +17,7 @@ use color_eyre::{
     eyre::{ContextCompat, Result, WrapErr, bail, eyre},
 };
 use rastair_types::Probability;
-use rastair_vcf::VcfField;
-use rust_htslib::bcf::Read as _;
+use rust_htslib::bcf::{self, Read as _};
 use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};
 
@@ -141,9 +139,9 @@ impl ConvertParams {
 
 fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     let mut reader = if params.input.is_std() {
-        rust_htslib::bcf::Reader::from_stdin().wrap_err("Failed to open stdin to read VCF file")?
+        bcf::Reader::from_stdin().wrap_err("Failed to open stdin to read VCF file")?
     } else if params.input.is_file() {
-        rust_htslib::bcf::Reader::from_path(params.input.path())
+        bcf::Reader::from_path(params.input.path())
             .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?
     } else {
         return Err(eyre!("VCF input can only be file or stdin").note("If you need to convert from other source, please open an issue in the rastair2 repository"));
@@ -160,12 +158,6 @@ fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
             debug!(%error, "Skipping invalid record in VCF file");
             continue;
         };
-
-        let cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or_default();
-        let dn_cpg = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or_default();
-        if !cpg && !dn_cpg {
-            continue;
-        }
 
         let params = crate::bed::rastair1::BedRecordsConvertParams {
             ml_threshold: params.ml_threshold,

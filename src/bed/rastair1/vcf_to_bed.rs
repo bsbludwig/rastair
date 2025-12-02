@@ -24,6 +24,15 @@ impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation, reason = "htslib likes i64")]
     #[instrument(level = "trace", skip_all, fields(pos=%r.pos()))]
     pub fn from_vcf(r: &HtslibRecord, params: &BedRecordsConvertParams) -> Result<Option<Self>> {
+        let in_cpg = r.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
+        let de_novo = r.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
+        let is_pass = r.has_filter(&PASS);
+
+        let relevant = in_cpg || (de_novo && is_pass);
+        if !relevant {
+            return Ok(None);
+        }
+
         let contig = r
             .rid()
             .wrap_err("Record has no ID")
@@ -112,12 +121,6 @@ impl Rastair1BedFormat {
             trace!(?genotype, "No genotype confidence field found");
             Phred::from_phred(0)
         };
-        let in_cpg = r.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
-        let de_novo = r.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
-
-        if de_novo && !r.has_filter(&PASS) {
-            return Ok(None);
-        }
 
         // TODO: Use ML
         let beta = if in_cpg && genotype.homozygous_not_ref() { Some(0.0) } else { beta };
@@ -136,7 +139,7 @@ impl Rastair1BedFormat {
         };
 
         let bed = Rastair1BedFormat {
-            contig,
+            contig: contig.clone(),
             pos: r.pos() as usize,
             r#ref,
             beta,
@@ -155,7 +158,11 @@ impl Rastair1BedFormat {
         if cfg!(debug_assertions)
             && let Some(err) = bed.sanity_check()
         {
-            Err(eyre!("invalid bed record")).section(err.header("BED errors")).this_is_a_bug()?;
+            Err(eyre!("invalid bed record"))
+                .section(err.header("BED errors"))
+                .with_note(|| format!("Position {contig}:{}", r.pos()))
+                .with_note(|| format!("CPG={in_cpg}, CPGnovo={de_novo}"))
+                .this_is_a_bug()?;
         }
 
         Ok(Some(bed))
