@@ -1,7 +1,7 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
     call::variant_calling::{EstimatedGenotype, GenotypeTag},
-    metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
+    metrics::{DenovoAdjecent, FormsDenovo, MethylationEvidenceStrandInfo, PileupMetrics},
     utils::{Base::*, logging::ThisIsABug as _},
     vcf::InCpG,
 };
@@ -56,24 +56,24 @@ impl Rastair1BedFormat {
         };
 
         let counts = if cpg && ref_base == C {
-            Counts::from_c(pileup)
+            MethylationEvidenceStrandInfo::from_c(pileup)
         } else if cpg && ref_base == G {
-            Counts::from_g(pileup)
+            MethylationEvidenceStrandInfo::from_g(pileup)
         } else if let Some(denovo) = pileup.alts.iter().find(|a| *a.metrics.denovo) {
             if denovo.metrics.denovo == FormsDenovo::ThisBecomesC {
-                Counts::from_c(pileup)
+                MethylationEvidenceStrandInfo::from_c(pileup)
             } else if denovo.metrics.denovo == FormsDenovo::ThisBecomesG {
-                Counts::from_g(pileup)
+                MethylationEvidenceStrandInfo::from_g(pileup)
             } else {
                 // Should be never happen since we filtered above
-                Counts::default()
+                MethylationEvidenceStrandInfo::default()
             }
         } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
-            Counts::from_c(pileup)
+            MethylationEvidenceStrandInfo::from_c(pileup)
         } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
-            Counts::from_g(pileup)
+            MethylationEvidenceStrandInfo::from_g(pileup)
         } else {
-            Counts::default()
+            MethylationEvidenceStrandInfo::default()
         };
 
         // If this looks like SNP, set beta to 0
@@ -116,7 +116,7 @@ impl Rastair1BedFormat {
             beta,
             strand,
             unmod: counts.unmod,
-            r#mod: counts.r#mod,
+            r#mod: counts.modified,
             no_snp: counts.no_snp,
             snp: counts.snp,
             // coverage: counts.total() as usize, // TODO: is coverage meant to include other alts?
@@ -135,35 +135,6 @@ impl Rastair1BedFormat {
 
         Ok(Some(bed))
     }
-}
-
-#[derive(Debug, Default)]
-struct Counts {
-    unmod: u32,
-    r#mod: u32,
-    no_snp: u32,
-    snp: u32,
-}
-
-impl Counts {
-    fn from_c(pileup: &PileupMetrics) -> Self {
-        let c = pileup.allele(C).map(|a| a.strand_count).unwrap_or_default();
-        let t = pileup.allele(T).map(|a| a.strand_count).unwrap_or_default();
-
-        Counts { unmod: c.ot, r#mod: t.ot, no_snp: c.ob, snp: t.ob }
-    }
-
-    fn from_g(pileup: &PileupMetrics) -> Self {
-        let g = pileup.allele(G).map(|a| a.strand_count).unwrap_or_default();
-        let a = pileup.allele(A).map(|a| a.strand_count).unwrap_or_default();
-
-        Counts { unmod: g.ob, r#mod: a.ob, no_snp: g.ot, snp: a.ot }
-    }
-
-    //     todo: choose whether to use this
-    //     fn total(&self) -> u32 {
-    //         self.unmod + self.r#mod + self.no_snp + self.snp
-    //     }
 }
 
 fn guess_strand_from_pileup(pileup: &PileupMetrics) -> Strand {
