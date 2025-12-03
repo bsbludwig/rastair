@@ -1,21 +1,18 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
     metrics::MethylationEvidenceStrandInfo,
-    utils::{Base, ByStrand, logging::ThisIsABug},
-    vcf::{
-        AlleleSpecificStrandBias, DeNovoCpGCandidate, GenotypeConfidence, GenotypeLikelihood,
-        InCpG, Methylated,
-    },
+    utils::logging::ThisIsABug,
+    vcf::{DeNovoCpGCandidate, GenotypeConfidence, GenotypeLikelihood, InCpG, Methylated},
 };
 use color_eyre::{
     Result, Section as _, SectionExt as _,
-    eyre::{Context as _, ContextCompat as _, Report, ensure, eyre},
+    eyre::{Context as _, ContextCompat as _, ensure, eyre},
 };
 use rastair_types::SmallVec;
 use rastair_types::SmolStr;
 use rastair_types::{Phred, Probability};
 use rastair_vcf::{
-    StrandSpecificInfoField as _, VcfField as _,
+    VcfField as _,
     standard_fields::{Genotype, PASS, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
@@ -79,9 +76,6 @@ impl Rastair1BedFormat {
             return Ok(None);
         }
 
-        let assb = AlleleSpecificStrandBias::from_vcf(r)
-            .wrap_err("Failed to read Allele-specific Strand Bias field")?;
-
         let count = MethylationEvidenceStrandInfo::from_vcf(r)
             .wrap_err("Failed to read methylation evidence strand info")?;
 
@@ -118,7 +112,7 @@ impl Rastair1BedFormat {
             Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
         } else {
             trace!(pos=%contig, pos=r.pos(), ?in_cpg, ?genotype, "why no beta?");
-            None
+            Some(Probability::ZERO)
         };
 
         let strand = if in_cpg {
@@ -159,32 +153,6 @@ impl Rastair1BedFormat {
     }
 }
 
-#[derive(Debug, Default)]
-struct StrandCount {
-    a: ByStrand<u32>,
-    c: ByStrand<u32>,
-    g: ByStrand<u32>,
-    t: ByStrand<u32>,
-}
-
-impl StrandCount {
-    fn from_assb(assb: &AlleleSpecificStrandBias) -> Result<StrandCount, Report> {
-        // AS_SB is encoded with two integers per allele, so we need to parse it accordingly
-        let mut counts = StrandCount::default();
-        for count in assb.iter() {
-            match count.base {
-                Base::A => counts.a = *count,
-                Base::C => counts.c = *count,
-                Base::G => counts.g = *count,
-                Base::T => counts.t = *count,
-                _ => {}
-            }
-        }
-
-        Ok(counts)
-    }
-}
-
 impl MethylationEvidenceStrandInfo {
     fn from_vcf(r: &HtslibRecord) -> Result<Self> {
         let nums = r
@@ -200,45 +168,5 @@ impl MethylationEvidenceStrandInfo {
             no_snp: nums[2] as u32,
             snp: nums[3] as u32,
         })
-    }
-}
-
-impl AlleleSpecificStrandBias {
-    fn from_vcf(r: &HtslibRecord) -> Result<Self> {
-        let alleles = r
-            .alleles()
-            .iter()
-            .map(|a| str::from_utf8(a).map(SmolStr::new))
-            .collect::<Result<SmallVec<_, 4>, _>>()
-            .wrap_err("Failed to parse alleles")?;
-
-        // we have two fields: AS_SB_OT and AS_SB_OB
-        let assb_ot = r
-            .info(AlleleSpecificStrandBias::ID_OT.as_bytes())
-            .integer()
-            .wrap_err("Failed to fetch AS_SB_OT field")?
-            .wrap_err("AS_SB_OT field not set")?;
-        let assb_ob = r
-            .info(AlleleSpecificStrandBias::ID_OB.as_bytes())
-            .integer()
-            .wrap_err("Failed to fetch AS_SB_OB field")?
-            .wrap_err("AS_SB_OB field not set")?;
-
-        ensure!(
-            assb_ot.len() == assb_ob.len(),
-            "AS_SB_OT and AS_SB_OB fields have different lengths"
-        );
-
-        Ok(AlleleSpecificStrandBias(
-            alleles
-                .iter()
-                .enumerate()
-                .map(|(i, allele)| ByStrand {
-                    base: Base::from(allele),
-                    ot: assb_ot.get(i).copied().unwrap_or(0) as u32,
-                    ob: assb_ob.get(i).copied().unwrap_or(0) as u32,
-                })
-                .collect(),
-        ))
     }
 }

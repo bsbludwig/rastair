@@ -1,6 +1,4 @@
 mod utils;
-use clio::ClioPath;
-use rastair_types::Probability;
 use utils::*;
 
 #[test]
@@ -79,7 +77,7 @@ fn write_mpk_then_convert_to_bed() -> Result<()> {
 }
 
 #[test]
-#[ignore = "TODO: Fix after VCF changes"]
+// #[ignore = "TODO: Fix after VCF changes"]
 fn write_bcf_then_convert_to_bed() -> Result<()> {
     apply_common_filters!();
 
@@ -108,6 +106,8 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
         .succeeds()
         .wrap_err("Failed to convert to bed")?;
 
+    // use clio::ClioPath;
+    // use rastair_types::Probability;
     // rastair::convert(&rastair::ConvertParams {
     //     input: ClioPath::new(&bcf)?,
     //     input_format: None,
@@ -121,7 +121,7 @@ fn write_bcf_then_convert_to_bed() -> Result<()> {
 }
 
 #[test]
-#[ignore = "TODO: Fix conversion parameter matching"]
+// #[ignore = "TODO: Fix conversion parameter matching"]
 fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
     apply_common_filters!();
 
@@ -129,6 +129,8 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
     let mpk = temp_dir.path().join("test.mpk.lz4");
     let vcf = temp_dir.path().join("test.vcf");
     let bed = temp_dir.path().join("test.bed");
+    let bed_from_mpk = temp_dir.path().join("from_mpk.bed");
+    let bed_from_vcf = temp_dir.path().join("from_vcf.bed");
 
     rastair()
         .args([
@@ -176,7 +178,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
         .args(["convert", "--input"])
         .arg(&mpk)
         .arg("--output")
-        .arg(temp_dir.path().join("from_mpk.bed"))
+        .arg(&bed_from_mpk)
         .silent()
         .succeeds()
         .wrap_err("Failed to convert mpk to bed")?;
@@ -185,32 +187,32 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
         .args(["convert", "--input"])
         .arg(&mpk)
         .arg("--output")
-        .arg(temp_dir.path().join("from_vcf.bed"))
+        .arg(&bed_from_vcf)
         .silent()
         .succeeds()
         .wrap_err("Failed to convert vcf to bed")?;
 
     // Compare the bed files
-    let bed_directly = std::fs::read_to_string(temp_dir.path().join("test.bed"))?;
+    let bed_directly = std::fs::read_to_string(&bed)?;
 
-    let bed_from_vcf = std::fs::read_to_string(temp_dir.path().join("from_vcf.bed"))?;
-    assert_eq!(bed_directly, bed_from_vcf, "BED files from VCF conversions do not match");
+    let bed_vcf = std::fs::read_to_string(&bed_from_vcf)?;
+    assert_eq!(bed_directly, bed_vcf, "BED files from VCF conversions do not match");
 
-    let bed_from_mpk = std::fs::read_to_string(temp_dir.path().join("from_mpk.bed"))?;
-    assert_eq!(bed_directly, bed_from_mpk, "BED files from MPK conversions do not match");
+    let bed_mpk = std::fs::read_to_string(&bed_from_mpk)?;
+    assert_eq!(bed_directly, bed_mpk, "BED files from MPK conversions do not match");
 
     Ok(())
 }
 
 #[test]
-#[ignore = "pretty slow"]
+// #[ignore = "pretty slow"]
 fn can_pipe_through() -> Result<()> {
     apply_common_filters!();
 
     let mut cmd = Command::new(insta_cmd::get_cargo_bin("/bin/bash"));
     cmd.arg("-c");
     cmd.env("NO_COLOR", "1");
-    cmd.arg("cargo run -q --release -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --thresholds --vcf | head -n1000 | cargo run -q --release -- convert -f bcf -F bed | head -n5");
+    cmd.arg("cargo run -q --release -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --no-ml --vcf | head -n1000 | cargo run -q --release -- convert -f bcf -F bed | head -n5");
 
     assert_cmd_snapshot!(cmd);
 

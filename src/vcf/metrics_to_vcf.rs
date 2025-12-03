@@ -23,6 +23,7 @@ use rastair_vcf::{
     },
 };
 
+#[expect(unused, reason = "wip")]
 pub struct VcfRecordSet {
     reference_line: Option<Record>,
     alt_lines: Vec<Record>,

@@ -1,7 +1,7 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
     call::variant_calling::{EstimatedGenotype, GenotypeTag},
-    metrics::{DenovoAdjecent, FormsDenovo, MethylationEvidenceStrandInfo, PileupMetrics},
+    metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
     utils::logging::ThisIsABug as _,
     vcf::InCpG,
 };
