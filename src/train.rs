@@ -23,7 +23,7 @@ use rand::prelude::*;
 use rastair_types::{Base, Probability, RegionString};
 use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
-use std::{collections::HashSet, num::NonZeroU64, thread::available_parallelism};
+use std::{collections::HashSet, num::NonZeroU64, path::PathBuf, thread::available_parallelism};
 use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
@@ -276,6 +276,13 @@ pub fn load_truth_vcf(
     region: &RegionString,
     threads: usize,
 ) -> Result<HashSet<PositionKey>> {
+    ensure!(vcf_path.exists(), "Predictions VCF file `{vcf_path:?}` not found.");
+    let index_path = PathBuf::from(format!("{}.csi", vcf_path.path().display()));
+    ensure!(
+        index_path.exists(),
+        "Predictions VCF index `{index_path:?}` not found. Please create an index with `bcftools index {vcf_path:?}`",
+    );
+
     let mut reader = bcf::IndexedReader::from_path(vcf_path.path())
         .wrap_err_with(|| format!("Failed to open truth VCF file: {}", vcf_path.display()))?;
     reader.set_threads(threads.max(2)).wrap_err("Failed to set threads for truth VCF reader")?;

@@ -318,13 +318,11 @@ fn load_predictions_vcf(
     region: &RegionString,
     threads: usize,
 ) -> Result<Vec<PredictionRecord>> {
-    // Ensure index file exists
+    ensure!(vcf_path.exists(), "Predictions VCF file `{vcf_path:?}` not found.");
     let index_path = PathBuf::from(format!("{}.csi", vcf_path.path().display()));
     ensure!(
         index_path.exists(),
-        "Predictions VCF file `{}` not found. Please create an index with `bcftools index {}`",
-        index_path.display(),
-        vcf_path.display(),
+        "Predictions VCF index `{index_path:?}` not found. Please create an index with `bcftools index {vcf_path:?}`",
     );
 
     let mut reader = bcf::IndexedReader::from_path(vcf_path.path())
