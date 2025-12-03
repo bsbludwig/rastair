@@ -105,7 +105,7 @@ mod tests {
     use crate::utils::Base;
 
     fn make_read(qname: &str, base: Base, second: bool) -> (ReadName, SimpleRead) {
-        (qname.as_bytes().to_vec(), SimpleRead { base, second, ..Default::default() })
+        (qname.as_bytes().into(), SimpleRead { base, second, ..Default::default() })
     }
 
     fn make_reads(reads: Vec<(ReadName, SimpleRead)>) -> (Vec<ReadName>, SimpleReads) {
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_empty_reads() {
-        let mut reads = SimpleReads(SmallVec::new());
+        let mut reads = SimpleReads(Vec::new());
         let names = Vec::new();
         reads.remove_overlapping_pairs(&names);
         assert_eq!(reads.0.len(), 0);

@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_alleles_in_order() {
-        let bases = SimpleReads(SmallVec::from(vec![
+        let bases = SimpleReads(vec![
             SimpleRead { base: Base::A, strand: Strand::OT, ..default() },
             SimpleRead {
                 base: Base::C,
@@ -97,7 +97,7 @@ mod tests {
                 ..default()
             },
             SimpleRead { base: Base::A, strand: Strand::OT, ..default() },
-        ]));
+        ]);
 
         let segment = Segment {
             range: ChunkRegion {
