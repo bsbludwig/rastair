@@ -28,7 +28,6 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
 }
 
 #[test]
-// #[ignore = "slow"]
 fn vcf_with_ml() -> Result<()> {
     apply_common_filters!();
 

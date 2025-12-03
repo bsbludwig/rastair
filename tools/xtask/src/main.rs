@@ -84,6 +84,7 @@ fn main() -> Result<()> {
                 .arg("test")
                 .arg("--workspace")
                 .arg("--test-runner=nextest")
+                .arg("--disable-nextest-doctest")
                 .arg("--accept")
                 .status()
                 .wrap_err("Failed to run insta tests")?;
