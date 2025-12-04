@@ -114,7 +114,7 @@ pub(crate) fn parse_strand(s: &str) -> Strand {
 }
 
 #[macro_export]
-macro_rules! vcf {
+macro_rules! vcf_assert {
     () => {{
         $crate::call::tests::utils::VcfMatcher { expected: vec![] }
     }};

@@ -1,6 +1,6 @@
 //! Tests for VCF output from rastair call
 use super::utils::*;
-use crate::{pileups, vcf, vcf::lowDp};
+use crate::{pileups, vcf::lowDp, vcf_assert};
 use rastair_types::Base::*;
 
 #[test]
@@ -13,7 +13,7 @@ fn test_simple_variant() -> Result<()> {
         [ A C G T ] OT,
     );
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .),
         (C A),
         (G .),
@@ -39,7 +39,7 @@ fn test_all_matching_ref() -> Result<()> {
     // Test with variants filter: There are no variants
     let records = test_call(segment.clone(), pileups.clone(), RecordFilters::variants())?;
     // FIXME: Why are we printing CpGs anyway?
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .),
         (G .),
     ];
@@ -48,7 +48,7 @@ fn test_all_matching_ref() -> Result<()> {
 
     // Now test with CpG filter: Should match the middle two positions
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .),
         (G .),
     ];
@@ -69,7 +69,7 @@ fn test_multiple_alt_alleles() -> Result<()> {
         [ A ] OB,
         [ G ] OB,
     );
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C T,A,G),
     ];
 
@@ -90,8 +90,8 @@ fn test_cpg_context() -> Result<()> {
         [ C G ] OB,
     );
 
-    let expected_vcf = vcf![
         (C .) PASS,
+    let expected_vcf = vcf_assert![
         (C T) FAIL,
         (G .) PASS,
     ];
@@ -123,7 +123,7 @@ fn test_filter_status_matching() -> Result<()> {
     set_fail(&mut records[0], T);
     set_fail(&mut records[1], A);
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // methylation evidence: C is methylated
         (C T) FAIL,  // low confidence variant
         (G .) PASS,  // methylation evidence: G is methylated
@@ -137,7 +137,7 @@ fn test_filter_status_matching() -> Result<()> {
     set_pass(&mut records[0], T);
     set_pass(&mut records[1], A);
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS, // FIXME: Should we output ref->. here?
         (C T) PASS,
         (G .) PASS,
@@ -162,7 +162,7 @@ fn test_denovo_cpg() -> Result<()> {
         [ T A ] OB,
     );
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (G C) PASS,  // de-novo CpG candidate
         (G T) FAIL,  // other alt at first position
         (G .) FAIL,  // other de-novo CpG position
@@ -192,7 +192,7 @@ fn test_c_to_t_high_ml_score() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::variants())?;
     set_pass(&mut records[0], T);
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C T) PASS,  // Only the variant row, no ref->. row
     ];
 
@@ -216,7 +216,7 @@ fn test_g_to_a_high_ml_score() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::variants())?;
     set_pass(&mut records[0], A);
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (G A) PASS,  // Only the variant row, no ref->. row
     ];
 
@@ -242,7 +242,7 @@ fn test_mixed_methylation_and_real_variants() -> Result<()> {
     set_fail(&mut records[0], T); // Low ML - methylation evidence
     set_pass(&mut records[0], A); // High ML - real variant
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         // (C .) PASS,  // methylation evidence
         (C T) FAIL,  // low confidence methylation transition
         (C A) PASS,  // real variant
@@ -270,7 +270,7 @@ fn test_non_methylation_transitions() -> Result<()> {
     set_fail(&mut records[0], A); // Low ML, but C->A is not methylation transition
     set_fail(&mut records[1], C); // Low ML, but G->C is not methylation transition
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // FIXME: Skip because C->A is not methylation evidence
         (C A) FAIL,  // No ref->. row because C->A is not methylation evidence
         (G .) PASS,  // FIXME: Skip because G->C is not methylation evidence
@@ -296,7 +296,7 @@ fn test_multiple_methylation_transitions_same_position() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
     set_fail(&mut records[0], T); // Low ML - methylation evidence
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // methylation evidence (only one ref->. row)
         (C T) FAIL,  // the methylation transition
         (G .) PASS,
@@ -322,7 +322,7 @@ fn test_a_and_t_bases_never_methylation_evidence() -> Result<()> {
 
     let records = test_call(segment, pileups, RecordFilters::variants())?;
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (A C) PASS,  // No ref->. because A cannot show methylation evidence
         (T G) PASS,  // No ref->. because T cannot show methylation evidence
     ];
@@ -346,7 +346,7 @@ fn test_reverse_strand_methylation() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::variants())?;
     set_fail(&mut records[1], A); // Low ML - methylation evidence on reverse strand
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,
         (G .) PASS,  // methylation evidence
         (G A) FAIL,  // low confidence methylation transition
@@ -373,7 +373,7 @@ fn test_empty_alts_only_produces_one_row() -> Result<()> {
 
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .),  // Single row for matching reference
         (G .),  // Single row for matching reference
     ];
@@ -400,7 +400,7 @@ fn test_all_methylation_transitions_failing() -> Result<()> {
     set_fail(&mut records[0], T);
     set_fail(&mut records[1], A);
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // C is methylated
         (C T) FAIL,  // methylation transition
         (G .) PASS,  // G is methylated
@@ -429,7 +429,7 @@ fn test_c_to_t_with_no_ml_score() -> Result<()> {
     let records = test_call(segment, pileups, RecordFilters::variants())?;
 
     // What should we expect here?
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         // FIXME: Should still write (C .) PASS,
         (C T) PASS   // What filter status?
     ];
@@ -456,7 +456,7 @@ fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
     set_pass(&mut records[0], T); // High ML score
     records[0].alt_filters_mut(T).unwrap().filters.add(lowDp, || true);
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,
         (C T) PASS,  // PASS despite other filters failing
         (G .) PASS,
@@ -468,7 +468,7 @@ fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
     // Now, without ML
     records[0].alt_filters_mut(T).unwrap().ml = None;
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,
         (C T) FAIL,  // PASS despite other filters failing
         (G .) PASS,
@@ -497,7 +497,7 @@ fn test_c_with_t_and_a_both_low_ml() -> Result<()> {
     set_fail(&mut records[0], T); // Low ML - methylation evidence
     set_fail(&mut records[0], A); // Low ML - but not methylation transition
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // methylation evidence from C->T
         (C T) FAIL,  // methylation transition with low ML
         (C A) FAIL,  // non-methylation transition with low ML, no ref->. for this
@@ -527,7 +527,7 @@ fn test_g_with_a_and_c_alts() -> Result<()> {
     set_fail(&mut records[0], A); // G->A low ML - methylation evidence
     set_pass(&mut records[0], C); // G->C high ML - non-methylation variant
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         // FIXME: Add (G .) PASS,  // methylation evidence from G->A
         (G A) FAIL,  // methylation transition with low ML
         (G C) PASS,  // non-methylation variant
@@ -563,7 +563,7 @@ fn test_cpg_islands_multiple_positions() -> Result<()> {
     set_fail(&mut records[4], T);
     // G3: matches ref (no alt)
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // C1 methylated
         (C T) FAIL,  // C1->T methylation transition
         (G .) PASS,  // G1 matches ref
@@ -600,7 +600,7 @@ fn test_strand_bias_in_methylation() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
     set_fail(&mut records[0], T); // C->T with low ML from OT strand only
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // methylation evidence
         (C T) FAIL,  // strand-biased methylation transition
         (G .) PASS,  // G matches on both strands
@@ -628,7 +628,7 @@ fn test_cpg_both_positions_written() -> Result<()> {
     set_pass(&mut records[0], A);
 
     // Always write both CpG positions
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // C with potential methylation evidence
         (C A) PASS,  // C has variant
         (G .) PASS   // Should write G to maintain CpG context
@@ -670,7 +670,7 @@ fn test_other_pos_in_cpg_passes_flag() -> Result<()> {
     // other_pos_in_cpg_passes=true because G passes. This makes the position
     // pass (so ref->. is PASS), but C->T alt still fails on its own merits
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,  // Position passes due to other_pos_in_cpg_passes
         (C T) FAIL,  // Alt still fails based on its own filters (low ML, etc.)
         (G .) PASS,  //
@@ -713,7 +713,7 @@ fn test_denovo_cpg_both_positions_with_methylation() -> Result<()> {
 
     let records = reprocess(records)?; // to propagate de-novo CpG flags
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (A C) PASS,  // De-novo CpG creation
         (A T) FAIL,  // Methylation evidence
         (G .) PASS,  // Write the G from the de-novo CpG
@@ -742,7 +742,7 @@ fn test_denovo_cpg_that_is_variant_hg96_chr20_75254() -> Result<()> {
     set_fail(&mut records[1], G);
 
     // Todo: Does this make sense?
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) FAIL,
         (C A) PASS,
         (C G) FAIL,
@@ -767,7 +767,7 @@ fn test_denovo_cpg_hg96_chr20_76962() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
     set_pass(&mut records[0], C);
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (T C) PASS,  // De-novo CpG creation
         (G .) PASS,  // Write the G from the de-novo CpG
     ];
@@ -790,7 +790,7 @@ fn test_cpg_variant_hg96_chr20_65899() -> Result<()> {
 
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
 
-    let expected_vcf = vcf![
+    let expected_vcf = vcf_assert![
         (C .) PASS,
         (G .) PASS,
         (G A) PASS,  // Actual variant
