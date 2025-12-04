@@ -302,8 +302,10 @@ impl MetricsSubset<'_> {
         let methylated = if self.alts.is_empty() || self.is_ref_only_row {
             // For ref->. rows, indicate methylation status based on position metrics
             self.pos_metrics.methylated.clone()
+        } else if self.alts.iter().any(|alt| *alt.metrics.denovo) {
+            // For N->C or N->G de-novo CpG candidates, indicate methylation status based on alt metrics
+            self.pos_metrics.methylated.clone()
         } else {
-            // For alt rows, no methylation info
             Methylated::Unknown
         };
 

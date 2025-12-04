@@ -87,14 +87,15 @@ fn test_cpg_context() -> Result<()> {
         [ T G ] OT,
         [ T G ] OT,
         [ C G ] OT,
-        [ C G ] OB,
+        [ C A ] OB,
         [ C G ] OB,
     );
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=0.6666,
+        (C .) PASS M5mC=2./3.,
         (C T) FAIL,
-        (G .) PASS M5mC=0.0,
+        (G .) PASS M5mC=1./2.,
+        (G A) FAIL,
     ];
 
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
@@ -153,25 +154,51 @@ fn test_filter_status_matching() -> Result<()> {
 
 #[test]
 fn test_denovo_cpg() -> Result<()> {
-    // First position: G with alts C and T
-    // Second position: G with alt A (methylation transition G->A)
     let (segment, pileups) = pileups!(
         [ G G ] Ref,
         [ C G ] OT,
         [ C G ] OT,
-        [ T A ] OB,
-        [ T A ] OB,
+        [ C G ] OB,
     );
 
     let expected_vcf = vcf_assert![
-        (G C) PASS,  // de-novo CpG candidate
-        (G T) FAIL,  // other alt at first position
-        (G .) FAIL,  // other de-novo CpG position
-        (G A) FAIL,  // second position: G->A methylation transition with low ML
+        (G C) PASS M5mC=0.,  // de-novo CpG candidate
+        (G .) PASS M5mC=0.,  // second position
     ];
 
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
     set_pass(&mut records[0], C); // set C alt to pass, creating de-novo CpG for sure
+    let records = reprocess(records)?; // to propagate de-novo CpG flags
+
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_denovo_cpg_methylated() -> Result<()> {
+    // First position: G with alts C and T
+    // Second position: G with alt A (methylation transition G->A)
+    let (segment, pileups) = pileups!(
+        [ G G ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ G A ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (G T) FAIL,  // other alt at first position
+        (G C) PASS M5mC=1.,  // de-novo CpG candidate
+        (G .) PASS M5mC=1.,  // other de-novo CpG position
+        (G A) PASS,  // second position: G->A methylation transition with low ML
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[0], C); // set C alt to pass, creating de-novo CpG for sure
+    let records = reprocess(records)?; // to propagate de-novo CpG flags
 
     let vcf_records = metrics_to_vcf(&records)?;
     expected_vcf.matches(vcf_records)?;
@@ -194,7 +221,7 @@ fn test_c_to_t_high_ml_score() -> Result<()> {
     set_pass(&mut records[0], T);
 
     let expected_vcf = vcf_assert![
-        (C T) PASS,  // Only the variant row, no ref->. row
+        (C T) PASS M5mC=None,  // Only the variant row, no ref->. row
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -232,11 +259,11 @@ fn test_mixed_methylation_and_real_variants() -> Result<()> {
     // Test C with both methylation evidence (C->T low ML) and real variant (C->A high ML)
     // Assumption: When we have both types, we output ref->. plus both alt rows
     let (segment, pileups) = pileups!(
-        [ C ] Ref,
-        [ T ] OT,
-        [ T ] OT,
-        [ A ] OB,
-        [ A ] OB,
+        [ C G ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ A G ] OB,
+        [ A G ] OB,
     );
 
     let mut records = test_call(segment, pileups, RecordFilters::variants())?;
@@ -244,9 +271,10 @@ fn test_mixed_methylation_and_real_variants() -> Result<()> {
     set_pass(&mut records[0], A); // High ML - real variant
 
     let expected_vcf = vcf_assert![
-        // (C .) PASS,  // methylation evidence
+        (C .) PASS M5mC=1.,  // methylation evidence
         (C T) FAIL,  // low confidence methylation transition
         (C A) PASS,  // real variant
+        (G .) PASS,
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -295,12 +323,12 @@ fn test_multiple_methylation_transitions_same_position() -> Result<()> {
     );
 
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
-    set_fail(&mut records[0], T); // Low ML - methylation evidence
+    set_fail(&mut records[0], T); // Force low ML
 
     let expected_vcf = vcf_assert![
-        (C .) PASS,  // methylation evidence (only one ref->. row)
+        (C .) PASS M5mC=1.,  // methylation evidence (only one ref->. row)
         (C T) FAIL,  // the methylation transition
-        (G .) PASS,
+        (G .) PASS M5mC=0.,
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -324,8 +352,8 @@ fn test_a_and_t_bases_never_methylation_evidence() -> Result<()> {
     let records = test_call(segment, pileups, RecordFilters::variants())?;
 
     let expected_vcf = vcf_assert![
-        (A C) PASS,  // No ref->. because A cannot show methylation evidence
-        (T G) PASS,  // No ref->. because T cannot show methylation evidence
+        (A C) PASS M5mC=None,  // No ref->. because A cannot show methylation evidence
+        (T G) PASS M5mC=None,  // No ref->. because T cannot show methylation evidence
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -348,8 +376,8 @@ fn test_reverse_strand_methylation() -> Result<()> {
     set_fail(&mut records[1], A); // Low ML - methylation evidence on reverse strand
 
     let expected_vcf = vcf_assert![
-        (C .) PASS,
-        (G .) PASS,  // methylation evidence
+        (C .) PASS M5mC=0.,
+        (G .) PASS M5mC=1.,  // methylation evidence
         (G A) FAIL,  // low confidence methylation transition
     ];
 
@@ -429,10 +457,8 @@ fn test_c_to_t_with_no_ml_score() -> Result<()> {
 
     let records = test_call(segment, pileups, RecordFilters::variants())?;
 
-    // What should we expect here?
     let expected_vcf = vcf_assert![
-        // FIXME: Should still write (C .) PASS,
-        (C T) PASS   // What filter status?
+        (C T) PASS
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -471,7 +497,7 @@ fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C .) PASS,
-        (C T) FAIL,  // PASS despite other filters failing
+        (C T) FAIL,  // FAIL because ML is None and other filters fail
         (G .) PASS,
     ];
 
@@ -499,10 +525,10 @@ fn test_c_with_t_and_a_both_low_ml() -> Result<()> {
     set_fail(&mut records[0], A); // Low ML - but not methylation transition
 
     let expected_vcf = vcf_assert![
-        (C .) PASS,  // methylation evidence from C->T
+        (C .) PASS M5mC=1.,  // methylation evidence from C->T
         (C T) FAIL,  // methylation transition with low ML
         (C A) FAIL,  // non-methylation transition with low ML, no ref->. for this
-        (G .) PASS,
+        (G .) PASS M5mC=0.,
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -565,15 +591,15 @@ fn test_cpg_islands_multiple_positions() -> Result<()> {
     // G3: matches ref (no alt)
 
     let expected_vcf = vcf_assert![
-        (C .) PASS,  // C1 methylated
+        (C .) PASS M5mC=1.,  // C1 methylated
         (C T) FAIL,  // C1->T methylation transition
-        (G .) PASS,  // G1 matches ref
-        (C .) PASS,  // C2 matches ref
-        (G .) PASS,  // G2 methylated
+        (G .) PASS M5mC=0.,  // G1 matches ref
+        (C .) PASS M5mC=0.,  // C2 matches ref
+        (G .) PASS M5mC=1.,  // G2 methylated
         (G A) FAIL,  // G2->A methylation transition
-        (C .) PASS,  // C3 methylated
+        (C .) PASS M5mC=1.,  // C3 methylated
         (C T) FAIL,  // C3->T methylation transition
-        (G .) PASS,  // G3 matches ref
+        (G .) PASS M5mC=0.,  // G3 matches ref
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -593,20 +619,41 @@ fn test_strand_bias_in_methylation() -> Result<()> {
         [ T G ] OT,
         [ T G ] OT,
         [ T G ] OT,
-        [ C G ] OB,
-        [ C G ] OB,
-        [ C G ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
     );
-
-    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
-    set_fail(&mut records[0], T); // C->T with low ML from OT strand only
-
+    let records = test_call(segment, pileups, RecordFilters::cpgs())?;
     let expected_vcf = vcf_assert![
-        (C .) PASS,  // methylation evidence
+        (C .) PASS M5mC=1.,  // methylation evidence
         (C T) FAIL,  // strand-biased methylation transition
-        (G .) PASS,  // G matches on both strands
+        (G .) PASS M5mC=1.,  // G matches on both strands
+        (G A) FAIL,  // G matches on both strands
     ];
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
 
+    // And now the other way around!
+    // Test C->T only on OB strand -- i.e., not methylation evidence
+    // (and same for G->A)
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ C A ] OT,
+    );
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[0], T);
+    set_pass(&mut records[1], A);
+    let expected_vcf = vcf_assert![
+        (C .) PASS M5mC=0.,
+        (C T) PASS,
+        (G .) PASS M5mC=0.,
+        (G A) PASS,
+    ];
     let vcf_records = metrics_to_vcf(&records)?;
     expected_vcf.matches(vcf_records)?;
 
@@ -676,48 +723,6 @@ fn test_other_pos_in_cpg_passes_flag() -> Result<()> {
         (C T) FAIL,  // Alt still fails based on its own filters (low ML, etc.)
         (G .) PASS,  //
         (G A) PASS,  // G->A passes normally
-    ];
-
-    let vcf_records = metrics_to_vcf(&records)?;
-    expected_vcf.matches(vcf_records)?;
-
-    Ok(())
-}
-
-#[test]
-fn test_denovo_cpg_both_positions_with_methylation() -> Result<()> {
-    // Test complex scenario combining multiple TODOs:
-    // - A->C creates de-novo CpG (now have CG)
-    // - The newly created C shows methylation evidence (C->T on some reads)
-    // - Should write both positions of the de-novo CpG
-    //
-    // Assumption: When de-novo CpG is created and shows methylation,
-    // both positions should be written to maintain biological context
-    //
-    // Example: Reference is AG
-    // - Some reads show CG (A->C, creating de-novo CpG)
-    // - Some reads show TG (suggesting unmethylated C)
-    // Expected output: Both C and G positions with methylation info
-    let (segment, pileups) = pileups!(
-        [ A G ] Ref,
-        [ C G ] OT,  // Creates de-novo CpG
-        [ C G ] OT,
-        [ T G ] OB,  // Methylation evidence
-        [ T G ] OB,
-    );
-
-    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
-    // A->C creates de-novo CpG and should pass
-    set_pass(&mut records[0], C);
-    // A->T is methylation transition with low ML
-    set_fail(&mut records[0], T);
-
-    let records = reprocess(records)?; // to propagate de-novo CpG flags
-
-    let expected_vcf = vcf_assert![
-        (A C) PASS,  // De-novo CpG creation
-        (A T) FAIL,  // Methylation evidence
-        (G .) PASS,  // Write the G from the de-novo CpG
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;

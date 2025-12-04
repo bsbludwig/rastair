@@ -1,8 +1,8 @@
 use crate::{
     call::{methylation::ThresholdParams, variant_calling::GenotypeTag},
-    metrics::PileupMetrics,
+    metrics::{DenovoAdjecent, PileupMetrics},
     utils::{Base::*, IntoF64, logging::ThisIsABug},
-    vcf::Methylated,
+    vcf::{InCpG, Methylated},
 };
 use color_eyre::{
     Result,
@@ -26,14 +26,16 @@ pub fn call(config: &ThresholdParams, current: &PileupMetrics) -> Result<Option<
 }
 
 fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methylated> {
+    let cpg = p.pos_metrics.cpg;
+    let denovo_adj = p.pos_metrics.denovo_adj;
     let ref_base = p.ref_base();
     let sequence_context = &p.pileup.context;
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
 
-    if ref_base == C {
+    if cpg == InCpG::C || denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
         ref_c(config, p)
-    } else if ref_base == G {
+    } else if cpg == InCpG::G || denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
         ref_g(config, p)
     } else if p.alt(C).is_some() && ref_after == G {
         // creating new CpG
@@ -769,7 +771,7 @@ mod tests {
             let metrics = to_metrics(&ps[0], &seg, None);
             let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-            assert_no_evidence(result);
+            assert_none(result);
         }
     }
 }
