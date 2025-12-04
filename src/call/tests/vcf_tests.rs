@@ -14,9 +14,9 @@ fn test_simple_variant() -> Result<()> {
     );
 
     let expected_vcf = vcf_assert![
-        (C .),
-        (C A),
-        (G .),
+        (C .) PASS M5mC=0.0,
+        (C A) FAIL,
+        (G .) PASS M5mC=0.0,
     ];
 
     let records = test_call(segment, pileups, RecordFilters::variants())?;
@@ -38,10 +38,10 @@ fn test_all_matching_ref() -> Result<()> {
 
     // Test with variants filter: There are no variants
     let records = test_call(segment.clone(), pileups.clone(), RecordFilters::variants())?;
-    // FIXME: Why are we printing CpGs anyway?
+    // We are printing CpGs anyway
     let expected_vcf = vcf_assert![
-        (C .),
-        (G .),
+        (C .) PASS M5mC=0.0,
+        (G .) PASS M5mC=0.0,
     ];
     let vcf_records = metrics_to_vcf(&records)?;
     expected_vcf.matches(vcf_records)?;
@@ -49,8 +49,8 @@ fn test_all_matching_ref() -> Result<()> {
     // Now test with CpG filter: Should match the middle two positions
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
     let expected_vcf = vcf_assert![
-        (C .),
-        (G .),
+        (C .) PASS M5mC=0.0,
+        (G .) PASS M5mC=0.0,
     ];
     let vcf_records = metrics_to_vcf(&records)?;
     expected_vcf.matches(vcf_records)?;
@@ -86,14 +86,15 @@ fn test_cpg_context() -> Result<()> {
         [ C G ] Ref,
         [ T G ] OT,
         [ T G ] OT,
+        [ C G ] OT,
         [ C G ] OB,
         [ C G ] OB,
     );
 
-        (C .) PASS,
     let expected_vcf = vcf_assert![
+        (C .) PASS M5mC=0.6666,
         (C T) FAIL,
-        (G .) PASS,
+        (G .) PASS M5mC=0.0,
     ];
 
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
@@ -124,9 +125,9 @@ fn test_filter_status_matching() -> Result<()> {
     set_fail(&mut records[1], A);
 
     let expected_vcf = vcf_assert![
-        (C .) PASS,  // methylation evidence: C is methylated
+        (C .) PASS  M5mC=1.0,  // methylation evidence: C is methylated
         (C T) FAIL,  // low confidence variant
-        (G .) PASS,  // methylation evidence: G is methylated
+        (G .) PASS  M5mC=1.0,  // methylation evidence: G is methylated
         (G A) FAIL,  // low confidence variant
     ];
 
@@ -138,10 +139,10 @@ fn test_filter_status_matching() -> Result<()> {
     set_pass(&mut records[1], A);
 
     let expected_vcf = vcf_assert![
-        (C .) PASS, // FIXME: Should we output ref->. here?
-        (C T) PASS,
-        (G .) PASS,
-        (G A) PASS,
+        (C .) PASS M5mC=1.0, // FIXME: Should we output ref->. here?
+        (C T) PASS M5mC=None,
+        (G .) PASS M5mC=1.0,
+        (G A) PASS M5mC=None,
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;

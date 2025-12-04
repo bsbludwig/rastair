@@ -1,6 +1,7 @@
 //! Test utilities for writing concise and readable tests for rastair call
 #![allow(clippy::cast_possible_truncation, reason = "Test code")]
 
+use crate::utils::IntoF64 as _;
 use crate::{
     CallParams,
     call::{
@@ -118,9 +119,9 @@ macro_rules! vcf_assert {
     () => {{
         $crate::call::tests::utils::VcfMatcher { expected: vec![] }
     }};
-    // Pattern with explicit PASS/FAIL status
+    // Pattern with explicit PASS/FAIL status and field assertions
     (
-        $(( $ref:ident $($alt:tt),+ $(,)? ) $pass_status:ident),+ $(,)?
+        $(( $ref:ident $($alt:tt),+ $(,)? ) $pass_status:ident $($field:ident = $value:expr)*),+ $(,)?
     ) => {{
         $crate::call::tests::utils::VcfMatcher {
             expected: vec![$(
@@ -128,6 +129,7 @@ macro_rules! vcf_assert {
                     ref_base: rastair_types::Base::$ref,
                     alt_bases: vec![$( $crate::call::tests::utils::parse_alt_token(stringify!($alt)) ),+],
                     pass_status: Some($crate::call::tests::utils::parse_pass_status(stringify!($pass_status))),
+                    fields: vec![$( (stringify!($field), $value.to_field_value()) ),*],
                 }
             ),+]
         }
@@ -142,6 +144,7 @@ macro_rules! vcf_assert {
                     ref_base: rastair_types::Base::$ref,
                     alt_bases: vec![$( $crate::call::tests::utils::parse_alt_token(stringify!($alt)) ),+],
                     pass_status: None,
+                    fields: vec![],
                 }
             ),+]
         }
@@ -160,6 +163,89 @@ pub(crate) fn parse_pass_status(s: &str) -> bool {
     }
 }
 
+/// Value types for field assertions
+#[derive(Debug, Clone)]
+pub(crate) enum FieldValue {
+    F64(f64),
+    OptF64(Option<f64>),
+    String(String),
+}
+
+impl FieldValue {
+    /// Compare with another FieldValue, using epsilon for float comparisons
+    fn matches(&self, other: &Self, epsilon: f64) -> bool {
+        match (self, other) {
+            (Self::F64(a), Self::F64(b)) => (a - b).abs() < epsilon,
+            // Allow F64 to match OptF64(Some(value)) for convenience
+            (Self::F64(a), Self::OptF64(Some(b))) | (Self::OptF64(Some(b)), Self::F64(a)) => {
+                (a - b).abs() < epsilon
+            }
+            (Self::OptF64(a), Self::OptF64(b)) => match (a, b) {
+                (Some(a), Some(b)) => (a - b).abs() < epsilon,
+                (None, None) => true,
+                _ => false,
+            },
+            (Self::String(a), Self::String(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// Trait for converting values into FieldValue for test assertions
+pub(crate) trait ToFieldValue {
+    fn to_field_value(self) -> FieldValue;
+}
+
+impl ToFieldValue for f64 {
+    fn to_field_value(self) -> FieldValue {
+        FieldValue::F64(self)
+    }
+}
+
+impl ToFieldValue for Option<f64> {
+    fn to_field_value(self) -> FieldValue {
+        FieldValue::OptF64(self)
+    }
+}
+
+impl ToFieldValue for &str {
+    fn to_field_value(self) -> FieldValue {
+        FieldValue::String(self.to_string())
+    }
+}
+
+impl ToFieldValue for String {
+    fn to_field_value(self) -> FieldValue {
+        FieldValue::String(self)
+    }
+}
+
+/// Get a field value from a VCF record by field ID
+fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
+    // FORMAT fields (sample 0)
+    if let Some(sample) = record.samples.first() {
+        match field_id {
+            "M5mC" => {
+                return Ok(FieldValue::OptF64(sample.methylated.beta().map(|p| p.f())));
+            }
+            "ML" => {
+                // ML is OnePerAlt, so we get the first value
+                let ml_value = sample
+                    .machine_learning_prediction
+                    .first()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ML field is empty"))?;
+                return Ok(FieldValue::F64(*ml_value));
+            }
+            "GT" => {
+                return Ok(FieldValue::String(format!("{:?}", sample.genotype)));
+            }
+            _ => {}
+        }
+    }
+
+    bail!("Unknown or unsupported field: {}", field_id)
+}
+
 #[derive(Debug)]
 pub(crate) struct VcfMatcher {
     pub expected: Vec<ExpectedVcfRecord>,
@@ -170,6 +256,7 @@ pub(crate) struct ExpectedVcfRecord {
     pub ref_base: Base,
     pub alt_bases: Vec<Option<Base>>,
     pub pass_status: Option<bool>,
+    pub fields: Vec<(&'static str, FieldValue)>,
 }
 
 impl VcfMatcher {
@@ -257,7 +344,25 @@ impl VcfMatcher {
                 }
             }
 
-            // Todo: Check INFO fields
+            // Check field assertions
+            for (field_id, expected_value) in &expected.fields {
+                match get_field_value(actual, field_id) {
+                    Ok(actual_value) => {
+                        if !expected_value.matches(&actual_value, 1e-3) {
+                            errors.push(format!(
+                                "Record {}: Field {} expected {:?}, got {:?}",
+                                idx, field_id, expected_value, actual_value
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!(
+                            "Record {}: Failed to get field {}: {}",
+                            idx, field_id, e
+                        ));
+                    }
+                }
+            }
         }
 
         if !errors.is_empty() {
