@@ -1,27 +1,26 @@
-// Adapted from rastair1, AGPL-3.0-only, (C) Benjamin Schuster-Boeckler
-// source: https://bitbucket.org/bsblabludwig/rastair/src/306bf046f14c64992c06b9000c60113e35a0f766/src/operations/count_variants/mod.rs#lines-394
-
+// Adapted from rastair1, (c) Benjamin Schuster-Boeckler
 use crate::{
     call::{pileup::Pileup, variant_calling::ErrorModel},
-    utils::{Base, IntoF64 as _, Strand},
+    utils::{Base::*, IntoF64 as _, Strand},
 };
-use color_eyre::eyre::{Result, ensure};
+use color_eyre::eyre::{ContextCompat, Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
 use rastair_types::Probability;
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
+use std::num::{NonZeroI32, NonZeroU8};
 use tracing::{instrument, trace};
 
 impl Pileup {
     pub fn estimate_genotype(&self, error_model: ErrorModel) -> Option<EstimatedGenotype> {
-        let (nosnp, snp) = if self.reference_base == Base::C {
+        let (nosnp, snp) = if self.reference_base == C {
             (
-                self.reads.iter().filter(|b| b.base == Base::C && b.strand == Strand::OB).count(),
-                self.reads.iter().filter(|b| b.base == Base::T && b.strand == Strand::OB).count(),
+                self.reads.iter().filter(|b| b.base == C && b.strand == Strand::OB).count(),
+                self.reads.iter().filter(|b| b.base == T && b.strand == Strand::OB).count(),
             )
-        } else if self.reference_base == Base::G {
+        } else if self.reference_base == G {
             (
-                self.reads.iter().filter(|b| b.base == Base::G && b.strand == Strand::OT).count(),
-                self.reads.iter().filter(|b| b.base == Base::A && b.strand == Strand::OT).count(),
+                self.reads.iter().filter(|b| b.base == G && b.strand == Strand::OT).count(),
+                self.reads.iter().filter(|b| b.base == A && b.strand == Strand::OT).count(),
             )
         } else {
             return None;
@@ -36,24 +35,88 @@ impl Pileup {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+/// Represents a diploid genotype with support for multiple alternative alleles.
+///
+/// This enum provides a more type-safe and readable representation than raw VCF
+/// genotype indices, while still supporting the full range of diploid genotypes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub enum GenotypeTag {
-    /// Homozygous reference (CC)
-    #[default]
-    CC,
-    /// Heterozygous (CT)
-    CT,
-    /// Homozygous alternative (TT)
-    TT,
+    /// Homozygous reference (0/0)
+    HomRef,
+    /// Heterozygous with one reference and one alt allele (0/n where n > 0)
+    RefHet(NonZeroU8),
+    /// Compound heterozygous with two different alt alleles (m/n where m < n and m,n > 0)
+    ///
+    /// The alleles are always stored in sorted order (smaller first) to ensure uniqueness.
+    AltHet(NonZeroU8, NonZeroU8),
+    /// Homozygous alternative (n/n where n > 0)
+    HomAlt(NonZeroU8),
+}
+
+impl GenotypeTag {
+    /// Creates a homozygous reference genotype (0/0).
+    ///
+    /// This is equivalent to the legacy `CC` genotype.
+    pub const fn hom_ref() -> Self {
+        Self::HomRef
+    }
+
+    /// Creates a heterozygous genotype with one reference and one alt allele (0/n).
+    ///
+    /// When `alt_allele` is 1, this is equivalent to the legacy `CT` genotype.
+    pub const fn ref_het(alt_allele: NonZeroU8) -> Self {
+        Self::RefHet(alt_allele)
+    }
+
+    /// Creates a compound heterozygous genotype with two different alt alleles (m/n).
+    ///
+    /// The alleles are automatically sorted to ensure canonical representation.
+    /// If both alleles are the same, use [`GenotypeTag::hom_alt()`] instead.
+    #[inline]
+    pub fn alt_het(allele1: NonZeroU8, allele2: NonZeroU8) -> Self {
+        assert_ne!(
+            allele1, allele2,
+            "Genotype with two different alleles expect, but got `{allele1}` twice."
+        );
+        // Store in sorted order for canonical representation
+        if allele1 < allele2 {
+            Self::AltHet(allele1, allele2)
+        } else {
+            Self::AltHet(allele2, allele1)
+        }
+    }
+
+    /// Is this genotype heterozygous (any combination of different alleles)?
+    pub const fn is_heterozygous(&self) -> bool {
+        matches!(self, Self::RefHet(_) | Self::AltHet(_, _))
+    }
+
+    /// Is this genotype homozygous (both alleles the same)?
+    pub const fn is_homozygous(&self) -> bool {
+        matches!(self, Self::HomRef | Self::HomAlt(_))
+    }
+
+    pub const CC: Self = Self::HomRef;
+    pub const CT: Self = Self::RefHet(NonZeroU8::new(1).unwrap());
+    pub const TT: Self = Self::HomAlt(NonZeroU8::new(1).unwrap());
 }
 
 impl From<GenotypeTag> for [GenotypeAllele; 2] {
     fn from(value: GenotypeTag) -> Self {
         match value {
-            GenotypeTag::CC => [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)],
-            GenotypeTag::CT => [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)],
-            GenotypeTag::TT => [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)],
+            GenotypeTag::HomRef => [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)],
+            GenotypeTag::RefHet(n) => {
+                [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(NonZeroI32::from(n).get())]
+            }
+            GenotypeTag::AltHet(m, n) => [
+                GenotypeAllele::Unphased(NonZeroI32::from(m).get()),
+                GenotypeAllele::Unphased(NonZeroI32::from(n).get()),
+            ],
+            GenotypeTag::HomAlt(n) => [
+                GenotypeAllele::Unphased(NonZeroI32::from(n).get()),
+                GenotypeAllele::Unphased(NonZeroI32::from(n).get()),
+            ],
         }
     }
 }
@@ -62,6 +125,53 @@ impl From<GenotypeTag> for Genotype {
     fn from(value: GenotypeTag) -> Self {
         let genotype: [GenotypeAllele; 2] = value.into();
         Genotype(genotype.into())
+    }
+}
+
+impl TryFrom<&[GenotypeAllele]> for GenotypeTag {
+    type Error = color_eyre::Report;
+
+    fn try_from(alleles: &[GenotypeAllele]) -> Result<Self> {
+        use color_eyre::eyre::bail;
+
+        match alleles {
+            // Homozygous reference: 0/0
+            [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
+            | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(0)] => Ok(Self::HomRef),
+
+            // Heterozygous with reference: 0/n or n/0
+            [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(n)]
+            | [GenotypeAllele::Unphased(n), GenotypeAllele::Unphased(0)]
+            | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(n)]
+            | [GenotypeAllele::Phased(n), GenotypeAllele::Phased(0)]
+                if *n > 0 && *n <= 255 =>
+            {
+                #[allow(clippy::cast_possible_truncation, reason = "safe: n is in 1..=255")]
+                let n = *n as u8;
+                Ok(Self::RefHet(NonZeroU8::new(n).wrap_err("expected non-null value")?))
+            }
+
+            // Both alleles are alt (non-zero)
+            [GenotypeAllele::Unphased(m), GenotypeAllele::Unphased(n)]
+            | [GenotypeAllele::Phased(m), GenotypeAllele::Phased(n)]
+                if *m > 0 && *m <= 255 && *n > 0 && *n <= 255 =>
+            {
+                #[allow(clippy::cast_possible_truncation, reason = "n,m in 1..=255")]
+                let (m, n) = (*m as u8, *n as u8);
+                let m = NonZeroU8::new(m).wrap_err("expected non-null value")?;
+                let n = NonZeroU8::new(n).wrap_err("expected non-null value")?;
+
+                if m == n {
+                    // Homozygous alt: n/n
+                    Ok(Self::HomAlt(m))
+                } else {
+                    // Compound heterozygous: m/n (sorted)
+                    Ok(Self::alt_het(m, n))
+                }
+            }
+
+            _ => bail!("Unsupported or invalid genotype format: {alleles:?}"),
+        }
     }
 }
 
@@ -111,7 +221,7 @@ impl EstimatedGenotype {
             if p_het < p_hom {
                 trace!("Assuming CC: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
                 Ok(EstimatedGenotype {
-                    genotype: GenotypeTag::CC,
+                    genotype: GenotypeTag::hom_ref(),
                     likelihood: Probability::new(1.0 - p_hom)?,
                     confidence: Probability::new(1.0 - (p_hom - p_het) / p_hom)?,
                 })

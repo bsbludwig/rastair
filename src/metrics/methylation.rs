@@ -1,5 +1,5 @@
 use crate::{
-    call::{methylation::ThresholdParams, variant_calling::GenotypeTag},
+    call::methylation::ThresholdParams,
     metrics::{DenovoAdjecent, PileupMetrics},
     utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
@@ -196,7 +196,7 @@ fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
         let unmod_count = c_counts.ot.f();
 
         if let Some(gt) = record.pos_metrics.genotype
-            && gt.genotype == GenotypeTag::CT
+            && gt.genotype.is_heterozygous()
         {
             // divide by 2 assuming diploid genome
             mod_count /= 2.;
@@ -238,7 +238,7 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
         let unmod_count = g_counts.ob.f();
 
         if let Some(gt) = record.pos_metrics.genotype
-            && gt.genotype == GenotypeTag::CT
+            && gt.genotype.is_heterozygous()
         {
             // divide by 2 assuming diploid genome
             mod_count /= 2.;
@@ -261,7 +261,10 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
 mod tests {
     use super::*;
     use crate::{
-        call::{pileup::Pileup, variant_calling::EstimatedGenotype},
+        call::{
+            pileup::Pileup,
+            variant_calling::{EstimatedGenotype, GenotypeTag},
+        },
         pileups,
         sequence::Segment,
     };

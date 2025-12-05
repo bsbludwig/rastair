@@ -49,7 +49,7 @@ impl Rastair1BedFormat {
         } else {
             debug!("No genotype for record");
             EstimatedGenotype {
-                genotype: GenotypeTag::CC,
+                genotype: GenotypeTag::hom_ref(),
                 likelihood: Probability::ONE,
                 confidence: Probability::ONE,
             }
@@ -75,7 +75,7 @@ impl Rastair1BedFormat {
             }
         } else if *pileup.pos_metrics.cpg
             && let Some(gt) = pileup.pos_metrics.genotype
-            && gt.genotype == GenotypeTag::CT
+            && gt.genotype.is_heterozygous()
         {
             // - Is it in a CpG and called as heterozygous?
             Some(Probability::ZERO)

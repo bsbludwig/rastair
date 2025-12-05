@@ -12,6 +12,7 @@
 - [De-novo CpGs](calling/denovo.md)
 - [Methylation calling](calling/methylation.md)
 - [Machine-learning models](calling/ml.md)
+- [Genotyping](calling/genotyping.md)
 
 # Formats
 - [VCF/BCF](formats/vcf.md)
