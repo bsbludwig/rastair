@@ -1,28 +1,54 @@
-# Machine-learning models
+# Machine Learning Models
 
-Rastair supports using machine-learning models to improve the accuracy of methylation and variant calling.
+Rastair uses @ML to distinguish true @methylation calls and variants from sequencing artifacts (and noise).
+The ML models evaluate each alt at each position and assign a prediction score for that alt to be a true variant.
 
-This is a new feature and is still experimental.
-It should work quite well on regular human DNA with 10-20x converage.
+By default, ML is enabled with a threshold of `0.8`.
+A pre-trained model is bundled with Rastair.
 
-## Parameters
+The model handles three contexts:
+- **@CpG methylation sites**: Standard 5mC detection in @CpG sites
+- **@Denovo**: New methylation sites not in reference
+- **Other variants**: Non-CpG @SNP:pl and @indel:pl
 
-The machine-learning model gives a prediction for how likely a variant or methylation call is.
-Using the `--ml` parameter, you can set a threshold for this prediction, e.g. `--ml 0.75`.
+## Adjusting the Threshold
 
-To use different model files, you can pass `--model-cpg <FILE>`, `--model-denovo-cpg <FILE>`, and `--model-other <FILE>` parameters.
-Only one set of models is included with Rastair at the moment.
+Default:
 
-## Performance
+```bash
+rastair call input.bam
+```
 
-Running machine-learning model is by far the slowest part of the Rastair pipeline.
-Reducing the number of positions, e.g. only requesting @CpG sites (using `--cpg-only`), will help speed up the process.
+Change threshold:
 
-## Training
+```bash
+rastair call --ml 0.9 input.bam
+```
 
-For now, the machine-learning models are trained outside of Rastair.
-In the future, Rastair might gain the ability to train models directly,
-which makes it easier to adapt models to different use cases.
+Disable ML (faster, less accurate):
 
-<!-- document expected accuracy -->
-<!-- document using other models -->
+```bash
+rastair call --no-ml input.bam
+```
+
+## Performance Considerations
+
+ML inference is the slowest part of the pipeline.
+To speed up calling:
+
+- **Reduce positions evaluated**: Use `--cpg-only` if you only care about CpG methylation
+- **Disable ML**: Use `--no-ml` for quick exploratory runs where accuracy isn't critical
+
+## Training Custom Models
+
+If you have ground-truth data (e.g., validated @SNP:pl), you can train a custom model tailored to your specific dataset, coverage, or sample type.
+
+Basic training command:
+
+```bash
+rastair ml train input.bam --truth ground_truth.vcf --output ./my_models
+```
+
+See [the CLI docs](../cli.md#rastair-ml-train)
+or run `rastair ml train --help`
+for an overview of all training options.
