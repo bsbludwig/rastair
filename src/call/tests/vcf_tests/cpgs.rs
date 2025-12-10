@@ -41,8 +41,6 @@ fn test_mixed_methylation_and_real_variants() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_fail(&mut records[0], T); // Low ML - methylation evidence
     set_pass(&mut records[0], A); // High ML - real variant
-
-    // Reprocess to recalculate genotypes with the modified ML scores
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
@@ -72,6 +70,7 @@ fn test_non_methylation_transitions() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_fail(&mut records[0], A); // Low ML, but C->A is not methylation transition
     set_fail(&mut records[1], C); // Low ML, but G->C is not methylation transition
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C .) FAIL,  // No ref->. row because C->A is not methylation evidence
@@ -179,6 +178,7 @@ fn test_all_methylation_transitions_failing() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_fail(&mut records[0], T);
     set_fail(&mut records[1], A);
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=1.,  // C is methylated
@@ -208,6 +208,7 @@ fn test_all_methylation_transitions_passing_as_variants() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
     set_pass(&mut records[1], A);
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C .) FAIL M5mC=None,

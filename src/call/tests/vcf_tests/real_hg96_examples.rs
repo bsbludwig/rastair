@@ -44,6 +44,7 @@ fn test_denovo_cpg_hg96_chr20_76962() -> Result<()> {
 
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
     set_pass(&mut records[0], C);
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (T C) PASS,  // De-novo CpG creation

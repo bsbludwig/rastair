@@ -86,6 +86,7 @@ fn test_multiple_alt_alleles() -> Result<()> {
     set_pass(&mut records[0], T);
     set_pass(&mut records[0], G);
     set_fail(&mut records[0], A);
+    let records = reprocess(records)?;
 
     let vcf_records = metrics_to_vcf(&records)?;
     expected_vcf.matches(vcf_records)?;
@@ -105,6 +106,7 @@ fn test_c_to_t_outside_cpg() -> Result<()> {
 
     let mut records = test_call(segment, pileups, RecordFilters::variants())?;
     set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C T) PASS M5mC=None,  // Only the variant row, no ref->. row
@@ -128,6 +130,7 @@ fn test_g_to_a_outside_cpg() -> Result<()> {
 
     let mut records = test_call(segment, pileups, RecordFilters::variants())?;
     set_pass(&mut records[0], A);
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (G A) PASS,  // Only the variant row, no ref->. row

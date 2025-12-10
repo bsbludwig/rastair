@@ -288,12 +288,12 @@ impl VcfMatcher {
 
             // Check ALT
             let actual_alts = &actual.main.alt;
-            let expected_alts = expected.alt_bases.iter().filter(|x| x.is_some()).count();
-            if expected_alts != actual_alts.len() {
+            let expected_alts_count = expected.alt_bases.len();
+            if expected_alts_count != actual_alts.len() {
                 errors.push(format!(
                     "Record {}: Expected {} ALT alleles, got {}",
                     idx,
-                    expected.alt_bases.len(),
+                    expected_alts_count,
                     actual_alts.len()
                 ));
             } else {
@@ -452,6 +452,11 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
         .into_iter()
         .map_surrounding(|before, current, after| {
             process::propagate_denovo_pass_flags(before, current, after, Some(ML_THRESHOLD))
+        })
+        .map(|current| {
+            let mut current = current?;
+            process::set_alt_calls(&mut current, Some(ML_THRESHOLD))?;
+            Ok(current)
         })
         .collect()
 }
