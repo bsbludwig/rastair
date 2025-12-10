@@ -13,14 +13,16 @@ fn test_denovo_cpg_that_is_variant_hg96_chr20_75254() -> Result<()> {
         [ A G ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_fail(&mut records[0], A);
 
     // Reprocess to recalculate genotypes with the modified ML scores
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
+        (C .) PASS,  // First position with A alt
         (C A) FAIL,  // First position with A alt
+        (C .) PASS,  // Second position with G alt
         (C G) FAIL,  // Second position with G alt
     ];
 
