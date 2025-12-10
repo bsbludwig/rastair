@@ -75,12 +75,11 @@ pub fn writer_thread(
                         use crate::io::vcf_writer::Writer;
                         match vcf_writer {
                             Writer::Vcf(writer) => {
-                                let mut records = record
+                                let records = record
                                     .to_vcf_records(ml_threshold)
                                     .wrap_err("Failed to convert metrics to VCF record")
                                     .this_is_a_bug()?;
-                                records.filter(&vcf_filter);
-                                for vcf_record in records.iter() {
+                                for vcf_record in records.into_iter(&vcf_filter) {
                                     writer.add(&vcf_record).wrap_err("Failed to write VCF record")?;
                                 }
                             }

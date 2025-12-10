@@ -381,6 +381,12 @@ fn process_region(
             process::propagate_denovo_pass_flags(b, c, a, params.ml.threshold())
         })
         .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
+        .map(|mut pileup| {
+            // Finally, set the actual variant calls based on all metrics and filters
+            process::set_alt_calls(&mut pileup, params.ml.threshold())?;
+            Ok(pileup)
+        })
+        .filter_map(log_failed_and_skip!("failed to set alt calls, skipping"))
         .filter(|p| only_core_positions(&segment, p))
         .collect();
 

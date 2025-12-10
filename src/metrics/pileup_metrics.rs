@@ -16,7 +16,7 @@ use rastair_types::SmallVec;
 use rastair_types::SmolStr;
 use rastair_types::{Base, Probability, RootMeanSquare, RootMeanSquareExt as _, Strand};
 use rastair_vcf::VcfFilter;
-use std::ops::Deref;
+use std::{cell::RefCell, ops::Deref};
 use thiserror::Error;
 use tracing::trace;
 
@@ -39,6 +39,18 @@ pub struct Alt {
     pub base: Base,
     pub metrics: AlleleMetrics,
     pub filters: AltFilters,
+    pub call: AltCall,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub enum AltCall {
+    #[default]
+    Uncalled,
+    RealVariant,
+    MethylationEvidenceOnly {
+        for_base: Base,
+    },
+    ReadError,
 }
 
 impl PileupMetrics {
@@ -80,9 +92,14 @@ impl PileupMetrics {
             .iter()
             .map(|pile| {
                 let base = pile.base;
-                AlleleMetrics::from_bases(pile, &pileup)
-                    .wrap_err(AlleleMetricError(base))
-                    .map(|metrics| Alt { base, metrics, filters: AltFilters::default() })
+                AlleleMetrics::from_bases(pile, &pileup).wrap_err(AlleleMetricError(base)).map(
+                    |metrics| Alt {
+                        base,
+                        metrics,
+                        filters: AltFilters::default(),
+                        call: default(),
+                    },
+                )
             })
             .collect::<Result<_>>()
             .wrap_err("Failed to compute allele metrics for alt alleles")?;

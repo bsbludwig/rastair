@@ -4,6 +4,7 @@ use crate::{
         rastair1::{BedRecordsFilterParams, Rastair1BedFormat},
         writer::BedWriter,
     },
+    call::RecordFilters,
     io::{
         formats::{FromFileExtension, InputFormat, OutputFormat},
         mpk::{MessagePackReader, MpkEntry},
@@ -52,6 +53,10 @@ pub struct ConvertParams {
     #[arg(short = 'F', long)]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub output_format: Option<OutputFormat>,
+
+    /// VCF filters
+    #[command(flatten)]
+    pub vcf_filter: RecordFilters,
 
     /// BED-specific parameters
     #[command(flatten)]
@@ -204,7 +209,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
                     .to_vcf_records(Some(params.ml_threshold))
                     .wrap_err("Failed to convert record to VCF format")
                     .this_is_a_bug()?
-                    .iter()
+                    .into_iter(&params.vcf_filter)
                 {
                     writer.add(&vcf_record).wrap_err("Failed to write record")?;
                 }

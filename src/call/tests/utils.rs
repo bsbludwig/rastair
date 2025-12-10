@@ -479,7 +479,7 @@ pub(crate) fn metrics_to_vcf(metrics: &[PileupMetrics]) -> Result<Vec<VcfRecord>
     let mut vcf_records = Vec::new();
     for metric in metrics {
         let records = metric.to_vcf_records(Some(ML_THRESHOLD))?;
-        vcf_records.extend(records.iter());
+        vcf_records.extend(records.into_iter(&RecordFilters::all())); // FIXME
     }
     Ok(vcf_records)
 }

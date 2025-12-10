@@ -78,7 +78,7 @@ mod tests {
     use super::*;
     use crate::{
         call::pileup::Pileup,
-        metrics::{Alt, PositionMetrics},
+        metrics::{Alt, AltCall, PositionMetrics},
         sequence::{ChunkRegion, Region},
         utils::default,
         vcf::{InCpG, lowDp},
@@ -119,6 +119,7 @@ mod tests {
                     denovo: crate::metrics::FormsDenovo::No,
                     ..default()
                 },
+                call: default(),
             }]
             .into(),
         }
