@@ -381,9 +381,8 @@ fn process_region(
         .map(|mut pileup| {
             // Set "extended" metrics that depend on the segment and params. This is
             // done in a separate step since it uses the pileup as well as the ML score.
-            // TODO: Use ML score for genotyping
             pileup.pos_metrics.extended.genotype =
-                pileup.pileup.estimate_genotype(params.variant_calling.error_model);
+                pileup.estimate_genotype(params.ml.threshold(), params.variant_calling.error_model);
             pileup.pos_metrics.extended.methylated =
                 metrics::methylation::call(&params.methylation.thresholds, &pileup)?
                     .unwrap_or_default();
