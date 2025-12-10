@@ -1,5 +1,5 @@
 use crate::{call::tests::utils::*, pileups, vcf::lowDp, vcf_assert};
-use rastair_types::Base::*;
+use rastair_types::{Base::*, SmolStr};
 
 #[test]
 fn test_cpg_context() -> Result<()> {
@@ -98,6 +98,7 @@ fn test_multiple_methylation_transitions_same_position() -> Result<()> {
 
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_fail(&mut records[0], T); // Force low ML
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=1.,  // methylation evidence (only one ref->. row)
@@ -123,6 +124,7 @@ fn test_reverse_strand_methylation() -> Result<()> {
 
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_fail(&mut records[1], A); // Low ML - methylation evidence on reverse strand
+    let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=0.,
