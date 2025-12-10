@@ -11,11 +11,13 @@ use tracing::instrument;
 pub fn set_alt_calls(current: &mut PileupMetrics, ml_threshold: Option<Probability>) -> Result<()> {
     let alleles: SmallVec<Base, 4> =
         std::iter::once(current.ref_base()).chain(current.alts.iter().map(|a| a.base)).collect();
+    let cpg_context = *current.pos_metrics.cpg || current.forms_denovo();
 
     for alt in &mut current.alts {
         if alt.filters.pass(ml_threshold) {
             alt.call = AltCall::RealVariant;
-        } else if let Some(ref_base) = methylation_evidence(alt.base)
+        } else if cpg_context
+            && let Some(ref_base) = methylation_evidence(alt.base)
             && alleles.contains(&ref_base)
         {
             alt.call = AltCall::MethylationEvidenceOnly { for_base: ref_base }

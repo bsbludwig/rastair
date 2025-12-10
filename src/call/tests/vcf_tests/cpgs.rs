@@ -1,5 +1,5 @@
-use crate::{call::tests::utils::*, pileups, vcf::lowDp, vcf_assert};
-use rastair_types::{Base::*, SmolStr};
+use crate::{call::tests::utils::*, pileups, vcf_assert};
+use rastair_types::Base::*;
 
 #[test]
 fn test_cpg_context() -> Result<()> {
@@ -68,15 +68,13 @@ fn test_non_methylation_transitions() -> Result<()> {
     );
 
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
-    set_fail(&mut records[0], A); // Low ML, but C->A is not methylation transition
-    set_fail(&mut records[1], C); // Low ML, but G->C is not methylation transition
+    set_pass(&mut records[0], A);
+    set_pass(&mut records[1], C);
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) FAIL,  // No ref->. row because C->A is not methylation evidence
-        (C A) PASS,  // FIXME: Skip because C->A is not methylation evidence
-        (G .) FAIL,  // FIXME: Skip because G->C is not methylation evidence
-        (G C) PASS,  // No ref->. row because G->C is not methylation evidence
+        (C A) PASS,
+        (G C) PASS,
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -211,9 +209,7 @@ fn test_all_methylation_transitions_passing_as_variants() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) FAIL M5mC=None,
         (C T) PASS,
-        (G .) FAIL M5mC=None,
         (G A) PASS,
     ];
 

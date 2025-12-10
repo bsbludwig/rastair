@@ -16,7 +16,7 @@ use rastair_types::SmallVec;
 use rastair_types::SmolStr;
 use rastair_types::{Base, Probability, RootMeanSquare, RootMeanSquareExt as _, Strand};
 use rastair_vcf::VcfFilter;
-use std::{cell::RefCell, ops::Deref};
+use std::ops::Deref;
 use thiserror::Error;
 use tracing::trace;
 

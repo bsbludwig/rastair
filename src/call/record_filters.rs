@@ -78,7 +78,7 @@ mod tests {
     use super::*;
     use crate::{
         call::pileup::Pileup,
-        metrics::{Alt, AltCall, PositionMetrics},
+        metrics::{Alt, PositionMetrics},
         sequence::{ChunkRegion, Region},
         utils::default,
         vcf::{InCpG, lowDp},

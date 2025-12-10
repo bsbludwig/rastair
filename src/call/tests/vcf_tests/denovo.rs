@@ -39,14 +39,16 @@ fn test_denovo_cpg_methylated() -> Result<()> {
     );
 
     let expected_vcf = vcf_assert![
-        (G C) PASS M5mC=1.,  // All alts at first position combined: T fails, C passes (any passing = PASS)
+        (G .,C) PASS M5mC=1.,  // All alts at first position combined: T fails, C passes (any passing = PASS)
+        (G T) FAIL,
         (G .) PASS M5mC=1.,  // other de-novo CpG position
+        (G A) FAIL,
     ];
 
-    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], C); // set C alt to pass, creating de-novo CpG for sure
     set_fail(&mut records[0], T); // set T alt to fail, it's a methylation evidence
-    set_fail(&mut records[1], A); // set C alt to pass, creating de-novo CpG for sure
+    set_fail(&mut records[1], A); // methylation evidence
     let records = reprocess(records)?; // to recalculate genotypes and propagate de-novo CpG flags
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -55,90 +57,92 @@ fn test_denovo_cpg_methylated() -> Result<()> {
     Ok(())
 }
 
-// /// Edge case: CCC reference with heterozygous C>G at positions 1 and 2
-// ///
-// /// Position 1: C>G creates de-novo CpG at (1,2)
-// /// Position 2: C>G creates de-novo CpG at (2,3)
-// /// Position 2 has dual role:
-// ///   - It's the "matching C" for position 1's de-novo CpG (`ThisIsTheMatchingC`)
-// ///   - It also has C>G creating its own de-novo CpG (`ThisBecomesG`)
-// #[test]
-// fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
-//     let (segment, pileups) = pileups!(
-//         [ C C G ] Ref,
-//         [ G G G ] OT,
-//         [ G G G ] OT,
-//         [ G G G ] OB,
-//         [ C T G ] OT,
-//         [ C C A ] OB,
-//     );
+/// Edge case: CCC reference with heterozygous C>G at positions 1 and 2
+///
+/// Position 1: C>G creates de-novo CpG at (1,2)
+/// Position 2: C>G creates de-novo CpG at (2,3)
+/// Position 2 has dual role:
+///   - It's the "matching C" for position 1's de-novo CpG (`ThisIsTheMatchingC`)
+///   - It also has C>G creating its own de-novo CpG (`ThisBecomesG`)
+#[test]
+fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C C G ] Ref,
+        [ G G G ] OT,
+        [ G G G ] OT,
+        [ G G G ] OB,
+        [ C T G ] OT,
+        [ C C A ] OB,
+    );
 
-//     let expected_vcf = vcf_assert![
-//         (C .) PASS M5mC=0., // Position 1: C with de-novo CpG G
-//         (C G) PASS M5mC=None,
-//         (C .) PASS M5mC=1., // Weird but maybe correct: one T that fails ML makes C methylated
-//         (C G) PASS M5mC=1., // FIXME: This is the methylation evidence of the G but it is wrong, should be 0.0
-//         (C T) FAIL M5mC=None,
-//         (G .) PASS M5mC=0.5,
-//         (G A) FAIL M5mC=None,
-//     ];
+    let expected_vcf = vcf_assert![
+        (C G) PASS M5mC=0., // Position 1: C with de-novo CpG G
+        (C .,G) PASS M5mC=1., // Weird but maybe correct: one T that fails ML makes C methylated
+        (C T) FAIL,
+        (G .) PASS M5mC=0.5,
+        (G A) FAIL,
+    ];
 
-//     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
-//     let vcf_records = metrics_to_vcf(&records)?;
-//     expected_vcf.matches(vcf_records)?;
+    let records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
 
-//     Ok(())
-// }
+    Ok(())
+}
 
-// #[test]
-// fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
-//     let (segment, pileups) = pileups!(
-//         [ C C C ] Ref,
-//         [ G G G ] OT,
-//         [ G G G ] OT,
-//         [ G C G ] OB,
-//         [ C T G ] OT,
-//         [ C C A ] OB,
-//     );
+#[test]
+fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C C C ] Ref,
+        [ G G G ] OT,
+        [ G G G ] OT,
+        [ G C G ] OB,
+        [ C T G ] OT,
+        [ C C A ] OB,
+    );
 
-//     let expected_vcf = vcf_assert![
-//         (C .) FAIL, // FIXME: Should pass as C in de-novo CpG
-//         (C G) PASS M5mC=None,
-//         (C .) PASS M5mC=1., // Weird but maybe correct: one T that fails ML makes C methylated
-//         (C G) PASS M5mC=1., // FIXME: This is the methylation evidence of the G but it is wrong, should be 0.0
-//         (C T) PASS, // FIXME: This should be FAIL, only 1 T
-//         (C G) PASS M5mC=0.5,
-//         (C A) FAIL M5mC=None,
-//     ];
+    let expected_vcf = vcf_assert![
+        (C G) PASS M5mC=0.0,
+        (C .,G) PASS M5mC=1., // Weird but maybe correct: one T that fails ML makes C methylated
+        (C T) FAIL,
+        (C .,G) PASS M5mC=0.5,
+        (C A) FAIL,
+    ];
 
-//     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
-//     let vcf_records = metrics_to_vcf(&records)?;
-//     expected_vcf.matches(vcf_records)?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], G);
+    set_pass(&mut records[1], G);
+    set_fail(&mut records[1], T); // methylation evidence
+    set_fail(&mut records[2], A); // methylation evidence
+    let records = reprocess(records)?; // to recalculate genotypes and propagate de-novo CpG flags
 
-//     Ok(())
-// }
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
 
-// #[test]
-// fn test_a_and_t_cant_form_denovo() -> Result<()> {
-//     // Test that A and T reference bases don't produce methylation evidence rows
-//     // Currently, de-novo CpG creation is only considered when one of the C or G is in the reference
-//     let (segment, pileups) = pileups!(
-//         [ A T ] Ref,
-//         [ C G ] OT,
-//         [ C G ] OT,
-//         [ C G ] OB,
-//         [ C G ] OB,
-//     );
+    Ok(())
+}
 
-//     let records = test_call(segment, pileups, RecordFilters::all())?;
+#[test]
+fn test_a_and_t_cant_form_denovo() -> Result<()> {
+    // Test that A and T reference bases don't produce methylation evidence rows
+    // Currently, de-novo CpG creation is only considered when one of the C or G is in the reference
+    let (segment, pileups) = pileups!(
+        [ A T ] Ref,
+        [ C G ] OT,
+        [ C G ] OT,
+        [ C G ] OB,
+        [ C G ] OB,
+    );
 
-//     let expected_vcf = vcf_assert![
-//         (A C) PASS M5mC=None,
-//         (T G) PASS M5mC=None,
-//     ];
+    let records = test_call(segment, pileups, RecordFilters::all())?;
 
-//     let vcf_records = metrics_to_vcf(&records)?;
-//     expected_vcf.matches(vcf_records)?;
+    let expected_vcf = vcf_assert![
+        (A C) PASS M5mC=None,
+        (T G) PASS M5mC=None,
+    ];
 
-//     Ok(())
-// }
+    let vcf_records = metrics_to_vcf(&records)?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
