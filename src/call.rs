@@ -360,21 +360,12 @@ fn process_region(
         })
         .filter_map(log_failed_and_skip!("failed to calculate ML score, skipping"))
         .map(|mut pileup| {
-            // Set "extended" metrics that depend on the segment and params. This is
-            // done in a separate step since it uses the pileup as well as the ML score.
-            // TODO: Use ML score for genotyping
-            pileup.pos_metrics.extended.genotype =
-                pileup.pileup.estimate_genotype(params.variant_calling.error_model);
-            pileup.pos_metrics.extended.methylated =
-                metrics::methylation::call(&params.methylation.thresholds, &pileup)?
-                    .unwrap_or_default();
-
             // Add 'simple' filters based on the collected metrics
             process::apply_threshold_filters(&mut pileup, &threshold_filters)
                 .wrap_err("Failed to apply threshold filters")?;
             Ok(pileup)
         })
-        .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))
+        .filter_map(log_failed_and_skip!("failed to add threshold filters, skipping"))
         .map_surrounding(|b, c, a| {
             // For CpG sites and de-novo CpG sites, if one position is pass, mark
             // corresponding as pass as well
@@ -387,6 +378,18 @@ fn process_region(
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to set alt calls, skipping"))
+        .map(|mut pileup| {
+            // Set "extended" metrics that depend on the segment and params. This is
+            // done in a separate step since it uses the pileup as well as the ML score.
+            // TODO: Use ML score for genotyping
+            pileup.pos_metrics.extended.genotype =
+                pileup.pileup.estimate_genotype(params.variant_calling.error_model);
+            pileup.pos_metrics.extended.methylated =
+                metrics::methylation::call(&params.methylation.thresholds, &pileup)?
+                    .unwrap_or_default();
+            Ok(pileup)
+        })
+        .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))
         .filter(|p| only_core_positions(&segment, p))
         .collect();
 
