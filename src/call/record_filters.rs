@@ -53,10 +53,8 @@ impl RecordFilters {
                     // - we're a passing de-novo CpG candidate
                     return true;
                 }
-                if record.alts.iter().any(|alt| {
-                    *alt.metrics.denovo && alt.filters.filters.other_pos_in_denovo_passes
-                }) {
-                    // - other position passes
+                if record.pos_filters.other_pos_in_denovo_passes {
+                    // - other position in de-novo CpG passes
                     return true;
                 }
                 false
@@ -192,7 +190,7 @@ mod tests {
         let mut r = default_record();
         r.alts[0].metrics.denovo = crate::metrics::FormsDenovo::ThisBecomesG;
         r.alts[0].filters.filters.add(lowDp, || true);
-        r.alts[0].filters.filters.other_pos_in_denovo_passes = true;
+        r.pos_filters.other_pos_in_denovo_passes = true;
         assert!(
             filters.matches(&r, ML_THRESHOLD),
             "should match de-novo CpG candidate failing filters if other position passes"
