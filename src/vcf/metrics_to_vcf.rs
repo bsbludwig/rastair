@@ -380,12 +380,12 @@ pub struct VcfRecordSet {
 
 impl VcfRecordSet {
     pub fn into_iter(self, filters: &RecordFilters) -> Box<dyn Iterator<Item = Record>> {
+        let covered_cpg = *self.main.info.in_cp_g && *self.main.info.read_depth > 0;
         match (filters.vcf_all, filters.cpgs_only) {
             (false, false) => {
                 // default behavior: only passing records with alts
                 // but filter out non-covered CpG positions
-                let is_non_covered_cpg = *self.main.info.in_cp_g && *self.main.info.read_depth == 0;
-                if !self.main.main.alt.is_empty() && !is_non_covered_cpg {
+                if !self.main.main.alt.is_empty() && covered_cpg {
                     Box::new(Some(self.main).into_iter())
                 } else {
                     Box::new(std::iter::empty())
@@ -393,9 +393,7 @@ impl VcfRecordSet {
             }
             (false, true) => {
                 // CpGs with read evidence only
-                if *self.main.info.read_depth > 0
-                    && (*self.main.info.in_cp_g || *self.main.info.de_novo_cp_g_candidate)
-                {
+                if covered_cpg || *self.main.info.de_novo_cp_g_candidate {
                     Box::new(Some(self.main).into_iter())
                 } else {
                     Box::new(std::iter::empty())
@@ -406,7 +404,7 @@ impl VcfRecordSet {
                 Box::new(Some(self.main).into_iter().chain(self.rejected))
             }
             (true, true) => {
-                if *self.main.info.in_cp_g {
+                if covered_cpg || *self.main.info.de_novo_cp_g_candidate {
                     Box::new(Some(self.main).into_iter().chain(self.rejected))
                 } else {
                     Box::new(std::iter::empty())
