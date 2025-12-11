@@ -38,6 +38,7 @@ pub fn writer_thread(
         BedRecordsConvertParams { ml_threshold: params.ml.ml, filters: bed.filters.clone() };
 
     let ml_threshold = params.ml.threshold();
+    let error_model = params.variant_calling.error_model.clone();
 
     // Spawn the actual VCF writer thread. Everything in here is driven by the
     // incoming records from the processing threads.
@@ -76,7 +77,7 @@ pub fn writer_thread(
                         match vcf_writer {
                             Writer::Vcf(writer) => {
                                 let records = record
-                                    .to_vcf_records(ml_threshold)
+                                    .to_vcf_records(ml_threshold, &error_model)
                                     .wrap_err("Failed to convert metrics to VCF record")
                                     .this_is_a_bug()?;
                                 for vcf_record in records.into_iter(&vcf_filter) {

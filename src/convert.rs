@@ -4,7 +4,7 @@ use crate::{
         rastair1::{BedRecordsFilterParams, Rastair1BedFormat},
         writer::BedWriter,
     },
-    call::RecordFilters,
+    call::{RecordFilters, variant_calling::ErrorModel},
     io::{
         formats::{FromFileExtension, InputFormat, OutputFormat},
         mpk::{MessagePackReader, MpkEntry},
@@ -53,6 +53,10 @@ pub struct ConvertParams {
     #[arg(short = 'F', long)]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub output_format: Option<OutputFormat>,
+
+    #[arg(long, default_value = "novaseq6000")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub error_model: ErrorModel,
 
     /// VCF filters
     #[command(flatten)]
@@ -206,7 +210,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         match entry {
             Ok(MpkEntry::Record(record)) => {
                 for vcf_record in record
-                    .to_vcf_records(Some(params.ml_threshold))
+                    .to_vcf_records(Some(params.ml_threshold), &params.error_model)
                     .wrap_err("Failed to convert record to VCF format")
                     .this_is_a_bug()?
                     .into_iter(&params.vcf_filter)

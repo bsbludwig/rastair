@@ -35,7 +35,11 @@ impl PileupMetrics {
     /// 2. write additional VCF records for each failing alt (may be filtered out later)
     ///
     // TODO: Handle methylation evidence when both a cpg and de-novo cpg candidate are present
-    pub fn to_vcf_records(&self, ml_threshold: Option<Probability>) -> Result<VcfRecordSet> {
+    pub fn to_vcf_records(
+        &self,
+        ml_threshold: Option<Probability>,
+        error_model: &ErrorModel,
+    ) -> Result<VcfRecordSet> {
         // Validate that all alts have been called
         for alt in &self.alts {
             ensure!(
@@ -61,7 +65,12 @@ impl PileupMetrics {
         }
 
         // Build main record
-        let main = self.build_main_record(&real_variants, &methylation_evidence, ml_threshold)?;
+        let main = self.build_main_record(
+            &real_variants,
+            &methylation_evidence,
+            ml_threshold,
+            error_model,
+        )?;
 
         // Build rejected records (one per methylation evidence, one per read error)
         let mut rejected = Vec::new();
@@ -77,6 +86,7 @@ impl PileupMetrics {
         real_variants: &[&Alt],
         methylation_evidence: &[&Alt],
         ml_threshold: Option<Probability>,
+        error_model: &ErrorModel,
     ) -> Result<Record> {
         // Determine alt alleles for main record
         let has_methylation = !methylation_evidence.is_empty();
@@ -98,7 +108,7 @@ impl PileupMetrics {
                 .chain(real_variants.iter().map(|alt| alt.base.into()))
                 .collect(),
             qual: {
-                if real_variants.is_empty() {
+                let ml_qual = if real_variants.is_empty() {
                     // `ALT=.`, VCF spec says: QUAL = -10log10(P(variant))
                     // Use the maximum ML score from methylation evidence
                     methylation_evidence
@@ -114,9 +124,9 @@ impl PileupMetrics {
                         .filter_map(|alt| alt.filters.ml)
                         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                         .map(|p| *Phred::from(p.inverted()))
-                }
-                // TODO: consider ALT=. with no variants and no methylation evidence
-                // TODO: consider no ML
+                };
+                // Fallback: if no ML scores available, use sequencing error rate
+                ml_qual.or_else(|| Some(*Phred::from(error_model.error_rate())))
             },
         };
 

@@ -1,6 +1,7 @@
 //! Test utilities for writing concise and readable tests for rastair call
 #![allow(clippy::cast_possible_truncation, reason = "Test code")]
 
+use crate::call::variant_calling::ErrorModel;
 use crate::utils::IntoF64 as _;
 use crate::{
     CallParams,
@@ -521,7 +522,7 @@ impl RecordFilters {
 pub(crate) fn metrics_to_vcf(metrics: &[PileupMetrics]) -> Result<Vec<VcfRecord>> {
     let mut vcf_records = Vec::new();
     for metric in metrics {
-        let records = metric.to_vcf_records(Some(ML_THRESHOLD))?;
+        let records = metric.to_vcf_records(Some(ML_THRESHOLD), &ErrorModel::default())?;
         vcf_records.extend(records.into_iter(&RecordFilters::all())); // FIXME
     }
     Ok(vcf_records)
