@@ -10,8 +10,8 @@ use crate::{
         StrandSpecificMappingQuality, low_ml_score,
     },
 };
-use color_eyre::Result;
 use color_eyre::eyre::ensure;
+use color_eyre::{Result, eyre::Context as _};
 use rastair_types::{
     Phred, Probability,
     smallvec::{SmallVec, smallvec, smallvec_inline},
@@ -96,6 +96,8 @@ impl PileupMetrics {
         // 2. No real variants (to create valid ref-only records for CpG/de-novo positions)
         let should_add_dot = has_methylation || real_variants.is_empty();
 
+        let depth = self.pos_metrics.depth.max(1).f();
+
         // Build VCF fixed fields
         let main = VcfFixedFields {
             chrom: self.pileup.contig().clone(),
@@ -126,7 +128,14 @@ impl PileupMetrics {
                         .map(|p| *Phred::from(p.inverted()))
                 };
                 // Fallback: if no ML scores available, use sequencing error rate
-                ml_qual.or_else(|| Some(*Phred::from(error_model.error_rate())))
+                if let Some(ml_qual) = ml_qual {
+                    Some(ml_qual)
+                } else {
+                    Some(*Phred::from(
+                        Probability::new(*error_model.error_rate() / depth)
+                            .wrap_err("Failed to compute QUAL from error rate")?,
+                    ))
+                }
             },
         };
 
