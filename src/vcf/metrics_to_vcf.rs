@@ -1,7 +1,7 @@
 use super::{Methylated, Record};
 use crate::{
     call::{RecordFilters, variant_calling::ErrorModel},
-    metrics::{AlleleMetrics, Alt, PileupMetrics},
+    metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
     utils::{IntoF64 as _, default},
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
@@ -23,6 +23,7 @@ use rastair_vcf::{
         MappingQuality0, PASS, ReadDepth, SampleReadDepth, SamplesWithData,
     },
 };
+use std::num::NonZeroU8;
 
 impl PileupMetrics {
     /// Convert the metrics to VCF records
@@ -38,7 +39,7 @@ impl PileupMetrics {
         // Validate that all alts have been called
         for alt in &self.alts {
             ensure!(
-                !matches!(alt.call, crate::metrics::AltCall::Uncalled),
+                !matches!(alt.call, AltCall::Uncalled),
                 "Alt {} at position {} is Uncalled - this should not happen",
                 alt.base,
                 self.pileup.pos
@@ -46,18 +47,16 @@ impl PileupMetrics {
         }
 
         // Categorize alts by their call type
-        let mut real_variants = Vec::new();
-        let mut methylation_evidence = Vec::new();
-        let mut read_errors = Vec::new();
+        let mut real_variants: SmallVec<_, 2> = SmallVec::new();
+        let mut methylation_evidence: SmallVec<_, 2> = SmallVec::new();
+        let mut read_errors: SmallVec<_, 2> = SmallVec::new();
 
         for alt in &self.alts {
             match alt.call {
-                crate::metrics::AltCall::RealVariant => real_variants.push(alt),
-                crate::metrics::AltCall::MethylationEvidenceOnly { .. } => {
-                    methylation_evidence.push(alt)
-                }
-                crate::metrics::AltCall::ReadError => read_errors.push(alt),
-                crate::metrics::AltCall::Uncalled => unreachable!("checked above"),
+                AltCall::RealVariant => real_variants.push(alt),
+                AltCall::MethylationEvidenceOnly { .. } => methylation_evidence.push(alt),
+                AltCall::ReadError => read_errors.push(alt),
+                AltCall::Uncalled => unreachable!("checked above"),
             }
         }
 
@@ -257,12 +256,13 @@ impl PileupMetrics {
 
             // Remap the genotype indices from self.alts positions to VCF positions
             use crate::call::variant_calling::GenotypeTag;
+            #[expect(clippy::cast_possible_truncation, reason = "small indices only")]
             let remapped_genotype = match estimated.genotype {
                 GenotypeTag::HomRef => GenotypeTag::HomRef,
                 GenotypeTag::RefHet(n) => {
                     let self_idx = n.get() as usize - 1;
                     if let Some(vcf_idx) = self_alts_to_vcf_index.get(self_idx).and_then(|&x| x) {
-                        GenotypeTag::ref_het(std::num::NonZeroU8::new(vcf_idx as u8).unwrap_or(n))
+                        GenotypeTag::ref_het(NonZeroU8::new(vcf_idx as u8).unwrap_or(n))
                     } else {
                         // Alt not in real_variants, default to 0/0
                         GenotypeTag::HomRef
@@ -271,7 +271,7 @@ impl PileupMetrics {
                 GenotypeTag::HomAlt(n) => {
                     let self_idx = n.get() as usize - 1;
                     if let Some(vcf_idx) = self_alts_to_vcf_index.get(self_idx).and_then(|&x| x) {
-                        GenotypeTag::hom_alt(std::num::NonZeroU8::new(vcf_idx as u8).unwrap_or(n))
+                        GenotypeTag::hom_alt(NonZeroU8::new(vcf_idx as u8).unwrap_or(n))
                     } else {
                         // Alt not in real_variants, default to 0/0
                         GenotypeTag::HomRef
@@ -285,16 +285,16 @@ impl PileupMetrics {
 
                     match (vcf_idx_m, vcf_idx_n) {
                         (Some(vm), Some(vn)) => GenotypeTag::alt_het(
-                            std::num::NonZeroU8::new(vm as u8).unwrap_or(m),
-                            std::num::NonZeroU8::new(vn as u8).unwrap_or(n),
+                            NonZeroU8::new(vm as u8).unwrap_or(m),
+                            NonZeroU8::new(vn as u8).unwrap_or(n),
                         ),
                         (Some(vm), None) => {
                             // Only first alt in real_variants, call as 0/1
-                            GenotypeTag::ref_het(std::num::NonZeroU8::new(vm as u8).unwrap_or(m))
+                            GenotypeTag::ref_het(NonZeroU8::new(vm as u8).unwrap_or(m))
                         }
                         (None, Some(vn)) => {
                             // Only second alt in real_variants, call as 0/2
-                            GenotypeTag::ref_het(std::num::NonZeroU8::new(vn as u8).unwrap_or(n))
+                            GenotypeTag::ref_het(NonZeroU8::new(vn as u8).unwrap_or(n))
                         }
                         (None, None) => {
                             // Neither alt in real_variants, default to 0/0
