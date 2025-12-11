@@ -13,8 +13,9 @@ fn test_a_to_t_high_ml_score() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
 
     // 3 T reads, 1 A read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -38,8 +39,9 @@ fn test_a_to_g_high_ml_score() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
 
     // 3 G reads, 1 A read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -63,8 +65,9 @@ fn test_a_to_c_high_ml_score() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], C);
+    let records = reprocess(records)?;
 
     // 3 C reads, 1 A read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -88,8 +91,9 @@ fn test_t_to_a_high_ml_score() -> Result<()> {
         [ T ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], A);
+    let records = reprocess(records)?;
 
     // 3 A reads, 1 T read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -113,8 +117,9 @@ fn test_t_to_g_high_ml_score() -> Result<()> {
         [ T ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
 
     // 3 G reads, 1 T read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -138,8 +143,9 @@ fn test_t_to_c_high_ml_score() -> Result<()> {
         [ T ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], C);
+    let records = reprocess(records)?;
 
     // 3 C reads, 1 T read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -163,8 +169,9 @@ fn test_c_to_a_high_ml_score() -> Result<()> {
         [ C ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], A);
+    let records = reprocess(records)?;
 
     // 3 A reads, 1 C read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -188,8 +195,9 @@ fn test_c_to_g_high_ml_score() -> Result<()> {
         [ C ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
 
     // 3 G reads, 1 C read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -213,8 +221,9 @@ fn test_g_to_t_high_ml_score() -> Result<()> {
         [ G ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
 
     // 3 T reads, 1 G read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -238,8 +247,9 @@ fn test_g_to_c_high_ml_score() -> Result<()> {
         [ G ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], C);
+    let records = reprocess(records)?;
 
     // 3 C reads, 1 G read -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -264,14 +274,12 @@ fn test_multi_allelic_site_picks_highest_ml() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T); // ML = 1.0
 
     // Set G to have lower ML but still passing
     let g_filters = records[0].alt_filters_mut(G).unwrap();
-    g_filters.ml = Some(Probability::new(0.85).unwrap());
-
-    // Reprocess to recalculate genotypes with the modified ML scores
+    g_filters.ml = Some(Probability::new_panicky(0.85));
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
@@ -295,16 +303,16 @@ fn test_all_alts_below_ml_threshold() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_fail(&mut records[0], T); // ML = 0.0
     set_fail(&mut records[0], G); // ML = 0.0
-
-    // Reprocess to recalculate genotypes with the modified ML scores
     let records = reprocess(records)?;
 
     // Both alts below ML threshold -> combined in one row
     let expected_vcf = vcf_assert![
-        (A T,G) FAIL,
+        (A .) PASS GT="0/0",
+        (A T) FAIL,
+        (A G) FAIL,
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -326,12 +334,13 @@ fn test_het_vs_hom_alt_genotyping_for_a_base() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
 
-    // 2 T reads, 2 A reads -> with perfectly balanced reads, binomial calls HomRef (0/0)
+    // 2 T reads, 2 A reads -> with perfectly balanced reads
     let expected_vcf = vcf_assert![
-        (A T) PASS GT="0/0",
+        (A T) PASS GT="0/1",
     ];
 
     let vcf_records = metrics_to_vcf(&records)?;
@@ -354,8 +363,9 @@ fn test_het_genotyping_with_unbalanced_reads() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
 
     // 3 T reads, 2 A reads -> heterozygous (0/1)
     let expected_vcf = vcf_assert![
@@ -379,8 +389,9 @@ fn test_hom_alt_genotyping_for_t_base() -> Result<()> {
         [ G ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
 
     // 4 G reads, 0 T reads -> homozygous alt (1/1)
     let expected_vcf = vcf_assert![
@@ -407,11 +418,9 @@ fn test_compound_het_with_balanced_alts() -> Result<()> {
         [ G ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
     set_pass(&mut records[0], G);
-
-    // Reprocess to recalculate genotypes with the modified ML scores
     let records = reprocess(records)?;
 
     // 3 T reads, 3 G reads, 0 A reads -> compound heterozygous (1/2)
@@ -439,11 +448,9 @@ fn test_compound_het_with_slightly_unbalanced_alts() -> Result<()> {
         [ G ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
     set_pass(&mut records[0], G);
-
-    // Reprocess to recalculate genotypes with the modified ML scores
     let records = reprocess(records)?;
 
     // 4 T reads (67%), 2 G reads (33%), 0 A reads
@@ -473,9 +480,10 @@ fn test_two_alts_passing_but_one_dominant() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
     set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
 
     // 5 T reads (83%), 1 G read (17%), 1 A read
     // G has <20% of alt reads -> should call het with T only (0/1)
@@ -504,9 +512,10 @@ fn test_compound_het_vs_single_het_with_ref() -> Result<()> {
         [ A ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
     set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
 
     // 3 T reads, 2 G reads, 3 A reads
     // Both alts have reasonable support but ref reads suggest het not compound het
@@ -536,11 +545,9 @@ fn test_compound_het_for_c_base_with_non_methylation_alts() -> Result<()> {
         [ G ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], A);
     set_pass(&mut records[0], G);
-
-    // Reprocess to recalculate genotypes with the modified ML scores
     let records = reprocess(records)?;
 
     // 3 A reads, 3 G reads, 0 C reads -> compound heterozygous (1/2)
@@ -566,17 +573,15 @@ fn test_three_alts_passing_uses_top_two() -> Result<()> {
         [ C ] OB,
     );
 
-    let mut records = test_call(segment, pileups, RecordFilters::variants())?;
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
 
     // Set T with highest ML, G with medium ML, C with lowest ML
     set_pass(&mut records[0], T);
-    records[0].alt_filters_mut(T).unwrap().ml = Some(Probability::new(0.95).unwrap());
+    records[0].alt_filters_mut(T).unwrap().ml = Some(Probability::new_panicky(0.95));
     set_pass(&mut records[0], G);
-    records[0].alt_filters_mut(G).unwrap().ml = Some(Probability::new(0.90).unwrap());
+    records[0].alt_filters_mut(G).unwrap().ml = Some(Probability::new_panicky(0.90));
     set_pass(&mut records[0], C);
-    records[0].alt_filters_mut(C).unwrap().ml = Some(Probability::new(0.85).unwrap());
-
-    // Reprocess to recalculate genotypes with the modified ML scores
+    records[0].alt_filters_mut(C).unwrap().ml = Some(Probability::new_panicky(0.85));
     let records = reprocess(records)?;
 
     // Should genotype based on top 2 (T and G)

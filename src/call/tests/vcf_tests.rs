@@ -3,5 +3,5 @@
 mod basic;
 mod cpgs;
 mod denovo;
-// mod genotyping;
+mod genotyping;
 mod real_hg96_examples;

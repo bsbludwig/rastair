@@ -189,6 +189,44 @@ impl FieldValue {
             _ => false,
         }
     }
+
+    /// Compare field values with special handling for GT field
+    fn matches_field(&self, other: &Self, field_name: &str, epsilon: f64) -> bool {
+        if field_name == "GT" {
+            // For GT field, convert VCF-style strings like "0/1" to expected format
+            match (self, other) {
+                (Self::String(expected), Self::String(actual)) => {
+                    let normalized_expected = Self::normalize_gt_string(expected);
+                    normalized_expected == *actual
+                }
+                _ => self.matches(other, epsilon),
+            }
+        } else {
+            self.matches(other, epsilon)
+        }
+    }
+
+    /// Normalize a genotype string - converts "0/1" to "Genotype([Unphased(0), Unphased(1)])"
+    fn normalize_gt_string(s: &str) -> String {
+        // If it's already in the expected format, return as-is
+        if s.starts_with("Genotype(") {
+            return s.to_string();
+        }
+
+        // Parse VCF-style format like "0/1" or "1/1"
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() != 2 {
+            // Not a genotype format, return as-is
+            return s.to_string();
+        }
+
+        if let (Ok(allele1), Ok(allele2)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+            format!("Genotype([Unphased({}), Unphased({})])", allele1, allele2)
+        } else {
+            // Parse failed, return as-is
+            s.to_string()
+        }
+    }
 }
 
 /// Trait for converting values into FieldValue for test assertions
@@ -348,7 +386,7 @@ impl VcfMatcher {
             for (field_id, expected_value) in &expected.fields {
                 match get_field_value(actual, field_id) {
                     Ok(actual_value) => {
-                        if !expected_value.matches(&actual_value, 1e-3) {
+                        if !expected_value.matches_field(&actual_value, field_id, 1e-3) {
                             errors.push(format!(
                                 "Record {}: Field {} expected {:?}, got {:?}",
                                 idx, field_id, expected_value, actual_value
