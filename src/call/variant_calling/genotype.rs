@@ -6,7 +6,7 @@ use crate::{
 };
 use color_eyre::eyre::{ContextCompat, Result, bail, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
-use rastair_types::Probability;
+use rastair_types::{Probability, SmallVec};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use std::num::{NonZeroI32, NonZeroU8};
 use tracing::{instrument, trace};
@@ -25,7 +25,7 @@ impl PileupMetrics {
         error_model: ErrorModel,
     ) -> Option<EstimatedGenotype> {
         // Filter to only real variants
-        let real_variant_alts: Vec<_> = self
+        let real_variant_alts: SmallVec<_, 2> = self
             .alts
             .iter()
             .enumerate()
@@ -37,7 +37,7 @@ impl PileupMetrics {
         }
 
         // If ML threshold is set, filter by ML score
-        let passing_alts: Vec<_> = if let Some(threshold) = ml_threshold {
+        let passing_alts: SmallVec<_, 2> = if let Some(threshold) = ml_threshold {
             real_variant_alts
                 .into_iter()
                 .filter(|(_, alt)| alt.filters.ml.is_some_and(|ml| ml >= threshold))
@@ -71,7 +71,7 @@ impl PileupMetrics {
         // Note: We compare each alt independently against ref (Option A).
         // Alternative approaches: compare alt1 vs alt2 for compound het (Option B),
         // or compare each alt against total depth minus its count (Option C).
-        let mut alt_genotypes = Vec::new();
+        let mut alt_genotypes: SmallVec<_, 2> = SmallVec::new();
         for (alt_idx, alt) in &passing_alts {
             let alt_base = alt.base;
             let (ref_count, alt_count) = self.get_counts_for_alt(alt_base);
