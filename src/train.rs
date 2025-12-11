@@ -254,6 +254,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     );
 
     let model = RastairModel {
+        feature_set: params.ml_features,
         cpg: train_and_save_model("cpg", cpg_data, params).wrap_err("Failed to train CpG model")?,
         denovo: train_and_save_model("denovo", denovo_data, params)
             .wrap_err("Failed to train de-novo CpG model")?,

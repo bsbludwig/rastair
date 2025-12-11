@@ -7,7 +7,8 @@ use rastair_types::{Base, Probability};
 /// Combined model file containing all three random forest models
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RastairModel {
-    // pub feature_set: MlFeatureSet, // TODO: Add this
+    #[serde(default)]
+    pub feature_set: MlFeatureSet,
     pub cpg: RandomForest,
     pub denovo: RandomForest,
     pub others: RandomForest,
