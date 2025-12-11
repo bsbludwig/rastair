@@ -124,9 +124,27 @@ impl PileupMetrics {
             };
 
             // Check if we should call compound heterozygous (1/2)
-            // This happens when both alts have similar support
-            let likelihood_ratio = *top2.likelihood / *top1.likelihood;
-            if likelihood_ratio > 0.5 {
+            // Special case: if both are HomAlt, always call compound het
+            let should_call_compound_het = match (top1.genotype, top2.genotype) {
+                (GenotypeTag::HomAlt(_), GenotypeTag::HomAlt(_)) => {
+                    // Both alts look like hom alt (no ref reads) -> must be compound het
+                    true
+                }
+                (GenotypeTag::RefHet(_), GenotypeTag::RefHet(_)) => {
+                    // Both are het with ref reads -> only call compound het if very similar
+                    // Use a higher threshold (0.8) to be more conservative
+                    let likelihood_ratio = *top2.likelihood / *top1.likelihood;
+                    likelihood_ratio > 0.8
+                }
+                _ => {
+                    // Mixed case (one HomAlt, one RefHet) -> use moderate threshold
+                    let likelihood_ratio = *top2.likelihood / *top1.likelihood;
+                    // Handle NaN (both likelihoods are 0) as similar
+                    likelihood_ratio.is_nan() || likelihood_ratio > 0.5
+                }
+            };
+
+            if should_call_compound_het {
                 // Both alts have reasonable support, call compound het
                 // Use combined probability for likelihood and confidence
                 let combined_likelihood =
@@ -384,7 +402,7 @@ impl EstimatedGenotype {
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::hom_ref(),
                     likelihood: Probability::new(1.0 - p_hom)?,
-                    confidence: Probability::new(1.0 - (p_hom - p_het) / p_hom)?,
+                    confidence: Probability::new((1.0 - (p_hom - p_het) / p_hom).clamp(0.0, 1.0))?,
                 })
             } else {
                 trace!(
@@ -393,7 +411,7 @@ impl EstimatedGenotype {
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::ref_het(alt_index),
                     likelihood: Probability::new(1.0 - p_het / p_het_max)?,
-                    confidence: Probability::new(1.0 - (p_het - p_hom) / p_het)?,
+                    confidence: Probability::new((1.0 - (p_het - p_hom) / p_het).clamp(0.0, 1.0))?,
                 })
             }
         } else {
@@ -405,7 +423,7 @@ impl EstimatedGenotype {
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::hom_alt(alt_index),
                     likelihood: Probability::new(1.0 - p_hom)?,
-                    confidence: Probability::new(1.0 - (p_hom - p_het) / p_hom)?,
+                    confidence: Probability::new((1.0 - (p_hom - p_het) / p_hom).clamp(0.0, 1.0))?,
                 })
             } else {
                 trace!(
@@ -414,7 +432,7 @@ impl EstimatedGenotype {
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::ref_het(alt_index),
                     likelihood: Probability::new(1.0 - p_het / p_het_max)?,
-                    confidence: Probability::new((1.0 - p_het - p_hom) / p_het)?,
+                    confidence: Probability::new(((1.0 - p_het - p_hom) / p_het).clamp(0.0, 1.0))?,
                 })
             }
         }

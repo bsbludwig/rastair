@@ -1,6 +1,6 @@
 use super::{Methylated, Record};
 use crate::{
-    call::RecordFilters,
+    call::{RecordFilters, variant_calling::ErrorModel},
     metrics::{AlleleMetrics, Alt, PileupMetrics},
     utils::{IntoF64 as _, default},
     vcf::{
@@ -77,7 +77,7 @@ impl PileupMetrics {
         &self,
         real_variants: &[&Alt],
         methylation_evidence: &[&Alt],
-        _ml_threshold: Option<Probability>,
+        ml_threshold: Option<Probability>,
     ) -> Result<Record> {
         // Determine alt alleles for main record
         let has_methylation = !methylation_evidence.is_empty();
@@ -111,7 +111,7 @@ impl PileupMetrics {
         let info = self.build_info(real_variants);
 
         // Build format fields
-        let format = self.build_format(real_variants, has_methylation);
+        let format = self.build_format(real_variants, has_methylation, ml_threshold);
 
         // Build filters
         let filters = {
@@ -143,7 +143,7 @@ impl PileupMetrics {
         };
 
         let info = self.build_info(&[alt]);
-        let format = self.build_format(&[alt], false);
+        let format = self.build_format(&[alt], false, ml_threshold);
 
         let filters = {
             let mut filters = super::Filters::default();
@@ -229,10 +229,93 @@ impl PileupMetrics {
         }
     }
 
-    fn build_format(&self, real_variants: &[&Alt], has_methylation: bool) -> Format {
-        // Calculate genotype from real variants
-        let (genotype, genotype_likelihood, genotype_confidence) =
-            calculate_genotype(real_variants, &self.ref_metrics, self.pos_metrics.depth);
+    fn build_format(
+        &self,
+        real_variants: &[&Alt],
+        has_methylation: bool,
+        ml_threshold: Option<Probability>,
+    ) -> Format {
+        // Determine if "." will be added to VCF alt list (affects indices)
+        let should_add_dot = has_methylation || real_variants.is_empty();
+        let vcf_index_offset = if should_add_dot { 1 } else { 0 };
+
+        // Calculate genotype from real variants using estimate_genotype
+        let (genotype, genotype_likelihood, genotype_confidence) = if let Some(estimated) =
+            self.estimate_genotype(ml_threshold, ErrorModel::default())
+        {
+            // Build a mapping from self.alts index to real_variants index (position in VCF)
+            let mut self_alts_to_vcf_index = vec![None; self.alts.len()];
+            for (vcf_idx, real_alt) in real_variants.iter().enumerate() {
+                // Find this alt in self.alts
+                for (self_idx, self_alt) in self.alts.iter().enumerate() {
+                    if std::ptr::eq(*real_alt, self_alt) {
+                        self_alts_to_vcf_index[self_idx] = Some(vcf_idx + 1 + vcf_index_offset);
+                        break;
+                    }
+                }
+            }
+
+            // Remap the genotype indices from self.alts positions to VCF positions
+            use crate::call::variant_calling::GenotypeTag;
+            let remapped_genotype = match estimated.genotype {
+                GenotypeTag::HomRef => GenotypeTag::HomRef,
+                GenotypeTag::RefHet(n) => {
+                    let self_idx = n.get() as usize - 1;
+                    if let Some(vcf_idx) = self_alts_to_vcf_index.get(self_idx).and_then(|&x| x) {
+                        GenotypeTag::ref_het(std::num::NonZeroU8::new(vcf_idx as u8).unwrap_or(n))
+                    } else {
+                        // Alt not in real_variants, default to 0/0
+                        GenotypeTag::HomRef
+                    }
+                }
+                GenotypeTag::HomAlt(n) => {
+                    let self_idx = n.get() as usize - 1;
+                    if let Some(vcf_idx) = self_alts_to_vcf_index.get(self_idx).and_then(|&x| x) {
+                        GenotypeTag::hom_alt(std::num::NonZeroU8::new(vcf_idx as u8).unwrap_or(n))
+                    } else {
+                        // Alt not in real_variants, default to 0/0
+                        GenotypeTag::HomRef
+                    }
+                }
+                GenotypeTag::AltHet(m, n) => {
+                    let self_idx_m = m.get() as usize - 1;
+                    let self_idx_n = n.get() as usize - 1;
+                    let vcf_idx_m = self_alts_to_vcf_index.get(self_idx_m).and_then(|&x| x);
+                    let vcf_idx_n = self_alts_to_vcf_index.get(self_idx_n).and_then(|&x| x);
+
+                    match (vcf_idx_m, vcf_idx_n) {
+                        (Some(vm), Some(vn)) => GenotypeTag::alt_het(
+                            std::num::NonZeroU8::new(vm as u8).unwrap_or(m),
+                            std::num::NonZeroU8::new(vn as u8).unwrap_or(n),
+                        ),
+                        (Some(vm), None) => {
+                            // Only first alt in real_variants, call as 0/1
+                            GenotypeTag::ref_het(std::num::NonZeroU8::new(vm as u8).unwrap_or(m))
+                        }
+                        (None, Some(vn)) => {
+                            // Only second alt in real_variants, call as 0/2
+                            GenotypeTag::ref_het(std::num::NonZeroU8::new(vn as u8).unwrap_or(n))
+                        }
+                        (None, None) => {
+                            // Neither alt in real_variants, default to 0/0
+                            GenotypeTag::HomRef
+                        }
+                    }
+                }
+            };
+
+            let gt = Genotype::from(remapped_genotype);
+            let gl = GenotypeLikelihood(smallvec_inline![Some(Phred::from(estimated.likelihood))]);
+            let gc = GenotypeConfidence(smallvec_inline![Some(Phred::from(estimated.confidence))]);
+            (gt, gl, gc)
+        } else {
+            // Fallback to homozygous reference (0/0) when estimate_genotype returns None
+            (
+                Genotype(smallvec![GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]),
+                GenotypeLikelihood(smallvec_inline![None]),
+                GenotypeConfidence(smallvec_inline![None]),
+            )
+        };
 
         let has_ml = real_variants.iter().any(|alt| alt.filters.ml.is_some());
 
@@ -260,39 +343,6 @@ impl PileupMetrics {
             }),
         }
     }
-}
-
-/// Calculate genotype from real variant alts
-///
-/// Simple genotype caller: if we have real variants, we assume they're real.
-/// FIXME: This will be replaced with ML-based genotyping in the future.
-fn calculate_genotype(
-    real_variants: &[&Alt],
-    _ref_metrics: &AlleleMetrics,
-    _total_depth: u32,
-) -> (Genotype, GenotypeLikelihood, GenotypeConfidence) {
-    use GenotypeAllele::*;
-
-    let gt = match real_variants.len() {
-        0 => {
-            // No real variants: homozygous reference (0/0)
-            smallvec![Unphased(0), Unphased(0)]
-        }
-        1 => {
-            // Single real variant: assume heterozygous (0/1)
-            smallvec![Unphased(0), Unphased(1)]
-        }
-        _ => {
-            // Multiple real variants: assume compound heterozygous (1/2)
-            smallvec![Unphased(1), Unphased(2)]
-        }
-    };
-
-    (
-        Genotype(gt),
-        GenotypeLikelihood(smallvec_inline![None]),
-        GenotypeConfidence(smallvec_inline![None]),
-    )
 }
 
 pub struct VcfRecordSet {
