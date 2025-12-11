@@ -374,7 +374,9 @@ impl VcfRecordSet {
         match (filters.vcf_all, filters.cpgs_only) {
             (false, false) => {
                 // default behavior: only passing records with alts
-                if !self.main.main.alt.is_empty() {
+                // but filter out non-covered CpG positions
+                let is_non_covered_cpg = *self.main.info.in_cp_g && *self.main.info.read_depth == 0;
+                if !self.main.main.alt.is_empty() && !is_non_covered_cpg {
                     Box::new(Some(self.main).into_iter())
                 } else {
                     Box::new(std::iter::empty())

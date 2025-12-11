@@ -219,6 +219,25 @@ fn test_all_methylation_transitions_passing_as_variants() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn test_non_covered_cpg_filtering() -> Result<()> {
+    let (segment, pileups) = create_pileups(vec![C, G], vec![]);
+
+    let records = test_call(segment.clone(), pileups.clone(), RecordFilters::cpgs())?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;
+    assert!(vcf_records.is_empty(), "Expected no VCF records for non-covered CpG site");
+
+    let records = test_call(segment, pileups, RecordFilters::all())?;
+    let expected_vcf = vcf_assert![
+        (C .) PASS,
+        (G .) PASS,
+    ];
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
 // #[test]
 // fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
 //     // Test C->T with high ML but other filters fail (e.g., low depth, low quality)
