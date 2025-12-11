@@ -97,13 +97,27 @@ impl PileupMetrics {
                 .into_iter()
                 .chain(real_variants.iter().map(|alt| alt.base.into()))
                 .collect(),
-            qual: Some({
-                #[allow(clippy::cast_possible_truncation, reason = "const")]
-                {
-                    // FIXME: use real quality
-                    *Phred::from(Probability::new_panicky(0.001)) as f32
+            qual: {
+                if real_variants.is_empty() {
+                    // `ALT=.`, VCF spec says: QUAL = -10log10(P(variant))
+                    // Use the maximum ML score from methylation evidence
+                    methylation_evidence
+                        .iter()
+                        .filter_map(|alt| alt.filters.ml)
+                        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                        .map(|p| *Phred::from(p))
+                } else {
+                    // There are variants, VCF spec says: QUAL = -10log10(P(no variant))
+                    // Use the *inverted* maximum ML score from all real variants
+                    real_variants
+                        .iter()
+                        .filter_map(|alt| alt.filters.ml)
+                        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                        .map(|p| *Phred::from(p.inverted()))
                 }
-            }),
+                // TODO: consider ALT=. with no variants and no methylation evidence
+                // TODO: consider no ML
+            },
         };
 
         // Build info fields
@@ -133,12 +147,7 @@ impl PileupMetrics {
             id: default(),
             r#ref: self.pileup.reference_base.into(),
             alt: smallvec![alt.base.into()],
-            qual: Some({
-                #[allow(clippy::cast_possible_truncation, reason = "const")]
-                {
-                    *Phred::from(Probability::new_panicky(0.001)) as f32
-                }
-            }),
+            qual: alt.filters.ml.map(|ml| *Phred::from(ml.inverted())),
         };
 
         let info = self.build_info(&[alt]);

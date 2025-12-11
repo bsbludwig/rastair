@@ -84,7 +84,7 @@ pub struct VcfFixedFields {
     /// log10` prob (call in ALT is wrong). If ALT is ‘.’ (no variant) then this
     /// is `−10 log10` prob (variant), and if ALT is not ‘.’ this is `−10 log10`
     /// prob (no variant). If unknown, the MISSING value must be specified.
-    pub qual: Option<f32>,
+    pub qual: Option<f64>,
     // Following fields are application-specific:
     // - FILTER
     // - INFO
@@ -116,7 +116,7 @@ impl VcfFixedFields {
         record.set_alleles(alleles.as_slice()).wrap_err("Failed to set alleles")?;
 
         if let Some(qual) = self.qual {
-            record.set_qual(qual);
+            record.set_qual(qual as f32);
         }
 
         Ok(())
