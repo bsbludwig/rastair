@@ -2,7 +2,7 @@
 use crate::{
     call::variant_calling::ErrorModel,
     metrics::{AltCall, PileupMetrics},
-    utils::{Base, Base::*, IntoF64 as _, Strand},
+    utils::{Base, Base::*, IntoF64 as _, Strand::*},
 };
 use color_eyre::eyre::{ContextCompat, Result, bail, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
@@ -171,32 +171,23 @@ impl PileupMetrics {
     /// For C→T and G→A variants, uses strand-specific counting to avoid
     /// confounding with methylation. For other variants, uses both strands.
     fn get_counts_for_alt(&self, alt_base: Base) -> (usize, usize) {
-        type ReadFilter = Box<dyn Fn(&crate::call::pileup::SimpleRead) -> bool>;
-
         let ref_base = self.ref_base();
+        let reads = || self.pileup.reads.iter();
 
-        // Determine if this is a strand-specific variant
-        let (ref_filter, alt_filter): (ReadFilter, ReadFilter) = if ref_base == C && alt_base == T {
-            // C→T: use OB strand only
-            (
-                Box::new(|r| r.base == C && r.strand == Strand::OB),
-                Box::new(|r| r.base == T && r.strand == Strand::OB),
-            )
-        } else if ref_base == G && alt_base == A {
-            // G→A: use OT strand only
-            (
-                Box::new(|r| r.base == G && r.strand == Strand::OT),
-                Box::new(|r| r.base == A && r.strand == Strand::OT),
-            )
-        } else {
-            // Other variants: use both strands
-            (Box::new(move |r| r.base == ref_base), Box::new(move |r| r.base == alt_base))
-        };
-
-        let ref_count = self.pileup.reads.iter().filter(|r| ref_filter(r)).count();
-        let alt_count = self.pileup.reads.iter().filter(|r| alt_filter(r)).count();
-
-        (ref_count, alt_count)
+        match (ref_base, alt_base) {
+            (C, T) => (
+                reads().filter(|r| r.base == C && r.strand == OB).count(),
+                reads().filter(|r| r.base == T && r.strand == OB).count(),
+            ),
+            (G, A) => (
+                reads().filter(|r| r.base == G && r.strand == OT).count(),
+                reads().filter(|r| r.base == A && r.strand == OT).count(),
+            ),
+            _ => (
+                reads().filter(|r| r.base == ref_base).count(),
+                reads().filter(|r| r.base == alt_base).count(),
+            ),
+        }
     }
 }
 
@@ -401,8 +392,9 @@ impl EstimatedGenotype {
                 trace!("Assuming 0/0: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::hom_ref(),
-                    likelihood: Probability::new(1.0 - p_hom)?,
-                    confidence: Probability::new((1.0 - (p_hom - p_het) / p_hom).clamp(0.0, 1.0))?,
+                    likelihood: Probability::new(p_hom)?.inverted(),
+                    confidence: Probability::new(((p_hom - p_het) / p_hom).clamp(0.0, 1.0))?
+                        .inverted(),
                 })
             } else {
                 trace!(
@@ -410,8 +402,9 @@ impl EstimatedGenotype {
                 );
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::ref_het(alt_index),
-                    likelihood: Probability::new(1.0 - p_het / p_het_max)?,
-                    confidence: Probability::new((1.0 - (p_het - p_hom) / p_het).clamp(0.0, 1.0))?,
+                    likelihood: Probability::new(p_het / p_het_max)?.inverted(),
+                    confidence: Probability::new(((p_het - p_hom) / p_het).clamp(0.0, 1.0))?
+                        .inverted(),
                 })
             }
         } else {
@@ -422,8 +415,9 @@ impl EstimatedGenotype {
                 );
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::hom_alt(alt_index),
-                    likelihood: Probability::new(1.0 - p_hom)?,
-                    confidence: Probability::new((1.0 - (p_hom - p_het) / p_hom).clamp(0.0, 1.0))?,
+                    likelihood: Probability::new(p_hom)?.inverted(),
+                    confidence: Probability::new(((p_hom - p_het) / p_hom).clamp(0.0, 1.0))?
+                        .inverted(),
                 })
             } else {
                 trace!(
@@ -431,8 +425,9 @@ impl EstimatedGenotype {
                 );
                 Ok(EstimatedGenotype {
                     genotype: GenotypeTag::ref_het(alt_index),
-                    likelihood: Probability::new(1.0 - p_het / p_het_max)?,
-                    confidence: Probability::new(((1.0 - p_het - p_hom) / p_het).clamp(0.0, 1.0))?,
+                    likelihood: Probability::new(p_het / p_het_max)?.inverted(),
+                    confidence: Probability::new(((p_het - p_hom) / p_het).clamp(0.0, 1.0))?
+                        .inverted(),
                 })
             }
         }
