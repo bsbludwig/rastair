@@ -370,7 +370,7 @@ impl EstimatedGenotype {
             ref_count > 0 || alt_count > 0,
             "No ref or alt read counts, cannot compute likelihood"
         );
-        ensure!(error_rate > f64::MIN, "Error rate too small, cannot calculate likelihood");
+        ensure!(*error_rate > f64::MIN, "Error rate too small, cannot calculate likelihood");
 
         // This is a simple estimate of genotype, based on the following consideration:
         // A site is either het or hom, where hom could be CC or TT.
@@ -392,7 +392,7 @@ impl EstimatedGenotype {
 
         // Then, I calculate the probability that this many or more alt_count/ref_count reads
         // are observed by error, assuming independence of reads and errors.
-        binom = Binomial::new(ref_count + alt_count, error_rate);
+        binom = Binomial::new(ref_count + alt_count, *error_rate);
 
         if ref_count >= alt_count {
             let p_hom = binom.mass(alt_count) + (1.0 - binom.distribution(alt_count.f()));

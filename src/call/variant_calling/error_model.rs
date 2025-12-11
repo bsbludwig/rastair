@@ -1,3 +1,4 @@
+use rastair_types::Probability;
 use std::fmt;
 
 /// The error rates for different Illumina sequencing platforms
@@ -47,31 +48,14 @@ impl fmt::Display for ErrorModel {
     }
 }
 
-// impl FromStr for ErrorModel {
-//     type Err = String;
-
-//     fn from_str(s: &str) -> Result<Self, Self::Err> {
-//         match s.to_lowercase().as_str() {
-//             "miseq" => Ok(ErrorModel::Miseq),
-//             "miniseq" => Ok(ErrorModel::Miniseq),
-//             "nextseq500" => Ok(ErrorModel::Nextseq500),
-//             "nextseq550" => Ok(ErrorModel::Nextseq550),
-//             "hiseq2500" => Ok(ErrorModel::Hiseq2500),
-//             "novaseq6000" => Ok(ErrorModel::Novaseq6000),
-//             "hiseq-x-ten" => Ok(ErrorModel::HiseqXTen),
-//             _ => Err(format!("Unknown error model: {}", s)),
-//         }
-//     }
-// }
-
 impl ErrorModel {
     /// The error rate for the given error model
     ///
     /// Cf. Nicholas Stoler, Anton Nekrutenko, Sequencing error profiles of
     /// Illumina sequencing instruments, NAR Genomics and Bioinformatics, Volume
     /// 3, Issue 1, March 2021, lqab019, <https://doi.org/10.1093/nargab/lqab019>
-    pub fn error_rate(&self) -> f64 {
-        match self {
+    pub const fn error_rate(&self) -> Probability {
+        Probability::new_panicky(match self {
             ErrorModel::Miseq => 0.00473,
             ErrorModel::Miniseq => 0.00613,
             ErrorModel::Nextseq500 => 0.00429,
@@ -79,6 +63,6 @@ impl ErrorModel {
             ErrorModel::Hiseq2500 => 0.00112,
             ErrorModel::Novaseq6000 => 0.00109,
             ErrorModel::HiseqXTen => 0.00087,
-        }
+        })
     }
 }
