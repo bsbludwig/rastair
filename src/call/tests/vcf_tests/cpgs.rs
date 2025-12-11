@@ -20,7 +20,7 @@ fn test_cpg_context() -> Result<()> {
     ];
 
     let records = test_call(segment, pileups, RecordFilters::all())?;
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -49,7 +49,7 @@ fn test_mixed_methylation_and_real_variants() -> Result<()> {
         (G .) PASS,
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -77,7 +77,7 @@ fn test_non_methylation_transitions() -> Result<()> {
         (G C) PASS,
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -103,7 +103,7 @@ fn test_multiple_methylation_transitions_same_position() -> Result<()> {
         (G .) PASS M5mC=0.,
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -129,7 +129,7 @@ fn test_reverse_strand_methylation() -> Result<()> {
         (G A) FAIL,  // low confidence methylation transition
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -155,7 +155,7 @@ fn test_empty_alts_only_produces_one_row() -> Result<()> {
         (G .) PASS M5mC=0.,  // Single row for matching reference
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -185,7 +185,7 @@ fn test_all_methylation_transitions_failing() -> Result<()> {
         (G A) FAIL,  // methylation transition
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -213,7 +213,7 @@ fn test_all_methylation_transitions_passing_as_variants() -> Result<()> {
         (G A) PASS,
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

@@ -26,7 +26,7 @@ fn test_denovo_cpg_that_is_variant_hg96_chr20_75254() -> Result<()> {
         (C G) FAIL,  // Second position with G alt
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -51,7 +51,7 @@ fn test_denovo_cpg_hg96_chr20_76962() -> Result<()> {
         (G .) PASS,  // Write the G from the de-novo CpG
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -74,7 +74,7 @@ fn test_cpg_variant_hg96_chr20_65899() -> Result<()> {
         (G A) PASS, // Actual variant
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

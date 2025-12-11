@@ -22,7 +22,7 @@ fn test_a_to_t_high_ml_score() -> Result<()> {
         (A T) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -48,7 +48,7 @@ fn test_a_to_g_high_ml_score() -> Result<()> {
         (A G) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -74,7 +74,7 @@ fn test_a_to_c_high_ml_score() -> Result<()> {
         (A C) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -100,7 +100,7 @@ fn test_t_to_a_high_ml_score() -> Result<()> {
         (T A) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -126,7 +126,7 @@ fn test_t_to_g_high_ml_score() -> Result<()> {
         (T G) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -152,7 +152,7 @@ fn test_t_to_c_high_ml_score() -> Result<()> {
         (T C) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -178,7 +178,7 @@ fn test_c_to_a_high_ml_score() -> Result<()> {
         (C A) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -204,7 +204,7 @@ fn test_c_to_g_high_ml_score() -> Result<()> {
         (C G) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -230,7 +230,7 @@ fn test_g_to_t_high_ml_score() -> Result<()> {
         (G T) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -256,7 +256,7 @@ fn test_g_to_c_high_ml_score() -> Result<()> {
         (G C) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -286,7 +286,7 @@ fn test_multi_allelic_site_picks_highest_ml() -> Result<()> {
         (A T,G) PASS,  // Both alts passing, combined in one row
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -315,7 +315,7 @@ fn test_all_alts_below_ml_threshold() -> Result<()> {
         (A G) FAIL,
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -343,7 +343,7 @@ fn test_het_vs_hom_alt_genotyping_for_a_base() -> Result<()> {
         (A T) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -372,7 +372,7 @@ fn test_het_genotyping_with_unbalanced_reads() -> Result<()> {
         (A T) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -398,7 +398,7 @@ fn test_hom_alt_genotyping_for_t_base() -> Result<()> {
         (T G) PASS GT="1/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -428,7 +428,7 @@ fn test_compound_het_with_balanced_alts() -> Result<()> {
         (A T,G) PASS GT="1/2",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -459,7 +459,7 @@ fn test_compound_het_with_slightly_unbalanced_alts() -> Result<()> {
         (A T,G) PASS GT="1/2",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -491,7 +491,7 @@ fn test_two_alts_passing_but_one_dominant() -> Result<()> {
         (A T,G) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -525,7 +525,7 @@ fn test_compound_het_vs_single_het_with_ref() -> Result<()> {
         (A T,G) PASS GT="0/1",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -555,7 +555,7 @@ fn test_compound_het_for_c_base_with_non_methylation_alts() -> Result<()> {
         (C A,G) PASS GT="1/2",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -590,7 +590,7 @@ fn test_three_alts_passing_uses_top_two() -> Result<()> {
         (A T,G,C) PASS GT="1/2",
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

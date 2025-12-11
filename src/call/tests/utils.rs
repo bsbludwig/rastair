@@ -519,11 +519,14 @@ impl RecordFilters {
     }
 }
 
-pub(crate) fn metrics_to_vcf(metrics: &[PileupMetrics]) -> Result<Vec<VcfRecord>> {
+pub(crate) fn metrics_to_vcf(
+    metrics: &[PileupMetrics],
+    filters: RecordFilters,
+) -> Result<Vec<VcfRecord>> {
     let mut vcf_records = Vec::new();
     for metric in metrics {
         let records = metric.to_vcf_records(Some(ML_THRESHOLD), &ErrorModel::default())?;
-        vcf_records.extend(records.into_iter(&RecordFilters::all())); // FIXME
+        vcf_records.extend(records.into_iter(&filters));
     }
     Ok(vcf_records)
 }

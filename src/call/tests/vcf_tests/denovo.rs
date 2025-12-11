@@ -19,7 +19,7 @@ fn test_denovo_cpg() -> Result<()> {
     set_pass(&mut records[0], C); // set C alt to pass, creating de-novo CpG for sure
     let records = reprocess(records)?; // to propagate de-novo CpG flags
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -51,7 +51,7 @@ fn test_denovo_cpg_methylated() -> Result<()> {
     set_fail(&mut records[1], A); // methylation evidence
     let records = reprocess(records)?; // to recalculate genotypes and propagate de-novo CpG flags
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -84,7 +84,7 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
     ];
 
     let records = test_call(segment, pileups, RecordFilters::cpgs())?;
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -116,7 +116,7 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
     set_fail(&mut records[2], A); // methylation evidence
     let records = reprocess(records)?; // to recalculate genotypes and propagate de-novo CpG flags
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -141,7 +141,7 @@ fn test_a_and_t_cant_form_denovo() -> Result<()> {
         (T G) PASS M5mC=None,
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

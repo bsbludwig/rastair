@@ -17,7 +17,7 @@ fn test_simple_variant() -> Result<()> {
     ];
 
     let records = test_call(segment, pileups, RecordFilters::all())?;
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -40,7 +40,7 @@ fn test_all_matching_ref() -> Result<()> {
         (C .) PASS M5mC=0.0,
         (G .) PASS M5mC=0.0,
     ];
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     // Now test with CpG filter: Should match the middle two positions
@@ -50,7 +50,7 @@ fn test_all_matching_ref() -> Result<()> {
         (C .) PASS M5mC=0.0,
         (G .) PASS M5mC=0.0,
     ];
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     // Now with all filter: prints all positions
@@ -89,7 +89,7 @@ fn test_multiple_alt_alleles() -> Result<()> {
     set_fail(&mut records[0], A);
     let records = reprocess(records)?;
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -113,7 +113,7 @@ fn test_c_to_t_outside_cpg() -> Result<()> {
         (C T) PASS M5mC=None,  // Only the variant row, no ref->. row
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -137,7 +137,7 @@ fn test_g_to_a_outside_cpg() -> Result<()> {
         (G A) PASS,  // Only the variant row, no ref->. row
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
@@ -162,7 +162,7 @@ fn test_c_to_t_outside_cpg_with_no_ml() -> Result<()> {
         (C T) PASS M5mC=None
     ];
 
-    let vcf_records = metrics_to_vcf(&records)?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())
