@@ -7,8 +7,8 @@ use crate::{
     metrics::{
         PileupMetrics,
         ml::{
-            features::{FeatureCalculator, MlFeatureCalculator},
-            types::RastairModel,
+            features::FeatureCalculator,
+            types::{MlFeatureSet, RastairModel},
         },
     },
     sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
@@ -48,8 +48,8 @@ pub struct TrainModelParams {
     #[arg(help_heading = cli::sections::TRAINING)]
     ml: Probability,
 
-    #[arg(long, default_value_t = MlFeatureCalculator::Standard)]
-    ml_features: MlFeatureCalculator,
+    #[arg(long, default_value_t = MlFeatureSet::Standard)]
+    ml_features: MlFeatureSet,
 
     /// Number of threads to use
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]

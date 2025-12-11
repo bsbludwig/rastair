@@ -1,4 +1,5 @@
-use super::features::MlFeatureCalculator;
+use std::fmt;
+
 use biosphere::RandomForest;
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
@@ -6,15 +7,33 @@ use rastair_types::{Base, Probability};
 /// Combined model file containing all three random forest models
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RastairModel {
+    // pub feature_set: MlFeatureSet, // TODO: Add this
     pub cpg: RandomForest,
     pub denovo: RandomForest,
     pub others: RandomForest,
 }
 
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
+pub enum MlFeatureSet {
+    #[default]
+    Standard,
+    Simple,
+}
+
+impl fmt::Display for MlFeatureSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MlFeatureSet::Standard => write!(f, "standard"),
+            MlFeatureSet::Simple => write!(f, "simple"),
+        }
+    }
+}
+
+/// Instance of machine learning model and parameters
 pub struct MachineLearning {
     pub threshold: Probability,
     pub model: Option<Box<RastairModel>>,
-    pub feature_calculator: MlFeatureCalculator,
+    pub feature_calculator: MlFeatureSet,
 }
 
 impl MachineLearning {
@@ -23,7 +42,7 @@ impl MachineLearning {
         Self {
             threshold: Probability::ZERO,
             model: None,
-            feature_calculator: MlFeatureCalculator::Standard,
+            feature_calculator: MlFeatureSet::Standard,
         }
     }
 

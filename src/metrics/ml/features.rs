@@ -4,10 +4,11 @@
 //! Different implementations can be swapped to support various feature sets and
 //! model variants.
 
+use super::types::MlFeatureSet;
 use crate::metrics::{MetricsForAlt, PileupMetrics};
 use color_eyre::{Result, eyre::Context as _};
 use ndarray::Array2;
-use std::fmt::{self, Display};
+use std::fmt;
 
 pub mod shared;
 pub mod standard;
@@ -40,27 +41,11 @@ pub trait FeatureCalculator: fmt::Debug + Send + Sync {
     ) -> Result<Array2<f64>>;
 }
 
-#[derive(Debug, Clone, Copy, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
-pub enum MlFeatureCalculator {
-    #[default]
-    Standard,
-    Simple,
-}
-
-impl Display for MlFeatureCalculator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MlFeatureCalculator::Standard => write!(f, "standard"),
-            MlFeatureCalculator::Simple => write!(f, "simple"),
-        }
-    }
-}
-
-impl MlFeatureCalculator {
+impl MlFeatureSet {
     pub fn get_calculator(&self) -> Box<dyn FeatureCalculator> {
         match self {
-            MlFeatureCalculator::Standard => Box::new(StandardFeatures),
-            MlFeatureCalculator::Simple => Box::new(SimpleFeatures),
+            MlFeatureSet::Standard => Box::new(StandardFeatures),
+            MlFeatureSet::Simple => Box::new(SimpleFeatures),
         }
     }
 }
