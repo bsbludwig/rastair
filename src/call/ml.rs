@@ -18,7 +18,7 @@
 //! for input to a random forest classifier.
 
 use crate::{
-    metrics::ml::types::{MachineLearning, MlFeatureSet, RastairModel},
+    metrics::ml::types::{MachineLearning, RastairModel},
     utils::cli,
 };
 use better_default::Default;
@@ -62,10 +62,6 @@ pub struct MachineLearningParams {
     #[arg(help_heading = cli::sections::FILTER)]
     #[serde(skip)]
     model: Option<ClioPath>,
-
-    #[arg(long, default_value_t = MlFeatureSet::Standard)]
-    #[arg(help_heading = cli::sections::FILTER)]
-    ml_features: MlFeatureSet,
 }
 
 impl MachineLearningParams {
@@ -83,8 +79,8 @@ impl MachineLearningParams {
 
         Ok(MachineLearning {
             threshold: self.ml,
+            feature_calculator: combined.feature_set,
             model: Some(Box::new(combined)),
-            feature_calculator: self.ml_features,
         })
     }
 

@@ -129,14 +129,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
 
   Default value: `1000`
-* `--thresholds` — Only use hard thresholds to call variants and methylation events.
+* `--no-ml` — Only use hard thresholds to call variants and methylation events.
 
    This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
 * `--ml <ML>` — Use machine learning model with this threshold value to call variants and methylation events
 
    When specified, a ML model will classify positions with a prediction score. Anything above this threshold is considered PASS.
 
-   For consistency with `--thresholds`, this option can be also be specified as `--ml` without a value, which will use the default threshold.
+   For consistency with `--no-ml`, this option can be also be specified as `--ml` without a value, which will use the default threshold.
 
   Default value: `0.80`
 * `--model <MODEL>` — Path to the combined model file containing CpG, denovo, and others models
@@ -216,7 +216,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
 
-  Default value: `2`
+  Default value: `1`
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
@@ -421,9 +421,18 @@ Train machine learning models
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
 * `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
 
+###### **Options:**
+
+* `--ml-features <ML_FEATURES>`
+
+  Default value: `standard`
+
+  Possible values: `standard`, `simple`
+
+
 ###### **Output Options:**
 
-* `-o`, `--output-dir <OUTPUT_DIR>` — Output directory for trained models
+* `-o`, `--output <OUTPUT>` — Output directory for trained models
 
   Default value: `./models`
 
