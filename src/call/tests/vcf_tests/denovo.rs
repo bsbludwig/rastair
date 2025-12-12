@@ -146,3 +146,34 @@ fn test_a_and_t_cant_form_denovo() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_cpg_that_is_also_denovo() -> Result<()> {
+    // Test that A and T reference bases don't produce methylation evidence rows
+    // Currently, de-novo CpG creation is only considered when one of the C or G is in the reference
+    let (segment, pileups) = pileups!(
+        [ C C G ] Ref,
+        [ C G G ] OT,
+        [ T T G ] OT,
+        [ C C G ] OB,
+        [ C A A ] OB,
+        [ C A A ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[1], G); // make this a denovo
+    set_fail(&mut records[1], A); // make this methylation evidence
+    set_fail(&mut records[2], A); // make this methylation evidence
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (C .) PASS M5mC=0.5,
+        (C .,G) PASS M5mC=1., // FIXME: what about de-novo CpG beta?
+        (G .) PASS M5mC=2./3.,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}

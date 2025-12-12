@@ -4,7 +4,7 @@ use crate::{
     metrics::{AltCall, PileupMetrics},
     utils::{Base, Base::*, IntoF64 as _, Strand::*},
 };
-use color_eyre::eyre::{ContextCompat, Result, bail, ensure};
+use color_eyre::eyre::{ContextCompat, Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
 use rastair_types::{Probability, SmallVec};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
