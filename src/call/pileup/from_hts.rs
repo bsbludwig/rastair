@@ -27,6 +27,7 @@ impl Pileup {
             .filter_map(|pile| alignment_to_read(params, pile))
             .filter(|seen_base| params.read_masking.filter(seen_base))
             .filter(|seen_base| params.quality.filter(seen_base))
+            .take(1000)
             .collect();
 
         let mut reads = SimpleReads(seen_bases);
