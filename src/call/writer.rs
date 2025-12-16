@@ -8,7 +8,7 @@ use crate::{
 use color_eyre::{Result, eyre::Context as _};
 use ordered_channel::Receiver;
 use std::thread;
-use tracing::info;
+use tracing::{info, trace};
 
 /// Build the VCF writer thread
 pub fn writer_thread(
@@ -17,7 +17,7 @@ pub fn writer_thread(
     vcf_receiver: Receiver<Vec<PileupMetrics>>,
 ) -> Result<thread::JoinHandle<Result<()>>> {
     let vcf_output = params.vcf.vcf.clone();
-    let vcf_filter = params.record_filters.clone();
+    let record_filter = params.record_filters.clone();
     let metadata = [
         format!("rastairVersion={}", env!("CARGO_PKG_VERSION")),
         format!("rastairCommand={}", std::env::args().skip(1).collect::<Vec<_>>().join(" ")),
@@ -38,7 +38,7 @@ pub fn writer_thread(
         BedRecordsConvertParams { ml_threshold: params.ml.ml, filters: bed.filters.clone() };
 
     let ml_threshold = params.ml.threshold();
-    let error_model = params.variant_calling.error_model.clone();
+    let error_model = params.variant_calling.error_model;
 
     // Spawn the actual VCF writer thread. Everything in here is driven by the
     // incoming records from the processing threads.
@@ -59,6 +59,11 @@ pub fn writer_thread(
                 let _guard = span.enter();
 
                 for record in records {
+                    if !record_filter.matches(&record) {
+                        trace!(pos=%record.contig_pos(), "Record did not pass filters, skipping");
+                        continue;
+                    }
+
                     // Write BED record if requested
                     if let Some(bed_writer) = bed_writer.as_mut()
                         && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record, &bed_params)
@@ -70,9 +75,7 @@ pub fn writer_thread(
                                 .wrap_err("Failed to write record to BED")?;
                         }
 
-                    if let Some(vcf_writer) = vcf_writer.as_mut()
-                        && vcf_filter.matches(&record, ml_threshold)
-                    {
+                    if let Some(vcf_writer) = vcf_writer.as_mut() {
                         use crate::io::vcf_writer::Writer;
                         match vcf_writer {
                             Writer::Vcf(writer) => {
@@ -80,8 +83,8 @@ pub fn writer_thread(
                                     .to_vcf_records(ml_threshold, &error_model)
                                     .wrap_err("Failed to convert metrics to VCF record")
                                     .this_is_a_bug()?;
-                                for vcf_record in records.into_iter(&vcf_filter) {
-                                    writer.add(&vcf_record).wrap_err("Failed to write VCF record")?;
+                                for vcf_record in records.to_vec(&record_filter) {
+                                    writer.add(vcf_record).wrap_err("Failed to write VCF record")?;
                                 }
                             }
                             Writer::MessagePack(writer) => {

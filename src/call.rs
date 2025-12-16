@@ -339,21 +339,7 @@ fn process_region(
                 MethylationEvidenceStrandInfo::from_pileup(&current);
             current
         })
-        .filter(|p| {
-            // Filter out pileups that are not relevant based on caller parameters
-            let cpg_only_pls = params.record_filters.cpgs_only;
-
-            let has_alts = !p.alts.is_empty();
-            let cpg = *p.pos_metrics.cpg || p.forms_denovo();
-
-            if cpg_only_pls {
-                // Filter out pileups that are not CpG if requested
-                cpg
-            } else {
-                // Otherwise, keep all variant evidence + methylation evidence
-                has_alts || cpg
-            }
-        })
+        .filter(|p| params.record_filters.pre_filter(p))
         .map_surrounding(|b, c, a| {
             // More filters: Add ML metrics if requested
             process::add_ml_metrics(b, c, a, ml)
@@ -375,6 +361,7 @@ fn process_region(
         .map(|mut pileup| {
             // Finally, set the actual variant calls based on all metrics and filters
             process::set_alt_calls(&mut pileup, params.ml.threshold())?;
+            process::add_position_tags(&mut pileup);
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to set alt calls, skipping"))

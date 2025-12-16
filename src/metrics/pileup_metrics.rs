@@ -32,6 +32,24 @@ pub struct PileupMetrics {
     pub ref_metrics: AlleleMetrics,
     /// Metrics and filters for each alternative allele
     pub alts: SmallVec<Alt, 2>,
+    /// "Tags" for this positions, which will become calls
+    pub tags: RecordTags,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RecordTags {
+    // The tags have been calculated. Mainly to debug :)
+    pub set: bool,
+    /// This position has coverage
+    pub covered: bool,
+    /// This is in a CpG site
+    pub cpg: bool,
+    /// This is a de-novo CpG site (not the partner)
+    pub denovo_cpg: bool,
+    /// This is the partner position of a de-novo CpG site
+    pub denovo_cpg_partner: bool,
+    /// This position is a variant (but not a denovo CpG)
+    pub variant: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -42,7 +60,7 @@ pub struct Alt {
     pub call: AltCall,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AltCall {
     #[default]
     Uncalled,
@@ -108,7 +126,14 @@ impl PileupMetrics {
 
         let pos_filters = Filters::default();
 
-        let metrics = PileupMetrics { pileup, pos_metrics, pos_filters, ref_metrics, alts };
+        let metrics = PileupMetrics {
+            pileup,
+            pos_metrics,
+            pos_filters,
+            ref_metrics,
+            alts,
+            tags: RecordTags::default(),
+        };
 
         Ok(metrics)
     }

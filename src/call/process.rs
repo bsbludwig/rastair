@@ -4,6 +4,7 @@ mod calc_ml;
 mod denovo;
 mod pileup_metrics;
 mod pileups;
+mod position_tags;
 mod set_alt_calls;
 mod threshold_filters;
 
@@ -26,3 +27,5 @@ pub use denovo::propagate_denovo_pass_flags;
 
 // Finally, we set the actual variant calls based on all the metrics and filters
 pub use set_alt_calls::set_alt_calls;
+// and add tags for positions based on the alt calls
+pub use position_tags::add_position_tags;

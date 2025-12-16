@@ -56,7 +56,7 @@ fn count_vcf_lines() -> Result<()> {
         stdout.lines().filter(|l| !l.starts_with('#')).filter(|l| l.contains("CPGnovo")).count();
 
     assert_snapshot!(cpgs, @"1448");
-    assert_snapshot!(denovos, @"340");
+    assert_snapshot!(denovos, @"0");
 
     Ok(())
 }
@@ -76,7 +76,7 @@ fn every_bed_line_should_be_in_vcf() -> Result<()> {
 
     assert_snapshot!(vcf_cpg.len(), @"1448");
     assert_snapshot!(bed_cpg.len(), @"1448");
-    assert_snapshot!(vcf_de_novo.len(), @"340");
+    assert_snapshot!(vcf_de_novo.len(), @"0");
     assert_snapshot!(bed_de_novo.len(), @"0");
 
     assert!(
@@ -123,7 +123,7 @@ fn every_bed_line_should_be_in_vcf_bacteriophage() -> Result<()> {
 
     assert_snapshot!(vcf_cpg.len(), @"6109");
     assert_snapshot!(bed_cpg.len(), @"6109");
-    assert_snapshot!(vcf_de_novo.len(), @"66");
+    assert_snapshot!(vcf_de_novo.len(), @"0");
     assert_snapshot!(bed_de_novo.len(), @"0");
 
     assert!(

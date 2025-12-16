@@ -39,7 +39,7 @@ impl PileupMetrics {
         &self,
         ml_threshold: Option<Probability>,
         error_model: &ErrorModel,
-    ) -> Result<VcfRecordSet> {
+    ) -> Result<VcfRecordSet<'_>> {
         // Validate that all alts have been called
         for alt in &self.alts {
             ensure!(
@@ -73,12 +73,12 @@ impl PileupMetrics {
         )?;
 
         // Build rejected records (one per methylation evidence, one per read error)
-        let mut rejected = Vec::new();
+        let mut rejected = SmallVec::new();
         for alt in methylation_evidence.iter().chain(read_errors.iter()) {
             rejected.push(self.build_rejected_record(alt, ml_threshold)?);
         }
 
-        Ok(VcfRecordSet { main, rejected })
+        Ok(VcfRecordSet { pileup: self, main, rejected })
     }
 
     fn build_main_record(
@@ -373,41 +373,44 @@ impl PileupMetrics {
     }
 }
 
-pub struct VcfRecordSet {
+pub struct VcfRecordSet<'p> {
+    pileup: &'p PileupMetrics,
     main: Record,
-    rejected: Vec<Record>,
+    rejected: SmallVec<Record, 2>,
 }
 
-impl VcfRecordSet {
-    pub fn into_iter(self, filters: &RecordFilters) -> Box<dyn Iterator<Item = Record>> {
-        let covered_cpg = *self.main.info.in_cp_g && *self.main.info.read_depth > 0;
+impl<'p> VcfRecordSet<'p> {
+    pub fn to_vec(&self, filters: &RecordFilters) -> SmallVec<&Record, 3> {
+        let t = &self.pileup.tags;
+        let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
+
         match (filters.vcf_all, filters.cpgs_only) {
             (false, false) => {
-                // default behavior: only passing records with alts
-                // but filter out non-covered CpG positions
-                if !self.main.main.alt.is_empty() && covered_cpg {
-                    Box::new(Some(self.main).into_iter())
+                if t.covered {
+                    smallvec![&self.main]
                 } else {
-                    Box::new(std::iter::empty())
+                    smallvec![]
                 }
             }
             (false, true) => {
-                // CpGs with read evidence only
-                if covered_cpg || *self.main.info.de_novo_cp_g_candidate {
-                    Box::new(Some(self.main).into_iter())
+                if t.covered && cpg {
+                    smallvec![&self.main]
                 } else {
-                    Box::new(std::iter::empty())
+                    smallvec![]
                 }
             }
             (true, false) => {
-                // `--all` means all, do nothing
-                Box::new(Some(self.main).into_iter().chain(self.rejected))
+                let mut v = smallvec![&self.main];
+                v.extend(&self.rejected);
+                v
             }
             (true, true) => {
-                if covered_cpg || *self.main.info.de_novo_cp_g_candidate {
-                    Box::new(Some(self.main).into_iter().chain(self.rejected))
+                if cpg {
+                    let mut v = smallvec![&self.main];
+                    v.extend(&self.rejected);
+                    v
                 } else {
-                    Box::new(std::iter::empty())
+                    smallvec![]
                 }
             }
         }

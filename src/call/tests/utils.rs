@@ -495,6 +495,7 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
         .map(|current| {
             let mut current = current?;
             process::set_alt_calls(&mut current, Some(ML_THRESHOLD))?;
+            process::add_position_tags(&mut current);
             Ok(current)
         })
         .collect()
@@ -526,7 +527,7 @@ pub(crate) fn metrics_to_vcf(
     let mut vcf_records = Vec::new();
     for metric in metrics {
         let records = metric.to_vcf_records(Some(ML_THRESHOLD), &ErrorModel::default())?;
-        vcf_records.extend(records.into_iter(&filters));
+        vcf_records.extend(records.to_vec(&filters).into_iter().cloned());
     }
     Ok(vcf_records)
 }

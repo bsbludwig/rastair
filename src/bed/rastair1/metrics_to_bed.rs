@@ -15,11 +15,12 @@ impl Rastair1BedFormat {
         pileup: &PileupMetrics,
         params: &BedRecordsConvertParams,
     ) -> Result<Option<Self>> {
-        if !params.filters.include_empty && pileup.pos_metrics.depth == 0 {
+        let t = &pileup.tags;
+        if !params.filters.include_empty && !t.covered {
             trace!("no coverage, skipping");
             return Ok(None);
         }
-        if !(*pileup.pos_metrics.cpg || pileup.forms_denovo()) {
+        if !(t.cpg || t.denovo_cpg || t.denovo_cpg_partner) {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }
@@ -29,20 +30,7 @@ impl Rastair1BedFormat {
 
         // If a position is covered by both a ref CpG site and a de-novo CpG
         // site, the ref case should take precedence.
-        let cpg = *pileup.pos_metrics.cpg;
-        let de_novo = !cpg && pileup.forms_denovo();
-        if de_novo {
-            if *pileup.pos_metrics.denovo_adj && !pileup.pos_filters.other_pos_in_denovo_passes {
-                // This is an adjacent de-novo CpG site, but the other position did not pass filters
-                return Ok(None);
-            } else if let Some(alt) = pileup.alts.iter().find(|a| *a.metrics.denovo)
-                && !alt.filters.pass(Some(ml_threshold))
-            {
-                // Only report de novo candidates that we are confident about
-                trace!(%alt.base, "de novo candidate with low score");
-                return Ok(None);
-            }
-        }
+        let de_novo = !t.cpg && (t.denovo_cpg || t.denovo_cpg_partner);
 
         let gt = if let Some(gt) = pileup.pos_metrics.genotype {
             gt

@@ -1,5 +1,4 @@
 use crate::{metrics::PileupMetrics, utils::cli};
-use rastair_types::Probability;
 
 /// Filters to apply when deciding whether to output a VCF record
 ///
@@ -7,8 +6,8 @@ use rastair_types::Probability;
 ///
 /// | `vcf_all` | `cpgs_only` | Output behavior                                  |
 /// | --------- | ----------- | ------------------------------------------------ |
-/// | ``        | ``          | All CpG sites and variants that PASS             |
-/// | ``        | `-c`        | All CpG sites and PASSing de-novo CpG candidates |
+/// | ``        | ``          | All covered CpG sites and variants that PASS     |
+/// | ``        | `-c`        | All covered CpG sites and PASSing de-novo CpGs   |
 /// | `--all`   | ``          | All CpG sites and all variants                   |
 /// | `--all`   | `-c`        | All CpG and de-novo CpG candidates               |
 ///
@@ -18,7 +17,7 @@ pub struct RecordFilters {
     /// Output all positions, even if they do not pass filters.
     ///
     /// If combined with `--cpgs-only`, only CpG positions will be reported,
-    /// including non-passing de-novo CpGs.
+    /// including non-passing de-novo CpGs, and those without coverage.
     #[arg(long = "all")]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_all: bool,
@@ -28,19 +27,43 @@ pub struct RecordFilters {
     /// Only report positions that are CpGs in the reference or variants that
     /// would result in a de-novo CpG.
     ///
-    /// Only if combined with `--all`, non-passing de-novo CpG positions will
-    /// also be reported.
+    /// If combined with `--all`, non-passing de-novo CpG positions and CpGs in
+    /// the reference but without coverage in the sample will also be reported.
     #[arg(short = 'c', long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
     pub cpgs_only: bool,
 }
 
 impl RecordFilters {
-    /// Check if a pileup matches the filter criteria
+    /// Filter out pileups that are not relevant based on caller parameters
     ///
-    /// This is pre-filtering positions so we don't process too much.
-    pub fn matches(&self, _record: &PileupMetrics, _ml_threshold: Option<Probability>) -> bool {
-        true
+    /// Only to speed up processing.
+    pub fn pre_filter(&self, pileup: &PileupMetrics) -> bool {
+        let has_alts = !pileup.alts.is_empty();
+        let cpg = *pileup.pos_metrics.cpg || pileup.forms_denovo();
+
+        if self.cpgs_only {
+            // Filter out pileups that are not CpG if requested
+            cpg
+        } else {
+            // Otherwise, keep all variant evidence + methylation evidence
+            has_alts || cpg
+        }
+    }
+
+    /// Check if a pileup matches the filter criteria
+    pub fn matches(&self, record: &PileupMetrics) -> bool {
+        let t = &record.tags;
+        debug_assert!(t.set, "record tags not set before filtering");
+
+        let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
+
+        match (self.vcf_all, self.cpgs_only) {
+            (false, false) => t.covered && (cpg || t.variant),
+            (false, true) => t.covered && cpg,
+            (true, false) => true, // --all means all
+            (true, true) => t.covered && cpg,
+        }
     }
 
     // FIXME: Make this actually work, we're filtering out too much!
