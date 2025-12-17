@@ -22,3 +22,4 @@
 - [Format converter](convert.md)
 
 # Appendix
+- [Architecture](architecture.md)
