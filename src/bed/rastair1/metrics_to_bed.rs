@@ -38,8 +38,8 @@ impl Rastair1BedFormat {
             debug!("No genotype for record");
             EstimatedGenotype {
                 genotype: GenotypeTag::hom_ref(),
-                likelihood: Probability::ONE,
-                confidence: Probability::ONE,
+                likelihood: Probability::ZERO,
+                confidence: Probability::ZERO,
             }
         };
 

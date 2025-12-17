@@ -33,7 +33,25 @@ impl PileupMetrics {
             .collect();
 
         if real_variant_alts.is_empty() {
-            return None;
+            // No real variants - calculate HomRef genotype using no_snp and snp counts
+            // like rastair1 did.
+            let counts = self.pos_metrics.extended.methylation_strand_info;
+            let ref_count = counts.no_snp as usize;
+            let alt_count = counts.snp as usize;
+
+            if ref_count == 0 && alt_count == 0 {
+                return None;
+            }
+
+            const ONE: NonZeroU8 = NonZeroU8::new(1).expect("1 > 0");
+
+            return EstimatedGenotype::calculate_for_alt(ref_count, alt_count, ONE, error_model)
+                .ok()
+                .map(|mut gt| {
+                    // Force genotype to HomRef since we have no real variants
+                    gt.genotype = GenotypeTag::hom_ref();
+                    gt
+                });
         }
 
         // If ML threshold is set, filter by ML score
@@ -59,7 +77,7 @@ impl PileupMetrics {
                 let confidence = (*threshold - *max_ml) / *threshold;
                 return Some(EstimatedGenotype {
                     genotype: GenotypeTag::HomRef,
-                    likelihood: Probability::ONE,
+                    likelihood: Probability::ZERO,
                     confidence: Probability::new(confidence).ok()?,
                 });
             } else {
@@ -68,9 +86,10 @@ impl PileupMetrics {
         }
 
         // Calculate genotype for each passing alt using binomial model
-        // Note: We compare each alt independently against ref (Option A).
-        // Alternative approaches: compare alt1 vs alt2 for compound het (Option B),
-        // or compare each alt against total depth minus its count (Option C).
+        // Note: We compare each alt independently against ref.
+        // Alternative approaches:
+        // - compare alt1 vs alt2 for compound het
+        // - compare each alt against total depth minus its count
         let mut alt_genotypes: SmallVec<_, 2> = SmallVec::new();
         for (alt_idx, alt) in &passing_alts {
             let alt_base = alt.base;
