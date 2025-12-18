@@ -91,12 +91,8 @@ impl Rastair1BedFormat {
                 raw_genotype
                     .iter()
                     .map(|allele| match allele {
-                        GenotypeAllele::Unphased(idx) if *idx > 1 => {
-                            GenotypeAllele::Unphased(1)
-                        }
-                        GenotypeAllele::Phased(idx) if *idx > 1 => {
-                            GenotypeAllele::Phased(1)
-                        }
+                        GenotypeAllele::Unphased(idx) if *idx > 1 => GenotypeAllele::Unphased(1),
+                        GenotypeAllele::Phased(idx) if *idx > 1 => GenotypeAllele::Phased(1),
                         other => other.clone(),
                     })
                     .collect()
@@ -129,8 +125,6 @@ impl Rastair1BedFormat {
         };
 
         // If this is a CpG position with the CpG-relevant SNP (PASS filter), set beta to 0
-        // because we can't reliably measure methylation when there's a true methylation-confounding variant
-        // The CpG-relevant SNPs are: C→T (methylation signal) and G→A (complement)
         let has_cpg_snp = in_cpg && is_pass && {
             // Determine which alt base would be the CpG-relevant SNP (T for C, A for G)
             let cpg_snp_base = if r#ref == "C" { "T" } else { "A" };

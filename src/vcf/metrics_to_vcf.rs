@@ -242,13 +242,16 @@ impl PileupMetrics {
             in_cp_g: self.pos_metrics.cpg,
             methylation_evidence_strand_info: self.pos_metrics.extended.methylation_strand_info,
             de_novo_cp_g_candidate: {
-                if let Some(alt) = alts_metrics.iter().find(|m| *m.denovo) {
-                    DeNovoCpGCandidate::Candidate {
-                        ref_base: self.pileup.reference_base,
-                        alt_base: alt.base,
+                let t = &self.tags;
+                if t.denovo_cpg || t.denovo_cpg_partner {
+                    if let Some(alt) = alts_metrics.iter().find(|m| *m.denovo) {
+                        DeNovoCpGCandidate::Candidate {
+                            ref_base: self.pileup.reference_base,
+                            alt_base: alt.base,
+                        }
+                    } else {
+                        DeNovoCpGCandidate::Adjecent { ref_base: self.pileup.reference_base }
                     }
-                } else if alts.is_empty() && *self.pos_metrics.denovo_adj {
-                    DeNovoCpGCandidate::Adjecent { ref_base: self.pileup.reference_base }
                 } else {
                     DeNovoCpGCandidate::NotCandidate
                 }
