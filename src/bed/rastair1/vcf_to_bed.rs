@@ -129,26 +129,18 @@ impl Rastair1BedFormat {
             Phred::from_phred(0)
         };
 
-        // If this is a CpG position with a real SNP (PASS filter with non-. alt), set beta to 0
-        // because we can't reliably measure methylation when there's a true variant
-        let has_real_snp = in_cpg && is_pass && {
+        // If this is a CpG position with the CpG-relevant SNP (PASS filter), set beta to 0
+        // because we can't reliably measure methylation when there's a true methylation-confounding variant
+        // The CpG-relevant SNPs are: C→T (methylation signal) and G→A (complement)
+        let has_cpg_snp = in_cpg && is_pass && {
             // Determine which alt base would be the CpG-relevant SNP (T for C, A for G)
             let cpg_snp_base = if r#ref == "C" { "T" } else { "A" };
             // Check if this alt exists in the alleles list
             alleles.iter().skip(1).any(|a| a.as_str() == cpg_snp_base)
         };
 
-        // Set beta logic:
-        // 1. If CpG with real SNP (PASS filter): beta = 0
-        // 2. If CpG and heterozygous: beta = 0
-        // 3. Otherwise: use beta from VCF
-        let beta = if has_real_snp {
-            Some(0.0)
-        } else if in_cpg && genotype.heterozygous() {
-            Some(0.0)
-        } else {
-            beta
-        };
+        // Set beta to 0 if there's a CpG-relevant SNP, otherwise use beta from VCF
+        let beta = if has_cpg_snp { Some(0.0) } else { beta };
         let beta = if let Some(beta) = beta {
             Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
         } else {
