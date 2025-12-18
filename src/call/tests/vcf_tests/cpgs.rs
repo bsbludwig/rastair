@@ -44,8 +44,8 @@ fn test_mixed_methylation_and_real_variants() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .,A) PASS M5mC=1.,  // methylation evidence, passing A
-        (C T) FAIL,  // Other: T fails as real variant
+        (C A) PASS M5mC=1.,  // real variant A, methylation info preserved in M5mC
+        (C T) FAIL,  // methylation evidence T fails as separate record
         (G .) PASS,
     ];
 

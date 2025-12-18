@@ -39,7 +39,7 @@ fn test_denovo_cpg_methylated() -> Result<()> {
     );
 
     let expected_vcf = vcf_assert![
-        (G .,C) PASS M5mC=1.,  // All alts at first position combined: T fails, C passes (any passing = PASS)
+        (G C) PASS M5mC=1.,  // Real variant C, methylation info preserved in M5mC
         (G T) FAIL,
         (G .) PASS M5mC=1.,  // other de-novo CpG position
         (G A) FAIL,
@@ -77,7 +77,7 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=0., // Position 1: C with de-novo CpG G
-        (C .,G) PASS M5mC=1., // Weird but maybe correct: one T that fails ML makes C methylated
+        (C G) PASS M5mC=1., // Position 2: Real variant G, methylation info preserved in M5mC
         (C T) FAIL,
         (G .) PASS M5mC=0.5,
         (G A) FAIL,
@@ -103,9 +103,9 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=0.0,
-        (C .,G) PASS M5mC=1., // Weird but maybe correct: one T that fails ML makes C methylated
+        (C G) PASS M5mC=1., // Position 2: Real variant G, methylation info preserved in M5mC
         (C T) FAIL,
-        (C .,G) PASS M5mC=0.5,
+        (C G) PASS M5mC=0.5, // Position 3: Real variant G, methylation info preserved in M5mC
         (C A) FAIL,
     ];
 
@@ -168,7 +168,7 @@ fn test_cpg_that_is_also_denovo() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=0.5,
-        (C .,G) PASS M5mC=1., // FIXME: what about de-novo CpG beta?
+        (C G) PASS M5mC=1., // Real variant G, methylation info preserved in M5mC
         (G .) PASS M5mC=2./3.,
     ];
 

@@ -28,11 +28,13 @@ use std::num::NonZeroU8;
 impl PileupMetrics {
     /// Convert the metrics to VCF records
     ///
-    /// We write this
-    /// 1. write one VCF record with all passing alts
-    ///    1. if there is methylation evidence, we add `.` as an alt to indicate methylation status
-    ///    2. if no alts pass, we write a ref-only record (ref->.). people want this for CpG sites.
-    /// 2. write additional VCF records for each failing alt (may be filtered out later)
+    /// We write:
+    /// 1. One main VCF record with real variants only
+    ///    - If real variants exist: use only real variants
+    ///    - If no real variants: use '.' for reference-only CpG tracking
+    /// 2. Additional rejected records for methylation evidence and read errors
+    ///
+    /// Methylation information is preserved in the `M5mC` format field.
     ///
     // TODO: Handle methylation evidence when both a cpg and de-novo cpg candidate are present
     pub fn to_vcf_records(
@@ -72,8 +74,10 @@ impl PileupMetrics {
             error_model,
         )?;
 
-        // Build rejected records (one per methylation evidence, one per read error)
+        // Build rejected records
         let mut rejected = SmallVec::new();
+
+        // Create rejected records for methylation evidence and read errors
         for alt in methylation_evidence.iter().chain(read_errors.iter()) {
             rejected.push(self.build_rejected_record(alt, ml_threshold)?);
         }
@@ -91,12 +95,22 @@ impl PileupMetrics {
         // Determine alt alleles for main record
         let has_methylation = !methylation_evidence.is_empty();
 
-        // Add "." to indicate methylation tracking or ref-only record when:
-        // 1. We have methylation evidence (to mark methylation status even with real variants), OR
-        // 2. No real variants (to create valid ref-only records for CpG/de-novo positions)
-        let should_add_dot = has_methylation || real_variants.is_empty();
-
         let depth = self.pos_metrics.depth.max(1).f();
+
+        // Build alt alleles for main record:
+        // - If we have real variants: use ONLY real variants (no '.' mixing)
+        // - If no real variants: use '.' for reference-only records (needed for valid VCF)
+        let alt_alleles: rastair_types::SmallVec<rastair_types::SmolStr, 2> =
+            if !real_variants.is_empty() {
+                // Case 1: Real variants exist - use only real variants (fixes the C .,G issue)
+                real_variants.iter().map(|alt| alt.base.into()).collect()
+            } else {
+                // Case 2: No real variants - use '.' for valid VCF reference records
+                rastair_types::SmallVec::from([".".into()])
+            };
+
+        // For info and format fields, use real_variants when they exist
+        let main_alts = if !real_variants.is_empty() { real_variants } else { &[] };
 
         // Build VCF fixed fields
         let main = VcfFixedFields {
@@ -104,14 +118,10 @@ impl PileupMetrics {
             pos: self.pileup.pos,
             id: default(),
             r#ref: self.pileup.reference_base.into(),
-            alt: should_add_dot
-                .then_some(rastair_types::SmolStr::new_inline("."))
-                .into_iter()
-                .chain(real_variants.iter().map(|alt| alt.base.into()))
-                .collect(),
+            alt: alt_alleles,
             qual: {
                 let ml_qual = if real_variants.is_empty() {
-                    // `ALT=.`, VCF spec says: QUAL = -10log10(P(variant))
+                    // No real variants, VCF spec says: QUAL = -10log10(P(variant))
                     // Use the maximum ML score from methylation evidence
                     methylation_evidence
                         .iter()
@@ -140,10 +150,10 @@ impl PileupMetrics {
         };
 
         // Build info fields
-        let info = self.build_info(real_variants);
+        let info = self.build_info(main_alts);
 
         // Build format fields
-        let format = self.build_format(real_variants, has_methylation, ml_threshold);
+        let format = self.build_format(main_alts, has_methylation, ml_threshold);
 
         // Build filters
         let filters = {
@@ -261,24 +271,23 @@ impl PileupMetrics {
 
     fn build_format(
         &self,
-        real_variants: &[&Alt],
+        main_alts: &[&Alt],
         has_methylation: bool,
         ml_threshold: Option<Probability>,
     ) -> Format {
-        // Determine if "." will be added to VCF alt list (affects indices)
-        let should_add_dot = has_methylation || real_variants.is_empty();
-        let vcf_index_offset = if should_add_dot { 1 } else { 0 };
+        // No more "." alt, so no index offset needed
+        let vcf_index_offset = 0;
 
         // Calculate genotype from real variants using estimate_genotype
         let (genotype, genotype_likelihood, genotype_confidence) = if let Some(estimated) =
             self.estimate_genotype(ml_threshold, ErrorModel::default())
         {
-            // Build a mapping from self.alts index to real_variants index (position in VCF)
-            let mut self_alts_to_vcf_index = vec![None; self.alts.len()];
-            for (vcf_idx, real_alt) in real_variants.iter().enumerate() {
+            // Build a mapping from self.alts index to main_alts index (position in VCF)
+            let mut self_alts_to_vcf_index: SmallVec<_, 2> = smallvec![None; self.alts.len()];
+            for (vcf_idx, main_alt) in main_alts.iter().enumerate() {
                 // Find this alt in self.alts
                 for (self_idx, self_alt) in self.alts.iter().enumerate() {
-                    if std::ptr::eq(*real_alt, self_alt) {
+                    if std::ptr::eq(*main_alt, self_alt) {
                         self_alts_to_vcf_index[self_idx] = Some(vcf_idx + 1 + vcf_index_offset);
                         break;
                     }
@@ -348,7 +357,7 @@ impl PileupMetrics {
             )
         };
 
-        let has_ml = real_variants.iter().any(|alt| alt.filters.ml.is_some());
+        let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
 
         // Determine methylation status - set for CpG positions and de-novo CpGs
         let is_cpg = matches!(self.pos_metrics.cpg, super::InCpG::C | super::InCpG::G);
@@ -368,7 +377,7 @@ impl PileupMetrics {
             sample_read_depth: SampleReadDepth(self.pileup.reads.len()),
             methylated,
             machine_learning_prediction: MachineLearningPrediction(if has_ml {
-                real_variants.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect()
+                main_alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect()
             } else {
                 smallvec![]
             }),
