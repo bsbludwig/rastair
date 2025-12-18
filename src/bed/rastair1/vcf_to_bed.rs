@@ -82,20 +82,19 @@ impl Rastair1BedFormat {
         let genotype = if let Ok(gs) = r.genotypes() {
             let raw_genotype: SmallVec<_, 4> = gs.get(0).iter().map(|x| (*x).into()).collect();
 
-            // Remap genotype indices to account for '.' alleles
+            // Remap genotype indices to account for '.' methylation markers
             // In VCF with alleles like [G, ., C], GT=0/2 should map to 0/1 for Rastair1 format
-            // because Rastair1 uses simplified C/T or G/A notation
+            // because Rastair1 uses simplified C/T or G/A notation where index 1 represents "alt"
             let has_dot_allele = alleles.iter().any(|a| a.as_str() == ".");
             if has_dot_allele {
+                // Remap: skip the '.' allele at index 1
                 raw_genotype
                     .iter()
                     .map(|allele| match allele {
                         GenotypeAllele::Unphased(idx) if *idx > 1 => {
-                            // Remap indices > 1 to 1 (skip the '.' at index 1)
                             GenotypeAllele::Unphased(1)
                         }
                         GenotypeAllele::Phased(idx) if *idx > 1 => {
-                            // Remap indices > 1 to 1 (skip the '.' at index 1)
                             GenotypeAllele::Phased(1)
                         }
                         other => other.clone(),
