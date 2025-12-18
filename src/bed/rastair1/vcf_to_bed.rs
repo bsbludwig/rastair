@@ -117,8 +117,36 @@ impl Rastair1BedFormat {
 
         let strand = if in_cpg {
             if r#ref == "C" { rastair_types::Strand::OT } else { rastair_types::Strand::OB }
+        } else if de_novo {
+            // Infer strand from de-novo CpG information:
+            // De-novo CpGs are created when:
+            // - Any base → C followed by G creates CG (C is methylation site, OT strand)
+            // - C followed by any base → G creates CG (G is on OB strand)
+            //
+            // For a position with CPGnovo flag:
+            // - If alt contains C → this position becomes C (OT strand)
+            // - If alt contains G → this position becomes G (OB strand)
+            // - If ref=G and no alt → adjacent G to a C variant (OB strand)
+            // - If ref=C and no alt → adjacent C to a G variant (OT strand)
+            let has_alt_c = alleles.iter().skip(1).any(|a| a.as_str() == "C");
+            let has_alt_g = alleles.iter().skip(1).any(|a| a.as_str() == "G");
+
+            if has_alt_c {
+                // This position has a variant creating a C
+                rastair_types::Strand::OT
+            } else if has_alt_g {
+                // This position has a variant creating a G
+                rastair_types::Strand::OB
+            } else if r#ref == "G" {
+                // Adjacent G position (partner to a C variant)
+                rastair_types::Strand::OB
+            } else if r#ref == "C" {
+                // Adjacent C position (partner to a G variant)
+                rastair_types::Strand::OT
+            } else {
+                rastair_types::Strand::Unknown
+            }
         } else {
-            // FIXME: infer from denovo candidate info?
             rastair_types::Strand::Unknown
         };
 
