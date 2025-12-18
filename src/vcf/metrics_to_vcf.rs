@@ -340,8 +340,8 @@ impl PileupMetrics {
             // Fallback to homozygous reference (0/0) when estimate_genotype returns None
             (
                 Genotype(smallvec![GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]),
-                GenotypeLikelihood(smallvec_inline![None]),
-                GenotypeConfidence(smallvec_inline![None]),
+                GenotypeLikelihood(smallvec_inline![Some(Phred::from(Probability::ZERO))]),
+                GenotypeConfidence(smallvec_inline![Some(Phred::from(Probability::ZERO))]),
             )
         };
 
