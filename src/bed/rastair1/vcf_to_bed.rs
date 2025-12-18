@@ -13,7 +13,7 @@ use rastair_types::SmolStr;
 use rastair_types::{Phred, Probability};
 use rastair_vcf::{
     VcfField as _,
-    standard_fields::{Genotype, PASS, ReadDepth},
+    standard_fields::{Genotype, GenotypeAllele, PASS, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
 use tracing::{instrument, trace};
@@ -80,7 +80,30 @@ impl Rastair1BedFormat {
             .wrap_err("Failed to read methylation evidence strand info")?;
 
         let genotype = if let Ok(gs) = r.genotypes() {
-            gs.get(0).iter().map(|x| (*x).into()).collect()
+            let raw_genotype: SmallVec<_, 4> = gs.get(0).iter().map(|x| (*x).into()).collect();
+
+            // Remap genotype indices to account for '.' alleles
+            // In VCF with alleles like [G, ., C], GT=0/2 should map to 0/1 for Rastair1 format
+            // because Rastair1 uses simplified C/T or G/A notation
+            let has_dot_allele = alleles.iter().any(|a| a.as_str() == ".");
+            if has_dot_allele {
+                raw_genotype
+                    .iter()
+                    .map(|allele| match allele {
+                        GenotypeAllele::Unphased(idx) if *idx > 1 => {
+                            // Remap indices > 1 to 1 (skip the '.' at index 1)
+                            GenotypeAllele::Unphased(1)
+                        }
+                        GenotypeAllele::Phased(idx) if *idx > 1 => {
+                            // Remap indices > 1 to 1 (skip the '.' at index 1)
+                            GenotypeAllele::Phased(1)
+                        }
+                        other => other.clone(),
+                    })
+                    .collect()
+            } else {
+                raw_genotype
+            }
         } else {
             SmallVec::new()
         };
