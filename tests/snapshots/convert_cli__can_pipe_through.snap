@@ -4,7 +4,7 @@ info:
   program: bash
   args:
     - "-c"
-    - "cargo run -q -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105000-6105800 --no-ml --vcf | head -n1000 | cargo run -q -- convert -f bcf -F bed | head -n5"
+    - "cargo run -q -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105000-6105800 --vcf | head -n1000 | cargo run -q -- convert -f bcf -F bed | head -n5"
   env:
     NO_COLOR: "1"
 ---
