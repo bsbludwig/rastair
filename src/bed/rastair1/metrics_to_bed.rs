@@ -1,5 +1,5 @@
 use crate::{
-    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
+    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat, format::GenotypeString},
     call::variant_calling::{EstimatedGenotype, GenotypeTag},
     metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
     utils::logging::ThisIsABug as _,
@@ -90,7 +90,7 @@ impl Rastair1BedFormat {
             snp: counts.snp,
             // coverage: counts.total() as usize, // TODO: is coverage meant to include other alts?
             coverage: pileup.pileup.reads.len(),
-            genotype: gt.genotype.into(),
+            genotype: GenotypeString::from_genotype(&gt.genotype.into(), ref_base),
             genotype_likelihood: Phred::from(gt.likelihood),
             genotype_confidence: Phred::from(gt.confidence),
             de_novo,

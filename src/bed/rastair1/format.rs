@@ -1,6 +1,6 @@
 use crate::bed::BedRecord;
 use color_eyre::Result;
-use rastair_types::{Phred, Probability, SmolStr, Strand, smol_str::format_smolstr};
+use rastair_types::{Base, Phred, Probability, SmolStr, Strand, smol_str::format_smolstr};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use std::io::Write;
 use tracing::debug;
@@ -17,7 +17,7 @@ pub struct Rastair1BedFormat {
     pub no_snp: u32,
     pub snp: u32,
     pub coverage: usize,
-    pub genotype: Genotype,
+    pub genotype: GenotypeString,
     pub genotype_likelihood: Phred,
     pub genotype_confidence: Phred,
     pub de_novo: bool,
@@ -30,7 +30,7 @@ impl BedRecord for Rastair1BedFormat {
         let Rastair1BedFormat {
             contig,
             pos: start,
-            r#ref,
+            r#ref: _,
             beta,
             strand,
             unmod,
@@ -47,9 +47,7 @@ impl BedRecord for Rastair1BedFormat {
         let name = ".";
         let strand = strand.as_symbol();
         let beta = if let Some(beta) = beta {
-            // Convert to f32 to match VCF float32 precision, then format
-            let beta_f32 = **beta as f32;
-            format_smolstr!("{beta_f32:.2}")
+            format_smolstr!("{beta:.2}")
         } else {
             debug!("position {contig}:{start} has no beta value");
             SmolStr::new_inline(".")
@@ -60,7 +58,7 @@ impl BedRecord for Rastair1BedFormat {
             "{contig}\t{start}\t{end}\t{name}\t{beta}\t{strand}\t{unmod}\t{mod}\t{no_snp}\t{snp}\t{coverage}"
         )?;
 
-        let genotype = genotype_to_rastair1_string(genotype, r#ref);
+        // let genotype = genotype_to_rastair1_string(genotype, r#ref);
         let genotype_likelihood = genotype_likelihood.as_int();
         let genotype_confidence = genotype_confidence.as_int();
         write!(f, "\t{genotype}\t{genotype_likelihood}\t{genotype_confidence}")?;
@@ -83,39 +81,72 @@ impl BedRecord for Rastair1BedFormat {
     }
 }
 
-pub fn genotype_to_rastair1_string(genotype: &Genotype, ref_base: &str) -> SmolStr {
-    match genotype.0.as_slice() {
-        [GenotypeAllele::Phased(0)]
-        | [GenotypeAllele::Unphased(0)]
-        | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(0)]
-        | [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)] => {
-            if ref_base == "C" {
-                SmolStr::new_static("C/C")
-            } else {
-                SmolStr::new_static("G/G")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenotypeString {
+    CC,
+    CT,
+    TT,
+    GG,
+    GA,
+    AA,
+    Unknown,
+}
+
+impl GenotypeString {
+    pub fn as_str(&self) -> &str {
+        match self {
+            GenotypeString::CC => "C/C",
+            GenotypeString::CT => "C/T",
+            GenotypeString::TT => "T/T",
+            GenotypeString::GG => "G/G",
+            GenotypeString::GA => "G/A",
+            GenotypeString::AA => "A/A",
+            GenotypeString::Unknown => ".",
+        }
+    }
+
+    pub fn from_genotype(genotype: &Genotype, ref_base: Base) -> GenotypeString {
+        use rastair_types::Base::*;
+
+        match genotype.0.as_slice() {
+            [GenotypeAllele::Phased(0)]
+            | [GenotypeAllele::Unphased(0)]
+            | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(0)]
+            | [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)] => {
+                if ref_base == C {
+                    GenotypeString::CC
+                } else {
+                    GenotypeString::GG
+                }
+            }
+            [GenotypeAllele::Phased(0), GenotypeAllele::Phased(1)]
+            | [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)] => {
+                if ref_base == C {
+                    GenotypeString::CT
+                } else {
+                    GenotypeString::GA
+                }
+            }
+            [GenotypeAllele::Phased(1)]
+            | [GenotypeAllele::Unphased(1)]
+            | [GenotypeAllele::Phased(1), GenotypeAllele::Phased(1)]
+            | [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)] => {
+                if ref_base == C {
+                    GenotypeString::TT
+                } else {
+                    GenotypeString::AA
+                }
+            }
+            _ => {
+                // would want to return `SmolStr::new_static(".")` but let's be compatible with rastair1 for now
+                if ref_base == C { GenotypeString::CC } else { GenotypeString::GG }
             }
         }
-        [GenotypeAllele::Phased(0), GenotypeAllele::Phased(1)]
-        | [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)] => {
-            if ref_base == "C" {
-                SmolStr::new_static("C/T")
-            } else {
-                SmolStr::new_static("G/A")
-            }
-        }
-        [GenotypeAllele::Phased(1)]
-        | [GenotypeAllele::Unphased(1)]
-        | [GenotypeAllele::Phased(1), GenotypeAllele::Phased(1)]
-        | [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)] => {
-            if ref_base == "C" {
-                SmolStr::new_static("T/T")
-            } else {
-                SmolStr::new_static("A/A")
-            }
-        }
-        _ => {
-            // would want to return `SmolStr::new_static(".")` but let's be compatible with rastair1 for now
-            if ref_base == "C" { SmolStr::new_static("C/C") } else { SmolStr::new_static("G/G") }
-        }
+    }
+}
+
+impl std::fmt::Display for GenotypeString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }

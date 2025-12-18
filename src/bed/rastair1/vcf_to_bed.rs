@@ -1,5 +1,5 @@
 use crate::{
-    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
+    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat, format::GenotypeString},
     metrics::MethylationEvidenceStrandInfo,
     utils::logging::ThisIsABug,
     vcf::{DeNovoCpGCandidate, GenotypeConfidence, GenotypeLikelihood, InCpG, Methylated},
@@ -8,8 +8,8 @@ use color_eyre::{
     Result, Section as _, SectionExt as _,
     eyre::{Context as _, ContextCompat as _, ensure, eyre},
 };
-use rastair_types::SmallVec;
 use rastair_types::SmolStr;
+use rastair_types::{Base, SmallVec};
 use rastair_types::{Phred, Probability};
 use rastair_vcf::{
     VcfField as _,
@@ -99,10 +99,11 @@ impl Rastair1BedFormat {
             } else {
                 raw_genotype
             }
+            // raw_genotype
         } else {
             SmallVec::new()
         };
-        let genotype = Genotype(genotype);
+        let genotype = GenotypeString::from_genotype(&Genotype(genotype), Base::from(&r#ref));
         let genotype_likelihood = if let Ok(buffer) =
             r.format(GenotypeLikelihood::ID.as_bytes()).integer()
             && let Some(first) = buffer.first()
