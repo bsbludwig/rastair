@@ -47,7 +47,9 @@ impl BedRecord for Rastair1BedFormat {
         let name = ".";
         let strand = strand.as_symbol();
         let beta = if let Some(beta) = beta {
-            format_smolstr!("{beta:.2}")
+            // Convert to f32 to match VCF float32 precision, then format
+            let beta_f32 = **beta as f32;
+            format_smolstr!("{beta_f32:.2}")
         } else {
             debug!("position {contig}:{start} has no beta value");
             SmolStr::new_inline(".")
