@@ -76,7 +76,8 @@ impl VcfField for MethylationEvidenceStrandInfo {
 }
 
 impl HeaderField for MethylationEvidenceStrandInfo {
-    const DESCRIPTION: &'static str = "Number of methylated and unmethylated reads supporting each strand, as well as reads with and without SNP evidence";
+    const DESCRIPTION: &'static str =
+        "Number of reads that are evidence for unmodified, modified, no SNP, snp";
 }
 
 impl InfoField for MethylationEvidenceStrandInfo {
@@ -88,7 +89,7 @@ impl InfoField for MethylationEvidenceStrandInfo {
         record
             .push_info_integer(
                 Self::ID,
-                &[self.modified as i32, self.unmod as i32, self.no_snp as i32, self.snp as i32],
+                &[self.unmod as i32, self.modified as i32, self.no_snp as i32, self.snp as i32],
             )
             .wrap_err("Failed to set M5cM_Strands field")
     }

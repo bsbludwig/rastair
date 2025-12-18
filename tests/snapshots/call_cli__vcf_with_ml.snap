@@ -52,7 +52,7 @@ exit_code: 0
 ##INFO=<ID=ENT100,Number=1,Type=Float,Description="Shannon entropy of 100bp sequence context around variant position. Value range (0..2)">
 ##INFO=<ID=NAB,Number=R,Type=Float,Description="RMS of number of aligned bases">
 ##INFO=<ID=NOI,Number=R,Type=Float,Description="RMS of number of indels">
-##INFO=<ID=M5cM_Strands,Number=4,Type=Integer,Description="Number of methylated and unmethylated reads supporting each strand, as well as reads with and without SNP evidence">
+##INFO=<ID=M5cM_Strands,Number=4,Type=Integer,Description="Number of reads that are evidence for unmodified, modified, no SNP, snp">
 ##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
 ##INFO=<ID=CPGnovo,Number=0,Type=Flag,Description="De-novo CPG candidate: Could the alt alleles create a new CpG site?">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
@@ -63,9 +63,9 @@ exit_code: 0
 ##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelihood by rastair's machine learning model">
 ##contig=<ID=chr19,length=100>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
-chr19	6105712	.	C	.	13.0103	PASS	AD=10;BQ=35.5778;DP=18;MQ=60;MQ0=0;NS=1;AS_SB_OT=4;AS_SB_OB=6;SC5=AACGT;ABQ=35.6202;AMQ=60;AS_SS_BQ_OT=36;AS_SS_BQ_OB=35.3648;AS_SS_MQ=60,60;PIR=0.549563;ENT100=1.90852;NAB=79.1094;NOI=0;M5cM_Strands=8,4,6,0;CPG	GT:GL:GC:DP:M5mC	0/0:99:18:18:0.666667
-chr19	6105713	.	G	.	16.4782	PASS	AD=14;BQ=34.7083;DP=18;MQ=60;MQ0=0;NS=1;AS_SB_OT=12;AS_SB_OB=2;SC5=ACGTC;ABQ=34.3303;AMQ=60;AS_SS_BQ_OT=34.0441;AS_SS_BQ_OB=36;AS_SS_MQ=60,60;PIR=0.622738;ENT100=1.90063;NAB=79.4355;NOI=0;M5cM_Strands=4,2,12,0;CPG	GT:GL:GC:DP:M5mC	0/0:99:36:18:0.666667
-chr19	6105744	.	C	.	11.8293	PASS	AD=8;BQ=35.7631;DP=16;MQ=60;MQ0=0;NS=1;AS_SB_OT=2;AS_SB_OB=6;SC5=ACCGG;ABQ=35.5246;AMQ=60;AS_SS_BQ_OT=36;AS_SS_BQ_OB=35.3648;AS_SS_MQ=60,60;PIR=0.456023;ENT100=1.95566;NAB=79.1352;NOI=0;M5cM_Strands=8,2,6,0;CPG	GT:GL:GC:DP:M5mC	0/0:99:18:16:0.8
+chr19	6105712	.	C	.	13.0103	PASS	AD=10;BQ=35.5778;DP=18;MQ=60;MQ0=0;NS=1;AS_SB_OT=4;AS_SB_OB=6;SC5=AACGT;ABQ=35.6202;AMQ=60;AS_SS_BQ_OT=36;AS_SS_BQ_OB=35.3648;AS_SS_MQ=60,60;PIR=0.549563;ENT100=1.90852;NAB=79.1094;NOI=0;M5cM_Strands=4,8,6,0;CPG	GT:GL:GC:DP:M5mC	0/0:99:18:18:0.666667
+chr19	6105713	.	G	.	16.4782	PASS	AD=14;BQ=34.7083;DP=18;MQ=60;MQ0=0;NS=1;AS_SB_OT=12;AS_SB_OB=2;SC5=ACGTC;ABQ=34.3303;AMQ=60;AS_SS_BQ_OT=34.0441;AS_SS_BQ_OB=36;AS_SS_MQ=60,60;PIR=0.622738;ENT100=1.90063;NAB=79.4355;NOI=0;M5cM_Strands=2,4,12,0;CPG	GT:GL:GC:DP:M5mC	0/0:99:36:18:0.666667
+chr19	6105744	.	C	.	11.8293	PASS	AD=8;BQ=35.7631;DP=16;MQ=60;MQ0=0;NS=1;AS_SB_OT=2;AS_SB_OB=6;SC5=ACCGG;ABQ=35.5246;AMQ=60;AS_SS_BQ_OT=36;AS_SS_BQ_OB=35.3648;AS_SS_MQ=60,60;PIR=0.456023;ENT100=1.95566;NAB=79.1352;NOI=0;M5cM_Strands=2,8,6,0;CPG	GT:GL:GC:DP:M5mC	0/0:99:18:16:0.8
 chr19	6105745	.	G	.	17.5696	PASS	AD=13;BQ=34.0367;DP=16;MQ=60;MQ0=0;NS=1;AS_SB_OT=10;AS_SB_OB=3;SC5=CCGGC;ABQ=34.805;AMQ=60;AS_SS_BQ_OT=34.4384;AS_SS_BQ_OB=36;AS_SS_MQ=60,60;PIR=0.604877;ENT100=1.95225;NAB=79.2377;NOI=0;M5cM_Strands=3,3,10,0;CPG	GT:GL:GC:DP:M5mC	0/0:99:30:16:0.5
 
 ----- stderr -----

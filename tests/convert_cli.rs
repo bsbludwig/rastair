@@ -183,7 +183,7 @@ fn same_bed_via_mkv_and_bcf_conversion() -> Result<()> {
 
     rastair()
         .args(["convert", "--input"])
-        .arg(&mpk)
+        .arg(&vcf)
         .arg("--output")
         .arg(&bed_from_vcf)
         .silent()
