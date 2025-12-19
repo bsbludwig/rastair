@@ -15,4 +15,6 @@ By specifying the file extension (`.vcf`, `.bcf`, or `.vcf.gz`) Rastair will aut
 
 ## Fields
 
+By default, only a few fields are include.
+You can enable more using the `--vcf-info-fields` and `--vcf-info-fields` flags with comma-separated field names.
 See [VCF Fields](vcf-fields.md) for a detailed description of the fields in the VCF output.
