@@ -2,6 +2,8 @@
 
 This document contains the help content for the `rastair` command-line program.
 
+**Version:** `2.0.0-rc.2`
+
 **Command Overview:**
 
 * [`rastair`↴](#rastair)
@@ -168,17 +170,13 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
 * `--vcf-info-fields <VCF_INFO_FIELDS>` — Additional INFO fields to include in VCF output (comma-separated VCF field IDs)
 
-   By default, only a minimal set is included: DP, AF, BQ, MQ, InCpG, DeNovoCpGCandidate
-
-   Available fields: AD, BQ, DP, MQ, MQ0, NS, ASBS, SEQCTX, AF, ABQ, AMQ, SSBQ, SSMQ, PIR, ENT100, NAB, NOI, MESI, InCpG, DeNovoCpGCandidate
+   By default, only a minimal set is included.
 
   Possible values: `AD`, `BQ`, `DP`, `MQ`, `MQ0`, `NS`, `AS_SB`, `SC5`, `AF`, `ABQ`, `AMQ`, `AS_SS_BQ`, `AS_SS_MQ`, `PIR`, `ENT100`, `NAB`, `NOI`, `M5cM_Strands`, `CPG`, `CPGnovo`
 
 * `--vcf-format-fields <VCF_FORMAT_FIELDS>` — Additional FORMAT fields to include in VCF output (comma-separated VCF field IDs)
 
-   By default, only a minimal set is included: GT, DP, M
-
-   Available fields: GT, GL, GC, DP, M, ML
+   By default, only a minimal set is included.
 
   Possible values: `GT`, `GL`, `GC`, `DP`, `M5mC`, `ML`
 
@@ -238,6 +236,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
   Default value: `14`
+  [env: `RASTAIR_THREADS`]
 
 
 
@@ -490,6 +489,7 @@ Train machine learning models
 * `-@`, `--threads <THREADS>` — Number of threads to use
 
   Default value: `14`
+  [env: `RASTAIR_THREADS`]
 
 ###### **Training Options:**
 
@@ -536,6 +536,7 @@ Compare predictions from a rastair2 call against a ground truth VCF and calculat
 * `-@`, `--threads <THREADS>` — Number of threads to use
 
   Default value: `14`
+  [env: `RASTAIR_THREADS`]
 
 
 
@@ -587,6 +588,7 @@ Please note that this is currently implemented as an R script. Unless you're usi
 * `--r-script-dir <R_SCRIPT_DIR>` — Override directory to find R scripts
 
    When not set, tries to look for `$rastair_path/scripts` and `./scripts`
+  [env: `R_SCRIPT_DIR`]
 
 ###### **Output Options:**
 
