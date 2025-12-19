@@ -21,8 +21,8 @@
 //!
 //! vcf_record!(
 //!     filters: [q10, s50],
-//!     info: [AlleleFrequency],
-//!     format: [ReadDepth],
+//!     info: [AlleleFrequency default],
+//!     format: [ReadDepth default],
 //!     min_samples: 1
 //! );
 //!
@@ -135,7 +135,10 @@ impl VcfBuilder {
         mut self,
         contigs: &[Contig],
         samples: &[SmolStr],
-    ) -> Result<VcfFile<R>> {
+    ) -> Result<VcfFile<R>>
+    where
+        R::Config: Default,
+    {
         R::write_header(&mut self.header).wrap_err("Failed to write VCF header")?;
 
         for contig in contigs {
@@ -168,7 +171,13 @@ impl VcfBuilder {
             chromosomes.insert(contig.name.clone(), id);
         }
 
-        Ok(VcfFile { chromosomes, samples: 0, record_type: PhantomData, writer: vcf })
+        Ok(VcfFile {
+            chromosomes,
+            samples: 0,
+            record_type: PhantomData,
+            writer: vcf,
+            field_config: Default::default(),
+        })
     }
 }
 
@@ -180,13 +189,28 @@ pub struct VcfFile<R: WriteToVcf> {
     pub samples: u16,
     record_type: PhantomData<R>,
     writer: Writer,
+    /// Configuration for which fields to write
+    field_config: R::Config,
 }
 
 impl<R: WriteToVcf> VcfFile<R> {
+    /// Set a custom field configuration
+    ///
+    /// This allows controlling which fields are written to the VCF output.
+    pub fn with_config(mut self, config: R::Config) -> Self {
+        self.field_config = config;
+        self
+    }
+
+    /// Get a mutable reference to the field configuration
+    pub fn config_mut(&mut self) -> &mut R::Config {
+        &mut self.field_config
+    }
+
     /// Add a record to the VCF
     pub fn add(&mut self, data: &R) -> Result<()> {
         let mut record = self.writer.empty_record();
-        data.write(&mut record).wrap_err("Failed to write record")?;
+        data.write(&mut record, &self.field_config).wrap_err("Failed to write record")?;
         self.writer.write(&record).wrap_err("Failed to write record to VCF file")?;
         Ok(())
     }
@@ -221,10 +245,14 @@ mod tests {
 
         vcf_record!(
             filters: [q10, s50],
-            info: [AlleleFrequency],
-            format: [Example],
+            info: [AlleleFrequency default],
+            format: [Example default],
             min_samples: 1
         );
+
+        // Use FieldConfig to suppress unused method warning
+        let config = FieldConfig::default();
+        let _ = config.with_field_ids(&[], &[]);
 
         let temp_dir = TempDir::new()?;
         let temp_file = temp_dir.path().join("test.vcf");

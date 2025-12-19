@@ -146,7 +146,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
 
-   Only if combined with `--all`, non-passing de-novo CpG positions will also be reported.
+   If combined with `--all`, non-passing de-novo CpG positions and CpGs in the reference but without coverage in the sample will also be reported.
 
   Default value: `false`
 * `--bed-include-empty` — Include CpG positions with zero coverage
@@ -162,10 +162,26 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--all` — Output all positions, even if they do not pass filters.
 
-   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs.
+   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs, and those without coverage.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
+* `--vcf-info-fields <VCF_INFO_FIELDS>` — Additional INFO fields to include in VCF output (comma-separated VCF field IDs)
+
+   By default, only a minimal set is included: DP, AF, BQ, MQ, InCpG, DeNovoCpGCandidate
+
+   Available fields: AD, BQ, DP, MQ, MQ0, NS, ASBS, SEQCTX, AF, ABQ, AMQ, SSBQ, SSMQ, PIR, ENT100, NAB, NOI, MESI, InCpG, DeNovoCpGCandidate
+
+  Possible values: `AD`, `BQ`, `DP`, `MQ`, `MQ0`, `NS`, `AS_SB`, `SC5`, `AF`, `ABQ`, `AMQ`, `AS_SS_BQ`, `AS_SS_MQ`, `PIR`, `ENT100`, `NAB`, `NOI`, `M5cM_Strands`, `CPG`, `CPGnovo`
+
+* `--vcf-format-fields <VCF_FORMAT_FIELDS>` — Additional FORMAT fields to include in VCF output (comma-separated VCF field IDs)
+
+   By default, only a minimal set is included: GT, DP, M
+
+   Available fields: GT, GL, GC, DP, M, ML
+
+  Possible values: `GT`, `GL`, `GC`, `DP`, `M5mC`, `ML`
+
 * `--bed <BED>` — Output BED file with the called methylated positions
 * `--bed-format <BED_FORMAT>` — Format of the output BED file
 
@@ -343,6 +359,13 @@ Convert between different file formats
 
 ###### **Filter Options:**
 
+* `-c`, `--cpgs-only` — Report CpGs only and default to BED output
+
+   Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
+
+   If combined with `--all`, non-passing de-novo CpG positions and CpGs in the reference but without coverage in the sample will also be reported.
+
+  Default value: `false`
 * `--bed-include-empty` — Include CpG positions with zero coverage
 
    This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
@@ -388,6 +411,32 @@ Convert between different file formats
     Regular BED file, usually `.bed`
   - `bed-gz`:
     BGZIP compressed file, usually `.bed.gz`
+
+* `--all` — Output all positions, even if they do not pass filters.
+
+   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs, and those without coverage.
+
+###### **Processing Options:**
+
+* `--error-model <ERROR_MODEL>`
+
+  Default value: `novaseq6000`
+
+  Possible values:
+  - `miseq`:
+    MiSeq <https://support.illumina.com/sequencing/sequencing_instruments/miseq.html>
+  - `miniseq`:
+    MiniSeq <https://support.illumina.com/sequencing/sequencing_instruments/miniseq.html>
+  - `nextseq500`:
+    NextSeq 500 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-500.html>
+  - `nextseq550`:
+    NextSeq 550 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-550.html>
+  - `hiseq2500`:
+    HiSeq 2500 <https://support.illumina.com/sequencing/sequencing_instruments/hiseq_2500.html>
+  - `novaseq6000`:
+    NovaSeq 6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
+  - `hiseq-x-ten`:
+    HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
 
 

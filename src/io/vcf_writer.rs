@@ -8,6 +8,7 @@ use crate::{
     vcf::Record,
 };
 use better_default::Default;
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use rastair_types::SmolStr;
@@ -42,6 +43,30 @@ pub struct VcfParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[default(NonZeroUsize::new(1).expect("1 > 0"))]
     pub vcf_threads: NonZeroUsize,
+
+    /// Additional INFO fields to include in VCF output (comma-separated VCF field IDs)
+    ///
+    /// By default, only a minimal set is included.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_parser = PossibleValuesParser::new(crate::vcf::InfoFieldId::ALL_IDS)
+            .map(|s| s.parse::<crate::vcf::InfoFieldId>().unwrap())
+    )]
+    #[arg(help_heading = cli::sections::OUTPUT)]
+    pub vcf_info_fields: Vec<crate::vcf::InfoFieldId>,
+
+    /// Additional FORMAT fields to include in VCF output (comma-separated VCF field IDs)
+    ///
+    /// By default, only a minimal set is included.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_parser = PossibleValuesParser::new(crate::vcf::FormatFieldId::ALL_IDS)
+            .map(|s| s.parse::<crate::vcf::FormatFieldId>().unwrap())
+    )]
+    #[arg(help_heading = cli::sections::OUTPUT)]
+    pub vcf_format_fields: Vec<crate::vcf::FormatFieldId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,11 +172,16 @@ impl VcfParams {
             Format::Vcf(f) => f.into(),
         };
 
+        // Build field configuration from CLI flags
+        let field_config = crate::vcf::FieldConfig::default()
+            .with_field_ids(&self.vcf_info_fields, &self.vcf_format_fields);
+
         Ok(Some(Writer::Vcf(
             self.vcf_writer(&contigs, &samples, metadata, format, compression)
                 .wrap_err("Failed to create VCF writer")?
                 .wrap_err("No VCF output path present")
-                .this_is_a_bug()?,
+                .this_is_a_bug()?
+                .with_config(field_config),
         )))
     }
 

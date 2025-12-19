@@ -1,0 +1,8 @@
+---
+source: tests/error_messages.rs
+expression: result.stderr()
+---
+error: invalid value 'INVALID_FIELD' for '--vcf-format-fields <VCF_FORMAT_FIELDS>'
+  [possible values: GT, GL, GC, DP, M5mC, ML]
+
+For more information, try '--help'.

@@ -9,6 +9,7 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`dnCpG_bq`** | Low base quality for de-novo CpG candidate |
 | **`dnCpG_mapq`** | Low mapping quality for de-novo CpG candidate |
 | **`dnCpG_vaf`** | Low variant allele frequency for de-novo CpG candidate |
+| **`dnCpG_adj`** | Included as adjacent position for de-novo CpG candidate, but other position did not pass filters |
 | **`m_vaf`** | Low variant allele frequency for methylation candidate |
 | **`m_bq_ratio`** | Low quality ratio for methylation candidate |
 | **`m_pos`** | Alt allele evidence from read edges for methylation candidate |
@@ -37,6 +38,7 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`ENT100`** | Shannon entropy of 100bp sequence context around variant position. Value range (0..2) | `Float` | `f64` | 1 |
 | **`NAB`** | RMS of number of aligned bases | `Float` | `f64` | R |
 | **`NOI`** | RMS of number of indels | `Float` | `f64` | R |
+| **`M5cM_Strands`** | Number of methylated and unmethylated reads supporting each strand, as well as reads with and without SNP evidence | `Integer` | `u32` | 4 |
 | **`CPG`** | Is this a CpG site? | `Flag` | `bool` | 0 |
 | **`CPGnovo`** | De-novo CPG candidate: Could the alt alleles create a new CpG site? | `Flag` | `bool` | 0 |
 ## Format Fields

@@ -4,11 +4,6 @@ mod utils;
 use insta::assert_compact_debug_snapshot;
 use utils::*;
 
-const CALL_TEST_BAM: [&str; 3] =
-    ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
-const CHR19_SMALL: &str = "--region=chr19:6105700-6105800";
-const NO_ML: &str = "--no-ml"; // disable ML for faster tests
-
 #[test]
 fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
     apply_common_filters!();
@@ -287,6 +282,68 @@ fn vcf_with_nOT_nOB() -> Result<()> {
             .collect::<Vec<_>>();
         Ok(depths)
     }
+
+    Ok(())
+}
+
+#[test]
+fn vcf_field_configuration_via_cli() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let default_vcf = temp_dir.path().join("default.vcf");
+    let custom_vcf = temp_dir.path().join("custom.vcf");
+
+    // Create VCF with default fields
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&default_vcf)
+        .succeeds()?;
+
+    // Create VCF with additional fields enabled
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&custom_vcf)
+        .args(["--vcf-info-fields=AF,MQ0,NS"])
+        .succeeds()?;
+
+    let default_content = std::fs::read_to_string(&default_vcf)?;
+    let custom_content = std::fs::read_to_string(&custom_vcf)?;
+
+    // Note: Headers are written for all fields regardless of config
+    // Check the actual data lines instead
+    let default_data_lines: Vec<&str> = vcf_content_lines(&default_content).collect();
+    let custom_data_lines: Vec<&str> = vcf_content_lines(&custom_content).collect();
+
+    // Default VCF should not contain AF, MQ0, NS in data lines (they are not default)
+    assert!(!default_data_lines.iter().any(|l| l.contains("AF=")), "AF should not be in default");
+    assert!(!default_data_lines.iter().any(|l| l.contains("MQ0=")), "MQ0 should not be in default");
+    assert!(!default_data_lines.iter().any(|l| l.contains("NS=")), "NS should not be in default");
+
+    // Default VCF should contain default fields like AD in data lines
+    assert!(default_data_lines.iter().all(|l| l.contains("AD=")), "Should have AD in default");
+    assert!(default_data_lines.iter().all(|l| l.contains("DP=")), "Should have DP in default");
+    assert!(default_data_lines.iter().all(|l| l.contains("BQ=")), "Should have BQ in default");
+
+    // Custom VCF should contain the additional fields in at least some data lines
+    // (not all fields are present on all variant types)
+    assert!(
+        custom_data_lines.iter().any(|l| l.contains("AF=")),
+        "Should have AF in some data lines"
+    );
+    assert!(
+        custom_data_lines.iter().any(|l| l.contains("MQ0=")),
+        "Should have MQ0 in some data lines"
+    );
+    assert!(
+        custom_data_lines.iter().any(|l| l.contains("NS=")),
+        "Should have NS in some data lines"
+    );
+
+    // Custom VCF should still have default fields
+    assert!(custom_data_lines.iter().all(|l| l.contains("AD=")), "Should still have AD");
 
     Ok(())
 }

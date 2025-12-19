@@ -7,6 +7,11 @@ pub use insta_cmd::assert_cmd_snapshot;
 pub use std::{collections::BTreeSet, path::Path, process::Command};
 pub use tempfile::TempDir;
 
+pub const CALL_TEST_BAM: [&str; 3] =
+    ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
+pub const CHR19_SMALL: &str = "--region=chr19:6105700-6105800";
+pub const NO_ML: &str = "--no-ml"; // disable ML for faster tests
+
 pub fn rastair() -> Command {
     let mut cmd = Command::new(insta_cmd::get_cargo_bin("rastair"));
     cmd.env("NO_COLOR", "1");

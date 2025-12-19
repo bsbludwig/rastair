@@ -126,3 +126,35 @@ fn invalid_bam_file() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn vcf_field_configuration_invalid_field_id() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let temp_file = temp_dir.path().join("test.vcf");
+
+    // Try to enable an invalid INFO field
+    let result = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&temp_file)
+        .arg("--vcf-info-fields=INVALID_FIELD")
+        .output()?;
+
+    assert!(!result.status.success(), "Should fail with invalid field ID");
+    assert_snapshot!(result.stderr());
+
+    // Try to enable an invalid FORMAT field
+    let result = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&temp_file)
+        .arg("--vcf-format-fields=INVALID_FIELD")
+        .output()?;
+
+    assert!(!result.status.success(), "Should fail with invalid field ID");
+    assert_snapshot!(result.stderr());
+
+    Ok(())
+}
