@@ -481,7 +481,7 @@ fn subsample_training_data(
     n_positive: usize,
     n_negative: usize,
 ) -> Result<(Array2<f64>, Array1<f64>)> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Separate positive and negative indices
     let mut positive_indices = Vec::new();

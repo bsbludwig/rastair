@@ -2348,7 +2348,7 @@ dependencies = [
  "pastey",
  "probability",
  "proptest",
- "rand 0.8.5",
+ "rand 0.9.2",
  "rastair-types",
  "rastair-vcf",
  "rayon",
