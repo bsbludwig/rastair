@@ -331,7 +331,7 @@ fn process_truth_record(record: &bcf::Record) -> Result<Option<PositionKey>> {
     // Filter: only SNPs (single nucleotide variants)
     let alleles = record.alleles();
     if alleles.len() != 2 {
-        return Ok(None); // Skip multi-allelic sites
+        return Ok(None); // TODO: Handle  multi-allelic sites
     }
 
     let ref_allele = alleles[0];

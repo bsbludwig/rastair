@@ -322,7 +322,7 @@ fn load_predictions_vcf(
     let index_path = PathBuf::from(format!("{}.csi", vcf_path.path().display()));
     ensure!(
         index_path.exists(),
-        "Predictions VCF index `{index_path:?}` not found. Please create an index with `bcftools index {vcf_path:?}`",
+        "Predictions VCF index `{index_path:?}` not found. Please create an index with `bcftools index {vcf_path}`",
     );
 
     let mut reader = bcf::IndexedReader::from_path(vcf_path.path())
