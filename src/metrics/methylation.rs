@@ -33,19 +33,70 @@ fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methy
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
 
-    if cpg == InCpG::C || denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
-        ref_c(config, p)
+    // Check for original CpG
+    let original_beta = if cpg == InCpG::C || denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
+        Some(ref_c(config, p)?)
     } else if cpg == InCpG::G || denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
-        ref_g(config, p)
-    } else if p.alt(C).is_some() && ref_after == G {
+        Some(ref_g(config, p)?)
+    } else {
+        None
+    };
+
+    // Check for de-novo CpG
+    let denovo_beta = if p.alt(C).is_some() && ref_after == G {
         // creating new CpG
-        if ref_base == T { ref_t_to_c(config, p) } else { ref_not_t_to_c(config, p) }
+        if ref_base == T { Some(ref_t_to_c(config, p)?) } else { Some(ref_not_t_to_c(config, p)?) }
     } else if p.alt(G).is_some() && ref_before == C {
         // creating new CpG
-        if ref_base == A { ref_a_to_g(config, p) } else { ref_not_a_to_g(config, p) }
+        if ref_base == A { Some(ref_a_to_g(config, p)?) } else { Some(ref_not_a_to_g(config, p)?) }
     } else {
-        // Position is neither an original CpG nor a de-novo CpG site
-        Ok(Methylated::Unknown)
+        None
+    };
+
+    // Combine results
+    match (original_beta, denovo_beta) {
+        // Both original and de-novo CpG present
+        (
+            Some(Methylated::OriginalCpG { beta: orig }),
+            Some(Methylated::DeNovoCpG { beta: denovo }),
+        ) => Ok(Methylated::Both { original_beta: orig, denovo_beta: denovo }),
+
+        // Only original CpG
+        (Some(Methylated::OriginalCpG { beta: orig }), Some(Methylated::NoEvidence))
+        | (Some(Methylated::OriginalCpG { beta: orig }), None) => {
+            Ok(Methylated::OriginalCpG { beta: orig })
+        }
+
+        // Only de-novo CpG
+        (Some(Methylated::NoEvidence), Some(Methylated::DeNovoCpG { beta: denovo }))
+        | (None, Some(Methylated::DeNovoCpG { beta: denovo })) => {
+            Ok(Methylated::DeNovoCpG { beta: denovo })
+        }
+
+        // No evidence from both
+        (Some(Methylated::NoEvidence), Some(Methylated::NoEvidence))
+        | (Some(Methylated::NoEvidence), None)
+        | (None, Some(Methylated::NoEvidence)) => Ok(Methylated::NoEvidence),
+
+        // Neither present
+        (None, None) => Ok(Methylated::Unknown),
+
+        // Unknown cases
+        (Some(Methylated::Unknown), _) | (_, Some(Methylated::Unknown)) => Ok(Methylated::Unknown),
+
+        // Shouldn't happen cases - functions returning wrong variant types
+        (Some(Methylated::Both { .. }), _) | (_, Some(Methylated::Both { .. })) => {
+            Err(color_eyre::eyre::eyre!("Unexpected Both variant in intermediate methylation call"))
+        }
+        (Some(Methylated::DeNovoCpG { .. }), Some(Methylated::OriginalCpG { .. }))
+        | (Some(Methylated::DeNovoCpG { .. }), Some(Methylated::DeNovoCpG { .. }))
+        | (Some(Methylated::DeNovoCpG { .. }), Some(Methylated::NoEvidence))
+        | (Some(Methylated::DeNovoCpG { .. }), None)
+        | (Some(Methylated::OriginalCpG { .. }), Some(Methylated::OriginalCpG { .. }))
+        | (None, Some(Methylated::OriginalCpG { .. }))
+        | (Some(Methylated::NoEvidence), Some(Methylated::OriginalCpG { .. })) => {
+            Err(color_eyre::eyre::eyre!("Unexpected variant combination in methylation calling"))
+        }
     }
 }
 

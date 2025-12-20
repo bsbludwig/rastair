@@ -77,7 +77,7 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=0., // Position 1: C with de-novo CpG G
-        (C G) PASS M5mC=1., // Position 2: Real variant G, methylation info preserved in M5mC
+        (C G) PASS M5mC=vec![1., 0.], // Position 2: Real variant G - both original and de-novo CpG beta values
         (C T) FAIL,
         (G .) PASS M5mC=0.5,
         (G A) FAIL,
@@ -168,7 +168,7 @@ fn test_cpg_that_is_also_denovo() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=0.5,
-        (C G) PASS M5mC=1., // Real variant G, methylation info preserved in M5mC
+        (C G) PASS M5mC=vec![1., 1.], // Real variant G - both original and de-novo CpG beta values
         (G .) PASS M5mC=2./3.,
     ];
 

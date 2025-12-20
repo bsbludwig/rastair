@@ -20,14 +20,29 @@ pub enum Methylated {
     OriginalCpG { beta: Probability },
     /// De-novo CpG site
     DeNovoCpG { beta: Probability },
+    /// Both original CpG and de-novo CpG at this position
+    Both { original_beta: Probability, denovo_beta: Probability },
 }
 
 impl Methylated {
+    /// Returns the beta value(s) as a vector.
+    /// For positions with both original and de-novo CpG, returns both values.
+    pub fn betas(&self) -> Vec<Probability> {
+        match self {
+            Methylated::Unknown => vec![],
+            Methylated::NoEvidence => vec![Probability::ZERO],
+            Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => vec![*beta],
+            Methylated::Both { original_beta, denovo_beta } => vec![*original_beta, *denovo_beta],
+        }
+    }
+
+    /// Returns the first beta value, for backwards compatibility.
     pub fn beta(&self) -> Option<Probability> {
         match self {
             Methylated::Unknown => None,
             Methylated::NoEvidence => Some(Probability::ZERO),
             Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => Some(*beta),
+            Methylated::Both { original_beta, .. } => Some(*original_beta),
         }
     }
 }
@@ -43,6 +58,9 @@ impl fmt::Debug for Methylated {
             Methylated::DeNovoCpG { beta } => {
                 f.debug_tuple("Methylated::DeNovoCpG").field(beta).finish()
             }
+            Methylated::Both { original_beta, denovo_beta } => {
+                f.debug_tuple("Methylated::Both").field(original_beta).field(denovo_beta).finish()
+            }
         }
     }
 }
@@ -57,16 +75,19 @@ impl rastair_vcf::HeaderField for Methylated {
 
 impl rastair_vcf::FormatField for Methylated {
     type Type = Option<f64>;
-    const NUMBER: FormatFieldNumber = FormatFieldNumber::Num(1);
+    const NUMBER: FormatFieldNumber = FormatFieldNumber::OnePerPossibleBaseModification;
 
     fn write(&self, record: &mut Record) -> Result<()> {
-        <Option<f64> as FormatFieldValue>::write(record, Self::ID, &[self.beta().map(|x| x.f())])
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to write format field {} (type {})",
-                    Self::ID,
-                    <Self::Type as FormatFieldValue>::TYPE_NAME
-                )
-            })
+        let betas = self.betas();
+        let values: Vec<Option<f64>> =
+            if betas.is_empty() { vec![None] } else { betas.iter().map(|b| Some(b.f())).collect() };
+
+        <Option<f64> as FormatFieldValue>::write(record, Self::ID, &values).wrap_err_with(|| {
+            format!(
+                "Failed to write format field {} (type {})",
+                Self::ID,
+                <Self::Type as FormatFieldValue>::TYPE_NAME
+            )
+        })
     }
 }

@@ -46,7 +46,7 @@ expression: stdout
 ##FORMAT=<ID=GL,Number=G,Type=Integer,Description="Genotype likelihoods, Phred-scaled">
 ##FORMAT=<ID=GC,Number=G,Type=Integer,Description="Genotype confidence, Phred-scaled">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
-##FORMAT=<ID=M5mC,Number=1,Type=Float,Description="Methylation level at CpG sites">
+##FORMAT=<ID=M5mC,Number=M,Type=Float,Description="Methylation level at CpG sites">
 ##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelihood by rastair's machine learning model">
 ##contig=<ID=chr19,length=100>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample

@@ -23,7 +23,17 @@ This gives us a good indication that the `C` is methylated.
 ## Output (VCF)
 
 When methylation calling is enabled, Rastair will include all `CpG` sites in the output VCF file.
-It will set the beta value in the `M5mC` format field for each site.
+It will set the beta value(s) in the `M5mC` format field for each site.
+
+In most cases, a single beta value is reported. However, when a position is both:
+1. Part of an original CpG site in the reference genome, AND
+2. Affected by a variant that creates a de-novo CpG site
+
+Then **two beta values** will be reported in the `M5mC` field:
+- The first value represents the methylation level of the original CpG context
+- The second value represents the methylation level of the de-novo CpG context
+
+This allows for accurate methylation quantification in complex scenarios where multiple CpG contexts overlap at a single position.
 
 If a certain threshold of confidence is met,
 the alt allele will be set to `.` since it is not considered a variant in the traditional sense.

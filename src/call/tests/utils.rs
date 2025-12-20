@@ -169,6 +169,7 @@ pub(crate) fn parse_pass_status(s: &str) -> bool {
 pub(crate) enum FieldValue {
     F64(f64),
     OptF64(Option<f64>),
+    VecF64(Vec<f64>),
     String(String),
 }
 
@@ -186,6 +187,12 @@ impl FieldValue {
                 (None, None) => true,
                 _ => false,
             },
+            (Self::VecF64(a), Self::VecF64(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter().zip(b.iter()).all(|(a_val, b_val)| (a_val - b_val).abs() < epsilon)
+            }
             (Self::String(a), Self::String(b)) => a == b,
             _ => false,
         }
@@ -259,13 +266,26 @@ impl ToFieldValue for String {
     }
 }
 
+impl ToFieldValue for Vec<f64> {
+    fn to_field_value(self) -> FieldValue {
+        FieldValue::VecF64(self)
+    }
+}
+
 /// Get a field value from a VCF record by field ID
 fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
     // FORMAT fields (sample 0)
     if let Some(sample) = record.samples.first() {
         match field_id {
             "M5mC" => {
-                return Ok(FieldValue::OptF64(sample.methylated.beta().map(|p| p.f())));
+                let betas = sample.methylated.betas();
+                if betas.is_empty() {
+                    return Ok(FieldValue::OptF64(None));
+                } else if betas.len() == 1 {
+                    return Ok(FieldValue::OptF64(Some(betas[0].f())));
+                } else {
+                    return Ok(FieldValue::VecF64(betas.iter().map(|b| b.f()).collect()));
+                }
             }
             "ML" => {
                 // ML is OnePerAlt, so we get the first value
