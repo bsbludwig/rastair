@@ -1,7 +1,7 @@
 use std::fmt;
 
 use color_eyre::{Result, eyre::WrapErr};
-use rastair_types::Probability;
+use rastair_types::{Probability, SmallVec, smallvec::smallvec};
 use rastair_vcf::{FormatFieldNumber, FormatFieldValue, VcfField as _};
 use rust_htslib::bcf::Record;
 
@@ -27,12 +27,14 @@ pub enum Methylated {
 impl Methylated {
     /// Returns the beta value(s) as a vector.
     /// For positions with both original and de-novo CpG, returns both values.
-    pub fn betas(&self) -> Vec<Probability> {
+    pub fn betas(&self) -> SmallVec<Probability, 2> {
         match self {
-            Methylated::Unknown => vec![],
-            Methylated::NoEvidence => vec![Probability::ZERO],
-            Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => vec![*beta],
-            Methylated::Both { original_beta, denovo_beta } => vec![*original_beta, *denovo_beta],
+            Methylated::Unknown => smallvec![],
+            Methylated::NoEvidence => smallvec![Probability::ZERO],
+            Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => smallvec![*beta],
+            Methylated::Both { original_beta, denovo_beta } => {
+                smallvec![*original_beta, *denovo_beta]
+            }
         }
     }
 
