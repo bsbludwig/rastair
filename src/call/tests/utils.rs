@@ -278,14 +278,21 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
     if let Some(sample) = record.samples.first() {
         match field_id {
             "M5mC" => {
-                let betas = sample.methylated.betas();
-                if betas.is_empty() {
-                    return Ok(FieldValue::OptF64(None));
-                } else if betas.len() == 1 {
-                    return Ok(FieldValue::OptF64(Some(betas[0].f())));
-                } else {
-                    return Ok(FieldValue::VecF64(betas.iter().map(|b| b.f()).collect()));
-                }
+                use crate::vcf::Methylated;
+                return Ok(match &sample.methylated {
+                    // Unknown: no data available
+                    Methylated::Unknown => FieldValue::OptF64(None),
+                    // NoEvidence: checked and found no methylation (beta = 0.0)
+                    Methylated::NoEvidence => FieldValue::OptF64(Some(0.0)),
+                    // Single context: one beta value
+                    Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => {
+                        FieldValue::OptF64(Some(beta.f()))
+                    }
+                    // Dual context: both beta values
+                    Methylated::Both { original_beta, denovo_beta } => {
+                        FieldValue::VecF64(vec![original_beta.f(), denovo_beta.f()])
+                    }
+                });
             }
             "ML" => {
                 // ML is OnePerAlt, so we get the first value

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use color_eyre::{Result, eyre::WrapErr};
-use rastair_types::{Probability, SmallVec, smallvec::smallvec};
+use rastair_types::Probability;
 use rastair_vcf::{FormatFieldNumber, FormatFieldValue, VcfField as _};
 use rust_htslib::bcf::Record;
 
@@ -22,31 +22,6 @@ pub enum Methylated {
     DeNovoCpG { beta: Probability },
     /// Both original CpG and de-novo CpG at this position
     Both { original_beta: Probability, denovo_beta: Probability },
-}
-
-impl Methylated {
-    /// Returns the beta value(s) as a vector.
-    /// For positions with both original and de-novo CpG, returns both values.
-    pub fn betas(&self) -> SmallVec<Probability, 2> {
-        match self {
-            Methylated::Unknown => smallvec![],
-            Methylated::NoEvidence => smallvec![Probability::ZERO],
-            Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => smallvec![*beta],
-            Methylated::Both { original_beta, denovo_beta } => {
-                smallvec![*original_beta, *denovo_beta]
-            }
-        }
-    }
-
-    /// Returns the first beta value, for backwards compatibility.
-    pub fn beta(&self) -> Option<Probability> {
-        match self {
-            Methylated::Unknown => None,
-            Methylated::NoEvidence => Some(Probability::ZERO),
-            Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => Some(*beta),
-            Methylated::Both { original_beta, .. } => Some(*original_beta),
-        }
-    }
 }
 
 impl fmt::Debug for Methylated {
@@ -80,11 +55,20 @@ impl rastair_vcf::FormatField for Methylated {
     const NUMBER: FormatFieldNumber = FormatFieldNumber::OnePerPossibleBaseModification;
 
     fn write(&self, record: &mut Record) -> Result<()> {
-        let betas = self.betas();
-        let values: Vec<Option<f64>> =
-            if betas.is_empty() { vec![None] } else { betas.iter().map(|b| Some(b.f())).collect() };
+        let values: &[Option<f64>] = match self {
+            // Unknown: no processing was done, write None
+            Methylated::Unknown => &[None],
+            // NoEvidence: we checked and found no methylation, write 0.0
+            Methylated::NoEvidence => &[Some(0.0)],
+            // Single context: write one beta value
+            Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => &[Some(beta.f())],
+            // Dual context: write both beta values (original first, de-novo second)
+            Methylated::Both { original_beta, denovo_beta } => {
+                &[Some(original_beta.f()), Some(denovo_beta.f())]
+            }
+        };
 
-        <Option<f64> as FormatFieldValue>::write(record, Self::ID, &values).wrap_err_with(|| {
+        <Option<f64> as FormatFieldValue>::write(record, Self::ID, values).wrap_err_with(|| {
             format!(
                 "Failed to write format field {} (type {})",
                 Self::ID,
