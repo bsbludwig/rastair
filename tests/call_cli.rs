@@ -214,7 +214,6 @@ fn segmentation_does_not_change_bed_output() -> Result<()> {
 }
 
 #[test]
-#[ignore = "TODO: Fix after changing vcf output"]
 fn segmentation_overlaps_do_not_cause_duplicate_records() -> Result<()> {
     const REGION: &str = "--region=chr19";
 
@@ -344,6 +343,191 @@ fn vcf_field_configuration_via_cli() -> Result<()> {
 
     // Custom VCF should still have default fields
     assert!(custom_data_lines.iter().all(|l| l.contains("AD=")), "Should still have AD");
+
+    Ok(())
+}
+
+#[test]
+fn min_depth_filter_reduces_variant_calls() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let default_vcf = temp_dir.path().join("default.vcf");
+    let filtered_vcf = temp_dir.path().join("filtered.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&default_vcf)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&filtered_vcf)
+        .arg("--v-min-depth=10")
+        .succeeds()?;
+
+    let default_content = std::fs::read_to_string(&default_vcf)?;
+    let filtered_content = std::fs::read_to_string(&filtered_vcf)?;
+
+    let default_count = vcf_content_lines(&default_content).count();
+    let filtered_count = vcf_content_lines(&filtered_content).count();
+
+    assert!(
+        filtered_count <= default_count,
+        "Filtered VCF should have fewer or equal records than default (filtered: {}, default: {})",
+        filtered_count,
+        default_count
+    );
+
+    Ok(())
+}
+
+#[test]
+fn max_coverage_filter_affects_output() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let default_vcf = temp_dir.path().join("default.vcf");
+    let filtered_vcf = temp_dir.path().join("filtered.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&default_vcf)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&filtered_vcf)
+        .arg("--m-max-coverage=5")
+        .succeeds()?;
+
+    let default_content = std::fs::read_to_string(&default_vcf)?;
+    let filtered_content = std::fs::read_to_string(&filtered_vcf)?;
+
+    let default_count = vcf_content_lines(&default_content).count();
+    let filtered_count = vcf_content_lines(&filtered_content).count();
+
+    assert!(
+        filtered_count <= default_count,
+        "Filtered VCF should have fewer or equal records than default (filtered: {}, default: {})",
+        filtered_count,
+        default_count
+    );
+
+    Ok(())
+}
+
+#[test]
+fn min_baseq_filter_reduces_variant_calls() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let default_vcf = temp_dir.path().join("default.vcf");
+    let filtered_vcf = temp_dir.path().join("filtered.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&default_vcf)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&filtered_vcf)
+        .arg("--min-baseq=30")
+        .succeeds()?;
+
+    let default_content = std::fs::read_to_string(&default_vcf)?;
+    let filtered_content = std::fs::read_to_string(&filtered_vcf)?;
+
+    let default_count = vcf_content_lines(&default_content).count();
+    let filtered_count = vcf_content_lines(&filtered_content).count();
+
+    assert!(
+        filtered_count <= default_count,
+        "Filtered VCF should have fewer or equal records than default (filtered: {}, default: {})",
+        filtered_count,
+        default_count
+    );
+
+    Ok(())
+}
+
+#[test]
+fn min_mapq_filter_reduces_variant_calls() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let default_vcf = temp_dir.path().join("default.vcf");
+    let filtered_vcf = temp_dir.path().join("filtered.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&default_vcf)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&filtered_vcf)
+        .arg("--min-mapq=40")
+        .succeeds()?;
+
+    let default_content = std::fs::read_to_string(&default_vcf)?;
+    let filtered_content = std::fs::read_to_string(&filtered_vcf)?;
+
+    let default_count = vcf_content_lines(&default_content).count();
+    let filtered_count = vcf_content_lines(&filtered_content).count();
+
+    assert!(
+        filtered_count <= default_count,
+        "Filtered VCF should have fewer or equal records than default (filtered: {}, default: {})",
+        filtered_count,
+        default_count
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mbias_filter_affects_variant_calls() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let default_vcf = temp_dir.path().join("default.vcf");
+    let filtered_vcf = temp_dir.path().join("filtered.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&default_vcf)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&filtered_vcf)
+        .args(["--nOT=10,10,10,10", "--nOB=10,10,10,10"])
+        .succeeds()?;
+
+    let default_content = std::fs::read_to_string(&default_vcf)?;
+    let filtered_content = std::fs::read_to_string(&filtered_vcf)?;
+
+    let default_count = vcf_content_lines(&default_content).count();
+    let filtered_count = vcf_content_lines(&filtered_content).count();
+
+    assert!(
+        filtered_count <= default_count,
+        "Filtered VCF should have fewer or equal records than default (filtered: {}, default: {})",
+        filtered_count,
+        default_count
+    );
 
     Ok(())
 }
