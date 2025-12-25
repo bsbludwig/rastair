@@ -24,7 +24,7 @@ pub use rust_htslib::bcf::record::GenotypeAllele as HtslibGenotypeAllele;
 
 /// Represents a genotype in a VCF record, which can contain multiple alleles.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct Genotype(pub SmallVec<GenotypeAllele, 4>);
+pub struct Genotype(pub SmallVec<GenotypeAllele, 2>);
 
 /// Represents a single allele in a genotype, which can be phased or unphased.
 // Copy from `rust_htslib::bcf::record::GenotypeAllele` for adding serde derives

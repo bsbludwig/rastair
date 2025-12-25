@@ -1,4 +1,5 @@
 use super::super::shared::{CommonFeatures, alt_score_methylation_aware};
+use super::super::utils::safe_div;
 use crate::{
     metrics::{FormsDenovo, MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
@@ -75,7 +76,7 @@ fn calculate_adjacent_features(
             let beta_center = {
                 let c_count = c.metrics.alt(C).map(|x| x.strand_count.ot).unwrap_or_default();
                 let t_count = c.metrics.alt(T).map(|x| x.strand_count.ot).unwrap_or_default();
-                if c_count + t_count == 0 { 0.0 } else { t_count.f() / (t_count + c_count).f() }
+                safe_div(t_count.f(), (t_count + c_count).f())
             };
 
             if let Some(after) = a
@@ -87,11 +88,11 @@ fn calculate_adjacent_features(
                 let beta_after = {
                     let g_count = r.strand_count.ob;
                     let a_count = alt.strand_count.ob;
-                    if g_count + a_count == 0 { 0.0 } else { a_count.f() / (a_count + g_count).f() }
+                    safe_div(a_count.f(), (a_count + g_count).f())
                 };
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_after + 1.0).log2();
 
-                let alt_ad_adj = alt.depth.f() / after.pos_metrics.depth.f();
+                let alt_ad_adj = safe_div(alt.depth.f(), after.pos_metrics.depth.f());
                 let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.).log2()
                     - (r.strand_count.ot.f() * r.baseq_s.ot + 1.).log2();
                 let sb_adj = (alt.strand_count.ob + 1).f() / (alt.strand_count.ot + 1).f();
@@ -106,7 +107,7 @@ fn calculate_adjacent_features(
             let beta_center = {
                 let g_count = c.metrics.alt(G).map(|x| x.strand_count.ot).unwrap_or_default();
                 let a_count = c.metrics.alt(A).map(|x| x.strand_count.ot).unwrap_or_default();
-                if g_count + a_count == 0 { 0.0 } else { a_count.f() / (a_count + g_count).f() }
+                safe_div(a_count.f(), (a_count + g_count).f())
             };
 
             if let Some(before) = b
@@ -118,11 +119,11 @@ fn calculate_adjacent_features(
                 let beta_before = {
                     let c_count = r.strand_count.ob;
                     let t_count = alt.strand_count.ob;
-                    if c_count + t_count == 0 { 0.0 } else { t_count.f() / (t_count + c_count).f() }
+                    safe_div(t_count.f(), (t_count + c_count).f())
                 };
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_before + 1.0).log2();
 
-                let alt_ad_adj = alt.depth.f() / before.pos_metrics.depth.f();
+                let alt_ad_adj = safe_div(alt.depth.f(), before.pos_metrics.depth.f());
                 let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.).log2()
                     - (r.strand_count.ob.f() * r.baseq_s.ob + 1.).log2();
                 let sb_adj = (alt.strand_count.ot + 1).f() / (alt.strand_count.ob + 1).f();

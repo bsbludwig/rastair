@@ -1,4 +1,5 @@
 use super::super::shared::{CommonFeatures, alt_score_methylation_aware};
+use super::super::utils::safe_div;
 use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
@@ -82,20 +83,22 @@ fn calculate_adjacent_features(
         let c_r = &c.metrics.ref_metrics;
         let r = &after.ref_metrics;
 
-        let beta_center =
-            c_alt.strand_count.ot.f() / (c_alt.strand_count.ot.f() + c_r.strand_count.ot.f());
+        let beta_center = safe_div(
+            c_alt.strand_count.ot.f(),
+            c_alt.strand_count.ot.f() + c_r.strand_count.ot.f(),
+        );
 
         if let Some(MetricsForAlt { alt, .. }) = after.alt_metrics(A) {
             let alt_ad = alt.depth.f();
             let depth = after.pos_metrics.depth.f();
-            let alt_ad_adj = alt_ad / depth;
+            let alt_ad_adj = safe_div(alt_ad, depth);
 
             // Calculate alt_score for G→A
             let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.0).log2()
                 - (r.strand_count.ot.f() * c_r.baseq_s.ot + 1.0).log2();
 
             let beta_after =
-                alt.strand_count.ob.f() / (alt.strand_count.ob + r.strand_count.ob).f();
+                safe_div(alt.strand_count.ob.f(), (alt.strand_count.ob + r.strand_count.ob).f());
 
             let beta_ratio = (beta_center + 1.0).log2() - (beta_after + 1.0).log2();
 
@@ -117,19 +120,19 @@ fn calculate_adjacent_features(
         let r = &before.ref_metrics;
 
         let beta_center =
-            c_r.strand_count.ob.f() / (c_alt.strand_count.ob.f() + c_r.strand_count.ob.f());
+            safe_div(c_r.strand_count.ob.f(), c_alt.strand_count.ob.f() + c_r.strand_count.ob.f());
 
         if let Some(MetricsForAlt { alt, .. }) = before.alt_metrics(T) {
             let alt_ad = alt.depth.f();
             let depth = before.pos_metrics.depth.f();
-            let alt_ad_adj = alt_ad / depth;
+            let alt_ad_adj = safe_div(alt_ad, depth);
 
             // Calculate alt_score for C→T
             let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.0).log2()
                 - (r.strand_count.ob.f() * c_r.baseq_s.ob + 1.0).log2();
 
             let beta_before =
-                alt.strand_count.ot.f() / (alt.strand_count.ot + r.strand_count.ot).f();
+                safe_div(alt.strand_count.ot.f(), (alt.strand_count.ot + r.strand_count.ot).f());
 
             let beta_ratio = (beta_center + 1.0).log2() - (beta_before + 1.0).log2();
 
