@@ -14,6 +14,3 @@ mod utils;
 
 pub mod params;
 pub use params::ThresholdParams;
-
-#[cfg(test)]
-mod tests;

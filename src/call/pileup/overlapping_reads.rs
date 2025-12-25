@@ -1,7 +1,6 @@
 // TODO: Replace this with a more efficient dedupe algorithm
 //  - track qnames separately and not in SimpleRead
 //  - use a FxHashMap for quick lookup by qname suffix
-// TODO: Add tests for this module
 
 use std::cell::RefCell;
 
