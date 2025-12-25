@@ -491,7 +491,9 @@ pub(crate) fn test_call(
 #[track_caller]
 pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
     if m.ref_base() == base {
-        todo!()
+        panic!(
+            "Cannot set reference base {base} as passing - only alt bases can be marked as passing/failing"
+        );
     }
     let alt = m.alt_filters_mut(base).wrap_err_with(|| format!("no {base} alt")).unwrap();
     alt.ml = Some(Probability::ONE);
@@ -502,7 +504,9 @@ rastair_vcf::filter!(MANUAL, "manual");
 #[track_caller]
 pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     if m.ref_base() == base {
-        todo!()
+        panic!(
+            "Cannot set reference base {base} as failing - only alt bases can be marked as passing/failing"
+        );
     }
     m.pos_filters.other_pos_in_denovo_passes = false;
 
