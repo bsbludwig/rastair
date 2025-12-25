@@ -1,5 +1,6 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat, format::GenotypeString},
+    call::variant_calling::GenotypeTag,
     metrics::MethylationEvidenceStrandInfo,
     utils::logging::ThisIsABug,
     vcf::{DeNovoCpGCandidate, GenotypeConfidence, GenotypeLikelihood, InCpG, Methylated},
@@ -79,13 +80,15 @@ impl Rastair1BedFormat {
         let count = MethylationEvidenceStrandInfo::from_vcf(r)
             .wrap_err("Failed to read methylation evidence strand info")?;
 
-        let genotype = if let Ok(gs) = r.genotypes() {
+        let genotype_alleles: SmallVec<_, 2> = if let Ok(gs) = r.genotypes() {
             // No more genotype remapping needed since VCF no longer mixes '.' with real variants
             gs.get(0).iter().map(|x| (*x).into()).collect()
         } else {
             SmallVec::new()
         };
-        let genotype = GenotypeString::from_genotype(&Genotype(genotype), Base::from(&r#ref));
+        let genotype_tag = GenotypeTag::try_from(&genotype_alleles[..]).ok();
+        let genotype =
+            GenotypeString::from_genotype(&Genotype(genotype_alleles), Base::from(&r#ref));
         let genotype_likelihood = if let Ok(buffer) =
             r.format(GenotypeLikelihood::ID.as_bytes()).integer()
             && let Some(first) = buffer.first()
@@ -107,15 +110,21 @@ impl Rastair1BedFormat {
             Phred::from_phred(0)
         };
 
-        // If this is a CpG position with the CpG-relevant SNP (PASS filter), set beta to 0
-        let has_cpg_snp = in_cpg && is_pass && {
+        // If this is a CpG position with a called CpG-relevant variant, set beta to 0.
+        // We check both:
+        // 1. The CpG-relevant alt allele (T for C, A for G) exists with PASS filter
+        // 2. The genotype actually calls the variant (not hom ref 0/0)
+        // Without the genotype check, methylation evidence (which shows as T/A reads
+        // at CpG sites) would incorrectly set beta=0 when using --no-ml.
+        let is_called_variant = genotype_tag.is_some_and(|gt| !gt.is_hom_ref());
+        let has_cpg_snp = in_cpg && is_pass && is_called_variant && {
             // Determine which alt base would be the CpG-relevant SNP (T for C, A for G)
             let cpg_snp_base = if r#ref == "C" { "T" } else { "A" };
             // Check if this alt exists in the alleles list
             alleles.iter().skip(1).any(|a| a.as_str() == cpg_snp_base)
         };
 
-        // Set beta to 0 if there's a CpG-relevant SNP, otherwise use beta from VCF
+        // Set beta to 0 if there's a called CpG-relevant SNP, otherwise use beta from VCF
         let beta = if has_cpg_snp { Some(0.0) } else { beta };
         let beta = if let Some(beta) = beta {
             Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)

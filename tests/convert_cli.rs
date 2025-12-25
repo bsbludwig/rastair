@@ -110,7 +110,6 @@ fn can_pipe_through() -> Result<()> {
     let mut cmd = Command::new(insta_cmd::get_cargo_bin("/bin/bash"));
     cmd.arg("-c");
     cmd.env("NO_COLOR", "1");
-    // FIXME: Wrong beta with `--no-ml`?
     cmd.arg("cargo run -q -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105000-6105800 --vcf | head -n1000 | cargo run -q -- convert -f bcf -F bed | head -n5");
 
     assert_cmd_snapshot!(cmd);

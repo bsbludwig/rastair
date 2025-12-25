@@ -277,6 +277,11 @@ impl GenotypeTag {
         matches!(self, Self::HomRef | Self::HomAlt(_))
     }
 
+    /// Is this genotype homozygous reference (0/0)?
+    pub const fn is_hom_ref(&self) -> bool {
+        matches!(self, Self::HomRef)
+    }
+
     pub const CC: Self = Self::HomRef;
     pub const CT: Self = Self::RefHet(NonZeroU8::new(1).unwrap());
     pub const TT: Self = Self::HomAlt(NonZeroU8::new(1).unwrap());
