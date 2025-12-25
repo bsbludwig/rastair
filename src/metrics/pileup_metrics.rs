@@ -79,8 +79,8 @@ impl PileupMetrics {
     pub fn new(pileup: Pileup) -> Result<Self> {
         let by_allele = pileup.by_allele();
         let [reference, alts_reads @ ..] = by_allele.as_slice() else {
-            // todo: do we reach this point also when we have no reads covering
-            // this region but there is a cpg in the ref?
+            // This should never happen because by_allele() always includes the reference base,
+            // even when there are no reads
             bail!("No alleles found in pileup");
         };
         trace!(
