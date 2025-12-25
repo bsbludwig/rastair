@@ -20,7 +20,7 @@ use color_eyre::eyre::{Context as _, ContextCompat, Result, bail, ensure};
 use lz4::EncoderBuilder;
 use ndarray::{Array1, Array2, Axis};
 use rand::prelude::*;
-use rastair_types::{Base, Probability, RegionString};
+use rastair_types::{Base, Probability, RegionString, SmallVec};
 use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
 use std::{collections::HashSet, num::NonZeroU64, path::PathBuf, thread::available_parallelism};
@@ -311,47 +311,57 @@ pub fn load_truth_vcf(
             }
         };
 
-        if let Some(key) = process_truth_record(&record)? {
-            variants.insert(key);
-        }
+        variants.extend(process_truth_record(&record));
     }
 
     Ok(variants)
 }
 
-/// Process a truth VCF record and extract variant information
-/// Returns None if the record should be filtered out
-fn process_truth_record(record: &bcf::Record) -> Result<Option<PositionKey>> {
+/// Process a truth VCF record and extract variant information.
+/// Returns a list of PositionKeys for each valid SNP alt allele.
+/// Multi-allelic sites produce multiple keys (one per alt).
+fn process_truth_record(record: &bcf::Record) -> SmallVec<PositionKey, 2> {
     // Filter: only PASS variants
     // Note: has_filter returns true if the filter is NOT PASS
     if !record.has_filter("PASS".as_bytes()) {
-        return Ok(None);
+        return SmallVec::new();
     }
 
-    // Filter: only SNPs (single nucleotide variants)
     let alleles = record.alleles();
-    if alleles.len() != 2 {
-        return Ok(None); // TODO: Handle  multi-allelic sites
+    if alleles.is_empty() {
+        return SmallVec::new();
     }
 
-    let ref_allele = alleles[0];
-    let alt_allele = alleles[1];
+    let ref_allele = alleles.first().expect("alleles is not empty");
 
-    // Both must be single base
-    if ref_allele.len() != 1 || alt_allele.len() != 1 {
-        return Ok(None);
+    // Reference must be single base (SNP)
+    if ref_allele.len() != 1 {
+        return SmallVec::new();
     }
 
     let ref_base = Base::from(ref_allele[0]);
-    let alt_base = Base::from(alt_allele[0]);
-
-    if ref_base == Base::Unknown || alt_base == Base::Unknown {
-        return Ok(None);
+    if ref_base == Base::Unknown {
+        return SmallVec::new();
     }
 
     let pos = record.pos() as u64;
 
-    Ok(Some(PositionKey { pos, ref_base, alt_base }))
+    // Process each alt allele (indices 1 onwards)
+    alleles
+        .iter()
+        .skip(1)
+        .filter_map(|alt_allele| {
+            // Alt must be single base (SNP)
+            if alt_allele.len() != 1 {
+                return None;
+            }
+            let alt_base = Base::from(alt_allele[0]);
+            if alt_base == Base::Unknown {
+                return None;
+            }
+            Some(PositionKey { pos, ref_base, alt_base })
+        })
+        .collect()
 }
 
 /// Collect training data from a single segment
