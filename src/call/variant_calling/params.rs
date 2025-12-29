@@ -11,8 +11,8 @@ use better_default::Default;
 pub struct VariantCallingParams {
     /// The error model to use
     ///
-    /// This should match the sequencing platform used to generate the data
-    #[arg(long, default_value = "novaseq6000")]
+    /// Accepts platform names or a custom error rate (e.g., 0.005)
+    #[arg(long, default_value = "novaseq6000", value_parser = ErrorModel::value_parser())]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub error_model: ErrorModel,
 

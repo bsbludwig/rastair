@@ -532,6 +532,105 @@ fn mbias_filter_affects_variant_calls() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn error_model_accepts_platform_names() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let vcf_miseq = temp_dir.path().join("miseq.vcf");
+    let vcf_novaseq = temp_dir.path().join("novaseq.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&vcf_miseq)
+        .arg("--error-model=miseq")
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&vcf_novaseq)
+        .arg("--error-model=novaseq6000")
+        .succeeds()?;
+
+    // Both should succeed - different error models can produce different results
+    assert!(vcf_miseq.exists());
+    assert!(vcf_novaseq.exists());
+
+    Ok(())
+}
+
+#[test]
+fn error_model_accepts_custom_error_rate() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let vcf_custom = temp_dir.path().join("custom.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&vcf_custom)
+        .arg("--error-model=0.005")
+        .succeeds()?;
+
+    assert!(vcf_custom.exists());
+
+    Ok(())
+}
+
+#[test]
+fn error_model_rejects_invalid_error_rate() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("test.vcf");
+
+    // Error rate > 1.0 should fail
+    let result = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&vcf)
+        .arg("--error-model=1.5")
+        .output()?;
+
+    assert!(!result.status.success());
+    let stderr = result.stderr();
+    assert!(
+        stderr.contains("Error rate must be between 0.0 and 1.0"),
+        "Expected error message about invalid range, got: {}",
+        stderr
+    );
+
+    Ok(())
+}
+
+#[test]
+fn error_model_rejects_invalid_platform_name() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("test.vcf");
+
+    let result = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&vcf)
+        .arg("--error-model=invalid_platform")
+        .output()?;
+
+    assert!(!result.status.success());
+    let stderr = result.stderr();
+    assert!(
+        stderr.contains("Invalid error model") || stderr.contains("invalid value"),
+        "Expected error message about invalid platform, got: {}",
+        stderr
+    );
+
+    Ok(())
+}
+
 // TODO: add tests that compare default output with output when
 // - mbias (nOT/nOB) are set
 // - min depth is set

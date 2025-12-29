@@ -206,7 +206,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   Default value: `200`
 * `--error-model <ERROR_MODEL>` — The error model to use
 
-   This should match the sequencing platform used to generate the data
+   Accepts platform names or a custom error rate (e.g., 0.005)
 
   Default value: `novaseq6000`
 
@@ -216,14 +216,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `miniseq`:
     MiniSeq <https://support.illumina.com/sequencing/sequencing_instruments/miniseq.html>
   - `nextseq500`:
-    NextSeq 500 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-500.html>
+    NextSeq500 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-500.html>
   - `nextseq550`:
-    NextSeq 550 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-550.html>
+    NextSeq550 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-550.html>
   - `hiseq2500`:
-    HiSeq 2500 <https://support.illumina.com/sequencing/sequencing_instruments/hiseq_2500.html>
+    HiSeq2500 <https://support.illumina.com/sequencing/sequencing_instruments/hiseq_2500.html>
   - `novaseq6000`:
-    NovaSeq 6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
-  - `hiseq-x-ten`:
+    NovaSeq6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
+  - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
@@ -427,14 +427,14 @@ Convert between different file formats
   - `miniseq`:
     MiniSeq <https://support.illumina.com/sequencing/sequencing_instruments/miniseq.html>
   - `nextseq500`:
-    NextSeq 500 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-500.html>
+    NextSeq500 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-500.html>
   - `nextseq550`:
-    NextSeq 550 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-550.html>
+    NextSeq550 <https://support.illumina.com/sequencing/sequencing_instruments/nextseq-550.html>
   - `hiseq2500`:
-    HiSeq 2500 <https://support.illumina.com/sequencing/sequencing_instruments/hiseq_2500.html>
+    HiSeq2500 <https://support.illumina.com/sequencing/sequencing_instruments/hiseq_2500.html>
   - `novaseq6000`:
-    NovaSeq 6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
-  - `hiseq-x-ten`:
+    NovaSeq6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
+  - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
 

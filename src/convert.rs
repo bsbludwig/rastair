@@ -54,7 +54,7 @@ pub struct ConvertParams {
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub output_format: Option<OutputFormat>,
 
-    #[arg(long, default_value = "novaseq6000")]
+    #[arg(long, default_value = "novaseq6000", value_parser = ErrorModel::value_parser())]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub error_model: ErrorModel,
 
