@@ -1,7 +1,7 @@
 // Adapted from rastair1, (c) Benjamin Schuster-Boeckler
 use crate::{
     call::variant_calling::ErrorModel,
-    metrics::{AltCall, PileupMetrics},
+    metrics::{AltCall, FormsDenovo, PileupMetrics},
     utils::{Base, Base::*, IntoF64 as _, Strand::*},
 };
 use color_eyre::eyre::{ContextCompat, Result, ensure};
@@ -93,7 +93,8 @@ impl PileupMetrics {
         let mut alt_genotypes: SmallVec<_, 2> = SmallVec::new();
         for (alt_idx, alt) in &passing_alts {
             let alt_base = alt.base;
-            let (ref_count, alt_count) = self.get_counts_for_alt(alt_base);
+            let forms_denovo = alt.metrics.denovo;
+            let (ref_count, alt_count) = self.get_counts_for_alt(alt_base, forms_denovo);
 
             #[allow(
                 clippy::cast_possible_truncation,
@@ -189,19 +190,46 @@ impl PileupMetrics {
     ///
     /// For C→T and G→A variants, uses strand-specific counting to avoid
     /// confounding with methylation. For other variants, uses both strands.
-    fn get_counts_for_alt(&self, alt_base: Base) -> (usize, usize) {
+    ///
+    /// De-novo CpGs (X→C or X→G that create new CpG contexts) are treated
+    /// the same as regular CpG variants:
+    /// - X→C (ThisBecomesC): Uses OB strand only (like C→T)
+    /// - X→G (ThisBecomesG): Uses OT strand only (like G→A)
+    ///
+    /// This prevents methylation evidence from confounding genotype calls.
+    fn get_counts_for_alt(&self, alt_base: Base, forms_denovo: FormsDenovo) -> (usize, usize) {
         let ref_base = self.ref_base();
         let reads = || self.pileup.reads.iter();
+        let obs = || reads().filter(|r| r.strand == OB);
+        let ots = || reads().filter(|r| r.strand == OT);
 
+        // For de-novo CpGs, treat them like CpG SNPs to avoid methylation confounding:
+        // - ThisBecomesC: new C can be methylated (C→T on OT strand), so use OB strand only
+        // - ThisBecomesG: partner C can be methylated (shows as A on OB strand), so use OT strand only
+        match forms_denovo {
+            FormsDenovo::ThisBecomesC => {
+                return (
+                    obs().filter(|r| r.base == ref_base).count(),
+                    obs().filter(|r| r.base == alt_base).count(),
+                );
+            }
+            FormsDenovo::ThisBecomesG => {
+                return (
+                    ots().filter(|r| r.base == ref_base).count(),
+                    ots().filter(|r| r.base == alt_base).count(),
+                );
+            }
+            FormsDenovo::No => {}
+        }
+
+        // For regular variants (not de-novo CpGs)
         match (ref_base, alt_base) {
-            (C, T) => (
-                reads().filter(|r| r.base == C && r.strand == OB).count(),
-                reads().filter(|r| r.base == T && r.strand == OB).count(),
-            ),
-            (G, A) => (
-                reads().filter(|r| r.base == G && r.strand == OT).count(),
-                reads().filter(|r| r.base == A && r.strand == OT).count(),
-            ),
+            (C, T) => {
+                (obs().filter(|r| r.base == C).count(), obs().filter(|r| r.base == T).count())
+            }
+            (G, A) => {
+                (ots().filter(|r| r.base == G).count(), ots().filter(|r| r.base == A).count())
+            }
             _ => (
                 reads().filter(|r| r.base == ref_base).count(),
                 reads().filter(|r| r.base == alt_base).count(),

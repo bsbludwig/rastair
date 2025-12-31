@@ -595,3 +595,41 @@ fn test_three_alts_passing_uses_top_two() -> Result<()> {
 
     Ok(())
 }
+
+/// Test that de-novo CpG genotyping ignores REF reads from converted strand.
+#[test]
+fn test_denovo_cpg_genotyping_ignores_converted_strand_ref_reads() -> Result<()> {
+    // Position 1: A with next base G (A→C creates de-novo CpG)
+    // Position 2: G (partner of de-novo CpG)
+    let (segment, pileups) = pileups!(
+        [ A G ] Ref,
+        // OT strand: A (ref) and T (methylated C)
+        [ A G ] OT,
+        [ A G ] OT,
+        [ T G ] OT,  // methylated
+        [ T G ] OT,  // methylated
+        // OB strand: C (alt) only - no ref reads
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C); // C is the real variant creating de-novo CpG
+    set_fail(&mut records[0], T); // T is methylation evidence, not a real variant
+    set_fail(&mut records[1], A); // A on second position is methylation evidence
+    let records = reprocess(records)?;
+
+    // Genotyping for the C alt should only use OB strand
+    let expected_vcf = vcf_assert![
+        (A C) PASS GT="1/1",
+        (A T) FAIL,
+        (G .) PASS,  // partner position of de-novo CpG
+        (G A) FAIL,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
