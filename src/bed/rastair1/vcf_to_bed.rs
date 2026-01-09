@@ -14,7 +14,7 @@ use rastair_types::{Base, SmallVec};
 use rastair_types::{Phred, Probability};
 use rastair_vcf::{
     VcfField as _,
-    standard_fields::{Genotype, PASS, ReadDepth},
+    standard_fields::{PASS, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
 use tracing::{instrument, trace};
@@ -87,8 +87,13 @@ impl Rastair1BedFormat {
             SmallVec::new()
         };
         let genotype_tag = GenotypeTag::try_from(&genotype_alleles[..]).ok();
-        let genotype =
-            GenotypeString::from_genotype(&Genotype(genotype_alleles), Base::from(&r#ref));
+        let alt_bases: Vec<Base> = alleles.iter().skip(1).map(Base::from).collect();
+        let genotype = if let Some(gt) = genotype_tag {
+            GenotypeString::from_genotype_tag(gt, Base::from(&r#ref), &alt_bases)
+        } else {
+            // Fallback for invalid genotype
+            GenotypeString(Base::from(&r#ref), Base::from(&r#ref))
+        };
         let genotype_likelihood = if let Ok(buffer) =
             r.format(GenotypeLikelihood::ID.as_bytes()).integer()
             && let Some(first) = buffer.first()

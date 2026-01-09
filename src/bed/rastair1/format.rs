@@ -1,7 +1,7 @@
 use crate::bed::BedRecord;
+use crate::call::variant_calling::GenotypeTag;
 use color_eyre::Result;
 use rastair_types::{Base, Phred, Probability, SmolStr, Strand, smol_str::format_smolstr};
-use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
 use std::io::Write;
 use tracing::debug;
 
@@ -82,64 +82,35 @@ impl BedRecord for Rastair1BedFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GenotypeString {
-    CC,
-    CT,
-    TT,
-    GG,
-    GA,
-    AA,
-    Unknown,
-}
+pub struct GenotypeString(pub Base, pub Base);
 
 impl GenotypeString {
-    pub fn as_str(&self) -> &str {
-        match self {
-            GenotypeString::CC => "C/C",
-            GenotypeString::CT => "C/T",
-            GenotypeString::TT => "T/T",
-            GenotypeString::GG => "G/G",
-            GenotypeString::GA => "G/A",
-            GenotypeString::AA => "A/A",
-            GenotypeString::Unknown => ".",
-        }
-    }
-
-    pub fn from_genotype(genotype: &Genotype, ref_base: Base) -> GenotypeString {
-        use rastair_types::Base::*;
-
-        match genotype.0.as_slice() {
-            [GenotypeAllele::Phased(0)]
-            | [GenotypeAllele::Unphased(0)]
-            | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(0)]
-            | [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)] => {
-                if ref_base == C {
-                    GenotypeString::CC
-                } else {
-                    GenotypeString::GG
-                }
+    /// Creates a [`GenotypeString`] from a [`GenotypeTag`] and the actual bases.
+    ///
+    /// `alt_bases` should contain the alternative alleles in order (index 0 = first alt, etc.)
+    pub fn from_genotype_tag(
+        genotype: GenotypeTag,
+        ref_base: Base,
+        alt_bases: &[Base],
+    ) -> GenotypeString {
+        match genotype {
+            GenotypeTag::HomRef => GenotypeString(ref_base, ref_base),
+            GenotypeTag::RefHet(alt_idx) => {
+                let alt_base =
+                    alt_bases.get(usize::from(alt_idx.get()) - 1).copied().unwrap_or(ref_base);
+                GenotypeString(ref_base, alt_base)
             }
-            [GenotypeAllele::Phased(0), GenotypeAllele::Phased(1)]
-            | [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)] => {
-                if ref_base == C {
-                    GenotypeString::CT
-                } else {
-                    GenotypeString::GA
-                }
+            GenotypeTag::HomAlt(alt_idx) => {
+                let alt_base =
+                    alt_bases.get(usize::from(alt_idx.get()) - 1).copied().unwrap_or(ref_base);
+                GenotypeString(alt_base, alt_base)
             }
-            [GenotypeAllele::Phased(1)]
-            | [GenotypeAllele::Unphased(1)]
-            | [GenotypeAllele::Phased(1), GenotypeAllele::Phased(1)]
-            | [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)] => {
-                if ref_base == C {
-                    GenotypeString::TT
-                } else {
-                    GenotypeString::AA
-                }
-            }
-            _ => {
-                // would want to return `SmolStr::new_static(".")` but let's be compatible with rastair1 for now
-                if ref_base == C { GenotypeString::CC } else { GenotypeString::GG }
+            GenotypeTag::AltHet(alt1_idx, alt2_idx) => {
+                let alt1 =
+                    alt_bases.get(usize::from(alt1_idx.get()) - 1).copied().unwrap_or(ref_base);
+                let alt2 =
+                    alt_bases.get(usize::from(alt2_idx.get()) - 1).copied().unwrap_or(ref_base);
+                GenotypeString(alt1, alt2)
             }
         }
     }
@@ -147,6 +118,6 @@ impl GenotypeString {
 
 impl std::fmt::Display for GenotypeString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        write!(f, "{}/{}", self.0, self.1)
     }
 }

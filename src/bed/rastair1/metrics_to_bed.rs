@@ -92,6 +92,8 @@ impl Rastair1BedFormat {
 
         let strand = guess_strand_from_pileup(pileup);
 
+        let alt_bases: Vec<_> = pileup.alts.iter().map(|a| a.base).collect();
+
         let bed = super::Rastair1BedFormat {
             contig: pileup.contig(),
             pos: pileup.pos() as usize,
@@ -104,7 +106,7 @@ impl Rastair1BedFormat {
             snp: counts.snp,
             // Coverage is total read depth at this position, including all bases/alts
             coverage: pileup.pileup.reads.len(),
-            genotype: GenotypeString::from_genotype(&gt.genotype.into(), ref_base),
+            genotype: GenotypeString::from_genotype_tag(gt.genotype, ref_base, &alt_bases),
             genotype_likelihood: Phred::from(gt.likelihood),
             genotype_confidence: Phred::from(gt.confidence),
             de_novo,
