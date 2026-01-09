@@ -24,7 +24,6 @@ impl Rastair1BedFormat {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }
-        let ml_threshold = params.ml_threshold;
 
         let ref_base = pileup.ref_base();
 
@@ -45,49 +44,22 @@ impl Rastair1BedFormat {
 
         let counts = pileup.pos_metrics.extended.methylation_strand_info;
 
-        // Determine beta value for BED output
-        // Strategy: For positions with both original and de-novo CpG contexts,
-        // prefer the original CpG beta as it represents the reference genome context.
-        let beta = if let Some(alt_base) = pileup.pos_metrics.cpg.alt_base()
-            && let Some(alt) = pileup.alt_filters(alt_base)
-            && let Some(score) = alt.ml
-        {
-            if score >= ml_threshold {
-                // ML says this is a true variant, not methylation
-                Some(Probability::ZERO)
-            } else {
-                // ML says not a variant, use methylation beta
-                match &pileup.pos_metrics.methylated {
-                    Methylated::Unknown => {
-                        debug!(%score, %ml_threshold, "ML says not a variant, but no beta available");
-                        Some(Probability::ZERO)
-                    }
-                    Methylated::NoEvidence => Some(Probability::ZERO),
-                    Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => {
-                        Some(*beta)
-                    }
-                    // For dual context, prefer original CpG beta (reference genome context)
-                    Methylated::Both { original_beta, .. } => Some(*original_beta),
+        let beta = match &pileup.pos_metrics.methylated {
+            Methylated::Unknown => {
+                warn!(in_cpg=?pileup.pos_metrics.cpg, ?de_novo, genotype=?pileup.pos_metrics.genotype, "why no beta?");
+                None
+            }
+            Methylated::NoEvidence => Some(Probability::ZERO),
+            Methylated::OriginalCpG { beta } => {
+                if let GenotypeTag::HomAlt(_) = gt.genotype {
+                    Some(Probability::ZERO)
+                } else {
+                    Some(*beta)
                 }
             }
-        } else if *pileup.pos_metrics.cpg
-            && let Some(gt) = pileup.pos_metrics.genotype
-            && gt.genotype.is_heterozygous()
-        {
-            // In a CpG and called as heterozygous
-            Some(Probability::ZERO)
-        } else {
-            // Use available methylation beta
-            match &pileup.pos_metrics.methylated {
-                Methylated::Unknown => {
-                    warn!(in_cpg=?pileup.pos_metrics.cpg, ?de_novo, genotype=?pileup.pos_metrics.genotype, "why no beta?");
-                    None
-                }
-                Methylated::NoEvidence => Some(Probability::ZERO),
-                Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => Some(*beta),
-                // For dual context, prefer original CpG beta (reference genome context)
-                Methylated::Both { original_beta, .. } => Some(*original_beta),
-            }
+            Methylated::DeNovoCpG { beta } => Some(*beta),
+            // For dual context, prefer original CpG beta (reference genome context)
+            Methylated::Both { original_beta, .. } => Some(*original_beta),
         };
 
         let strand = guess_strand_from_pileup(pileup);
