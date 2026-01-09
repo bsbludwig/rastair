@@ -200,6 +200,7 @@ impl Rastair1BedFormat {
 }
 
 impl MethylationEvidenceStrandInfo {
+    #[instrument(level = "trace", skip_all)]
     fn from_vcf(r: &HtslibRecord) -> Result<Self> {
         let nums = r
             .info(MethylationEvidenceStrandInfo::ID.as_bytes())
@@ -208,11 +209,12 @@ impl MethylationEvidenceStrandInfo {
             .wrap_err("field not set")?;
         ensure!(nums.len() == 4, "field has invalid length");
 
+        #[expect(clippy::get_first, reason = "consistency")]
         Ok(MethylationEvidenceStrandInfo {
-            unmod: nums[0] as u32,
-            modified: nums[1] as u32,
-            no_snp: nums[2] as u32,
-            snp: nums[3] as u32,
+            unmod: nums.get(0).copied().wrap_err("missing unmod count")? as u32,
+            modified: nums.get(1).copied().wrap_err("missing modified count")? as u32,
+            no_snp: nums.get(2).copied().wrap_err("missing no_snp count")? as u32,
+            snp: nums.get(3).copied().wrap_err("missing snp count")? as u32,
         })
     }
 }
