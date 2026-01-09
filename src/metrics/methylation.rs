@@ -224,6 +224,22 @@ fn ref_not_a_to_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<M
     }
 }
 
+/// Calculate beta value for heterozygous C>T or G>A variants.
+///
+/// For heterozygous SNPs, assume 50% of the modified reads are expected to come
+/// from the SNP allele itself, not from methylation. So we calculate beta by
+/// only counting the "excess" modified reads.
+fn calculate_het_snp_beta(mod_count: f64, unmod_count: f64) -> f64 {
+    let total = mod_count + unmod_count;
+    if total == 0. {
+        return 0.;
+    }
+
+    let unmod_fraction = unmod_count / total;
+    let excess_mod = mod_count * (0.5 - unmod_fraction);
+    if excess_mod > 0. { excess_mod / (unmod_count + excess_mod) } else { 0. }
+}
+
 fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated> {
     assert_eq!(record.ref_base(), C);
     let c = &record.ref_metrics;
@@ -243,24 +259,23 @@ fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
         let t_counts = t.strand_count;
         let c_counts = c.strand_count;
 
-        let mut mod_count = t_counts.ot.f();
+        let mod_count = t_counts.ot.f();
         let unmod_count = c_counts.ot.f();
 
-        if let Some(gt) = record.pos_metrics.genotype
-            && gt.genotype.is_heterozygous()
-        {
-            // divide by 2 assuming diploid genome
-            mod_count /= 2.;
+        let total = mod_count + unmod_count;
+        if total == 0. {
+            return Ok(Methylated::NoEvidence);
         }
 
-        let total = mod_count + unmod_count;
-        if total > 0. {
-            Ok(Methylated::OriginalCpG {
-                beta: Probability::new(mod_count / total).this_is_a_bug()?,
-            })
+        let beta_value = if let Some(gt) = record.pos_metrics.genotype
+            && gt.genotype.is_heterozygous()
+        {
+            calculate_het_snp_beta(mod_count, unmod_count)
         } else {
-            Ok(Methylated::NoEvidence)
-        }
+            mod_count / total
+        };
+
+        Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
     } else {
         Ok(Methylated::NoEvidence)
     }
@@ -285,24 +300,23 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
         let a_counts = a.strand_count;
         let g_counts = g.strand_count;
 
-        let mut mod_count = a_counts.ob.f();
+        let mod_count = a_counts.ob.f();
         let unmod_count = g_counts.ob.f();
 
-        if let Some(gt) = record.pos_metrics.genotype
-            && gt.genotype.is_heterozygous()
-        {
-            // divide by 2 assuming diploid genome
-            mod_count /= 2.;
+        let total = mod_count + unmod_count;
+        if total == 0. {
+            return Ok(Methylated::NoEvidence);
         }
 
-        let total = mod_count + unmod_count;
-        if total > 0. {
-            Ok(Methylated::OriginalCpG {
-                beta: Probability::new(mod_count / total).this_is_a_bug()?,
-            })
+        let beta_value = if let Some(gt) = record.pos_metrics.genotype
+            && gt.genotype.is_heterozygous()
+        {
+            calculate_het_snp_beta(mod_count, unmod_count)
         } else {
-            Ok(Methylated::NoEvidence)
-        }
+            mod_count / total
+        };
+
+        Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
     } else {
         Ok(Methylated::NoEvidence)
     }
@@ -447,7 +461,30 @@ mod tests {
             let metrics = to_metrics(&ps[0], &seg, Some(ct_genotype()));
             let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-            assert_original_cpg(result, 0.75);
+            // With corrected formula: 6 mod, 1 unmod
+            // excess_mod = 6 * (0.5 - 1/7) = 6 * 0.357 = 2.142
+            // beta = 2.142 / (1 + 2.142) ≈ 0.682
+            assert_original_cpg(result, 0.682);
+        }
+
+        #[test]
+        fn het_snp_fifty_fifty() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [T A] OT,
+                [T A] OT,
+                [T A] OT,
+                [C G] OT,
+                [C G] OT,
+                [C G] OT,
+            );
+            let metrics = to_metrics(&ps[0], &seg, Some(ct_genotype()));
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            // With corrected formula: 3 mod, 3 unmod (50/50 split)
+            // excess_mod = 3 * (0.5 - 3/6) = 3 * 0 = 0
+            // beta = 0
+            assert_original_cpg(result, 0.0);
         }
 
         #[test]
@@ -544,7 +581,30 @@ mod tests {
             let metrics = to_metrics(&ps[1], &seg, Some(ct_genotype()));
             let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-            assert_original_cpg(result, 0.75);
+            // With corrected formula: 6 mod, 1 unmod
+            // excess_mod = 6 * (0.5 - 1/7) = 6 * 0.357 = 2.142
+            // beta = 2.142 / (1 + 2.142) ≈ 0.682
+            assert_original_cpg(result, 0.682);
+        }
+
+        #[test]
+        fn het_snp_fifty_fifty() {
+            let (seg, ps) = pileups!(
+                [C G] Ref,
+                [C A] OB,
+                [C A] OB,
+                [C A] OB,
+                [C G] OB,
+                [C G] OB,
+                [C G] OB,
+            );
+            let metrics = to_metrics(&ps[1], &seg, Some(ct_genotype()));
+            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+
+            // With corrected formula: 3 mod, 3 unmod (50/50 split)
+            // excess_mod = 3 * (0.5 - 3/6) = 3 * 0 = 0
+            // beta = 0
+            assert_original_cpg(result, 0.0);
         }
 
         #[test]
