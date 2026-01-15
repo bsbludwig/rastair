@@ -50,13 +50,7 @@ impl Rastair1BedFormat {
                 None
             }
             Methylated::NoEvidence => Some(Probability::ZERO),
-            Methylated::OriginalCpG { beta } => {
-                if let GenotypeTag::HomAlt(_) = gt.genotype {
-                    Some(Probability::ZERO)
-                } else {
-                    Some(*beta)
-                }
-            }
+            Methylated::OriginalCpG { beta } => Some(*beta),
             Methylated::DeNovoCpG { beta } => Some(*beta),
             // For dual context, prefer original CpG beta (reference genome context)
             Methylated::Both { original_beta, .. } => Some(*original_beta),

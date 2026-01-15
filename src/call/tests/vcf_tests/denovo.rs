@@ -68,16 +68,16 @@ fn test_denovo_cpg_methylated() -> Result<()> {
 fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
     let (segment, pileups) = pileups!(
         [ C C G ] Ref,
-        [ G G G ] OT,
+        [ G T G ] OT,
         [ G G G ] OT,
         [ G G G ] OB,
-        [ C T G ] OT,
+        [ C C G ] OT,
         [ C C A ] OB,
     );
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=0., // Position 1: C with de-novo CpG G
-        (C G) PASS M5mC=vec![1., 0.], // Position 2: Real variant G - both original and de-novo CpG beta values
+        (C G) PASS M5mC=vec![0.5, 0.], // Position 2: Real variant G - both original and de-novo CpG beta values
         (C T) FAIL,
         (G .) PASS M5mC=0.5,
         (G A) FAIL,

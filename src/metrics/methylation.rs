@@ -1,5 +1,5 @@
 use crate::{
-    call::methylation::ThresholdParams,
+    call::variant_calling::GenotypeTag,
     metrics::{DenovoAdjecent, PileupMetrics},
     utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
@@ -8,7 +8,7 @@ use color_eyre::{
     Result,
     eyre::{Context, ContextCompat},
 };
-use rastair_types::Probability;
+use rastair_types::{Base, Probability};
 use tracing::{Level, debug, instrument, trace, warn};
 
 #[instrument(
@@ -17,15 +17,15 @@ use tracing::{Level, debug, instrument, trace, warn};
     fields(contig = %current.contig(), pos = current.pos()),
     name = "methylation_call"
 )]
-pub fn call(config: &ThresholdParams, current: &PileupMetrics) -> Result<Option<Methylated>> {
-    let res = call_methylation(config, current).wrap_err("Failed to call methylation")?;
+pub fn call(current: &PileupMetrics) -> Result<Option<Methylated>> {
+    let res = call_methylation(current).wrap_err("Failed to call methylation")?;
     match res {
         Methylated::Unknown => Ok(None),
         _ => Ok(Some(res)),
     }
 }
 
-fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methylated> {
+fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
     let cpg = p.pos_metrics.cpg;
     let denovo_adj = p.pos_metrics.denovo_adj;
     let ref_base = p.ref_base();
@@ -35,9 +35,9 @@ fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methy
 
     // Check for original CpG
     let original_beta = if cpg == InCpG::C || denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
-        Some(ref_c(config, p)?)
+        Some(ref_c(p)?)
     } else if cpg == InCpG::G || denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
-        Some(ref_g(config, p)?)
+        Some(ref_g(p)?)
     } else {
         None
     };
@@ -45,10 +45,10 @@ fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methy
     // Check for de-novo CpG
     let denovo_beta = if p.alt(C).is_some() && ref_after == G {
         // creating new CpG
-        if ref_base == T { Some(ref_t_to_c(config, p)?) } else { Some(ref_not_t_to_c(config, p)?) }
+        if ref_base == T { Some(ref_t_to_c(p)?) } else { Some(ref_not_t_to_c(p)?) }
     } else if p.alt(G).is_some() && ref_before == C {
         // creating new CpG
-        if ref_base == A { Some(ref_a_to_g(config, p)?) } else { Some(ref_not_a_to_g(config, p)?) }
+        if ref_base == A { Some(ref_a_to_g(p)?) } else { Some(ref_not_a_to_g(p)?) }
     } else {
         None
     };
@@ -100,42 +100,29 @@ fn call_methylation(config: &ThresholdParams, p: &PileupMetrics) -> Result<Methy
     }
 }
 
-fn ref_t_to_c(config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated> {
+fn ref_t_to_c(record: &PileupMetrics) -> Result<Methylated> {
     assert_eq!(record.ref_base(), T);
     let t = &record.ref_metrics;
     let c = record.alt(C).wrap_err("Expected alt C at T->C denovo CpG site").this_is_a_bug()?;
 
     // T > C case: need to use strand to distinguish mod from unmod
-    let c_counts = c.strand_count;
-    let t_counts = t.strand_count;
-
-    // If there's 2+ reads evidence for T on OB, assume het SNP and adjust beta
-    // Note that T is the _ref_ here
-    // TODO: some more sophisticated SNP calling here, taking into account baseq, mapq etc
-    if t_counts.ob >= config.m_min_denovo_depth {
-        // mod (reads showing T) are the ref here
-        // divide by 2 assuming diploid genome
-        let mod_count = t_counts.ot.f() / 2.;
-        let total = c_counts.ot.f() + mod_count;
-        if total > 0. {
-            Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
-        } else {
-            Ok(Methylated::NoEvidence)
-        }
-    } else {
-        let mod_count = t_counts.ot;
-        let total = c_counts.ot + t_counts.ot;
-        if total > 0 {
-            Ok(Methylated::DeNovoCpG {
-                beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
-            })
-        } else {
-            Ok(Methylated::NoEvidence)
-        }
+    let c_counts = c.strand_count.ot.f();
+    let t_counts = t.strand_count.ot.f();
+    let total = c_counts + t_counts;
+    if total == 0. {
+        return Ok(Methylated::NoEvidence);
     }
+
+    // TODO: some more sophisticated SNP calling here, taking into account baseq, mapq etc
+    let beta = match record.pos_metrics.genotype {
+        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(t_counts, c_counts),
+        _ => t_counts / total,
+    };
+
+    Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
-fn ref_not_t_to_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated> {
+fn ref_not_t_to_c(record: &PileupMetrics) -> Result<Methylated> {
     assert_ne!(record.ref_base(), T);
 
     let t = record.alt(T);
@@ -165,39 +152,29 @@ fn ref_not_t_to_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<M
     }
 }
 
-fn ref_a_to_g(config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated> {
+fn ref_a_to_g(record: &PileupMetrics) -> Result<Methylated> {
     assert_eq!(record.ref_base(), A);
     let a = &record.ref_metrics;
     let g = record.alt(G).wrap_err("Expected alt G at A->G denovo CpG site").this_is_a_bug()?;
 
     // A > G case: similar logic but for OB strand
-    let g_counts = g.strand_count;
-    let a_counts = a.strand_count;
+    let g_counts = g.strand_count.ob.f();
+    let a_counts = a.strand_count.ob.f();
+    let total = a_counts + g_counts;
 
-    // If there's 2+ reads evidence for A on OT, assume het SNP and adjust beta
-    if a_counts.ot >= config.m_min_denovo_depth {
-        // divide by 2 assuming diploid genome
-        let mod_count = a_counts.ob.f() / 2.;
-        let total = g_counts.ob.f() + mod_count;
-        if total > 0. {
-            Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
-        } else {
-            Ok(Methylated::NoEvidence)
-        }
-    } else {
-        let mod_count = a_counts.ob;
-        let total = g_counts.ob + mod_count;
-        if total > 0 {
-            Ok(Methylated::DeNovoCpG {
-                beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
-            })
-        } else {
-            Ok(Methylated::NoEvidence)
-        }
+    if total == 0. {
+        return Ok(Methylated::NoEvidence);
     }
+
+    let beta = match record.pos_metrics.genotype {
+        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(a_counts, g_counts),
+        _ => a_counts / total,
+    };
+
+    Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
-fn ref_not_a_to_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated> {
+fn ref_not_a_to_g(record: &PileupMetrics) -> Result<Methylated> {
     assert_ne!(record.ref_base(), A);
 
     let a = record.alt(A);
@@ -235,12 +212,31 @@ fn calculate_het_snp_beta(mod_count: f64, unmod_count: f64) -> f64 {
         return 0.;
     }
 
-    let unmod_fraction = unmod_count / total;
-    let excess_mod = mod_count * (0.5 - unmod_fraction);
-    if excess_mod > 0. { excess_mod / (unmod_count + excess_mod) } else { 0. }
+    let excess_mod = (mod_count - total / 2.).max(0.0); // mod_count * (0.5 - unmod_fraction);
+    excess_mod / (unmod_count + excess_mod)
 }
 
-fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated> {
+fn het_alt_is_base(record: &PileupMetrics, base: Base) -> bool {
+    let Some(gt) = record.pos_metrics.genotype else {
+        return false;
+    };
+
+    match gt.genotype {
+        GenotypeTag::RefHet(idx) => {
+            let i = (idx.get() as usize).saturating_sub(1);
+            record.alts.get(i).map(|a| a.base) == Some(base)
+        }
+        GenotypeTag::AltHet(a, b) => {
+            let ai = (a.get() as usize).saturating_sub(1);
+            let bi = (b.get() as usize).saturating_sub(1);
+            record.alts.get(ai).map(|x| x.base) == Some(base)
+                || record.alts.get(bi).map(|x| x.base) == Some(base)
+        }
+        _ => false,
+    }
+}
+
+fn ref_c(record: &PileupMetrics) -> Result<Methylated> {
     assert_eq!(record.ref_base(), C);
     let c = &record.ref_metrics;
 
@@ -267,12 +263,12 @@ fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
             return Ok(Methylated::NoEvidence);
         }
 
-        let beta_value = if let Some(gt) = record.pos_metrics.genotype
-            && gt.genotype.is_heterozygous()
-        {
-            calculate_het_snp_beta(mod_count, unmod_count)
-        } else {
-            mod_count / total
+        let beta_value = match record.pos_metrics.genotype {
+            Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, T) => {
+                calculate_het_snp_beta(mod_count, unmod_count)
+            }
+            Some(gt) if gt.genotype.is_homozygous() & !gt.genotype.is_hom_ref() => 0.0,
+            _ => mod_count / total,
         };
 
         Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
@@ -281,7 +277,7 @@ fn ref_c(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
     }
 }
 
-fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated> {
+fn ref_g(record: &PileupMetrics) -> Result<Methylated> {
     assert_eq!(record.ref_base(), G);
     let g = &record.ref_metrics;
 
@@ -308,12 +304,12 @@ fn ref_g(_config: &ThresholdParams, record: &PileupMetrics) -> Result<Methylated
             return Ok(Methylated::NoEvidence);
         }
 
-        let beta_value = if let Some(gt) = record.pos_metrics.genotype
-            && gt.genotype.is_heterozygous()
-        {
-            calculate_het_snp_beta(mod_count, unmod_count)
-        } else {
-            mod_count / total
+        let beta_value = match record.pos_metrics.genotype {
+            Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, A) => {
+                calculate_het_snp_beta(mod_count, unmod_count)
+            }
+            Some(gt) if gt.genotype.is_homozygous() & !gt.genotype.is_hom_ref() => 0.0,
+            _ => mod_count / total,
         };
 
         Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
@@ -411,7 +407,7 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_original_cpg(result, 1.0);
         }
@@ -425,7 +421,7 @@ mod tests {
                 [C G] OT,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_no_evidence(result);
         }
@@ -441,7 +437,7 @@ mod tests {
                 [C G] OT,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_original_cpg(result, 0.6);
         }
@@ -458,13 +454,11 @@ mod tests {
                 [T A] OT,
                 [C G] OT,
             );
-            let metrics = to_metrics(&ps[0], &seg, Some(ct_genotype()));
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
 
-            // With corrected formula: 6 mod, 1 unmod
-            // excess_mod = 6 * (0.5 - 1/7) = 6 * 0.357 = 2.142
-            // beta = 2.142 / (1 + 2.142) ≈ 0.682
-            assert_original_cpg(result, 0.682);
+            let metrics = to_metrics(&ps[0], &seg, Some(ct_genotype()));
+            let result = call(&metrics).unwrap();
+
+            assert_original_cpg(result, 0.71428571);
         }
 
         #[test]
@@ -479,7 +473,7 @@ mod tests {
                 [C G] OT,
             );
             let metrics = to_metrics(&ps[0], &seg, Some(ct_genotype()));
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             // With corrected formula: 3 mod, 3 unmod (50/50 split)
             // excess_mod = 3 * (0.5 - 3/6) = 3 * 0 = 0
@@ -494,7 +488,7 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_no_evidence(result);
         }
@@ -507,7 +501,7 @@ mod tests {
                 [C G] OT,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_no_evidence(result);
         }
@@ -526,7 +520,7 @@ mod tests {
                 [C G] OT,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_original_cpg(result, 1.0);
         }
@@ -540,7 +534,7 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_no_evidence(result);
         }
@@ -561,7 +555,7 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_original_cpg(result, 0.7);
         }
@@ -579,12 +573,9 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[1], &seg, Some(ct_genotype()));
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
-            // With corrected formula: 6 mod, 1 unmod
-            // excess_mod = 6 * (0.5 - 1/7) = 6 * 0.357 = 2.142
-            // beta = 2.142 / (1 + 2.142) ≈ 0.682
-            assert_original_cpg(result, 0.682);
+            assert_original_cpg(result, 0.71428571);
         }
 
         #[test]
@@ -599,7 +590,7 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[1], &seg, Some(ct_genotype()));
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             // With corrected formula: 3 mod, 3 unmod (50/50 split)
             // excess_mod = 3 * (0.5 - 3/6) = 3 * 0 = 0
@@ -614,7 +605,7 @@ mod tests {
                 [C G] OT,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_no_evidence(result);
         }
@@ -627,13 +618,15 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_no_evidence(result);
         }
     }
 
     mod denovo_t_to_c {
+        use std::num::NonZeroU8;
+
         use super::*;
 
         #[test]
@@ -652,7 +645,7 @@ mod tests {
                 [C G] OT,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_denovo_cpg(result, 0.2);
         }
@@ -669,10 +662,16 @@ mod tests {
                 [T G] OB,
                 [T G] OB,
             );
-            let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let gt = EstimatedGenotype {
+                genotype: GenotypeTag::RefHet(NonZeroU8::new(1).unwrap()),
+                likelihood: Probability::new(0.8).unwrap(),
+                confidence: Probability::new(0.99).unwrap(),
+            };
 
-            assert_denovo_cpg(result, 0.667);
+            let metrics = to_metrics(&ps[0], &seg, Some(gt));
+            let result = call(&metrics).unwrap();
+
+            assert_denovo_cpg(result, 0.6);
         }
 
         #[test]
@@ -682,13 +681,15 @@ mod tests {
                 [T G] OB,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_none(result);
         }
     }
 
     mod denovo_a_to_g {
+        use std::num::NonZeroU8;
+
         use super::*;
 
         #[test]
@@ -707,7 +708,7 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_denovo_cpg(result, 0.1);
         }
@@ -724,10 +725,15 @@ mod tests {
                 [C A] OT,
                 [C A] OT,
             );
-            let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let gt = EstimatedGenotype {
+                genotype: GenotypeTag::RefHet(NonZeroU8::new(1).unwrap()),
+                likelihood: Probability::new(0.8).unwrap(),
+                confidence: Probability::new(0.99).unwrap(),
+            };
+            let metrics = to_metrics(&ps[1], &seg, Some(gt));
+            let result = call(&metrics).unwrap();
 
-            assert_denovo_cpg(result, 0.667);
+            assert_denovo_cpg(result, 0.6);
         }
 
         #[test]
@@ -737,7 +743,7 @@ mod tests {
                 [C A] OT,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_none(result);
         }
@@ -761,8 +767,13 @@ mod tests {
                 [C G] OT,
                 [C G] OT,
             );
-            let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let gt = EstimatedGenotype {
+                genotype: GenotypeTag::HomRef,
+                likelihood: Probability::new(0.8).unwrap(),
+                confidence: Probability::new(0.99).unwrap(),
+            };
+            let metrics = to_metrics(&ps[0], &seg, Some(gt));
+            let result = call(&metrics).unwrap();
 
             assert_denovo_cpg(result, 0.5);
         }
@@ -784,7 +795,7 @@ mod tests {
                 [T G] OB,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_denovo_cpg(result, 0.3);
         }
@@ -796,7 +807,7 @@ mod tests {
                 [A G] OB,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_none(result);
         }
@@ -821,7 +832,7 @@ mod tests {
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_denovo_cpg(result, 0.4);
         }
@@ -843,7 +854,7 @@ mod tests {
                 [C A] OT,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_denovo_cpg(result, 0.2);
         }
@@ -855,7 +866,7 @@ mod tests {
                 [C T] OT,
             );
             let metrics = to_metrics(&ps[1], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_none(result);
         }
@@ -871,7 +882,7 @@ mod tests {
                 [A T] OT,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_none(result);
         }
@@ -883,7 +894,7 @@ mod tests {
                 [C A] OT,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
-            let result = call(&ThresholdParams::default(), &metrics).unwrap();
+            let result = call(&metrics).unwrap();
 
             assert_none(result);
         }

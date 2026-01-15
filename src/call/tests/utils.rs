@@ -517,6 +517,7 @@ pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     alt.filters.add(MANUAL, || true);
 }
 
+// TODO this does not currently re-process beta value calculation after changing genotype call!
 pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics>> {
     records
         .into_iter()

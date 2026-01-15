@@ -371,8 +371,7 @@ fn process_region(
             pileup.pos_metrics.extended.genotype =
                 pileup.estimate_genotype(params.ml.threshold(), params.variant_calling.error_model);
             pileup.pos_metrics.extended.methylated =
-                metrics::methylation::call(&params.methylation.thresholds, &pileup)?
-                    .unwrap_or_default();
+                metrics::methylation::call(&pileup)?.unwrap_or_default();
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))

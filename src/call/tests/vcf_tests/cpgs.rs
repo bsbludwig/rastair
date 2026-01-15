@@ -98,7 +98,7 @@ fn test_multiple_methylation_transitions_same_position() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=1.,  // methylation evidence (only one ref->. row)
+        (C .) PASS M5mC=0.,  // methylation evidence (only one ref->. row)
         (C T) FAIL,  // the methylation transition
         (G .) PASS M5mC=0.,
     ];
@@ -179,9 +179,9 @@ fn test_all_methylation_transitions_failing() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=1.,  // C is methylated
+        (C .) PASS M5mC=0.,  // C is methylated, beta is 0 because it's a hom C>T
         (C T) FAIL,  // methylation transition
-        (G .) PASS M5mC=1.,  // G is methylated
+        (G .) PASS M5mC=0.,  // G is methylated, beta is 0 because it's a hom G>A
         (G A) FAIL,  // methylation transition
     ];
 
@@ -367,13 +367,13 @@ fn test_cpg_islands_multiple_positions() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=1.,  // C1 methylated
+        (C .) PASS M5mC=0.,  // C1 methylated
         (C T) FAIL,  // C1->T methylation transition
         (G .) PASS M5mC=0.,  // G1 matches ref
         (C .) PASS M5mC=0.,  // C2 matches ref
-        (G .) PASS M5mC=1.,  // G2 methylated
+        (G .) PASS M5mC=0.,  // G2 methylated
         (G A) FAIL,  // G2->A methylation transition
-        (C .) PASS M5mC=1.,  // C3 methylated
+        (C .) PASS M5mC=0.,  // C3 methylated
         (C T) FAIL,  // C3->T methylation transition
         (G .) PASS M5mC=0.,  // G3 matches ref
     ];
