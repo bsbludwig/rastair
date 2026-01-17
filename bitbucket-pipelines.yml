@@ -69,17 +69,16 @@ pipelines:
                   - cargo-local-bin
                 script:
                   - apt-get update
-                  - apt-get install -y --no-install-recommends musl-tools curl unzip libclang-dev cmake samtools tabix
+                  - apt-get install -y --no-install-recommends curl unzip libclang-dev cmake samtools tabix
                   # Install AWS CLI v2 (simple & consistent for OIDC)
                   - curl -sSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
                   - unzip -q awscliv2.zip
                   - ./aws/install -b /usr/local/bin
 
-                  - rustup target add x86_64-unknown-linux-musl
-                  - cargo build --release --locked --target x86_64-unknown-linux-musl
+                  - cargo build --release --locked
 
                   - BIN_NAME="rastair"
-                  - TARGET="x86_64-unknown-linux-musl"
+                  - TARGET="x86_64-unknown-linux-gnu"
                   - VERSION="${BITBUCKET_TAG}"
                   - OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
                   - mkdir -p "${OUTDIR}"
