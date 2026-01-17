@@ -51,6 +51,7 @@ pipelines:
                   - unzip -q awscliv2.zip
                   - ./aws/install -b /usr/local/bin
 
+                  - cargo install mdbook
                   - cargo xtask docs
                   - export AWS_DEFAULT_REGION="${AWS_REGION_DOC}"
                   - export AWS_REGION="${AWS_REGION_DOC}"
