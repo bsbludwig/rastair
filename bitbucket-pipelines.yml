@@ -45,7 +45,7 @@ pipelines:
                   - cargo-local-bin
                 script:
                   - apt-get update
-                  - apt-get install -y --no-install-recommends curl unzip
+                  - apt-get install -y --no-install-recommends curl unzip cmake libclang-dev
                   # Install AWS CLI v2 (simple & consistent for OIDC)
                   - curl -sSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
                   - unzip -q awscliv2.zip
