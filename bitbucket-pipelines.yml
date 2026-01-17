@@ -32,16 +32,41 @@ pipelines:
                 - cargo xtask test
 
   tags:
-    "*":
-      - step:
-          name: Release Build
-          caches:
-            - cargo-index
-            - cargo-cache
-            - cargo-git
-            - cargo-local-bin
-          script:
-            - apt-get update && apt-get install -y --no-install-recommends libclang-dev
-            - cargo xtask release
-          artifacts:
-            - target/release/rastair
+    "v*":
+      - parallel:
+          steps:
+            - step:
+                name: Build + upload Linux (musl)
+                image: rust:1.92
+                caches:
+                  - cargo-index
+                  - cargo-cache
+                  - cargo-git
+                  - cargo-local-bin
+                script:
+                  - apt-get update
+                  - apt-get install -y --no-install-recommends musl-tools curl unzip libclang-dev cmake samtools tabix
+                  # Install AWS CLI v2 (simple & consistent for OIDC)
+                  - curl -sSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+                  - unzip -q awscliv2.zip
+                  - ./aws/install -b /usr/local/bin
+
+                  - rustup target add x86_64-unknown-linux-musl
+                  - cargo build --release --locked --target x86_64-unknown-linux-musl
+
+                  - BIN_NAME="rastair"
+                  - TARGET="x86_64-unknown-linux-musl"
+                  - VERSION="${BITBUCKET_TAG}"
+                  - OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
+                  - mkdir -p "${OUTDIR}"
+                  - cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
+                  - (cd dist && tar -czf "${BIN_NAME}-${VERSION}-${TARGET}.tar.gz" "${BIN_NAME}-${VERSION}-${TARGET}")
+                  - sha256sum "dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz" > dist/SHA256SUMS
+                  - export AWS_DEFAULT_REGION="${AWS_REGION_REL}"
+                  - export AWS_REGION="${AWS_REGION_REL}"
+                  - export S3_BUCKET=${S3_BUCKET_REL}
+                  - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_REL}
+                  - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_REL}
+                  - aws s3 cp dist/ "s3://${S3_BUCKET}/build/${VERSION}/" --recursive
+
+
