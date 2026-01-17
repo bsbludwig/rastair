@@ -36,6 +36,29 @@ pipelines:
       - parallel:
           steps:
             - step:
+                name: Compile & upload docs
+                image: rust:1.92
+                caches:
+                  - cargo-index
+                  - cargo-cache
+                  - cargo-git
+                  - cargo-local-bin
+                script:
+                  - apt-get update
+                  - apt-get install -y --no-install-recommends curl unzip
+                  # Install AWS CLI v2 (simple & consistent for OIDC)
+                  - curl -sSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+                  - unzip -q awscliv2.zip
+                  - ./aws/install -b /usr/local/bin
+
+                  - cargo xtask docs
+                  - export AWS_DEFAULT_REGION="${AWS_REGION_DOC}"
+                  - export AWS_REGION="${AWS_REGION_DOC}"
+                  - export S3_BUCKET=${S3_BUCKET_DOC}
+                  - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DOC}
+                  - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_DOC}
+                  - aws s3 sync ./book s3://${S3_BUCKET}/
+            - step:
                 name: Build + upload Linux (musl)
                 image: rust:1.92
                 caches:
