@@ -75,7 +75,7 @@ Alternatively, run `cargo fmt` before committing.
 ### Strictly-typed data
 
 We use `struct`s and "newtypes" to represent data
-with a much information in the type system as possible.
+with as much information in the type system as possible.
 E.g., we use a `RootMeanSquare` type instead of `f64`.
 
 ### Multiple `impl` blocks
