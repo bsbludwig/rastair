@@ -51,7 +51,7 @@ pipelines:
                   - unzip -q awscliv2.zip
                   - ./aws/install -b /usr/local/bin
 
-                  - cargo install mdbook
+                  - cargo install mdbook@0.4.52 mdbook-mermaid@0.16.2 mdbook-katex@0.9.4
                   - cargo xtask docs
                   - export AWS_DEFAULT_REGION="${AWS_REGION_DOC}"
                   - export AWS_REGION="${AWS_REGION_DOC}"
@@ -60,7 +60,7 @@ pipelines:
                   - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_DOC}
                   - aws s3 sync ./book s3://${S3_BUCKET}/
             - step:
-                name: Build + upload Linux (musl)
+                name: Build + upload Linux
                 image: rust:1.92
                 caches:
                   - cargo-index
@@ -82,7 +82,8 @@ pipelines:
                   - VERSION="${BITBUCKET_TAG}"
                   - OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
                   - mkdir -p "${OUTDIR}"
-                  - cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
+                  - cp "target/release/${BIN_NAME}" "${OUTDIR}/"
+                  - cp "scripts/*" "${OUTDIR}/"
                   - (cd dist && tar -czf "${BIN_NAME}-${VERSION}-${TARGET}.tar.gz" "${BIN_NAME}-${VERSION}-${TARGET}")
                   - sha256sum "dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz" > dist/SHA256SUMS
                   - export AWS_DEFAULT_REGION="${AWS_REGION_REL}"
