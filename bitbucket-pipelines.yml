@@ -60,6 +60,8 @@ pipelines:
                   - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_DOC}
                   - ls
                   - aws s3 sync ./docs/book s3://${S3_BUCKET}/
+                  - aws cloudfront create-invalidation --distribution-id E12QS42FTTJKFT --paths "/*"
+
             - step:
                 name: Build + upload Linux
                 image: rust:1.92
@@ -92,6 +94,7 @@ pipelines:
                   - export S3_BUCKET=${S3_BUCKET_REL}
                   - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_REL}
                   - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_REL}
-                  - aws s3 cp dist/ "s3://${S3_BUCKET}/build/${VERSION}/" --recursive
+                  - aws s3 cp dist/*.tar.gz "s3://${S3_BUCKET}/build/release-${VERSION}/" --recursive
+                  - aws s3 cp dist/SHA256SUMS "s3://${S3_BUCKET}/build/release-${VERSION}/" --recursive
 
 
