@@ -58,7 +58,8 @@ pipelines:
                   - export S3_BUCKET=${S3_BUCKET_DOC}
                   - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DOC}
                   - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_DOC}
-                  - aws s3 sync ./book s3://${S3_BUCKET}/
+                  - ls
+                  - aws s3 sync ./docs/book s3://${S3_BUCKET}/
             - step:
                 name: Build + upload Linux
                 image: rust:1.92
@@ -83,7 +84,7 @@ pipelines:
                   - OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
                   - mkdir -p "${OUTDIR}"
                   - cp "target/release/${BIN_NAME}" "${OUTDIR}/"
-                  - cp "scripts/*" "${OUTDIR}/"
+                  - cp ./scripts/* "${OUTDIR}/"
                   - (cd dist && tar -czf "${BIN_NAME}-${VERSION}-${TARGET}.tar.gz" "${BIN_NAME}-${VERSION}-${TARGET}")
                   - sha256sum "dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz" > dist/SHA256SUMS
                   - export AWS_DEFAULT_REGION="${AWS_REGION_REL}"
