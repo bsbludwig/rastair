@@ -214,7 +214,7 @@ workflows:
               only: /^v.*/
       - upload_release_to_s3:
           # optionally keep using a context for secrets:
-          context: aws-release
+          context: rastair2_deploy
           requires:
             - build_linux
             - build_macos
