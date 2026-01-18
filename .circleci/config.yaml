@@ -1,0 +1,186 @@
+version: 2.1
+
+executors:
+  rust-linux:
+    docker:
+      - image: rust:1.92
+    working_directory: ~/project
+
+  macos-vm:
+    macos:
+      xcode: 16.4.0
+    resource_class: m4pro.medium
+    working_directory: ~/project
+
+  aws-uploader:
+    docker:
+      - image: cimg/aws:2025.01
+    working_directory: ~/project
+
+commands:
+  restore_rust_cache:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - v1-cargo-{{ arch }}-
+
+  save_rust_cache_linux:
+    steps:
+      - save_cache:
+          key: v1-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - /usr/local/cargo/registry
+            - /usr/local/cargo/git
+            - ~/project/target
+
+  save_rust_cache_macos:
+    steps:
+      - save_cache:
+          key: v1-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - ~/project/target
+
+jobs:
+  build_linux:
+    executor: rust-linux
+    steps:
+      - checkout
+      - restore_rust_cache
+      - run:
+          name: Install system deps
+          command: |
+            set -euo pipefail
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              git curl unzip libclang-dev cmake samtools tabix
+      - run:
+          name: Build + package (Linux)
+          command: |
+            set -euo pipefail
+
+            BIN_NAME="rastair"
+            TARGET="x86_64-unknown-linux-gnu"
+            VERSION="${CIRCLE_TAG:?This workflow should run on tags only}"
+            OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
+            TARBALL="${BIN_NAME}-${VERSION}-${TARGET}.tar.gz"
+
+            cargo build --release --locked --target "${TARGET}"
+
+            mkdir -p "${OUTDIR}"
+            cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
+            cp -R scripts/* "${OUTDIR}/"
+
+            (cd dist && tar -czf "${TARBALL}" "$(basename "${OUTDIR}")")
+            (cd dist && sha256sum "${TARBALL}" > "${TARBALL}.sha256")
+      - save_rust_cache_linux
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - dist/*.tar.gz
+            - dist/*.sha256
+
+  build_macos:
+    executor: macos-vm
+    steps:
+      - checkout
+      - restore_rust_cache
+      - run:
+          name: Install build deps (macOS)
+          command: |
+            set -euo pipefail
+
+            # Install Rust toolchain
+            curl https://sh.rustup.rs -sSf | sh -s -- -y
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+
+            brew update
+            brew install cmake samtools htslib
+      - run:
+          name: Build + package (macOS)
+          command: |
+            set -euo pipefail
+            source "$BASH_ENV"
+
+            BIN_NAME="rastair"
+            VERSION="${CIRCLE_TAG:?This workflow should run on tags only}"
+
+            for TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
+              rustup target add "${TARGET}"
+              cargo build --release --locked --target "${TARGET}"
+
+              OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
+              TARBALL="${BIN_NAME}-${VERSION}-${TARGET}.tar.gz"
+
+              mkdir -p "${OUTDIR}"
+              cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
+              cp -R scripts/* "${OUTDIR}/"
+
+              (cd dist && tar -czf "${TARBALL}" "$(basename "${OUTDIR}")")
+              (cd dist && shasum -a 256 "${TARBALL}" > "${TARBALL}.sha256")
+            done
+      - save_rust_cache_macos
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - dist/*.tar.gz
+            - dist/*.sha256
+
+  upload_release_to_s3:
+    executor: aws-uploader
+    steps:
+      - attach_workspace:
+          at: ~/project
+      - run:
+          name: Upload release artifacts to S3 (static AWS keys)
+          command: |
+            set -euo pipefail
+
+            VERSION="${CIRCLE_TAG:?This workflow should run on tags only}"
+            : "${S3_BUCKET:?Set S3_BUCKET in CircleCI env/context}"
+            : "${AWS_REGION:?Set AWS_REGION in CircleCI env/context}"
+            : "${AWS_ACCESS_KEY_ID:?Set AWS_ACCESS_KEY_ID in CircleCI env/context}"
+            : "${AWS_SECRET_ACCESS_KEY:?Set AWS_SECRET_ACCESS_KEY in CircleCI env/context}"
+
+            export AWS_DEFAULT_REGION="${AWS_REGION}"
+            export AWS_REGION="${AWS_REGION}"
+
+            cd dist
+            cat *.sha256 | sort -k2 > SHA256SUMS
+
+            aws s3 cp . "s3://${S3_BUCKET}/build/release-${VERSION}/" \
+              --recursive \
+              --exclude "*" \
+              --include "*.tar.gz" \
+              --include "SHA256SUMS"
+
+workflows:
+  version: 2
+  release:
+    jobs:
+      - build_linux:
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v.*/
+      - build_macos:
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v.*/
+      - upload_release_to_s3:
+          # optionally keep using a context for secrets:
+          context: aws-release
+          requires:
+            - build_linux
+            - build_macos
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v.*/
