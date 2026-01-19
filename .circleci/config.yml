@@ -2,8 +2,9 @@ version: 2.1
 
 executors:
   rust-linux:
-    docker:
-      - image: rust:1.92
+    machine:
+      - image: ubuntu-2004:current
+    resource_class: medium
     working_directory: ~/project
 
   macos-vm:
