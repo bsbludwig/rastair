@@ -24,6 +24,7 @@ additional-js = ["mermaid.min.js", "mermaid-init.js"]
 git-repository-url = "https://bitbucket.org/bsblabludwig/rastair2"
 git-repository-icon = "fa-git"
 additional-css = ["theme/custom.css", "theme/mdbook-admonish.css"]
+theme = "theme"
 
 [output.html.search]
 limit-results = 20
