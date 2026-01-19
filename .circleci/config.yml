@@ -3,7 +3,7 @@ version: 2.1
 executors:
   rust-linux:
     machine:
-      image: ubuntu-2004:current
+      image: ubuntu-2004:2022.10.1
     working_directory: ~/project
 
   macos-vm:
