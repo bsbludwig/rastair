@@ -74,7 +74,7 @@ jobs:
             cp -R scripts/* "${OUTDIR}/"
 
             (cd dist && tar -czf "${TARBALL}" "$(basename "${OUTDIR}")")
-            (cd dist && sha256sum "${TARBALL}" > "${TARBALL}.sha256")
+            (cd dist && sha256sum -a 256 "${TARBALL}" > "${TARBALL}.sha256")
       - save_rust_cache_linux
       - persist_to_workspace:
           root: ~/project
@@ -113,7 +113,6 @@ jobs:
               cargo build --release --locked --target "${TARGET}"
 
               OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
-              TARBALL="${BIN_NAME}-${VERSION}-${TARGET}.tar.gz"
 
               mkdir -p "${OUTDIR}"
               cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
@@ -157,7 +156,7 @@ jobs:
               # xcrun notarytool submit "${NOTARY_ZIP}" --keychain-profile "notary-profile" --wait
               # xcrun stapler staple "${NOTARY_ZIP}"
 
-              (cd dist && shasum -a 256 "${NOTARY_ZIP}" > "${NOTARY_ZIP}.sha256")
+              shasum -a 256 "${NOTARY_ZIP}" > "${NOTARY_ZIP}.sha256"
             done
       - save_rust_cache_macos
       - persist_to_workspace:
