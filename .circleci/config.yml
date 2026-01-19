@@ -74,7 +74,7 @@ jobs:
             cp -R scripts/* "${OUTDIR}/"
 
             (cd dist && tar -czf "${TARBALL}" "$(basename "${OUTDIR}")")
-            (cd dist && sha256sum -a 256 "${TARBALL}" > "${TARBALL}.sha256")
+            (cd dist && sha256sum "${TARBALL}" > "${TARBALL}.sha256")
       - save_rust_cache_linux
       - persist_to_workspace:
           root: ~/project
