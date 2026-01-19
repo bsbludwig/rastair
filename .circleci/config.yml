@@ -2,8 +2,8 @@ version: 2.1
 
 executors:
   rust-linux:
-    machine:
-      image: ubuntu-2004:2023.10.1
+    docker:
+      - image: ubuntu:20.04
     working_directory: ~/project
 
   macos-vm:
@@ -25,16 +25,7 @@ commands:
             - v1-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
             - v1-cargo-{{ arch }}-
 
-  save_rust_cache_linux:
-    steps:
-      - save_cache:
-          key: v1-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
-          paths:
-            - ~/.cargo/registry
-            - ~/.cargo/git
-            - ~/project/target
-
-  save_rust_cache_macos:
+  save_rust_cache:
     steps:
       - save_cache:
           key: v1-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
@@ -46,7 +37,6 @@ commands:
 jobs:
   build_linux:
     executor: rust-linux
-    resource_class: medium
     steps:
       - checkout
       - restore_rust_cache
@@ -54,9 +44,9 @@ jobs:
           name: Install system deps + Rust toolchain
           command: |
             set -euo pipefail
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends \
-              git curl unzip libclang-dev cmake samtools tabix
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              ca-certificates git curl unzip libclang-dev cmake samtools tabix build-essential
 
             curl https://sh.rustup.rs -sSf | sh -s -- -y
             echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
@@ -81,7 +71,7 @@ jobs:
 
             (cd dist && tar -czf "${TARBALL}" "$(basename "${OUTDIR}")")
             (cd dist && sha256sum "${TARBALL}" > "${TARBALL}.sha256")
-      - save_rust_cache_linux
+      - save_rust_cache
       - persist_to_workspace:
           root: ~/project
           paths:
@@ -164,7 +154,7 @@ jobs:
 
               shasum -a 256 "${NOTARY_ZIP}" > "${NOTARY_ZIP}.sha256"
             done
-      - save_rust_cache_macos
+      - save_rust_cache
       - persist_to_workspace:
           root: ~/project
           paths:
