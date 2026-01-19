@@ -8,15 +8,11 @@ In addition, there are a number of convenience commands, e.g. to convert between
 
 Below we will give some examples that cover common use-cases. You can find an in-depth documentation of the complete command line syntax [here](cli.md).
 
-## 0. Parameters shared between various sub-commands
-
+```admonish tip
 Nearly all rastair sub-commands are capable of multi-threading.
 You can e.g. use `-@ 4` to parallelise operations across 4 cores.
 By default, rastair will try to use all available cores on your system.
-
-Similarly, you can restrict processing to only one genomic interval using the `-l` parameter.
-To only process a specific chromosome, you can do `-l chr19`.
-You can also chose an interval within the chromosome: `-l chr19:6103156-6143156`.
+```
 
 ## 1. Call genomic variants and methylated positions
 
@@ -29,32 +25,42 @@ all high-confidence calls will be included:
 rastair call -r reference.fa.gz -o test.bcf test.bam
 ```
 
-If you want all variants, regardless of their confidence, you can use the `--all` flag:
+```admonish tip
+You can restrict processing to only a specific genomic region. For example `-l chr19` will process the entire chromosome 19.
+You can also chose an interval within the chromosome: `-l chr19:6103156-6143156`.
+```
+
+Rastair will only report variants that pass its internal filters. If you want to report absolutely all candidate variants, regardless of their score, you can use the `--all` flag:
 
 ```bash
 rastair call -r reference.fa.gz --all -o test.vcf.gz test.bam
+```
+```admonish warning
+Beware that vcf files generated with `--all` can get very large!
+```
+
+Rastair will annotate variants with only a subset of all possible `INFO` and `FORMAT` tags. You can choose a custom set of annotations with e.g.
+
+```bash
+rastair call -r reference.fa.gz --vcf-info-fields AD,BQ,MQ,MQ0,ENT100,SC5,CPG,CPGnovo --vcf-format-fields GT,M5mC,ML -o test.vcf.gz test.bam
 ```
 
 You can find a description of all custom VCF fields used by rastair [here](formats/vcf-fields.md).
 
 ## 2. Only call methylation, do not report genetic variants (very fast)
 
-In cases where all you need is a table of methylation counts in genomic
--- and putatively @denovo positions,
-you can use the `--cpgs-only` parameter (or `-c`),
-which will default the output to @BED format.
-This will greatly speed up the processing compared to calling all putative genetic variants:
+@Bed output will only report CpG -- and de-novo CpG -- positions, which is a lot faster than processing all potential variants:
 
 ```bash
-rastair call -r reference.fa.gz --cpgs-only --bed test.bed.gz test.bam
+rastair call -r reference.fa.gz --bed test.bed.gz test.bam
 ```
 
-The reference for the meaning of the different columns in the bed output format can be found [here](formats/bed.md). Rastair will automatically produce [bgzip compressed](https://www.htslib.org/doc/bgzip.html) files if the output file name ends in `.gz`. You can then [index these with tabix](https://www.htslib.org/doc/tabix.html) for rapid access to specific genomic ranges:
+```admonish tip
+Rastair will automatically produce [bgzip compressed](https://www.htslib.org/doc/bgzip.html) files if the output file name ends in `.gz`. They are also automaticall [indexed with tabix](https://www.htslib.org/doc/tabix.html) for rapid access to specific genomic ranges:
 
-```bash
-tabix -p bed test.bed.gz
-# Fetch calls in a random genomic region:
-tabix test.bed.gz chr19:6103156-6143156
+```tabix test.bed.gz chr19:6103156-6143156```
+
+This is usually orders of magnitude faster than using e.g. [bedtools](https://github.com/arq5x/bedtools2).
 ```
 
 In some cases, you might prefer to write the bed output to `STDOUT` and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (ie exclude @denovo):
@@ -71,7 +77,10 @@ The command-line argument for this was inspired by [MethylDackel](https://github
 However, we decided to only have one set of parameters: `--nOT` and `--nOB`.
 Each of them takes a comma-separated list of 4 integers: `[r1_5',r1_3',r2_5',r2_3']`, denoting the number of bases from the start/end of read 1/2 that should be ignored.
 
-**Unlike MethylDackel, rastair's command line arguments always refer to the start/end position of the read in 5' -> 3' direction, not the position in the reference after alignment**.
+```admonish warning
+Unlike MethylDackel, **rastair's command line arguments always refer to the start/end position of the read in 5'&rarr;3' direction**, not the position in the reference after alignment!
+```
+
 To give an example: imagine the following read pair
 
 ```text
@@ -86,11 +95,35 @@ R2:                         <AC-------------GC-
 This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/360075017111-strand-bias-and-orientation-bias)" read represents the @OT (ie R1 is the OT, and R2 is the reverse complement of the OT).
 A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it ocurrs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
 
-## 3. Report methylation per-read in bed format
+## 3. Report methylation per-read
+
+Many applications require information about the methylation of individual bases in each sequenced read. Rastair can report this information in bed format:
 
 ```bash
 rastair per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 ```
 
-Again, this will generate a bgzip-compressed bed file that can be indexed with `tabix`.
 For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
+
+The per-read output can then be used to annotate the reads in the bam file with methylation information that is compatible with e.g. [modkit](https://github.com/nanoporetech/modkit):
+
+```bash
+rastair bam -r reference.fa.gz -o test_annotated.bam test.bam test_per-read.bed.gz
+```
+
+The per-read output is also the input for a QC report that can be generated using an R script bundled with rastair.
+
+```admonish info
+The QC tool requires a working installation of R with [RMarkdown](https://cran.r-project.org/web/packages/rmarkdown/index.html), [data.table](https://r-datatable.com) and [ggplot2](https://ggplot2.tidyverse.org) libraries.
+```
+
+```bash
+mkdir -p test_qc
+mbias.R --output-prefix test_qc test_per-read.bed.gz
+```
+
+This will generate a file called `mbias.html` in the `test_qc` directory.
+
+```admonish tip
+You can choose to only create QC info from a subset of the reads with e.g. `--region chr19`.
+```
