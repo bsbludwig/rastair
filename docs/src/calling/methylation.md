@@ -40,18 +40,19 @@ the alt allele will be set to `.` since it is not considered a variant in the tr
 
 ## Criteria for methylation calling
 
-- Only @CpG sites are considered for methylation calling.
+- Only @CpG sites (including [de-novo CpGs](calling/denovo.md)) are considered for methylation calling.
 - @OT reads with `T` on the ref `C` position
 - @OB reads with `A` on the ref `G` position
-- Low number of other read bases at same positions
-- Good read depth
-- High base quality
-- High mapping quality
-- Coverage far away from start/end of reads
-- Coverage not close to indels
+- Not a homozygous variant away from C/T
+- Sufficient read depth (controlled with `--v-min-depth`)
+- High base quality (controlled with `--min-baseq`)
+- High mapping quality (controlled with `--min-mapq`)
 
-## Filters
+## Beta value correction
+When a CpG also overlaps a heterozygous variant, then only the non-variant C/G bases are available for methylation. Where the variant allele is a T/A at a C/G position, respectively, this thus requires that we do not count the "genetic T/A alleles", but only the chemically converted T/A. Unfortunately, we do not know which ones are which, so rastair currently uses a simple heuristic: we assume a diploid genome, and thus half of all reads are expected to derive from the T/A allele, while the other half represents the C/G. We therefore only consider the *excess* of T/A reads beyond half the reads observed as bona-fide "modified":
 
-In @VCF, filters are used to indicate whether we have reliable evidence supporting a variant/methylation call.
-We currently don't use filters in this implementation,
-but the criteria above will become filters in the future.
+$$ M_{excess} = \max \{ M_{total} - \frac{M + U}{2}, 0 \} \\
+   \beta = \frac{M_{excess}}{M_{excess} + U}
+$$
+
+Where $M$ are the number of modified reads and $U$ are the number of unmodified reads.
