@@ -3,7 +3,7 @@ version: 2.1
 executors:
   rust-linux:
     machine:
-      image: ubuntu-2004:2024.01
+      image: ubuntu-2004:current
     working_directory: ~/project
 
   macos-vm:
@@ -46,6 +46,7 @@ commands:
 jobs:
   build_linux:
     executor: rust-linux
+    resource_class: medium
     steps:
       - checkout
       - restore_rust_cache
