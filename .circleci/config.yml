@@ -3,8 +3,7 @@ version: 2.1
 executors:
   rust-linux:
     machine:
-      - image: ubuntu-2004:current
-    resource_class: medium
+      image: ubuntu-2004:2024.01
     working_directory: ~/project
 
   macos-vm:
@@ -31,8 +30,8 @@ commands:
       - save_cache:
           key: v1-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:
-            - /usr/local/cargo/registry
-            - /usr/local/cargo/git
+            - ~/.cargo/registry
+            - ~/.cargo/git
             - ~/project/target
 
   save_rust_cache_macos:
@@ -51,16 +50,21 @@ jobs:
       - checkout
       - restore_rust_cache
       - run:
-          name: Install system deps
+          name: Install system deps + Rust toolchain
           command: |
             set -euo pipefail
-            apt-get update
-            apt-get install -y --no-install-recommends \
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
               git curl unzip libclang-dev cmake samtools tabix
+
+            curl https://sh.rustup.rs -sSf | sh -s -- -y
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
       - run:
           name: Build + package (Linux)
           command: |
             set -euo pipefail
+            source "$BASH_ENV"
 
             BIN_NAME="rastair"
             TARGET="x86_64-unknown-linux-gnu"
