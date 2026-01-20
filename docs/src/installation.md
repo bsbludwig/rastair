@@ -5,7 +5,11 @@ For convenience, we provide pre-built binaries for a number of platforms:
 
 ### Linux
 
-A pre-built binary for Linux (x86) can be downloaded [here](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz). This was built on Ubuntu 20.04 but should work on most recent distributions. Note that you will need to have libbz2 installed and somewhere in `LD_LIBRARY_PATH`.
+We provide a pre-built binary for Linux (x86):
+
+- [rastair-{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz) (64-bit, x86)
+
+This binary was built on Ubuntu 20.04 but should work on most recent distributions. Note that you will need to have libbz2 installed and somewhere in `LD_LIBRARY_PATH`.
 
 ```admonish info
 While rastair itself is hard-linked and therefore independent of system libraries, this is unfortunately not yet the case for htslib. If your system uses a GLIBC older than 2.30, then you will have to [compile from source](#building-from-source).
@@ -13,9 +17,11 @@ While rastair itself is hard-linked and therefore independent of system librarie
 
 ### Mac OSX
 
-For Apple users, you can find an Apple Silicon binary for any "M" series of newer Apple processors [here](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-aarch64-apple-darwin.zip).
+For Apple users, we provide both Apple Silicon and Intel binaries:
 
- For older Macs, we also provide an Intel build [here](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-x86_64-apple-darwin.zip).
+- [rastair-{{VERSION}}-aarch64-apple-darwin.zip](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-aarch64-apple-darwin.zip) (ARM "Apple Silicon", for all "M" line processors)
+
+- [rastair-{{VERSION}}-x86_64-apple-darwin.zip](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-x86_64-apple-darwin.zip) (64-bit, older x86 Intel Macs)
 
  ```admonish warning
  These binaries are not yet signed and notarized. This means that OSX will refuse to execute them at first. There are a number of workarounds, but for command line tools [these instructions](https://donatstudios.com/mac-terminal-run-unsigned-binaries) seem like the most straightforward.
