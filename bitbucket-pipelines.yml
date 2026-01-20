@@ -43,23 +43,37 @@ pipelines:
                   - cargo-cache
                   - cargo-git
                   - cargo-local-bin
-                script:
-                  - apt-get update
-                  - apt-get install -y --no-install-recommends curl unzip cmake libclang-dev
+                script: |
+                  apt-get update
+                  apt-get install -y --no-install-recommends curl unzip cmake libclang-dev
                   # Install AWS CLI v2 (simple & consistent for OIDC)
-                  - curl -sSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
-                  - unzip -q awscliv2.zip
-                  - ./aws/install -b /usr/local/bin
+                  curl -sSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+                  unzip -q awscliv2.zip
+                  ./aws/install -b /usr/local/bin
 
-                  - cargo install mdbook@0.4.52 mdbook-mermaid@0.16.2 mdbook-katex@0.9.4 mdbook-admonish@1.20.0
-                  - cargo xtask docs
-                  - export AWS_DEFAULT_REGION="${AWS_REGION_DOC}"
-                  - export AWS_REGION="${AWS_REGION_DOC}"
-                  - export S3_BUCKET=${S3_BUCKET_DOC}
-                  - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DOC}
-                  - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_DOC}
-                  - ls
-                  - aws s3 sync ./docs/book s3://${S3_BUCKET}/
-                  - aws cloudfront create-invalidation --distribution-id E12QS42FTTJKFT --paths "/*"
+                  cargo install mdbook@0.4.52 mdbook-mermaid@0.16.2 mdbook-katex@0.9.4 mdbook-admonish@1.20.0 mdbook-yapp@1.2.4
+                  # prepare variable to create substitution table for template vars
+                  # first, test if BITBUCKET_TAG is set, and if not, use the version in Cargo.toml:
+                  if [ -z "${BITBUCKET_TAG:-}" ]; then
+                    BITBUCKET_TAG="v$(awk -F' *= *' '
+                      $0 ~ /^\[package\]/ {in_pkg=1; next}
+                      $0 ~ /^\[/ {in_pkg=0}
+                      in_pkg && $1=="version" {
+                        gsub(/"/, "", $2); gsub(/'\''/, "", $2);
+                        print $2; exit
+                      }' Cargo.toml)"
+                  fi
+                  export VERSION_TRUNC="${BITBUCKET_TAG#v}"
+                  export S3_BUCKET_REL AWS_REGION_REL BITBUCKET_TAG
+                  cat docs/template_yapp.config | envsubst > docs/yapp.config
+                  cargo xtask docs
+                  # upload
+                  export AWS_DEFAULT_REGION="${AWS_REGION_DOC}"
+                  export AWS_REGION="${AWS_REGION_DOC}"
+                  export S3_BUCKET=${S3_BUCKET_DOC}
+                  export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DOC}
+                  export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY_DOC}
 
+                  aws s3 sync ./docs/book s3://${S3_BUCKET}/
+                  aws cloudfront create-invalidation --distribution-id E12QS42FTTJKFT --paths "/*"
 

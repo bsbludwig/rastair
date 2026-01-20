@@ -58,7 +58,9 @@ rastair call -r reference.fa.gz --bed test.bed.gz test.bam
 ```admonish tip
 Rastair will automatically produce [bgzip compressed](https://www.htslib.org/doc/bgzip.html) files if the output file name ends in `.gz`. They are also automaticall [indexed with tabix](https://www.htslib.org/doc/tabix.html) for rapid access to specific genomic ranges:
 
-```tabix test.bed.gz chr19:6103156-6143156```
+> ```bash
+> tabix test.bed.gz chr19:6103156-6143156
+> ```
 
 This is usually orders of magnitude faster than using e.g. [bedtools](https://github.com/arq5x/bedtools2).
 ```

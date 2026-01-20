@@ -1,7 +1,7 @@
 [package]
 name = "rastair"
 description = "Fast and flexible extraction of methylation information from BAM files"
-version = "2.0.0-rc.2"
+version = "2.0.0-rc1"
 edition = "2024"
 rust-version = "1.89.0"
 license-file = "LICENSE.txt"
@@ -18,6 +18,7 @@ mdbook = { version = "0.4.52" }
 mdbook-katex = { version = "0.9.4" }
 mdbook-mermaid = { version = "0.16" }
 mdbook-admonish = { version = "1.20.0" }
+mdbook-yapp = { version = "1.2.4" }
 
 [workspace]
 members = ["crates/*", "tools/*"]
