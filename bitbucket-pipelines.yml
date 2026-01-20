@@ -65,7 +65,7 @@ pipelines:
                         }' Cargo.toml)"
                     fi
                     export VERSION_TRUNC="${BITBUCKET_TAG#v}"
-                    export S3_BUCKET_REL AWS_REGION_REL BITBUCKET_TAG
+                    export S3_BUCKET_REL AWS_REGION_REL BITBUCKET_TAG BITBUCKET_REPO_FULL_NAME
                     cat docs/template_yapp.config | envsubst > docs/yapp.config
                     cargo xtask docs
                     # upload

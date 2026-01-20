@@ -10,7 +10,8 @@ In contrast, mod-C&rarr;T methods only affect around 60M positions in the human 
 
 ## License
 
-Rastair is free for academic and other non-commercial use, and the [code is available on bitbucket](https://www.bitbucket.org/bsblabludwig/rastair/). You can read the details of the license [here](https://bitbucket.org/bsblabludwig/rastair/src/main/LICENSE.txt).
+Rastair is free for academic and other non-commercial use, and the [code is available on bitbucket](https://www.bitbucket.org/{{BITBUCKET_REPO_FULL_NAME}}/). You can read the details of the license [here](https://www.bitbucket.org/{{BITBUCKET_REPO_FULL_NAME}}/src/main/LICENSE.txt).
+
 ```admonish info
 For commercial entities that would like to use rastair, please contact [enquiries@innovation.ox.ac.uk](mailto:enquiries@innovation.ox.ac.uk?cc=benjamin.schuster-boeckler%40ludwig.ox.ac.uk&subject=Rastair%20%2F%20reference%2024811) quoting reference 24811.
 ```

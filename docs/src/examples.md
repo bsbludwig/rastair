@@ -113,19 +113,6 @@ The per-read output can then be used to annotate the reads in the bam file with 
 rastair bam -r reference.fa.gz -o test_annotated.bam test.bam test_per-read.bed.gz
 ```
 
-The per-read output is also the input for a QC report that can be generated using an R script bundled with rastair.
-
-```admonish info
-The QC tool requires a working installation of R with [RMarkdown](https://cran.r-project.org/web/packages/rmarkdown/index.html), [data.table](https://r-datatable.com) and [ggplot2](https://ggplot2.tidyverse.org) libraries.
-```
-
-```bash
-mkdir -p test_qc
-mbias.R --output-prefix test_qc test_per-read.bed.gz
-```
-
-This will generate a file called `mbias.html` in the `test_qc` directory.
-
 ```admonish tip
-You can choose to only create QC info from a subset of the reads with e.g. `--region chr19`.
+The per-read output is also the input for your QC pipeline. For more details, read the [qc section](src/qc.md) of this manual.
 ```

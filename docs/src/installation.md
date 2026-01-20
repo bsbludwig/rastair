@@ -34,6 +34,14 @@ Once we have received our credentials from the Apple Developer Programme, we wil
 ### Pre-requisites
 To compile from source, uou need a working [Rust installation](https://www.rust-lang.org/tools/install) (version 1.88 or later). Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang library](https://clang.llvm.org/get_started.html) as well as [cmake](https://cmake.org/download/) and [bzip2](https://sourceware.org/bzip2/). On most systems, these are either already available or can be installed using a standard package manager:
 
+First, clone the repo:
+
+```bash
+git clone git@bitbucket.org:{{BITBUCKET_REPO_FULL_NAME}}.git
+```
+
+Then follow the platform-specific instructions below.
+
 #### Ubuntu
 ```bash
 sudo apt install libclang-dev libbz2-dev cmake
@@ -51,9 +59,8 @@ We assume that you have Xcode developer tools installed. In that case, you only 
 brew install bzip2 cmake
 ```
 
-
 ### Compile
-Clone the repository and build the project using:
+Finally, build the project using:
 
 ```bash
 cargo xtask release
