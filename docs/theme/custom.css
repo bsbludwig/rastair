@@ -1,0 +1,18 @@
+#logo {
+    width: 100%; /* Adjust as needed */
+}
+.light #logo {
+    content: url("/img/logo_black.png");
+}
+
+.navy #logo {
+    content: url("/img/logo_white.png");
+}
+
+.coal #logo {
+    content: url("/img/logo_white.png");
+}
+
+.rust #logo {
+    content: url("/img/logo_black.png");
+}

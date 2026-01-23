@@ -7,6 +7,7 @@
 # Usage
 - [Examples](./examples.md)
 - [Command-line interface](./cli.md)
+- [Quality control report](./qc.md)
 
 # Calling logic
 - [De-novo CpGs](calling/denovo.md)

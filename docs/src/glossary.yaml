@@ -2,7 +2,13 @@
   long: "TET-Assisted Pyridine-Borane Sequencing"
   group: "Genetics"
   description: |
-    A method for detecting DNA modifications, such as @methylation, at single-base resolution. TAPS uses a chemical reaction to convert 5-methylcytosine (5mC) to thymine (T) while leaving unmodified cytosines unchanged. Allows the detection of 5mC sites using standard sequencing technologies. Alternative to @bisulfite sequencing, which can introduce biases and artifacts during the conversion process. #notecite(<liu2019bisulfite>)
+    A method for detecting DNA modifications, such as @methylation, at single-base resolution. TAPS uses a chemical reaction to convert 5-methylcytosine (5mC) to thymine (T) while leaving unmodified cytosines unchanged. Allows the detection of 5mC sites using standard sequencing technologies. Alternative to @bisulfite sequencing, which can introduce biases and artifacts during the conversion process. You can read more about it [here](https://en.wikipedia.org/wiki/TET-assisted_pyridine_borane_sequencing).
+
+- key: 5Base
+  long: "Illumina 5-Base sequencing"
+  group: "Genetics"
+  description: |
+    Illumina launched a chemistry that uses a custom enzyme to convert methylated (and hydroxymethylated) cytosine to thymine. The resulting data look very similar to TAPS data. Read more [here](https://www.illumina.com/science/genomics-research/articles/5-base-solution.html).
 
 - key: bisulfite
   group: "Genetics"

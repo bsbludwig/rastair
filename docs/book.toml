@@ -3,6 +3,7 @@ authors = ["Benjamin Schuster-Boeckler","Pascal Hertleif"]
 language = "en"
 src = "src"
 title = "Rastair"
+description = "Rastair is a command-line tool to process epigentic sequencing data. It can call genetic variants and DNA methylation simultaneously from Illumina™ 5base and TAPS+."
 
 [preprocessor.glossary]
 command = "cargo run -p mdbook-glossary"
@@ -14,7 +15,25 @@ after = ["links"]
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
 
-[output]
+[preprocessor.admonish]
+command = "mdbook-admonish"
+assets_version = "3.1.0" # do not edit: managed by `mdbook-admonish install`
+
+# Enables template replacement to put in version from git tag etc
+[preprocessor.yapp]
 
 [output.html]
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
+git-repository-url = "https://bitbucket.org/bsblabludwig/rastair2"
+git-repository-icon = "fa-git"
+additional-css = ["theme/custom.css", "theme/mdbook-admonish.css"]
+theme = "theme"
+
+[output.html.search]
+limit-results = 20
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 2

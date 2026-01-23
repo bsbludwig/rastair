@@ -235,7 +235,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `14`
+  Default value: `10`
   [env: `RASTAIR_THREADS`]
 
 
@@ -312,7 +312,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `14`
+  Default value: `10`
 
 
 
@@ -488,7 +488,7 @@ Train machine learning models
 
 * `-@`, `--threads <THREADS>` — Number of threads to use
 
-  Default value: `14`
+  Default value: `10`
   [env: `RASTAIR_THREADS`]
 
 ###### **Training Options:**
@@ -535,7 +535,7 @@ Compare predictions from a rastair2 call against a ground truth VCF and calculat
   Default value: `0.80`
 * `-@`, `--threads <THREADS>` — Number of threads to use
 
-  Default value: `14`
+  Default value: `10`
   [env: `RASTAIR_THREADS`]
 
 
