@@ -9,9 +9,9 @@ authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"
 
 [package.metadata.bin]
-cargo-binstall = { version = "1.16.1" }
+cargo-binstall = { version = "1.17.3" }
 cargo-llvm-cov = { version = "0.6.21" }
-cargo-insta = { version = "1.44.1" }
+cargo-insta = { version = "1.46.1" }
 cargo-nextest = { version = "0.9.114" }
 
 mdbook = { version = "0.4.52" }
@@ -34,11 +34,11 @@ rust-htslib = { version = "0.50.0", git = "https://github.com/killercup/rust-hts
 ] }
 tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
 
-insta = { version = "1.43.1", features = ["filters"] }
+insta = { version = "1.46.1", features = ["filters"] }
 insta-cmd = "0.6.0"
 pastey = "0.2.0"
 proptest = "1.7.0"
-tempfile = "3.21.0"
+tempfile = "3.24.0"
 
 [dependencies]
 rust-htslib = { workspace = true }
