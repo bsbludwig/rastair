@@ -34,7 +34,8 @@ expression: stdout
 ##INFO=<ID=AMQ,Number=R,Type=Float,Description="RMS Map quality per allele">
 ##INFO=<ID=AS_SS_BQ_OT,Number=R,Type=Float,Description="Strand-specific RMS of base quality per allele on the original top strand">
 ##INFO=<ID=AS_SS_BQ_OB,Number=R,Type=Float,Description="Strand-specific RMS of base quality per allele on the original bottom strand">
-##INFO=<ID=AS_SS_MQ,Number=.,Type=Float,Description="Strand-specific RMS of mapping quality per allele (tuples of [reads_ot, reads_ob] for each allele)">
+##INFO=<ID=AS_SS_MQ_OT,Number=R,Type=Float,Description="Strand-specific RMS of mapping quality per allele on the original top strand">
+##INFO=<ID=AS_SS_MQ_OB,Number=R,Type=Float,Description="Strand-specific RMS of mapping quality per allele on the original bottom strand">
 ##INFO=<ID=PIR,Number=R,Type=Float,Description="RMS of relative position in read">
 ##INFO=<ID=ENT100,Number=1,Type=Float,Description="Shannon entropy of 100bp sequence context around variant position. Value range (0..2)">
 ##INFO=<ID=NAB,Number=R,Type=Float,Description="RMS of number of aligned bases">
