@@ -115,7 +115,11 @@ jobs:
 
             # Download and install the necessary intermediate certificates
             curl -O https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+            curl -O https://www.apple.com/appleca/AppleIncRootCertificate.cer
+
             security import DeveloperIDG2CA.cer \
+              -k build.keychain
+            security import AppleIncRootCertificate.cer \
               -k build.keychain
 
             # Import Developer ID Application cert (.p12)
@@ -142,18 +146,18 @@ jobs:
               rustup target add "${TARGET}"
               cargo build --release --locked --target "${TARGET}"
 
-              OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
-
-              mkdir -p "${OUTDIR}"
-              cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
-              cp -R scripts/* "${OUTDIR}/"
-
               # Sign each built binary (per target)
               codesign --force --options runtime --timestamp \
                 --sign "${MACOS_SIGN_IDENTITY}" \
                 "target/${TARGET}/release/${BIN_NAME}"
-
+              # Check if it worked
               codesign --verify --verbose=2 "target/${TARGET}/release/${BIN_NAME}"
+
+              # Create a zip bundle
+              OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
+              mkdir -p "${OUTDIR}"
+              cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
+              cp -R scripts/* "${OUTDIR}/"
 
               # Create a zip for notarization submission (not the tar.gz)
               NOTARY_ZIP="dist/${BIN_NAME}-${VERSION}-${TARGET}.zip"
