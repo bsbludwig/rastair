@@ -121,7 +121,7 @@ jobs:
               security set-keychain-settings -t 3600 -u build.keychain
 
               # Import Developer ID Application cert (.p12)
-              echo "$MACOS_CERT_B64" | base64 --decode > macos_signing.cer
+              echo "${MACOS_CERT_B64}" | base64 --decode > macos_signing.cer
               security import macos_signing.cer \
                 -k build.keychain \
                 -T /usr/bin/codesign \
@@ -132,27 +132,23 @@ jobs:
 
               # Sign each built binary (per target)
               codesign --force --options runtime --timestamp \
-                --sign "$MACOS_SIGN_IDENTITY" \
+                --sign "${MACOS_SIGN_IDENTITY}" \
                 "target/${TARGET}/release/${BIN_NAME}"
 
               codesign --verify --verbose=2 "target/${TARGET}/release/${BIN_NAME}"
 
               # Store notary credentials in keychain (once per job run)
               xcrun notarytool store-credentials "notary-profile" \
-                --apple-id "$APPLE_ID" \
-                --team-id "$APPLE_TEAM_ID" \
-                --password "$APPLE_APP_SPECIFIC_PASSWORD"
+                --apple-id "${APPLE_ID}" \
+                --team-id "${APPLE_TEAM_ID}" \
+                --password "${APPLE_NOTARIZATION_PASSWORD}"
 
               # Create a zip for notarization submission (not the tar.gz)
               NOTARY_ZIP="dist/${BIN_NAME}-${VERSION}-${TARGET}.zip"
               ditto -c -k --sequesterRsrc --keepParent "${OUTDIR}" "${NOTARY_ZIP}"
 
               # Submit and wait for result
-              xcrun notarytool submit "${NOTARY_ZIP}" \
-                --apple-id $APPLE_ID \
-                --password $APPLE_NOTARIZATION_PASSWORD \
-                --team-id "$APPLE_TEAM_ID" \
-                --wait
+              xcrun notarytool submit "${NOTARY_ZIP}" --keychain-profile "notary-profile" --wait
               xcrun stapler staple "${NOTARY_ZIP}"
 
               shasum -a 256 "${NOTARY_ZIP}" > "${NOTARY_ZIP}.sha256"
