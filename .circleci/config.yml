@@ -100,19 +100,13 @@ jobs:
           command: |
             set -euo pipefail
             source "$BASH_ENV"
-            
+
             : "${MACOS_CERT_B64:?Set MACOS_CERT_B64 in CircleCI env/context}"
             : "${APPLE_ID:?Set APPLE_ID in CircleCI env/context}"
             : "${APPLE_TEAM_ID:?Set APPLE_TEAM_ID in CircleCI env/context}"
             : "${APPLE_NOTARIZATION_PASSWORD:?Set APPLE_NOTARIZATION_PASSWORD in CircleCI env/context}"
             : "${MACOS_SIGN_IDENTITY:?Set MACOS_SIGN_IDENTITY in CircleCI env/context}"
-            
-            export MACOS_CERT_B64=${MACOS_CERT_B64}
-            export APPLE_ID=${APPLE_ID}
-            export APPLE_TEAM_ID=${APPLE_TEAM_ID}
-            export APPLE_NOTARIZATION_PASSWORD=${APPLE_NOTARIZATION_PASSWORD}
-            export MACOS_SIGN_IDENTITY=${MACOS_SIGN_IDENTITY}
-            
+
             KEYCHAIN_PASSWORD="$(uuidgen)"
             security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
             security default-keychain -s build.keychain
@@ -133,7 +127,7 @@ jobs:
               --apple-id "${APPLE_ID}" \
               --team-id "${APPLE_TEAM_ID}" \
               --password "${APPLE_NOTARIZATION_PASSWORD}"
-                
+
             BIN_NAME="rastair"
             VERSION="${CIRCLE_TAG:?This workflow should run on tags only}"
 
@@ -211,6 +205,7 @@ workflows:
             tags:
               only: /^v.*/
       - build_macos:
+          context: rastair2_deploy
           filters:
             branches:
               ignore: /.*/
