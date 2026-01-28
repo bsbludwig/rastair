@@ -113,6 +113,11 @@ jobs:
             security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
             security set-keychain-settings -t 3600 -u build.keychain
 
+            # Download and install the necessary intermediate certificates
+            curl -O https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+            security import DeveloperIDG2CA.cer \
+              -k build.keychain
+
             # Import Developer ID Application cert (.p12)
             echo "${MACOS_CERT_B64}" | base64 --decode > macos_signing.p12
             security import macos_signing.p12 \
