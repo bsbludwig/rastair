@@ -121,7 +121,6 @@ jobs:
             # Import Developer ID Application cert (.p12)
             echo "${MACOS_CERT_B64}" | base64 --decode > macos_signing.p12
             security import macos_signing.p12 \
-
               -T /usr/bin/codesign \
               -T /usr/bin/security \
               -P ${KEYCHAIN_PASSWORD}
