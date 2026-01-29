@@ -126,17 +126,20 @@ jobs:
               -T /usr/bin/security \
               -P ${KEYCHAIN_PASSWORD}
 
+            echo "Importing additional root and intermediate certs" 1>&2
             security import DeveloperIDG2CA.cer -k build.keychain
             security import AppleIncRootCertificate.cer -k build.keychain
             security import AppleRootCA-G2.cer -k build.keychain
 
             # leave in some debug info
-            security find-identity -p codesigning
+            #security find-identity -p codesigning
 
             # Allow codesign to access the key without prompts
+            echo "Enabling password-less signing" 1>&2
             security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ${KEYCHAIN_PASSWORD} build.keychain
 
             # Store notary credentials in keychain (once per job run)
+            echo "Set up norarization authentication" 1>&2
             xcrun notarytool store-credentials "notary-profile" \
               --apple-id "${APPLE_ID}" \
               --team-id "${APPLE_TEAM_ID}" \
@@ -146,14 +149,17 @@ jobs:
             VERSION="${CIRCLE_TAG:?This workflow should run on tags only}"
 
             for TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
+              echo "Build for ${TARGET}" 1>&2
               rustup target add "${TARGET}"
               cargo build --release --locked --target "${TARGET}"
 
               # Sign each built binary (per target)
+              echo "Sign binary for ${TARGET}" 1>&2
               codesign --force --options runtime --timestamp \
                 --sign "${MACOS_SIGN_IDENTITY}" \
                 "target/${TARGET}/release/${BIN_NAME}"
               # Check if it worked
+              echo "Test signed binary for ${TARGET}" 1>&2
               codesign --verify --verbose=2 "target/${TARGET}/release/${BIN_NAME}"
 
               # Create a zip bundle
@@ -167,6 +173,7 @@ jobs:
               ditto -c -k --sequesterRsrc --keepParent "${OUTDIR}" "${NOTARY_ZIP}"
 
               # Submit and wait for result
+              echo "Notarize ${NOTARY_ZIP}" 1>&2
               xcrun notarytool submit "${NOTARY_ZIP}" --keychain-profile "notary-profile" --wait
               #xcrun stapler staple "${NOTARY_ZIP}"
 
