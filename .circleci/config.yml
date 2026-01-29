@@ -126,16 +126,23 @@ jobs:
               -P ${KEYCHAIN_PASSWORD}
 
             echo "Importing additional root and intermediate certs" 1>&2
-            security import DeveloperIDG2CA.cer -k build.keychain
-            security import AppleIncRootCertificate.cer -k build.keychain
-            security import AppleRootCA-G2.cer -k build.keychain
+            mkdir certs
+            cd certs
 
-            # leave in some debug info
-            #security find-identity -p codesigning
+            for i in $ALL_APPLE_CERTS; do curl -O $i; done
+            for i in *.cer; do security import $i -k build.keychain; done
+            cd ..
 
             # Allow codesign to access the key without prompts
             echo "Enabling password-less signing" 1>&2
             security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ${KEYCHAIN_PASSWORD} build.keychain
+
+            # leave in some debug info
+            echo "Do we have a code-signing identity?" 1>&2
+            security find-identity -p codesigning
+            echo "Test if certificate can now be validated" 1>&2
+            security find-certificate -c "$MACOS_SIGN_IDENTITY" -p > test.pem
+            security verify-cert -k build.keychain -p codesign -c test.pem
 
             # Store notary credentials in keychain (once per job run)
             echo "Set up norarization authentication" 1>&2
