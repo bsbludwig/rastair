@@ -116,11 +116,11 @@ jobs:
             # Download and install the necessary intermediate certificates
             curl -O https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
             curl -O https://www.apple.com/appleca/AppleIncRootCertificate.cer
+            curl -O https://www.apple.com/certificateauthority/AppleRootCA-G2.cer
 
-            security import DeveloperIDG2CA.cer \
-              -k build.keychain
-            security import AppleIncRootCertificate.cer \
-              -k build.keychain
+            security import DeveloperIDG2CA.cer
+            security import AppleIncRootCertificate.cer
+            security import AppleRootCA-G2.cer
 
             # Import Developer ID Application cert (.p12)
             echo "${MACOS_CERT_B64}" | base64 --decode > macos_signing.p12
@@ -165,7 +165,7 @@ jobs:
 
               # Submit and wait for result
               xcrun notarytool submit "${NOTARY_ZIP}" --keychain-profile "notary-profile" --wait
-              xcrun stapler staple "${NOTARY_ZIP}"
+              #xcrun stapler staple "${NOTARY_ZIP}"
 
               shasum -a 256 "${NOTARY_ZIP}" > "${NOTARY_ZIP}.sha256"
             done
