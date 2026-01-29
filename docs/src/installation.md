@@ -23,16 +23,10 @@ For Apple users, we provide both Apple Silicon and Intel binaries:
 
 - [rastair-{{VERSION}}-x86_64-apple-darwin.zip](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-x86_64-apple-darwin.zip) (64-bit, older x86 Intel Macs)
 
- ```admonish warning
- These binaries are not yet signed and notarized. This means that OSX will refuse to execute them at first. There are a number of workarounds, but for command line tools [these instructions](https://donatstudios.com/mac-terminal-run-unsigned-binaries) seem like the most straightforward.
-
-Once we have received our credentials from the Apple Developer Programme, we will provide signed and notarized binaries and remove this warning.
- ```
-
 ## Building from source
 
 ### Pre-requisites
-To compile from source, uou need a working [Rust installation](https://www.rust-lang.org/tools/install) (version 1.88 or later). Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang library](https://clang.llvm.org/get_started.html) as well as [cmake](https://cmake.org/download/) and [bzip2](https://sourceware.org/bzip2/). On most systems, these are either already available or can be installed using a standard package manager:
+To compile from source, you need a working [Rust installation](https://www.rust-lang.org/tools/install) (version 1.88 or later). Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang library](https://clang.llvm.org/get_started.html) as well as [cmake](https://cmake.org/download/) and [bzip2](https://sourceware.org/bzip2/). On most systems, these are either already available or can be installed using a standard package manager:
 
 First, clone the repo:
 
