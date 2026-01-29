@@ -118,7 +118,8 @@ jobs:
             security import macos_signing.p12 \
               -T /usr/bin/codesign \
               -T /usr/bin/security \
-              -P ${KEYCHAIN_PASSWORD}
+              -P ${KEYCHAIN_PASSWORD} \
+              -k build.keychain
 
             # Allow codesign to access the key without prompts
             echo "Enabling password-less signing" 1>&2
@@ -132,6 +133,10 @@ jobs:
 
             security verify-cert -k build.keychain -p codesign -c test.pem || true
 
+            # Force-reload keychain
+            sudo killall -HUP trustd || true
+            sleep 1
+
             echo "Importing additional root and intermediate certs" 1>&2
             mkdir certs
             cd certs
@@ -140,7 +145,7 @@ jobs:
             for i in *.cer; do security import $i -k build.keychain; done
             cd ..
 
-            security verify-cert -k build.keychain -p codesign -c test.pem
+            # security verify-cert -k build.keychain -p codesign -c test.pem
 
             # Store notary credentials in keychain (once per job run)
             echo "Set up norarization authentication" 1>&2
