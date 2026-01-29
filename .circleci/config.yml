@@ -113,6 +113,18 @@ jobs:
             security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
             security set-keychain-settings -t 3600 -u build.keychain
 
+            echo "Importing additional root and intermediate certs" 1>&2
+            mkdir certs
+            cd certs
+
+            for i in $ALL_APPLE_CERTS; do curl -O $i; done
+            for i in *.cer; do security import $i -k build.keychain; done
+            cd ..
+
+            # Force-reload keychain
+            sudo killall -HUP trustd || true
+            sleep 1
+
             # Import Developer ID Application cert (.p12)
             echo "${MACOS_CERT_B64}" | base64 --decode > macos_signing.p12
             security import macos_signing.p12 \
@@ -131,21 +143,7 @@ jobs:
             echo "Test if certificate can now be validated" 1>&2
             security find-certificate -c "$MACOS_SIGN_IDENTITY" -p > test.pem
 
-            security verify-cert -k build.keychain -p codesign -c test.pem || true
-
-            # Force-reload keychain
-            sudo killall -HUP trustd || true
-            sleep 1
-
-            echo "Importing additional root and intermediate certs" 1>&2
-            mkdir certs
-            cd certs
-
-            for i in $ALL_APPLE_CERTS; do curl -O $i; done
-            for i in *.cer; do security import $i -k build.keychain; done
-            cd ..
-
-            # security verify-cert -k build.keychain -p codesign -c test.pem
+            security verify-cert -k build.keychain -p codesign -c test.pem
 
             # Store notary credentials in keychain (once per job run)
             echo "Set up norarization authentication" 1>&2
