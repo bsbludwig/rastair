@@ -68,6 +68,7 @@ jobs:
             mkdir -p "${OUTDIR}"
             cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
             cp -R scripts/* "${OUTDIR}/"
+            cp LICENSE.txt README.md "${OUTDIR}/"
 
             (cd dist && tar -czf "${TARBALL}" "$(basename "${OUTDIR}")")
             (cd dist && sha256sum "${TARBALL}" > "${TARBALL}.sha256")
@@ -174,6 +175,7 @@ jobs:
               mkdir -p "${OUTDIR}"
               cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
               cp -R scripts/* "${OUTDIR}/"
+              cp LICENSE.txt README.md "${OUTDIR}/"
 
               # Create a zip for notarization submission (not the tar.gz)
               NOTARY_ZIP="dist/${BIN_NAME}-${VERSION}-${TARGET}.zip"
