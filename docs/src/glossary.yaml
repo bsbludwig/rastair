@@ -13,62 +13,62 @@
 - key: bisulfite
   group: "Genetics"
   description: |
-    A chemical treatment used to convert unmethylated cytosines to uracil in DNA used in bisulfite sequencing to detect DNA @methylation patterns. Methylated cytosines are protected from conversion, allowing researchers to distinguish between methylated and unmethylated cytosines in the genome.
+    A chemical treatment that converts only _unmethylated_ cytosines to uracil in DNA. Used in bisulfite sequencing to detect DNA @methylation patterns.
 
 - key: variant
   group: "Genetics"
   description: |
-    Used to refer to a specific region of the genome which differs between two genomes. Variants can be @SNV:pl, insertions, deletions, or structural changes.
+    A genomic locus that differs from the given @referenceGenome. Variants can be @SNV:pl, insertions, deletions, or structural changes.
 
 - key: allele
   group: "Genetics"
   description: |
-    A specific version of a gene or DNA sequence that can vary between individuals. Alleles can differ by a single nucleotide (@SNV), a small insertion or deletion (@indel), or larger structural changes.
+    In cells with more than one homologous chromosomes, an allele refers to each of the observed sequences. In particular, a diploid genome will have two alleles per autosomal position.
 
 - key: refAllele
   short: "reference allele"
   group: "Genetics"
   description: |
-    Base that is present in the @referenceGenome at a specific @locus. Opposite to @altAllele.
+    @allele that matches the @referenceGenome at a specific @locus. Opposite to @altAllele.
 
 - key: altAllele
   short: "alternative allele"
   group: "Genetics"
   description: |
-    Base that is different from the @refAllele at a specific @locus. Opposite to @refAllele.
+    @allele that is different from the @refAllele at a specific @locus. Opposite to @refAllele.
 
 - key: referenceGenome
   short: "reference genome"
   group: "Genetics"
   description: |
-    Sequence of the species' genome that is used as a reference for comparing and analyzing genetic data.
+    Sequence of the species' genome that is used as a reference for comparing and analyzing genetic data. In particular, most alignment algorithms will use a reference genome to map reads to.
 
 - key: haplotype
   group: "Genetics"
   description: |
-    The @allele:pl at @variant:pl close together on the same @chromosome tend to occur together more often than is expected by chance. These blocks of @allele:pl are called haplotypes. Genes that are close to each other on the same @chromosome tend to be inherited together because they're less likely to be separated during the process of recombination, which occurs when @chromosome:pl exchange genetic material.
+    A haplotype is a set of @variant:pl that co-occur on the same chromosome sequence, and are therefore linked.
 
 - key: methylation
   group: "Genetics"
   description: |
-    Methylation is a chemical modification of DNA that involves adding a small molecule called a methyl group (CH₃) to certain parts of DNA, typically at cytosine bases adjacent to guanine bases (@CpG sites). This process is part of the epigenetic mechanisms that regulate gene expression without altering the underlying DNA sequence. Methylation often acts as a "switch" by turning genes off when methyl groups are added. It is a crucial process during development and helps maintain cellular identity. If genes involved in growth are turned off due to methylation, it might prevent them from causing uncontrolled cell division (cancer). However, if tumor-suppressor genes get hypermethylated, they can be silenced too, contributing to cancer. Conversely, hypomethylation (reduced methylation) may activate genes that shouldn't be on, also leading to issues like cancer.
+    Cytosine methylation is the enzymatic addition of a methyl group to cytosine by DNA methyltransferases. In animals, DNA methylation occurs at @CpG dinucleotides.
 
 - key: methylated
   group: "Genetics"
   description: |
-    Refers to DNA that has undergone @methylation.
+    Refers to a base that has undergone @methylation.
 
 - key: SNV
   long: "Single Nucleotide Variant"
   group: "Genetics"
   description: |
-    A variation in a single nucleotide that occurs at a specific position in the genome.
+    A variation in a single nucleotide that occurs at a specific position in the genome. SNV is commonly used to refer to somatic variation, _ie._ a difference between _eg._ a cancer and its host.
 
 - key: SNP
   long: "Single Nucleotide Polymorphism"
   group: "Genetics"
   description: |
-    A @SNV that occurs at a given minimum frequency in the population.
+    Formally, a SNP is a @variant that occurs at a given minimum frequency in the population. However, it is nowadays often used to refer to any inherited @variant in an individual.
 
 - key: SAM
   long: "Sequence Alignment Map"
@@ -88,7 +88,7 @@
   long: "Browser Extensible Data"
   group: "File Formats"
   description: |
-    A text-based file format that stores genomic regions as a list of intervals.
+    A tab-separated-file format that stores genomic regions as a list of intervals.
 
     It looks like this:
     ```
@@ -97,13 +97,17 @@
     chr1	13220	14409	ENSG00000278267.1	0	+
     ```
 
-    The first three columns represent the @chromosome, start position, and end position of the interval. The other columns contain additional information about the interval.
+    The first three columns represent the chromosome, start position, and end position of the interval. The other columns contain additional information about the interval. Importantly, the start position in a bed file is 0-based, and the end position refers to the first base that is outside the interval. So, to refer to the first base of chromosome 1, one would write
+
+    ```
+    chr1 0 1 Interval_of_length_1
+    ```
 
 - key: VCF
   long: "Variant Call Format"
   group: "File Formats"
   description: |
-    File format based on @TSV that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations. @vcfPaper
+    Tab-separated-file format that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations. @vcfPaper
 
     It looks like this:
 
@@ -113,45 +117,37 @@
     chr1	10002	.	T	G	20	PASS	.	GT:DP	0/1:15	1/1:25
     ```
 
-    The first row contains the column headers. The first eight columns are mandatory fields that describe the variant. The remaining columns contain information about the samples and their genotypes.
-
-- key: TSV
-  long: "Tab-Separated Values"
-  group: "File Formats"
-  description: |
-    Text-based file format, each line corresponds to a row, and columns are separated by tabs.
+    The first row contains the column headers. The first eight columns are mandatory fields that describe the variant. The remaining columns contain information about the samples and their genotypes. Importantly, unlike in @BED, the position column in VCF files is 1-based.
 
 - key: FASTQ
   group: "File Formats"
   description: |
-    A text-based file format that stores DNA or RNA sequences and their corresponding quality scores. It is used to store raw sequencing data from high-throughput sequencing experiments. FASTQ files contain the sequence data in the form of nucleotide bases (A, T, C, G) and quality scores that represent the confidence in each base call.
+    A text-based file format that stores DNA or RNA sequences, optionally with corresponding quality scores such as produced by most sequencing machines. It is used to store raw sequencing data from high-throughput sequencing experiments. FASTQ files contain the sequence data in the form of nucleotide bases (A, T, C, G) and @Phred-scaled quality scores that represent the confidence in each base call.
 
 - key: samtools
   short: SAMtools
   group: "Tools"
   description: |
-    A suite of programs for interacting with sequencing data. It can manipulate @SAM and @BAM files, perform format conversions, and identify variants in sequence data.
-
-    Under the umbrella organization of `samtools`, a lot of related projects can be found, including [specifications for file formats]("https://github.com/samtools/hts-specs").
+    A [suite of utilities](https://www.htslib.org/doc/samtools.html) for manipulating @SAM and @BAM. It can manipulate @SAM and @BAM files. @samPaper
 
 - key: bcftools
   short: BCFtools
   group: "Tools"
   description: |
-    A set of utilities for manipulating variant calls in the @VCF and BCF file formats. @samtoolsPaper
+    A [set of utilities](https://samtools.github.io/bcftools/bcftools.html) for manipulating variant calls in the @VCF and BCF file formats. @samtoolsPaper
 
 - key: bedtools
   short: BEDtools
   group: "Tools"
   description: |
-    A suite of utilities for manipulating genomic intervals stored in @BED files.
+    A popular [suite of utilities](https://bedtools.readthedocs.io/en/latest/) for manipulating genomic intervals stored in @BED files.
 
 - key: GATK
   short: GATK
   long: "Genome Analysis Toolkit"
   group: "Tools"
   description: |
-    A software package for analyzing sequencing data with tools for variant discovery, genotyping, and other analyses.
+    A [software package](https://gatk.broadinstitute.org) for analyzing sequencing data with tools for variant discovery, genotyping, and other analyses.
 
 - key: BCF
   long: "Binary Call Format"
@@ -163,18 +159,13 @@
   long: "Integrative Genomics Viewer"
   group: "Tools"
   description: |
-    A visualization tool for interactive exploration of @SAM and @BAM files.
+    A [tool for interactive exploration](https://igv.org/) of @SAM and @BAM files.
     Also see  @screenshot-igv.
 
 - key: locus
   group: "Genetics"
   description: |
-    A specific position on a @chromosome where a gene or other DNA sequence is located. It can also refer to the position of a @variant in the genome.
-
-- key: chromosome
-  group: "Genetics"
-  description: |
-    A long DNA molecule that contains many genes and other genetic elements.
+    A specific position on a chromosome, for example the position of a @variant in the genome.
 
 - key: assay
   group: "Genetics"
@@ -192,14 +183,14 @@
   long: "Burrows-Wheeler Aligner"
   group: "Tools"
   description: |
-    A software package for mapping low-divergent sequences against a large @referenceGenome.
+    A [sequence alignment program](https://github.com/bwa-mem2/bwa-mem2) for mapping low-divergent sequences against a large @referenceGenome.
 
 - key: Minimap2
   short: "Minimap2"
   group: "Tools"
   # link: https://github.com/lh3/minimap2
   description: |
-    Sequence alignment program that aligns DNA or mRNA sequences against a reference database.
+    A [sequence alignment program](https://github.com/lh3/minimap2) that aligns DNA or mRNA sequences against a reference database. Often used for long-read data.
 
 - key: RMS
   long: "Root Mean Square"
@@ -238,7 +229,7 @@
   short: diploid genome
   group: "Genetics"
   description: |
-    Genome that contains two sets of @chromosome:pl, one set inherited from each parent.
+    Genome that contains two sets of chromosome:pl, one set inherited from each parent.
 
 - key: ML
   long: "Machine Learning"
@@ -290,19 +281,13 @@
   long: Original Top
   group: "Sequence Analysis"
   description: |
-    The original top of the original molecule of DNA that was sequenced. The "top" by definition is the sequence that matches the reference sequence.
+    The "original top" of the DNA fragment that was sequenced. The "top" by definition is the sequence that matches the reference sequence.
 
 - key: OB
   long: Original Bottom
   group: "Sequence Analysis"
   description: |
-    The original bottom alignment score of a read.
-
-- key: repeatedSequence
-  short: repeated sequence
-  group: "Genetics"
-  description: |
-    A sequence that occurs multiple times in the genome. There homopolymer repeats like `AAAAAA`, tandem repeats like `ATATATAT`, and interspersed repeats which are dispersed throughout the genome.
+    The "original bottom" of the DNA fragment that was sequenced.
 
 - key: maximumLikelihood
   short: maximum likelihood
@@ -346,12 +331,12 @@
   long: sequence read
   group: "Sequence Analysis"
   description: |
-    A short sequence of DNA or RNA that is generated by a high-throughput sequencing technology. Reads are typically a few hundred base pairs long and are used to reconstruct the original sequence of the genome.
+    A sequence of DNA or RNA that is generated by a high-throughput sequencing technology. In "short-read sequencing", they are typically between a few dozen and a few hundred base pairs long.
 
 - key: alignment
   group: "Sequence Analysis"
   description: |
-    Represents the mapping of a sequence @read to a @referenceGenome in @BAM and @SAM files. It includes information about the position, orientation, and quality of the alignment.
+    Represents the position and base-to-base mapping of a sequence @read to a @referenceGenome.
 
 - key: pileup
   group: "Sequence Analysis"
@@ -363,11 +348,6 @@
   group: "File Formats"
   description: |
     A unique identifier for a sequence @read in a @SAM or @BAM file. It is used to track the origin of the read and link it to other information in the file. Example: `NB502094:69:HN2H2BGX5:2:21111:24699:8526`
-
-- key: putative
-  group: "Genetics"
-  description: |
-    Refers to something that is assumed to be true or valid based on initial evidence but has not been definitively proven.
 
 - key: flamegraph
   group: "Programming"
@@ -390,7 +370,7 @@
   long: "Variant Allele Frequency"
   group: "Genetics"
   description: |
-    The proportion of a specific @altAllele in a sample compared to the total number of alleles at that @variant:
+    The proportion of observations of a specific @altAllele in a sample, compared to the total number of observations @locus:
 
     $ \text{VAF} = \frac{\text{Reads supporting the variant allele}}{\text{Total reads covering the site}} $
 

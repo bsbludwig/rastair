@@ -37,4 +37,4 @@ That means, for a given input, it can convert to a format in the same group or a
 3. @BED (`.bed`) and per-read BED (`.reads.bed`)
 
    Contains the most important calling information.
-   Can be processed using @bedtools (or anything else that can read @TSV files).
+   Can be processed using @bedtools (or anything else that can read tab-separated-values files).

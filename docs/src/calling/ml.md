@@ -19,31 +19,21 @@ Here, `_adj` refers to a feature of the `adjacent` nucleotide, _ie_ the C when e
 
 ## Adjusting the Threshold
 
-Default:
-
-```bash
-rastair call input.bam
-```
-
-Change threshold:
+Based on our training data, we empirically determined that a threshold of $ 0.8 $ seems to offer a good balance between sensitivity and specificity. This is now the default setting. However, you can manually override this:
 
 ```bash
 rastair call --ml 0.9 input.bam
 ```
 
-Disable ML (faster, less accurate):
+Values above 0.8 will shift the balance towards higher specificity at the expense of sensitivity.
+
+If you care primarily about speed but do not need strict variant calling, e.g. when you only want to call methylation at known CpGs, you can turn the ML scoring off:
 
 ```bash
 rastair call --no-ml input.bam
 ```
 
-## Performance Considerations
-
-ML inference is the slowest part of the pipeline.
-To speed up calling:
-
-- **Reduce positions evaluated**: Use `--cpg-only` if you only care about CpG methylation
-- **Disable ML**: Use `--no-ml` for quick exploratory runs where accuracy isn't critical
+There are a range of hard-threshold filters that can be customized with different command line arguments. Refer to the [cli documentation](../cli.md) for details.
 
 ## Training Custom Models
 
