@@ -107,12 +107,6 @@ rastair per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 
 For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
 
-The per-read output can then be used to annotate the reads in the bam file with methylation information that is compatible with e.g. [modkit](https://github.com/nanoporetech/modkit):
-
-```bash
-rastair bam -r reference.fa.gz -o test_annotated.bam test.bam test_per-read.bed.gz
-```
-
 ```admonish tip
 The per-read output is also the input for your QC pipeline. For more details, read the [qc section](src/qc.md) of this manual.
 ```

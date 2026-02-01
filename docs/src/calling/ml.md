@@ -34,21 +34,3 @@ rastair call --no-ml input.bam
 ```
 
 There are a range of hard-threshold filters that can be customized with different command line arguments. Refer to the [cli documentation](../cli.md) for details.
-
-## Training Custom Models
-
-```admonish warning
-The `ml train` subcommand is insufficiently tested at this point, and might not produce optimal models!
-```
-
-If you have ground-truth data (e.g., validated @SNP:pl), you can train a custom model tailored to your specific dataset, coverage, or sample type.
-
-Basic training command:
-
-```bash
-rastair ml train input.bam --truth ground_truth.vcf --output ./my_models
-```
-
-See [the CLI docs](../cli.md#rastair-ml-train)
-or run `rastair ml train --help`
-for an overview of all training options.

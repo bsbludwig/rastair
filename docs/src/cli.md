@@ -9,11 +9,7 @@ This document contains the help content for the `rastair` command-line program.
 * [`rastair`↴](#rastair)
 * [`rastair call`↴](#rastair-call)
 * [`rastair per-read`↴](#rastair-per-read)
-* [`rastair bam`↴](#rastair-bam)
 * [`rastair convert`↴](#rastair-convert)
-* [`rastair ml`↴](#rastair-ml)
-* [`rastair ml train`↴](#rastair-ml-train)
-* [`rastair ml verify`↴](#rastair-ml-verify)
 * [`rastair view`↴](#rastair-view)
 * [`rastair mbias`↴](#rastair-mbias)
 * [`rastair license`↴](#rastair-license)
@@ -30,9 +26,7 @@ See <https://docs.rastair.com/> for more information.
 
 * `call` — Call methylated positions
 * `per-read` — Call methylation per-read
-* `bam` — Add methylation information to BAM files
 * `convert` — Convert between different file formats
-* `ml` — Machine learning commands for training and verifying models
 * `view` — View internal format as JSON lines
 * `mbias` — Calculate conversion per base position in read
 * `license` — Show license -- rastair is licensed under a non-commercial use licence
@@ -315,40 +309,6 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 
 
-## `rastair bam`
-
-Add methylation information to BAM files
-
-This will rewrite a BAM file to add methylation information and change the methylated positions in the sequence to their original base.
-
-**Usage:** `rastair bam [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE> <CALLS_FILE>`
-
-###### **Arguments:**
-
-* `<BAM_FILE>` — Path to sorted and indexed BAM file
-* `<CALLS_FILE>` — Rastair's calls to determine methylation
-
-###### **Input Options:**
-
-* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
-
-###### **Output Options:**
-
-* `-o`, `--output <OUTPUT>` — Output file
-
-  Default value: `-`
-
-###### **Processing Options:**
-
-* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
-
-   Used for splitting work between threads. Tweak this to adjust memory usage.
-
-  Default value: `100000`
-
-
-
 ## `rastair convert`
 
 Convert between different file formats
@@ -436,106 +396,6 @@ Convert between different file formats
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
-
-
-
-## `rastair ml`
-
-Machine learning commands for training and verifying models
-
-**Usage:** `rastair ml <COMMAND>`
-
-###### **Subcommands:**
-
-* `train` — Train machine learning models
-* `verify` — Verify trained models against ground truth
-
-
-
-## `rastair ml train`
-
-Train machine learning models
-
-**Usage:** `rastair ml train [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE> <TRUTH>`
-
-###### **Arguments:**
-
-* `<BAM_FILE>` — Path to sorted and indexed BAM file
-* `<TRUTH>` — Path to the ground truth file (VCF) to train with
-
-###### **Input Options:**
-
-* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
-
-###### **Options:**
-
-* `--ml-features <ML_FEATURES>`
-
-  Default value: `standard`
-
-  Possible values: `standard`, `simple`
-
-
-###### **Output Options:**
-
-* `-o`, `--output <OUTPUT>` — Output directory for trained models
-
-  Default value: `./models`
-
-###### **Processing Options:**
-
-* `-@`, `--threads <THREADS>` — Number of threads to use
-
-  Default value: `10`
-  [env: `RASTAIR_THREADS`]
-
-###### **Training Options:**
-
-* `--n-trees <N_TREES>` — Number of trees in the random forest
-
-  Default value: `800`
-* `--max-features <MAX_FEATURES>` — Number of features to consider at each split (mtry parameter)
-
-  Default value: `2`
-* `--n-positive <N_POSITIVE>` — Number of positive examples (SNPs) to sample for training
-
-  Default value: `4000`
-* `--n-negative <N_NEGATIVE>` — Number of negative examples (REF positions) to sample for training
-
-  Default value: `16000`
-* `--ml <ML>` — ML threshold for model evaluation (used for reporting metrics)
-
-  Default value: `0.80`
-
-
-
-## `rastair ml verify`
-
-Verify trained models against ground truth
-
-Compare predictions from a rastair2 call against a ground truth VCF and calculate classification metrics (sensitivity, specificity, etc.)
-
-**Usage:** `rastair ml verify [OPTIONS] <PREDICTIONS> <TRUTH>`
-
-###### **Arguments:**
-
-* `<PREDICTIONS>` — Path to predictions VCF file (output from rastair2 call)
-* `<TRUTH>` — Path to ground truth VCF file
-
-###### **Input Options:**
-
-* `-l`, `--region <REGION>` — Region to analyze (e.g., chr16)
-
-###### **Processing Options:**
-
-* `--ml-threshold <ML_THRESHOLD>` — ML score threshold for calling variants
-
-  Default value: `0.80`
-* `-@`, `--threads <THREADS>` — Number of threads to use
-
-  Default value: `10`
-  [env: `RASTAIR_THREADS`]
 
 
 

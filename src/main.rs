@@ -55,10 +55,12 @@ enum Subcommand {
     ///
     /// This will rewrite a BAM file to add methylation information and change
     /// the methylated positions in the sequence to their original base.
+    #[command(hide = true)]
     Bam(BamRewriteArgs),
     /// Convert between different file formats
     Convert(ConvertParams),
     /// Machine learning commands for training and verifying models
+    #[command(hide = true)]
     Ml {
         #[command(subcommand)]
         command: MlSubcommand,
