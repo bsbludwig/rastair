@@ -2,7 +2,7 @@
 
 This document contains the help content for the `rastair` command-line program.
 
-**Version:** `2.0.0-rc.2`
+**Version:** `2.0.0-rc2`
 
 **Command Overview:**
 
@@ -116,9 +116,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--m-min-depth <M_MIN_DEPTH>` — The minimum number of reads to call a position as methylated
 
   Default value: `3`
-* `--m-min-denovo-depth <M_MIN_DENOVO_DEPTH>` — The minimum number of reads required as evidence for a de novo CpG
-
-  Default value: `2`
 * `--m-bq-ratio-min <M_BQ_RATIO_MIN>` — The minimum quality ratio `(ad_alt*bq_alt + 1) / (ad_ref*bq_ref + 1)`
 
   Default value: `0.27`

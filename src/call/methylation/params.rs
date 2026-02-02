@@ -21,12 +21,6 @@ pub struct ThresholdParams {
     #[default(3)]
     pub m_min_depth: u32,
 
-    /// The minimum number of reads required as evidence for a de novo CpG
-    #[arg(long, default_value_t = 2)]
-    #[arg(help_heading = cli::sections::FILTER)]
-    #[default(2)]
-    pub m_min_denovo_depth: u32,
-
     /// The minimum quality ratio `(ad_alt*bq_alt + 1) / (ad_ref*bq_ref + 1)`
     #[arg(long, default_value_t = 0.27)]
     #[arg(help_heading = cli::sections::FILTER)]
