@@ -3,6 +3,7 @@
 Rastair comes with a helper script, written in [R](https://cran.r-project.org), which generates a comprehense QC report for your library.
 
 ```admonish info
+**If not using the docker image:**
 The QC tool requires a working installation of R with [RMarkdown](https://cran.r-project.org/web/packages/rmarkdown/index.html), [data.table](https://r-datatable.com), [ggplot2](https://ggplot2.tidyverse.org) and [argparser](https://cran.r-project.org/web/packages/argparser/index.html) libraries. You can install all of them at once with
 > ```r
 > install.packages(c("argparser", "data.table", "ggplot2", "rmarkdown"))
@@ -20,7 +21,7 @@ Once you have your per-read output, you generate the html report with
 
 ```bash
 mkdir -p test_qc
-mbias.R --output-prefix test_qc test_per-read.bed.gz
+rastair mbias --output-prefix test_qc test_per-read.bed.gz
 ```
 
 This will produce a file called `mbias.html` in the `test_qc` directory.
