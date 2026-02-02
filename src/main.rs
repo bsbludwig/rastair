@@ -2,7 +2,7 @@ use clap::{CommandFactory as _, Parser as _};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
 use rastair::*;
-use std::io::Write as _;
+use std::io::{Write as _, stdout};
 use tracing::{debug, info, warn};
 
 /// Use mimalloc as the global allocator, which proves to be faster than the
@@ -31,6 +31,7 @@ struct Cli {
 /// See <https://docs.rastair.com/> for more information.
 #[derive(Debug, clap::Subcommand)]
 #[command(version)]
+#[expect(clippy::large_enum_variant, reason = "It's the CLI definition")]
 enum Subcommand {
     /// Call methylated positions
     ///
@@ -79,6 +80,8 @@ enum Subcommand {
         #[command(subcommand)]
         command: Generate,
     },
+    /// Show license -- rastair is licensed under a non-commercial use licence
+    License,
 }
 
 /// Machine learning commands for training and verifying models
@@ -202,6 +205,10 @@ fn main() -> Result<()> {
                     .wrap_err("Failed to generate VCF docs")?;
             }
         },
+        Subcommand::License => {
+            let license_text = include_str!("../LICENSE.txt");
+            stdout().write_all(license_text.as_bytes()).wrap_err("Failed to write license text")?
+        }
     }
 
     Ok(())

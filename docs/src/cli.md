@@ -16,6 +16,7 @@ This document contains the help content for the `rastair` command-line program.
 * [`rastair ml verify`↴](#rastair-ml-verify)
 * [`rastair view`↴](#rastair-view)
 * [`rastair mbias`↴](#rastair-mbias)
+* [`rastair license`↴](#rastair-license)
 
 ## `rastair`
 
@@ -34,6 +35,7 @@ See <https://docs.rastair.com/> for more information.
 * `ml` — Machine learning commands for training and verifying models
 * `view` — View internal format as JSON lines
 * `mbias` — Calculate conversion per base position in read
+* `license` — Show license -- rastair is licensed under a non-commercial use licence
 
 ###### **Options:**
 
@@ -598,6 +600,14 @@ Please note that this is currently implemented as an R script. Unless you're usi
 * `--tabix-path <TABIX_PATH>` — Path to tabix executable
 
   Default value: `tabix`
+
+
+
+## `rastair license`
+
+Show license -- rastair is licensed under a non-commercial use licence
+
+**Usage:** `rastair license`
 
 
 
