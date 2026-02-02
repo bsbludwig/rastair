@@ -49,7 +49,7 @@ You can find a description of all custom VCF fields used by rastair [here](forma
 
 ## 2. Only call methylation, do not report genetic variants (very fast)
 
-@Bed output will only report CpG -- and de-novo CpG -- positions, which is a lot faster than processing all potential variants:
+@BED output will only report CpG -- and de-novo CpG -- positions, which is a lot faster than processing all potential variants:
 
 ```bash
 rastair call -r reference.fa.gz --bed test.bed.gz test.bam
