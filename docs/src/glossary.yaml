@@ -74,7 +74,7 @@
   long: "Sequence Alignment Map"
   group: "File Formats"
   description: |
-    A text-based file format that stores sequence data in a tab-delimited format. [Format Specification for version 1.0](https://samtools.github.io/hts-specs/SAMv1.pdf). It is used to store the alignment of sequence reads to a @referenceGenome. SAM files are used to visualize and analyze sequence data in genome browsers like @IGV. @samPaper
+    A text-based file format that stores sequence data in a tab-delimited format. [Format Specification for version 1.0](https://samtools.github.io/hts-specs/SAMv1.pdf). It is used to store the alignment of sequence reads to a @referenceGenome. SAM files are used to visualize and analyze sequence data in genome browsers like @IGV.
 
     Additional keys are defined in the [Optional Fields Specification](https://samtools.github.io/hts-specs/SAMtags.pdf).
 
@@ -130,7 +130,7 @@
   short: SAMtools
   group: "Tools"
   description: |
-    A suite of programs for interacting with sequencing data. It can manipulate @SAM and @BAM files, perform format conversions, and identify variants in sequence data. @samPaper
+    A suite of programs for interacting with sequencing data. It can manipulate @SAM and @BAM files, perform format conversions, and identify variants in sequence data.
 
     Under the umbrella organization of `samtools`, a lot of related projects can be found, including [specifications for file formats]("https://github.com/samtools/hts-specs").
 
@@ -405,3 +405,8 @@
   group: "Genetics"
   description: |
     A @CpG site that is not present in the @referenceGenome but seems to occur in the sample when there is a variant that turns a `NG` (or a `CN`) into a `CG`.
+
+- key: tabix
+  group: "Tools"
+  description: |
+    An indexing tool for tab-delimited files, such as @VCF and @BED files. It creates an index file that allows for efficient random access to specific regions of the file. Part of @samtools. [Homepage](https://www.htslib.org/doc/tabix.html)

@@ -16,7 +16,7 @@ This design ensures that positions at segment boundaries have access to adjacent
 After processing, only core positions are emitted, preventing duplicates.
 
 **Thread-Local Readers**:
-Each worker thread maintains its own @BAM and @FASTA file handles, avoiding lock contention and serialize I/O.
+Each worker thread maintains its own @BAM and @FASTQ file handles, avoiding lock contention and serialize I/O.
 Using index files (FAI, CSI, or TBI) enables efficient parallel random access.
 
 **Ordered Channel**:

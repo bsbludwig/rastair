@@ -22,7 +22,7 @@ Briefly, we provide pre-built binaries for [Linux (x86)](https://s3.{{S3_REGION}
 
 ## Usage
 
-Call methylation at all CpG positions (including CpGs formed by SNPs) from a bam file and output as a [tabix-indexed](https://www.htslib.org/doc/tabix.html) [bed file](formats/bed):
+Call methylation at all CpG positions (including CpGs formed by SNPs) from a bam file and output as a @tabix\-indexed [bed file](formats/bed.md):
 
 ```bash
 rastair call --bed output.bed.gz -r reference.fasta.gz input.bam
