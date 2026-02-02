@@ -28,8 +28,6 @@ color-eyre = "0.6.5"
 serde = { version = "1.0.219", features = ["derive"] }
 cstr8 = "0.1.4"
 rust-htslib = { version = "0.50.0", git = "https://github.com/killercup/rust-htslib.git", branch = "feature/set-seq", default-features = false, features = [
-  "bzip2",
-  "lzma",
   "libdeflate",
 ] }
 tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
