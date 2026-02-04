@@ -29,6 +29,8 @@ serde = { version = "1.0.219", features = ["derive"] }
 cstr8 = "0.1.4"
 rust-htslib = { version = "0.50.0", git = "https://github.com/killercup/rust-htslib.git", branch = "feature/set-seq", default-features = false, features = [
   "libdeflate",
+  "bzip2",
+  "lzma",
   "static",
 ] }
 tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
@@ -93,6 +95,9 @@ libc = "0.2.174"
 better_default = "1.0.5"
 noodles = { version = "0.104.0", features = ["tabix", "csi", "bgzf", "core"] }
 noodles-bgzf = { version = "0.45.0", features = ["libdeflate"] }
+
+# just so that rust-htslib builds it statically
+bzip2-sys = { version = "0.1.13", features = ["static"] }
 
 [dev-dependencies]
 insta = { workspace = true }
