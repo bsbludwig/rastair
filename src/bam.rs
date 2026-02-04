@@ -12,10 +12,10 @@ use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 mod base_modification;
-pub use base_modification::MethylatedPositions;
+pub use base_modification::{MethylatedPositions, XrTags};
 use tracing::{instrument, warn};
 
 #[derive(Debug, Parser)]
@@ -128,10 +128,11 @@ fn rewrite_region(
 ///
 /// 1. Find all calls that are covered by our record
 /// 2. Find the positions in the read that correspond to the called positions
-/// 3. Build a `MethylatedPositions` struct
-/// 4. Rewrite the sequence to un-modify the bases of methylated positions
+/// 3. Build a `MethylatedPositions` struct for MM/ML tags
+/// 4. Build `XrTags` for XR/XG/XM tags
+/// 5. Rewrite the sequence to un-modify the bases of methylated positions
 ///    (i.e., change T or A that is methylation evidence back to C or G)
-/// 5. Apply the modifications to the record
+/// 6. Apply the modifications to the record
 #[instrument(level = "debug", skip_all, fields(pos = record.pos()))]
 fn rewrite_record(
     // All calls in the region of the record (they are all the same contig)
@@ -150,9 +151,23 @@ fn rewrite_record(
 
     let mods = MethylatedPositions::new(strand, &seq_for_mm_tag, &methylated_positions);
 
+    // Determine if this read is first or second in pair for XR tag
+    let is_first_in_pair = record.is_first_in_template();
+
+    // Create XR/XG/XM tags (reusing a HashSet for performance)
+    let mut methylated_set = FxHashSet::default();
+    let xr_tags = XrTags::new(
+        &seq_for_mm_tag,
+        strand,
+        &methylated_positions,
+        is_first_in_pair,
+        &mut methylated_set,
+    );
+
     record.set_seq(&seq);
 
     mods.apply_to_record(record)?;
+    xr_tags.apply_to_record(record)?;
     Ok(())
 }
 
@@ -263,7 +278,7 @@ fn add_rastair_header(header: &mut Header) {
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation, reason = "lots of noise otherwise for small numbers")]
 mod tests {
-    use color_eyre::eyre::{ContextCompat as _, bail};
+    use color_eyre::eyre::{ContextCompat as _, bail, ensure};
     use insta::{assert_compact_debug_snapshot, assert_snapshot};
     use rust_htslib::bam::record::Aux;
 
@@ -362,6 +377,122 @@ mod tests {
             bail!("MM tag is not a string");
         };
         assert_snapshot!(mod_string, @"G-m,4,0,0,16;");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_xr_xg_xm_tags() -> Result<()> {
+        use Base::*;
+
+        // Test with flag 83 (OB strand, first in pair reverse)
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")
+            .wrap_err("failed to open test BAM")?;
+        bam.fetch((0, 6103075, 6103100))?;
+        let mut record = Record::new();
+        bam.read(&mut record).wrap_err("no records")?.wrap_err("failed to read record")?;
+
+        // Verify this is flag 83
+        assert_eq!(record.flags(), 83, "Expected flag 83");
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
+
+        let ol_seq = record.seq().as_bytes();
+
+        // Create test calls with some methylated CpGs
+        let calls = {
+            let mut calls = FxHashMap::default();
+            let seq = &ol_seq;
+
+            for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
+                let current_base = Base::from(seq[pos_in_read as usize]);
+                let Some(next_base) = seq.get((pos_in_read + 1) as usize).map(Base::from) else {
+                    continue;
+                };
+
+                match (current_base, next_base) {
+                    (C, G) => {
+                        calls.insert(
+                            pos_in_ref as u32,
+                            RastairCall::Cpg { methylated: true, base: C },
+                        );
+                    }
+                    (C, A) => {
+                        calls.insert(
+                            pos_in_ref as u32 + 1,
+                            RastairCall::Cpg { methylated: true, base: G },
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            calls
+        };
+
+        rewrite_record(&calls, &mut record)?;
+
+        // Check XR tag (flag 83: first in pair => CT)
+        let Aux::String(xr_tag) = record.aux(b"XR").wrap_err("missing XR tag")? else {
+            bail!("XR tag is not a string");
+        };
+        assert_snapshot!(xr_tag, @"CT");
+
+        // Check XG tag (OB strand => GA)
+        let Aux::String(xg_tag) = record.aux(b"XG").wrap_err("missing XG tag")? else {
+            bail!("XG tag is not a string");
+        };
+        assert_snapshot!(xg_tag, @"GA");
+
+        // Check XM tag exists and has correct length
+        let Aux::String(xm_tag) = record.aux(b"XM").wrap_err("missing XM tag")? else {
+            bail!("XM tag is not a string");
+        };
+        assert_eq!(xm_tag.len(), record.seq_len());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_xr_xg_tags_all_flags() -> Result<()> {
+        // Test all four flag combinations
+        let test_cases = vec![
+            (99, "CT", "CT"),  // flag 99: OT, first in pair => XR:CT, XG:CT
+            (147, "GA", "CT"), // flag 147: OT, second in pair => XR:GA, XG:CT
+            (83, "CT", "GA"),  // flag 83: OB, first in pair => XR:CT, XG:GA
+            (163, "GA", "GA"), // flag 163: OB, second in pair => XR:GA, XG:GA
+        ];
+
+        for (flag, expected_xr, expected_xg) in test_cases {
+            let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")
+                .wrap_err("failed to open test BAM")?;
+
+            // Find a record with the desired flag
+            bam.fetch(FetchDefinition::All)?;
+            let mut record = Record::new();
+            let mut found = false;
+
+            while let Some(result) = bam.read(&mut record) {
+                result?;
+                if record.flags() == flag {
+                    found = true;
+                    break;
+                }
+            }
+
+            ensure!(found, "No record with flag {flag} found in test BAM");
+
+            let calls = FxHashMap::default(); // Empty calls for this test
+            rewrite_record(&calls, &mut record)?;
+
+            let Aux::String(xr_tag) = record.aux(b"XR").wrap_err("missing XR tag")? else {
+                bail!("XR tag is not a string for flag {}", flag);
+            };
+            assert_eq!(xr_tag, expected_xr, "XR tag mismatch for flag {}", flag);
+
+            let Aux::String(xg_tag) = record.aux(b"XG").wrap_err("missing XG tag")? else {
+                bail!("XG tag is not a string for flag {}", flag);
+            };
+            assert_eq!(xg_tag, expected_xg, "XG tag mismatch for flag {}", flag);
+        }
 
         Ok(())
     }
