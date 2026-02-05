@@ -23,6 +23,12 @@ The main functionality is implemented in the `rastair` crate,
 with submodules for different components like pileup processing, variant calling, and methylation analysis.
 The `xtask` crate is used for auxiliary tasks like testing and benchmarking.
 
+The core processing pipeline is implemented in `src/call.rs` in the `process_region` function, which processes pileups through several stages:
+calculate pileup metrics → set de-novo adjacency flags → add ML metrics → apply threshold filters → propagate de-novo pass flags → set alt calls → estimate genotype → call methylation.
+Methylation calling logic is in `src/metrics/methylation.rs` with separate functions for reference C/G positions (`ref_c`, `ref_g`) and de-novo CpG creation (`ref_t_to_c`, `ref_a_to_g`, etc.).
+Genotype estimation happens before methylation calling in `src/call/variant_calling/genotype.rs`.
+The results are stored in `PileupMetrics.pos_metrics.extended.genotype` and `.methylated`.
+
 # Rust coding guidelines
 
 Rust code is to be written in expert-level Rust. Use the most modern features and idioms.
@@ -51,12 +57,19 @@ Specific adn well-named types are the main way to ensure correctness and introdu
   - Use explicit error handling with `match` or `if let Err(...)` when you need custom logic
 * Use `tracing` for logging
 
-## Testings
+## Testing
 
 * Write comprehensive unit tests for the most critical and complex parts of the codebase when you either add them or encounter bugs in them
 * Write integration tests for critical workflows and components, e.g. like the ones in `tests/call_cli.rs`
 * Run the tests with `cargo test`.
 * Use `cargo xtask insta` to run tests and update any snapshot tests. You need to verify the updated content is correct!
+
+### VCF Tests
+
+VCF tests are in `src/call/tests/vcf_tests/` with separate modules for different scenarios (cpgs.rs, denovo.rs, basic.rs).
+Tests use the `pileups!` macro to create synthetic read data with format `[base1 base2 ...] Strand`, and `vcf_assert!` macro to check expected VCF output with format `(Ref Alt...) PASS/FAIL Field=value`.
+Test utilities in `src/call/tests/utils.rs` provide the `pileups!` macro for creating test data, and helper functions like `set_pass`/`set_fail` for modifying alt calls with ML scores.
+The `reprocess()` function recalculates methylation_strand_info, genotypes, alt calls, and methylation values after modifications.
 
 # Interactivity guidelines
 
