@@ -122,12 +122,8 @@ impl PileupMetrics {
             qual: {
                 let ml_qual = if real_variants.is_empty() {
                     // No real variants, VCF spec says: QUAL = -10log10(P(variant))
-                    // Use the maximum ML score from methylation evidence
-                    methylation_evidence
-                        .iter()
-                        .filter_map(|alt| alt.filters.ml)
-                        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                        .map(|p| *Phred::from(p))
+                    // As there is _no_ evidence for a variant, the Phred should be MAX
+                    Some(Phred::from_phred(99).as_int())
                 } else {
                     // There are variants, VCF spec says: QUAL = -10log10(P(no variant))
                     // Use the *inverted* maximum ML score from all real variants
@@ -135,16 +131,19 @@ impl PileupMetrics {
                         .iter()
                         .filter_map(|alt| alt.filters.ml)
                         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                        .map(|p| *Phred::from(p.inverted()))
+                        .map(|p| Phred::from(p.inverted()).as_int())
                 };
                 // Fallback: if no ML scores available, use sequencing error rate
                 if let Some(ml_qual) = ml_qual {
                     Some(ml_qual)
                 } else {
-                    Some(*Phred::from(
-                        Probability::new(*error_model.error_rate() / depth)
-                            .wrap_err("Failed to compute QUAL from error rate")?,
-                    ))
+                    Some(
+                        Phred::from(
+                            Probability::new(*error_model.error_rate() / depth)
+                                .wrap_err("Failed to compute QUAL from error rate")?,
+                        )
+                        .as_int(),
+                    )
                 }
             },
         };
@@ -176,7 +175,7 @@ impl PileupMetrics {
             id: default(),
             r#ref: self.pileup.reference_base.into(),
             alt: smallvec![alt.base.into()],
-            qual: alt.filters.ml.map(|ml| *Phred::from(ml.inverted())),
+            qual: alt.filters.ml.map(|ml| Phred::from(ml.inverted()).as_int()),
         };
 
         let info = self.build_info(&[alt]);

@@ -84,7 +84,7 @@ pub struct VcfFixedFields {
     /// log10` prob (call in ALT is wrong). If ALT is ‘.’ (no variant) then this
     /// is `−10 log10` prob (variant), and if ALT is not ‘.’ this is `−10 log10`
     /// prob (no variant). If unknown, the MISSING value must be specified.
-    pub qual: Option<f64>,
+    pub qual: Option<i32>,
     // Following fields are application-specific:
     // - FILTER
     // - INFO
@@ -166,7 +166,7 @@ mod tests {
             id: BTreeSet::from(["rs123".into()]),
             r#ref: "A".into(),
             alt: SmallVec::from(["C".into(), "G".into()]),
-            qual: Some(50.0),
+            qual: Some(50),
         };
 
         let mut record = vcf.empty_record();
@@ -200,7 +200,7 @@ mod tests {
             id: BTreeSet::new(),
             r#ref: "A".into(),
             alt: SmallVec::from(["G".into()]),
-            qual: Some(30.5),
+            qual: Some(30),
         };
 
         let display = format!("{}", fields);
@@ -215,7 +215,7 @@ mod tests {
             id: BTreeSet::from(["rs456".into()]),
             r#ref: "C".into(),
             alt: SmallVec::from(["T".into(), "G".into(), "A".into()]),
-            qual: Some(99.9),
+            qual: Some(99),
         };
 
         let display = format!("{}", fields);
@@ -245,7 +245,7 @@ mod tests {
             id: BTreeSet::from(["sv123".into()]),
             r#ref: "N".into(),
             alt: SmallVec::from(["<DEL>".into()]),
-            qual: Some(10.0),
+            qual: Some(10),
         };
 
         let display = format!("{}", fields);
@@ -260,7 +260,7 @@ mod tests {
             id: BTreeSet::from(["custom_var".into(), "another_id".into()]),
             r#ref: "ATCGATCG".into(),
             alt: SmallVec::from(["A".into(), "ATCGATCGATCG".into(), "*".into()]),
-            qual: Some(42.42),
+            qual: Some(42),
         };
 
         let display = format!("{}", fields);
@@ -290,7 +290,7 @@ mod tests {
             id: BTreeSet::new(),
             r#ref: "AAA".into(),
             alt: SmallVec::from(["<*>".into(), "AA".into()]),
-            qual: Some(1.5),
+            qual: Some(2),
         };
 
         let display = format!("{}", fields);

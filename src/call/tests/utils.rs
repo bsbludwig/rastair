@@ -21,7 +21,7 @@ pub(crate) use color_eyre::{Result, eyre::bail};
 use rastair_types::{Base, Probability, Strand};
 use std::{rc::Rc, str::FromStr, sync::OnceLock};
 
-pub const ML_THRESHOLD: Probability = Probability::new_panicky(0.8);
+pub const ML_THRESHOLD: Probability = Probability::new_panicky(0.5);
 
 #[macro_export]
 macro_rules! pileups {
@@ -490,11 +490,10 @@ pub(crate) fn test_call(
 
 #[track_caller]
 pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
-    if m.ref_base() == base {
-        panic!(
-            "Cannot set reference base {base} as passing - only alt bases can be marked as passing/failing"
-        );
-    }
+    assert!(
+        m.ref_base() != base,
+        "Cannot set reference base {base} as passing - only alt bases can be marked as passing/failing"
+    );
     let alt = m.alt_filters_mut(base).wrap_err_with(|| format!("no {base} alt")).unwrap();
     alt.ml = Some(Probability::ONE);
 }
@@ -503,11 +502,10 @@ rastair_vcf::filter!(MANUAL, "manual");
 
 #[track_caller]
 pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
-    if m.ref_base() == base {
-        panic!(
-            "Cannot set reference base {base} as failing - only alt bases can be marked as passing/failing"
-        );
-    }
+    assert!(
+        m.ref_base() != base,
+        "Cannot set reference base {base} as failing - only alt bases can be marked as passing/failing"
+    );
     m.pos_filters.other_pos_in_denovo_passes = false;
 
     let alt = m.alt_filters_mut(base).wrap_err_with(|| format!("no {base} alt")).unwrap();
@@ -517,8 +515,11 @@ pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     alt.filters.add(MANUAL, || true);
 }
 
-// TODO this does not currently re-process beta value calculation after changing genotype call!
 pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics>> {
+    use crate::{
+        call::variant_calling::ErrorModel, metrics, metrics::MethylationEvidenceStrandInfo,
+    };
+
     records
         .into_iter()
         .map_surrounding(|before, current, after| {
@@ -528,6 +529,19 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
             let mut current = current?;
             process::set_alt_calls(&mut current, Some(ML_THRESHOLD))?;
             process::add_position_tags(&mut current);
+
+            // Recalculate methylation strand info (needed for genotype estimation)
+            current.pos_metrics.extended.methylation_strand_info =
+                MethylationEvidenceStrandInfo::from_pileup(&current);
+
+            // Recalculate genotype and methylation after changing alt calls
+            current.pos_metrics.extended.genotype =
+                current.estimate_genotype(Some(ML_THRESHOLD), ErrorModel::default());
+            current.pos_metrics.extended.methylated =
+                metrics::methylation::call(&current)?.unwrap_or_default();
+            current.pos_metrics.extended.methylation_strand_info =
+                MethylationEvidenceStrandInfo::from_pileup_with_methylation(&current);
+
             Ok(current)
         })
         .collect()

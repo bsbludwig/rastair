@@ -11,6 +11,8 @@ mod mbias;
 pub use bam::{BamRewriteArgs, rewrite as rewrite_bam};
 pub use io::mpk::viewer::{MpkViewParams, view as mpk_view};
 pub use mbias::{MBiasParams, mbias};
+mod pack;
+pub use pack::{PackModelParams, pack_models};
 
 // utils
 pub use utils::logging::setup_logging;

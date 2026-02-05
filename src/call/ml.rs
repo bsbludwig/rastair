@@ -32,7 +32,7 @@ use rastair_types::Probability;
 use std::{fs, io::Read, path::Path};
 use tracing::{debug, instrument};
 
-pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.8);
+pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.5);
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MachineLearningParams {
@@ -51,7 +51,7 @@ pub struct MachineLearningParams {
     ///
     /// For consistency with `--no-ml`, this option can be also be specified as
     /// `--ml` without a value, which will use the default threshold.
-    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.8", num_args = 0..=1)]
+    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.5", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,

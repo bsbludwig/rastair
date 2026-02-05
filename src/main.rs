@@ -96,6 +96,8 @@ enum MlSubcommand {
     /// Compare predictions from a rastair2 call against a ground truth VCF
     /// and calculate classification metrics (sensitivity, specificity, etc.)
     Verify(VerifyParams),
+    /// Pack three random forest models into a combined model file
+    Pack(PackModelParams),
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -172,6 +174,13 @@ fn main() -> Result<()> {
                 rastair::verify(&params)?;
                 let duration = start.elapsed();
                 info!(?duration, "Verification finished");
+            }
+            MlSubcommand::Pack(params) => {
+                let start = std::time::Instant::now();
+                debug!(?params, "Running pack command");
+                rastair::pack_models(&params)?;
+                let duration = start.elapsed();
+                info!(?duration, "Packing finished");
             }
         },
         Subcommand::Convert(params) => {

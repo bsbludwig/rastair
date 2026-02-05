@@ -211,6 +211,32 @@ fn test_c_to_g_high_ml_score() -> Result<()> {
 }
 
 #[test]
+fn test_c_to_t_outside_cpg_counts_both_strands() -> Result<()> {
+    // C→T outside CpG should count both strands for genotyping.
+    let (segment, pileups) = pileups!(
+        [ C ] Ref,
+        [ T ] OT,
+        [ T ] OT,
+        [ C ] OB,
+        [ C ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
+
+    // 2 T reads, 2 C reads -> heterozygous (0/1)
+    let expected_vcf = vcf_assert![
+        (C T) PASS GT="0/1",
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
 fn test_g_to_t_high_ml_score() -> Result<()> {
     // G→T transition (non-methylation-confounded) with high ML score
     let (segment, pileups) = pileups!(
@@ -622,7 +648,7 @@ fn test_denovo_cpg_genotyping_ignores_converted_strand_ref_reads() -> Result<()>
 
     // Genotyping for the C alt should only use OB strand
     let expected_vcf = vcf_assert![
-        (A C) PASS GT="1/1",
+        (A C) PASS GT="0/1",
         (A T) FAIL,
         (G .) PASS,  // partner position of de-novo CpG
         (G A) FAIL,

@@ -96,16 +96,17 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
         [ C C C ] Ref,
         [ G G G ] OT,
         [ G G G ] OT,
-        [ G C G ] OB,
         [ C T G ] OT,
+        [ G C A ] OB,
         [ C C A ] OB,
+        [ C G A ] OB,
     );
 
     let expected_vcf = vcf_assert![
-        (C G) PASS M5mC=0.0,
-        (C G) PASS M5mC=1., // Position 2: Real variant G, methylation info preserved in M5mC
+        (C G) PASS M5mC=0.0 GT="0/1", // Position 1: C with de-novo CpG G, and no methylation evidence
+        (C G) PASS M5mC=vec![1.0, 0.0] GT="0/1", // Position 2: Real variant G, genotype G/G, no C allele to methylate
         (C T) FAIL,
-        (C G) PASS M5mC=0.5, // Position 3: Real variant G, methylation info preserved in M5mC
+        (C G) PASS M5mC=1.0 GT="1/1", // Position 3: Real variant G, methylation info for that G>A
         (C A) FAIL,
     ];
 
@@ -113,6 +114,7 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
     set_pass(&mut records[0], G);
     set_pass(&mut records[1], G);
     set_fail(&mut records[1], T); // methylation evidence
+    set_pass(&mut records[2], G); // real variant
     set_fail(&mut records[2], A); // methylation evidence
     let records = reprocess(records)?; // to recalculate genotypes and propagate de-novo CpG flags
 
@@ -153,23 +155,27 @@ fn test_cpg_that_is_also_denovo() -> Result<()> {
     // Currently, de-novo CpG creation is only considered when one of the C or G is in the reference
     let (segment, pileups) = pileups!(
         [ C C G ] Ref,
-        [ C G G ] OT,
-        [ T T G ] OT,
-        [ C C G ] OB,
-        [ C A A ] OB,
-        [ C A A ] OB,
+        [ T G G ] OT,
+        [ T G G ] OT,
+        [ C T G ] OT,
+        [ C T G ] OT,
+        [ C C A ] OB,
+        [ C C A ] OB,
+        [ C A G ] OB,
+        [ C A G ] OB,
     );
 
     let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
-    set_pass(&mut records[1], G); // make this a denovo
+    set_fail(&mut records[0], T); // make this methylation evidence
+    set_pass(&mut records[1], G); // make this G in a denovo
     set_fail(&mut records[1], A); // make this methylation evidence
     set_fail(&mut records[2], A); // make this methylation evidence
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=0.5,
-        (C G) PASS M5mC=vec![1., 1.], // Real variant G - both original and de-novo CpG beta values
-        (G .) PASS M5mC=2./3.,
+        (C G) PASS M5mC=vec![1.0, 1.0], // Real variant G - both original and de-novo CpG beta values
+        (G .) PASS M5mC=0.5,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;

@@ -44,7 +44,7 @@ fn test_mixed_methylation_and_real_variants() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C A) PASS M5mC=1.,  // real variant A, methylation info preserved in M5mC
+        (C A) PASS M5mC=1. GT="0/1",  // T reads (methylation evidence) count as C allele → genotype C/A, beta 1.0
         (C T) FAIL,  // methylation evidence T fails as separate record
         (G .) PASS,
     ];
@@ -98,7 +98,7 @@ fn test_multiple_methylation_transitions_same_position() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=0.,  // methylation evidence (only one ref->. row)
+        (C .) PASS M5mC=1.,  // genotype C/C, all reads show T (fully methylated)
         (C T) FAIL,  // the methylation transition
         (G .) PASS M5mC=0.,
     ];
@@ -179,9 +179,9 @@ fn test_all_methylation_transitions_failing() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=0.,  // C is methylated, beta is 0 because it's a hom C>T
+        (C .) PASS M5mC=1.,  // genotype C/C, all reads show T (fully methylated)
         (C T) FAIL,  // methylation transition
-        (G .) PASS M5mC=0.,  // G is methylated, beta is 0 because it's a hom G>A
+        (G .) PASS M5mC=1.,  // genotype G/G, all reads show A (fully methylated)
         (G A) FAIL,  // methylation transition
     ];
 
@@ -367,13 +367,13 @@ fn test_cpg_islands_multiple_positions() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=0.,  // C1 methylated
+        (C .) PASS M5mC=1.,  // C1: genotype C/C, all reads show T (fully methylated)
         (C T) FAIL,  // C1->T methylation transition
         (G .) PASS M5mC=0.,  // G1 matches ref
         (C .) PASS M5mC=0.,  // C2 matches ref
-        (G .) PASS M5mC=0.,  // G2 methylated
+        (G .) PASS M5mC=1.,  // G2: genotype G/G, all reads show A (fully methylated)
         (G A) FAIL,  // G2->A methylation transition
-        (C .) PASS M5mC=0.,  // C3 methylated
+        (C .) PASS M5mC=1.,  // C3: genotype C/C, all reads show T (fully methylated)
         (C T) FAIL,  // C3->T methylation transition
         (G .) PASS M5mC=0.,  // G3 matches ref
     ];
@@ -497,6 +497,39 @@ fn test_other_pos_in_cpg_passes_flag() -> Result<()> {
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "TODO: Fix beta calculation for het positions with non-T alts (see ref_c in methylation.rs)"]
+fn test_non_ct_variant() -> Result<()> {
+    // Test C with both methylation evidence (C->T low ML) and real variant (C->A high ML)
+    // Assumption: When we have both types, we output ref->. plus both alt rows
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ A G ] OT,
+        [ A G ] OT,
+        [ A G ] OB,
+        [ A G ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_fail(&mut records[0], T); // methylation evidence
+    set_pass(&mut records[0], A); // real variant
+    set_fail(&mut records[1], A); // methylation evidence
+    let records = reprocess(records)?;
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;
+    let expected_vcf = vcf_assert![
+        (C A) PASS M5mC=0.5,  // C allele shows 2 converted reads out of 4 OT reads
+        (G .) PASS M5mC=0.5, // 2 OB reads are converted
+    ];
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

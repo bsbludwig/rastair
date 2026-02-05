@@ -42,7 +42,7 @@
 //!             id: BTreeSet::from(["rs123".into()]),
 //!             r#ref: "A".into(),
 //!             alt: smallvec!["C".into(), "G".into()],
-//!             qual: Some(50.0),
+//!             qual: Some(50),
 //!         },
 //!         filters: { let mut f = Filters::new(); f.add(q10.filter()); f.add(s50.filter()); f },
 //!         info: Info {
@@ -270,7 +270,7 @@ mod tests {
                     id: BTreeSet::from(["rs123".into()]),
                     r#ref: "A".into(),
                     alt: SmallVec::from(["C".into(), "G".into()]),
-                    qual: Some(50.0),
+                    qual: Some(50),
                 },
                 filters: {
                     let mut f = Filters::new();

@@ -5,8 +5,8 @@
 - [Installation](./installation.md)
 
 # Usage
-- [Examples](./examples.md)
-- [Command-line interface](./cli.md)
+- [Getting started](./examples.md)
+- [Command-line reference](./cli.md)
 - [Quality control report](./qc.md)
 
 # Calling logic

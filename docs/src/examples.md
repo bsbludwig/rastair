@@ -22,7 +22,7 @@ If writing to a @VCF (give a `.vcf.gz` file name) or @BCF file (give a filename 
 all high-confidence calls will be included:
 
 ```bash
-rastair call -r reference.fa.gz -o test.bcf test.bam
+rastair call -r reference.fa.gz -o test.vcf.gz test.bam
 ```
 
 ```admonish tip
@@ -42,10 +42,14 @@ Beware that vcf files generated with `--all` can get very large!
 Rastair will annotate variants with only a subset of all possible `INFO` and `FORMAT` tags. You can choose a custom set of annotations with e.g.
 
 ```bash
-rastair call -r reference.fa.gz --vcf-info-fields AD,BQ,MQ,MQ0,ENT100,SC5,CPG,CPGnovo --vcf-format-fields GT,M5mC,ML -o test.vcf.gz test.bam
+rastair call -r reference.fa.gz --vcf-info-fields AD,BQ,MQ,MQ0,ENT100,SC5,CPG,CPGnovo --vcf-format-fields GT,M5mC,ML -o test.bcf test.bam
 ```
 
 You can find a description of all custom VCF fields used by rastair [here](formats/vcf-fields.md).
+
+```admonish tip
+rastair can produce uncompressed VCF, bgzip-compressed `vcf.gz` and `bcf` files. The format will be guessed from the file ending. If you want to stream output to STDOUT, you can do `--vcf -`
+```
 
 ## 2. Only call methylation, do not report genetic variants (very fast)
 
@@ -62,7 +66,7 @@ Rastair will automatically produce [bgzip compressed](https://www.htslib.org/doc
 > tabix test.bed.gz chr19:6103156-6143156
 > ```
 
-This is usually orders of magnitude faster than using e.g. [bedtools](https://github.com/arq5x/bedtools2).
+This is usually orders of magnitude faster than using e.g. [bedtools](https://github.com/arq5x/bedtools2). You can also stream the bed file to STDOUT by setting `--bed -`.
 ```
 
 In some cases, you might prefer to write the bed output to `STDOUT` and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (ie exclude @denovo):
@@ -107,6 +111,6 @@ rastair per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 
 For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
 
-```admonish tip
+```admonish info
 The per-read output is also the input for your QC pipeline. For more details, read the [qc section](src/qc.md) of this manual.
 ```

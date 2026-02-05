@@ -1,6 +1,6 @@
 use crate::{
     call::variant_calling::GenotypeTag,
-    metrics::{DenovoAdjecent, PileupMetrics},
+    metrics::{AltCall, DenovoAdjecent, PileupMetrics},
     utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
 };
@@ -42,11 +42,13 @@ fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
         None
     };
 
-    // Check for de-novo CpG
-    let denovo_beta = if p.alt(C).is_some() && ref_after == G {
+    // Check for de-novo CpG (only if the denovo alt is a real variant)
+    let has_denovo_c = p.alts.iter().any(|a| a.base == C && a.call == AltCall::RealVariant);
+    let has_denovo_g = p.alts.iter().any(|a| a.base == G && a.call == AltCall::RealVariant);
+    let denovo_beta = if has_denovo_c && ref_after == G {
         // creating new CpG
         if ref_base == T { Some(ref_t_to_c(p)?) } else { Some(ref_not_t_to_c(p)?) }
-    } else if p.alt(G).is_some() && ref_before == C {
+    } else if has_denovo_g && ref_before == C {
         // creating new CpG
         if ref_base == A { Some(ref_a_to_g(p)?) } else { Some(ref_not_a_to_g(p)?) }
     } else {
@@ -263,6 +265,14 @@ fn ref_c(record: &PileupMetrics) -> Result<Methylated> {
             return Ok(Methylated::NoEvidence);
         }
 
+        // TODO: Fix beta calculation for heterozygous positions with non-T alts.
+        // Currently only applies het adjustment for C/T genotypes, but should also
+        // handle C/A, C/G where T reads are methylation evidence (not a real variant).
+        // Example: genotype C/A with T reads marked as MethylationEvidenceOnly should
+        // account for the fact that reads are split between C and A alleles.
+        // Expected: if C allele has 2C + 2T reads, beta = 2/4 = 0.5
+        // Current: only looks at OT strand (0C + 2T), beta = 2/2 = 1.0
+        // See failing tests: test_non_ct_variant, test_cpg_that_is_also_denovo
         let beta_value = match record.pos_metrics.genotype {
             Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, T) => {
                 calculate_het_snp_beta(mod_count, unmod_count)
@@ -304,6 +314,9 @@ fn ref_g(record: &PileupMetrics) -> Result<Methylated> {
             return Ok(Methylated::NoEvidence);
         }
 
+        // TODO: Fix beta calculation for heterozygous positions with non-A alts.
+        // Same issue as ref_c but for G positions: only applies het adjustment for G/A
+        // genotypes, but should also handle G/C, G/T where A reads are methylation evidence.
         let beta_value = match record.pos_metrics.genotype {
             Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, A) => {
                 calculate_het_snp_beta(mod_count, unmod_count)
@@ -326,6 +339,7 @@ mod tests {
             pileup::Pileup,
             variant_calling::{EstimatedGenotype, GenotypeTag},
         },
+        metrics::AltCall,
         pileups,
         sequence::Segment,
     };
@@ -339,6 +353,11 @@ mod tests {
         let mut metrics = PileupMetrics::new(pileup.clone()).unwrap();
         if let Some(gt) = genotype {
             metrics.pos_metrics.extended.genotype = Some(gt);
+        }
+        // Methylation calling now respects alt calls for de-novo detection, so
+        // mark all observed alts as real variants in these unit tests.
+        for alt in &mut metrics.alts {
+            alt.call = AltCall::RealVariant;
         }
         metrics
     }
@@ -620,6 +639,25 @@ mod tests {
             let metrics = to_metrics(&ps[1], &seg, None);
             let result = call(&metrics).unwrap();
 
+            assert_no_evidence(result);
+        }
+
+        #[test]
+        fn filtered_denovo_alt_does_not_change_beta() {
+            // CGG context with a real G>T variant and a filtered-out G>C denovo candidate.
+            // The denovo beta must not be used when the denovo alt is not a real variant.
+            let (seg, ps) = pileups!(
+                [C G G] Ref,
+                [C T G] OT,
+                [C T G] OT,
+                [C C G] OB,
+            );
+            let mut metrics = to_metrics(&ps[1], &seg, None);
+
+            let denovo_alt = metrics.alts.iter_mut().find(|a| a.base == C).expect("expected C alt");
+            denovo_alt.call = AltCall::ReadError;
+
+            let result = call(&metrics).unwrap();
             assert_no_evidence(result);
         }
     }

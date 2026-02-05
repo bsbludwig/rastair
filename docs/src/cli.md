@@ -133,7 +133,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    For consistency with `--no-ml`, this option can be also be specified as `--ml` without a value, which will use the default threshold.
 
-  Default value: `0.80`
+  Default value: `0.50`
 * `--model <MODEL>` — Path to the combined model file containing CpG, denovo, and others models
 
    Default is the bundled model in the Rastair binary.
@@ -165,7 +165,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    By default, only a minimal set is included.
 
-  Possible values: `AD`, `BQ`, `DP`, `MQ`, `MQ0`, `NS`, `AS_SB`, `SC5`, `AF`, `ABQ`, `AMQ`, `AS_SS_BQ`, `AS_SS_MQ`, `PIR`, `ENT100`, `NAB`, `NOI`, `M5cM_Strands`, `CPG`, `CPGnovo`
+  Possible values: `AD`, `BQ`, `DP`, `MQ`, `MQ0`, `NS`, `AS_SB`, `SC5`, `AF`, `ABQ`, `AMQ`, `AS_SS_BQ`, `AS_SS_MQ`, `PIR`, `ENT100`, `NAB`, `NOI`, `M5mC_Strands`, `CPG`, `CPGnovo`
 
 * `--vcf-format-fields <VCF_FORMAT_FIELDS>` — Additional FORMAT fields to include in VCF output (comma-separated VCF field IDs)
 
@@ -228,7 +228,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `10`
   [env: `RASTAIR_THREADS`]
 
 
@@ -331,7 +330,7 @@ Convert between different file formats
 
    This does nothing if the input data does not contain ML scores.
 
-  Default value: `0.80`
+  Default value: `0.50`
 
 ###### **Input Options:**
 

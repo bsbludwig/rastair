@@ -3,6 +3,7 @@ use crate::{
     call::variant_calling::ErrorModel,
     metrics::{AltCall, FormsDenovo, PileupMetrics},
     utils::{Base, Base::*, IntoF64 as _, Strand::*},
+    vcf::InCpG,
 };
 use color_eyre::eyre::{ContextCompat, Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
@@ -64,37 +65,23 @@ impl PileupMetrics {
             real_variant_alts
         };
 
-        // If no alts pass ML threshold, return 0/0 with confidence based on distance from threshold
-        if passing_alts.is_empty() {
-            if let Some(threshold) = ml_threshold {
-                let max_ml = self
-                    .alts
-                    .iter()
-                    .filter_map(|alt| alt.filters.ml)
-                    .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                    .unwrap_or(Probability::ZERO);
-
-                let confidence = (*threshold - *max_ml) / *threshold;
-                return Some(EstimatedGenotype {
-                    genotype: GenotypeTag::HomRef,
-                    likelihood: Probability::ZERO,
-                    confidence: Probability::new(confidence).ok()?,
-                });
-            } else {
-                return None;
-            }
-        }
-
         // Calculate genotype for each passing alt using binomial model
         // Note: We compare each alt independently against ref.
         // Alternative approaches:
         // - compare alt1 vs alt2 for compound het
         // - compare each alt against total depth minus its count
         let mut alt_genotypes: SmallVec<_, 2> = SmallVec::new();
+
         for (alt_idx, alt) in &passing_alts {
             let alt_base = alt.base;
             let forms_denovo = alt.metrics.denovo;
             let (ref_count, alt_count) = self.get_counts_for_alt(alt_base, forms_denovo);
+
+            // Add methylation evidence to ref count for genotype calculation.
+            // This is the same adjustment for all alts at this position,
+            // because we're comparing each alt independently against the same
+            // reference.
+            let ref_count_with_methylation = ref_count;
 
             #[allow(
                 clippy::cast_possible_truncation,
@@ -104,8 +91,12 @@ impl PileupMetrics {
                 continue;
             };
 
-            match EstimatedGenotype::calculate_for_alt(ref_count, alt_count, alt_index, error_model)
-            {
+            match EstimatedGenotype::calculate_for_alt(
+                ref_count_with_methylation,
+                alt_count,
+                alt_index,
+                error_model,
+            ) {
                 Ok(gt) => alt_genotypes.push(gt),
                 Err(error) => {
                     trace!(%error, alt_base=%alt_base, "Failed to calculate genotype for alt");
@@ -188,8 +179,8 @@ impl PileupMetrics {
 
     /// Get reference and alt read counts for a specific alt base.
     ///
-    /// For C→T and G→A variants, uses strand-specific counting to avoid
-    /// confounding with methylation. For other variants, uses both strands.
+    /// For CpG positions (reference C or G), uses strand-specific counting to avoid
+    /// confounding with methylation. For non-CpG positions, uses both strands.
     ///
     /// De-novo CpGs (X→C or X→G that create new CpG contexts) are treated
     /// the same as regular CpG variants:
@@ -202,38 +193,61 @@ impl PileupMetrics {
         let reads = || self.pileup.reads.iter();
         let obs = || reads().filter(|r| r.strand == OB);
         let ots = || reads().filter(|r| r.strand == OT);
+        let count_all = || {
+            (
+                reads().filter(|r| r.base == ref_base).count(),
+                reads().filter(|r| r.base == alt_base).count(),
+            )
+        };
+        let count_ob = || {
+            (
+                obs().filter(|r| r.base == ref_base).count(),
+                obs().filter(|r| r.base == alt_base).count(),
+            )
+        };
+        let count_ot = || {
+            (
+                ots().filter(|r| r.base == ref_base).count(),
+                ots().filter(|r| r.base == alt_base).count(),
+            )
+        };
 
         // For de-novo CpGs, treat them like CpG SNPs to avoid methylation confounding:
         // - ThisBecomesC: new C can be methylated (C→T on OT strand), so use OB strand only
         // - ThisBecomesG: partner C can be methylated (shows as A on OB strand), so use OT strand only
         match forms_denovo {
+            FormsDenovo::ThisBecomesC if ref_base == T => count_ob(),
             FormsDenovo::ThisBecomesC => {
-                return (
-                    obs().filter(|r| r.base == ref_base).count(),
-                    obs().filter(|r| r.base == alt_base).count(),
-                );
+                let ref_count = reads().filter(|r| r.base == ref_base).count();
+                let alt_count = obs().filter(|r| r.base == C).count()
+                    + ots().filter(|r| matches!(r.base, C | T)).count();
+                (ref_count, alt_count)
             }
+            FormsDenovo::ThisBecomesG if ref_base == A => count_ot(),
             FormsDenovo::ThisBecomesG => {
-                return (
-                    ots().filter(|r| r.base == ref_base).count(),
-                    ots().filter(|r| r.base == alt_base).count(),
-                );
+                let ref_count = reads().filter(|r| r.base == ref_base).count();
+                let alt_count = ots().filter(|r| r.base == G).count()
+                    + obs().filter(|r| matches!(r.base, G | A)).count();
+                (ref_count, alt_count)
             }
-            FormsDenovo::No => {}
-        }
-
-        // For regular variants (not de-novo CpGs)
-        match (ref_base, alt_base) {
-            (C, T) => {
-                (obs().filter(|r| r.base == C).count(), obs().filter(|r| r.base == T).count())
-            }
-            (G, A) => {
-                (ots().filter(|r| r.base == G).count(), ots().filter(|r| r.base == A).count())
-            }
-            _ => (
-                reads().filter(|r| r.base == ref_base).count(),
-                reads().filter(|r| r.base == alt_base).count(),
-            ),
+            // For regular variants (not de-novo CpGs), use CpG-aware counting when needed.
+            FormsDenovo::No => match self.pos_metrics.cpg {
+                InCpG::C if alt_base == T => count_ob(),
+                InCpG::C => {
+                    let ref_count = obs().filter(|r| r.base == C).count()
+                        + ots().filter(|r| matches!(r.base, C | T)).count();
+                    let alt_count = reads().filter(|r| r.base == alt_base).count();
+                    (ref_count, alt_count)
+                }
+                InCpG::G if alt_base == A => count_ot(),
+                InCpG::G => {
+                    let ref_count = ots().filter(|r| r.base == G).count()
+                        + obs().filter(|r| matches!(r.base, G | A)).count();
+                    let alt_count = reads().filter(|r| r.base == alt_base).count();
+                    (ref_count, alt_count)
+                }
+                InCpG::No => count_all(),
+            },
         }
     }
 }

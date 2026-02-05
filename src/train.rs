@@ -260,6 +260,9 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
             .wrap_err("Failed to train de-novo CpG model")?,
         others: train_and_save_model("other", other_data, params)
             .wrap_err("Failed to train other model")?,
+        cpg_platt: Default::default(),
+        denovo_platt: Default::default(),
+        others_platt: Default::default(),
     };
 
     serialize_model(&model, params.output.clone())

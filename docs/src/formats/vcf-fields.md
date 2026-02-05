@@ -39,7 +39,7 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`ENT100`** | Shannon entropy of 100bp sequence context around variant position. Value range (0..2) | `Float` | `f64` | 1 |
 | **`NAB`** | RMS of number of aligned bases | `Float` | `f64` | R |
 | **`NOI`** | RMS of number of indels | `Float` | `f64` | R |
-| **`M5cM_Strands`** | Number of reads that are evidence for unmodified, modified, no SNP, snp | `Integer` | `u32` | 4 |
+| **`M5mC_Strands`** | Number of reads that are evidence for unmodified, modified, no SNP, snp | `Integer` | `u32` | 4 |
 | **`CPG`** | Is this a CpG site? | `Flag` | `bool` | 0 |
 | **`CPGnovo`** | De-novo CPG candidate: Could the alt alleles create a new CpG site? | `Flag` | `bool` | 0 |
 ## Format Fields

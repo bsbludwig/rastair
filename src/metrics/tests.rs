@@ -12,7 +12,7 @@ use rastair_types::Probability;
 
 #[test]
 fn test_cpg_detection() -> Result<()> {
-    let ml_threshold = Some(Probability::new_panicky(0.8));
+    let ml_threshold = Some(Probability::new_panicky(0.5));
     let mut readers = ReaderParams::test_data().around("chr19", 6105711).readers()?;
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
@@ -51,7 +51,7 @@ fn test_cpg_detection() -> Result<()> {
 
 #[test]
 fn set_filters() -> Result<()> {
-    let ml_threshold = Some(Probability::new_panicky(0.8));
+    let ml_threshold = Some(Probability::new_panicky(0.5));
     let mut readers = ReaderParams::test_data().around("chr19", 6105742).readers()?;
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 

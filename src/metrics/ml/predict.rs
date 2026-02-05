@@ -1,7 +1,6 @@
 use super::types::{MachineLearning, MlModel, Prediction};
 use crate::metrics::{MetricsForAlt, PileupMetrics};
 use color_eyre::eyre::ensure;
-use rastair_types::Probability;
 use tracing::{debug, instrument, warn};
 
 impl MachineLearning {
@@ -24,22 +23,25 @@ impl MachineLearning {
 
         let feature_calculator = self.feature_calculator.get_calculator();
 
-        let (name, model, features) = if current.is_evidence_for_methylation() {
+        let (name, model, platt, features) = if current.is_evidence_for_methylation() {
             (
                 MlModel::Cpg,
                 &rastair_model.cpg,
+                &rastair_model.cpg_platt,
                 feature_calculator.calculate_cpg(current, before, after),
             )
         } else if *current.alt.denovo {
             (
                 MlModel::DenovoCpg,
                 &rastair_model.denovo,
+                &rastair_model.denovo_platt,
                 feature_calculator.calculate_denovo_cpg(current, before, after),
             )
         } else {
             (
                 MlModel::Others,
                 &rastair_model.others,
+                &rastair_model.others_platt,
                 feature_calculator.calculate_others(current, before, after),
             )
         };
@@ -58,8 +60,7 @@ impl MachineLearning {
 
         match prediction.get(0).copied() {
             Some(p) => Some(Prediction {
-                prediction: Probability::new(p)
-                    .expect("Got invalid probability value in prediction"),
+                prediction: platt.calibrate_score(p),
                 threshold: self.threshold,
                 allele: current.alt.base,
                 features: features.row(0).to_owned(),

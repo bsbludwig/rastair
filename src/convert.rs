@@ -69,7 +69,7 @@ pub struct ConvertParams {
     /// Minimum ML score to consider a position as variant
     ///
     /// This does nothing if the input data does not contain ML scores.
-    #[arg(long = "bed-ml", default_value_t = Probability::new_panicky(0.8))]
+    #[arg(long = "bed-ml", default_value_t = Probability::new_panicky(0.5))]
     #[arg(help_heading = cli::sections::FILTER)]
     pub ml_threshold: Probability,
 }

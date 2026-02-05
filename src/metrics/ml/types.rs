@@ -4,12 +4,44 @@ use biosphere::RandomForest;
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
 
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PlattScaling {
+    pub a: f64,
+    pub b: f64,
+}
+
+impl Default for PlattScaling {
+    fn default() -> Self {
+        Self { a: 1.0, b: 0.0 }
+    }
+}
+
+impl PlattScaling {
+    pub fn calibrate_score(&self, score: f64) -> Probability {
+        let z = self.a * score + self.b;
+        let p = if z >= 0.0 {
+            let ez = (-z).exp();
+            ez / (1.0 + ez)
+        } else {
+            let ez = z.exp();
+            1.0 / (1.0 + ez)
+        };
+        Probability::new(p).unwrap_or(Probability::ZERO)
+    }
+}
+
 /// Combined model file containing all three random forest models
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RastairModel {
     pub cpg: RandomForest,
     pub denovo: RandomForest,
     pub others: RandomForest,
+    #[serde(default)]
+    pub cpg_platt: PlattScaling,
+    #[serde(default)]
+    pub denovo_platt: PlattScaling,
+    #[serde(default)]
+    pub others_platt: PlattScaling,
     #[serde(default)]
     pub feature_set: MlFeatureSet,
 }
