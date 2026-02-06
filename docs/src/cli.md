@@ -2,7 +2,7 @@
 
 This document contains the help content for the `rastair` command-line program.
 
-**Version:** `2.0.0-rc2`
+**Version:** `2.0.0`
 
 **Command Overview:**
 
