@@ -64,6 +64,7 @@ jobs:
             TARBALL="${BIN_NAME}-${VERSION}-${TARGET}.tar.gz"
 
             cargo build --release --locked --target "${TARGET}"
+            cargo test --release --locked --target "${TARGET}" # Make sure tests pass before deploying
 
             mkdir -p "${OUTDIR}"
             cp "target/${TARGET}/release/${BIN_NAME}" "${OUTDIR}/"
@@ -160,6 +161,7 @@ jobs:
               echo "Build for ${TARGET}" 1>&2
               rustup target add "${TARGET}"
               cargo build --release --locked --target "${TARGET}"
+              cargo test --release --locked --target "${TARGET}" # Make sure tests pass before deploying
 
               # Sign each built binary (per target)
               echo "Sign binary for ${TARGET}" 1>&2
