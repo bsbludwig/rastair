@@ -2315,7 +2315,7 @@ checksum = "474c42c904f04dfe2a595a02f71e1a0e5e92ffb5761cc9a4c02140b93b8dd504"
 
 [[package]]
 name = "rastair"
-version = "2.0.0-rc2"
+version = "2.0.0"
 dependencies = [
  "better_default",
  "bgzip",
