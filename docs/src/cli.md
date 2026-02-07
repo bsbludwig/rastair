@@ -228,6 +228,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
+  Default value: `10`
   [env: `RASTAIR_THREADS`]
 
 
