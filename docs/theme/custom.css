@@ -1,6 +1,22 @@
 #logo {
     width: 100%; /* Adjust as needed */
 }
+
+#news {
+    width: 100%;
+}
+
+#news .mastodon-feed {
+    display: block;
+    max-width: 100%;
+}
+
+#news .toots,
+#news .toot {
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+}
 .light #logo {
     content: url("/img/logo_black.png");
 }

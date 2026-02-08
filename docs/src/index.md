@@ -1,12 +1,25 @@
 <img src="img/logo_white.png" alt="Rastair logo" id="logo">
 <!-- <img src="img/logo_black.png" alt="Rastair logo" class="logo"> -->
 
+<link rel="stylesheet" type="text/css" href="https://esm.sh/emfed@1/toots.css">
+
 ## Background
 Rastair is a command-line tool that allows the simultaneous detection of genetic variants and methylated positions from short-read sequencing data that was generated using a "mod-C&rarr;T" method, such as @TAPS or Illumina's @5Base technology.
 
 Traditional @bisulfite sequencing (BS-seq) converts *all* non-modified cytosine (C) to thymine (T). This results in reads that differ substantially from the reference and are thus harder to align. Coverting most C to T also reduces the available information for variant identification. While several tools have been developed to overcome this problem, genetic variant calls from BS-seq remain substantially worse than those derived from whole-genome sequencing data.
 
 In contrast, mod-C&rarr;T methods only affect around 60M positions in the human genome, equivalent to only approx. 2% of all nucleotides. This leads to greatly improved sequencing quality, higher mapping rates, and better yield from low-input DNA. It also makes it possible to identify genetic variation - in addition to epigenetic changes - with much higher accuracy. **Rastair implements a fast and accurate algorithm to simultaneously provide such high-quality variant *and* methylation calls.**
+
+## Latest Updates
+<section id="news">
+  <a class="mastodon-feed"
+     href="https://{{MSTDN_INSTANCE}}/{{MSTDN_ACCOUNT}}"
+     data-toot-limit="2">
+     Loading posts from {{MSTDN_ACCOUNT}}@{{MSTDN_INSTANCE}}...
+  </a>
+</section>
+
+<script type="module" src="https://esm.sh/emfed@1"></script>
 
 ## Performance
 ### Rastair SNP calls on TAPS+ data

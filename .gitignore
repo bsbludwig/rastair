@@ -10,3 +10,4 @@
 **/*.vcf.gz.tbi
 .bin/
 .Rproj.user
+docs/yapp.config
