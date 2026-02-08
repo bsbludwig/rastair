@@ -54,7 +54,7 @@ For the following, we assume you have a good "call" command as `$call`, e.g. `ca
 
 - Use [samply](https://github.com/mstange/samply/) to quickly get profiling data: `cargo build --profile profiling && samply record $CARGO_TARGET_DIR/profiling/rastair $call`
 - You can use [cargo-pgo](https://github.com/Kobzol/cargo-pgo) for building with profile-guided optimizations (PGO):
-  `cargo xtask release --pgo -- $call`
+  `cargo xtask pgo -- $call`
 
 ### Reducing memory pressure
 

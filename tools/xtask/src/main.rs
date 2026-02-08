@@ -1,8 +1,5 @@
-use cargo_pgo::{
-    get_cargo_ctx,
-    pgo::{instrument::PgoInstrumentShortcutArgs, optimize::PgoOptimizeArgs},
-};
-use clap::Parser;
+use clap::{Parser, value_parser};
+use clio::ClioPath;
 use color_eyre::{
     Result, Section,
     eyre::{Context, ContextCompat, bail, ensure, eyre},
@@ -37,15 +34,25 @@ enum Command {
         #[arg(long)]
         serve: bool,
     },
-    /// Build a release version using cargo-pgo
-    Release {
-        /// Enable PGO (Profile-Guided Optimization) instrumentation
-        #[arg(long, requires("args"))]
-        pgo: bool,
+    /// Compile a release build
+    Release,
+    /// Compile an even more optimized build using profile-guided optimization
+    ///
+    /// Compiles in "profiling" mode and runs that binary generating VCF/BCF/BED
+    /// output and collect its profile. Then compiles an optimized version based
+    /// on the runtime profile.
+    Pgo {
+        /// Path to sorted and indexed BAM file for profiling
+        #[arg(value_parser=value_parser!(ClioPath).exists().is_file())]
+        bam: ClioPath,
 
-        /// Additional arguments to pass to run the binary for profiling
-        #[arg(last = true)]
-        args: Vec<String>,
+        /// Path to reference FASTA file for profiling
+        #[arg(short = 'r', long, value_parser=value_parser!(ClioPath).exists().is_file())]
+        fasta: ClioPath,
+
+        /// Genomic range for profiling (e.g., chr1:1716080-1716100)
+        #[arg(short = 'l', long)]
+        range: String,
     },
 }
 
@@ -97,14 +104,14 @@ fn main() -> Result<()> {
             info!("Generating documentation...");
             generate_docs(open)?;
         }
-        Command::Release { pgo, args } => {
-            if pgo {
-                info!("Building release version with PGO...");
-                build_pgo_release(&args)?;
-            } else {
-                info!("Building release version without PGO...");
-                build_release()?;
-            }
+        Command::Release => {
+            info!("Building release version without PGO...");
+            build_release()?;
+        }
+        Command::Pgo { bam, fasta, range } => {
+            info!("Building PGO-optimized release version...");
+            let binary_path = build_pgo_release(bam.path(), fasta.path(), &range)?;
+            info!("✓ PGO-optimized binary built at: {}", binary_path.display());
         }
     }
 
@@ -271,20 +278,152 @@ fn generate_docs(serve: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_pgo_release(args: &[String]) -> Result<()> {
-    let args = PgoInstrumentShortcutArgs::try_parse_from(
-        ["rastair"].into_iter().chain(args.iter().map(|x| x.as_str())),
-    )?;
-    let ctx = get_cargo_ctx(&[]).map_err(|e| eyre!("{e}"))?;
-    cargo_pgo::pgo::instrument::pgo_instrument(
-        ctx,
-        args.into_full_args(cargo_pgo::build::CargoCommand::Run),
-    )
-    .map_err(|e| eyre!("{e}"))?;
-    let ctx = get_cargo_ctx(&[]).map_err(|e| eyre!("{e}"))?;
-    cargo_pgo::pgo::optimize::pgo_optimize(ctx, PgoOptimizeArgs::parse_from(["build"]))
-        .map_err(|e| eyre!("{e}"))?;
-    Ok(())
+fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
+    // Verify cargo-pgo is installed
+    ensure!(
+        StdCommand::new("cargo")
+            .arg("pgo")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()?
+            .success(),
+        "cargo-pgo is not installed. Please install it with: cargo install cargo-pgo"
+    );
+
+    // Verify llvm-tools-preview is installed
+    let rustup_output = StdCommand::new("rustup")
+        .arg("component")
+        .arg("list")
+        .arg("--installed")
+        .output()
+        .wrap_err("Failed to check installed rustup components")?;
+
+    let components = String::from_utf8_lossy(&rustup_output.stdout);
+    ensure!(
+        components.contains("llvm-tools-preview") || components.contains("llvm-tools"),
+        "llvm-tools-preview is not installed. Please install it with: rustup component add llvm-tools-preview"
+    );
+
+    info!("Step 1/3: Generating profiles by running different scenarios...");
+
+    // Profile 1: VCF to stdout
+    info!("  → Profile 1/3: VCF output to stdout");
+    StdCommand::new("cargo")
+        .arg("pgo")
+        .arg("run")
+        .arg("--")
+        .arg("call")
+        .arg(bam)
+        .arg("-r")
+        .arg(fasta)
+        .arg("-l")
+        .arg(range)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .is_success()
+        .wrap_err("Failed to generate profile 1 (VCF to stdout)")?;
+
+    // Profile 2: BCF file output
+    info!("  → Profile 2/3: BCF output to file");
+    let tmp_bcf = tempfile::Builder::new()
+        .suffix(".bcf")
+        .tempfile()
+        .wrap_err("Failed to create temporary BCF file")?;
+    StdCommand::new("cargo")
+        .arg("pgo")
+        .arg("run")
+        .arg("--")
+        .arg("call")
+        .arg(bam)
+        .arg("-r")
+        .arg(fasta)
+        .arg("-l")
+        .arg(range)
+        .arg("-o")
+        .arg(tmp_bcf.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .is_success()
+        .wrap_err("Failed to generate profile 2 (BCF output)")?;
+
+    // Profile 3: BED file output
+    info!("  → Profile 3/3: BED output to file");
+    let tmp_bed = tempfile::Builder::new()
+        .suffix(".bed")
+        .tempfile()
+        .wrap_err("Failed to create temporary BED file")?;
+    StdCommand::new("cargo")
+        .arg("pgo")
+        .arg("run")
+        .arg("--")
+        .arg("call")
+        .arg(bam)
+        .arg("-r")
+        .arg(fasta)
+        .arg("-l")
+        .arg(range)
+        .arg("--bed")
+        .arg(tmp_bed.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .is_success()
+        .wrap_err("Failed to generate profile 3 (BED output)")?;
+
+    info!("Step 2/2: Building PGO-optimized binary...");
+    let optimize_output = StdCommand::new("cargo")
+        .arg("pgo")
+        .arg("optimize")
+        .arg("build")
+        .output()
+        .wrap_err("Failed to build PGO-optimized binary")?;
+
+    if !optimize_output.status.success() {
+        let stderr = String::from_utf8_lossy(&optimize_output.stderr);
+        bail!(
+            "Cargo PGO optimize failed with status: {}\n\nStderr:\n{}",
+            optimize_output.status,
+            stderr
+        );
+    }
+
+    // Get the host target triple
+    let rustc_output =
+        StdCommand::new("rustc").arg("-vV").output().wrap_err("Failed to get rustc version")?;
+    let rustc_version = std::str::from_utf8(&rustc_output.stdout)
+        .wrap_err("Failed to parse rustc version output")?;
+    let host_triple = rustc_version
+        .lines()
+        .find(|line| line.starts_with("host: "))
+        .and_then(|line| line.strip_prefix("host: "))
+        .wrap_err("Failed to extract host triple from rustc -vV")?;
+
+    // Get the target directory from cargo metadata
+    let metadata_output = StdCommand::new(env!("CARGO"))
+        .arg("metadata")
+        .arg("--format-version=1")
+        .arg("--no-deps")
+        .output()
+        .wrap_err("Failed to get cargo metadata")?;
+
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata_output.stdout)
+        .wrap_err("Failed to parse cargo metadata")?;
+
+    let target_dir = metadata["target_directory"]
+        .as_str()
+        .wrap_err("Failed to get target directory from metadata")?;
+
+    // The optimized binary is in target/<target-triple>/release/rastair
+    let optimized_binary =
+        PathBuf::from(target_dir).join(host_triple).join("release").join("rastair");
+
+    ensure!(
+        optimized_binary.exists(),
+        "Optimized binary not found at: {}",
+        optimized_binary.display()
+    );
+
+    Ok(optimized_binary)
 }
 
 pub trait ExitStatusResultExt {
