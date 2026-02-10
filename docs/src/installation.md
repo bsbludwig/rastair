@@ -31,7 +31,7 @@ To compile from source, you need a working [Rust installation](https://www.rust-
 First, clone the repo:
 
 ```bash
-git clone git@bitbucket.org:{{BITBUCKET_REPO_FULL_NAME}}.git
+git clone git@bitbucket.org:{{BITBUCKET_WORKSPACE}}/{{BITBUCKET_REPO_FULL_NAME}}.git
 ```
 
 Then follow the platform-specific instructions below.
