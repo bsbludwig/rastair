@@ -107,7 +107,7 @@
   long: "Variant Call Format"
   group: "File Formats"
   description: |
-    Tab-separated-file format that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations. @vcfPaper
+    Tab-separated-file format that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations.
 
     It looks like this:
 
@@ -128,13 +128,13 @@
   short: SAMtools
   group: "Tools"
   description: |
-    A [suite of utilities](https://www.htslib.org/doc/samtools.html) for manipulating @SAM and @BAM. It can manipulate @SAM and @BAM files. @samPaper
+    A [suite of utilities](https://www.htslib.org/doc/samtools.html) for manipulating @SAM and @BAM. It can manipulate @SAM and @BAM files.
 
 - key: bcftools
   short: BCFtools
   group: "Tools"
   description: |
-    A [set of utilities](https://samtools.github.io/bcftools/bcftools.html) for manipulating variant calls in the @VCF and BCF file formats. @samtoolsPaper
+    A [set of utilities](https://samtools.github.io/bcftools/bcftools.html) for manipulating variant calls in the @VCF and BCF file formats.
 
 - key: bedtools
   short: BEDtools
@@ -253,12 +253,12 @@
 - key: Rust
   group: "Programming"
   description: |
-    A systems programming language, known for its safety, speed, and concurrency. @rustPaper
+    A systems programming language, known for its safety, speed, and concurrency.
 
 - key: htslib
   group: "Tools"
   description: |
-    A C library for reading/writing sequencing data, used by tools like @samtools and @bcftools to manipulate @SAM, @BAM, and @VCF files@htslibPaper. Rastair uses the @Rust bindings provided by the `rust-htslib` crate.
+    A C library for reading/writing sequencing data, used by tools like @samtools and @bcftools to manipulate @SAM, @BAM, and @VCF files. Rastair uses the @Rust bindings provided by the `rust-htslib` crate.
 
 - key: mapQ
   long: "mapping quality"
@@ -304,7 +304,7 @@
 - key: bgzip
   group: "Tools"
   description: |
-    Compression tool that produces @BGZF files, commonly used to compress @VCF and @BAM files. Part of @samtools.
+    Compression tool that produces @BGZF files, commonly used to compress @VCF and @BAM files. Part of @samtools. [Homepage](https://www.htslib.org/doc/bgzip.html).
 
 - key: BGZF
   long: "Blocked GNU Zip Format"
@@ -390,3 +390,12 @@
   group: "Tools"
   description: |
     An indexing tool for tab-delimited files, such as @VCF and @BED files. It creates an index file that allows for efficient random access to specific regions of the file. Part of @samtools. [Homepage](https://www.htslib.org/doc/tabix.html)
+
+- key: STDOUT
+  short: "`stdout`"
+  long: "standard output"
+  group: "Programming"
+  description: |
+    The default program output for terminal applications, which streams it either to the terminal or the next program in a pipeline.
+
+    For example, when running `ls -l | grep "myfile"`, `ls -l` sends its output to the standard output, which is then piped to `grep` to filter for lines containing "myfile".

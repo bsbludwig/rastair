@@ -48,7 +48,9 @@ rastair call -r reference.fa.gz --vcf-info-fields AD,BQ,MQ,MQ0,ENT100,SC5,CPG,CP
 You can find a description of all custom VCF fields used by rastair [here](formats/vcf-fields.md).
 
 ```admonish tip
-rastair can produce uncompressed VCF, bgzip-compressed `vcf.gz` and `bcf` files. The format will be guessed from the file ending. If you want to stream output to STDOUT, you can do `--vcf -`
+rastair can produce uncompressed VCF, bgzip-compressed `vcf.gz` and `bcf` files.
+The format will be guessed from the file ending.
+If no output name is given, rastair writes VCF to @STDOUT.
 ```
 
 ## 2. Only call methylation, do not report genetic variants (very fast)
@@ -60,16 +62,16 @@ rastair call -r reference.fa.gz --bed test.bed.gz test.bam
 ```
 
 ```admonish tip
-Rastair will automatically produce [bgzip compressed](https://www.htslib.org/doc/bgzip.html) files if the output file name ends in `.gz`. They are also automaticall [indexed with tabix](https://www.htslib.org/doc/tabix.html) for rapid access to specific genomic ranges:
+Rastair will automatically produce @bgzip compressed files if the output file name ends in `.gz`. They are also automaticall indexed with @tabix for rapid access to specific genomic ranges:
 
 > ```bash
 > tabix test.bed.gz chr19:6103156-6143156
 > ```
 
-This is usually orders of magnitude faster than using e.g. [bedtools](https://github.com/arq5x/bedtools2). You can also stream the bed file to STDOUT by setting `--bed -`.
+This is usually orders of magnitude faster than using e.g. @bedtools. You can also stream the @BED file to @STDOUT by setting `--bed -`.
 ```
 
-In some cases, you might prefer to write the bed output to `STDOUT` and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (ie exclude @denovo):
+In some cases, you might prefer to write the bed output to @STDOUT and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (ie exclude @denovo):
 
 ```bash
 rastair call -r reference.fa.gz --cpgs-only --bed - test.bam | grep -Fw REF
