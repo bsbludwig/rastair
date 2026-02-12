@@ -291,18 +291,18 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         "cargo-pgo is not installed. Please install it with: cargo install cargo-pgo"
     );
 
-    // Verify llvm-tools-preview is installed
-    let rustup_output = StdCommand::new("rustup")
+    // Ensure llvm-tools-preview is installed
+    info!("Ensuring llvm-tools-preview is installed...");
+    let rustup_install = StdCommand::new("rustup")
         .arg("component")
-        .arg("list")
-        .arg("--installed")
-        .output()
-        .wrap_err("Failed to check installed rustup components")?;
+        .arg("add")
+        .arg("llvm-tools-preview")
+        .status()
+        .wrap_err("Failed to install llvm-tools-preview")?;
 
-    let components = String::from_utf8_lossy(&rustup_output.stdout);
     ensure!(
-        components.contains("llvm-tools-preview") || components.contains("llvm-tools"),
-        "llvm-tools-preview is not installed. Please install it with: rustup component add llvm-tools-preview"
+        rustup_install.success(),
+        "Failed to install llvm-tools-preview. Please install it manually with: rustup component add llvm-tools-preview"
     );
 
     info!("Step 1/3: Generating profiles by running different scenarios...");
@@ -320,7 +320,6 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         .arg("-l")
         .arg(range)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
         .is_success()
         .wrap_err("Failed to generate profile 1 (VCF to stdout)")?;
 
@@ -343,7 +342,6 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         .arg("-o")
         .arg(tmp_bcf.path())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
         .is_success()
         .wrap_err("Failed to generate profile 2 (BCF output)")?;
 
@@ -365,7 +363,6 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         .arg(range)
         .arg("--bed")
         .arg(tmp_bed.path())
-        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .is_success()
         .wrap_err("Failed to generate profile 3 (BED output)")?;
