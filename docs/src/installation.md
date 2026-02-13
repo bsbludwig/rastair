@@ -1,7 +1,47 @@
 # Installation
 
+## Homebrew
+
+For installing rastair locally on macOS and Linux,
+you can use [homebrew](https://brew.sh/):
+
+```sh
+brew tap bsblabludwig/rastair git@bitbucket.org:bsblabludwig/homebrew-rastair.git
+brew install rastair
+```
+
+## Docker
+
+You can use the pre-built docker image in the usual way:
+
+```bash
+docker pull sbludwig/rastair:version-{{DOCKER_VERSION}}
+```
+
+### Building using Docker
+
+You can also build Rastair using Docker.
+Ensure you have Docker installed and running on your system,
+then, clone the repo and build the image:
+
+```bash
+docker build -t rastair .
+```
+
+This image is based on the R base image and includes all necessary dependencies
+to also run the bundled R scripts.
+
+## Conda
+
+```admonish warning
+This is not yet available.
+```
+
+This is still work in progress: we hope to soon provide a bioconda recipe to install rastair.
+
 ## Pre-built binaries
-For convenience, we provide pre-built binaries for a number of platforms:
+
+You can also download pre-built binaries for a number of platforms.
 
 ### Linux
 
@@ -68,32 +108,3 @@ On some systems, you might get performance improvements by allowing the compiler
 > RUSTFLAGS="-C target-cpu=native" cargo xtask release
 > ```
 ```
-
-## Docker
-
-### You can install the pre-built docker image in the usual way:
-
-```bash
-docker pull sbludwig/rastair:version-{{DOCKER_VERSION}}
-```
-
-### Building using Docker
-
-You can also build Rastair using Docker.
-Ensure you have Docker installed and running on your system,
-then, build the image:
-
-```bash
-docker build -t rastair .
-```
-
-This image is based on the R base image and includes all necessary dependencies
-to also run the bundled R scripts.
-
-## Conda
-
-```admonish warning
-This is not yet available.
-```
-
-This is still work in progress: we hope to soon provide a bioconda recipe to install rastair.
