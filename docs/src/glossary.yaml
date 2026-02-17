@@ -399,3 +399,15 @@
     The default program output for terminal applications, which streams it either to the terminal or the next program in a pipeline.
 
     For example, when running `ls -l | grep "myfile"`, `ls -l` sends its output to the standard output, which is then piped to `grep` to filter for lines containing "myfile".
+
+- key: dragen
+  short: DRAGEN
+  group: "Tools"
+  description: |
+    Illumina DRAGEN (Dynamic Read Analysis for GENomics) is a platform for genomic data analysis, providing alignment, variant calling, and other bioinformatics tasks. [Homepage](https://www.illumina.com/products/by-type/informatics-products/dragen-secondary-analysis.html)
+
+- key: bismark
+  short: Bismark
+  group: "Tools"
+  description: |
+    A tool to map bisulfite converted sequence reads and determine cytosine methylation states. [Homepage](https://felixkrueger.github.io/Bismark/)
