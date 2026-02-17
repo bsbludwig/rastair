@@ -3,14 +3,13 @@ use rust_htslib::bam::Read as BamRead;
 use utils::*;
 
 #[test]
-fn bam_rewrite_adds_xr_xg_xm_tags() -> Result<()> {
+fn bam_rewrite_legacy_adds_xr_xg_xm_tags() -> Result<()> {
     apply_common_filters!();
 
     let temp_dir = TempDir::new()?;
     let calls_bed = temp_dir.path().join("calls.bed.gz");
     let output_bam = temp_dir.path().join("output.bam");
 
-    // First, generate calls using rastair call
     rastair()
         .args([
             "call",
@@ -26,17 +25,16 @@ fn bam_rewrite_adds_xr_xg_xm_tags() -> Result<()> {
         .succeeds()
         .wrap_err("Failed to generate calls")?;
 
-    // Index the calls file
     std::process::Command::new("tabix")
         .args(["-p", "bed"])
         .arg(&calls_bed)
         .output()
         .wrap_err("Failed to index calls file")?;
 
-    // Run BAM rewriter
     rastair()
         .args([
             "bam",
+            "legacy",
             "--fasta-file=tests/data/test.fasta.gz",
             "--region=chr19:6103075-6103100",
             "tests/data/test.bam",
@@ -48,9 +46,8 @@ fn bam_rewrite_adds_xr_xg_xm_tags() -> Result<()> {
         .succeeds()
         .wrap_err("Failed to rewrite BAM")?;
 
-    // Verify the output BAM has XR/XG/XM tags
-    let mut bam_reader = rust_htslib::bam::Reader::from_path(&output_bam)
-        .wrap_err("Failed to open output BAM")?;
+    let mut bam_reader =
+        rust_htslib::bam::Reader::from_path(&output_bam).wrap_err("Failed to open output BAM")?;
 
     let mut record = rust_htslib::bam::Record::new();
     let mut records_checked = 0;
@@ -62,34 +59,24 @@ fn bam_rewrite_adds_xr_xg_xm_tags() -> Result<()> {
         let flag = record.flags();
         flags_seen.insert(flag);
 
-        // Check XR tag exists
-        let xr = record
-            .aux(b"XR")
-            .wrap_err(format!("Missing XR tag for flag {}", flag))?;
+        let xr = record.aux(b"XR").wrap_err(format!("Missing XR tag for flag {}", flag))?;
         let xr_value = match xr {
             rust_htslib::bam::record::Aux::String(s) => s,
             _ => panic!("XR tag is not a string for flag {}", flag),
         };
 
-        // Check XG tag exists
-        let xg = record
-            .aux(b"XG")
-            .wrap_err(format!("Missing XG tag for flag {}", flag))?;
+        let xg = record.aux(b"XG").wrap_err(format!("Missing XG tag for flag {}", flag))?;
         let xg_value = match xg {
             rust_htslib::bam::record::Aux::String(s) => s,
             _ => panic!("XG tag is not a string for flag {}", flag),
         };
 
-        // Check XM tag exists
-        let xm = record
-            .aux(b"XM")
-            .wrap_err(format!("Missing XM tag for flag {}", flag))?;
+        let xm = record.aux(b"XM").wrap_err(format!("Missing XM tag for flag {}", flag))?;
         let xm_value = match xm {
             rust_htslib::bam::record::Aux::String(s) => s,
             _ => panic!("XM tag is not a string for flag {}", flag),
         };
 
-        // Verify XM length matches sequence length
         assert_eq!(
             xm_value.len(),
             record.seq_len(),
@@ -97,7 +84,6 @@ fn bam_rewrite_adds_xr_xg_xm_tags() -> Result<()> {
             flag
         );
 
-        // Verify XR/XG values match expected flag mappings
         match flag {
             99 => {
                 assert_eq!(xr_value, "CT", "XR tag mismatch for flag 99");
@@ -115,23 +101,22 @@ fn bam_rewrite_adds_xr_xg_xm_tags() -> Result<()> {
                 assert_eq!(xr_value, "GA", "XR tag mismatch for flag 163");
                 assert_eq!(xg_value, "GA", "XG tag mismatch for flag 163");
             }
-            _ => {
-                // Other flags may exist, just verify they have the tags
-            }
+            _ => {}
         }
 
-        // Verify MM and ML tags also exist (both formats should be present)
-        record
-            .aux(b"MM")
-            .wrap_err(format!("Missing MM tag for flag {}", flag))?;
-        record
-            .aux(b"ML")
-            .wrap_err(format!("Missing ML tag for flag {}", flag))?;
+        // Legacy mode should NOT produce MM/ML tags
+        assert!(
+            record.aux(b"MM").is_err(),
+            "Legacy mode should not produce MM tag for flag {}",
+            flag
+        );
     }
 
     assert!(records_checked > 0, "No records were checked");
     assert!(
-        flags_seen.contains(&83) || flags_seen.contains(&99) || flags_seen.contains(&147)
+        flags_seen.contains(&83)
+            || flags_seen.contains(&99)
+            || flags_seen.contains(&147)
             || flags_seen.contains(&163),
         "Expected to see at least one of the standard paired-end flags"
     );
@@ -170,10 +155,10 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
         .output()
         .wrap_err("Failed to index calls file")?;
 
-    // Run BAM rewriter
     rastair()
         .args([
             "bam",
+            "standard",
             "--fasta-file=tests/data/test.fasta.gz",
             "--region=chr19:6103075-6103100",
             "tests/data/test.bam",
@@ -186,8 +171,8 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
         .wrap_err("Failed to rewrite BAM")?;
 
     // Verify existing tags are preserved
-    let mut bam_reader = rust_htslib::bam::Reader::from_path(&output_bam)
-        .wrap_err("Failed to open output BAM")?;
+    let mut bam_reader =
+        rust_htslib::bam::Reader::from_path(&output_bam).wrap_err("Failed to open output BAM")?;
 
     let mut record = rust_htslib::bam::Record::new();
     let mut records_checked = 0;
@@ -197,15 +182,9 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
         records_checked += 1;
 
         // Check that standard tags are preserved
-        record
-            .aux(b"NM")
-            .wrap_err("Missing NM tag (should be preserved)")?;
-        record
-            .aux(b"MD")
-            .wrap_err("Missing MD tag (should be preserved)")?;
-        record
-            .aux(b"AS")
-            .wrap_err("Missing AS tag (should be preserved)")?;
+        record.aux(b"NM").wrap_err("Missing NM tag (should be preserved)")?;
+        record.aux(b"MD").wrap_err("Missing MD tag (should be preserved)")?;
+        record.aux(b"AS").wrap_err("Missing AS tag (should be preserved)")?;
     }
 
     assert!(records_checked > 0, "No records were checked");

@@ -2,9 +2,9 @@ use color_eyre::eyre::{Context, Result};
 use rastair_types::SmallVec;
 use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
+use rustc_hash::FxHashSet;
 use std::fmt::Write;
 use tracing::debug;
-use rustc_hash::FxHashSet;
 
 /// Conversion type for XR/XG tags (CT or GA)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,13 +170,9 @@ fn calculate_mm_skips(seq: &[u8], base: Base, methylated_indices: &[u32]) -> Sma
     skips
 }
 
-/// Generate XM tag string for a sequence
-///
-/// The XM tag contains one character per base:
-/// - `.` for non-cytosine positions
-/// - `Z` for methylated CpG cytosine (uppercase)
-/// - `z` for unmethylated CpG cytosine (lowercase)
-pub fn generate_xm_string(
+/// Generate XM tag string for a rewritten sequence (standard mode)
+#[cfg(test)]
+fn generate_xm_string(
     seq: &[u8],
     strand: Strand,
     methylated_positions: &[u32],
@@ -196,11 +192,39 @@ pub fn generate_xm_string(
         .map(|(i, &b)| {
             let base = Base::from(b);
             if base == target_base {
-                if methylated_set.contains(&i) {
-                    'Z'
-                } else {
-                    'z'
-                }
+                if methylated_set.contains(&i) { 'Z' } else { 'z' }
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
+/// Generate XM tag string for legacy mode (original, unrewritten sequence).
+///
+/// In legacy mode the SEQ is not rewritten, so methylated positions still show
+/// T (OT) or A (OB). The XM tag marks:
+/// - `Z` at positions in `methylated_set` (methylated CpG)
+/// - `z` at positions with the strand's target base (unmethylated CpG)
+/// - `.` everywhere else
+pub fn generate_xm_string_legacy(
+    seq: &[u8],
+    strand: Strand,
+    methylated_set: &FxHashSet<usize>,
+) -> String {
+    let target_base = match strand {
+        Strand::OT => Base::C,
+        Strand::OB => Base::G,
+        Strand::Unknown => return ".".repeat(seq.len()),
+    };
+
+    seq.iter()
+        .enumerate()
+        .map(|(i, &b)| {
+            if methylated_set.contains(&i) {
+                'Z'
+            } else if Base::from(b) == target_base {
+                'z'
             } else {
                 '.'
             }
@@ -220,48 +244,41 @@ pub struct XrTags {
 }
 
 impl XrTags {
-    /// Create XR/XG/XM tags from record information
-    pub fn new(
+    /// Create XR/XG/XM tags for legacy mode (original, unrewritten seq)
+    pub fn new_legacy(
         seq: &[u8],
         strand: Strand,
-        methylated_positions: &[u32],
         is_first_in_pair: bool,
-        methylated_set: &mut FxHashSet<usize>,
+        methylated_set: &FxHashSet<usize>,
     ) -> Self {
-        let xr = if is_first_in_pair {
-            ConversionType::CT
-        } else {
-            ConversionType::GA
-        };
-
-        let xg = match strand {
-            Strand::OT => ConversionType::CT,
-            Strand::OB => ConversionType::GA,
-            Strand::Unknown => {
-                debug!("Unknown strand detected, defaulting XG to CT");
-                ConversionType::CT
-            }
-        };
-
-        let xm = generate_xm_string(seq, strand, methylated_positions, methylated_set);
-
+        let (xr, xg) = xr_xg(strand, is_first_in_pair);
+        let xm = generate_xm_string_legacy(seq, strand, methylated_set);
         Self { xr, xg, xm }
     }
 
     /// Apply XR/XG/XM tags to a BAM record
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
-        record
-            .push_aux(b"XR", Aux::String(self.xr.as_str()))
-            .wrap_err("could not add XR tag")?;
+        record.push_aux(b"XR", Aux::String(self.xr.as_str())).wrap_err("could not add XR tag")?;
 
-        record
-            .push_aux(b"XG", Aux::String(self.xg.as_str()))
-            .wrap_err("could not add XG tag")?;
+        record.push_aux(b"XG", Aux::String(self.xg.as_str())).wrap_err("could not add XG tag")?;
 
         record.push_aux(b"XM", Aux::String(&self.xm)).wrap_err("could not add XM tag")?;
 
         Ok(())
     }
+}
+
+fn xr_xg(strand: Strand, is_first_in_pair: bool) -> (ConversionType, ConversionType) {
+    let xr = if is_first_in_pair { ConversionType::CT } else { ConversionType::GA };
+    let xg = match strand {
+        Strand::OT => ConversionType::CT,
+        Strand::OB => ConversionType::GA,
+        Strand::Unknown => {
+            debug!("Unknown strand detected, defaulting XG to CT");
+            ConversionType::CT
+        }
+    };
+    (xr, xg)
 }
 
 #[cfg(test)]

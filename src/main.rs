@@ -53,10 +53,14 @@ enum Subcommand {
     PerRead(PerReadParams),
     /// Add methylation information to BAM files
     ///
-    /// This will rewrite a BAM file to add methylation information and change
-    /// the methylated positions in the sequence to their original base.
+    /// Write a modBAM file with methylation tags derived from Rastair calls.
+    /// Use `standard` for MM/ML tags (rewrites SEQ) or `legacy` for
+    /// XR/XG/XM tags (keeps original SEQ).
     #[command(hide = true)]
-    Bam(BamRewriteArgs),
+    Bam {
+        #[command(subcommand)]
+        command: BamSubcommand,
+    },
     /// Convert between different file formats
     Convert(ConvertParams),
     /// Machine learning commands for training and verifying models
@@ -150,11 +154,14 @@ fn main() -> Result<()> {
             let duration = start.elapsed();
             info!(?duration, "Calling reads finished");
         }
-        Subcommand::Bam(params) => {
-            // track execution time
+        Subcommand::Bam { command } => {
             let start = std::time::Instant::now();
-            debug!(?params, "Running bam command");
-            rastair::rewrite_bam(&params)?;
+            let (params, mode) = match &command {
+                BamSubcommand::Standard(p) => (p, BamMode::Standard),
+                BamSubcommand::Legacy(p) => (p, BamMode::Legacy),
+            };
+            debug!(?mode, "Running bam command");
+            rastair::rewrite_bam(params, mode)?;
             let duration = start.elapsed();
             info!(?duration, "Bam rewrite finished");
         }
