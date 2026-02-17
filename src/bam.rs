@@ -497,6 +497,277 @@ mod tests {
         Ok(())
     }
 
+    /// Decode an MM tag string back to absolute sequence positions.
+    ///
+    /// MM format: `BASE[+-]m,skip1,skip2,...;`
+    /// The skips are deltas between consecutive occurrences of the target base.
+    ///
+    /// Both MM and XM tags in this codebase are generated from
+    /// `seq_for_mm_tag` (the forward-oriented sequence). To decode MM
+    /// consistently, pass the same forward-oriented sequence.
+    fn decode_mm_to_positions(mm_tag: &str, seq: &[u8]) -> Result<(Base, Vec<usize>)> {
+        let mm_tag = mm_tag.trim_end_matches(';');
+        ensure!(mm_tag.len() >= 3, "MM tag too short: {mm_tag}");
+
+        let base = Base::from(mm_tag.as_bytes()[0]);
+
+        // Format: "C+m,skip1,skip2,..." or "G-m;" (no positions)
+        // Skip past "C+m" prefix; if there's a comma, skip that too
+        if mm_tag.len() <= 3 {
+            return Ok((base, vec![]));
+        }
+        let skips_str = &mm_tag[4..]; // skip "C+m," or "G-m,"
+
+        if skips_str.is_empty() {
+            return Ok((base, vec![]));
+        }
+
+        let base_positions: Vec<usize> = seq
+            .iter()
+            .enumerate()
+            .filter(|&(_, b)| Base::from(*b) == base)
+            .map(|(i, _)| i)
+            .collect();
+
+        let mut positions = Vec::new();
+        let mut base_idx: usize = 0;
+
+        for skip in skips_str.split(',') {
+            let skip: usize = skip.parse().wrap_err_with(|| format!("bad skip: {skip}"))?;
+            base_idx += skip;
+            let seq_pos = base_positions.get(base_idx).ok_or_else(|| {
+                color_eyre::eyre::eyre!("MM skip out of bounds: base_idx={base_idx}")
+            })?;
+            positions.push(*seq_pos);
+            base_idx += 1;
+        }
+
+        Ok((base, positions))
+    }
+
+    /// Decode an XM tag string to absolute sequence positions of methylated bases.
+    fn decode_xm_to_positions(xm_tag: &str) -> Vec<usize> {
+        xm_tag
+            .chars()
+            .enumerate()
+            .filter(|(_, c)| *c == 'Z')
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Get the forward-oriented sequence from a record (what `rewrite_record`
+    /// calls `seq_for_mm_tag`). For reverse reads this is the reverse
+    /// complement of the stored SEQ.
+    fn seq_for_mm_tag(record: &Record) -> Vec<u8> {
+        let stored = record.seq().as_bytes();
+        if record.is_reverse() { reverse_complement(&stored) } else { stored }
+    }
+
+    #[test]
+    fn roundtrip_mm_and_xm_agree() -> Result<()> {
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")
+            .wrap_err("failed to open test BAM")?;
+
+        // Test multiple records covering both OT and OB strands
+        bam.fetch((0, 6103075, 6103200))?;
+        let mut record = Record::new();
+        let mut tested = 0u32;
+
+        while let Some(result) = bam.read(&mut record) {
+            result?;
+            let ol_seq = record.seq().as_bytes();
+            let calls = build_cpg_calls(&record, &ol_seq);
+            rewrite_record(&calls, &mut record)?;
+
+            let Aux::String(mm_tag) = record.aux(b"MM").wrap_err("missing MM tag")? else {
+                bail!("MM tag is not a string");
+            };
+            let Aux::String(xm_tag) = record.aux(b"XM").wrap_err("missing XM tag")? else {
+                bail!("XM tag is not a string");
+            };
+
+            // Both tags are generated from seq_for_mm_tag, so decode in that
+            // coordinate space
+            let fwd_seq = seq_for_mm_tag(&record);
+            let (_, mm_positions) = decode_mm_to_positions(mm_tag, &fwd_seq)
+                .wrap_err_with(|| format!("decode MM {:?} pos={} flag={}", mm_tag, record.pos(), record.flags()))?;
+            let xm_positions = decode_xm_to_positions(xm_tag);
+
+            assert_eq!(
+                mm_positions, xm_positions,
+                "MM/XM mismatch for record at pos {} (flag {})",
+                record.pos(),
+                record.flags()
+            );
+
+            tested += 1;
+        }
+
+        ensure!(tested > 0, "no records tested");
+        Ok(())
+    }
+
+    #[test]
+    fn roundtrip_write_read_bam() -> Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let temp_bam = temp_dir.path().join("roundtrip.bam");
+
+        // Read records, apply rewrite, write to temp BAM
+        let header = {
+            let bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+            Header::from_template(bam.header())
+        };
+
+        let mut writer =
+            Writer::from_path(&temp_bam, &header, bam::Format::Bam).wrap_err("create writer")?;
+
+        let mut bam =
+            bam::IndexedReader::from_path("tests/data/test.bam").wrap_err("open test BAM")?;
+        bam.fetch((0, 6103075, 6103100))?;
+
+        let mut records_written = 0u32;
+        let mut record = Record::new();
+        while let Some(result) = bam.read(&mut record) {
+            result?;
+            let ol_seq = record.seq().as_bytes();
+            let calls = build_cpg_calls(&record, &ol_seq);
+            rewrite_record(&calls, &mut record)?;
+            writer.write(&record)?;
+            records_written += 1;
+        }
+        drop(writer);
+        ensure!(records_written > 0, "no records written");
+
+        // Read back and verify both tag sets
+        let mut reader =
+            bam::Reader::from_path(&temp_bam).wrap_err("open roundtrip BAM for reading")?;
+        let mut records_read = 0u32;
+
+        while let Some(result) = reader.read(&mut record) {
+            result?;
+            records_read += 1;
+
+            let fwd_seq = seq_for_mm_tag(&record);
+
+            // Both MM and XM must be present
+            let Aux::String(mm_tag) = record.aux(b"MM").wrap_err("missing MM tag")? else {
+                bail!("MM not a string");
+            };
+            let Aux::String(xm_tag) = record.aux(b"XM").wrap_err("missing XM tag")? else {
+                bail!("XM not a string");
+            };
+
+            // XM length must match the forward-oriented seq length
+            assert_eq!(xm_tag.len(), fwd_seq.len(), "XM length mismatch");
+
+            // Decode using forward-oriented seq and compare
+            let (_, mm_positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+            let xm_positions = decode_xm_to_positions(xm_tag);
+            assert_eq!(mm_positions, xm_positions, "MM/XM mismatch after BAM roundtrip");
+
+            // XR and XG must be present
+            let Aux::String(_) = record.aux(b"XR").wrap_err("missing XR")? else {
+                bail!("XR not a string");
+            };
+            let Aux::String(_) = record.aux(b"XG").wrap_err("missing XG")? else {
+                bail!("XG not a string");
+            };
+
+            // ML tag present with correct length
+            let Aux::ArrayU8(ml_data) = record.aux(b"ML").wrap_err("missing ML")? else {
+                bail!("ML not an array");
+            };
+            assert_eq!(
+                ml_data.iter().count(),
+                mm_positions.len(),
+                "ML length should match number of methylated positions"
+            );
+        }
+
+        assert_eq!(records_written, records_read, "record count mismatch after roundtrip");
+
+        Ok(())
+    }
+
+    #[test]
+    fn roundtrip_no_methylation() -> Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let temp_bam = temp_dir.path().join("roundtrip_empty.bam");
+
+        let header = {
+            let bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+            Header::from_template(bam.header())
+        };
+
+        let mut writer = Writer::from_path(&temp_bam, &header, bam::Format::Bam)?;
+
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch((0, 6103075, 6103100))?;
+
+        let mut record = Record::new();
+        bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+
+        let calls = FxHashMap::default(); // no calls
+        rewrite_record(&calls, &mut record)?;
+        writer.write(&record)?;
+        drop(writer);
+
+        // Read back
+        let mut reader = bam::Reader::from_path(&temp_bam)?;
+        reader.read(&mut record).wrap_err("no records")?.wrap_err("read back")?;
+
+        let Aux::String(mm_tag) = record.aux(b"MM").wrap_err("missing MM")? else {
+            bail!("MM not a string");
+        };
+        let Aux::String(xm_tag) = record.aux(b"XM").wrap_err("missing XM")? else {
+            bail!("XM not a string");
+        };
+
+        let fwd_seq = seq_for_mm_tag(&record);
+        let (_, mm_positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+        let xm_positions = decode_xm_to_positions(xm_tag);
+
+        assert!(mm_positions.is_empty(), "expected no MM methylation");
+        assert!(xm_positions.is_empty(), "expected no XM methylation");
+
+        // XM should have only dots and lowercase z
+        ensure!(
+            !xm_tag.contains('Z'),
+            "XM should have no uppercase Z without methylation calls"
+        );
+
+        Ok(())
+    }
+
+    /// Build CpG methylation calls from a record's sequence by looking for
+    /// CA (OB strand evidence) and CG dinucleotides.
+    fn build_cpg_calls(record: &Record, seq: &[u8]) -> FxHashMap<u32, RastairCall> {
+        use Base::*;
+        let mut calls = FxHashMap::default();
+        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
+            let current_base = Base::from(seq[pos_in_read as usize]);
+            let Some(next_base) = seq.get((pos_in_read + 1) as usize).map(Base::from) else {
+                continue;
+            };
+            match (current_base, next_base) {
+                (C, G) => {
+                    calls.insert(
+                        pos_in_ref as u32,
+                        RastairCall::Cpg { methylated: true, base: C },
+                    );
+                }
+                (C, A) => {
+                    calls.insert(
+                        pos_in_ref as u32 + 1,
+                        RastairCall::Cpg { methylated: true, base: G },
+                    );
+                }
+                _ => {}
+            }
+        }
+        calls
+    }
+
     fn as_base_string(seq: &[u8]) -> String {
         seq.iter().map(|b| Base::from(*b).as_str()).collect()
     }
