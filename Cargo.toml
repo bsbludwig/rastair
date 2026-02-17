@@ -43,7 +43,6 @@ proptest = "1.7.0"
 tempfile = "3.24.0"
 
 [dependencies]
-rust-htslib = { workspace = true }
 color-eyre = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 cstr8 = { workspace = true }
@@ -53,8 +52,12 @@ rastair-vcf = { version = "0.1.0", path = "crates/rastair-vcf" }
 rastair-types = { version = "0.1.0", path = "crates/rastair-types" }
 
 # bio tools
-bgzip = { version = "0.3.1", features = ["zlib-ng"] }
 bio = "2.2.0"
+noodles = { version = "0.104.0", features = ["tabix", "csi", "bgzf", "core"] }
+noodles-bgzf = { version = "0.45.0", features = ["libdeflate"] }
+rust-htslib = { workspace = true }
+
+# ml
 biosphere = { git = "https://github.com/DaGaMs/biosphere.git", version = "0.4.0", features = [
   "serde",
 ] }
@@ -94,8 +97,6 @@ clap-markdown = { version = "0.1.5", git = "https://github.com/Softleif/clap-mar
 clap-num = "1.2.0"
 libc = "0.2.174"
 better_default = "1.0.5"
-noodles = { version = "0.104.0", features = ["tabix", "csi", "bgzf", "core"] }
-noodles-bgzf = { version = "0.45.0", features = ["libdeflate"] }
 
 # just so that rust-htslib builds it statically
 bzip2-sys = { version = "0.1.13", features = ["static"] }
@@ -166,7 +167,6 @@ insta.opt-level = 3
 similar.opt-level = 3
 biosphere.opt-level = 3
 ndarray.opt-level = 3
-bgzip.opt-level = 3
 lz4.opt-level = 3
 rust-htslib.opt-level = 3
 

@@ -1,9 +1,9 @@
-use bgzip::{BGZFReader, index::BGZFIndex, read::IndexedBGZFReader};
 use bio::io::fasta::IndexedReader;
 use color_eyre::{
     Section,
     eyre::{Context, ContextCompat, Result, eyre},
 };
+use noodles_bgzf as bgzf;
 use std::{
     fmt,
     fs::File,
@@ -164,15 +164,10 @@ mod fasta_tests {
         let bgzip_index_path = dir.path().join("test.fa.gz.gzi");
 
         // Create a bgzipped FASTA file with gzi index
-        let mut gz = bgzip::BGZFWriter::with_compress_unit_size(
-            File::create(&fasta_path)?,
-            bgzip::Compression::fast(),
-            16, // extra small chunk size so we get index entries!
-            true,
-        )?;
+        let mut gz = bgzf::io::Writer::new(File::create(&fasta_path)?);
         gz.write_all(b">seq1\nACGT\n>seq2\nGTCA\n")?;
-        let index = gz.close()?.expect("index");
-        index.write(&mut File::create(&bgzip_index_path)?)?;
+        gz.finish()?;
+        bgzf::gzi::fs::write(&bgzip_index_path, &bgzf::gzi::Index::default())?;
 
         // Create FAI index
         let mut index_file = File::create(&fasta_index_path)?;
@@ -267,22 +262,15 @@ fn open_maybe_bgzip<P: AsRef<Path> + std::fmt::Debug>(path: P) -> Result<BgzipRe
                 .with_note(|| format!("Expected index file to be one of: {possible_index_files:?}"))
                 .with_suggestion(|| format!("Create bgzip index with `bgzip -r {path:?}`"))
         })?;
-        let index = BGZFIndex::from_reader(open(index_path)?)
-            .map_err(|source| eyre!(Box::new(source)))
-            .wrap_err_with(|| format!("Failed to read index file {index_path:?}"))?;
-        let gzreader = BGZFReader::new(open(path)?)
-            .wrap_err_with(|| format!("Failed to read bgzip file {path:?}"))?;
-        let in_file = IndexedBGZFReader::new(gzreader, index)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to create indexed bgzip reader for {path:?} with index {index_path:?}"
-                )
-            })
-            .with_suggestion(|| {
-                format!(
-                    "Maybe the index is invalid? You can recreate it with `bgzip -r {index_path:?}`"
-                )
-            })?;
+        let index = bgzf::gzi::io::Reader::new(
+            open(index_path)
+                .wrap_err_with(|| format!("Failed to open bgzip index file {index_path:?}"))?,
+        )
+        .read_index()
+        .wrap_err_with(|| format!("Failed to parse bgzip index file {index_path:?}"))?;
+        let bgzf_file =
+            open(path).wrap_err_with(|| format!("Failed to open bgzip file {path:?}"))?;
+        let in_file = bgzf::io::IndexedReader::new(bgzf_file, index);
         debug!(?index_path, "Opened bgzip file");
         Ok(BgzipReader::Gz {
             gz_file: path.to_path_buf(),
@@ -333,15 +321,10 @@ mod open_maybe_bgzip {
         let index_path = dir.path().join("test_file.gz.gzi");
 
         // create a dummy bgzip file with an index
-        let mut gz = bgzip::BGZFWriter::with_compress_unit_size(
-            File::create(&file_path)?,
-            bgzip::Compression::fast(),
-            16, // extra small chunk size so we get index entries!
-            true,
-        )?;
+        let mut gz = bgzf::io::Writer::new(File::create(&file_path)?);
         gz.write_all(b"compressed content :)")?;
-        let index = gz.close()?.expect("index");
-        index.write(&mut File::create(&index_path)?)?;
+        gz.finish()?;
+        bgzf::gzi::fs::write(&index_path, &bgzf::gzi::Index::default())?;
 
         let _ = open_maybe_bgzip(&file_path)?;
 
@@ -414,12 +397,13 @@ mod open_maybe_bgzip {
         let mut file = File::create(&file_path)?;
         file.write_all(b"this is not a valid bgzip file")?;
 
-        // Create a dummy index file so we get past the index check
-        let index = BGZFIndex::default();
-        index.write(&mut File::create(&index_path)?)?;
+        // Create an empty GZI index so we get past the index check
+        bgzf::gzi::fs::write(&index_path, &bgzf::gzi::Index::default())?;
 
-        let result = open_maybe_bgzip(&file_path);
-        assert!(result.is_err());
+        // Construction succeeds but reading fails on invalid BGZF data
+        let mut reader = open_maybe_bgzip(&file_path)?.into_reader();
+        let mut buf = [0u8; 1];
+        assert!(reader.read(&mut buf).is_err());
 
         Ok(())
     }
@@ -431,9 +415,9 @@ mod open_maybe_bgzip {
         let index_path = dir.path().join("test.gz.gzi");
 
         // Create a valid BGZIP file
-        let mut gz = bgzip::BGZFWriter::new(File::create(&file_path)?, bgzip::Compression::fast());
+        let mut gz = bgzf::io::Writer::new(File::create(&file_path)?);
         gz.write_all(b"content")?;
-        gz.close()?;
+        gz.finish()?;
 
         // Create an index that doesn't match the file
         let mut index = File::create(&index_path)?;

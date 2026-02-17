@@ -133,18 +133,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bgzip"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b64fd8980fb64af5951bc05de7772b598150a6f7eac42ec17f73e8489915f99b"
-dependencies = [
- "flate2",
- "log",
- "rayon",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.69.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -612,15 +600,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crc32fast"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "crossbeam-channel"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -946,8 +925,6 @@ version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
- "crc32fast",
- "libz-ng-sys",
  "miniz_oxide",
  "zlib-rs",
 ]
@@ -1442,16 +1419,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "667f4fec20f29dfc6bc7357c582d91796c169ad7e2fce709468aefeb2c099870"
 dependencies = [
  "cc",
- "libc",
-]
-
-[[package]]
-name = "libz-ng-sys"
-version = "1.1.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bf914b7dd154ca9193afec311d8e39345c1bd93b48b3faa77329f0db8f553c0"
-dependencies = [
- "cmake",
  "libc",
 ]
 
@@ -2205,7 +2172,6 @@ name = "rastair"
 version = "2.0.0"
 dependencies = [
  "better_default",
- "bgzip",
  "bio",
  "biosphere",
  "bzip2-sys",
