@@ -73,6 +73,14 @@ pub struct PerReadParams {
     #[arg(help_heading = cli::sections::FILTER)]
     exclude_ambiguous: bool,
 
+    /// Enable single-strand mode
+    ///
+    /// In this mode, unpaired reads are accepted and orientation is inferred
+    /// from alignment direction only (forward=OT, reverse=OB).
+    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = cli::sections::FILTER)]
+    single_strand: bool,
+
     // --- Output parameters ---
     #[command(flatten)]
     bed_reads: BedReadsParams,
@@ -310,7 +318,7 @@ fn process_region(
         if (record.pos() as u64) < start {
             continue;
         }
-        if !params.read_flags.filter(&record) {
+        if !params.read_flags.filter_with_single_strand_mode(&record, params.single_strand) {
             continue;
         }
         if record.mapq() < params.min_mapq {
@@ -326,6 +334,7 @@ fn process_region(
             &segment,
             &calls,
             params.exclude_ambiguous,
+            params.single_strand,
             params.count_clipped,
         )
         .wrap_err("Failed to read record")?;
@@ -345,6 +354,7 @@ fn record_to_row(
     segment: &Segment,
     calls: &FxHashMap<usize, RastairCall>,
     exclude_ambiguous: bool,
+    single_strand: bool,
     count_clipped: bool,
 ) -> Result<PerRead> {
     let segment_start_pos =
@@ -376,7 +386,7 @@ fn record_to_row(
             .wrap_err("Failed to calculate index for position")?;
         let read_base = read_seq[pos_in_read];
         let ref_base = ref_seq.get(idx).copied().wrap_err("reading seq")?;
-        let orientation = orientation(record, exclude_ambiguous);
+        let orientation = orientation(record, exclude_ambiguous, single_strand);
         let pos_rel = if count_clipped {
             pos_in_read
         } else {
@@ -450,7 +460,11 @@ fn record_to_row(
     })
 }
 
-fn orientation(bam_record: &Record, exclude_ambiguous: bool) -> Strand {
+fn orientation(bam_record: &Record, exclude_ambiguous: bool, single_strand: bool) -> Strand {
+    if single_strand {
+        return if bam_record.is_reverse() { Strand::OB } else { Strand::OT };
+    }
+
     use SequenceReadPairOrientation::*;
 
     let read_pair_orientation = bam_record.read_pair_orientation();
@@ -481,5 +495,47 @@ fn orientation(bam_record: &Record, exclude_ambiguous: bool) -> Strand {
             }
         }
         _ => Strand::Unknown, // This should be impossible?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orientation_single_end_uses_alignment_strand() {
+        let mut record = Record::new();
+
+        record.set_flags(0x0); // single-end forward
+        assert_eq!(orientation(&record, true, true), Strand::OT);
+        assert_eq!(orientation(&record, false, true), Strand::OT);
+
+        record.set_flags(0x10); // single-end reverse
+        assert_eq!(orientation(&record, true, true), Strand::OB);
+        assert_eq!(orientation(&record, false, true), Strand::OB);
+    }
+
+    #[test]
+    fn orientation_single_end_without_mode_stays_unknown() {
+        let mut record = Record::new();
+
+        record.set_flags(0x0);
+        assert_eq!(orientation(&record, true, false), Strand::Unknown);
+        assert_eq!(orientation(&record, false, false), Strand::Unknown);
+
+        record.set_flags(0x10);
+        assert_eq!(orientation(&record, true, false), Strand::Unknown);
+        assert_eq!(orientation(&record, false, false), Strand::Unknown);
+    }
+
+    #[test]
+    fn orientation_single_strand_mode_ignores_pairing_flags() {
+        let mut record = Record::new();
+
+        record.set_flags(0x80 | 0x20); // would be OB in paired logic
+        assert_eq!(orientation(&record, true, true), Strand::OT);
+
+        record.set_flags(0x40 | 0x10); // reverse always means OB
+        assert_eq!(orientation(&record, true, true), Strand::OB);
     }
 }

@@ -72,7 +72,7 @@ fn alignment_to_read(
     let record = a.record();
     let cigar = record.raw_cigar();
 
-    if !params.read_flags.filter(&record) {
+    if !params.read_flags.filter_with_single_strand_mode(&record, params.single_strand) {
         return None;
     }
     let (matches, indels) = calc_cigar_data(cigar);
@@ -86,7 +86,8 @@ fn alignment_to_read(
             mapq: record.mapq(),
             // Strand of the read, derived from the record. Early return if strand cannot be determined.
             // TODO: handle "lenient mode"
-            strand: StrandFromRecord::strand(&record).ok()?,
+            strand: StrandFromRecord::strand_with_single_strand_mode(&record, params.single_strand)
+                .ok()?,
             reverse: record.is_reverse(),
             second: record.is_last_in_template(),
             position: PositionInRead {

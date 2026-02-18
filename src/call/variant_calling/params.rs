@@ -9,6 +9,14 @@ use better_default::Default;
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct VariantCallingParams {
+    /// Enable single-strand mode
+    ///
+    /// In this mode, unpaired reads are accepted and strand assignment uses
+    /// only the read's alignment direction (forward=OT, reverse=OB).
+    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = cli::sections::FILTER)]
+    pub single_strand: bool,
+
     /// The error model to use
     ///
     /// Accepts platform names or a custom error rate (e.g., 0.005)

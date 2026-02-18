@@ -52,6 +52,9 @@ impl fmt::Display for Strand {
 pub trait StrandFromRecord {
     /// Create a `Strand` from a BCF record
     fn strand(&self) -> Strand;
+
+    /// Create a `Strand` from a record, optionally allowing single-end mode.
+    fn strand_with_single_strand_mode(&self, single_strand_mode: bool) -> Strand;
 }
 
 /// Get strand from `htslib` record
@@ -84,6 +87,14 @@ impl StrandFromRecord for Record {
             Strand::Unknown // Not a paired read or no flags set
         }
     }
+
+    fn strand_with_single_strand_mode(&self, single_strand_mode: bool) -> Strand {
+        if single_strand_mode {
+            if self.is_reverse() { Strand::OB } else { Strand::OT }
+        } else {
+            StrandFromRecord::strand(self)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +124,44 @@ mod tests {
 
         record.set_flags(0x00); // No flags set
         assert_eq!(StrandFromRecord::strand(&record), Strand::Unknown);
+
+        record.set_flags(0x10); // No pairing flags
+        assert_eq!(StrandFromRecord::strand(&record), Strand::Unknown);
+
+        record.set_flags(0x01); // Paired but no first/second information
+        assert_eq!(StrandFromRecord::strand(&record), Strand::Unknown);
+    }
+
+    #[test]
+    fn test_single_strand_mode() {
+        let mut record = Record::default();
+
+        record.set_flags(0x00); // Single-end, forward
+        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OT);
+
+        record.set_flags(0x10); // Single-end, reverse
+        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OB);
+
+        record.set_flags(0x40 | 0x10); // Pair flags ignored in single-strand mode
+        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OB);
+
+        record.set_flags(0x80 | 0x20); // Pair/mate flags ignored, only 0x10 matters
+        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OT);
+
+        record.set_flags(0x00); // Without single-strand mode, still unknown
+        assert_eq!(
+            StrandFromRecord::strand_with_single_strand_mode(&record, false),
+            Strand::Unknown
+        );
+    }
+
+    #[test]
+    fn test_single_strand_mode_ignores_paired_flags() {
+        let mut record = Record::default();
+        record.set_flags(0x01 | 0x02 | 0x20 | 0x40);
+        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OT);
+
+        record.set_flags(0x01 | 0x02 | 0x20 | 0x40 | 0x10);
+        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OB);
     }
 }

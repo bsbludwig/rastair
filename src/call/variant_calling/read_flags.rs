@@ -29,11 +29,29 @@ pub struct ReadFlags {
 }
 
 impl ReadFlags {
-    /// Check if the read matches the include flags and does not match the exclude flags
+    /// Check if the read matches flags in paired-end mode.
     pub fn filter(&self, record: &Record) -> bool {
+        self.filter_with_single_strand_mode(record, false)
+    }
+
+    /// Check if the read matches the include flags and does not match the exclude flags
+    pub fn filter_with_single_strand_mode(
+        &self,
+        record: &Record,
+        single_strand_mode: bool,
+    ) -> bool {
         let flags = record.flags();
-        let include = flags & self.include_flags == self.include_flags;
-        let exclude = flags & self.exclude_flags != 0;
+        let (flags, include_flags, exclude_flags) = if single_strand_mode {
+            (
+                flags & !SINGLE_STRAND_IGNORED_FLAGS,
+                self.include_flags & !SINGLE_STRAND_IGNORED_FLAGS,
+                self.exclude_flags & !SINGLE_STRAND_IGNORED_FLAGS,
+            )
+        } else {
+            (flags, self.include_flags, self.exclude_flags)
+        };
+        let include = flags & include_flags == include_flags;
+        let exclude = flags & exclude_flags != 0;
         include && !exclude
     }
 }
@@ -52,4 +70,72 @@ mod flags {
     pub const IS_FAILED: u16 = 0x200;
     pub const IS_DUPLICATE: u16 = 0x400;
     pub const IS_SUPPLEMENTAL: u16 = 0x800;
+
+    pub const SINGLE_STRAND_IGNORED_FLAGS: u16 =
+        IS_PAIRED | IS_PROPERLY_PAIRED | MATE_IS_REVERSE_STRAND | IS_FIRST_IN_PAIR;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_filter_rejects_single_end_reads() {
+        let read_flags = ReadFlags::default();
+        let mut record = Record::new();
+
+        record.set_flags(0x0); // single-end forward
+        assert!(!read_flags.filter(&record));
+
+        record.set_flags(0x10); // single-end reverse
+        assert!(!read_flags.filter(&record));
+    }
+
+    #[test]
+    fn single_strand_mode_accepts_single_end_reads() {
+        let read_flags = ReadFlags::default();
+        let mut record = Record::new();
+
+        record.set_flags(0x0); // single-end forward
+        assert!(read_flags.filter_with_single_strand_mode(&record, true));
+
+        record.set_flags(0x10); // single-end reverse
+        assert!(read_flags.filter_with_single_strand_mode(&record, true));
+    }
+
+    #[test]
+    fn default_filter_keeps_paired_requirements_for_paired_reads() {
+        let read_flags = ReadFlags::default();
+        let mut record = Record::new();
+
+        record.set_flags(IS_PAIRED); // missing proper pair
+        assert!(!read_flags.filter(&record));
+
+        record.set_flags(IS_PAIRED | IS_PROPERLY_PAIRED);
+        assert!(read_flags.filter(&record));
+    }
+
+    #[test]
+    fn single_strand_mode_ignores_pair_related_flags() {
+        let read_flags = ReadFlags::default();
+        let mut record = Record::new();
+
+        // In single-strand mode, required 0x1/0x2 are ignored
+        record.set_flags(IS_PAIRED);
+        assert!(read_flags.filter_with_single_strand_mode(&record, true));
+
+        // 0x20 and 0x40 are ignored as well
+        record
+            .set_flags(IS_PAIRED | IS_PROPERLY_PAIRED | MATE_IS_REVERSE_STRAND | IS_FIRST_IN_PAIR);
+        assert!(read_flags.filter_with_single_strand_mode(&record, true));
+    }
+
+    #[test]
+    fn exclude_flags_still_apply_to_single_end_reads() {
+        let read_flags = ReadFlags::default();
+        let mut record = Record::new();
+
+        record.set_flags(IS_UNMAPPED);
+        assert!(!read_flags.filter_with_single_strand_mode(&record, true));
+    }
 }
