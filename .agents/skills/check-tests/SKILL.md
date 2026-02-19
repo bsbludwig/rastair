@@ -2,8 +2,6 @@
 name: check-tests
 description: Run all Rastair tests and report which ones are failing. Use when you need a quick overview of test status before starting work.
 context: fork
-disable-model-invocation: true
-allowed-tools: Bash
 ---
 
 # Check Test Status
