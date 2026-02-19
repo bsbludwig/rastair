@@ -21,9 +21,11 @@ use tracing::{instrument, warn};
 /// Subcommands for `rastair bam`
 #[derive(Debug, clap::Subcommand)]
 pub enum BamSubcommand {
-    /// Write modBAM with MM/ML tags (rewrites SEQ)
+    /// Write modBAM with MM/ML tags as specified by the SAM 4.5 spec
+    /// This will rewrite SEQ to un-modify bases that have methylation evidence.
     Standard(BamRewriteArgs),
-    /// Write legacy XR/XG/XM tags (keeps original SEQ)
+    /// Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN
+    /// and Bismark.
     Legacy(BamRewriteArgs),
 }
 

@@ -19,8 +19,9 @@ struct Cli {
     /// Enable more logging
     ///
     /// You can also use the `RASTAIR_LOG` environment variable to configure
-    /// logging in a more precise way. See the documentation of the
-    /// `tracing-subscriber` library to learn more.
+    /// logging in a more precise way.
+    ///
+    /// Note that trace-level logging is disabled in production builds.
     #[arg(short, long, global = true)]
     verbose: bool,
 }
@@ -53,9 +54,8 @@ enum Subcommand {
     PerRead(PerReadParams),
     /// Add methylation information to BAM files
     ///
-    /// Write a modBAM file with methylation tags derived from Rastair calls.
-    /// Use `standard` for MM/ML tags (rewrites SEQ) or `legacy` for
-    /// XR/XG/XM tags (keeps original SEQ).
+    /// Writes a new BAM file that includes methylation tags derived from
+    /// Rastair calls.
     #[command(hide = true)]
     Bam {
         #[command(subcommand)]

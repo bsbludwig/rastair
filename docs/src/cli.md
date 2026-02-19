@@ -35,7 +35,9 @@ See <https://docs.rastair.com/> for more information.
 
 * `-v`, `--verbose` — Enable more logging
 
-   You can also use the `RASTAIR_LOG` environment variable to configure logging in a more precise way. See the documentation of the `tracing-subscriber` library to learn more.
+   You can also use the `RASTAIR_LOG` environment variable to configure logging in a more precise way.
+
+   Note that trace-level logging is disabled in production builds.
 
 
 
