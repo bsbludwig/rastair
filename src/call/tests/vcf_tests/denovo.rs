@@ -149,6 +149,40 @@ fn test_a_and_t_cant_form_denovo() -> Result<()> {
     Ok(())
 }
 
+/// C[G>C]G scenario: position 1 (G-ref) is both the G-side of the original CpG (C-G at
+/// positions 0-1) and the new de-novo CpG C-side (G->C SNP creates C-G at positions 1-2).
+#[test]
+fn test_ref_cpg_g_to_c_snp_no_original_methylation() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C G G ] Ref,
+        [ C T G ] OT,  // T at pos1 = methylated new C after G->C SNP (TAPS: mC → T on OT)
+        [ C T G ] OT,
+        [ C T G ] OT,
+        [ C C G ] OT,  // C at pos1 = unmethylated new C (the SNP allele, unmodified)
+        [ C G A ] OB,  // G at pos1 = original G ref (no methylation), A at pos2 = methylated new G-side
+        [ C G A ] OB,
+        [ C G A ] OB,
+        [ C G G ] OB,  // G at pos2 = unmethylated new G-side
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[1], C); // G->C at pos1 is a real variant creating a de-novo CpG
+    set_fail(&mut records[1], T); // T at pos1 is methylation evidence for the new C-side
+    set_fail(&mut records[2], A); // A at pos2 is methylation evidence for the new G-side
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (C .) PASS M5mC=0.,    // pos0: original CpG C-side, no T reads → NoEvidence
+        (G C) PASS M5mC=0.75,  // pos1: only de-novo beta (original G-side has no A reads)
+        (G .) PASS M5mC=0.75,  // pos2: de-novo CpG G-side partner
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
 #[test]
 fn test_cpg_that_is_also_denovo() -> Result<()> {
     // Test that A and T reference bases don't produce methylation evidence rows
