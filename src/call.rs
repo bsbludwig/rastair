@@ -24,7 +24,10 @@ use crate::{
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
+    metrics::{
+        self, MethylationEvidenceStrandInfo, PileupMetrics,
+        ml::types::{GpuRastairModel, MachineLearning},
+    },
     sequence::{ChunkRegion, ReaderParams, Readers, Segment, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
 };
@@ -212,7 +215,16 @@ pub fn call(mut params: CallParams) -> Result<()> {
         .thread_name(|idx| format!("worker-{idx}"))
         .num_threads(worker_threads)
         .start_handler(|idx| trace!(idx, "Starting worker thread"))
-        .exit_handler(|idx| trace!(idx, "Closing worker thread"))
+        .exit_handler(|idx| {
+            trace!(idx, "Closing worker thread");
+            // Explicitly drop GPU resources *before* the thread's TLS destructors
+            // fire. This avoids "TLS value accessed during/after destruction" panics
+            // on Metal/wgpu, where the OS autorelease pool is torn down during
+            // thread exit before Rust TLS destructors run.
+            GPU_FORESTS.with(|gf| {
+                gf.borrow_mut().take();
+            });
+        })
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {
@@ -236,6 +248,15 @@ pub fn call(mut params: CallParams) -> Result<()> {
     Ok(())
 }
 
+thread_local! {
+    /// Per-thread GPU forest handles forked from the prototype in [`MachineLearning`].
+    /// Initialized lazily on the first call to [`process_region_wrapper`] in each
+    /// rayon worker thread. Each handle owns its own pre-allocated GPU buffers and
+    /// shares compiled pipelines with the prototype via `Arc`.
+    static GPU_FORESTS: std::cell::RefCell<Option<GpuRastairModel>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Wrapper function for processing a region in a thread-safe manner.
 ///
 /// Calls [`process_region`] with thread-local readers and ships the result to
@@ -252,6 +273,17 @@ fn process_region_wrapper(
         /// Readers for the BAM and FASTA files, initialized per thread to avoid
         /// re-opening files or having a lock
         static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+    }
+
+    // Lazily fork the GPU forests for this thread on its first chunk.
+    if let Some(proto) = ml.gpu_prototype.as_ref() {
+        GPU_FORESTS.with(|gf| {
+            if gf.borrow().is_none() {
+                // 10_000 positions × 4 alts max — matches the buffer size allocated
+                // in MachineLearningParams::init for the prototype forests.
+                *gf.borrow_mut() = Some(proto.fork(40_000));
+            }
+        });
     }
 
     // Use thread-local readers to avoid re-opening files in each thread
@@ -330,7 +362,8 @@ fn process_region(
         };
     }
 
-    let pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
+    // Pass 1: collect all pre-ML pileups for the chunk.
+    let mut pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
         .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
         .map_surrounding(process::set_denovo_adj)
         .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
@@ -340,11 +373,22 @@ fn process_region(
             current
         })
         .filter(|p| params.record_filters.pre_filter(p))
-        .map_surrounding(|b, c, a| {
-            // More filters: Add ML metrics if requested
-            process::add_ml_metrics(b, c, a, ml)
-        })
-        .filter_map(log_failed_and_skip!("failed to calculate ML score, skipping"))
+        .collect();
+
+    // Pass 2: ML prediction — GPU batch if available for this thread, otherwise
+    // sequential CPU fallback (same semantics as streaming map_surrounding).
+    let ml_result = GPU_FORESTS.with(|gf| -> Result<()> {
+        match gf.borrow().as_ref() {
+            Some(gpu) => process::batch_add_ml_metrics(&mut pileups, ml, gpu),
+            None => process::add_ml_metrics_vec(&mut pileups, ml),
+        }
+    });
+    if let Err(e) = ml_result {
+        warn!(error = format!("{e:#}"), "failed to calculate ML score, skipping region");
+    }
+
+    let pileups: Vec<PileupMetrics> = pileups
+        .into_iter()
         .map(|mut pileup| {
             // Add 'simple' filters based on the collected metrics
             process::apply_threshold_filters(&mut pileup, &threshold_filters)

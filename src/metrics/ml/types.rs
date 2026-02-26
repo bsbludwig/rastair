@@ -1,6 +1,7 @@
 use std::fmt;
 
 use biosphere::RandomForest;
+use biosphere::gpu::GpuForest;
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
 
@@ -62,11 +63,36 @@ impl fmt::Display for MlFeatureSet {
     }
 }
 
+/// GPU-accelerated forests for each model type, used as per-thread prototypes.
+///
+/// Create once via [`MachineLearningParams::init`], then call [`GpuRastairModel::fork`]
+/// inside each worker thread to get a thread-local handle that shares compiled
+/// pipelines and uploaded node data without re-uploading.
+pub struct GpuRastairModel {
+    pub cpg: GpuForest,
+    pub denovo: GpuForest,
+    pub others: GpuForest,
+}
+
+impl GpuRastairModel {
+    /// Create per-thread handles that share GPU pipelines and node data with `self`.
+    pub fn fork(&self, max_samples: usize) -> Self {
+        Self {
+            cpg: self.cpg.fork(max_samples),
+            denovo: self.denovo.fork(max_samples),
+            others: self.others.fork(max_samples),
+        }
+    }
+}
+
 /// Instance of machine learning model and parameters
 pub struct MachineLearning {
     pub threshold: Probability,
     pub model: Option<Box<RastairModel>>,
     pub feature_calculator: MlFeatureSet,
+    /// Prototype GPU forests. Worker threads call [`GpuRastairModel::fork`] on
+    /// first use to obtain thread-local handles without recompiling shaders.
+    pub gpu_prototype: Option<GpuRastairModel>,
 }
 
 impl MachineLearning {
@@ -76,6 +102,7 @@ impl MachineLearning {
             threshold: Probability::ZERO,
             model: None,
             feature_calculator: MlFeatureSet::Standard,
+            gpu_prototype: None,
         }
     }
 

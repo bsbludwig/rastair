@@ -20,7 +20,8 @@ pub use denovo::set_denovo_adj;
 pub use threshold_filters::{ThresholdFilterParams, apply_threshold_filters};
 
 // And machine learning-based metrics, which are just more filters
-pub use calc_ml::add_ml_metrics;
+#[allow(unused_imports)]
+pub use calc_ml::{add_ml_metrics, add_ml_metrics_vec, batch_add_ml_metrics};
 
 // Now, let's mark both positions of de-novo CpG sites as pass if one passes
 pub use denovo::propagate_denovo_pass_flags;

@@ -18,10 +18,11 @@
 //! for input to a random forest classifier.
 
 use crate::{
-    metrics::ml::types::{MachineLearning, RastairModel},
+    metrics::ml::types::{GpuRastairModel, MachineLearning, RastairModel},
     utils::cli,
 };
 use better_default::Default;
+use biosphere::{FlatForest, gpu::GpuForest};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
@@ -55,6 +56,16 @@ pub struct MachineLearningParams {
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,
+    /// Use GPU-accelerated batch inference for ML predictions.
+    ///
+    /// Instead of running one random forest prediction per alt allele (CPU,
+    /// sequential), batches all alts in a chunk into a single GPU dispatch per
+    /// model type. Requires a Metal/Vulkan/DX12-capable GPU.
+    ///
+    /// Off by default; use this flag to benchmark GPU vs CPU throughput.
+    #[arg(long, help_heading = cli::sections::PROCESSING)]
+    #[default(false)]
+    pub gpu: bool,
     /// Path to the combined model file containing CpG, denovo, and others models
     ///
     /// Default is the bundled model in the Rastair binary.
@@ -77,10 +88,29 @@ impl MachineLearningParams {
         )
         .wrap_err("Failed to load combined RF model")?;
 
+        let feature_nums = combined.feature_set.get_calculator().feature_num();
+        // Size buffers for a full chunk (10k positions × 4 alts max) per thread.
+        let max_samples = 40_000;
+        let gpu_prototype = self.gpu.then(|| GpuRastairModel {
+            cpg: GpuForest::from_flat_forest(
+                &FlatForest::from_forest(&combined.cpg, feature_nums.cpg),
+                max_samples,
+            ),
+            denovo: GpuForest::from_flat_forest(
+                &FlatForest::from_forest(&combined.denovo, feature_nums.denovo_cpg),
+                max_samples,
+            ),
+            others: GpuForest::from_flat_forest(
+                &FlatForest::from_forest(&combined.others, feature_nums.others),
+                max_samples,
+            ),
+        });
+
         Ok(MachineLearning {
             threshold: self.ml,
             feature_calculator: combined.feature_set,
             model: Some(Box::new(combined)),
+            gpu_prototype,
         })
     }
 
