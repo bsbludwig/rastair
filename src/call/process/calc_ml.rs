@@ -102,11 +102,15 @@ pub fn batch_add_ml_metrics(
     let positions = pileups.len();
 
     let calc = &ml.feature_calculator;
+    let feature_num = ml.feature_calculator.feature_num();
 
     let mut pending = PendingGroups {
         cpg: Vec::with_capacity(positions / 2),
+        cpg_features: Vec::with_capacity(positions / 2 * feature_num.cpg),
         denovo: Vec::with_capacity(positions / 2),
+        denovo_features: Vec::with_capacity(positions / 2 * feature_num.denovo_cpg),
         others: Vec::with_capacity(positions / 2),
+        others_features: Vec::with_capacity(positions / 2 * feature_num.others),
     };
     // (pileup_idx, alt_base) pairs that failed pre_ml_filter
     let mut pre_ml_rejected: Vec<(usize, Base)> = Vec::new();
@@ -146,7 +150,7 @@ pub fn batch_add_ml_metrics(
                     )
                 };
 
-                let features = match features_result {
+                let features: Vec<f32> = match features_result {
                     Ok(f) => {
                         if f.is_any_nan() {
                             continue;
@@ -159,12 +163,21 @@ pub fn batch_add_ml_metrics(
                     }
                 };
 
-                let pending_item = Pending { pileup_idx: i, alt_base, features, platt };
+                let pending_item = Pending { pileup_idx: i, alt_base, platt };
 
                 match model_type {
-                    MlModel::Cpg => pending.cpg.push(pending_item),
-                    MlModel::DenovoCpg => pending.denovo.push(pending_item),
-                    MlModel::Others => pending.others.push(pending_item),
+                    MlModel::Cpg => {
+                        pending.cpg.push(pending_item);
+                        pending.cpg_features.extend(features);
+                    }
+                    MlModel::DenovoCpg => {
+                        pending.denovo.push(pending_item);
+                        pending.denovo_features.extend(features);
+                    }
+                    MlModel::Others => {
+                        pending.others.push(pending_item);
+                        pending.others_features.extend(features);
+                    }
                 }
             }
         }
@@ -178,17 +191,9 @@ pub fn batch_add_ml_metrics(
     }
 
     // Phase 2b: submit all three GPU dispatches, then collect — GPU work overlaps.
-    let flat_features = |items: &[Pending]| -> Vec<f32> {
-        items.iter().flat_map(|p| p.features.iter().copied()).collect()
-    };
-    let cpg_features = flat_features(&pending.cpg);
-    let denovo_features = flat_features(&pending.denovo);
-    let others_features = flat_features(&pending.others);
-
-    // All three submits before any collect — GPU executes concurrently.
-    let h_cpg = gpu.cpg.predict_submit(&cpg_features, pending.cpg.len());
-    let h_denovo = gpu.denovo.predict_submit(&denovo_features, pending.denovo.len());
-    let h_others = gpu.others.predict_submit(&others_features, pending.others.len());
+    let h_cpg = gpu.cpg.predict_submit(&pending.cpg_features, pending.cpg.len());
+    let h_denovo = gpu.denovo.predict_submit(&pending.denovo_features, pending.denovo.len());
+    let h_others = gpu.others.predict_submit(&pending.others_features, pending.others.len());
 
     let cpg_preds = collect_handle(h_cpg);
     let denovo_preds = collect_handle(h_denovo);
@@ -218,14 +223,16 @@ fn collect_handle(handle: Option<PredictHandle<'_>>) -> Vec<f32> {
 
 struct PendingGroups {
     cpg: Vec<Pending>,
+    cpg_features: Vec<f32>,
     denovo: Vec<Pending>,
+    denovo_features: Vec<f32>,
     others: Vec<Pending>,
+    others_features: Vec<f32>,
 }
 
 /// Each pending prediction records where to write the result back.
 struct Pending {
     pileup_idx: usize,
     alt_base: Base,
-    features: Vec<f32>, // pre-converted to f32 for direct GPU upload
     platt: PlattScaling,
 }
