@@ -6,6 +6,7 @@ use crate::{
     utils::logging::ThisIsABug,
     vcf::{low_ml_score, pre_ml},
 };
+use biosphere::gpu::PredictHandle;
 use color_eyre::eyre::{ContextCompat as _, Result};
 use rastair_types::{Base, Probability};
 use tracing::{debug, instrument};
@@ -98,19 +99,15 @@ pub fn batch_add_ml_metrics(
     if pileups.is_empty() {
         return Ok(());
     }
+    let positions = pileups.len();
 
     let calc = &ml.feature_calculator;
 
-    // Each pending prediction records where to write the result back.
-    struct Pending {
-        pileup_idx: usize,
-        alt_base: Base,
-        model: MlModel,
-        features: Vec<f32>, // pre-converted to f32 for direct GPU upload
-        platt: PlattScaling,
-    }
-
-    let mut pending: Vec<Pending> = Vec::new();
+    let mut pending = PendingGroups {
+        cpg: Vec::with_capacity(positions / 2),
+        denovo: Vec::with_capacity(positions / 2),
+        others: Vec::with_capacity(positions / 2),
+    };
     // (pileup_idx, alt_base) pairs that failed pre_ml_filter
     let mut pre_ml_rejected: Vec<(usize, Base)> = Vec::new();
 
@@ -162,13 +159,13 @@ pub fn batch_add_ml_metrics(
                     }
                 };
 
-                pending.push(Pending {
-                    pileup_idx: i,
-                    alt_base,
-                    model: model_type,
-                    features,
-                    platt,
-                });
+                let pending_item = Pending { pileup_idx: i, alt_base, features, platt };
+
+                match model_type {
+                    MlModel::Cpg => pending.cpg.push(pending_item),
+                    MlModel::DenovoCpg => pending.denovo.push(pending_item),
+                    MlModel::Others => pending.others.push(pending_item),
+                }
             }
         }
     } // end read-only borrow of pileups
@@ -180,25 +177,30 @@ pub fn batch_add_ml_metrics(
         }
     }
 
-    // Phase 2b: batch GPU predict per model type and assign calibrated predictions
-    // TODO: Use predict_async and dispatch all at once and then wait with pollster
-    for (model_type, gpu_forest) in [
-        (MlModel::Cpg, &gpu.cpg),
-        (MlModel::DenovoCpg, &gpu.denovo),
-        (MlModel::Others, &gpu.others),
+    // Phase 2b: submit all three GPU dispatches, then collect — GPU work overlaps.
+    let flat_features = |items: &[Pending]| -> Vec<f32> {
+        items.iter().flat_map(|p| p.features.iter().copied()).collect()
+    };
+    let cpg_features = flat_features(&pending.cpg);
+    let denovo_features = flat_features(&pending.denovo);
+    let others_features = flat_features(&pending.others);
+
+    // All three submits before any collect — GPU executes concurrently.
+    let h_cpg = gpu.cpg.predict_submit(&cpg_features, pending.cpg.len());
+    let h_denovo = gpu.denovo.predict_submit(&denovo_features, pending.denovo.len());
+    let h_others = gpu.others.predict_submit(&others_features, pending.others.len());
+
+    let cpg_preds = collect_handle(h_cpg);
+    let denovo_preds = collect_handle(h_denovo);
+    let others_preds = collect_handle(h_others);
+
+    for (items, preds) in [
+        (&pending.cpg, &cpg_preds),
+        (&pending.denovo, &denovo_preds),
+        (&pending.others, &others_preds),
     ] {
-        let batch: Vec<&Pending> = pending.iter().filter(|p| p.model == model_type).collect();
-        if batch.is_empty() {
-            continue;
-        }
-
-        // Stack all feature rows into a flat f32 slice (row-major)
-        let features_flat: Vec<f32> =
-            batch.iter().flat_map(|p| p.features.iter().copied()).collect();
-        let gpu_preds = gpu_forest.predict(&features_flat, batch.len());
-
-        for (p, raw_pred) in batch.iter().zip(gpu_preds.iter()) {
-            let calibrated: Probability = p.platt.calibrate_score(*raw_pred as f64);
+        for (p, &raw_pred) in items.iter().zip(preds.iter()) {
+            let calibrated: Probability = p.platt.calibrate_score(raw_pred as f64);
             let threshold = ml.threshold;
             if let Some(filters) = pileups[p.pileup_idx].alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);
@@ -208,4 +210,22 @@ pub fn batch_add_ml_metrics(
     }
 
     Ok(())
+}
+
+fn collect_handle(handle: Option<PredictHandle<'_>>) -> Vec<f32> {
+    handle.map(|h| h.collect()).unwrap_or_default()
+}
+
+struct PendingGroups {
+    cpg: Vec<Pending>,
+    denovo: Vec<Pending>,
+    others: Vec<Pending>,
+}
+
+/// Each pending prediction records where to write the result back.
+struct Pending {
+    pileup_idx: usize,
+    alt_base: Base,
+    features: Vec<f32>, // pre-converted to f32 for direct GPU upload
+    platt: PlattScaling,
 }
