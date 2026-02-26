@@ -41,7 +41,7 @@ pub fn get_pileups(
 
     // Go over each column in the pileup from htslib and build our own pileup
     let mut pileup = readers.bam.pileup();
-    pileup.set_max_depth(1000);
+    pileup.set_max_depth(params.max_coverage);
     let piles = pileup
         .filter_map(|p| match p {
             Ok(p) => Some(p),
