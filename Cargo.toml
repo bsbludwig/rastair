@@ -62,7 +62,6 @@ biosphere = { git = "https://github.com/Softleif/biosphere", branch = "gpu", ver
     "serde",
     "gpu",
 ] }
-# biosphere = { path = "/Users/pascal/code/DaGaMs/biosphere", version = "0.4.0", features = [ "serde", "gpu" ] }
 ndarray = "0.17.2"
 rand = "0.9.2"
 
@@ -102,6 +101,7 @@ better_default = "1.0.5"
 
 # just so that rust-htslib builds it statically
 bzip2-sys = { version = "0.1.13", features = ["static"] }
+pollster = "0.4.0"
 
 [dev-dependencies]
 insta = { workspace = true }

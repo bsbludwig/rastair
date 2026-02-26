@@ -18,6 +18,7 @@
 //! for input to a random forest classifier.
 
 use crate::{
+    call::process::GPU_BATCH_BUFFER_SIZE,
     metrics::ml::types::{GpuRastairModel, MachineLearning, RastairModel},
     utils::cli,
 };
@@ -56,13 +57,10 @@ pub struct MachineLearningParams {
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,
-    /// Use GPU-accelerated batch inference for ML predictions.
+    /// Use GPU-accelerated ML predictions which might speed up large datasets,
+    /// but can be slower for small ones due to overhead.
     ///
-    /// Instead of running one random forest prediction per alt allele (CPU,
-    /// sequential), batches all alts in a chunk into a single GPU dispatch per
-    /// model type. Requires a Metal/Vulkan/DX12-capable GPU.
-    ///
-    /// Off by default; use this flag to benchmark GPU vs CPU throughput.
+    /// Requires a Metal/Vulkan/DX12-capable GPU.
     #[arg(long, help_heading = cli::sections::PROCESSING)]
     #[default(false)]
     pub gpu: bool,
@@ -89,8 +87,8 @@ impl MachineLearningParams {
         .wrap_err("Failed to load combined RF model")?;
 
         let feature_nums = combined.feature_set.get_calculator().feature_num();
-        // Size buffers for a full chunk (10k positions × 4 alts max) per thread.
-        let max_samples = 40_000;
+
+        let max_samples = GPU_BATCH_BUFFER_SIZE;
         let gpu_prototype = self.gpu.then(|| GpuRastairModel {
             cpg: GpuForest::from_flat_forest(
                 &FlatForest::from_forest(&combined.cpg, feature_nums.cpg),
@@ -108,7 +106,8 @@ impl MachineLearningParams {
 
         Ok(MachineLearning {
             threshold: self.ml,
-            feature_calculator: combined.feature_set,
+            feature_set: combined.feature_set,
+            feature_calculator: combined.feature_set.get_calculator(),
             model: Some(Box::new(combined)),
             gpu_prototype,
         })

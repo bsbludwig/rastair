@@ -20,7 +20,7 @@ use crate::{
     call::{
         methylation::params::MethylationCallingParams,
         pileup::{Pileup, SimpleRead},
-        process::{calculate_pileup_metrics, get_pileups},
+        process::{GPU_BATCH_BUFFER_SIZE, calculate_pileup_metrics, get_pileups},
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
@@ -281,7 +281,7 @@ fn process_region_wrapper(
             if gf.borrow().is_none() {
                 // 10_000 positions × 4 alts max — matches the buffer size allocated
                 // in MachineLearningParams::init for the prototype forests.
-                *gf.borrow_mut() = Some(proto.fork(40_000));
+                *gf.borrow_mut() = Some(proto.fork(GPU_BATCH_BUFFER_SIZE));
             }
         });
     }
@@ -375,17 +375,21 @@ fn process_region(
         .filter(|p| params.record_filters.pre_filter(p))
         .collect();
 
-    // Pass 2: ML prediction — GPU batch if available for this thread, otherwise
-    // sequential CPU fallback (same semantics as streaming map_surrounding).
-    let ml_result = GPU_FORESTS.with(|gf| -> Result<()> {
-        match gf.borrow().as_ref() {
-            Some(gpu) => process::batch_add_ml_metrics(&mut pileups, ml, gpu),
-            None => process::add_ml_metrics_vec(&mut pileups, ml),
+    // Pass 2: ML prediction — GPU batch if available, otherwise or on error,
+    // use sequential CPU fallback.
+    GPU_FORESTS.with(|gf| -> Result<()> {
+        match gf.borrow().as_ref().map(|gpu| process::batch_add_ml_metrics(&mut pileups, ml, gpu)) {
+            Some(Ok(_)) => return Ok(()),
+            Some(Err(error)) => {
+                warn!(
+                    error = format!("{error:#}"),
+                    "failed to calculate ML score on GPU, falling back to CPU"
+                )
+            }
+            None => {}
         }
-    });
-    if let Err(e) = ml_result {
-        warn!(error = format!("{e:#}"), "failed to calculate ML score, skipping region");
-    }
+        process::add_ml_metrics_vec(&mut pileups, ml)
+    })?;
 
     let pileups: Vec<PileupMetrics> = pileups
         .into_iter()

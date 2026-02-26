@@ -10,6 +10,9 @@ use color_eyre::eyre::{ContextCompat as _, Result};
 use rastair_types::{Base, Probability};
 use tracing::{debug, instrument};
 
+/// Size buffer for reasonably full chunk (10k positions × 4 alts max) per thread.
+pub const GPU_BATCH_BUFFER_SIZE: usize = 40_000;
+
 /// Filter out very unlikely alts before running slow ML
 fn pre_ml_filter(c: &MetricsForAlt) -> bool {
     c.metrics.pos_metrics.depth > 1 && *c.metrics.pos_metrics.mapq > 5.
@@ -64,10 +67,13 @@ pub fn add_ml_metrics(
 /// Sequential ML prediction over a Vec of pileups, equivalent to streaming
 /// `map_surrounding(add_ml_metrics)`. Used as a CPU fallback when GPU batch
 /// prediction is unavailable.
+///
+/// FIXME: Does this do the same really in regard to matching by position?
 pub fn add_ml_metrics_vec(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Result<()> {
     for i in 0..pileups.len() {
         let (left, rest) = pileups.split_at_mut(i);
-        let (current, right) = rest.split_first_mut().expect("index in bounds");
+        let (current, right) =
+            rest.split_first_mut().wrap_err("Failed to split pileups").this_is_a_bug()?;
         let before = left.last().map(|p| p as &_);
         let after = right.first().map(|p| p as &_);
         add_ml_metrics(before, current, after, ml)?;
@@ -82,7 +88,7 @@ pub fn add_ml_metrics_vec(pileups: &mut [PileupMetrics], ml: &MachineLearning) -
 /// predictions back into the pileup filter state. This is 10k-30× fewer GPU
 /// dispatches than the per-alt streaming approach.
 pub fn batch_add_ml_metrics(
-    pileups: &mut Vec<PileupMetrics>,
+    pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     gpu: &GpuRastairModel,
 ) -> Result<()> {
@@ -93,7 +99,7 @@ pub fn batch_add_ml_metrics(
         return Ok(());
     }
 
-    let calc = ml.feature_calculator.get_calculator();
+    let calc = &ml.feature_calculator;
 
     // Each pending prediction records where to write the result back.
     struct Pending {
@@ -150,7 +156,10 @@ pub fn batch_add_ml_metrics(
                         }
                         f.row(0).iter().map(|&v| v as f32).collect()
                     }
-                    Err(_) => continue,
+                    Err(error) => {
+                        debug!(%error, "Failed to calculate features for ML prediction");
+                        continue;
+                    }
                 };
 
                 pending.push(Pending {
@@ -172,6 +181,7 @@ pub fn batch_add_ml_metrics(
     }
 
     // Phase 2b: batch GPU predict per model type and assign calibrated predictions
+    // TODO: Use predict_async and dispatch all at once and then wait with pollster
     for (model_type, gpu_forest) in [
         (MlModel::Cpg, &gpu.cpg),
         (MlModel::DenovoCpg, &gpu.denovo),

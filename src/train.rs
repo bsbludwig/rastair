@@ -7,7 +7,7 @@ use crate::{
     metrics::{
         PileupMetrics,
         ml::{
-            features::FeatureCalculator,
+            features::FeatureCalculatorBox,
             types::{MlFeatureSet, RastairModel},
         },
     },
@@ -372,7 +372,7 @@ fn collect_training_data_from_segment(
     chunk_region: &ChunkRegion,
     readers: &mut Readers,
     truth_variants: &HashSet<PositionKey>,
-    calculator: Box<dyn FeatureCalculator>,
+    calculator: FeatureCalculatorBox,
 ) -> Result<(TrainingData, TrainingData, TrainingData)> {
     // Create local training data for this segment
     let mut cpg_data = TrainingData::new();

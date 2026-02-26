@@ -21,28 +21,28 @@ impl MachineLearning {
             return None;
         };
 
-        let feature_calculator = self.feature_calculator.get_calculator();
+        let calc = &self.feature_calculator;
 
         let (name, model, platt, features) = if current.is_evidence_for_methylation() {
             (
                 MlModel::Cpg,
                 &rastair_model.cpg,
                 &rastair_model.cpg_platt,
-                feature_calculator.calculate_cpg(current, before, after),
+                calc.calculate_cpg(current, before, after),
             )
         } else if *current.alt.denovo {
             (
                 MlModel::DenovoCpg,
                 &rastair_model.denovo,
                 &rastair_model.denovo_platt,
-                feature_calculator.calculate_denovo_cpg(current, before, after),
+                calc.calculate_denovo_cpg(current, before, after),
             )
         } else {
             (
                 MlModel::Others,
                 &rastair_model.others,
                 &rastair_model.others_platt,
-                feature_calculator.calculate_others(current, before, after),
+                calc.calculate_others(current, before, after),
             )
         };
         let features = features.and_then(|x| {

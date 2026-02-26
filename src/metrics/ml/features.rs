@@ -21,6 +21,8 @@ pub struct FeatureNum {
     pub others: usize,
 }
 
+pub type FeatureCalculatorBox = Box<dyn FeatureCalculator>;
+
 /// Calculate ML features from variant metrics
 pub trait FeatureCalculator: fmt::Debug + Send + Sync {
     fn feature_num(&self) -> FeatureNum;
@@ -51,7 +53,7 @@ pub trait FeatureCalculator: fmt::Debug + Send + Sync {
 }
 
 impl MlFeatureSet {
-    pub fn get_calculator(&self) -> Box<dyn FeatureCalculator> {
+    pub fn get_calculator(&self) -> FeatureCalculatorBox {
         match self {
             MlFeatureSet::Standard => Box::new(StandardFeatures),
             MlFeatureSet::Simple => Box::new(SimpleFeatures),

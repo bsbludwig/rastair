@@ -5,6 +5,8 @@ use biosphere::gpu::GpuForest;
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
 
+use crate::metrics::ml::features::FeatureCalculatorBox;
+
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlattScaling {
     pub a: f64,
@@ -89,7 +91,8 @@ impl GpuRastairModel {
 pub struct MachineLearning {
     pub threshold: Probability,
     pub model: Option<Box<RastairModel>>,
-    pub feature_calculator: MlFeatureSet,
+    pub feature_set: MlFeatureSet,
+    pub feature_calculator: FeatureCalculatorBox,
     /// Prototype GPU forests. Worker threads call [`GpuRastairModel::fork`] on
     /// first use to obtain thread-local handles without recompiling shaders.
     pub gpu_prototype: Option<GpuRastairModel>,
@@ -98,10 +101,12 @@ pub struct MachineLearning {
 impl MachineLearning {
     /// Create a disabled ML instance
     pub fn disabled() -> Self {
+        let feature_set = MlFeatureSet::Standard;
         Self {
             threshold: Probability::ZERO,
             model: None,
-            feature_calculator: MlFeatureSet::Standard,
+            feature_set,
+            feature_calculator: feature_set.get_calculator(),
             gpu_prototype: None,
         }
     }
