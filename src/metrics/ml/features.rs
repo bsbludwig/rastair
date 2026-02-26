@@ -14,8 +14,17 @@ pub mod shared;
 pub mod standard;
 pub mod utils;
 
+#[derive(Debug, Clone, Copy)]
+pub struct FeatureNum {
+    pub cpg: usize,
+    pub denovo_cpg: usize,
+    pub others: usize,
+}
+
 /// Calculate ML features from variant metrics
 pub trait FeatureCalculator: fmt::Debug + Send + Sync {
+    fn feature_num(&self) -> FeatureNum;
+
     /// Calculate features for a CpG methylation candidate
     fn calculate_cpg(
         &self,
@@ -55,6 +64,10 @@ impl MlFeatureSet {
 pub struct StandardFeatures;
 
 impl FeatureCalculator for StandardFeatures {
+    fn feature_num(&self) -> FeatureNum {
+        FeatureNum { cpg: 56, denovo_cpg: 56, others: 48 }
+    }
+
     fn calculate_cpg(
         &self,
         current: &MetricsForAlt,
@@ -104,6 +117,10 @@ impl SimpleFeatures {
 }
 
 impl FeatureCalculator for SimpleFeatures {
+    fn feature_num(&self) -> FeatureNum {
+        FeatureNum { cpg: 48, denovo_cpg: 48, others: 48 }
+    }
+
     fn calculate_cpg(
         &self,
         current: &MetricsForAlt,
