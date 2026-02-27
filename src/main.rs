@@ -19,8 +19,9 @@ struct Cli {
     /// Enable more logging
     ///
     /// You can also use the `RASTAIR_LOG` environment variable to configure
-    /// logging in a more precise way. See the documentation of the
-    /// `tracing-subscriber` library to learn more.
+    /// logging in a more precise way.
+    ///
+    /// Note that trace-level logging is disabled in production builds.
     #[arg(short, long, global = true)]
     verbose: bool,
 }
@@ -53,10 +54,13 @@ enum Subcommand {
     PerRead(PerReadParams),
     /// Add methylation information to BAM files
     ///
-    /// This will rewrite a BAM file to add methylation information and change
-    /// the methylated positions in the sequence to their original base.
+    /// Writes a new BAM file that includes methylation tags derived from
+    /// Rastair calls.
     #[command(hide = true)]
-    Bam(BamRewriteArgs),
+    Bam {
+        #[command(subcommand)]
+        command: BamSubcommand,
+    },
     /// Convert between different file formats
     Convert(ConvertParams),
     /// Machine learning commands for training and verifying models
@@ -150,11 +154,14 @@ fn main() -> Result<()> {
             let duration = start.elapsed();
             info!(?duration, "Calling reads finished");
         }
-        Subcommand::Bam(params) => {
-            // track execution time
+        Subcommand::Bam { command } => {
             let start = std::time::Instant::now();
-            debug!(?params, "Running bam command");
-            rastair::rewrite_bam(&params)?;
+            let (params, mode) = match &command {
+                BamSubcommand::Standard(p) => (p, BamMode::Standard),
+                BamSubcommand::Legacy(p) => (p, BamMode::Legacy),
+            };
+            debug!(?mode, "Running bam command");
+            rastair::rewrite_bam(params, mode)?;
             let duration = start.elapsed();
             info!(?duration, "Bam rewrite finished");
         }

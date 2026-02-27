@@ -2,8 +2,25 @@ use color_eyre::eyre::{Context, Result};
 use rastair_types::SmallVec;
 use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
+use rustc_hash::FxHashSet;
 use std::fmt::Write;
 use tracing::debug;
+
+/// Conversion type for XR/XG tags (CT or GA)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionType {
+    CT,
+    GA,
+}
+
+impl ConversionType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CT => "CT",
+            Self::GA => "GA",
+        }
+    }
+}
 
 /// A struct representing a list of methylated positions in a sequence
 #[derive(Debug, Clone)]
@@ -153,6 +170,117 @@ fn calculate_mm_skips(seq: &[u8], base: Base, methylated_indices: &[u32]) -> Sma
     skips
 }
 
+/// Generate XM tag string for a rewritten sequence (standard mode)
+#[cfg(test)]
+fn generate_xm_string(
+    seq: &[u8],
+    strand: Strand,
+    methylated_positions: &[u32],
+    methylated_set: &mut FxHashSet<usize>,
+) -> String {
+    methylated_set.clear();
+    methylated_set.extend(methylated_positions.iter().map(|&pos| pos as usize));
+
+    let target_base = match strand {
+        Strand::OT => Base::C,
+        Strand::OB => Base::G,
+        Strand::Unknown => return ".".repeat(seq.len()),
+    };
+
+    seq.iter()
+        .enumerate()
+        .map(|(i, &b)| {
+            let base = Base::from(b);
+            if base == target_base {
+                if methylated_set.contains(&i) { 'Z' } else { 'z' }
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
+/// Generate XM tag string for legacy mode (original, unrewritten sequence).
+///
+/// In legacy mode the SEQ is not rewritten, so methylated positions still show
+/// T (OT) or A (OB). The XM tag marks:
+/// - `Z` at positions in `methylated_set` (methylated CpG)
+/// - `z` at positions with the strand's target base (unmethylated CpG)
+/// - `.` everywhere else
+pub fn generate_xm_string_legacy(
+    seq: &[u8],
+    strand: Strand,
+    methylated_set: &FxHashSet<usize>,
+) -> String {
+    let target_base = match strand {
+        Strand::OT => Base::C,
+        Strand::OB => Base::G,
+        Strand::Unknown => return ".".repeat(seq.len()),
+    };
+
+    seq.iter()
+        .enumerate()
+        .map(|(i, &b)| {
+            if methylated_set.contains(&i) {
+                'Z'
+            } else if Base::from(b) == target_base {
+                'z'
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
+/// XR/XG/XM tags for legacy methylation format
+#[derive(Debug, Clone)]
+pub struct XrTags {
+    /// XR:Z tag - read conversion (CT or GA)
+    pub xr: ConversionType,
+    /// XG:Z tag - reference conversion (CT or GA)
+    pub xg: ConversionType,
+    /// XM:Z tag - methylation call string
+    pub xm: String,
+}
+
+impl XrTags {
+    /// Create XR/XG/XM tags for legacy mode (original, unrewritten seq)
+    pub fn new_legacy(
+        seq: &[u8],
+        strand: Strand,
+        is_first_in_pair: bool,
+        methylated_set: &FxHashSet<usize>,
+    ) -> Self {
+        let (xr, xg) = xr_xg(strand, is_first_in_pair);
+        let xm = generate_xm_string_legacy(seq, strand, methylated_set);
+        Self { xr, xg, xm }
+    }
+
+    /// Apply XR/XG/XM tags to a BAM record
+    pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
+        record.push_aux(b"XR", Aux::String(self.xr.as_str())).wrap_err("could not add XR tag")?;
+
+        record.push_aux(b"XG", Aux::String(self.xg.as_str())).wrap_err("could not add XG tag")?;
+
+        record.push_aux(b"XM", Aux::String(&self.xm)).wrap_err("could not add XM tag")?;
+
+        Ok(())
+    }
+}
+
+fn xr_xg(strand: Strand, is_first_in_pair: bool) -> (ConversionType, ConversionType) {
+    let xr = if is_first_in_pair { ConversionType::CT } else { ConversionType::GA };
+    let xg = match strand {
+        Strand::OT => ConversionType::CT,
+        Strand::OB => ConversionType::GA,
+        Strand::Unknown => {
+            debug!("Unknown strand detected, defaulting XG to CT");
+            ConversionType::CT
+        }
+    };
+    (xr, xg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +322,53 @@ mod tests {
         let meth_pos = MethylatedPositions::new(Strand::OT, b"CCCCCCC", &[3, 4]);
         let mod_str = meth_pos.to_mod_string();
         assert_snapshot!(mod_str, @"C+m,3,0;");
+    }
+
+    #[test]
+    fn test_xm_string_generation() {
+        // Test XM tag generation for OT strand
+        // Sequence: ACGTCGATCG with Cs at positions 1, 4, 8
+        // Methylated positions: 1, 8 (C at index 1 and 8)
+        let seq = b"ACGTCGATCG";
+        let methylated_positions = vec![1, 8];
+        let mut methylated_set = FxHashSet::default();
+        let xm = generate_xm_string(seq, Strand::OT, &methylated_positions, &mut methylated_set);
+        // Expected: .Z..z...Z. (Z = methylated CpG C, z = unmethylated CpG C, . = non-C)
+        assert_snapshot!(xm, @".Z..z...Z.");
+    }
+
+    #[test]
+    fn test_xm_string_ob_strand() {
+        // Test XM tag generation for OB strand
+        // Sequence: GCGATATGCG with Gs at positions 0, 2, 7, 9
+        // Methylated positions: 0, 7 (G at index 0 and 7)
+        let seq = b"GCGATATGCG";
+        let methylated_positions = vec![0, 7];
+        let mut methylated_set = FxHashSet::default();
+        let xm = generate_xm_string(seq, Strand::OB, &methylated_positions, &mut methylated_set);
+        // Expected: Z.z...Z.z. (Z = methylated CpG G, z = unmethylated CpG G, . = non-G)
+        assert_snapshot!(xm, @"Z.z....Z.z");
+    }
+
+    #[test]
+    fn test_xm_string_no_methylation() {
+        // Test XM tag generation with no methylation
+        let seq = b"ACGTCGATCG";
+        let methylated_positions = vec![];
+        let mut methylated_set = FxHashSet::default();
+        let xm = generate_xm_string(seq, Strand::OT, &methylated_positions, &mut methylated_set);
+        // All Cs should be lowercase z (unmethylated)
+        assert_snapshot!(xm, @".z..z...z.");
+    }
+
+    #[test]
+    fn test_xm_string_all_methylated() {
+        // Test XM tag generation with all positions methylated
+        let seq = b"CGCGCG";
+        let methylated_positions = vec![0, 2, 4];
+        let mut methylated_set = FxHashSet::default();
+        let xm = generate_xm_string(seq, Strand::OT, &methylated_positions, &mut methylated_set);
+        // All Cs should be uppercase Z (methylated)
+        assert_snapshot!(xm, @"Z.Z.Z.");
     }
 }
