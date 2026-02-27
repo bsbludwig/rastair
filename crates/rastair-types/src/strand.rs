@@ -52,9 +52,6 @@ impl fmt::Display for Strand {
 pub trait StrandFromRecord {
     /// Create a `Strand` from a BCF record
     fn strand(&self) -> Strand;
-
-    /// Create a `Strand` from a record, optionally allowing single-end mode.
-    fn strand_with_single_strand_mode(&self, single_strand_mode: bool) -> Strand;
 }
 
 /// Get strand from `htslib` record
@@ -71,28 +68,24 @@ impl StrandFromRecord for Record {
     /// Get strand from record
     #[allow(clippy::collapsible_else_if)] // clearer
     fn strand(&self) -> Strand {
-        if self.is_first_in_template() {
-            if self.is_reverse() {
-                Strand::OB // Original bottom
-            } else {
-                Strand::OT // Original top
-            }
-        } else if self.is_last_in_template() {
-            if self.is_mate_reverse() {
-                Strand::OB // Original bottom
-            } else {
-                Strand::OT // Original top
-            }
-        } else {
-            Strand::Unknown // Not a paired read or no flags set
-        }
-    }
-
-    fn strand_with_single_strand_mode(&self, single_strand_mode: bool) -> Strand {
-        if single_strand_mode {
+        if !self.is_paired() {
             if self.is_reverse() { Strand::OB } else { Strand::OT }
         } else {
-            StrandFromRecord::strand(self)
+            if self.is_first_in_template() {
+                if self.is_reverse() {
+                    Strand::OB // Original bottom
+                } else {
+                    Strand::OT // Original top
+                }
+            } else if self.is_last_in_template() {
+                if self.is_mate_reverse() {
+                    Strand::OB // Original bottom
+                } else {
+                    Strand::OT // Original top
+                }
+            } else {
+                Strand::Unknown // Not a paired read or no flags set
+            }
         }
     }
 }
@@ -133,35 +126,32 @@ mod tests {
     }
 
     #[test]
-    fn test_single_strand_mode() {
+    fn test_unpaired_mode() {
         let mut record = Record::default();
 
         record.set_flags(0x00); // Single-end, forward
-        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OT);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
         record.set_flags(0x10); // Single-end, reverse
-        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OB);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
 
-        record.set_flags(0x40 | 0x10); // Pair flags ignored in single-strand mode
-        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OB);
+        record.set_flags(0x40 | 0x10); // Pair flags ignored in unpaired mode
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
 
         record.set_flags(0x80 | 0x20); // Pair/mate flags ignored, only 0x10 matters
-        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OT);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
-        record.set_flags(0x00); // Without single-strand mode, still unknown
-        assert_eq!(
-            StrandFromRecord::strand_with_single_strand_mode(&record, false),
-            Strand::Unknown
-        );
+        record.set_flags(0x00); // Without unpaired mode, still unknown
+        assert_eq!(StrandFromRecord::strand(&record), Strand::Unknown);
     }
 
     #[test]
-    fn test_single_strand_mode_ignores_paired_flags() {
+    fn test_unpaired_mode_ignores_paired_flags() {
         let mut record = Record::default();
         record.set_flags(0x01 | 0x02 | 0x20 | 0x40);
-        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OT);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
         record.set_flags(0x01 | 0x02 | 0x20 | 0x40 | 0x10);
-        assert_eq!(StrandFromRecord::strand_with_single_strand_mode(&record, true), Strand::OB);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
     }
 }

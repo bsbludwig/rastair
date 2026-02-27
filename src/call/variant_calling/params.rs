@@ -9,13 +9,13 @@ use better_default::Default;
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct VariantCallingParams {
-    /// Enable single-strand mode
+    /// Enable unpaired mode
     ///
     /// In this mode, unpaired reads are accepted and strand assignment uses
     /// only the read's alignment direction (forward=OT, reverse=OB).
     #[arg(long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
-    pub single_strand: bool,
+    pub unpaired: bool,
 
     /// The error model to use
     ///
@@ -24,7 +24,10 @@ pub struct VariantCallingParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub error_model: ErrorModel,
 
-    /// Whether to keep overlapping reads
+    /// Whether to keep overlapping paired-end reads
+    ///
+    /// In unpaired (`--single-strand`) mode this is ignored because read-pair
+    /// overlap deduplication is disabled.
     #[arg(long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
     pub keep_overlapping_reads: bool,

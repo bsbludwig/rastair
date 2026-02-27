@@ -73,13 +73,13 @@ pub struct PerReadParams {
     #[arg(help_heading = cli::sections::FILTER)]
     exclude_ambiguous: bool,
 
-    /// Enable single-strand mode
+    /// Enable unpaired mode
     ///
     /// In this mode, unpaired reads are accepted and orientation is inferred
     /// from alignment direction only (forward=OT, reverse=OB).
     #[arg(long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
-    single_strand: bool,
+    unpaired: bool,
 
     // --- Output parameters ---
     #[command(flatten)]
@@ -318,7 +318,7 @@ fn process_region(
         if (record.pos() as u64) < start {
             continue;
         }
-        if !params.read_flags.filter_with_single_strand_mode(&record, params.single_strand) {
+        if !params.read_flags.filter_with_unpaired_mode(&record, params.unpaired) {
             continue;
         }
         if record.mapq() < params.min_mapq {
@@ -334,7 +334,7 @@ fn process_region(
             &segment,
             &calls,
             params.exclude_ambiguous,
-            params.single_strand,
+            params.unpaired,
             params.count_clipped,
         )
         .wrap_err("Failed to read record")?;
@@ -354,7 +354,7 @@ fn record_to_row(
     segment: &Segment,
     calls: &FxHashMap<usize, RastairCall>,
     exclude_ambiguous: bool,
-    single_strand: bool,
+    unpaired: bool,
     count_clipped: bool,
 ) -> Result<PerRead> {
     let segment_start_pos =
@@ -386,7 +386,7 @@ fn record_to_row(
             .wrap_err("Failed to calculate index for position")?;
         let read_base = read_seq[pos_in_read];
         let ref_base = ref_seq.get(idx).copied().wrap_err("reading seq")?;
-        let orientation = orientation(record, exclude_ambiguous, single_strand);
+        let orientation = orientation(record, exclude_ambiguous, unpaired);
         let pos_rel = if count_clipped {
             pos_in_read
         } else {
@@ -460,8 +460,8 @@ fn record_to_row(
     })
 }
 
-fn orientation(bam_record: &Record, exclude_ambiguous: bool, single_strand: bool) -> Strand {
-    if single_strand {
+fn orientation(bam_record: &Record, exclude_ambiguous: bool, unpaired: bool) -> Strand {
+    if unpaired {
         return if bam_record.is_reverse() { Strand::OB } else { Strand::OT };
     }
 
@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn orientation_single_strand_mode_ignores_pairing_flags() {
+    fn orientation_unpaired_mode_ignores_pairing_flags() {
         let mut record = Record::new();
 
         record.set_flags(0x80 | 0x20); // would be OB in paired logic
