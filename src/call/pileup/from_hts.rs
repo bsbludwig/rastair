@@ -43,7 +43,7 @@ impl Pileup {
 
         let mut reads = SimpleReads(reads);
 
-        if !params.keep_overlapping_reads {
+        if should_deduplicate_overlapping_pairs(params) {
             reads.remove_overlapping_pairs(&names);
         }
 
@@ -63,6 +63,10 @@ impl Pileup {
     }
 }
 
+fn should_deduplicate_overlapping_pairs(params: &PileupMappingParams) -> bool {
+    !params.unpaired && !params.keep_overlapping_reads
+}
+
 /// Collect info from a pileup alignment
 fn alignment_to_read(
     params: &PileupMappingParams,
@@ -72,7 +76,7 @@ fn alignment_to_read(
     let record = a.record();
     let cigar = record.raw_cigar();
 
-    if !params.read_flags.filter(&record) {
+    if !params.read_flags.filter_with_unpaired_mode(&record, params.unpaired) {
         return None;
     }
     let (matches, indels) = calc_cigar_data(cigar);
@@ -121,4 +125,41 @@ fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
         }
     }
     (matches, indels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_deduplicate_overlapping_pairs;
+    use crate::call::{process::PileupMappingParams, variant_calling::VariantCallingParams};
+
+    #[test]
+    fn deduplicates_overlapping_pairs_by_default() {
+        let params = PileupMappingParams { variant_calling: VariantCallingParams::default() };
+        assert!(should_deduplicate_overlapping_pairs(&params));
+    }
+
+    #[test]
+    fn does_not_deduplicate_when_keep_overlapping_reads_is_enabled() {
+        let mut variant_calling = VariantCallingParams::default();
+        variant_calling.keep_overlapping_reads = true;
+        let params = PileupMappingParams { variant_calling };
+        assert!(!should_deduplicate_overlapping_pairs(&params));
+    }
+
+    #[test]
+    fn does_not_deduplicate_in_unpaired_mode() {
+        let mut variant_calling = VariantCallingParams::default();
+        variant_calling.unpaired = true;
+        let params = PileupMappingParams { variant_calling };
+        assert!(!should_deduplicate_overlapping_pairs(&params));
+    }
+
+    #[test]
+    fn unpaired_mode_takes_precedence_over_dedup_setting() {
+        let mut variant_calling = VariantCallingParams::default();
+        variant_calling.unpaired = true;
+        variant_calling.keep_overlapping_reads = false;
+        let params = PileupMappingParams { variant_calling };
+        assert!(!should_deduplicate_overlapping_pairs(&params));
+    }
 }

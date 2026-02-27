@@ -167,3 +167,29 @@ fn test_c_to_t_outside_cpg_with_no_ml() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_single_end_like_variant_calling() -> Result<()> {
+    // Single-end input has no pair flags; orientation comes from read direction.
+    // At this test layer, all reads are effectively "first in pair".
+    let (segment, pileups) = pileups!(
+        [ A ] Ref,
+        [ C ] OT,
+        [ C ] OT,
+        [ C ] OB,
+        [ C ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (A C) PASS GT="1/1",
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}

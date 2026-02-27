@@ -68,20 +68,24 @@ impl StrandFromRecord for Record {
     /// Get strand from record
     #[allow(clippy::collapsible_else_if)] // clearer
     fn strand(&self) -> Strand {
-        if self.is_first_in_template() {
-            if self.is_reverse() {
-                Strand::OB // Original bottom
-            } else {
-                Strand::OT // Original top
-            }
-        } else if self.is_last_in_template() {
-            if self.is_mate_reverse() {
-                Strand::OB // Original bottom
-            } else {
-                Strand::OT // Original top
-            }
+        if !self.is_paired() {
+            if self.is_reverse() { Strand::OB } else { Strand::OT }
         } else {
-            Strand::Unknown // Not a paired read or no flags set
+            if self.is_first_in_template() {
+                if self.is_reverse() {
+                    Strand::OB // Original bottom
+                } else {
+                    Strand::OT // Original top
+                }
+            } else if self.is_last_in_template() {
+                if self.is_mate_reverse() {
+                    Strand::OB // Original bottom
+                } else {
+                    Strand::OT // Original top
+                }
+            } else {
+                Strand::Unknown // Not a paired read or no flags set
+            }
         }
     }
 }
@@ -93,25 +97,58 @@ mod tests {
     #[test]
     fn test_various_records() {
         let mut record = Record::default();
-        record.set_flags(0x40 | 0x10); // First in pair, reverse strand
+        record.set_flags(0x1 | 0x2 | 0x40 | 0x10); // First in pair, reverse strand
         assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
 
-        record.set_flags(0x80 | 0x20); // Second in pair, reverse strand
+        record.set_flags(0x1 | 0x2 | 0x80 | 0x20); // Second in pair, reverse strand
         assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
 
-        record.set_flags(0x40 | 0x20); // First in pair, mate reverse strand
+        record.set_flags(0x1 | 0x2 | 0x40 | 0x20); // First in pair, mate reverse strand
         assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
-        record.set_flags(0x80 | 0x10); // Second in pair, mate reverse strand
+        record.set_flags(0x1 | 0x2 | 0x80 | 0x10); // Second in pair, mate reverse strand
         assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
-        record.set_flags(0x40); // First in pair, forward strand
+        record.set_flags(0x1 | 0x2 | 0x40); // First in pair, forward strand
         assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
-        record.set_flags(0x80); // Second in pair, forward strand
+        record.set_flags(0x1 | 0x2 | 0x80); // Second in pair, forward strand
         assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
 
-        record.set_flags(0x00); // No flags set
+        record.set_flags(0x00); // No flags set, ie top strand
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
+
+        record.set_flags(0x10); // No pairing flags, but read reverse strand -> OB
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
+
+        record.set_flags(0x01); // Paired but no first/second information
         assert_eq!(StrandFromRecord::strand(&record), Strand::Unknown);
+    }
+
+    #[test]
+    fn test_unpaired_mode() {
+        let mut record = Record::default();
+
+        record.set_flags(0x00); // Single-end, forward
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
+
+        record.set_flags(0x10); // Single-end, reverse
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
+
+        record.set_flags(0x40 | 0x10); // Pair flags ignored in unpaired mode
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
+
+        record.set_flags(0x80 | 0x20); // Pair/mate flags ignored, only 0x10 matters
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
+    }
+
+    #[test]
+    fn test_unpaired_mode_ignores_paired_flags() {
+        let mut record = Record::default();
+        record.set_flags(0x01 | 0x02 | 0x20 | 0x40);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OT);
+
+        record.set_flags(0x01 | 0x02 | 0x20 | 0x40 | 0x10);
+        assert_eq!(StrandFromRecord::strand(&record), Strand::OB);
     }
 }

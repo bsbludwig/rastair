@@ -280,6 +280,34 @@ fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
 }
 
 #[test]
+fn test_single_end_like_methylation_calling() -> Result<()> {
+    // Single-end input has no pair tags; all reads are treated as first-in-pair.
+    // OT/OB comes from alignment direction only.
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C G ] OT,
+        [ C G ] OT,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_fail(&mut records[0], T);
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (C .) PASS M5mC=1./2.,
+        (C T) FAIL,
+        (G .) PASS M5mC=0.,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
 fn test_c_with_t_and_a_both_low_ml() -> Result<()> {
     // Test C with both T and A alts, both failing ML threshold
     // Assumption: C->T is methylation transition, C->A is not
