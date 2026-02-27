@@ -67,7 +67,7 @@ pub struct StandardFeatures;
 
 impl FeatureCalculator for StandardFeatures {
     fn feature_num(&self) -> FeatureNum {
-        FeatureNum { cpg: 56, denovo_cpg: 56, others: 48 }
+        FeatureNum { cpg: 55, denovo_cpg: 56, others: 54 }
     }
 
     fn calculate_cpg(
