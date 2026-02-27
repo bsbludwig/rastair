@@ -1,7 +1,7 @@
 use std::fmt;
 
-use biosphere::RandomForest;
 use biosphere::gpu::GpuForest;
+use biosphere::{FlatForest, RandomForest};
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
 
@@ -65,6 +65,16 @@ impl fmt::Display for MlFeatureSet {
     }
 }
 
+/// Flat (BFS-linearised, f32) forests for CPU inference.
+///
+/// Built once from the loaded [`RastairModel`] and stored in [`MachineLearning`].
+/// Uses the same f32 representation as the GPU path so both paths are numerically consistent.
+pub struct FlatRastairModel {
+    pub cpg: FlatForest,
+    pub denovo: FlatForest,
+    pub others: FlatForest,
+}
+
 /// GPU-accelerated forests for each model type, used as per-thread prototypes.
 ///
 /// Create once via [`MachineLearningParams::init`], then call [`GpuRastairModel::fork`]
@@ -93,6 +103,8 @@ pub struct MachineLearning {
     pub model: Option<Box<RastairModel>>,
     pub feature_set: MlFeatureSet,
     pub feature_calculator: FeatureCalculatorBox,
+    /// Flat f32 forests for CPU inference, numerically consistent with the GPU path.
+    pub flat_model: Option<FlatRastairModel>,
     /// Prototype GPU forests. Worker threads call [`GpuRastairModel::fork`] on
     /// first use to obtain thread-local handles without recompiling shaders.
     pub gpu_prototype: Option<GpuRastairModel>,
@@ -107,6 +119,7 @@ impl MachineLearning {
             model: None,
             feature_set,
             feature_calculator: feature_set.get_calculator(),
+            flat_model: None,
             gpu_prototype: None,
         }
     }
@@ -128,7 +141,7 @@ pub struct Prediction {
     pub threshold: Probability,
     /// Features used for this prediction
     #[serde(skip)]
-    pub features: Array1<f64>,
+    pub features: Array1<f32>,
 }
 
 impl Prediction {

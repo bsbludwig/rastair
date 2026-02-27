@@ -20,27 +20,31 @@ impl MachineLearning {
             warn!("No model available");
             return None;
         };
+        let Some(flat_model) = self.flat_model.as_ref() else {
+            warn!("No flat model available");
+            return None;
+        };
 
         let calc = &self.feature_calculator;
 
-        let (name, model, platt, features) = if current.is_evidence_for_methylation() {
+        let (name, flat_forest, platt, features) = if current.is_evidence_for_methylation() {
             (
                 MlModel::Cpg,
-                &rastair_model.cpg,
+                &flat_model.cpg,
                 &rastair_model.cpg_platt,
                 calc.calculate_cpg(current, before, after),
             )
         } else if *current.alt.denovo {
             (
                 MlModel::DenovoCpg,
-                &rastair_model.denovo,
+                &flat_model.denovo,
                 &rastair_model.denovo_platt,
                 calc.calculate_denovo_cpg(current, before, after),
             )
         } else {
             (
                 MlModel::Others,
-                &rastair_model.others,
+                &flat_model.others,
                 &rastair_model.others_platt,
                 calc.calculate_others(current, before, after),
             )
@@ -49,21 +53,22 @@ impl MachineLearning {
             ensure!(!x.is_any_nan(), "Failed to calculate features (one metric was NaN)");
             Ok(x)
         });
-        let features = match features {
+        let features_f64 = match features {
             Err(error) => {
                 debug!(%error, "Failed to generate features for ML prediction");
                 return None;
             }
             Ok(x) => x,
         };
-        let prediction = model.predict(&features.view());
+        let features_f32 = features_f64.mapv(|x| x as f32);
+        let prediction = flat_forest.predict(&features_f32.view());
 
         match prediction.get(0).copied() {
             Some(p) => Some(Prediction {
-                prediction: platt.calibrate_score(p),
+                prediction: platt.calibrate_score(p as f64),
                 threshold: self.threshold,
                 allele: current.alt.base,
-                features: features.row(0).to_owned(),
+                features: features_f32.row(0).to_owned(),
                 model: name,
             }),
             None => {

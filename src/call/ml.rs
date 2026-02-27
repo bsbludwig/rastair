@@ -19,7 +19,7 @@
 
 use crate::{
     call::process::GPU_BATCH_BUFFER_SIZE,
-    metrics::ml::types::{GpuRastairModel, MachineLearning, RastairModel},
+    metrics::ml::types::{FlatRastairModel, GpuRastairModel, MachineLearning, RastairModel},
     utils::cli,
 };
 use better_default::Default;
@@ -88,27 +88,26 @@ impl MachineLearningParams {
 
         let feature_nums = combined.feature_set.get_calculator().feature_num();
 
+        let flat_cpg = FlatForest::from_forest(&combined.cpg, feature_nums.cpg);
+        let flat_denovo = FlatForest::from_forest(&combined.denovo, feature_nums.denovo_cpg);
+        let flat_others = FlatForest::from_forest(&combined.others, feature_nums.others);
+
         let max_samples = GPU_BATCH_BUFFER_SIZE;
         let gpu_prototype = self.gpu.then(|| GpuRastairModel {
-            cpg: GpuForest::from_flat_forest(
-                &FlatForest::from_forest(&combined.cpg, feature_nums.cpg),
-                max_samples,
-            ),
-            denovo: GpuForest::from_flat_forest(
-                &FlatForest::from_forest(&combined.denovo, feature_nums.denovo_cpg),
-                max_samples,
-            ),
-            others: GpuForest::from_flat_forest(
-                &FlatForest::from_forest(&combined.others, feature_nums.others),
-                max_samples,
-            ),
+            cpg: GpuForest::from_flat_forest(&flat_cpg, max_samples),
+            denovo: GpuForest::from_flat_forest(&flat_denovo, max_samples),
+            others: GpuForest::from_flat_forest(&flat_others, max_samples),
         });
+
+        let flat_model =
+            FlatRastairModel { cpg: flat_cpg, denovo: flat_denovo, others: flat_others };
 
         Ok(MachineLearning {
             threshold: self.ml,
             feature_set: combined.feature_set,
             feature_calculator: combined.feature_set.get_calculator(),
             model: Some(Box::new(combined)),
+            flat_model: Some(flat_model),
             gpu_prototype,
         })
     }
