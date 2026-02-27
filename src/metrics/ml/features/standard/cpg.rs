@@ -6,11 +6,12 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{Context as _, ensure},
+    eyre::{Context as _, ensure, eyre},
 };
-use ndarray::Array2;
 use rastair_types::Base;
 use tracing::trace;
+
+pub const FEATURES: usize = 55;
 
 /// Generate features for CpG mutation candidates
 ///
@@ -19,7 +20,7 @@ pub fn cpg(
     current: &MetricsForAlt,
     before: Option<&PileupMetrics>,
     after: Option<&PileupMetrics>,
-) -> Result<Array2<f64>> {
+) -> Result<[f64; FEATURES]> {
     use Base::*;
 
     let alt = current.alt;
@@ -40,7 +41,7 @@ pub fn cpg(
             .wrap_err("Failed to calculate adjacent features for CpG")?;
 
     // Never change the order of these variables, as they are used in the model
-    let mut features = Vec::with_capacity(56);
+    let mut features = Vec::with_capacity(FEATURES);
     features.extend_from_slice(&[alt_ad_adj, alt_score_adj]);
     features.extend_from_slice(&common.base_encoding);
     features.extend_from_slice(&common.position_metrics);
@@ -53,8 +54,7 @@ pub fn cpg(
     features.extend_from_slice(&common.read_metrics);
     features.push(beta_ratio);
 
-    Array2::from_shape_vec((1, features.len()), features)
-        .wrap_err("Failed to create CpG feature array")
+    features.try_into().map_err(|_: Vec<f64>| eyre!("Expected {FEATURES} CpG features"))
 }
 
 struct AdjecentFeatures {

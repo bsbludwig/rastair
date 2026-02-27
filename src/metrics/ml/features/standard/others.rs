@@ -3,14 +3,15 @@ use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
 };
-use color_eyre::{Result, eyre::Context as _};
-use ndarray::Array2;
+use color_eyre::{Result, eyre::eyre};
+
+pub const FEATURES: usize = 54;
 
 pub fn others(
     current: &MetricsForAlt,
     _before: Option<&PileupMetrics>,
     _after: Option<&PileupMetrics>,
-) -> Result<Array2<f64>> {
+) -> Result<[f64; FEATURES]> {
     let alt = current.alt;
     let PileupMetrics { ref_metrics: r, .. } = &current.metrics;
 
@@ -23,7 +24,7 @@ pub fn others(
     let alt_score = alt_score_generic(alt, r);
 
     // Never change the order of these variables, as they are used in the model
-    let mut features = Vec::with_capacity(54);
+    let mut features = Vec::with_capacity(FEATURES);
     features.extend_from_slice(&common.base_encoding);
     features.extend_from_slice(&common.position_metrics);
     features.extend_from_slice(&common.context_encoding);
@@ -34,6 +35,5 @@ pub fn others(
     features.extend_from_slice(&common.mapping_quality_metrics);
     features.extend_from_slice(&common.read_metrics);
 
-    Array2::from_shape_vec((1, features.len()), features)
-        .wrap_err("Failed to create feature array for non-CpG variants")
+    features.try_into().map_err(|_: Vec<f64>| eyre!("Expected {FEATURES} features for non-CpG variants"))
 }

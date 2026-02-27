@@ -67,7 +67,11 @@ pub struct StandardFeatures;
 
 impl FeatureCalculator for StandardFeatures {
     fn feature_num(&self) -> FeatureNum {
-        FeatureNum { cpg: 55, denovo_cpg: 56, others: 54 }
+        FeatureNum {
+            cpg: standard::cpg::FEATURES,
+            denovo_cpg: standard::denovo_cpg::FEATURES,
+            others: standard::others::FEATURES,
+        }
     }
 
     fn calculate_cpg(
@@ -76,7 +80,9 @@ impl FeatureCalculator for StandardFeatures {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>> {
-        standard::cpg(current, before, after)
+        let features = standard::cpg(current, before, after)?;
+        Array2::from_shape_vec((1, standard::cpg::FEATURES), features.into())
+            .wrap_err("Failed to create CpG feature array")
     }
 
     fn calculate_denovo_cpg(
@@ -85,7 +91,9 @@ impl FeatureCalculator for StandardFeatures {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>> {
-        standard::denovo_cpg(current, before, after)
+        let features = standard::denovo_cpg(current, before, after)?;
+        Array2::from_shape_vec((1, standard::denovo_cpg::FEATURES), features.into())
+            .wrap_err("Failed to create denovo CpG feature array")
     }
 
     fn calculate_others(
@@ -94,7 +102,9 @@ impl FeatureCalculator for StandardFeatures {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>> {
-        standard::others(current, before, after)
+        let features = standard::others(current, before, after)?;
+        Array2::from_shape_vec((1, standard::others::FEATURES), features.into())
+            .wrap_err("Failed to create feature array for non-CpG variants")
     }
 }
 

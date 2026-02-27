@@ -6,11 +6,12 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{Context as _, bail, ensure},
+    eyre::{Context as _, bail, ensure, eyre},
 };
-use ndarray::Array2;
 use rastair_types::Base::*;
 use tracing::trace;
+
+pub const FEATURES: usize = 56;
 
 /// Generate features for denovo CpG mutation candidates
 ///
@@ -19,7 +20,7 @@ pub fn denovo_cpg(
     current: &MetricsForAlt,
     before: Option<&PileupMetrics>,
     after: Option<&PileupMetrics>,
-) -> Result<Array2<f64>> {
+) -> Result<[f64; FEATURES]> {
     let alt = current.alt;
     ensure!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
 
@@ -37,7 +38,7 @@ pub fn denovo_cpg(
             .wrap_err("Failed to calculate adjacent features for de-novo CpG")?;
 
     // Never change the order of these variables, as they are used in the model
-    let mut features = Vec::with_capacity(57);
+    let mut features = Vec::with_capacity(FEATURES);
     features.extend_from_slice(&[alt_ad_adj, alt_score_adj, sb_adj]);
     features.extend_from_slice(&common.base_encoding);
     features.extend_from_slice(&common.position_metrics);
@@ -50,8 +51,7 @@ pub fn denovo_cpg(
     features.extend_from_slice(&common.read_metrics);
     features.push(beta_ratio);
 
-    Array2::from_shape_vec((1, features.len()), features)
-        .wrap_err("Failed to create denovo CpG feature array")
+    features.try_into().map_err(|_: Vec<f64>| eyre!("Expected {FEATURES} denovo CpG features"))
 }
 
 struct AdjecentFeatures {
