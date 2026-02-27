@@ -65,6 +65,16 @@ impl MlFeatureSet {
 #[derive(Debug, Clone, Copy)]
 pub struct StandardFeatures;
 
+/// Get a typed mutable reference into the contiguous buffer of an `Array2::zeros((1, N))`.
+///
+/// Both `unwrap`s are invariants of `zeros((1, N))`: it is always contiguous and has exactly N elements.
+fn row_buf<const N: usize>(arr: &mut Array2<f64>) -> &mut [f64; N] {
+    arr.as_slice_mut()
+        .expect("zeros((1, N)) is contiguous")
+        .try_into()
+        .expect("zeros((1, N)) has exactly N elements")
+}
+
 impl FeatureCalculator for StandardFeatures {
     fn feature_num(&self) -> FeatureNum {
         FeatureNum {
@@ -80,9 +90,9 @@ impl FeatureCalculator for StandardFeatures {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>> {
-        let features = standard::cpg(current, before, after)?;
-        Array2::from_shape_vec((1, standard::cpg::FEATURES), features.into())
-            .wrap_err("Failed to create CpG feature array")
+        let mut arr = Array2::zeros((1, standard::cpg::FEATURES));
+        standard::cpg(current, before, after, row_buf(&mut arr))?;
+        Ok(arr)
     }
 
     fn calculate_denovo_cpg(
@@ -91,9 +101,9 @@ impl FeatureCalculator for StandardFeatures {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>> {
-        let features = standard::denovo_cpg(current, before, after)?;
-        Array2::from_shape_vec((1, standard::denovo_cpg::FEATURES), features.into())
-            .wrap_err("Failed to create denovo CpG feature array")
+        let mut arr = Array2::zeros((1, standard::denovo_cpg::FEATURES));
+        standard::denovo_cpg(current, before, after, row_buf(&mut arr))?;
+        Ok(arr)
     }
 
     fn calculate_others(
@@ -102,9 +112,9 @@ impl FeatureCalculator for StandardFeatures {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>> {
-        let features = standard::others(current, before, after)?;
-        Array2::from_shape_vec((1, standard::others::FEATURES), features.into())
-            .wrap_err("Failed to create feature array for non-CpG variants")
+        let mut arr = Array2::zeros((1, standard::others::FEATURES));
+        standard::others(current, before, after, row_buf(&mut arr))?;
+        Ok(arr)
     }
 }
 

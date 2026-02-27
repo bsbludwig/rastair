@@ -8,6 +8,7 @@ use crate::{
 };
 use biosphere::gpu::PredictHandle;
 use color_eyre::eyre::{ContextCompat as _, Result};
+use ndarray::{Array1, Array2, s};
 use rastair_types::{Base, Probability};
 use tracing::{debug, instrument};
 
@@ -104,13 +105,18 @@ pub fn batch_add_ml_metrics(
     let calc = &ml.feature_calculator;
     let feature_num = ml.feature_calculator.feature_num();
 
+    // Each alt belongs to exactly one model; positions * 4 is the per-model upper bound.
+    let max_alts = positions * 4;
     let mut pending = PendingGroups {
-        cpg: Vec::with_capacity(positions / 2),
-        cpg_features: Vec::with_capacity(positions / 2 * feature_num.cpg),
-        denovo: Vec::with_capacity(positions / 2),
-        denovo_features: Vec::with_capacity(positions / 2 * feature_num.denovo_cpg),
-        others: Vec::with_capacity(positions / 2),
-        others_features: Vec::with_capacity(positions / 2 * feature_num.others),
+        cpg: Vec::with_capacity(positions),
+        cpg_features: Array2::zeros((max_alts, feature_num.cpg)),
+        cpg_count: 0,
+        denovo: Vec::with_capacity(positions),
+        denovo_features: Array2::zeros((max_alts, feature_num.denovo_cpg)),
+        denovo_count: 0,
+        others: Vec::with_capacity(positions),
+        others_features: Array2::zeros((max_alts, feature_num.others)),
+        others_count: 0,
     };
     // (pileup_idx, alt_base) pairs that failed pre_ml_filter
     let mut pre_ml_rejected: Vec<(usize, Base)> = Vec::new();
@@ -150,33 +156,32 @@ pub fn batch_add_ml_metrics(
                     )
                 };
 
-                let features: Vec<f32> = match features_result {
-                    Ok(f) => {
-                        if f.is_any_nan() {
-                            continue;
-                        }
-                        f.row(0).iter().map(|&v| v as f32).collect()
-                    }
+                let f = match features_result {
                     Err(error) => {
                         debug!(%error, "Failed to calculate features for ML prediction");
                         continue;
                     }
+                    Ok(f) if f.is_any_nan() => continue,
+                    Ok(f) => f,
                 };
 
                 let pending_item = Pending { pileup_idx: i, alt_base, platt };
 
                 match model_type {
                     MlModel::Cpg => {
+                        pending.cpg_features.row_mut(pending.cpg_count).zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
                         pending.cpg.push(pending_item);
-                        pending.cpg_features.extend(features);
+                        pending.cpg_count += 1;
                     }
                     MlModel::DenovoCpg => {
+                        pending.denovo_features.row_mut(pending.denovo_count).zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
                         pending.denovo.push(pending_item);
-                        pending.denovo_features.extend(features);
+                        pending.denovo_count += 1;
                     }
                     MlModel::Others => {
+                        pending.others_features.row_mut(pending.others_count).zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
                         pending.others.push(pending_item);
-                        pending.others_features.extend(features);
+                        pending.others_count += 1;
                     }
                 }
             }
@@ -191,9 +196,9 @@ pub fn batch_add_ml_metrics(
     }
 
     // Phase 2b: submit all three GPU dispatches, then collect — GPU work overlaps.
-    let h_cpg = gpu.cpg.predict_submit(&pending.cpg_features, pending.cpg.len());
-    let h_denovo = gpu.denovo.predict_submit(&pending.denovo_features, pending.denovo.len());
-    let h_others = gpu.others.predict_submit(&pending.others_features, pending.others.len());
+    let h_cpg = gpu.cpg.predict_submit(&pending.cpg_features.slice(s![..pending.cpg_count, ..]));
+    let h_denovo = gpu.denovo.predict_submit(&pending.denovo_features.slice(s![..pending.denovo_count, ..]));
+    let h_others = gpu.others.predict_submit(&pending.others_features.slice(s![..pending.others_count, ..]));
 
     let cpg_preds = collect_handle(h_cpg);
     let denovo_preds = collect_handle(h_denovo);
@@ -217,17 +222,20 @@ pub fn batch_add_ml_metrics(
     Ok(())
 }
 
-fn collect_handle(handle: Option<PredictHandle<'_>>) -> Vec<f32> {
-    handle.map(|h| h.collect()).unwrap_or_default()
+fn collect_handle(handle: Option<PredictHandle<'_>>) -> Array1<f32> {
+    handle.map(|h| h.collect()).unwrap_or_else(|| Array1::zeros(0))
 }
 
 struct PendingGroups {
     cpg: Vec<Pending>,
-    cpg_features: Vec<f32>,
+    cpg_features: Array2<f32>,
+    cpg_count: usize,
     denovo: Vec<Pending>,
-    denovo_features: Vec<f32>,
+    denovo_features: Array2<f32>,
+    denovo_count: usize,
     others: Vec<Pending>,
-    others_features: Vec<f32>,
+    others_features: Array2<f32>,
+    others_count: usize,
 }
 
 /// Each pending prediction records where to write the result back.

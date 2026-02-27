@@ -4,10 +4,7 @@ use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
 };
-use color_eyre::{
-    Result,
-    eyre::{Context as _, ensure, eyre},
-};
+use color_eyre::{Result, eyre::{Context as _, ensure}};
 use rastair_types::Base;
 use tracing::trace;
 
@@ -20,7 +17,8 @@ pub fn cpg(
     current: &MetricsForAlt,
     before: Option<&PileupMetrics>,
     after: Option<&PileupMetrics>,
-) -> Result<[f64; FEATURES]> {
+    buf: &mut [f64; FEATURES],
+) -> Result<()> {
     use Base::*;
 
     let alt = current.alt;
@@ -35,26 +33,23 @@ pub fn cpg(
 
     let common = CommonFeatures::extract(current);
     let alt_score = alt_score_methylation_aware(alt, r, ref_base);
-
     let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj } =
         calculate_adjacent_features(current, before, after)
             .wrap_err("Failed to calculate adjacent features for CpG")?;
 
-    // Never change the order of these variables, as they are used in the model
-    let mut features = Vec::with_capacity(FEATURES);
-    features.extend_from_slice(&[alt_ad_adj, alt_score_adj]);
-    features.extend_from_slice(&common.base_encoding);
-    features.extend_from_slice(&common.position_metrics);
-    features.extend_from_slice(&common.context_encoding);
-    features.push(common.region_entropy);
-    features.extend_from_slice(&common.depth_ratios);
-    features.push(alt_score);
-    features.extend_from_slice(&common.base_quality_metrics);
-    features.extend_from_slice(&common.mapping_quality_metrics);
-    features.extend_from_slice(&common.read_metrics);
-    features.push(beta_ratio);
-
-    features.try_into().map_err(|_: Vec<f64>| eyre!("Expected {FEATURES} CpG features"))
+    // Never change the order of these writes, as they are used in the model
+    buf[0..2].copy_from_slice(&[alt_ad_adj, alt_score_adj]);
+    buf[2..10].copy_from_slice(&common.base_encoding);
+    buf[10..12].copy_from_slice(&common.position_metrics);
+    buf[12..28].copy_from_slice(&common.context_encoding);
+    buf[28] = common.region_entropy;
+    buf[29..35].copy_from_slice(&common.depth_ratios);
+    buf[35] = alt_score;
+    buf[36..42].copy_from_slice(&common.base_quality_metrics);
+    buf[42..48].copy_from_slice(&common.mapping_quality_metrics);
+    buf[48..54].copy_from_slice(&common.read_metrics);
+    buf[54] = beta_ratio;
+    Ok(())
 }
 
 struct AdjecentFeatures {

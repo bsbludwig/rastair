@@ -5,10 +5,11 @@ use crate::{
 };
 use rastair_types::Base;
 
-/// Common features shared across all ML models
+/// Common features shared across all ML models.
 ///
-/// This struct groups the feature sets that appear in the same order
-/// across `cpg`, `denovo_cpg`, and `others` models.
+/// The fields appear in two sections separated by per-model features:
+/// - Section A (33): `base_encoding` + `position_metrics` + `context_encoding` + `region_entropy` + `depth_ratios`
+/// - Section B (18): `base_quality_metrics` + `mapping_quality_metrics` + `read_metrics`
 pub struct CommonFeatures {
     /// One-hot encoding of reference and alt bases (8 features)
     pub base_encoding: [f64; 8],
@@ -29,7 +30,6 @@ pub struct CommonFeatures {
 }
 
 impl CommonFeatures {
-    /// Extract all common features from the current position
     pub fn extract(current: &MetricsForAlt) -> Self {
         let alt = current.alt;
         let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
