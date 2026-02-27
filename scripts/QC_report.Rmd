@@ -1,18 +1,20 @@
 ---
 title: "QC Report"
 date: "`r Sys.Date()`"
-output: 
+output:
   html_document:
     toc: true
     theme: united
 params:
   input_bgz: NULL
+  reference: NULL
   output_dir: "."
   region: NULL # By default there's no region
   tabix: "tabix" # Assume tabix is available in PATH
   include_flags: 3
   exclude_flags: 3852
   read_len: NULL
+  plot_vbias: TRUE
 ---
 
 ```{r setup, include=FALSE}
@@ -24,57 +26,19 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
-# For a subset of observations of read orientation on one strand,
-# calculate the suggested cutoff points
-calculate_cutoff <- function(mbias_table) {
-  # Ensure we process things in orders
-  mbias_table <- mbias_table[order(mbias_table$pos),]
-  # get the mean beta of the middle 60% of the data
-  n_obs <- nrow(mbias_table)
-  if (n_obs < 3) {
-    stop("Not enough data points to calculate cutoffs")
-  }
-  upper_lim <- min(ceiling(n_obs * 0.8), n_obs-1)
-  lower_lim <- max(floor(n_obs * 0.2), 2)
-  mean_middle <- mean(mbias_table[lower_lim:upper_lim,]$beta)
-  upper_ci_max <- max(mbias_table[lower_lim:upper_lim,]$upper_ci)
-  lower_ci_min <- min(mbias_table[lower_lim:upper_lim,]$lower_ci)
-  
-  # Search from the inside out for the first point left/right that is
-  # either outside the 95% CI bounds of the middle, or the mean of the
-  # middle is outside the CI of the point, or it's more than 0.05 away
-  # from the mean of the middle
-  check_match <- function(row, mean_middle, lower_ci_min, upper_ci_max) {
-    if (is.na(mean_middle) || is.null(mean_middle) || is.na(row$beta) || is.null(row$beta) || is.na(lower_ci_min) || is.null(lower_ci_min) || is.na(upper_ci_max) || is.null(upper_ci_max)) {
-      return(FALSE)
-    }
-    
-    if (!row$beta %between% c(lower_ci_min, upper_ci_max)
-        && abs(row$beta - mean_middle) > 0.05
-        && !mean_middle %between% c(row$lower_ci, row$upper_ci)) {
-      return(TRUE)
-    }
-    
-    return(FALSE)
-  }
-  
-  left_cutoff = 0
-  right_cutoff = 0
-  
-  middle = ceiling(n_obs/2)
-  for (pos in middle:1) {
-    if (check_match(mbias_table[pos,], mean_middle, lower_ci_min, upper_ci_max)) {
-      left_cutoff = pos
-      break
-    }
-  }
-  for (pos in 1:(n_obs-middle)) {
-    if (check_match(mbias_table[middle+pos,], mean_middle, lower_ci_min, upper_ci_max)) {
-      right_cutoff = n_obs - (middle+pos) + 1
-      break
-    }
-  }
-  return(data.frame(left=as.double(left_cutoff), right=as.double(right_cutoff)))
+parse_positions <- function(mod_pos, unmod_pos, snp_pos, moddn_pos, unmoddn_pos) {
+  m_pos <- as.integer(strsplit(as.character(mod_pos), ",", fixed=TRUE)[[1]])
+  u_pos <- as.integer(strsplit(as.character(unmod_pos), ",", fixed=TRUE)[[1]])
+  s_pos <- as.integer(strsplit(as.character(snp_pos), ",", fixed=TRUE)[[1]])
+  dm_pos <- as.integer(strsplit(as.character(moddn_pos), ",", fixed=TRUE)[[1]])
+  du_pos <- as.integer(strsplit(as.character(unmoddn_pos), ",", fixed=TRUE)[[1]])
+
+  nm <- ifelse(any(is.na(m_pos)), 0, length(m_pos))
+  nu <- ifelse(any(is.na(u_pos)), 0, length(u_pos))
+  ns <- ifelse(any(is.na(s_pos)), 0, length(s_pos))
+  ndm <- ifelse(any(is.na(dm_pos)), 0, length(dm_pos))
+  ndu <- ifelse(any(is.na(du_pos)), 0, length(du_pos))
+  return(data.table(pos_in_read=na.omit(c(m_pos, u_pos, s_pos, dm_pos, du_pos)), type=c(rep("M", nm), rep("U", nu), rep("S", ns), rep("m", ndm), rep("u", ndu))))
 }
 ```
 
@@ -87,6 +51,7 @@ if (!is.na(params$region) && nchar(params$region) > 0) {
 }
 setnames(data, 1, "chr")
 data[, chr := as.factor(chr)]
+data[, orientation := as.factor(orientation)]
 
 # remove reads without CpGs
 data <- data[num_cpg > 0]
@@ -100,16 +65,13 @@ if (is.null(params$read_len) || is.na(params$read_len) || !is.numeric(params$rea
 } else {
   read_len = params$read_len
 }
-  
-split_pos <- function(mod, unmod, snp) {
-  mod_pos <- as.numeric(tstrsplit(mod, ","))
-  unmod_pos <- as.integer(tstrsplit(unmod, ","))
-  snp_pos <- as.integer(tstrsplit(snp, ","))
-  return(list(pos_in_read = c(mod_pos, unmod_pos, snp_pos), type=as.factor(c(rep("mod", length(mod_pos)), rep("unmod", length(unmod_pos)), rep("snp", length(snp_pos))))))
-}
-data <- data[, split_pos(mod_cpgs, unmod_cpgs, snp_cpgs), by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag)]
 
-mbias_table <- data[, .(mod=sum(type=="mod"), unmod=sum(type=="unmod")), by=.(chr, pos=pos_in_read, read_pair=as.factor(fifelse(bitwAnd(flag, 64)>0, "First", "Second")), strand=as.factor(fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB")))]
+data <- data[, .N, by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag, mod_cpgs, unmod_cpgs, snp_cpgs, mod_denovos, unmod_denovos)] # unify duplicate reads
+
+# Break comma-separated pos_in_read into a list
+data <- data[, parse_positions(mod_cpgs, unmod_cpgs, snp_cpgs, mod_denovos, unmod_denovos), by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag)]
+
+mbias_table <- data[, .(mod=sum(type %in% c("M", "m")), unmod=sum(type %in% c("U","u"))), by=.(chr, pos=pos_in_read, read_pair=as.factor(fifelse(bitwAnd(flag, 64)>0, "First", "Second")), strand=as.factor(fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB")))]
 
 # Flip the OB reads so that mbias is always reported 5' -> 3'
 mbias_table[strand=="OT" & read_pair == "Second" | strand=="OB" & read_pair == "First", pos := read_len-pos]
@@ -124,18 +86,17 @@ setkey(mbias_table, chr, pos)
 for (chrom in unique(mbias_table$chr)) {
   cutoffs <- mbias_table[chr==chrom, calculate_cutoff(as.data.frame(.SD)), by=.(chr, read_pair, strand)]
   print(cutoffs)
-  
   #write cutoffs to file if requested
   if (!is.na(params$output_dir) && !is.null(params$output_dir)) {
     out_table <- cutoffs[, .(l_ot = .SD[read_pair=="First", left],
                              r_ot = .SD[read_pair=="First", right],
                              l_ob = .SD[read_pair=="Second", left],
-                             r_ob = .SD[read_pair=="Second", right]), 
+                             r_ob = .SD[read_pair=="Second", right]),
                          by=strand]
     setDF(out_table)
     write.table(out_table[,2:5], file.path(params$output_dir, paste0(chrom, "_cutoffs.txt")), row.names = FALSE, col.names = FALSE, quote=FALSE, sep=",")
   }
-  
+
   g <- ggplot(mbias_table[chr==chrom], aes(x=pos, y=beta, color=read_pair)) +
         geom_line() +
         geom_ribbon(aes(ymin=lower_ci, ymax=upper_ci, fill=read_pair), alpha=0.2) +
@@ -150,7 +111,7 @@ for (chrom in unique(mbias_table$chr)) {
   }
   g = g + facet_wrap(vars(strand), nrow = 2, as.table = FALSE)
   g = g + ggtitle(chrom)
-  
+
   print(g)
 }
 ```
@@ -158,31 +119,229 @@ for (chrom in unique(mbias_table$chr)) {
 ## V-bias plots
 
 ```{r transform_vbias, include=FALSE}
-merge_pos <- function(dt) {
-  if (nrow(dt) < 2) {
-    return(NULL)
+if (params$plot_vbias) {
+  suppressPackageStartupMessages({
+    library(Rsamtools)
+    library(GenomicRanges)
+    library(Biostrings)
+    library(ggside)
+  })
+  
+  # List all CpGs in the reference sequence for a particular region
+  cpg_table_from_fasta <- function(region,
+                                   fasta,
+                                   build_index_if_missing = FALSE) {
+    
+    elements <- unlist(strsplit(region, "[:\\-]"))
+    if (length(elements == 1)) {
+      chr = elements[1]
+      start_pos = 1
+      end_pos = NULL
+    } else if (length(elements) == 3) {
+      chr = elements[1]
+      start_pos = elements[2]
+      end_pos = elements[3]
+    } else {
+      stop("Could not parse region argument")
+    }
+    # region format: "chr1:2000-10000" (1-based, inclusive)
+    if (!is.null(end_pos) && start_pos > end_pos) stop("start must be <= end")
+    if (!file.exists(fasta)) stop("FASTA file not found: ", fasta)
+  
+    fai <- paste0(fasta, ".fai")
+    is_bgzip <- grepl("\\.(fa|fasta)\\.(gz|bgz)$", fasta, ignore.case = TRUE)
+    gzi <- paste0(fasta, ".gzi")
+  
+    if (!file.exists(fai) || (is_bgzip && !file.exists(gzi))) {
+      if (!build_index_if_missing) {
+        stop("Missing FASTA index. Need ", fai,
+             if (is_bgzip) paste0(" and ", gzi) else "",
+             ". Set build_index_if_missing=TRUE to run indexFa().")
+      }
+      indexFa(fasta)
+    }
+  
+    # Handle chr naming differences (e.g., chr1 vs 1)
+    idx <- scanFaIndex(fasta)
+    seq_levels <- as.character(seqnames(idx))
+    if (!(chr %in% seq_levels)) {
+      alt <- if (startsWith(chr, "chr")) sub("^chr", "", chr) else paste0("chr", chr)
+      if (alt %in% seq_levels) {
+        chr <- alt
+      } else {
+        stop("Chromosome '", chr, "' not found in FASTA index.")
+      }
+    }
+    
+    if (is.null(end_pos)) {
+      end_pos = seqlengths(idx)[chr]
+    }
+    
+    param <- GRanges(chr, IRanges::IRanges(start_pos, end_pos))
+    dna <- scanFa(fasta, param = param)[[1]]
+  
+    cg_rel <- start(matchPattern("CG", dna, fixed = TRUE))
+    if (length(cg_rel) == 0L) {
+      return(data.table(chr = character(), pos = integer(), base = character(), cpg_id = integer()))
+    }
+  
+    c_pos <- start_pos + cg_rel - 1L
+    out <- data.table(
+      chr = chr,
+      pos = as.vector(rbind(c_pos, c_pos + 1L)),     # C then G
+      base = rep(c("C", "G"), times = length(c_pos)),
+      cpg_id = rep(seq_along(c_pos), each = 2L)
+    )
+  
+    out[, chr := as.factor(chr)]
+    out[, base := as.factor(base)]
+    return(out)
   }
-  read_len = dt$end-dt$start
-  first_in_pair = dt[, bitwAnd(flag, 64)==64]
-  if (!any(first_in_pair)) {
-    return(NULL)
+  
+  # For a subset of observations of read orientation on one strand,
+  # calculate the suggested cutoff points
+  calculate_cutoff <- function(mbias_table) {
+    # Ensure we process things in orders
+    mbias_table <- mbias_table[order(mbias_table$pos),]
+    # get the mean beta of the middle 60% of the data
+    n_obs <- nrow(mbias_table)
+    if (n_obs < 3) {
+      stop("Not enough data points to calculate cutoffs")
+    }
+    upper_lim <- min(ceiling(n_obs * 0.8), n_obs-1)
+    lower_lim <- max(floor(n_obs * 0.2), 2)
+    mean_middle <- mean(mbias_table[lower_lim:upper_lim,]$beta)
+    upper_ci_max <- max(mbias_table[lower_lim:upper_lim,]$upper_ci)
+    lower_ci_min <- min(mbias_table[lower_lim:upper_lim,]$lower_ci)
+  
+    # Search from the inside out for the first point left/right that is
+    # either outside the 95% CI bounds of the middle, or the mean of the
+    # middle is outside the CI of the point, or it's more than 0.05 away
+    # from the mean of the middle
+    check_match <- function(row, mean_middle, lower_ci_min, upper_ci_max) {
+      if (is.na(mean_middle) || is.null(mean_middle) || is.na(row$beta) || is.null(row$beta) || is.na(lower_ci_min) || is.null(lower_ci_min) || is.na(upper_ci_max) || is.null(upper_ci_max)) {
+        return(FALSE)
+      }
+  
+      if (!row$beta %between% c(lower_ci_min, upper_ci_max)
+          && abs(row$beta - mean_middle) > 0.05
+          && !mean_middle %between% c(row$lower_ci, row$upper_ci)) {
+        return(TRUE)
+      }
+  
+      return(FALSE)
+    }
+  
+    left_cutoff = 0
+    right_cutoff = 0
+  
+    middle = ceiling(n_obs/2)
+    for (pos in middle:1) {
+      if (check_match(mbias_table[pos,], mean_middle, lower_ci_min, upper_ci_max)) {
+        left_cutoff = pos
+        break
+      }
+    }
+    for (pos in 1:(n_obs-middle)) {
+      if (check_match(mbias_table[middle+pos,], mean_middle, lower_ci_min, upper_ci_max)) {
+        right_cutoff = n_obs - (middle+pos) + 1
+        break
+      }
+    }
+    return(data.frame(left=as.double(left_cutoff), right=as.double(right_cutoff)))
   }
-  Orientation = head(dt[, fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB")], 1)
-  pos_in_fragment = fifelse(first_in_pair, dt$pos_in_read, read_len-dt$pos_in_read)
-  new_type <- fifelse(first_in_pair, dt$type, rev(dt$type))
-  pos_in_fragment[!first_in_pair] = pos_in_fragment[!first_in_pair] + dt$insert_size[!first_in_pair]-read_len[!first_in_pair]
-  duplicates <- pos_in_fragment[!first_in_pair] < max(read_len[first_in_pair])
-  pos_in_fragment <- pos_in_fragment[!duplicates]
-  new_type <- new_type[!duplicates]
-  return(dt[, .(type=new_type, pos_in_fragment=pos_in_fragment, insert_size=rep(min(insert_size), length(new_type)), fragment_length=rep(max(dt$end)-min(dt$start), length(new_type)), mapq=rep(mean(mapq), length(new_type)), Orientation=rep(Orientation, length(new_type)))])
+
+  cpgsInRegion <- lapply(unique(data$chr), function(chrom) {
+    res <- cpg_table_from_fasta(region = as.character(chrom), fasta = params$reference)
+  })
+  cpgsInRegion <- rbindlist(cpgsInRegion)
+  cpgsInRegion[, end:=pos]
+  setkey(cpgsInRegion, chr, pos, end)
+  
+  readPositions <- data[, .N, by=.(chr, start, end, orientation)]
+  readPositions[, N:=NULL]
+  setkey(readPositions, chr, start, end)
+  cpgsPerRead <- foverlaps(cpgsInRegion, readPositions, nomatch=NULL)
+  cpgsPerRead <- cpgsPerRead[, .N, by=.(chr, start, end, orientation, cpg_id)][, .(ordinal = order(cpg_id), cpg_id), by=.(chr, start, end, orientation)]
+  
+  rm(readPositions)
+  
+  # annotate with ordinals for all reads per sample, too
+  vdata <- data
+  vdata[, ordinal := order(pos_in_read), by=.(read_id, chr, start, end, orientation)]
+  
+  setkey(vdata, chr, start, end, orientation, ordinal)
+  setkey(cpgsPerRead, chr, start, end, orientation, ordinal)
+  vdata <- vdata[cpgsPerRead[, .(chr, start, end, orientation, ordinal, cpg_id)], nomatch=NULL]
+  rm(cpgsInRegion, cpgsPerRead)
+  
+  # merge reads into fragments
+  vdata <- vdata[, .(start=min(start), end=max(end), pos_in_fragment=min(start+pos_in_read), type=fifelse(any(type=="S"), "S", fifelse(all(type %in% c("U","u")), "U", "M"))), by=.(chr, read_id, cpg_id, insert_size, Orientation=fifelse(bitwAnd(flag, 96)==96 | bitwAnd(flag, 144)==144, "OT", "OB"))]
+  vdata[Orientation=="OT", pos_in_fragment := pos_in_fragment - min(start), by=.(chr, read_id)]
+  vdata[Orientation=="OB", pos_in_fragment := max(end)-pos_in_fragment, by=.(chr, read_id)]
 }
-vdata <- data[, merge_pos(.SD), by=.(chr, read_id)]
 ```
 
-```{r plot_vbias, echo=FALSE, fig.height=4, fig.width=7}
-for (chrom in unique(data$chr)) {
-  p <- ggplot(vdata[chr==chrom, .(beta=sum(type=="mod")/.N), by=.(`Pos in fragment`=pos_in_fragment, `Insert size`=insert_size, Orientation)], aes(x=`Pos in fragment`, y=`Insert size`, color=beta)) + scale_color_gradient(low="darkblue", high="red") + geom_point(size=0.001, alpha=0.2) + ggtitle(chrom) + facet_wrap(vars(Orientation))
-  print(p)
+```{r plot_vbias, echo=FALSE, fig.height=4, fig.width=7, warning=FALSE}
+if (params$plot_vbias) {
+  for (chrom in unique(vdata$chr)) {
+  
+    # main aggregated data (your tiles)
+    vdata_plot <- vdata[
+      chr == chrom & pos_in_fragment < insert_size,
+      .(beta = sum(type == "M") / .N,
+        observations = .N),
+      by = .(`Pos in fragment` = pos_in_fragment,
+             `Insert size` = insert_size,
+             Orientation)
+    ]
+  
+    # collapse to counts per Insert size per Orientation (this is what you want plotted)
+    side_counts <- vdata_plot[
+      , .(obs = sum(observations)),
+      by = .(`Insert size`, Orientation)
+    ]
+    side_counts[, obs_pdf:=obs/sum(obs), by=.(Orientation)]
+    
+    y_max <- as.numeric(quantile(vdata_plot[["Insert size"]], 0.99,  na.rm = TRUE))
+    x_max <- as.numeric(quantile(vdata_plot[["Pos in fragment"]], 0.99, na.rm = TRUE))
+  
+    p <- ggplot(vdata_plot, aes(x = `Pos in fragment`, y = `Insert size`, fill = beta)) +
+      geom_tile() +
+  
+      # left side panel: counts vs Insert size (one per facet via Orientation)
+      geom_ysidebar(
+        data = side_counts,
+        aes(y = `Insert size`, x = obs_pdf),   # x in side panel = obs, y aligns with main y
+        inherit.aes = FALSE,
+        stat = "identity",
+        orientation = "y"
+      ) +
+      ggside(y.pos = "left") +
+      
+      scale_ysidex_reverse() +
+      
+      scale_fill_gradient2(low = "black", mid = "orange", high = "purple", midpoint = 0.5) +
+      scale_y_continuous(limits = c(0, 600), expand = c(0, 0)) +
+      scale_x_continuous(limits = c(0, 600), expand = c(0, 0)) +
+  
+      ggtitle(chrom) +
+      facet_wrap(vars(Orientation)) +
+  
+      theme_minimal() +
+      theme(
+        panel.grid = element_blank(),
+        #axis.title.y = element_blank(),
+  
+        # make the side panel look like an annotation
+        ggside.panel.grid = element_blank(),
+        ggside.axis.title.x = element_blank(),
+        ggside.axis.text.x  = element_blank(),  # removes the side-panel x tick labels
+        ggside.axis.ticks.x = element_blank()   # (optional) removes the tick marks too
+      )
+  
+    print(p)
+  }  
 }
 ```
 

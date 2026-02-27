@@ -23,6 +23,14 @@ parser <- add_argument(parser, "bed_file",
                        help = "Input bed.gz file (required)")
 
 # Add optional arguments
+parser <- add_argument(parser, "--no-vbias", 
+                       help = "Do not generate vbias (faster)",
+                       flag=TRUE)
+
+parser <- add_argument(parser, "--reference", 
+                       help = "Reference fasta sequence, fai indexed (required for vbias)",
+                       default = NULL)
+
 parser <- add_argument(parser, "--region", 
                        help = "Genomic region (optional)",
                        default = NULL)
@@ -62,6 +70,8 @@ if (!file.exists(args$bed_file)) {
 # Print summary of parameters
 cat("=== RMarkdown Report Generation ===\n")
 cat("Parameters:\n")
+cat("  Reference:", ifelse(is.null(args$reference), "Not specified", args$reference), "\n")
+cat("  Plot vbias:", ifelse(is.null(args$no_vbias)||args$no_vbias==FALSE, "Yes", "No"), "\n")
 cat("  Genomic region:", ifelse(is.null(args$region), "Not specified", args$region), "\n")
 cat("  Include bitflag:", ifelse(is.null(args$include_flag), "Not specified", args$include_flag), "\n")
 cat("  Exclude bitflag:", ifelse(is.null(args$exclude_flag), "Not specified", args$exclude_flag), "\n")
@@ -79,6 +89,8 @@ params_list <- list(
   exclude_flags = args$exclude_flag,
   read_len = is.na(args$read_length),
   tabix = args$tabix_path,
+  reference = params$reference,
+  plot_vbias = is.null(params$no_vbias)||params$no_vbias==FALSE,
   input_bgz = normalizePath(args$bed_file)
 )
 
