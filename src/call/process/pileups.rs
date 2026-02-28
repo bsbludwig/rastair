@@ -1,5 +1,8 @@
 use crate::{
-    call::{pileup::Pileup, variant_calling::VariantCallingParams},
+    call::{
+        pileup::{Pileup, overlapping_reads::NameCollector},
+        variant_calling::VariantCallingParams,
+    },
     sequence::{ChunkRegion, Readers, Segment},
     utils::logging::ThisIsABug,
 };
@@ -42,6 +45,7 @@ pub fn get_pileups(
     // Go over each column in the pileup from htslib and build our own pileup
     let mut pileup = readers.bam.pileup();
     pileup.set_max_depth(params.max_coverage);
+    let mut collector = NameCollector::new(params);
     let piles = pileup
         .filter_map(|p| match p {
             Ok(p) => Some(p),
@@ -61,7 +65,7 @@ pub fn get_pileups(
             region.contains(u64::from(p.pos()))
         })
         .map(move |pile| {
-            Pileup::from_hts(&pile, segment.clone(), params).wrap_err_with(|| {
+            Pileup::from_hts(&pile, segment.clone(), params, &mut collector).wrap_err_with(|| {
                 format!("Failed to get candidate from pileup at position {}", pile.pos())
             })
         })

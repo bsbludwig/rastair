@@ -38,7 +38,7 @@ pub struct VariantCallingParams {
     #[default(3)]
     pub v_min_depth: u32,
 
-    // The minimum number of reads to call a position as a variant
+    // The maximum number of reads to consider for a position (for performance reasons)
     #[arg(long, default_value_t = 1000)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(1000)]

@@ -7,9 +7,8 @@ use rastair_types::{SmallVec, SmolStr};
 
 mod read;
 pub use read::*;
-mod overlapping_reads;
-
-mod from_hts;
+pub(crate) mod from_hts;
+pub(crate) mod overlapping_reads;
 
 /// Rastair's representation of a pileup at a specific position in the genome
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
