@@ -29,14 +29,9 @@ pub struct ReadFlags {
 }
 
 impl ReadFlags {
-    /// Check if the read matches flags in paired-end mode.
-    pub fn filter(&self, record: &Record) -> bool {
-        self.filter_with_unpaired_mode(record, false)
-    }
-
-    /// Check if the read matches the include flags and does not match the exclude flags
-    pub fn filter_with_unpaired_mode(&self, record: &Record, unpaired_mode: bool) -> bool {
-        let flags = record.flags();
+    /// Check if raw flags match the include flags and do not match the exclude flags.
+    /// In unpaired mode, pairing-related flags are masked out before comparison.
+    pub fn filter_flags(&self, flags: u16, unpaired_mode: bool) -> bool {
         let (flags, include_flags, exclude_flags) = if unpaired_mode {
             (
                 flags & !UNPAIRED_IGNORED_FLAGS,
@@ -49,6 +44,17 @@ impl ReadFlags {
         let include = flags & include_flags == include_flags;
         let exclude = flags & exclude_flags != 0;
         include && !exclude
+    }
+
+    /// Check if the read matches the include flags and does not match the exclude flags.
+    /// In unpaired mode, pairing-related flags are masked out before comparison.
+    pub fn filter_with_unpaired_mode(&self, record: &Record, unpaired_mode: bool) -> bool {
+        self.filter_flags(record.flags(), unpaired_mode)
+    }
+
+    /// Check if the read matches the include flags and does not match the exclude flags
+    pub fn filter(&self, record: &Record) -> bool {
+        self.filter_flags(record.flags(), false)
     }
 }
 

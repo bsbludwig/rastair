@@ -48,45 +48,41 @@ impl fmt::Display for Strand {
     }
 }
 
+/// Determine strand from raw BAM flags.
+///
+/// # Flags used
+///
+/// |   Flag | Decimal | Meaning                              |
+/// | -----: | ------: | ------------------------------------ |
+/// | `0x10` |      16 | Read is mapped to the reverse strand |
+/// | `0x20` |      32 | Mate is mapped to the reverse strand |
+/// | `0x40` |      64 | Read is first in pair                |
+/// | `0x80` |     128 | Read is second in pair               |
+#[allow(clippy::collapsible_else_if)] // clearer
+pub fn strand_from_flags(flags: u16) -> Strand {
+    if flags & 0x1 == 0 {
+        // Unpaired read: strand determined solely by alignment direction
+        if flags & 0x10 != 0 { Strand::OB } else { Strand::OT }
+    } else if flags & 0x40 != 0 {
+        // First in pair
+        if flags & 0x10 != 0 { Strand::OB } else { Strand::OT }
+    } else if flags & 0x80 != 0 {
+        // Last in pair
+        if flags & 0x20 != 0 { Strand::OB } else { Strand::OT }
+    } else {
+        Strand::Unknown
+    }
+}
+
 /// Extension trait to get strand information from a BCF record
 pub trait StrandFromRecord {
     /// Create a `Strand` from a BCF record
     fn strand(&self) -> Strand;
 }
 
-/// Get strand from `htslib` record
-///
-/// # Flags used
-///
-/// |   Flag | Decimal | Meaning                              | `htslib` method        |
-/// | -----: | ------: | ------------------------------------ | ---------------------- |
-/// | `0x10` |      16 | Read is mapped to the reverse strand | `is_reverse`           |
-/// | `0x20` |      32 | Mate is mapped to the reverse strand | `is_mate_reverse`      |
-/// | `0x40` |      64 | Read is first in pair                | `is_first_in_template` |
-/// | `0x80` |     128 | Read is second in pair               | `is_last_in_template`  |
 impl StrandFromRecord for Record {
-    /// Get strand from record
-    #[allow(clippy::collapsible_else_if)] // clearer
     fn strand(&self) -> Strand {
-        if !self.is_paired() {
-            if self.is_reverse() { Strand::OB } else { Strand::OT }
-        } else {
-            if self.is_first_in_template() {
-                if self.is_reverse() {
-                    Strand::OB // Original bottom
-                } else {
-                    Strand::OT // Original top
-                }
-            } else if self.is_last_in_template() {
-                if self.is_mate_reverse() {
-                    Strand::OB // Original bottom
-                } else {
-                    Strand::OT // Original top
-                }
-            } else {
-                Strand::Unknown // Not a paired read or no flags set
-            }
-        }
+        strand_from_flags(self.flags())
     }
 }
 

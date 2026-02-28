@@ -1,13 +1,13 @@
 use crate::{
     call::{
-        pileup::{Pileup, PositionInRead, ReadName, SimpleRead, SimpleReads},
+        pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
         process::PileupMappingParams,
     },
     sequence::Segment,
-    utils::{SequenceContext, StrandFromRecord},
+    utils::SequenceContext,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
-use rastair_types::SmallVec;
+use rastair_types::strand_from_flags;
 use rust_htslib::bam::pileup::{Alignment, Pileup as HtsPileup};
 use std::rc::Rc;
 use tracing::{debug, instrument};
@@ -29,10 +29,10 @@ impl Pileup {
         let max_reads = usize::try_from(max_reads).wrap_err("max_reads exceeds usize")?;
 
         let mut reads = Vec::with_capacity(max_reads);
-        let mut names = Vec::with_capacity(max_reads);
+        let mut names: Vec<&[u8]> = Vec::with_capacity(max_reads);
 
         pile.alignments()
-            .filter_map(|pile| alignment_to_read(params, pile))
+            .filter_map(|a| alignment_to_read(params, a))
             .filter(|(_, seen_base)| params.read_masking.filter(seen_base))
             .filter(|(_, seen_base)| params.quality.filter(seen_base))
             .take(max_reads)
@@ -68,29 +68,28 @@ fn should_deduplicate_overlapping_pairs(params: &PileupMappingParams) -> bool {
 }
 
 /// Collect info from a pileup alignment
-fn alignment_to_read(
+fn alignment_to_read<'a>(
     params: &PileupMappingParams,
-    a: Alignment<'_>,
-) -> Option<(ReadName, SimpleRead)> {
+    a: Alignment<'a>,
+) -> Option<(&'a [u8], SimpleRead)> {
     let pos = a.qpos()?;
-    let record = a.record();
-    let cigar = record.raw_cigar();
+    let record = a.record_view();
+    let flags = record.flags();
 
-    if !params.read_flags.filter_with_unpaired_mode(&record, params.unpaired) {
+    if !params.read_flags.filter_flags(flags, params.unpaired) {
         return None;
     }
-    let (matches, indels) = calc_cigar_data(cigar);
+    let (matches, indels) = calc_cigar_data(record.raw_cigar());
 
     Some((
-        SmallVec::from(record.qname()),
+        record.qname(),
         SimpleRead {
-            // qname: SmallVec::from(record.qname()),
             base: record.seq()[pos].into(),
             qual: *record.qual().get(pos)?,
             mapq: record.mapq(),
-            // Strand of the read, derived from the record. Early return if strand cannot be determined.
+            // Strand of the read, derived from flags. Early return if strand cannot be determined.
             // TODO: handle "lenient mode"
-            strand: StrandFromRecord::strand(&record).ok()?,
+            strand: strand_from_flags(flags).ok()?,
             reverse: record.is_reverse(),
             second: record.is_last_in_template(),
             position: PositionInRead {

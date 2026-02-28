@@ -30,5 +30,5 @@ pub use {
     probability::Probability,
     region_string::RegionString,
     rms::{RootMeanSquare, RootMeanSquareExt},
-    strand::{Strand, StrandFromRecord},
+    strand::{Strand, StrandFromRecord, strand_from_flags},
 };

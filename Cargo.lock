@@ -2331,7 +2331,7 @@ dependencies = [
 [[package]]
 name = "rust-htslib"
 version = "0.50.0"
-source = "git+https://github.com/killercup/rust-htslib.git?branch=feature%2Fset-seq#22792ae60f2f8631dbe534282b6852154b6c039a"
+source = "git+https://github.com/killercup/rust-htslib.git?branch=feature%2Fset-seq#4d23b997d290df8a162c4383f655b4066d55d4d6"
 dependencies = [
  "bio-types",
  "byteorder",

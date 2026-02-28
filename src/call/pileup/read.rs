@@ -1,5 +1,4 @@
 use crate::utils::{Base, Counter, Strand};
-use rastair_types::SmallVec;
 use std::{fmt, ops::Deref};
 
 /// A collection of bases seen in a pileup
@@ -53,8 +52,6 @@ pub struct SimpleRead {
     #[cfg_attr(test, default(2))]
     pub indels: u32,
 }
-
-pub type ReadName = SmallVec<u8, 48>;
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for SimpleRead {

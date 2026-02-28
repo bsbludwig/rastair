@@ -4,15 +4,12 @@
 
 use std::cell::RefCell;
 
-use crate::call::pileup::ReadName;
-
 use super::{SimpleRead, SimpleReads};
 use rastair_types::SmallVec;
 
 impl SimpleReads {
     /// Remove overlapping reads from the same fragment.
-    pub fn remove_overlapping_pairs(&mut self, names: &[ReadName]) {
-        // let mut to_remove = remove_dupes_simple(&self.0);
+    pub fn remove_overlapping_pairs(&mut self, names: &[&[u8]]) {
         let mut to_remove = remove_dupes_clever(&self.0, names);
         // Remove duplicates
         to_remove.sort_unstable();
@@ -32,7 +29,7 @@ impl SimpleReads {
 /// afterwards. This should be fine since the amount of items to remove is
 /// typically small.
 #[inline(never)]
-fn remove_dupes_clever(reads: &[SimpleRead], names: &[ReadName]) -> SmallVec<usize, 16> {
+fn remove_dupes_clever(reads: &[SimpleRead], names: &[&[u8]]) -> SmallVec<usize, 16> {
     const SUFFIX_SIZE: usize = 4;
     thread_local! {
         /// Temporary storage for seen suffixes
@@ -103,11 +100,11 @@ mod tests {
     use crate::call::pileup::read::SimpleRead;
     use crate::utils::Base;
 
-    fn make_read(qname: &str, base: Base, second: bool) -> (ReadName, SimpleRead) {
-        (qname.as_bytes().into(), SimpleRead { base, second, ..Default::default() })
+    fn make_read(qname: &'static [u8], base: Base, second: bool) -> (&'static [u8], SimpleRead) {
+        (qname, SimpleRead { base, second, ..Default::default() })
     }
 
-    fn make_reads(reads: Vec<(ReadName, SimpleRead)>) -> (Vec<ReadName>, SimpleReads) {
+    fn make_reads(reads: Vec<(&'static [u8], SimpleRead)>) -> (Vec<&'static [u8]>, SimpleReads) {
         let (names, reads) =
             reads.into_iter().fold((Vec::new(), Vec::new()), |(mut n_acc, mut r_acc), (n, r)| {
                 n_acc.push(n);
@@ -158,9 +155,9 @@ mod tests {
     #[test]
     fn test_no_duplicates() {
         let (names, mut reads) = make_reads(vec![
-            make_read("read1", Base::A, false),
-            make_read("read2", Base::C, false),
-            make_read("read3", Base::G, false),
+            make_read(b"read1", Base::A, false),
+            make_read(b"read2", Base::C, false),
+            make_read(b"read3", Base::G, false),
         ]);
 
         reads.remove_overlapping_pairs(&names);
@@ -169,8 +166,10 @@ mod tests {
 
     #[test]
     fn test_duplicate_same_base() {
-        let (names, mut reads) =
-            make_reads(vec![make_read("read1", Base::A, false), make_read("read1", Base::A, true)]);
+        let (names, mut reads) = make_reads(vec![
+            make_read(b"read1", Base::A, false),
+            make_read(b"read1", Base::A, true),
+        ]);
 
         reads.remove_overlapping_pairs(&names);
         assert_eq!(reads.0.len(), 1);
@@ -180,8 +179,10 @@ mod tests {
 
     #[test]
     fn test_duplicate_different_base_remove_second() {
-        let (names, mut reads) =
-            make_reads(vec![make_read("read1", Base::A, false), make_read("read1", Base::C, true)]);
+        let (names, mut reads) = make_reads(vec![
+            make_read(b"read1", Base::A, false),
+            make_read(b"read1", Base::C, true),
+        ]);
 
         reads.remove_overlapping_pairs(&names);
         assert_eq!(reads.0.len(), 1);
@@ -191,8 +192,10 @@ mod tests {
 
     #[test]
     fn test_duplicate_different_base_first_is_second() {
-        let (names, mut reads) =
-            make_reads(vec![make_read("read1", Base::A, true), make_read("read1", Base::C, false)]);
+        let (names, mut reads) = make_reads(vec![
+            make_read(b"read1", Base::A, true),
+            make_read(b"read1", Base::C, false),
+        ]);
 
         reads.remove_overlapping_pairs(&names);
         assert_eq!(reads.0.len(), 1);
@@ -203,11 +206,11 @@ mod tests {
     #[test]
     fn test_multiple_duplicate_pairs() {
         let (names, mut reads) = make_reads(vec![
-            make_read("read1", Base::A, false),
-            make_read("read2", Base::C, false),
-            make_read("read1", Base::A, true),
-            make_read("read3", Base::G, false),
-            make_read("read2", Base::C, true),
+            make_read(b"read1", Base::A, false),
+            make_read(b"read2", Base::C, false),
+            make_read(b"read1", Base::A, true),
+            make_read(b"read3", Base::G, false),
+            make_read(b"read2", Base::C, true),
         ]);
 
         reads.remove_overlapping_pairs(&names);
@@ -218,8 +221,8 @@ mod tests {
     fn test_same_suffix_different_qname() {
         // Create reads with same suffix but different full qnames
         let (names, mut reads) = make_reads(vec![
-            make_read("prefix_AAA", Base::A, false),
-            make_read("other__AAA", Base::C, false), // Same suffix, different prefix
+            make_read(b"prefix_AAA", Base::A, false),
+            make_read(b"other__AAA", Base::C, false), // Same suffix, different prefix
         ]);
 
         reads.remove_overlapping_pairs(&names);
@@ -229,9 +232,9 @@ mod tests {
     #[test]
     fn test_three_reads_same_qname() {
         let (names, mut reads) = make_reads(vec![
-            make_read("read1", Base::A, false),
-            make_read("read1", Base::A, true),
-            make_read("read1", Base::A, true),
+            make_read(b"read1", Base::A, false),
+            make_read(b"read1", Base::A, true),
+            make_read(b"read1", Base::A, true),
         ]);
 
         reads.remove_overlapping_pairs(&names);
@@ -241,14 +244,14 @@ mod tests {
     #[test]
     fn test_empty_reads() {
         let mut reads = SimpleReads(Vec::new());
-        let names = Vec::new();
+        let names: Vec<&[u8]> = Vec::new();
         reads.remove_overlapping_pairs(&names);
         assert_eq!(reads.0.len(), 0);
     }
 
     #[test]
     fn test_single_read() {
-        let (names, mut reads) = make_reads(vec![make_read("read1", Base::A, false)]);
+        let (names, mut reads) = make_reads(vec![make_read(b"read1", Base::A, false)]);
         reads.remove_overlapping_pairs(&names);
         assert_eq!(reads.0.len(), 1);
     }
@@ -258,9 +261,9 @@ mod tests {
         // Simulate realistic paired-end read names
         // Note: /1 and /2 suffixes make these DIFFERENT qnames (not duplicates)
         let (names, mut reads) = make_reads(vec![
-            make_read("instrument:1:flowcell:1:1234:5678:9012/1", Base::A, false),
-            make_read("instrument:1:flowcell:1:1234:5678:9012/2", Base::A, true),
-            make_read("instrument:1:flowcell:1:1234:9999:8888/1", Base::C, false),
+            make_read(b"instrument:1:flowcell:1:1234:5678:9012/1", Base::A, false),
+            make_read(b"instrument:1:flowcell:1:1234:5678:9012/2", Base::A, true),
+            make_read(b"instrument:1:flowcell:1:1234:9999:8888/1", Base::C, false),
         ]);
 
         reads.remove_overlapping_pairs(&names);
@@ -270,9 +273,9 @@ mod tests {
     #[test]
     fn test_short_qnames() {
         let (names, mut reads) = make_reads(vec![
-            make_read("A", Base::A, false),
-            make_read("A", Base::A, true),
-            make_read("B", Base::C, false),
+            make_read(b"A", Base::A, false),
+            make_read(b"A", Base::A, true),
+            make_read(b"B", Base::C, false),
         ]);
 
         reads.remove_overlapping_pairs(&names);
