@@ -184,7 +184,15 @@ pub fn call(mut params: CallParams) -> Result<()> {
     // parallel. From there, we send ready-made VCF records to a special writer
     // thread that only deals with writing the VCF file.
     let writer_threads = params.vcf.vcf_threads;
-    let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
+    let mut worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
+
+    // If the user is using GPU-accelerated ML, we'll add in some more threads
+    // since there is gonna be some time spent waiting for the GPU and we can do
+    // some CPU processing in the meantime. This is a bit of a heuristic, which
+    // we might want to tweak later.
+    let bonus_threads = if params.ml.gpu { 2 } else { 0 };
+    worker_threads += bonus_threads;
+
     debug!(
         "Gonna use {} threads: {} for processing, {} for writing VCF",
         params.total_threads,
