@@ -93,19 +93,20 @@ fn alignment_to_read<'a>(
         return None;
     }
     let (matches, indels) = calc_cigar_data(record.raw_cigar());
+    let (seq, qual) = record.seq_and_qual();
 
     Some((
         record.qname(),
         SimpleRead {
-            base: record.seq()[pos].into(),
-            qual: *record.qual().get(pos)?,
+            base: seq[pos].into(),
+            qual: *qual.get(pos)?,
             mapq: record.mapq(),
             strand: strand_from_flags(flags).ok()?,
-            reverse: record.is_reverse(),
-            second: record.is_last_in_template(),
+            reverse: flags & 0x10 != 0,
+            second: flags & 0x80 != 0,
             position: PositionInRead {
                 pos: u32::try_from(pos).expect("position fits in u32"),
-                read_length: u32::try_from(record.seq_len()).expect("read length fits in u32"),
+                read_length: u32::try_from(seq.len()).expect("read length fits in u32"),
             },
             matching_bases: matches,
             indels,
