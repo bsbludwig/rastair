@@ -4,7 +4,10 @@ use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
 };
-use color_eyre::{Result, eyre::{Context as _, ensure}};
+use color_eyre::{
+    Result,
+    eyre::{Context as _, ensure},
+};
 use rastair_types::Base;
 use tracing::trace;
 

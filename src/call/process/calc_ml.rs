@@ -169,17 +169,26 @@ pub fn batch_add_ml_metrics(
 
                 match model_type {
                     MlModel::Cpg => {
-                        pending.cpg_features.row_mut(pending.cpg_count).zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending
+                            .cpg_features
+                            .row_mut(pending.cpg_count)
+                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
                         pending.cpg.push(pending_item);
                         pending.cpg_count += 1;
                     }
                     MlModel::DenovoCpg => {
-                        pending.denovo_features.row_mut(pending.denovo_count).zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending
+                            .denovo_features
+                            .row_mut(pending.denovo_count)
+                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
                         pending.denovo.push(pending_item);
                         pending.denovo_count += 1;
                     }
                     MlModel::Others => {
-                        pending.others_features.row_mut(pending.others_count).zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending
+                            .others_features
+                            .row_mut(pending.others_count)
+                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
                         pending.others.push(pending_item);
                         pending.others_count += 1;
                     }
@@ -197,8 +206,10 @@ pub fn batch_add_ml_metrics(
 
     // Phase 2b: submit all three GPU dispatches, then collect — GPU work overlaps.
     let h_cpg = gpu.cpg.predict_submit(&pending.cpg_features.slice(s![..pending.cpg_count, ..]));
-    let h_denovo = gpu.denovo.predict_submit(&pending.denovo_features.slice(s![..pending.denovo_count, ..]));
-    let h_others = gpu.others.predict_submit(&pending.others_features.slice(s![..pending.others_count, ..]));
+    let h_denovo =
+        gpu.denovo.predict_submit(&pending.denovo_features.slice(s![..pending.denovo_count, ..]));
+    let h_others =
+        gpu.others.predict_submit(&pending.others_features.slice(s![..pending.others_count, ..]));
 
     let cpg_preds = collect_handle(h_cpg);
     let denovo_preds = collect_handle(h_denovo);
