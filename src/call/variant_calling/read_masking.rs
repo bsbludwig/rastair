@@ -181,7 +181,7 @@ mod tests {
                 .join(",");
 
             let result = ReadMaskSetting::from_str(&input);
-            assert!(result.is_err());
+            prop_assert!(result.is_err());
         }
 
         #[test]
@@ -200,8 +200,7 @@ mod tests {
 
             let input = parts.join(",");
             let result = ReadMaskSetting::from_str(&input);
-            assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), ParseMaskError::ParseIntError(_)));
+            prop_assert!(matches!(result, Err(ParseMaskError::ParseIntError(_))));
         }
     }
 

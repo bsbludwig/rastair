@@ -31,7 +31,7 @@ pub fn entropy(sequence: &[u8]) -> f64 {
 #[cfg(test)]
 mod tests {
     use crate::sequence::{ChunkRegion, Region, Segment};
-    use proptest::proptest;
+    use proptest::{prop_assert, proptest};
     use rastair_types::SmolStr;
     use std::iter::repeat_n;
 
@@ -82,15 +82,18 @@ mod tests {
                 overlap_start: 0,
                 overlap_end: 0,
             };
-            let segment = Segment { range: region, sequence: sequence.into_bytes(),
+            let segment = Segment {
+                range: region,
+                sequence: sequence.into_bytes(),
                 overlap_start: 0,
                 overlap_end: 0,
             };
-            let pos = 50;
 
-            let entropy = segment.entropy_around::<100>(pos).unwrap();
+            let entropy = segment.entropy_around::<100>(50).unwrap();
 
-            assert!(entropy >= 0.0);
+            // Shannon entropy over an alphabet of 4 bases is bounded to [0, log2(4)] = [0, 2]
+            prop_assert!(entropy >= 0.0);
+            prop_assert!(entropy <= 2.0 + f64::EPSILON);
         }
     }
 }

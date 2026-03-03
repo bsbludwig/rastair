@@ -219,8 +219,8 @@ fn test_sequence_slice() -> Result<()> {
 
 proptest!(
     #[test]
-    fn proptest_sequence_slice(start in 0usize..100, end in 0usize..100, seq in "[ATCG]{0,10}") {
-        prop_assume!(start <= end, "Start must be less than or equal to end");
+    fn proptest_sequence_slice(start in 0usize..100, extra in 0usize..100, seq in "[ATCG]{0,10}") {
+        let end = start + extra;
         let segment = Segment {
             range: ChunkRegion {
                 region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
@@ -233,8 +233,8 @@ proptest!(
             overlap_end: 0,
         };
 
-        // Ensure we don't panic on out-of-bounds slices
-        segment.sequence_slice::<5>(start, end).unwrap();
+        let result = segment.sequence_slice::<5>(start, end);
+        prop_assert!(result.is_ok(), "sequence_slice({start}, {end}) failed: {:?}", result.err());
     }
 );
 
