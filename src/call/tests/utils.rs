@@ -83,7 +83,7 @@ pub(crate) fn create_pileups(
         .map(|(pos_idx, reference_base)| {
             let pos = start + pos_idx as u64;
 
-            let reads = read_lines
+            let reads: Vec<SimpleRead> = read_lines
                 .iter()
                 .map(|read_line| SimpleRead {
                     base: read_line.bases[pos_idx],
@@ -98,7 +98,7 @@ pub(crate) fn create_pileups(
                 region: segment.range.clone(),
                 context,
                 pos: pos as u32,
-                reads: SimpleReads(reads),
+                reads: SimpleReads(reads.into()),
                 reference_base,
             }
         })

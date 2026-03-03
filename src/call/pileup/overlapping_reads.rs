@@ -282,10 +282,8 @@ mod tests {
 
     #[test]
     fn same_base_keeps_first() {
-        let reads = vec![
-            (b"read1".as_ref(), sr(Base::A, false)),
-            (b"read1".as_ref(), sr(Base::A, true)),
-        ];
+        let reads =
+            vec![(b"read1".as_ref(), sr(Base::A, false)), (b"read1".as_ref(), sr(Base::A, true))];
         for result in [run_dedup(reads.clone()), run_dedup_linear(reads)] {
             assert_eq!(result.len(), 1);
             assert_eq!(result[0].base, Base::A);
@@ -295,10 +293,8 @@ mod tests {
 
     #[test]
     fn different_base_removes_second_in_pair() {
-        let reads = vec![
-            (b"read1".as_ref(), sr(Base::A, false)),
-            (b"read1".as_ref(), sr(Base::C, true)),
-        ];
+        let reads =
+            vec![(b"read1".as_ref(), sr(Base::A, false)), (b"read1".as_ref(), sr(Base::C, true))];
         for result in [run_dedup(reads.clone()), run_dedup_linear(reads)] {
             assert_eq!(result.len(), 1);
             assert_eq!(result[0].base, Base::A);
@@ -307,10 +303,8 @@ mod tests {
 
     #[test]
     fn different_base_first_is_second() {
-        let reads = vec![
-            (b"read1".as_ref(), sr(Base::A, true)),
-            (b"read1".as_ref(), sr(Base::C, false)),
-        ];
+        let reads =
+            vec![(b"read1".as_ref(), sr(Base::A, true)), (b"read1".as_ref(), sr(Base::C, false))];
         for result in [run_dedup(reads.clone()), run_dedup_linear(reads)] {
             assert_eq!(result.len(), 1);
             assert_eq!(result[0].base, Base::C);

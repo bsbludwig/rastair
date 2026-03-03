@@ -1,16 +1,16 @@
 use crate::utils::{Base, Counter, Strand};
-use std::{fmt, ops::Deref};
+use std::{fmt, ops::Deref, sync::Arc};
 
 /// A collection of bases seen in a pileup
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 #[repr(transparent)]
-pub struct SimpleReads(pub(crate) Vec<SimpleRead>);
+pub struct SimpleReads(pub(crate) Arc<[SimpleRead]>);
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for SimpleReads {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.0.iter()).finish()
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -18,7 +18,7 @@ impl Deref for SimpleReads {
     type Target = [SimpleRead];
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &*self.0
     }
 }
 
@@ -63,11 +63,11 @@ impl fmt::Debug for SimpleRead {
 
 impl SimpleReads {
     pub fn matches(&self, base: Base) -> bool {
-        self.0.iter().all(|b| b.base == base)
+        self.iter().all(|b| b.base == base)
     }
 
     pub fn is_variant_candidate(&self) -> bool {
-        let counter: Counter = self.0.iter().map(|x| x.base).collect();
+        let counter: Counter = self.iter().map(|x| x.base).collect();
         counter.multiple_bases()
     }
 }

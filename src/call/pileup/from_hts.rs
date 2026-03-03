@@ -44,7 +44,7 @@ impl Pileup {
                 for (_, read) in alignments {
                     raw_reads.push(read);
                 }
-                SimpleReads(raw_reads)
+                SimpleReads(raw_reads.into())
             }
             NameCollector::Collect(buf) => {
                 buf.prepare(max_reads);
@@ -57,11 +57,10 @@ impl Pileup {
                     }
                 }
                 to_remove.sort_unstable();
-                let mut reads = SimpleReads(raw_reads);
                 for &idx in to_remove.iter().rev() {
-                    reads.0.swap_remove(idx);
+                    raw_reads.swap_remove(idx);
                 }
-                reads
+                SimpleReads(raw_reads.into())
             }
         };
 

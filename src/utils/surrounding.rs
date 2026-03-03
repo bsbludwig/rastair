@@ -175,7 +175,7 @@ mod tests {
             region: segment.range.clone(),
             context,
             pos: pos as u32,
-            reads: SimpleReads(vec![]),
+            reads: SimpleReads(vec![].into()),
             reference_base: Base::C,
         };
 
