@@ -18,17 +18,26 @@ get_script_dir <- function(command_line_args) {
 # Create argument parser
 parser <- arg_parser("Render RMarkdown document with genomic analysis parameters")
 
-# Add positional argument for bed file
-parser <- add_argument(parser, "bed_file", 
-                       help = "Input bed.gz file (required)")
-
 # Add optional arguments
+parser <- add_argument(parser, "--bed", 
+                       help = "Input per-read bed.gz file (must be tabix indexed)")
+
+parser <- add_argument(parser, "--vcf", 
+                       help = "Input vcf file (for cpg/gc bias plots)")
+
+parser <- add_argument(parser, "--bam", 
+                       help = "Input bam file (slower: will run rastair on the bam file to derive other data)")
+
 parser <- add_argument(parser, "--no-vbias", 
                        help = "Do not generate vbias (faster)",
                        flag=TRUE)
 
+parser <- add_argument(parser, "--no-gc", 
+                       help = "Do not generate gc/cpg bias plots",
+                       flag=TRUE)
+
 parser <- add_argument(parser, "--reference", 
-                       help = "Reference fasta sequence, fai indexed (required for vbias)",
+                       help = "Reference fasta sequence, fai indexed (required for vbias and gc plots)",
                        default = NULL)
 
 parser <- add_argument(parser, "--region", 
@@ -54,44 +63,53 @@ parser <- add_argument(parser, "--tabix-path",
                        help = "Path to tabix executable (optional)",
                        default = "tabix")
 
+parser <- add_argument(parser, "--bcftools-path", 
+                       help = "Path to bedtools executable (optional)",
+                       default = "bcftools")
+
+parser <- add_argument(parser, "--rastair-path", 
+                       help = "Path to rastair executable (optional)",
+                       default = "rastair")
+
 parser <- add_argument(parser, "--output-prefix", 
                        help = "Output path prefix (optional)",
                        default = ".")
+
+parser <- add_argument(parser, "--threads", 
+                       help = "Number of threads to use (only relevant when using bam input)",
+                       default = 1)
+
+parser <- add_argument(parser, "--wgbs", 
+                       help = "Treat the input as inverted, ie mod=unmod and unmod=mod",
+                       flag = TRUE)
 
 # Parse arguments
 args <- parse_args(parser)
 
 # Validate bed file exists
-if (!file.exists(args$bed_file)) {
-  cat("Error: Input bed.gz file does not exist:", args$bed_file, "\n")
+if ((is.na(args$bed) || is.null(args$bed) || !file.exists(args$bed)) && (is.na(args$bam) || is.null(args$bam) || !file.exists(args$bam))) {
+  cat("Error: either bam or bed input required\n")
   quit(status = 1)
 }
 
-# Print summary of parameters
-cat("=== RMarkdown Report Generation ===\n")
-cat("Parameters:\n")
-cat("  Reference:", ifelse(is.null(args$reference), "Not specified", args$reference), "\n")
-cat("  Plot vbias:", ifelse(is.null(args$no_vbias)||args$no_vbias==FALSE, "Yes", "No"), "\n")
-cat("  Genomic region:", ifelse(is.null(args$region), "Not specified", args$region), "\n")
-cat("  Include bitflag:", ifelse(is.null(args$include_flag), "Not specified", args$include_flag), "\n")
-cat("  Exclude bitflag:", ifelse(is.null(args$exclude_flag), "Not specified", args$exclude_flag), "\n")
-cat("  Read length:", ifelse(is.null(args$read_length), "Not specified", args$read_length), "\n")
-cat("  Tabix path:", args$tabix_path, "\n")
-cat("  Output prefix:", args$output_prefix, "\n")
-cat("  Input bed.gz file:", normalizePath(args$bed_file), "\n")
-cat("====================================\n\n")
-
 # Create parameters list for RMarkdown
 params_list <- list(
+  is_WGBS = args$wgbs,
   region = args$region,
   output_dir = normalizePath(args$output_prefix),
   include_flags = args$include_flag,
   exclude_flags = args$exclude_flag,
   read_len = is.na(args$read_length),
+  threads = args$threads,
   tabix = args$tabix_path,
-  reference = params$reference,
-  plot_vbias = is.null(params$no_vbias)||params$no_vbias==FALSE,
-  input_bgz = normalizePath(args$bed_file)
+  rastair = args$rastair_path,
+  bcftools = args$bcftools_path,
+  reference = ifelse(is.na(args$reference)||is.null(args$reference), "", normalizePath(args$reference)),
+  plot_vbias = is.null(args$no_vbias)||args$no_vbias==FALSE,
+  plot_gc = is.null(args$no_gc)||args$no_gc==FALSE,
+  input_bgz = ifelse(is.na(args$bed)||is.null(args$bed), "", normalizePath(args$bed)),
+  input_vcf = ifelse(is.na(args$vcf)||is.null(args$vcf), "", normalizePath(args$vcf)),
+  input_bam = ifelse(is.na(args$bam)||is.null(args$bam), "", normalizePath(args$bam))
 )
 
 script_dir = get_script_dir(commandArgs())
@@ -107,7 +125,7 @@ if (!file.exists(rmd_file)) {
 }
 
 # Define output file path
-output_file <- paste0(normalizePath(args$output_prefix), "/mbias.html")
+output_file <- paste0(normalizePath(args$output_prefix), "/qc_report.html")
 str(params_list)
 # Render the RMarkdown document
 cat("Rendering RMarkdown document...\n")
