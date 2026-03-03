@@ -23,11 +23,14 @@ use crate::{
     utils::cli,
 };
 use better_default::Default;
-use biosphere::{FlatForest, gpu::GpuForest};
+use biosphere::{
+    FlatForest,
+    gpu::{GpuForest, GpuInitError},
+};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
-    Result,
+    Result, Section,
     eyre::{Context, ensure},
 };
 use rastair_types::Probability;
@@ -93,11 +96,20 @@ impl MachineLearningParams {
         let flat_others = FlatForest::from_forest(&combined.others, feature_nums.others);
 
         let max_samples = GPU_BATCH_BUFFER_SIZE;
-        let gpu_prototype = self.gpu.then(|| GpuRastairModel {
-            cpg: GpuForest::from_flat_forest(&flat_cpg, max_samples),
-            denovo: GpuForest::from_flat_forest(&flat_denovo, max_samples),
-            others: GpuForest::from_flat_forest(&flat_others, max_samples),
-        });
+        let gpu_prototype = if self.gpu {
+            let gpu_forest = |forest| {
+                GpuForest::from_flat_forest(forest, max_samples)
+                    .wrap_err("Failed to initialise GPU context")
+                    .note(GpuInitError::hints())
+            };
+            Some(GpuRastairModel {
+                cpg: gpu_forest(&flat_cpg)?,
+                denovo: gpu_forest(&flat_denovo)?,
+                others: gpu_forest(&flat_others)?,
+            })
+        } else {
+            None
+        };
 
         let flat_model =
             FlatRastairModel { cpg: flat_cpg, denovo: flat_denovo, others: flat_others };

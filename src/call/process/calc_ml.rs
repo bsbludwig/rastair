@@ -205,15 +205,17 @@ pub fn batch_add_ml_metrics(
     }
 
     // Phase 2b: submit all three GPU dispatches, then collect — GPU work overlaps.
-    let h_cpg = gpu.cpg.predict_submit(&pending.cpg_features.slice(s![..pending.cpg_count, ..]));
-    let h_denovo =
-        gpu.denovo.predict_submit(&pending.denovo_features.slice(s![..pending.denovo_count, ..]));
-    let h_others =
-        gpu.others.predict_submit(&pending.others_features.slice(s![..pending.others_count, ..]));
+    let h_cpg = gpu.cpg.predict_submit(&pending.cpg_features.slice(s![..pending.cpg_count, ..]))?;
+    let h_denovo = gpu
+        .denovo
+        .predict_submit(&pending.denovo_features.slice(s![..pending.denovo_count, ..]))?;
+    let h_others = gpu
+        .others
+        .predict_submit(&pending.others_features.slice(s![..pending.others_count, ..]))?;
 
-    let cpg_preds = collect_handle(h_cpg);
-    let denovo_preds = collect_handle(h_denovo);
-    let others_preds = collect_handle(h_others);
+    let cpg_preds = collect_handle(h_cpg)?;
+    let denovo_preds = collect_handle(h_denovo)?;
+    let others_preds = collect_handle(h_others)?;
 
     for (items, preds) in [
         (&pending.cpg, &cpg_preds),
@@ -233,8 +235,11 @@ pub fn batch_add_ml_metrics(
     Ok(())
 }
 
-fn collect_handle(handle: Option<PredictHandle<'_>>) -> Array1<f32> {
-    handle.map(|h| h.collect()).unwrap_or_else(|| Array1::zeros(0))
+fn collect_handle(handle: Option<PredictHandle<'_>>) -> Result<Array1<f32>> {
+    match handle {
+        Some(h) => Ok(h.collect()?),
+        None => Ok(Array1::zeros(0)),
+    }
 }
 
 struct PendingGroups {
