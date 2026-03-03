@@ -32,6 +32,16 @@ pub struct VariantCallingParams {
     #[arg(help_heading = cli::sections::FILTER)]
     pub keep_overlapping_reads: bool,
 
+    /// Depth threshold below which linear name dedup is used instead of a hashmap
+    ///
+    /// At pileup positions with depth ≤ this value, read name deduplication
+    /// uses a linear scan through parallel suffix/name arrays rather than an
+    /// FxHashMap. Set to 0 to always use the hashmap.
+    #[arg(long, default_value_t = 30)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    #[default(30)]
+    pub linear_dedup_threshold: usize,
+
     // The minimum number of reads to call a position as a variant
     #[arg(long, default_value_t = 3)]
     #[arg(help_heading = cli::sections::FILTER)]
