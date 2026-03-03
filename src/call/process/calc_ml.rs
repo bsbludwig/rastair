@@ -6,9 +6,8 @@ use crate::{
     utils::logging::ThisIsABug,
     vcf::{low_ml_score, pre_ml},
 };
-use biosphere::gpu::PredictHandle;
 use color_eyre::eyre::{ContextCompat as _, Result};
-use ndarray::{Array1, Array2, s};
+use ndarray::{Array2, s};
 use rastair_types::{Base, Probability};
 use tracing::{debug, instrument};
 
@@ -204,19 +203,57 @@ pub fn batch_add_ml_metrics(
         }
     }
 
-    // Phase 2b: submit all three GPU dispatches, then collect — GPU work overlaps.
-    let h_cpg = gpu.cpg.predict_submit(&pending.cpg_features.slice(s![..pending.cpg_count, ..]))?;
-    let h_denovo = gpu
-        .denovo
-        .predict_submit(&pending.denovo_features.slice(s![..pending.denovo_count, ..]))?;
-    let h_others = gpu
-        .others
-        .predict_submit(&pending.others_features.slice(s![..pending.others_count, ..]))?;
+    // Phase 2b: predict in sub-batches that fit the GPU buffer.
+    // Within each round, submit all 3 models before collecting so GPU work overlaps.
+    let cpg_features = pending.cpg_features.slice(s![..pending.cpg_count, ..]);
+    let denovo_features = pending.denovo_features.slice(s![..pending.denovo_count, ..]);
+    let others_features = pending.others_features.slice(s![..pending.others_count, ..]);
 
-    let cpg_preds = collect_handle(h_cpg)?;
-    let denovo_preds = collect_handle(h_denovo)?;
-    let others_preds = collect_handle(h_others)?;
+    let max_count = pending.cpg_count.max(pending.denovo_count).max(pending.others_count);
+    let mut cpg_preds = Vec::with_capacity(pending.cpg_count);
+    let mut denovo_preds = Vec::with_capacity(pending.denovo_count);
+    let mut others_preds = Vec::with_capacity(pending.others_count);
 
+    for start in (0..max_count).step_by(GPU_BATCH_BUFFER_SIZE) {
+        // Submit all 3 models for this sub-batch round concurrently.
+        let h_cpg = {
+            if start < pending.cpg_count {
+                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.cpg_count);
+                gpu.cpg.predict_submit(&cpg_features.slice(s![start..end, ..]))?
+            } else {
+                None
+            }
+        };
+        let h_denovo = {
+            if start < pending.denovo_count {
+                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.denovo_count);
+                gpu.denovo.predict_submit(&denovo_features.slice(s![start..end, ..]))?
+            } else {
+                None
+            }
+        };
+        let h_others = {
+            if start < pending.others_count {
+                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.others_count);
+                gpu.others.predict_submit(&others_features.slice(s![start..end, ..]))?
+            } else {
+                None
+            }
+        };
+
+        // Collect all 3 before next round.
+        if let Some(h) = h_cpg {
+            cpg_preds.extend(h.collect()?.iter().copied());
+        }
+        if let Some(h) = h_denovo {
+            denovo_preds.extend(h.collect()?.iter().copied());
+        }
+        if let Some(h) = h_others {
+            others_preds.extend(h.collect()?.iter().copied());
+        }
+    }
+
+    // Phase 2c: write calibrated predictions back into pileup filters.
     for (items, preds) in [
         (&pending.cpg, &cpg_preds),
         (&pending.denovo, &denovo_preds),
@@ -233,13 +270,6 @@ pub fn batch_add_ml_metrics(
     }
 
     Ok(())
-}
-
-fn collect_handle(handle: Option<PredictHandle<'_>>) -> Result<Array1<f32>> {
-    match handle {
-        Some(h) => Ok(h.collect()?),
-        None => Ok(Array1::zeros(0)),
-    }
 }
 
 struct PendingGroups {
