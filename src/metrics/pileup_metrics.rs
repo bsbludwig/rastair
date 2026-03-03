@@ -14,7 +14,7 @@ use color_eyre::{
 };
 use rastair_types::SmallVec;
 use rastair_types::SmolStr;
-use rastair_types::{Base, Probability, RootMeanSquare, RootMeanSquareExt as _, Strand};
+use rastair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
 use rastair_vcf::VcfFilter;
 use std::ops::Deref;
 use thiserror::Error;
@@ -418,13 +418,8 @@ impl AlleleMetrics {
 
         let base = reads[0].base;
 
-        let i = || reads.iter();
-        let ot = || i().filter(|x| x.strand == OT);
-        let ob = || i().filter(|x| x.strand == OB);
-
         let denovo = {
             if base == pileup.reference_base {
-                // we are looking at the ref allele
                 FormsDenovo::No
             } else if pileup.ref_before() == C && base == G {
                 FormsDenovo::ThisBecomesG
@@ -435,31 +430,54 @@ impl AlleleMetrics {
             }
         };
 
+        let mut baseq = RmsAccumulator::new();
+        let mut mapq = RmsAccumulator::new();
+        let mut baseq_ot = RmsAccumulator::new();
+        let mut baseq_ob = RmsAccumulator::new();
+        let mut mapq_ot = RmsAccumulator::new();
+        let mut mapq_ob = RmsAccumulator::new();
+        let mut aligned = RmsAccumulator::new();
+        let mut indels = RmsAccumulator::new();
+        let mut pos_in_read = RmsAccumulator::new();
+        let mut ot_count = 0u32;
+        let mut ob_count = 0u32;
+
+        for r in reads {
+            let q = f64::from(r.qual);
+            let m = f64::from(r.mapq);
+            baseq.add(q);
+            mapq.add(m);
+            match r.strand {
+                OT => {
+                    ot_count += 1;
+                    baseq_ot.add(q);
+                    mapq_ot.add(m);
+                }
+                OB => {
+                    ob_count += 1;
+                    baseq_ob.add(q);
+                    mapq_ob.add(m);
+                }
+                Strand::Unknown => {
+                    // Reads with unknown strand are not counted in strand-specific metrics
+                }
+            }
+            aligned.add(f64::from(r.matching_bases));
+            indels.add(f64::from(r.indels));
+            pos_in_read.add(f64::from(r.position.pos) / f64::from(r.position.read_length));
+        }
+
         Ok(AlleleMetrics {
             base,
             depth: allele_depth,
-            baseq: i().map(|x| x.qual).rms(),
-            mapq: i().map(|x| x.mapq).rms(),
-            strand_count: ByStrand {
-                base,
-                ot: u32::try_from(ot().count()).wrap_err("read count should fit into u32")?,
-                ob: u32::try_from(ob().count()).wrap_err("read count should fit into u32")?,
-            },
-            baseq_s: ByStrand {
-                base,
-                ot: ot().map(|x| x.qual).collect(),
-                ob: ob().map(|x| x.qual).collect(),
-            },
-            mapq_s: ByStrand {
-                base,
-                ot: ot().map(|x| x.mapq).collect(),
-                ob: ob().map(|x| x.mapq).collect(),
-            },
-            num_aligned_bases: i().map(|x| x.matching_bases).rms(),
-            num_indels: i().map(|x| x.indels).rms(),
-            position_in_read: i()
-                .map(|b| f64::from(b.position.pos) / f64::from(b.position.read_length))
-                .rms(),
+            baseq: baseq.finish(),
+            mapq: mapq.finish(),
+            strand_count: ByStrand { base, ot: ot_count, ob: ob_count },
+            baseq_s: ByStrand { base, ot: baseq_ot.finish(), ob: baseq_ob.finish() },
+            mapq_s: ByStrand { base, ot: mapq_ot.finish(), ob: mapq_ob.finish() },
+            num_aligned_bases: aligned.finish(),
+            num_indels: indels.finish(),
+            position_in_read: pos_in_read.finish(),
             allele_frequency: Probability::new(allele_depth.f() / pileup.reads.len().f())
                 .wrap_err("allele frequency not in in [0,1]")
                 .this_is_a_bug()?,

@@ -25,20 +25,44 @@ pub struct RootMeanSquare(f64);
 
 impl<T: Into<f64>> FromIterator<T> for RootMeanSquare {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let mut count = 0;
-        let sum_of_squares: f64 = iter
-            .into_iter()
-            .map(|x| {
-                let x: f64 = x.into();
-                count += 1;
-                x.powi(2)
-            })
-            .sum();
-        if count == 0 {
+        let mut acc = RmsAccumulator::new();
+        for x in iter {
+            acc.add(x.into());
+        }
+        acc.finish()
+    }
+}
+
+/// Incremental accumulator for computing RMS in a single pass.
+///
+/// Useful when multiple RMS values need to be computed from the same data
+/// without iterating multiple times.
+#[derive(Clone, Copy, Default)]
+pub struct RmsAccumulator {
+    sum_of_squares: f64,
+    count: u32,
+}
+
+impl RmsAccumulator {
+    /// Creates a new empty accumulator.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a value to the accumulator.
+    #[inline]
+    pub fn add(&mut self, x: f64) {
+        self.sum_of_squares += x * x;
+        self.count += 1;
+    }
+
+    /// Computes the final RMS from accumulated values.
+    pub fn finish(self) -> RootMeanSquare {
+        if self.count == 0 {
             return RootMeanSquare(0.0);
         }
-        let average_of_squares = sum_of_squares / f64::from(count);
-        RootMeanSquare(average_of_squares.sqrt())
+        let average = self.sum_of_squares / f64::from(self.count);
+        RootMeanSquare(average.sqrt())
     }
 }
 
