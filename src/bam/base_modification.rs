@@ -41,10 +41,7 @@ impl MethylatedPositions {
     ///
     /// This determines the correct base and strand for CpG methylation based on
     /// the actual sequence content and read orientation
-    // FIMXE: This is wrong
-    // - reverse should have seq reversed?
-    // - positions are:  comma separated list of how many seq bases of the stated base type to skip, stored as a delta to the last and starting with 0 as the first (or next) base, starting from the uncomplemented 5’ end of the SEQ field.
-    // work with modkit code -- MmTagInfo, DeltaListConverter, test_get_base_mod_probs
+    /// Positions must be indices into `seq` (in stored/SEQ orientation).
     pub fn new(strand: Strand, seq: &[u8], methylated_positions: &[u32]) -> Self {
         let base = match strand {
             Strand::OT => Base::C,

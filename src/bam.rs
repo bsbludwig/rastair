@@ -148,33 +148,54 @@ fn rewrite_record(
     record: &mut Record,
     mode: BamMode,
 ) -> Result<()> {
-    let is_reverse = record.is_reverse();
     let strand = StrandFromRecord::strand(record);
     let is_first_in_pair = record.is_first_in_template();
 
+    let is_reverse = record.is_reverse();
+
     match mode {
         BamMode::Standard => {
+            // Methylation detection works in stored (+ strand) orientation:
+            // T→C for OT, A→G for OB. Positions are stored-SEQ indices.
             let MethylatedInfo { seq, methylated_positions } =
-                get_methylated_positions(calls, record, is_reverse);
+                get_methylated_positions(calls, record);
 
-            let seq_for_mm_tag = if is_reverse { reverse_complement(&seq) } else { seq.clone() };
+            // The MM tag spec requires positions relative to the original read
+            // (5' to 3'). For forward reads this equals the stored SEQ. For
+            // reverse reads the stored SEQ is the reverse complement of the
+            // original read, so we must convert both the sequence and positions
+            // to original-read orientation, and flip the base/strand qualifier.
+            let (mm_seq, mm_positions, mm_strand) = if is_reverse {
+                let seq_len = seq.len();
+                let original_positions: SmallVec<u32, 10> = methylated_positions
+                    .iter()
+                    .map(|&p| u32::try_from(seq_len - 1 - p as usize).expect("position fits"))
+                    .collect();
+                let original_seq = reverse_complement(&seq);
+                let flipped_strand = match strand {
+                    Strand::OT => Strand::OB,
+                    Strand::OB => Strand::OT,
+                    Strand::Unknown => Strand::Unknown,
+                };
+                (original_seq, original_positions, flipped_strand)
+            } else {
+                (seq.clone(), methylated_positions, strand)
+            };
 
-            let mods = MethylatedPositions::new(strand, &seq_for_mm_tag, &methylated_positions);
+            let mods = MethylatedPositions::new(mm_strand, &mm_seq, &mm_positions);
             record.set_seq(&seq);
             mods.apply_to_record(record)?;
         }
         BamMode::Legacy => {
-            let methylated_positions = find_methylated_positions(calls, record, is_reverse);
+            let methylated_positions = find_methylated_positions(calls, record);
 
-            let current_seq = record.seq().as_bytes();
-            let seq_for_tags =
-                if is_reverse { reverse_complement(&current_seq) } else { current_seq };
+            let seq = record.seq().as_bytes();
 
             let mut methylated_set = FxHashSet::default();
             methylated_set.extend(methylated_positions.iter().map(|&pos| pos as usize));
 
             let xr_tags =
-                XrTags::new_legacy(&seq_for_tags, strand, is_first_in_pair, &methylated_set);
+                XrTags::new_legacy(&seq, strand, is_first_in_pair, &methylated_set);
             xr_tags.apply_to_record(record)?;
         }
     }
@@ -186,32 +207,22 @@ fn rewrite_record(
 fn find_methylated_positions(
     calls: &FxHashMap<u32, RastairCall>,
     record: &Record,
-    is_reverse: bool,
 ) -> SmallVec<u32, 10> {
     let strand = StrandFromRecord::strand(record);
-    let current_seq = record.seq().as_bytes();
-    let seq = if is_reverse { reverse_complement(&current_seq) } else { current_seq };
-    let seq_len = seq.len();
+    let seq = record.seq().as_bytes();
     let mut methylated_positions: SmallVec<u32, 10> = SmallVec::new();
 
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
         let Some(pos_in_read) = pos_in_read else { continue };
         let Some(pos_in_ref) = pos_in_ref else { continue };
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
-        let pos_in_read = u32::try_from(pos_in_read).expect("position fits in u32");
+        let pos_in_read = pos_in_read as usize;
 
         if let Some(call) = calls.get(&pos_in_ref)
             && let RastairCall::Cpg { methylated, .. } = call
             && *methylated
         {
-            let original_pos = if is_reverse {
-                u32::try_from(seq_len - 1 - pos_in_read as usize).expect("position fits in u32")
-            } else {
-                pos_in_read
-            };
-
-            let pos = original_pos as usize;
-            let observed_base = Base::from(seq[pos]);
+            let observed_base = Base::from(seq[pos_in_read]);
 
             let is_methylation_evidence = match strand {
                 Strand::OT => observed_base == Base::T,
@@ -220,7 +231,7 @@ fn find_methylated_positions(
             };
 
             if is_methylation_evidence {
-                methylated_positions.push(original_pos);
+                methylated_positions.push(pos_in_read as u32);
             }
         }
     }
@@ -234,20 +245,19 @@ struct MethylatedInfo {
 }
 
 fn get_methylated_positions(
-    // All calls in the region of the record (they are all the same contig)
     calls: &FxHashMap<u32, RastairCall>,
     record: &Record,
-    is_reverse: bool,
 ) -> MethylatedInfo {
     use Base::*;
 
     let strand = StrandFromRecord::strand(record);
 
-    // For reverse reads, we need to work with the original sequence
-    let current_seq = record.seq().as_bytes();
-    let mut seq = if is_reverse { reverse_complement(&current_seq) } else { current_seq };
-
-    let seq_len = seq.len();
+    // The stored SEQ is always in + strand (reference) orientation, regardless
+    // of whether the read mapped to the reverse strand. Methylation evidence
+    // bases (T for OT at C, A for OB at G) are also defined in + strand terms,
+    // and `aligned_pairs_full` returns positions into the stored SEQ. So we work
+    // entirely in stored orientation — no reverse-complement needed.
+    let mut seq = record.seq().as_bytes();
     let mut methylated_positions: SmallVec<u32, 10> = SmallVec::new();
 
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
@@ -258,39 +268,25 @@ fn get_methylated_positions(
             continue;
         };
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
-        let pos_in_read = u32::try_from(pos_in_read).expect("position fits in u32");
+        let pos_in_read = pos_in_read as usize;
 
         if let Some(call) = calls.get(&pos_in_ref)
             && let RastairCall::Cpg { methylated, .. } = call
             && *methylated
         {
-            // For reverse reads, map current position to original position
-            let original_pos = if is_reverse {
-                u32::try_from(seq_len - 1 - pos_in_read as usize).expect("position fits in u32")
-            } else {
-                pos_in_read
-            };
+            let observed_base = Base::from(seq[pos_in_read]);
 
-            let pos = original_pos as usize;
-            let observed_base = Base::from(seq[pos]);
-
-            // Let's rewrite the sequence to un-modify the bases and collect
-            // methylated positions
             match strand {
-                // If we are on the top strand, we expect to see T at methylated
-                // C positions
                 Strand::OT => {
                     if observed_base == T {
-                        seq[pos] = *C;
-                        methylated_positions.push(original_pos);
+                        seq[pos_in_read] = *C;
+                        methylated_positions.push(pos_in_read as u32);
                     }
                 }
-                // If we are on the bottom strand, we expect to see A at
-                // methylated G
                 Strand::OB => {
                     if observed_base == A {
-                        seq[pos] = *G;
-                        methylated_positions.push(original_pos);
+                        seq[pos_in_read] = *G;
+                        methylated_positions.push(pos_in_read as u32);
                     }
                 }
                 Strand::Unknown => continue,
@@ -298,15 +294,9 @@ fn get_methylated_positions(
         }
     }
 
-    // For reverse reads, reverse complement back to get the modified SEQ
-    if is_reverse {
-        seq = reverse_complement(&seq);
-    }
-
     MethylatedInfo { seq, methylated_positions }
 }
 
-/// Reverse complement a DNA sequence
 fn reverse_complement(seq: &[u8]) -> Vec<u8> {
     seq.iter()
         .rev()
@@ -396,17 +386,16 @@ mod tests {
             calls
         };
 
-        let data = get_methylated_positions(&calls, &record, false);
+        let data = get_methylated_positions(&calls, &record);
         let new_seq = &data.seq;
 
         // for human comparison
         assert_snapshot!(as_base_string(&ol_seq), @"AAAGGCGTGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGTA");
         assert_snapshot!(as_base_string(new_seq), @"AAAGGCGTGCGCCGCCGCGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACGGGGTTTCTCTGTGTA");
-        // changed positions:                          __ _ _ ^  ^  ^ _   __   __   __     _   __  __  __      _ _  ^___       _ _
-        // positions in list of all Gs:                       4  0  0                                               16
 
         assert_compact_debug_snapshot!(data.methylated_positions, @"[10, 13, 16, 64]");
-        // okay but are these really all As that were methylated Gs?
+        // verify these are all positions where A (methylation evidence) was
+        // rewritten to G
         for &pos in &data.methylated_positions {
             let base = Base::from(ol_seq[pos as usize]);
             if base != A {
@@ -422,10 +411,24 @@ mod tests {
             }
         }
 
-        let methylated_positions =
-            MethylatedPositions::new(Strand::OB, new_seq, &data.methylated_positions);
+        // This is a reverse OB read (flag=83). The MM tag must be in
+        // original-read orientation (RC of stored SEQ), with flipped
+        // base/strand (OB→OT = C+m).
+        let is_reverse = record.is_reverse();
+        assert!(is_reverse, "test record should be reverse-strand");
 
-        assert_compact_debug_snapshot!(methylated_positions, @"MethylatedPositions { base: G, strand: OB, positions: [4, 0, 0, 16] }");
+        let seq_len = new_seq.len();
+        let original_positions: SmallVec<u32, 10> = data
+            .methylated_positions
+            .iter()
+            .map(|&p| u32::try_from(seq_len - 1 - p as usize).expect("fits"))
+            .collect();
+        let original_seq = reverse_complement(new_seq);
+
+        let methylated_positions =
+            MethylatedPositions::new(Strand::OT, &original_seq, &original_positions);
+
+        assert_compact_debug_snapshot!(methylated_positions, @"MethylatedPositions { base: C, strand: OT, positions: [5, 16, 0, 0] }");
         methylated_positions
             .apply_to_record(&mut record)
             .wrap_err("failed to apply modifications to record")?;
@@ -433,7 +436,7 @@ mod tests {
         let Aux::String(mod_string) = record.aux(b"MM").wrap_err("missing MM tag")? else {
             bail!("MM tag is not a string");
         };
-        assert_snapshot!(mod_string, @"G-m,4,0,0,16;");
+        assert_snapshot!(mod_string, @"C+m,5,16,0,0;");
 
         Ok(())
     }
@@ -605,9 +608,9 @@ mod tests {
         xm_tag.chars().enumerate().filter(|(_, c)| *c == 'Z').map(|(i, _)| i).collect()
     }
 
-    /// Get the forward-oriented sequence from a record (what `rewrite_record`
-    /// calls `seq_for_mm_tag`). For reverse reads this is the reverse
-    /// complement of the stored SEQ.
+    /// Get the sequence in MM tag orientation. For forward reads this is the
+    /// stored SEQ; for reverse reads it is the reverse complement (original
+    /// read orientation), since MM positions count from the original 5' end.
     fn seq_for_mm_tag(record: &Record) -> Vec<u8> {
         let stored = record.seq().as_bytes();
         if record.is_reverse() { reverse_complement(&stored) } else { stored }
