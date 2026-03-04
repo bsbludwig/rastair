@@ -1,5 +1,5 @@
 mod utils;
-use rust_htslib::bam::Read as BamRead;
+use rust_htslib::bam::{self, Read as BamRead};
 use utils::*;
 
 #[test]
@@ -188,6 +188,99 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
     }
 
     assert!(records_checked > 0, "No records were checked");
+
+    Ok(())
+}
+
+/// Rewritten BAM must be sorted by position and contain no duplicate reads,
+/// even when `--segment-max-length` forces processing across multiple segments.
+/// Reads overlapping a segment boundary used to be emitted by both the segment
+/// they start in and the next one, causing duplicates and sort-order violations
+/// that made `samtools index` fail.
+#[test]
+fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    let output_bam = temp_dir.path().join("output.bam");
+
+    // Generate calls over a wider region so we get enough reads to span
+    // multiple segments.
+    rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--no-ml",
+            "--region=chr19:6103000-6106000",
+            "--cpgs-only",
+            "-o",
+        ])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    std::process::Command::new("tabix")
+        .args(["-p", "bed"])
+        .arg(&calls_bed)
+        .output()
+        .wrap_err("Failed to index calls file")?;
+
+    // Use a very small segment length to force many segment boundaries,
+    // maximising the chance that reads straddle them.
+    rastair()
+        .args([
+            "bam",
+            "standard",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "--region=chr19:6103000-6106000",
+            "--segment-max-length=200",
+            "tests/data/test.bam",
+        ])
+        .arg(&calls_bed)
+        .args(["-o"])
+        .arg(&output_bam)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to rewrite BAM")?;
+
+    // Count records in the input BAM for the same region (the ground truth).
+    let input_count = {
+        let mut bam_in = bam::IndexedReader::from_path("tests/data/test.bam")
+            .wrap_err("Failed to open input BAM")?;
+        bam_in.fetch(("chr19", 6103000, 6106000))?;
+        let mut r = bam::Record::new();
+        let mut n = 0u32;
+        while let Some(res) = bam_in.read(&mut r) {
+            res?;
+            n += 1;
+        }
+        n
+    };
+
+    let mut reader = bam::Reader::from_path(&output_bam).wrap_err("Failed to open output BAM")?;
+
+    let mut record = bam::Record::new();
+    let mut prev_pos: i64 = -1;
+    let mut output_count = 0u32;
+
+    while let Some(result) = reader.read(&mut record) {
+        result.wrap_err("Failed to read BAM record")?;
+        output_count += 1;
+
+        let pos = record.pos();
+        ensure!(pos >= prev_pos, "Output BAM is not sorted: position {prev_pos} followed by {pos}");
+        prev_pos = pos;
+    }
+
+    ensure!(output_count > 10, "Expected more than 10 records, got {output_count}");
+    ensure!(
+        output_count == input_count,
+        "Record count mismatch: input has {input_count} but output has {output_count} \
+         (duplicates introduced or records lost)"
+    );
 
     Ok(())
 }

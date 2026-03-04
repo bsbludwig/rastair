@@ -94,9 +94,17 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
         writer
     };
 
-    for segment in &regions {
-        rewrite_region(&mut readers.bam, &mut calls_reader, &mut writer, &segment.region, mode)
-            .wrap_err_with(|| format!("Failed to rewrite region {}", segment.region))?;
+    for (i, segment) in regions.iter().enumerate() {
+        let is_last = i == regions.len() - 1;
+        rewrite_region(
+            &mut readers.bam,
+            &mut calls_reader,
+            &mut writer,
+            &segment.region,
+            mode,
+            is_last,
+        )
+        .wrap_err_with(|| format!("Failed to rewrite region {}", segment.region))?;
     }
 
     Ok(())
@@ -109,6 +117,7 @@ fn rewrite_region(
     writer: &mut rust_htslib::bam::Writer,
     region: &Region,
     mode: BamMode,
+    is_last_segment: bool,
 ) -> Result<()> {
     FetchDefinition::try_from(region)
         .wrap_err("Could not convert region string")
@@ -128,10 +137,23 @@ fn rewrite_region(
         .map(|call| (call.pos, call.call.clone()))
         .collect();
 
+    let region_start = region.start as i64;
+    let region_end = region.end as i64;
     let mut record = Record::new();
     while let Some(result) = bam.read(&mut record) {
         if let Err(error) = result {
             warn!(%error, "Failed to read BAM record");
+            continue;
+        }
+
+        // `bam.fetch` returns all reads overlapping the region. Adjacent
+        // segments share boundary positions (segment N ends at X, segment N+1
+        // starts at X), so reads at the boundary would be emitted twice.
+        // Each segment owns reads in [region_start, region_end); the last
+        // segment also includes region_end.
+        let pos = record.pos();
+        if pos < region_start || (!is_last_segment && pos >= region_end) {
+            continue;
         }
 
         rewrite_record(&calls, &mut record, mode).wrap_err("failed to rewrite record")?;
@@ -194,8 +216,7 @@ fn rewrite_record(
             let mut methylated_set = FxHashSet::default();
             methylated_set.extend(methylated_positions.iter().map(|&pos| pos as usize));
 
-            let xr_tags =
-                XrTags::new_legacy(&seq, strand, is_first_in_pair, &methylated_set);
+            let xr_tags = XrTags::new_legacy(&seq, strand, is_first_in_pair, &methylated_set);
             xr_tags.apply_to_record(record)?;
         }
     }
