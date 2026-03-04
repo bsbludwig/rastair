@@ -76,6 +76,25 @@ impl NameBuffer {
 /// Maps each qname to the index of the first read seen with that name.
 /// `prepare()` clears and pre-reserves capacity; the allocation persists
 /// across positions so there is no per-position overhead.
+// TODO: Invesigate more specific hasher for our ASCII read names suffixes.
+// Claude said: "One multiply. FxHash is fast but has poor avalanche — the low
+// bits of the result barely depend on the high bits of the input. For our
+// specific inputs (ASCII coordinate bytes like 9012\0\0\0\0), many suffixes
+// have identical high bytes (they're all 0x30–0x39), so the low bits of
+// suffix_u64 carry most of the discrimination. Those low bits feed poorly into
+// the low bits of the FxHash output, which matters because hashbrown uses both
+// low and high bits for bucket selection (H1 for bucket index, H2 for the SIMD
+// control byte comparison). Better choice: Fibonacci/Knuth multiplicative
+// hashing. The golden ratio constant 2^64 / φ = 0x9e3779b97f4a7c15 is provably
+// optimal for power-of-2 table sizes — by Knuth's theorem it maximises the
+// minimum distance between any two mapped values. Same cost (one multiply),
+// better spread. For the proposed FixedHashInner with a u32 suffix key, the
+// standard optimal formula is the folded multiply: ((suffix as
+// u64).wrapping_mul(0x9e3779b97f4a7c15_u64) >> 32) as usize & (capacity - 1)
+// This uses a 64-bit multiply on a 32-bit input so carry propagation fully
+// mixes all input bits into the high 32 bits, then takes those high bits for
+// the slot index. One u64 multiply + one shift — same instruction count as
+// FxHash, much better avalanche from structured inputs."
 struct HashInner(FxHashMap<NameKey, usize>);
 
 impl HashInner {
