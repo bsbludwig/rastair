@@ -1,8 +1,8 @@
 use crate::{
-    metrics::ml::types::{MlFeatureSet, RastairModel},
+    metrics::ml::types::{MlFeatureSet, RastairFlatModel},
     utils::cli,
 };
-use biosphere::RandomForest;
+use biosphere::{FlatForest, RandomForest};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, Result, bail, ensure};
 use lz4::{Decoder, EncoderBuilder};
@@ -72,7 +72,12 @@ pub fn pack_models(params: &PackModelParams) -> Result<()> {
     let others =
         load_random_forest(params.others.path()).wrap_err("Failed to load others model")?;
 
-    let combined = RastairModel {
+    let features = params.ml_features.get_calculator().feature_num();
+    let cpg = FlatForest::from_forest(&cpg, features.cpg);
+    let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
+    let others = FlatForest::from_forest(&others, features.others);
+
+    let combined = RastairFlatModel {
         cpg,
         denovo,
         others,
@@ -121,13 +126,13 @@ fn decode_random_forest(bytes: &[u8]) -> Result<RandomForest> {
     rmp_serde::from_read(decoder).wrap_err("Failed to deserialize RandomForest model")
 }
 
-fn decode_combined_model(bytes: &[u8]) -> Result<RastairModel> {
+fn decode_combined_model(bytes: &[u8]) -> Result<RastairFlatModel> {
     let decoder = Decoder::new(bytes).wrap_err("Failed to create LZ4 decoder")?;
     rmp_serde::from_read(decoder).wrap_err("Failed to deserialize combined model")
 }
 
 /// Serialize a model to disk with LZ4 compression
-fn serialize_model(model: &RastairModel, path: ClioPath) -> Result<()> {
+fn serialize_model(model: &RastairFlatModel, path: ClioPath) -> Result<()> {
     let file = path.create().wrap_err("Failed to create output file for model serialization")?;
     let mut encoder =
         EncoderBuilder::new().level(16).build(file).wrap_err("Failed to create LZ4 encoder")?;

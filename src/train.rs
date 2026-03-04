@@ -8,13 +8,13 @@ use crate::{
         PileupMetrics,
         ml::{
             features::FeatureCalculatorBox,
-            types::{MlFeatureSet, RastairModel},
+            types::{MlFeatureSet, RastairFlatModel},
         },
     },
     sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli},
 };
-use biosphere::{MaxFeatures, RandomForest, RandomForestParameters};
+use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, ContextCompat, Result, bail, ensure};
 use lz4::EncoderBuilder;
@@ -253,13 +253,22 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         "Collected training examples",
     );
 
-    let model = RastairModel {
+    let features = params.ml_features.get_calculator().feature_num();
+    let cpg =
+        train_and_save_model("cpg", cpg_data, params).wrap_err("Failed to train CpG model")?;
+    let cpg = FlatForest::from_forest(&cpg, features.cpg);
+    let denovo = train_and_save_model("denovo", denovo_data, params)
+        .wrap_err("Failed to train de-novo CpG model")?;
+    let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
+    let others = train_and_save_model("other", other_data, params)
+        .wrap_err("Failed to train other model")?;
+    let others = FlatForest::from_forest(&others, features.others);
+
+    let model = RastairFlatModel {
         feature_set: params.ml_features,
-        cpg: train_and_save_model("cpg", cpg_data, params).wrap_err("Failed to train CpG model")?,
-        denovo: train_and_save_model("denovo", denovo_data, params)
-            .wrap_err("Failed to train de-novo CpG model")?,
-        others: train_and_save_model("other", other_data, params)
-            .wrap_err("Failed to train other model")?,
+        cpg,
+        denovo,
+        others,
         cpg_platt: Default::default(),
         denovo_platt: Default::default(),
         others_platt: Default::default(),
@@ -544,7 +553,7 @@ fn subsample_training_data(
 }
 
 /// Serialize a model to disk with LZ4 compression
-fn serialize_model(model: &RastairModel, path: ClioPath) -> Result<()> {
+fn serialize_model(model: &RastairFlatModel, path: ClioPath) -> Result<()> {
     let file = path.create().wrap_err("Failed to create output file for model serialization")?;
     let mut encoder =
         EncoderBuilder::new().level(16).build(file).wrap_err("Failed to create LZ4 encoder")?;

@@ -1,7 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 // CLI modules
-pub(crate) mod call;
+pub mod call;
 pub use call::{CallParams, call};
 mod call_reads;
 pub use call_reads::{PerReadParams, call_reads};
@@ -20,7 +20,7 @@ pub use vcf::Record as VcfRecord;
 
 pub(crate) mod bam;
 pub(crate) mod bed;
-pub(crate) mod metrics;
+pub mod metrics;
 pub(crate) mod train;
 pub use train::{TrainModelParams, train_model};
 mod verify;

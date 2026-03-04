@@ -1,11 +1,9 @@
-use std::fmt;
-
+use crate::metrics::ml::features::FeatureCalculatorBox;
+use biosphere::FlatForest;
 use biosphere::gpu::GpuForest;
-use biosphere::{FlatForest, RandomForest};
 use ndarray::Array1;
 use rastair_types::{Base, Probability};
-
-use crate::metrics::ml::features::FeatureCalculatorBox;
+use std::fmt;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlattScaling {
@@ -33,12 +31,11 @@ impl PlattScaling {
     }
 }
 
-/// Combined model file containing all three random forest models
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct RastairModel {
-    pub cpg: RandomForest,
-    pub denovo: RandomForest,
-    pub others: RandomForest,
+pub struct RastairFlatModel {
+    pub cpg: FlatForest,
+    pub denovo: FlatForest,
+    pub others: FlatForest,
     #[serde(default)]
     pub cpg_platt: PlattScaling,
     #[serde(default)]
@@ -100,11 +97,9 @@ impl GpuRastairModel {
 /// Instance of machine learning model and parameters
 pub struct MachineLearning {
     pub threshold: Probability,
-    pub model: Option<Box<RastairModel>>,
+    pub model: Option<Box<RastairFlatModel>>,
     pub feature_set: MlFeatureSet,
     pub feature_calculator: FeatureCalculatorBox,
-    /// Flat f32 forests for CPU inference, numerically consistent with the GPU path.
-    pub flat_model: Option<FlatRastairModel>,
     /// Prototype GPU forests. Worker threads call [`GpuRastairModel::fork`] on
     /// first use to obtain thread-local handles without recompiling shaders.
     pub gpu_prototype: Option<GpuRastairModel>,
@@ -119,7 +114,6 @@ impl MachineLearning {
             model: None,
             feature_set,
             feature_calculator: feature_set.get_calculator(),
-            flat_model: None,
             gpu_prototype: None,
         }
     }

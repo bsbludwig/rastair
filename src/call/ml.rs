@@ -19,14 +19,11 @@
 
 use crate::{
     call::process::GPU_BATCH_BUFFER_SIZE,
-    metrics::ml::types::{FlatRastairModel, GpuRastairModel, MachineLearning, RastairModel},
+    metrics::ml::types::{GpuRastairModel, MachineLearning, RastairFlatModel},
     utils::cli,
 };
 use better_default::Default;
-use biosphere::{
-    FlatForest,
-    gpu::{GpuForest, GpuInitError},
-};
+use biosphere::gpu::{GpuForest, GpuInitError};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
@@ -83,17 +80,11 @@ impl MachineLearningParams {
             return Ok(MachineLearning::disabled());
         };
 
-        let combined = load_combined_model(
+        let model = load_combined_model(
             self.model.as_ref().map(|x| x.path()),
-            &include_bytes!("../../models/rastair_default.rf.mpk.lz4")[..],
+            &include_bytes!("../../models/rastair_default.rff.mpk.lz4")[..],
         )
         .wrap_err("Failed to load combined RF model")?;
-
-        let feature_nums = combined.feature_set.get_calculator().feature_num();
-
-        let flat_cpg = FlatForest::from_forest(&combined.cpg, feature_nums.cpg);
-        let flat_denovo = FlatForest::from_forest(&combined.denovo, feature_nums.denovo_cpg);
-        let flat_others = FlatForest::from_forest(&combined.others, feature_nums.others);
 
         let max_samples = GPU_BATCH_BUFFER_SIZE;
         let gpu_prototype = if self.gpu {
@@ -103,23 +94,19 @@ impl MachineLearningParams {
                     .note(GpuInitError::hints())
             };
             Some(GpuRastairModel {
-                cpg: gpu_forest(&flat_cpg)?,
-                denovo: gpu_forest(&flat_denovo)?,
-                others: gpu_forest(&flat_others)?,
+                cpg: gpu_forest(&model.cpg)?,
+                denovo: gpu_forest(&model.denovo)?,
+                others: gpu_forest(&model.others)?,
             })
         } else {
             None
         };
 
-        let flat_model =
-            FlatRastairModel { cpg: flat_cpg, denovo: flat_denovo, others: flat_others };
-
         Ok(MachineLearning {
             threshold: self.ml,
-            feature_set: combined.feature_set,
-            feature_calculator: combined.feature_set.get_calculator(),
-            model: Some(Box::new(combined)),
-            flat_model: Some(flat_model),
+            feature_set: model.feature_set,
+            feature_calculator: model.feature_set.get_calculator(),
+            model: Some(Box::new(model)),
             gpu_prototype,
         })
     }
@@ -130,14 +117,14 @@ impl MachineLearningParams {
 }
 
 #[instrument(level = "debug", skip_all)]
-pub fn load_combined_model(path: Option<&Path>, built_in: &[u8]) -> Result<RastairModel> {
-    fn load_model_from_file(path: &Path) -> Result<RastairModel> {
+pub fn load_combined_model(path: Option<&Path>, built_in: &[u8]) -> Result<RastairFlatModel> {
+    fn load_model_from_file(path: &Path) -> Result<RastairFlatModel> {
         ensure!(path.exists(), "Model file does not exist");
         let file = fs::read(path).wrap_err("Failed to read model file")?;
         load_combined(&file[..]).wrap_err("Failed to load combined model")
     }
 
-    fn load_combined(reader: impl Read) -> Result<RastairModel> {
+    fn load_combined(reader: impl Read) -> Result<RastairFlatModel> {
         let decompress = lz4::Decoder::new(reader).wrap_err("Failed to create LZ4 decoder")?;
         rmp_serde::from_read(decompress).wrap_err("Failed to deserialize combined model")
     }

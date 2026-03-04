@@ -16,36 +16,27 @@ impl MachineLearning {
             return None;
         }
 
-        let Some(rastair_model) = self.model.as_ref() else {
+        let Some(model) = self.model.as_ref() else {
             warn!("No model available");
-            return None;
-        };
-        let Some(flat_model) = self.flat_model.as_ref() else {
-            warn!("No flat model available");
             return None;
         };
 
         let calc = &self.feature_calculator;
 
         let (name, flat_forest, platt, features) = if current.is_evidence_for_methylation() {
-            (
-                MlModel::Cpg,
-                &flat_model.cpg,
-                &rastair_model.cpg_platt,
-                calc.calculate_cpg(current, before, after),
-            )
+            (MlModel::Cpg, &model.cpg, &model.cpg_platt, calc.calculate_cpg(current, before, after))
         } else if *current.alt.denovo {
             (
                 MlModel::DenovoCpg,
-                &flat_model.denovo,
-                &rastair_model.denovo_platt,
+                &model.denovo,
+                &model.denovo_platt,
                 calc.calculate_denovo_cpg(current, before, after),
             )
         } else {
             (
                 MlModel::Others,
-                &flat_model.others,
-                &rastair_model.others_platt,
+                &model.others,
+                &model.others_platt,
                 calc.calculate_others(current, before, after),
             )
         };
