@@ -42,6 +42,10 @@ pub fn get_pileups(
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
 
+    // Install read-group filter so that non-matching reads are rejected once
+    // at read time instead of once per pileup column they span.
+    params.read_groups.apply_to_reader(&mut readers.bam);
+
     let segment = Rc::new(segment);
     let segment_clone = segment.clone();
 

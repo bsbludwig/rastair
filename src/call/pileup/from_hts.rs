@@ -91,9 +91,6 @@ fn alignment_to_read<'a>(
     if !params.read_flags.filter_flags(flags, params.unpaired) {
         return None;
     }
-    if !params.read_groups.allows(&record) {
-        return None;
-    }
 
     let (matches, indels) = calc_cigar_data(record.raw_cigar());
     let (seq, qual) = record.seq_and_qual();

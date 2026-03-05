@@ -40,14 +40,90 @@ impl ReadGroupFilter {
         match self {
             ReadGroupFilter::All => true,
             ReadGroupFilter::Groups(groups) => {
-                if let Ok(bam::record::Aux::String(rg_str)) = record.aux(b"RG") {
-                    groups.iter().any(|g| g.as_str() == rg_str)
+                if let Some(aux) = record.raw_aux_data()
+                    && let Some(rg_str) = find_rg_tag(aux)
+                {
+                    groups.iter().any(|g| g.as_bytes() == rg_str)
                 } else {
                     false
                 }
             }
         }
     }
+
+    /// Install a pileup-level filter on the BAM reader so that records whose
+    /// RG tag is not in the allowed set are skipped before entering the pileup
+    /// engine. This means filtered reads are checked once (at read time)
+    /// instead of once per pileup column they span.
+    pub fn apply_to_reader(&self, reader: &mut bam::IndexedReader) {
+        match self {
+            ReadGroupFilter::All => reader.clear_pileup_filter(),
+            ReadGroupFilter::Groups(_) => {
+                let filter = self.clone();
+                reader.set_pileup_filter(move |record| filter.allows(&record));
+            }
+        }
+    }
+}
+
+/// Scan raw BAM auxiliary data for the RG tag and return its value as raw bytes.
+///
+/// This is a pure-Rust implementation that avoids FFI calls, full type dispatch,
+/// and UTF-8 validation. It scans the tag/type/value triples sequentially and
+/// returns the string value of the first `RG:Z:` field found.
+fn find_rg_tag(data: &[u8]) -> Option<&[u8]> {
+    let mut pos = 0;
+    while pos + 3 <= data.len() {
+        let tag0 = data[pos];
+        let tag1 = data[pos + 1];
+        let typ = data[pos + 2];
+        pos += 3;
+
+        if tag0 == b'R' && tag1 == b'G' {
+            if typ != b'Z' {
+                return None;
+            }
+            let start = pos;
+            while pos < data.len() && data[pos] != 0 {
+                pos += 1;
+            }
+            return Some(&data[start..pos]);
+        }
+
+        // Skip this tag's value.
+        match typ {
+            b'A' | b'c' | b'C' => pos += 1,
+            b's' | b'S' => pos += 2,
+            b'i' | b'I' | b'f' => pos += 4,
+            b'd' => pos += 8,
+            b'Z' | b'H' => {
+                while pos < data.len() && data[pos] != 0 {
+                    pos += 1;
+                }
+                pos += 1; // null terminator
+            }
+            b'B' => {
+                if pos + 5 > data.len() {
+                    return None;
+                }
+                let elem_size = match data[pos] {
+                    b'c' | b'C' => 1,
+                    b's' | b'S' => 2,
+                    b'i' | b'I' | b'f' => 4,
+                    _ => return None,
+                };
+                let count = u32::from_le_bytes([
+                    data[pos + 1],
+                    data[pos + 2],
+                    data[pos + 3],
+                    data[pos + 4],
+                ]) as usize;
+                pos += 5 + count * elem_size;
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 #[cfg(test)]

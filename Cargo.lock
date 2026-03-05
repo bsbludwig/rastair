@@ -2801,7 +2801,7 @@ dependencies = [
 [[package]]
 name = "rust-htslib"
 version = "1.0.0"
-source = "git+https://github.com/Softleif/rust-htslib.git#61af9fcd379a38c3ad126af675d1e3224baf8e7d"
+source = "git+https://github.com/Softleif/rust-htslib.git#d86704be1e508882adbf261b016ae74efb0d5820"
 dependencies = [
  "bio-types",
  "byteorder",
