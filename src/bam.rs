@@ -5,18 +5,20 @@ use crate::{
 };
 use clap::{Parser, value_parser};
 use clio::ClioPath;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, ContextCompat, Result, eyre};
 use rastair_types::SmallVec;
 use rastair_types::{Base, Strand, StrandFromRecord};
+use rayon::prelude::*;
 use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::thread::available_parallelism;
 
 mod base_modification;
 pub use base_modification::{MethylatedPositions, XrTags};
-use tracing::{instrument, warn};
+use tracing::{instrument, trace, warn};
 
 /// Subcommands for `rastair bam`
 #[derive(Debug, clap::Subcommand)]
@@ -48,6 +50,11 @@ pub struct BamRewriteArgs {
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_max_length: u64,
 
+    /// Number of threads to use for processing the BAM file.
+    #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub threads: usize,
+
     /// Rastair's calls to determine methylation
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
@@ -64,47 +71,123 @@ pub struct BamRewriteArgs {
     ?mode,
 ))]
 pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
-    let mut readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
-    let regions: Vec<ChunkRegion> = readers
-        .segments(params.segment_max_length, 0)
-        .wrap_err("Could not fetch segments from BAM file")?
-        .collect();
-
-    let mut calls_reader =
-        RastairBedReader::new(params.calls_file.path()).wrap_err("failed to open calls file")?;
-
-    let output_file = &params.output;
-    let mut writer = {
+    // Open BAM on the main thread to get header and compute regions
+    let (header, regions) = {
+        let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
+        let regions: Vec<ChunkRegion> = readers
+            .segments(params.segment_max_length, 0)
+            .wrap_err("Could not fetch segments from BAM file")?
+            .collect();
         let header = {
-            let mut header = Header::from_template(readers.bam.header());
-            add_rastair_header(&mut header);
-            header
+            let mut h = Header::from_template(readers.bam.header());
+            add_rastair_header(&mut h);
+            h
         };
-
-        let mut writer = if output_file.is_std() {
-            Writer::from_stdout(&header, bam::Format::Bam)
-        } else {
-            Writer::from_path(output_file.path(), &header, bam::Format::Bam)
-        }
-        .wrap_err("failed to create writer")?;
-        writer
-            .set_compression_level(bam::CompressionLevel::Fastest)
-            .wrap_err("failed to set compression level")?;
-        writer.set_threads(3).wrap_err("failed to set threads")?;
-        writer
+        (header, regions)
     };
 
-    for (i, segment) in regions.iter().enumerate() {
-        let is_last = i == regions.len() - 1;
-        rewrite_region(
-            &mut readers.bam,
-            &mut calls_reader,
-            &mut writer,
-            &segment.region,
-            mode,
-            is_last,
-        )
-        .wrap_err_with(|| format!("Failed to rewrite region {}", segment.region))?;
+    let worker_threads = params.threads.saturating_sub(1).max(1);
+    let (bam_sender, bam_receiver) = ordered_channel::bounded::<Vec<Record>>(worker_threads * 10);
+
+    let output_file = params.output.clone();
+    let writer_thread = std::thread::Builder::new()
+        .name("bam-writer".to_string())
+        .spawn(move || -> Result<()> {
+            let mut writer = if output_file.is_std() {
+                Writer::from_stdout(&header, bam::Format::Bam)
+            } else {
+                Writer::from_path(output_file.path(), &header, bam::Format::Bam)
+            }
+            .wrap_err("failed to create writer")?;
+            writer
+                .set_compression_level(bam::CompressionLevel::Fastest)
+                .wrap_err("failed to set compression level")?;
+            writer.set_threads(3).wrap_err("failed to set threads")?;
+
+            for records in bam_receiver {
+                for record in records {
+                    writer.write(&record).wrap_err("failed to write record to new BAM file")?;
+                }
+            }
+            Ok(())
+        })
+        .wrap_err("failed to spawn BAM writer thread")?;
+
+    let n_regions = regions.len();
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|idx| format!("bam-worker-{idx}"))
+        .num_threads(worker_threads)
+        .build()
+        .wrap_err("Failed to create thread pool for BAM rewrite")?
+        .install(move || {
+            regions.iter().enumerate().par_bridge().try_for_each_with(
+                bam_sender,
+                |sender, (index, segment)| {
+                    let is_last = index == n_regions - 1;
+                    rewrite_region_parallel(index, segment, is_last, sender, params, mode)
+                },
+            )
+        })
+        .wrap_err("Failed to process BAM regions in parallel")?;
+
+    writer_thread
+        .join()
+        .map_err(|_| eyre!("BAM writer thread panicked"))
+        .this_is_a_bug()?
+        .wrap_err("Error in BAM writer thread")?;
+
+    Ok(())
+}
+
+/// Wrapper for parallel BAM region processing with thread-local readers.
+fn rewrite_region_parallel(
+    index: usize,
+    segment: &ChunkRegion,
+    is_last: bool,
+    sender: &mut ordered_channel::Sender<Vec<Record>>,
+    params: &BamRewriteArgs,
+    mode: BamMode,
+) -> Result<()> {
+    thread_local! {
+        static BAM_READER: std::cell::RefCell<Option<bam::IndexedReader>> =
+            const { std::cell::RefCell::new(None) };
+        static BED_READER: std::cell::RefCell<Option<RastairBedReader>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    let records = BAM_READER.with(|bam_cell| {
+        BED_READER.with(|bed_cell| -> Result<Vec<Record>> {
+            let mut bam_opt = bam_cell.borrow_mut();
+            let mut bed_opt = bed_cell.borrow_mut();
+
+            if bam_opt.is_none() {
+                *bam_opt = Some(
+                    bam::IndexedReader::from_path(params.segments.bam_file.path())
+                        .wrap_err("Failed to open BAM in worker thread")?,
+                );
+            }
+            if bed_opt.is_none() {
+                *bed_opt = Some(
+                    RastairBedReader::new(params.calls_file.path())
+                        .wrap_err("Failed to open calls file in worker thread")?,
+                );
+            }
+
+            let bam = bam_opt
+                .as_mut()
+                .wrap_err("thread-local BAM reader not initialized")
+                .this_is_a_bug()?;
+            let bed = bed_opt
+                .as_mut()
+                .wrap_err("thread-local BED reader not initialized")
+                .this_is_a_bug()?;
+
+            rewrite_region(bam, bed, &segment.region, mode, is_last)
+        })
+    })?;
+
+    if let Err(err) = sender.send(index, records) {
+        trace!(error = format!("{err:#}"), "Failed to send BAM records, channel probably closed");
     }
 
     Ok(())
@@ -114,11 +197,10 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
 fn rewrite_region(
     bam: &mut bam::IndexedReader,
     calls_reader: &mut RastairBedReader,
-    writer: &mut rust_htslib::bam::Writer,
     region: &Region,
     mode: BamMode,
     is_last_segment: bool,
-) -> Result<()> {
+) -> Result<Vec<Record>> {
     FetchDefinition::try_from(region)
         .wrap_err("Could not convert region string")
         .and_then(|r| bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
@@ -140,6 +222,7 @@ fn rewrite_region(
     let region_start = region.start as i64;
     let region_end = region.end as i64;
     let mut record = Record::new();
+    let mut out = Vec::new();
     while let Some(result) = bam.read(&mut record) {
         if let Err(error) = result {
             warn!(%error, "Failed to read BAM record");
@@ -157,11 +240,10 @@ fn rewrite_region(
         }
 
         rewrite_record(&calls, &mut record, mode).wrap_err("failed to rewrite record")?;
-
-        writer.write(&record).wrap_err("failed to write record to new BAM file")?;
+        out.push(record.clone());
     }
 
-    Ok(())
+    Ok(out)
 }
 
 #[instrument(level = "debug", skip_all, fields(pos = record.pos()))]
