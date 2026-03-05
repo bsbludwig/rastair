@@ -50,20 +50,6 @@ impl ReadGroupFilter {
             }
         }
     }
-
-    /// Install a pileup-level filter on the BAM reader so that records whose
-    /// RG tag is not in the allowed set are skipped before entering the pileup
-    /// engine. This means filtered reads are checked once (at read time)
-    /// instead of once per pileup column they span.
-    pub fn apply_to_reader(&self, reader: &mut bam::IndexedReader) {
-        match self {
-            ReadGroupFilter::All => reader.clear_pileup_filter(),
-            ReadGroupFilter::Groups(_) => {
-                let filter = self.clone();
-                reader.set_pileup_filter(move |record| filter.allows(&record));
-            }
-        }
-    }
 }
 
 /// Scan raw BAM auxiliary data for the RG tag and return its value as raw bytes.
@@ -118,7 +104,9 @@ fn find_rg_tag(data: &[u8]) -> Option<&[u8]> {
                     data[pos + 3],
                     data[pos + 4],
                 ]) as usize;
-                pos += 5 + count * elem_size;
+                pos = (count.checked_mul(elem_size))
+                    .and_then(|n| n.checked_add(5))
+                    .and_then(|n| pos.checked_add(n))?;
             }
             _ => return None,
         }
@@ -157,7 +145,7 @@ mod tests {
         Ok(seen.into_iter().collect())
     }
 
-    fn view(record: &Record) -> bam::RecordView<'_> {
+    fn view<'a>(record: &'a Record) -> bam::RecordView<'a> {
         // Safety: the RecordView borrows from the record and does not outlive it.
         unsafe { bam::RecordView::from_raw(record.inner() as *const _) }
     }

@@ -42,9 +42,16 @@ pub fn get_pileups(
         .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
 
-    // Install read-group filter so that non-matching reads are rejected once
-    // at read time instead of once per pileup column they span.
-    params.read_groups.apply_to_reader(&mut readers.bam);
+    // Install a pileup-level filter so that reads can be rejected once at read
+    // time instead of once per pileup column they span.
+    {
+        let read_flags = params.read_flags.clone();
+        let unpaired = params.unpaired;
+        let rg_filter = params.read_groups.clone();
+        readers.bam.set_pileup_filter(move |record| {
+            read_flags.filter_flags(record.flags(), unpaired) && rg_filter.allows(&record)
+        });
+    }
 
     let segment = Rc::new(segment);
     let segment_clone = segment.clone();
@@ -89,7 +96,7 @@ pub fn get_pileups(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{sequence::ReaderParams, utils::default};
+    use crate::sequence::ReaderParams;
 
     #[test]
     fn test_reading_bounds() -> Result<()> {
@@ -102,8 +109,7 @@ mod tests {
         let segments: Vec<_> = readers.segments(10_000, 100)?.collect();
         readers.segment(&segments[0], 0)?;
 
-        let pileup_mapping_params =
-            PileupMappingParams { variant_calling: default(), read_groups: default() };
+        let pileup_mapping_params = PileupMappingParams::default();
         let (_segment, pileups) = get_pileups(&mut readers, &segments[0], &pileup_mapping_params)?;
         let pileups: Vec<_> = pileups.collect();
 

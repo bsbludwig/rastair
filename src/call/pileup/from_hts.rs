@@ -14,6 +14,7 @@ use std::rc::Rc;
 use tracing::{debug, instrument};
 
 impl Pileup {
+    /// Convert a pileup from htslib into our internal Pileup representation.
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn from_hts(
         pile: &HtsPileup,
@@ -32,9 +33,13 @@ impl Pileup {
 
         let mut raw_reads = Vec::with_capacity(max_reads);
 
+        // NOTE: The pileup might have already had some reads filtered out by
+        // the pileup-level filter, so we don't need to worry about flag and
+        // read-group filtering here. We do still apply read masking and quality
+        // filtering, however.
         let alignments = pile
             .alignments()
-            .filter_map(|a| alignment_to_read(params, a))
+            .filter_map(alignment_to_read)
             .filter(|(_, seen_base)| params.read_masking.filter(seen_base))
             .filter(|(_, seen_base)| params.quality.filter(seen_base))
             .take(max_reads);
@@ -80,18 +85,10 @@ impl Pileup {
     }
 }
 
-fn alignment_to_read<'a>(
-    params: &PileupMappingParams,
-    a: Alignment<'a>,
-) -> Option<(&'a [u8], SimpleRead)> {
+fn alignment_to_read<'a>(a: Alignment<'a>) -> Option<(&'a [u8], SimpleRead)> {
     let pos = a.qpos()?;
     let record = a.record_view();
     let flags = record.flags();
-
-    if !params.read_flags.filter_flags(flags, params.unpaired) {
-        return None;
-    }
-
     let (matches, indels) = calc_cigar_data(record.raw_cigar());
     let (seq, qual) = record.seq_and_qual();
 
