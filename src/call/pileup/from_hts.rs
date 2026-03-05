@@ -91,6 +91,10 @@ fn alignment_to_read<'a>(
     if !params.read_flags.filter_flags(flags, params.unpaired) {
         return None;
     }
+    if !params.read_groups.allows(&record) {
+        return None;
+    }
+
     let (matches, indels) = calc_cigar_data(record.raw_cigar());
     let (seq, qual) = record.seq_and_qual();
 
@@ -141,13 +145,14 @@ mod tests {
     fn name_collector_skip_when_keep_overlapping() {
         let params = PileupMappingParams {
             variant_calling: VariantCallingParams { keep_overlapping_reads: true, ..default() },
+            read_groups: default(),
         };
         assert!(matches!(NameCollector::new(&params), NameCollector::Skip));
     }
 
     #[test]
     fn name_collector_collect_by_default() {
-        let params = PileupMappingParams { variant_calling: default() };
+        let params = PileupMappingParams { variant_calling: default(), read_groups: default() };
         assert!(matches!(NameCollector::new(&params), NameCollector::Collect(_)));
     }
 }

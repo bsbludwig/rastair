@@ -2,7 +2,6 @@ use crate::{
     call::{
         ml::DEFAULT_ML_THRESHOLD,
         process::{PileupMappingParams, calculate_pileup_metrics, get_pileups},
-        variant_calling::VariantCallingParams,
     },
     metrics::{
         PileupMetrics,
@@ -388,7 +387,7 @@ fn collect_training_data_from_segment(
     let mut denovo_data = TrainingData::new();
     let mut other_data = TrainingData::new();
     // Build pileups
-    let mapping_params = PileupMappingParams { variant_calling: VariantCallingParams::default() };
+    let mapping_params = PileupMappingParams::default();
     let (segment, pileup_iter) =
         get_pileups(readers, chunk_region, &mapping_params).wrap_err("Failed to build pileups")?;
 

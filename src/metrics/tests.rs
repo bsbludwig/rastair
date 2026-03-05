@@ -16,7 +16,7 @@ fn test_cpg_detection() -> Result<()> {
     let mut readers = ReaderParams::test_data().around("chr19", 6105711).readers()?;
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
-    let pileup_mapping_params = process::PileupMappingParams { variant_calling: default() };
+    let pileup_mapping_params = process::PileupMappingParams::default();
     let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
         .wrap_err("failed to process region")?;
 
@@ -55,7 +55,7 @@ fn set_filters() -> Result<()> {
     let mut readers = ReaderParams::test_data().around("chr19", 6105742).readers()?;
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
-    let pileup_mapping_params = process::PileupMappingParams { variant_calling: default() };
+    let pileup_mapping_params = process::PileupMappingParams::default();
     let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
         .wrap_err("failed to process region")?;
 

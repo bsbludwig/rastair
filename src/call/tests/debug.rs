@@ -23,6 +23,7 @@ fn call_default_bed() -> Result<()> {
         },
         record_filters: RecordFilters { vcf_all: false, cpgs_only: true },
         segmentation: default(),
+        read_groups: default(),
         variant_calling: default(),
         denovo_cpg: default(),
         methylation: default(),

@@ -1,6 +1,7 @@
 use crate::{
     call::{
         pileup::{Pileup, overlapping_reads::NameCollector},
+        read_groups::ReadGroupFilter,
         variant_calling::VariantCallingParams,
     },
     sequence::{ChunkRegion, Readers, Segment},
@@ -11,8 +12,10 @@ use rust_htslib::bam::{FetchDefinition, Read as _};
 use std::{ops::Deref, rc::Rc};
 use tracing::{Level, debug, instrument, trace, warn};
 
+#[derive(Default)]
 pub struct PileupMappingParams {
     pub variant_calling: VariantCallingParams,
+    pub read_groups: ReadGroupFilter,
 }
 
 impl Deref for PileupMappingParams {
@@ -95,7 +98,8 @@ mod tests {
         let segments: Vec<_> = readers.segments(10_000, 100)?.collect();
         readers.segment(&segments[0], 0)?;
 
-        let pileup_mapping_params = PileupMappingParams { variant_calling: default() };
+        let pileup_mapping_params =
+            PileupMappingParams { variant_calling: default(), read_groups: default() };
         let (_segment, pileups) = get_pileups(&mut readers, &segments[0], &pileup_mapping_params)?;
         let pileups: Vec<_> = pileups.collect();
 

@@ -473,6 +473,7 @@ pub(crate) fn test_call(
         },
         record_filters: params,
         segmentation: default(),
+        read_groups: default(),
         variant_calling: default(),
         denovo_cpg: default(),
         methylation: default(),

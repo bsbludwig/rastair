@@ -607,6 +607,82 @@ fn error_model_rejects_invalid_error_rate() -> Result<()> {
 }
 
 #[test]
+fn read_group_single_filter_reduces_records() -> Result<()> {
+    apply_common_filters!();
+
+    const REGION: &str = "--region=chr19:6103000-6110000";
+
+    let temp_dir = TempDir::new()?;
+    let unfiltered = temp_dir.path().join("unfiltered.vcf");
+    let filtered = temp_dir.path().join("filtered.vcf");
+
+    rastair().args(CALL_TEST_BAM).args([REGION, NO_ML, "--vcf"]).arg(&unfiltered).succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--vcf"])
+        .arg(&filtered)
+        .arg("--read-groups=mTet1-PyBr-16h-p1_S1_L001")
+        .succeeds()?;
+
+    let unfiltered_count = vcf_content_lines(&std::fs::read_to_string(&unfiltered)?).count();
+    let filtered_count = vcf_content_lines(&std::fs::read_to_string(&filtered)?).count();
+
+    assert!(
+        filtered_count < unfiltered_count,
+        "single-group filter should produce fewer records (filtered: {filtered_count}, unfiltered: {unfiltered_count})",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn read_group_multiple_space_separated_filters_give_intermediate_records() -> Result<()> {
+    apply_common_filters!();
+
+    const REGION: &str = "--region=chr19:6103000-6110000";
+
+    let temp_dir = TempDir::new()?;
+    let one_group = temp_dir.path().join("one_group.vcf");
+    let two_groups = temp_dir.path().join("two_groups.vcf");
+    let unfiltered = temp_dir.path().join("unfiltered.vcf");
+
+    rastair().args(CALL_TEST_BAM).args([REGION, NO_ML, "--vcf"]).arg(&unfiltered).succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--vcf"])
+        .arg(&one_group)
+        .arg("--read-groups=mTet1-PyBr-16h-p1_S1_L001")
+        .succeeds()?;
+
+    // Space-separated: pass both groups as a single --read-groups value list
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--vcf"])
+        .arg(&two_groups)
+        .arg("--read-groups")
+        .arg("mTet1-PyBr-16h-p1_S1_L001")
+        .arg("mTet1-PyBr-16h-p1_S1_L002")
+        .succeeds()?;
+
+    let unfiltered_count = vcf_content_lines(&std::fs::read_to_string(&unfiltered)?).count();
+    let one_count = vcf_content_lines(&std::fs::read_to_string(&one_group)?).count();
+    let two_count = vcf_content_lines(&std::fs::read_to_string(&two_groups)?).count();
+
+    assert!(
+        one_count <= two_count,
+        "two groups should yield at least as many records as one (one: {one_count}, two: {two_count})",
+    );
+    assert!(
+        two_count <= unfiltered_count,
+        "two groups should yield no more records than unfiltered (two: {two_count}, unfiltered: {unfiltered_count})",
+    );
+
+    Ok(())
+}
+
+#[test]
 fn error_model_rejects_invalid_platform_name() -> Result<()> {
     apply_common_filters!();
 

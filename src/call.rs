@@ -21,6 +21,7 @@ use crate::{
         methylation::params::MethylationCallingParams,
         pileup::{Pileup, SimpleRead},
         process::{GPU_BATCH_BUFFER_SIZE, calculate_pileup_metrics, get_pileups},
+        read_groups::ReadGroupsParams,
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
@@ -44,6 +45,7 @@ pub mod denovo_cpg;
 pub mod methylation;
 pub mod ml;
 pub mod pileup;
+mod read_groups;
 mod record_filters;
 pub mod variant_calling;
 mod writer;
@@ -68,6 +70,9 @@ pub struct CallParams {
     #[command(flatten)]
     #[serde(skip)]
     pub segmentation: SegmentationParams,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub read_groups: ReadGroupsParams,
 
     // --- Calling parameters ---
     #[command(flatten)]
@@ -315,8 +320,10 @@ fn process_region_wrapper(
         // This is the actual processing of the region
 
         // NOTE: There are some filters applied here to ignore certain reads.
-        let pileup_mapping_params =
-            process::PileupMappingParams { variant_calling: params.variant_calling.clone() };
+        let pileup_mapping_params = process::PileupMappingParams {
+            variant_calling: params.variant_calling.clone(),
+            read_groups: params.read_groups.filter(),
+        };
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
 
         let res = process_region(segment, pileups, params, ml);
