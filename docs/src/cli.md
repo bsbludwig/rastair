@@ -61,7 +61,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Filter Options:**
 
-* `--keep-overlapping-reads` — Whether to keep overlapping reads
+* `--unpaired` — Enable unpaired mode
+
+   In this mode, unpaired reads are accepted and strand assignment uses only the read's alignment direction (forward=OT, reverse=OB).
+
+  Default value: `false`
+* `--keep-overlapping-reads` — Whether to keep overlapping paired-end reads
+
+   In unpaired (`--single-strand`) mode this is ignored because read-pair overlap deduplication is disabled.
 
   Default value: `false`
 * `--v-min-depth <V_MIN_DEPTH>`
@@ -154,6 +161,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
 * `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `--read-groups <READ_GROUPS>` — The read group(s) to filter reads by
+
+   Accepts one or more SAM RG tag values, space-separated. Can also be used with shell command substitution, e.g. `--read-groups $(cat groups.txt)`.
 
 ###### **Output Options:**
 
@@ -221,6 +231,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
+* `--linear-dedup-threshold <LINEAR_DEDUP_THRESHOLD>` — Depth threshold below which linear name dedup is used instead of a hashmap
+
+   At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an FxHashMap. Set to 0 to always use the hashmap.
+
+  Default value: `30`
+* `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead.
+
+   Requires a Metal/Vulkan/DX12-capable GPU.
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
 
    This is subtracted from `--threads` but never below 1. Adjust this if you think that VCF writing is a bottleneck, e.g. when the output files contain a lot of positions.
@@ -262,6 +280,11 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
   Default value: `1`
 * `--exclude-ambiguous` — Exclude reads where the orientation cannot be unambiguously determined
+* `--unpaired` — Enable unpaired mode
+
+   In this mode, unpaired reads are accepted and orientation is inferred from alignment direction only (forward=OT, reverse=OB).
+
+  Default value: `false`
 * `--count-clipped` — Count clipped positions
 
    By default, rastair ignores the leading (soft and hard) clipped positions in the "positions in read" columns. The indices written can be seen as "position in read relative to the first base actually aligned".
