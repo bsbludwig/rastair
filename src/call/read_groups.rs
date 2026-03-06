@@ -43,6 +43,8 @@ impl ReadGroupFilter {
                 if let Some(aux) = record.raw_aux_data()
                     && let Some(rg_str) = find_rg_tag(aux)
                 {
+                    // Linear scan is intentional: users typically specify O(1–10) groups,
+                    // so a HashSet would cost more in allocation than it saves.
                     groups.iter().any(|g| g.as_bytes() == rg_str)
                 } else {
                     false

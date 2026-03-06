@@ -628,10 +628,8 @@ fn read_group_single_filter_reduces_records() -> Result<()> {
     let unfiltered_count = vcf_content_lines(&std::fs::read_to_string(&unfiltered)?).count();
     let filtered_count = vcf_content_lines(&std::fs::read_to_string(&filtered)?).count();
 
-    assert!(
-        filtered_count < unfiltered_count,
-        "single-group filter should produce fewer records (filtered: {filtered_count}, unfiltered: {unfiltered_count})",
-    );
+    assert_snapshot!(unfiltered_count, @"192");
+    assert_snapshot!(filtered_count, @"180");
 
     Ok(())
 }
@@ -670,14 +668,9 @@ fn read_group_multiple_space_separated_filters_give_intermediate_records() -> Re
     let one_count = vcf_content_lines(&std::fs::read_to_string(&one_group)?).count();
     let two_count = vcf_content_lines(&std::fs::read_to_string(&two_groups)?).count();
 
-    assert!(
-        one_count <= two_count,
-        "two groups should yield at least as many records as one (one: {one_count}, two: {two_count})",
-    );
-    assert!(
-        two_count <= unfiltered_count,
-        "two groups should yield no more records than unfiltered (two: {two_count}, unfiltered: {unfiltered_count})",
-    );
+    assert_snapshot!(unfiltered_count, @"192");
+    assert_snapshot!(one_count, @"180");
+    assert_snapshot!(two_count, @"185");
 
     Ok(())
 }
