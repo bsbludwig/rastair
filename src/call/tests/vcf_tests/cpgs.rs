@@ -167,10 +167,10 @@ fn test_all_methylation_transitions_failing() -> Result<()> {
     // Assumption: Both C->T and G->A with low ML produce ref->. rows
     let (segment, pileups) = pileups!(
         [ C G ] Ref,
-        [ T A ] OT,
-        [ T A ] OT,
-        [ T A ] OB,
-        [ T A ] OB,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
     );
 
     let mut records = test_call(segment, pileups, RecordFilters::all())?;

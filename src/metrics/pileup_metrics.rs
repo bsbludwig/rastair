@@ -16,9 +16,7 @@ use color_eyre::{
     eyre::{Context, bail},
 };
 use rastair_vcf::VcfFilter;
-use seqair_types::SmallVec;
-use seqair_types::SmolStr;
-use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
+use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, SmallVec, SmolStr, Strand};
 use std::ops::Deref;
 use tracing::trace;
 

@@ -77,9 +77,9 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=0., // Position 1: C with de-novo CpG G
-        (C G) PASS M5mC=vec![0.5, 0.], // Position 2: Real variant G - both original and de-novo CpG beta values
+        (C G) PASS M5mC=0.5, // Position 2: Real variant G - original CpG only (no OB evidence for denovo)
         (C T) FAIL,
-        (G .) PASS M5mC=0.5,
+        (G .) PASS M5mC=1.0,
         (G A) FAIL,
     ];
 
@@ -173,8 +173,8 @@ fn test_ref_cpg_g_to_c_snp_no_original_methylation() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=0.,    // pos0: original CpG C-side, no T reads → NoEvidence
-        (G C) PASS M5mC=0.75,  // pos1: only de-novo beta (original G-side has no A reads)
-        (G .) PASS M5mC=0.75,  // pos2: de-novo CpG G-side partner
+        (G C) PASS M5mC=vec![0.0, 0.75],  // pos1: original G-side beta=0.0, de-novo C-side beta=0.75
+        (G .) PASS M5mC=0.,  // pos2: no OB reads with before=C → NoEvidence
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;
@@ -207,9 +207,9 @@ fn test_cpg_that_is_also_denovo() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=0.5,
+        (C .) PASS M5mC=1.0,
         (C G) PASS M5mC=vec![1.0, 1.0], // Real variant G - both original and de-novo CpG beta values
-        (G .) PASS M5mC=0.5,
+        (G .) PASS M5mC=1.0,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;

@@ -315,9 +315,9 @@ mod tests {
         fn fully_methylated() {
             let (seg, ps) = pileups!(
                 [C G] Ref,
-                [T A] OT,
-                [T A] OT,
-                [T A] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
                 [C G] OB,
             );
             let metrics = to_metrics(&ps[0], &seg, None);
@@ -337,16 +337,16 @@ mod tests {
             let metrics = to_metrics(&ps[0], &seg, None);
             let result = call(&metrics).unwrap();
 
-            assert_no_evidence(result);
+            assert_original_cpg(result, 0.0);
         }
 
         #[test]
         fn partially_methylated() {
             let (seg, ps) = pileups!(
                 [C G] Ref,
-                [T A] OT,
-                [T A] OT,
-                [T A] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
                 [C G] OT,
                 [C G] OT,
             );
@@ -360,12 +360,12 @@ mod tests {
         fn het_snp() {
             let (seg, ps) = pileups!(
                 [C G] Ref,
-                [T A] OT,
-                [T A] OT,
-                [T A] OT,
-                [T A] OT,
-                [T A] OT,
-                [T A] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
                 [C G] OT,
             );
 
@@ -379,9 +379,9 @@ mod tests {
         fn het_snp_fifty_fifty() {
             let (seg, ps) = pileups!(
                 [C G] Ref,
-                [T A] OT,
-                [T A] OT,
-                [T A] OT,
+                [T G] OT,
+                [T G] OT,
+                [T G] OT,
                 [C G] OT,
                 [C G] OT,
                 [C G] OT,
@@ -417,7 +417,7 @@ mod tests {
             let metrics = to_metrics(&ps[0], &seg, None);
             let result = call(&metrics).unwrap();
 
-            assert_no_evidence(result);
+            assert_original_cpg(result, 0.0);
         }
     }
 
@@ -450,7 +450,7 @@ mod tests {
             let metrics = to_metrics(&ps[1], &seg, None);
             let result = call(&metrics).unwrap();
 
-            assert_no_evidence(result);
+            assert_original_cpg(result, 0.0);
         }
 
         #[test]
@@ -534,7 +534,7 @@ mod tests {
             let metrics = to_metrics(&ps[1], &seg, None);
             let result = call(&metrics).unwrap();
 
-            assert_no_evidence(result);
+            assert_original_cpg(result, 0.0);
         }
 
         #[test]
