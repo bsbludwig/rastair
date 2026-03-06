@@ -4,12 +4,9 @@ use crate::{
     utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
 };
-use color_eyre::{
-    Result,
-    eyre::{Context, ContextCompat},
-};
-use seqair_types::{Base, Probability};
-use tracing::{Level, debug, instrument, trace, warn};
+use color_eyre::{Result, eyre::Context};
+use seqair_types::{Base, Probability, Strand};
+use tracing::instrument;
 
 #[instrument(
     level="debug",
@@ -103,104 +100,57 @@ fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
 }
 
 fn ref_t_to_c(record: &PileupMetrics) -> Result<Methylated> {
-    assert_eq!(record.ref_base(), T);
-    let t = &record.ref_metrics;
-    let c = record.alt(C).wrap_err("Expected alt C at T->C denovo CpG site").this_is_a_bug()?;
-
-    // T > C case: need to use strand to distinguish mod from unmod
-    let c_counts = c.strand_count.ot.f();
-    let t_counts = t.strand_count.ot.f();
-    let total = c_counts + t_counts;
+    let mod_count = record.after_counts.get(Strand::OT, T, G).f();
+    let unmod_count = record.after_counts.get(Strand::OT, C, G).f();
+    let total = mod_count + unmod_count;
     if total == 0. {
         return Ok(Methylated::NoEvidence);
     }
 
-    // TODO: some more sophisticated SNP calling here, taking into account baseq, mapq etc
     let beta = match record.pos_metrics.genotype {
-        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(t_counts, c_counts),
-        _ => t_counts / total,
+        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(mod_count, unmod_count),
+        _ => mod_count / total,
     };
 
     Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
 fn ref_not_t_to_c(record: &PileupMetrics) -> Result<Methylated> {
-    assert_ne!(record.ref_base(), T);
-
-    let t = record.alt(T);
-    let c = record.alt(C).wrap_err("Expected alt C at non-T->C denovo CpG site").this_is_a_bug()?;
-
-    // Get counts for `alt == T`, default to 0
-    let t_counts = t.map(|a| a.strand_count).unwrap_or_default();
-
-    // Ref is not T: count alt == T and alt == C separately
-    let mod_count = t_counts.ot;
-    let unmod = c.strand_count;
-    let unmod_count = unmod.ot;
-
-    // Check if there's evidence for T on the OB, which would be very
-    // weird, ie a multi-allelic site (X->C _and_ X->T ?!)
-    if t_counts.ob > 0 {
-        debug!(?t_counts, "Evidence for multi-allelic SNP at het D/C site");
-    }
-
+    let mod_count = record.after_counts.get(Strand::OT, T, G).f();
+    let unmod_count = record.after_counts.get(Strand::OT, C, G).f();
     let total = mod_count + unmod_count;
-    if total > 0 {
-        Ok(Methylated::DeNovoCpG {
-            beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
-        })
-    } else {
-        Ok(Methylated::NoEvidence)
+    if total == 0. {
+        return Ok(Methylated::NoEvidence);
     }
+
+    Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
 }
 
 fn ref_a_to_g(record: &PileupMetrics) -> Result<Methylated> {
-    assert_eq!(record.ref_base(), A);
-    let a = &record.ref_metrics;
-    let g = record.alt(G).wrap_err("Expected alt G at A->G denovo CpG site").this_is_a_bug()?;
-
-    // A > G case: similar logic but for OB strand
-    let g_counts = g.strand_count.ob.f();
-    let a_counts = a.strand_count.ob.f();
-    let total = a_counts + g_counts;
-
+    let mod_count = record.before_counts.get(Strand::OB, A, C).f();
+    let unmod_count = record.before_counts.get(Strand::OB, G, C).f();
+    let total = mod_count + unmod_count;
     if total == 0. {
         return Ok(Methylated::NoEvidence);
     }
 
     let beta = match record.pos_metrics.genotype {
-        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(a_counts, g_counts),
-        _ => a_counts / total,
+        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(mod_count, unmod_count),
+        _ => mod_count / total,
     };
 
     Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
 fn ref_not_a_to_g(record: &PileupMetrics) -> Result<Methylated> {
-    assert_ne!(record.ref_base(), A);
-
-    let a = record.alt(A);
-    let g = record.alt(G).wrap_err("Expected alt G at non-A->G denovo CpG site").this_is_a_bug()?;
-
-    let a_counts = a.map(|a| a.strand_count).unwrap_or_default();
-
-    // Ref is not A: count alt == A and alt == G separately
-    let mod_count = a_counts.ob;
-    let unmod = g.strand_count;
-    let unmod_count = unmod.ob;
-
-    if a_counts.ot > 0 {
-        debug!(?a_counts, "Evidence for multi-allelic SNP at het H/G site");
-    }
-
+    let mod_count = record.before_counts.get(Strand::OB, A, C).f();
+    let unmod_count = record.before_counts.get(Strand::OB, G, C).f();
     let total = mod_count + unmod_count;
-    if total > 0 {
-        Ok(Methylated::DeNovoCpG {
-            beta: Probability::new(mod_count.f() / total.f()).this_is_a_bug()?,
-        })
-    } else {
-        Ok(Methylated::NoEvidence)
+    if total == 0. {
+        return Ok(Methylated::NoEvidence);
     }
+
+    Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
 }
 
 /// Calculate beta value for heterozygous C>T or G>A variants.
@@ -239,96 +189,41 @@ fn het_alt_is_base(record: &PileupMetrics, base: Base) -> bool {
 }
 
 fn ref_c(record: &PileupMetrics) -> Result<Methylated> {
-    assert_eq!(record.ref_base(), C);
-    let c = &record.ref_metrics;
-
-    // Check for non-T alternatives (possible C->N SNP)
-    if tracing::enabled!(Level::TRACE)
-        && *record.pos_metrics.denovo_adj
-        && record.alts().iter().any(|b| *b != T)
-    {
-        trace!(
-            pos = %record.pos(),
-            "Possible C->N SNP next to a de-novo G"
-        );
+    let mod_count = record.after_counts.get(Strand::OT, T, G).f();
+    let unmod_count = record.after_counts.get(Strand::OT, C, G).f();
+    let total = mod_count + unmod_count;
+    if total == 0. {
+        return Ok(Methylated::NoEvidence);
     }
 
-    if let Some(t) = record.alt(T) {
-        let t_counts = t.strand_count;
-        let c_counts = c.strand_count;
-
-        let mod_count = t_counts.ot.f();
-        let unmod_count = c_counts.ot.f();
-
-        let total = mod_count + unmod_count;
-        if total == 0. {
-            return Ok(Methylated::NoEvidence);
+    let beta_value = match record.pos_metrics.genotype {
+        Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, T) => {
+            calculate_het_snp_beta(mod_count, unmod_count)
         }
+        Some(gt) if gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref() => 0.0,
+        _ => mod_count / total,
+    };
 
-        // TODO: Fix beta calculation for heterozygous positions with non-T alts.
-        // Currently only applies het adjustment for C/T genotypes, but should also
-        // handle C/A, C/G where T reads are methylation evidence (not a real variant).
-        // Example: genotype C/A with T reads marked as MethylationEvidenceOnly should
-        // account for the fact that reads are split between C and A alleles.
-        // Expected: if C allele has 2C + 2T reads, beta = 2/4 = 0.5
-        // Current: only looks at OT strand (0C + 2T), beta = 2/2 = 1.0
-        // See failing tests: test_non_ct_variant, test_cpg_that_is_also_denovo
-        let beta_value = match record.pos_metrics.genotype {
-            Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, T) => {
-                calculate_het_snp_beta(mod_count, unmod_count)
-            }
-            Some(gt) if gt.genotype.is_homozygous() & !gt.genotype.is_hom_ref() => 0.0,
-            _ => mod_count / total,
-        };
-
-        Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
-    } else {
-        Ok(Methylated::NoEvidence)
-    }
+    Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
 }
 
 fn ref_g(record: &PileupMetrics) -> Result<Methylated> {
-    assert_eq!(record.ref_base(), G);
-    let g = &record.ref_metrics;
-
-    // Check for non-A alternatives (possible G->N SNP)
-    if tracing::enabled!(Level::TRACE)
-        && *record.pos_metrics.denovo_adj
-        && record.alts().iter().any(|b| *b != A)
-    {
-        trace!(
-            pos = %record.pos(),
-            "Possible G->N SNP next to a de-novo C"
-        );
+    let mod_count = record.before_counts.get(Strand::OB, A, C).f();
+    let unmod_count = record.before_counts.get(Strand::OB, G, C).f();
+    let total = mod_count + unmod_count;
+    if total == 0. {
+        return Ok(Methylated::NoEvidence);
     }
 
-    if let Some(a) = record.alt(A) {
-        let a_counts = a.strand_count;
-        let g_counts = g.strand_count;
-
-        let mod_count = a_counts.ob.f();
-        let unmod_count = g_counts.ob.f();
-
-        let total = mod_count + unmod_count;
-        if total == 0. {
-            return Ok(Methylated::NoEvidence);
+    let beta_value = match record.pos_metrics.genotype {
+        Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, A) => {
+            calculate_het_snp_beta(mod_count, unmod_count)
         }
+        Some(gt) if gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref() => 0.0,
+        _ => mod_count / total,
+    };
 
-        // TODO: Fix beta calculation for heterozygous positions with non-A alts.
-        // Same issue as ref_c but for G positions: only applies het adjustment for G/A
-        // genotypes, but should also handle G/C, G/T where A reads are methylation evidence.
-        let beta_value = match record.pos_metrics.genotype {
-            Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, A) => {
-                calculate_het_snp_beta(mod_count, unmod_count)
-            }
-            Some(gt) if gt.genotype.is_homozygous() & !gt.genotype.is_hom_ref() => 0.0,
-            _ => mod_count / total,
-        };
-
-        Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
-    } else {
-        Ok(Methylated::NoEvidence)
-    }
+    Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
 }
 
 #[cfg(test)]
