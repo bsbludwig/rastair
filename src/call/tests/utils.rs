@@ -85,10 +85,16 @@ pub(crate) fn create_pileups(
 
             let reads: Vec<SimpleRead> = read_lines
                 .iter()
-                .map(|read_line| SimpleRead {
-                    base: read_line.bases[pos_idx],
-                    strand: read_line.strand,
-                    ..default()
+                .map(|read_line| {
+                    let before_base = pos_idx.checked_sub(1).map(|i| read_line.bases[i]);
+                    let after_base = read_line.bases.get(pos_idx + 1).copied();
+                    SimpleRead {
+                        base: read_line.bases[pos_idx],
+                        strand: read_line.strand,
+                        before_base,
+                        after_base,
+                        ..default()
+                    }
                 })
                 .collect();
 

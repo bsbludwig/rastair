@@ -6,7 +6,7 @@ use crate::{
         },
         variant_calling::{EstimatedGenotype, indel_calling::IndelCall},
     },
-    metrics::MethylationEvidenceStrandInfo,
+    metrics::{MethylationEvidenceStrandInfo, PairedCounts},
     utils::{ByStrand, IntoF64, default, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
 };
@@ -34,6 +34,10 @@ pub struct PileupMetrics {
     pub ref_metrics: AlleleMetrics,
     /// Metrics and filters for each alternative allele
     pub alts: SmallVec<Alt, 2>,
+    /// Counts of (my_base, before_base) pairs by strand
+    pub before_counts: PairedCounts,
+    /// Counts of (my_base, after_base) pairs by strand
+    pub after_counts: PairedCounts,
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
     /// Aggregated indel counts at this position.
@@ -146,12 +150,28 @@ impl PileupMetrics {
 
         let indels = aggregate_indels(&pileup);
 
+        let mut before_counts = PairedCounts::default();
+        let mut after_counts = PairedCounts::default();
+        for read in pileup.reads.iter() {
+            if read.strand == Strand::Unknown {
+                continue;
+            }
+            if let Some(before) = read.before_base {
+                before_counts.increment(read.strand, read.base, before);
+            }
+            if let Some(after) = read.after_base {
+                after_counts.increment(read.strand, read.base, after);
+            }
+        }
+
         Ok(PileupMetrics {
             pileup,
             pos_metrics,
             pos_filters: Filters::default(),
             ref_metrics,
             alts,
+            before_counts,
+            after_counts,
             tags: RecordTags::default(),
             indels,
             indel_calls: Vec::new(),
