@@ -1,65 +1,87 @@
 use crate::utils::cli;
 use rastair_types::SmolStr;
 use rust_htslib::bam;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
-#[derive(Debug, clap::Args, Clone, Default, serde::Serialize)]
-pub struct ReadGroupsParams {
-    /// The read group(s) to filter reads by
-    ///
-    /// Accepts one or more SAM RG tag values, space-separated. Can also be used with shell
-    /// command substitution, e.g. `--read-groups $(cat groups.txt)`.
-    #[arg(long, num_args(1..))]
-    #[arg(help_heading = cli::sections::INPUT)]
-    pub read_groups: Vec<SmolStr>,
+/// A parsed `TAG=VALUE` filter argument.
+#[derive(Debug, Clone)]
+pub struct TagValue {
+    tag: [u8; 2],
+    value: SmolStr,
 }
 
-/// A pre-processed, cheaply cloneable form of the read group filter.
+impl FromStr for TagValue {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some((tag_str, value)) = s.split_once('=') else {
+            return Err(format!("expected TAG=VALUE, got `{s}`"));
+        };
+        if tag_str.len() != 2 || !tag_str.is_ascii() {
+            return Err(format!("tag must be exactly 2 ASCII characters, got `{tag_str}`"));
+        }
+        let b = tag_str.as_bytes();
+        Ok(TagValue { tag: [b[0], b[1]], value: SmolStr::new(value) })
+    }
+}
+
+impl serde::Serialize for TagValue {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let tag_str = std::str::from_utf8(&self.tag).unwrap_or("??");
+        s.serialize_str(&format!("{tag_str}={}", self.value))
+    }
+}
+
+#[derive(Debug, clap::Args, Clone, Default, serde::Serialize)]
+pub struct RequireTagsParams {
+    /// Require reads to have a specific SAM tag value
+    ///
+    /// Format: TAG=VALUE, e.g. `--require-tags RG=mygroup`. Accepts one or more values
+    /// (space-separated). A read is kept if it matches any of the specified tag=value pairs.
+    #[arg(long, num_args(1..))]
+    #[arg(help_heading = cli::sections::INPUT)]
+    pub require_tags: Vec<TagValue>,
+}
+
+/// A pre-processed, cheaply cloneable form of the tag filter.
 #[derive(Debug, Clone, Default)]
-pub enum ReadGroupFilter {
+pub enum TagRequirement {
     /// No filter specified, so all reads pass.
     #[default]
     All,
-    /// Only reads whose RG tag is in this set pass.
-    Groups(Arc<[SmolStr]>),
+    /// Only reads matching at least one of these tag=value pairs pass.
+    AnyOf(Arc<[TagValue]>),
 }
 
-impl ReadGroupsParams {
-    pub fn filter(&self) -> ReadGroupFilter {
-        if self.read_groups.is_empty() {
-            ReadGroupFilter::All
+impl RequireTagsParams {
+    pub fn filter(&self) -> TagRequirement {
+        if self.require_tags.is_empty() {
+            TagRequirement::All
         } else {
-            ReadGroupFilter::Groups(self.read_groups.as_slice().into())
+            TagRequirement::AnyOf(self.require_tags.as_slice().into())
         }
     }
 }
 
-impl ReadGroupFilter {
-    /// Returns `true` if a read with the given RG tag value should be included.
+impl TagRequirement {
+    /// Returns `true` if a read passes the tag filter.
     pub fn allows(&self, record: &bam::RecordView<'_>) -> bool {
         match self {
-            ReadGroupFilter::All => true,
-            ReadGroupFilter::Groups(groups) => {
-                if let Some(aux) = record.raw_aux_data()
-                    && let Some(rg_str) = find_rg_tag(aux)
-                {
-                    // Linear scan is intentional: users typically specify O(1–10) groups,
-                    // so a HashSet would cost more in allocation than it saves.
-                    groups.iter().any(|g| g.as_bytes() == rg_str)
-                } else {
-                    false
-                }
+            TagRequirement::All => true,
+            TagRequirement::AnyOf(filters) => {
+                let Some(aux) = record.raw_aux_data() else {
+                    return false;
+                };
+                filters
+                    .iter()
+                    .any(|f| find_tag(aux, f.tag).is_some_and(|v| v == f.value.as_bytes()))
             }
         }
     }
 }
 
-/// Scan raw BAM auxiliary data for the RG tag and return its value as raw bytes.
-///
-/// This is a pure-Rust implementation that avoids FFI calls, full type dispatch,
-/// and UTF-8 validation. It scans the tag/type/value triples sequentially and
-/// returns the string value of the first `RG:Z:` field found.
-fn find_rg_tag(data: &[u8]) -> Option<&[u8]> {
+/// Scan raw BAM auxiliary data for a tag and return its string (`Z`-typed) value as raw bytes.
+fn find_tag(data: &[u8], target: [u8; 2]) -> Option<&[u8]> {
     let mut pos = 0;
     #[allow(clippy::indexing_slicing, reason = "loop condition checks bounds")]
     while pos + 3 <= data.len() {
@@ -68,7 +90,7 @@ fn find_rg_tag(data: &[u8]) -> Option<&[u8]> {
         let typ = data[pos + 2];
         pos += 3;
 
-        if tag0 == b'R' && tag1 == b'G' {
+        if tag0 == target[0] && tag1 == target[1] {
             if typ != b'Z' {
                 return None;
             }
@@ -129,8 +151,9 @@ mod tests {
     const L003: &str = "mTet1-PyBr-16h-p1_S1_L003";
     const L004: &str = "mTet1-PyBr-16h-p1_S1_L004";
 
-    fn filter(groups: &[&str]) -> ReadGroupFilter {
-        ReadGroupsParams { read_groups: groups.iter().map(SmolStr::new).collect() }.filter()
+    fn filter(tag_values: &[&str]) -> TagRequirement {
+        RequireTagsParams { require_tags: tag_values.iter().map(|s| s.parse().unwrap()).collect() }
+            .filter()
     }
 
     /// Read records from test.bam, returning one record per unique RG tag seen.
@@ -156,7 +179,7 @@ mod tests {
     #[test]
     fn all_filter_allows_every_record() -> Result<()> {
         let f = filter(&[]);
-        assert!(matches!(f, ReadGroupFilter::All));
+        assert!(matches!(f, TagRequirement::All));
         for (_, record) in one_record_per_group()? {
             assert!(f.allows(&view(&record)));
         }
@@ -164,8 +187,8 @@ mod tests {
     }
 
     #[test]
-    fn single_group_allows_matching_record() -> Result<()> {
-        let f = filter(&[L001]);
+    fn single_tag_allows_matching_record() -> Result<()> {
+        let f = filter(&[&format!("RG={L001}")]);
         let records = one_record_per_group()?;
         let (_, l001) = records.iter().find(|(rg, _)| rg == L001).expect("L001 record");
         assert!(f.allows(&view(l001)));
@@ -173,8 +196,8 @@ mod tests {
     }
 
     #[test]
-    fn single_group_rejects_non_matching_records() -> Result<()> {
-        let f = filter(&[L001]);
+    fn single_tag_rejects_non_matching_records() -> Result<()> {
+        let f = filter(&[&format!("RG={L001}")]);
         let records = one_record_per_group()?;
         for (rg, record) in &records {
             if rg != L001 {
@@ -185,8 +208,8 @@ mod tests {
     }
 
     #[test]
-    fn multiple_groups_allows_all_members() -> Result<()> {
-        let f = filter(&[L001, L002, L003]);
+    fn multiple_tags_allows_all_members() -> Result<()> {
+        let f = filter(&[&format!("RG={L001}"), &format!("RG={L002}"), &format!("RG={L003}")]);
         let records = one_record_per_group()?;
         for (rg, record) in &records {
             let expected = rg != L004;
@@ -196,9 +219,8 @@ mod tests {
     }
 
     #[test]
-    fn record_without_rg_tag_is_rejected_when_filter_active() -> Result<()> {
-        let f = filter(&[L001]);
-        // Construct a record with no RG tag by cloning one and stripping it.
+    fn record_without_tag_is_rejected_when_filter_active() -> Result<()> {
+        let f = filter(&[&format!("RG={L001}")]);
         let records = one_record_per_group()?;
         let (_, base) = records.first().expect("at least one record");
         let mut stripped = base.clone();
@@ -208,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn record_without_rg_tag_passes_when_no_filter() -> Result<()> {
+    fn record_without_tag_passes_when_no_filter() -> Result<()> {
         let f = filter(&[]);
         let records = one_record_per_group()?;
         let (_, base) = records.first().expect("at least one record");

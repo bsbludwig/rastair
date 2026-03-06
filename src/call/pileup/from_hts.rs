@@ -139,14 +139,14 @@ mod tests {
     fn name_collector_skip_when_keep_overlapping() {
         let params = PileupMappingParams {
             variant_calling: VariantCallingParams { keep_overlapping_reads: true, ..default() },
-            read_groups: default(),
+            require_tags: default(),
         };
         assert!(matches!(NameCollector::new(&params), NameCollector::Skip));
     }
 
     #[test]
     fn name_collector_collect_by_default() {
-        let params = PileupMappingParams { variant_calling: default(), read_groups: default() };
+        let params = PileupMappingParams { variant_calling: default(), require_tags: default() };
         assert!(matches!(NameCollector::new(&params), NameCollector::Collect(_)));
     }
 }

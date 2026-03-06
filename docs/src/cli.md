@@ -161,9 +161,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
 * `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
-* `--read-groups <READ_GROUPS>` — The read group(s) to filter reads by
+* `--require-tags <REQUIRE_TAGS>` — Require reads to have a specific SAM tag value
 
-   Accepts one or more SAM RG tag values, space-separated. Can also be used with shell command substitution, e.g. `--read-groups $(cat groups.txt)`.
+   Format: TAG=VALUE, e.g. `--require-tags RG=mygroup`. Accepts one or more values (space-separated). A read is kept if it matches any of the specified tag=value pairs.
 
 ###### **Output Options:**
 
@@ -233,7 +233,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--linear-dedup-threshold <LINEAR_DEDUP_THRESHOLD>` — Depth threshold below which linear name dedup is used instead of a hashmap
 
-   At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an FxHashMap. Set to 0 to always use the hashmap.
+   At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an `FxHashMap`. Set to 0 to always use the hashmap.
 
   Default value: `30`
 * `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead.

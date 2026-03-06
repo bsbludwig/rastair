@@ -1,7 +1,7 @@
 use crate::{
     call::{
         pileup::{Pileup, overlapping_reads::NameCollector},
-        read_groups::ReadGroupFilter,
+        require_tags::TagRequirement,
         variant_calling::VariantCallingParams,
     },
     sequence::{ChunkRegion, Readers, Segment},
@@ -15,7 +15,7 @@ use tracing::{Level, debug, instrument, trace, warn};
 #[derive(Default)]
 pub struct PileupMappingParams {
     pub variant_calling: VariantCallingParams,
-    pub read_groups: ReadGroupFilter,
+    pub require_tags: TagRequirement,
 }
 
 impl Deref for PileupMappingParams {
@@ -47,9 +47,9 @@ pub fn get_pileups(
     {
         let read_flags = params.read_flags.clone();
         let unpaired = params.unpaired;
-        let rg_filter = params.read_groups.clone();
+        let tag_filter = params.require_tags.clone();
         readers.bam.set_pileup_filter(move |record| {
-            read_flags.filter_flags(record.flags(), unpaired) && rg_filter.allows(&record)
+            read_flags.filter_flags(record.flags(), unpaired) && tag_filter.allows(&record)
         });
     }
 

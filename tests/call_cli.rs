@@ -622,7 +622,7 @@ fn read_group_single_filter_reduces_records() -> Result<()> {
         .args(CALL_TEST_BAM)
         .args([REGION, NO_ML, "--vcf"])
         .arg(&filtered)
-        .arg("--read-groups=mTet1-PyBr-16h-p1_S1_L001")
+        .arg("--require-tags=RG=mTet1-PyBr-16h-p1_S1_L001")
         .succeeds()?;
 
     let unfiltered_count = vcf_content_lines(&std::fs::read_to_string(&unfiltered)?).count();
@@ -651,17 +651,17 @@ fn read_group_multiple_space_separated_filters_give_intermediate_records() -> Re
         .args(CALL_TEST_BAM)
         .args([REGION, NO_ML, "--vcf"])
         .arg(&one_group)
-        .arg("--read-groups=mTet1-PyBr-16h-p1_S1_L001")
+        .arg("--require-tags=RG=mTet1-PyBr-16h-p1_S1_L001")
         .succeeds()?;
 
-    // Space-separated: pass both groups as a single --read-groups value list
+    // Space-separated: pass both groups as a single --require-tags value list
     rastair()
         .args(CALL_TEST_BAM)
         .args([REGION, NO_ML, "--vcf"])
         .arg(&two_groups)
-        .arg("--read-groups")
-        .arg("mTet1-PyBr-16h-p1_S1_L001")
-        .arg("mTet1-PyBr-16h-p1_S1_L002")
+        .arg("--require-tags")
+        .arg("RG=mTet1-PyBr-16h-p1_S1_L001")
+        .arg("RG=mTet1-PyBr-16h-p1_S1_L002")
         .succeeds()?;
 
     let unfiltered_count = vcf_content_lines(&std::fs::read_to_string(&unfiltered)?).count();
