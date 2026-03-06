@@ -18,7 +18,7 @@ impl Deref for SimpleReads {
     type Target = [SimpleRead];
 
     fn deref(&self) -> &Self::Target {
-        &*self.0
+        &self.0
     }
 }
 

@@ -329,7 +329,7 @@ pub fn load_truth_vcf(
 }
 
 /// Process a truth VCF record and extract variant information.
-/// Returns a list of PositionKeys for each valid SNP alt allele.
+/// Returns a list of `PositionKeys` for each valid SNP alt allele.
 /// Multi-allelic sites produce multiple keys (one per alt).
 fn process_truth_record(record: &bcf::Record) -> SmallVec<PositionKey, 2> {
     // Filter: only PASS variants

@@ -59,6 +59,7 @@ impl ReadGroupFilter {
 /// returns the string value of the first `RG:Z:` field found.
 fn find_rg_tag(data: &[u8]) -> Option<&[u8]> {
     let mut pos = 0;
+    #[allow(clippy::indexing_slicing, reason = "loop condition checks bounds")]
     while pos + 3 <= data.len() {
         let tag0 = data[pos];
         let tag1 = data[pos + 1];

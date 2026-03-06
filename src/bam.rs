@@ -219,8 +219,8 @@ fn rewrite_region(
         .map(|call| (call.pos, call.call.clone()))
         .collect();
 
-    let region_start = region.start as i64;
-    let region_end = region.end as i64;
+    let region_start = region.start.cast_signed();
+    let region_end = region.end.cast_signed();
     let mut record = Record::new();
     let mut out = Vec::new();
     while let Some(result) = bam.read(&mut record) {

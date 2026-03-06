@@ -36,7 +36,7 @@ pub struct VariantCallingParams {
     ///
     /// At pileup positions with depth ≤ this value, read name deduplication
     /// uses a linear scan through parallel suffix/name arrays rather than an
-    /// FxHashMap. Set to 0 to always use the hashmap.
+    /// `FxHashMap`. Set to 0 to always use the hashmap.
     #[arg(long, default_value_t = 30)]
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[default(30)]

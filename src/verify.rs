@@ -392,7 +392,10 @@ fn load_predictions_vcf(
                 .format(b"ML")
                 .float()
                 .ok()
-                .and_then(|v| v.first().and_then(|scores| scores.get(alt_idx).copied()))
+                .and_then(|v| {
+                    let scores = v.first()?;
+                    scores.get(alt_idx).copied()
+                })
                 .unwrap_or(0.0)
                 .f();
 

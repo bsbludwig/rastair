@@ -260,7 +260,7 @@ pub fn batch_add_ml_metrics(
         (&pending.others, &others_preds),
     ] {
         for (p, &raw_pred) in items.iter().zip(preds.iter()) {
-            let calibrated: Probability = p.platt.calibrate_score(raw_pred as f64);
+            let calibrated: Probability = p.platt.calibrate_score(f64::from(raw_pred));
             let threshold = ml.threshold;
             if let Some(filters) = pileups[p.pileup_idx].alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);

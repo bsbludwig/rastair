@@ -56,7 +56,7 @@ impl MachineLearning {
 
         match prediction.get(0).copied() {
             Some(p) => Some(Prediction {
-                prediction: platt.calibrate_score(p as f64),
+                prediction: platt.calibrate_score(p),
                 threshold: self.threshold,
                 allele: current.alt.base,
                 features: features_f32.row(0).to_owned(),
