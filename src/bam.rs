@@ -291,14 +291,11 @@ fn rewrite_record(
             mods.apply_to_record(record)?;
         }
         BamMode::Legacy => {
-            let methylated_positions = find_methylated_positions(calls, record);
-
+            let cpg = find_legacy_cpg_positions(calls, record);
             let seq = record.seq().as_bytes();
 
-            let mut methylated_set = FxHashSet::default();
-            methylated_set.extend(methylated_positions.iter().map(|&pos| pos as usize));
-
-            let xr_tags = XrTags::new_legacy(&seq, strand, is_first_in_pair, &methylated_set);
+            let xr_tags =
+                XrTags::new_legacy(&seq, strand, is_first_in_pair, &cpg.methylated, &cpg.all_cpg);
             xr_tags.apply_to_record(record)?;
         }
     }
@@ -306,14 +303,37 @@ fn rewrite_record(
     Ok(())
 }
 
-/// Find methylated positions without rewriting the sequence (for legacy mode)
-fn find_methylated_positions(
+struct LegacyCpgPositions {
+    /// Read positions where a methylated CpG was observed
+    methylated: FxHashSet<usize>,
+    /// All read positions that overlap a CpG call (methylated or not)
+    all_cpg: FxHashSet<usize>,
+}
+
+/// Find CpG positions for legacy XM tag generation.
+///
+/// Returns both the set of methylated positions and the set of all CpG
+/// positions (methylated + unmethylated) so the XM generator can distinguish
+/// "CpG but unmethylated" (`z`) from "not a CpG at all" (`.`).
+fn find_legacy_cpg_positions(
     calls: &FxHashMap<u32, RastairCall>,
     record: &Record,
-) -> SmallVec<u32, 10> {
+) -> LegacyCpgPositions {
     let strand = StrandFromRecord::strand(record);
     let seq = record.seq().as_bytes();
-    let mut methylated_positions: SmallVec<u32, 10> = SmallVec::new();
+    let mut methylated = FxHashSet::default();
+    let mut all_cpg = FxHashSet::default();
+
+    let target_base = match strand {
+        Strand::OT => Base::C,
+        Strand::OB => Base::G,
+        Strand::Unknown => return LegacyCpgPositions { methylated, all_cpg },
+    };
+    let evidence_base = match strand {
+        Strand::OT => Base::T,
+        Strand::OB => Base::A,
+        Strand::Unknown => unreachable!(),
+    };
 
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
         let Some(pos_in_read) = pos_in_read else { continue };
@@ -321,25 +341,26 @@ fn find_methylated_positions(
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
         let pos_in_read = pos_in_read as usize;
 
-        if let Some(call) = calls.get(&pos_in_ref)
-            && let RastairCall::Cpg { methylated, .. } = call
-            && *methylated
-        {
-            let observed_base = Base::from(seq[pos_in_read]);
+        let is_methylated = match calls.get(&pos_in_ref) {
+            Some(
+                RastairCall::Cpg { methylated, .. } | RastairCall::DeNovoCpg { methylated, .. },
+            ) => *methylated,
+            _ => continue,
+        };
 
-            let is_methylation_evidence = match strand {
-                Strand::OT => observed_base == Base::T,
-                Strand::OB => observed_base == Base::A,
-                Strand::Unknown => false,
-            };
+        let observed_base = Base::from(seq[pos_in_read]);
 
-            if is_methylation_evidence {
-                methylated_positions.push(pos_in_read as u32);
+        // A CpG position in the read shows either the target base (unmethylated)
+        // or the evidence base (methylated, converted by TAPS)
+        if observed_base == target_base || observed_base == evidence_base {
+            all_cpg.insert(pos_in_read);
+            if is_methylated && observed_base == evidence_base {
+                methylated.insert(pos_in_read);
             }
         }
     }
 
-    methylated_positions
+    LegacyCpgPositions { methylated, all_cpg }
 }
 
 struct MethylatedInfo {
@@ -373,10 +394,14 @@ fn get_methylated_positions(
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
         let pos_in_read = pos_in_read as usize;
 
-        if let Some(call) = calls.get(&pos_in_ref)
-            && let RastairCall::Cpg { methylated, .. } = call
-            && *methylated
-        {
+        let methylated = match calls.get(&pos_in_ref) {
+            Some(RastairCall::Cpg { methylated, .. } | RastairCall::DeNovoCpg { methylated, .. }) => {
+                *methylated
+            }
+            _ => continue,
+        };
+
+        if methylated {
             let observed_base = Base::from(seq[pos_in_read]);
 
             match strand {
@@ -979,6 +1004,180 @@ mod tests {
 
     fn as_base_string(seq: &[u8]) -> String {
         seq.iter().map(|b| Base::from(*b).as_str()).collect()
+    }
+
+    /// Only positions that are actual CpG sites in the calls should be marked
+    /// z/Z in the XM tag. Every other C (OT) or G (OB) that is NOT a CpG in
+    /// the reference must be `.`.
+    #[test]
+    fn xm_only_marks_called_cpg_positions() -> Result<()> {
+        use Base::*;
+
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch((0, 6103075, 6103100))?;
+        let mut record = Record::new();
+        bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+
+        let strand = StrandFromRecord::strand(&record);
+        let seq = record.seq().as_bytes();
+
+        // Count how many G bases (OB target) are in the read
+        let total_target_bases = seq
+            .iter()
+            .filter(|&&b| Base::from(b) == if strand == Strand::OB { G } else { C })
+            .count();
+
+        // Create calls for only ONE CpG position — pick the first CG or CA
+        // dinucleotide we find
+        let mut calls = FxHashMap::default();
+        let mut cpg_count = 0u32;
+        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
+            let current_base = Base::from(seq[pos_in_read as usize]);
+            let Some(next_base) = seq.get((pos_in_read + 1) as usize).map(Base::from) else {
+                continue;
+            };
+
+            // For OB: look for CA (methylation evidence for G on next pos)
+            if strand == Strand::OB && current_base == C && next_base == A && cpg_count == 0 {
+                calls.insert(
+                    pos_in_ref as u32 + 1,
+                    RastairCall::Cpg { methylated: true, base: G },
+                );
+                cpg_count += 1;
+                break;
+            }
+            // For OT: look for TG (methylation evidence for C)
+            if strand == Strand::OT && current_base == T && next_base == G && cpg_count == 0 {
+                calls.insert(
+                    pos_in_ref as u32,
+                    RastairCall::Cpg { methylated: true, base: C },
+                );
+                cpg_count += 1;
+                break;
+            }
+        }
+        ensure!(cpg_count == 1, "need at least one CpG call for this test");
+
+        rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+
+        let Aux::String(xm_tag) = record.aux(b"XM")? else {
+            bail!("XM not a string");
+        };
+
+        let z_count = xm_tag.chars().filter(|c| *c == 'Z' || *c == 'z').count();
+
+        // BUG: currently every C or G in the read is marked as z/Z, but only
+        // the one CpG position we called should be annotated.
+        assert!(
+            z_count < total_target_bases,
+            "XM has {z_count} CpG annotations but only {cpg_count} CpG call(s) exist. \
+             There are {total_target_bases} target bases in the read — non-CpG positions \
+             should be '.' not 'z'. XM: {xm_tag}"
+        );
+
+        Ok(())
+    }
+
+    /// De-novo CpG calls (DeNovoCpg variant) must also appear in legacy XM tags.
+    #[test]
+    fn xm_includes_denovo_cpg_methylation() -> Result<()> {
+        use Base::*;
+
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch((0, 6103075, 6103100))?;
+        let mut record = Record::new();
+        bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+
+        let strand = StrandFromRecord::strand(&record);
+        let seq = record.seq().as_bytes();
+
+        // Create a single DeNovoCpg call at the first methylation evidence base
+        let mut calls = FxHashMap::default();
+        let mut found = false;
+        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
+            let observed = Base::from(seq[pos_in_read as usize]);
+            let is_evidence = match strand {
+                Strand::OT => observed == T,
+                Strand::OB => observed == A,
+                Strand::Unknown => false,
+            };
+            if is_evidence {
+                let base = match strand {
+                    Strand::OT => C,
+                    Strand::OB => G,
+                    Strand::Unknown => unreachable!(),
+                };
+                calls.insert(
+                    pos_in_ref as u32,
+                    RastairCall::DeNovoCpg { methylated: true, base },
+                );
+                found = true;
+                break;
+            }
+        }
+        ensure!(found, "need a methylation-evidence base for this test");
+
+        rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+
+        let Aux::String(xm_tag) = record.aux(b"XM")? else {
+            bail!("XM not a string");
+        };
+
+        let has_methylated = xm_tag.chars().any(|c| c == 'Z' || c == 'X' || c == 'H');
+        assert!(
+            has_methylated,
+            "XM tag should contain a methylation mark for the DeNovoCpg call, \
+             but got: {xm_tag}"
+        );
+
+        Ok(())
+    }
+
+    /// De-novo CpG calls must also be found by find_methylated_positions (standard mode).
+    #[test]
+    fn standard_mode_includes_denovo_cpg() -> Result<()> {
+        use Base::*;
+
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch((0, 6103075, 6103100))?;
+        let mut record = Record::new();
+        bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+
+        let strand = StrandFromRecord::strand(&record);
+        let seq = record.seq().as_bytes();
+
+        let mut calls = FxHashMap::default();
+        let mut expected_pos = None;
+        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
+            let observed = Base::from(seq[pos_in_read as usize]);
+            let is_evidence = match strand {
+                Strand::OT => observed == T,
+                Strand::OB => observed == A,
+                Strand::Unknown => false,
+            };
+            if is_evidence {
+                let base = match strand {
+                    Strand::OT => C,
+                    Strand::OB => G,
+                    Strand::Unknown => unreachable!(),
+                };
+                calls.insert(
+                    pos_in_ref as u32,
+                    RastairCall::DeNovoCpg { methylated: true, base },
+                );
+                expected_pos = Some(pos_in_read as u32);
+                break;
+            }
+        }
+        ensure!(expected_pos.is_some(), "need a methylation-evidence base");
+
+        let data = get_methylated_positions(&calls, &record);
+        assert!(
+            !data.methylated_positions.is_empty(),
+            "get_methylated_positions should find DeNovoCpg calls, but found none"
+        );
+
+        Ok(())
     }
 
     #[test]

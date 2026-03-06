@@ -202,25 +202,24 @@ fn generate_xm_string(
 /// In legacy mode the SEQ is not rewritten, so methylated positions still show
 /// T (OT) or A (OB). The XM tag marks:
 /// - `Z` at positions in `methylated_set` (methylated CpG)
-/// - `z` at positions with the strand's target base (unmethylated CpG)
-/// - `.` everywhere else
+/// - `z` at positions in `cpg_set` but not in `methylated_set` (unmethylated CpG)
+/// - `.` everywhere else (positions that are NOT CpGs in the reference)
 pub fn generate_xm_string_legacy(
     seq: &[u8],
     strand: Strand,
     methylated_set: &FxHashSet<usize>,
+    cpg_set: &FxHashSet<usize>,
 ) -> String {
-    let target_base = match strand {
-        Strand::OT => Base::C,
-        Strand::OB => Base::G,
-        Strand::Unknown => return ".".repeat(seq.len()),
-    };
+    if strand == Strand::Unknown {
+        return ".".repeat(seq.len());
+    }
 
     seq.iter()
         .enumerate()
-        .map(|(i, &b)| {
+        .map(|(i, _)| {
             if methylated_set.contains(&i) {
                 'Z'
-            } else if Base::from(b) == target_base {
+            } else if cpg_set.contains(&i) {
                 'z'
             } else {
                 '.'
@@ -247,9 +246,10 @@ impl XrTags {
         strand: Strand,
         is_first_in_pair: bool,
         methylated_set: &FxHashSet<usize>,
+        cpg_set: &FxHashSet<usize>,
     ) -> Self {
         let (xr, xg) = xr_xg(strand, is_first_in_pair);
-        let xm = generate_xm_string_legacy(seq, strand, methylated_set);
+        let xm = generate_xm_string_legacy(seq, strand, methylated_set, cpg_set);
         Self { xr, xg, xm }
     }
 
