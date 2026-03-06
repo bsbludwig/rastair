@@ -95,21 +95,21 @@ impl Rastair1BedFormat {
             GenotypeString(Base::from(&r#ref), Base::from(&r#ref))
         };
         let genotype_likelihood = if let Ok(buffer) =
-            r.format(GenotypeLikelihood::ID.as_bytes()).integer()
+            r.format(GenotypeLikelihood::ID.as_bytes()).float()
             && let Some(first) = buffer.first()
             && let Some(val) = first.first()
         {
-            Phred::from_phred(*val)
+            Phred::from_phred(*val as i32)
         } else {
             trace!(?genotype, "No genotype likelihood field found");
             Phred::from_phred(0)
         };
         let genotype_confidence = if let Ok(buffer) =
-            r.format(GenotypeConfidence::ID.as_bytes()).integer()
+            r.format(GenotypeConfidence::ID.as_bytes()).float()
             && let Some(first) = buffer.first()
             && let Some(val) = first.first()
         {
-            Phred::from_phred(*val)
+            Phred::from_phred(*val as i32)
         } else {
             trace!(?genotype, "No genotype confidence field found");
             Phred::from_phred(0)

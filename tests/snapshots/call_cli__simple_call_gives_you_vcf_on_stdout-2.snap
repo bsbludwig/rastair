@@ -44,8 +44,8 @@ expression: stdout
 ##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
 ##INFO=<ID=CPGnovo,Number=0,Type=Flag,Description="De-novo CPG candidate: Could the alt alleles create a new CpG site?">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-##FORMAT=<ID=GL,Number=G,Type=Integer,Description="Genotype likelihoods, Phred-scaled">
-##FORMAT=<ID=GC,Number=G,Type=Integer,Description="Genotype confidence, Phred-scaled">
+##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods, Phred-scaled">
+##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence, Phred-scaled">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
 ##FORMAT=<ID=M5mC,Number=M,Type=Float,Description="Methylation level at CpG sites">
 ##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelihood by rastair's machine learning model">

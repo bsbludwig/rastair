@@ -29,7 +29,7 @@ impl FormatFieldValue for rastair_types::RootMeanSquare {
 }
 
 impl InfoFieldValue for rastair_types::Phred {
-    const TYPE_NAME: &'static str = "Integer";
+    const TYPE_NAME: &'static str = "Float";
 
     fn write(record: &mut Record, tag: &cstr8::CStr8, values: &[Self]) -> Result<()> {
         record
@@ -42,7 +42,7 @@ impl InfoFieldValue for rastair_types::Phred {
 }
 
 impl FormatFieldValue for rastair_types::Phred {
-    const TYPE_NAME: &'static str = "Integer";
+    const TYPE_NAME: &'static str = "Float";
 
     fn write(record: &mut Record, tag: &cstr8::CStr8, values: &[Self]) -> Result<()> {
         record
