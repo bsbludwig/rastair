@@ -53,21 +53,36 @@ fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
     match (original_beta, denovo_beta) {
         // Both original and de-novo CpG present
         (
-            Some(Methylated::OriginalCpG { beta: orig }),
-            Some(Methylated::DeNovoCpG { beta: denovo }),
-        ) => Ok(Methylated::Both { original_beta: orig, denovo_beta: denovo }),
+            Some(Methylated::OriginalCpG {
+                beta: orig,
+                mod_count: orig_mod,
+                total_count: orig_total,
+            }),
+            Some(Methylated::DeNovoCpG {
+                beta: denovo,
+                mod_count: denovo_mod,
+                total_count: denovo_total,
+            }),
+        ) => Ok(Methylated::Both {
+            original_beta: orig,
+            original_mod_count: orig_mod,
+            original_total_count: orig_total,
+            denovo_beta: denovo,
+            denovo_mod_count: denovo_mod,
+            denovo_total_count: denovo_total,
+        }),
 
         // Only original CpG
-        (Some(Methylated::OriginalCpG { beta: orig }), Some(Methylated::NoEvidence))
-        | (Some(Methylated::OriginalCpG { beta: orig }), None) => {
-            Ok(Methylated::OriginalCpG { beta: orig })
-        }
+        (
+            Some(Methylated::OriginalCpG { beta: orig, mod_count, total_count }),
+            Some(Methylated::NoEvidence) | None,
+        ) => Ok(Methylated::OriginalCpG { beta: orig, mod_count, total_count }),
 
         // Only de-novo CpG
-        (Some(Methylated::NoEvidence), Some(Methylated::DeNovoCpG { beta: denovo }))
-        | (None, Some(Methylated::DeNovoCpG { beta: denovo })) => {
-            Ok(Methylated::DeNovoCpG { beta: denovo })
-        }
+        (
+            Some(Methylated::NoEvidence) | None,
+            Some(Methylated::DeNovoCpG { beta: denovo, mod_count, total_count }),
+        ) => Ok(Methylated::DeNovoCpG { beta: denovo, mod_count, total_count }),
 
         // No evidence from both
         (Some(Methylated::NoEvidence), Some(Methylated::NoEvidence))
@@ -86,8 +101,7 @@ fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
         }
         (Some(Methylated::DeNovoCpG { .. }), Some(Methylated::OriginalCpG { .. }))
         | (Some(Methylated::DeNovoCpG { .. }), Some(Methylated::DeNovoCpG { .. }))
-        | (Some(Methylated::DeNovoCpG { .. }), Some(Methylated::NoEvidence))
-        | (Some(Methylated::DeNovoCpG { .. }), None)
+        | (Some(Methylated::DeNovoCpG { .. }), Some(Methylated::NoEvidence) | None)
         | (Some(Methylated::OriginalCpG { .. }), Some(Methylated::OriginalCpG { .. }))
         | (None, Some(Methylated::OriginalCpG { .. }))
         | (Some(Methylated::NoEvidence), Some(Methylated::OriginalCpG { .. })) => {
@@ -97,9 +111,10 @@ fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
 }
 
 fn denovo_to_c(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.after_counts.get(ReadKey { strand: Strand::OT, current: T, adj: G }).f();
-    let unmod_count =
-        record.after_counts.get(ReadKey { strand: Strand::OT, current: C, adj: G }).f();
+    let raw_mod = record.after_counts.get(ReadKey { strand: Strand::OT, current: T, adj: G });
+    let raw_unmod = record.after_counts.get(ReadKey { strand: Strand::OT, current: C, adj: G });
+    let mod_count = raw_mod.f();
+    let unmod_count = raw_unmod.f();
     if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
@@ -107,14 +122,18 @@ fn denovo_to_c(record: &PileupMetrics) -> Result<Methylated> {
     let het_confounded = record.ref_base() == T
         && record.pos_metrics.genotype.is_some_and(|gt| gt.genotype.is_heterozygous());
     let beta = adjusted_beta(mod_count, unmod_count, het_confounded, false);
-    Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
+    Ok(Methylated::DeNovoCpG {
+        beta: Probability::new(beta).this_is_a_bug()?,
+        mod_count: raw_mod,
+        total_count: raw_mod + raw_unmod,
+    })
 }
 
 fn denovo_to_g(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count =
-        record.before_counts.get(ReadKey { strand: Strand::OB, current: A, adj: C }).f();
-    let unmod_count =
-        record.before_counts.get(ReadKey { strand: Strand::OB, current: G, adj: C }).f();
+    let raw_mod = record.before_counts.get(ReadKey { strand: Strand::OB, current: A, adj: C });
+    let raw_unmod = record.before_counts.get(ReadKey { strand: Strand::OB, current: G, adj: C });
+    let mod_count = raw_mod.f();
+    let unmod_count = raw_unmod.f();
     if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
@@ -122,7 +141,11 @@ fn denovo_to_g(record: &PileupMetrics) -> Result<Methylated> {
     let het_confounded = record.ref_base() == A
         && record.pos_metrics.genotype.is_some_and(|gt| gt.genotype.is_heterozygous());
     let beta = adjusted_beta(mod_count, unmod_count, het_confounded, false);
-    Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
+    Ok(Methylated::DeNovoCpG {
+        beta: Probability::new(beta).this_is_a_bug()?,
+        mod_count: raw_mod,
+        total_count: raw_mod + raw_unmod,
+    })
 }
 
 /// Compute beta with optional adjustments for genotype.
@@ -166,9 +189,10 @@ fn het_alt_is_base(record: &PileupMetrics, base: Base) -> bool {
 }
 
 fn ref_c(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.after_counts.get(ReadKey { strand: Strand::OT, current: T, adj: G }).f();
-    let unmod_count =
-        record.after_counts.get(ReadKey { strand: Strand::OT, current: C, adj: G }).f();
+    let raw_mod = record.after_counts.get(ReadKey { strand: Strand::OT, current: T, adj: G });
+    let raw_unmod = record.after_counts.get(ReadKey { strand: Strand::OT, current: C, adj: G });
+    let mod_count = raw_mod.f();
+    let unmod_count = raw_unmod.f();
     if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
@@ -178,14 +202,18 @@ fn ref_c(record: &PileupMetrics) -> Result<Methylated> {
         gt.is_some_and(|gt| gt.genotype.is_heterozygous() && het_alt_is_base(record, T));
     let hom_alt = gt.is_some_and(|gt| gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref());
     let beta = adjusted_beta(mod_count, unmod_count, het_confounded, hom_alt);
-    Ok(Methylated::OriginalCpG { beta: Probability::new(beta).this_is_a_bug()? })
+    Ok(Methylated::OriginalCpG {
+        beta: Probability::new(beta).this_is_a_bug()?,
+        mod_count: raw_mod,
+        total_count: raw_mod + raw_unmod,
+    })
 }
 
 fn ref_g(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count =
-        record.before_counts.get(ReadKey { strand: Strand::OB, current: A, adj: C }).f();
-    let unmod_count =
-        record.before_counts.get(ReadKey { strand: Strand::OB, current: G, adj: C }).f();
+    let raw_mod = record.before_counts.get(ReadKey { strand: Strand::OB, current: A, adj: C });
+    let raw_unmod = record.before_counts.get(ReadKey { strand: Strand::OB, current: G, adj: C });
+    let mod_count = raw_mod.f();
+    let unmod_count = raw_unmod.f();
     if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
@@ -195,7 +223,11 @@ fn ref_g(record: &PileupMetrics) -> Result<Methylated> {
         gt.is_some_and(|gt| gt.genotype.is_heterozygous() && het_alt_is_base(record, A));
     let hom_alt = gt.is_some_and(|gt| gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref());
     let beta = adjusted_beta(mod_count, unmod_count, het_confounded, hom_alt);
-    Ok(Methylated::OriginalCpG { beta: Probability::new(beta).this_is_a_bug()? })
+    Ok(Methylated::OriginalCpG {
+        beta: Probability::new(beta).this_is_a_bug()?,
+        mod_count: raw_mod,
+        total_count: raw_mod + raw_unmod,
+    })
 }
 
 #[cfg(test)]
@@ -232,7 +264,7 @@ mod tests {
     #[track_caller]
     fn assert_original_cpg(result: Option<Methylated>, expected_beta: f64) {
         match result {
-            Some(Methylated::OriginalCpG { beta }) => {
+            Some(Methylated::OriginalCpG { beta, .. }) => {
                 assert!(
                     (*beta - expected_beta).abs() < 0.001,
                     "Expected beta {}, got {}",
@@ -247,7 +279,7 @@ mod tests {
     #[track_caller]
     fn assert_denovo_cpg(result: Option<Methylated>, expected_beta: f64) {
         match result {
-            Some(Methylated::DeNovoCpG { beta }) => {
+            Some(Methylated::DeNovoCpG { beta, .. }) => {
                 assert!(
                     (*beta - expected_beta).abs() < 0.001,
                     "Expected beta {}, got {}",

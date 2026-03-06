@@ -50,12 +50,12 @@ impl Rastair1BedFormat {
                 None
             }
             Methylated::NoEvidence => Some(Probability::ZERO),
-            Methylated::OriginalCpG { beta } => Some(*beta),
-            Methylated::DeNovoCpG { beta } => {
+            Methylated::OriginalCpG { beta, .. } => Some(*beta),
+            Methylated::DeNovoCpG { beta, .. } => {
                 // only pick the de-novo beta if this is written as a de-novo CpG
                 if de_novo { Some(*beta) } else { Some(Probability::ZERO) }
             }
-            Methylated::Both { original_beta, denovo_beta } => {
+            Methylated::Both { original_beta, denovo_beta, .. } => {
                 // For dual context, use the beta matching the record type (in case
                 // its ever not REF)
                 if de_novo { Some(*denovo_beta) } else { Some(*original_beta) }

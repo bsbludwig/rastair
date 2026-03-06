@@ -298,13 +298,39 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
                     // NoEvidence: checked and found no methylation (beta = 0.0)
                     Methylated::NoEvidence => FieldValue::OptF64(Some(0.0)),
                     // Single context: one beta value
-                    Methylated::OriginalCpG { beta } | Methylated::DeNovoCpG { beta } => {
+                    Methylated::OriginalCpG { beta, .. } | Methylated::DeNovoCpG { beta, .. } => {
                         FieldValue::OptF64(Some(beta.f()))
                     }
                     // Dual context: both beta values
-                    Methylated::Both { original_beta, denovo_beta } => {
+                    Methylated::Both { original_beta, denovo_beta, .. } => {
                         FieldValue::VecF64(vec![original_beta.f(), denovo_beta.f()])
                     }
+                });
+            }
+            "DPM5mC" => {
+                let values: Vec<f64> = sample
+                    .methylation_depth
+                    .0
+                    .iter()
+                    .filter_map(|v| v.map(|n| n as f64))
+                    .collect();
+                return Ok(if values.len() == 1 {
+                    FieldValue::OptF64(Some(values[0]))
+                } else {
+                    FieldValue::VecF64(values)
+                });
+            }
+            "ADM5mC" => {
+                let values: Vec<f64> = sample
+                    .methylation_alt_depth
+                    .0
+                    .iter()
+                    .filter_map(|v| v.map(|n| n as f64))
+                    .collect();
+                return Ok(if values.len() == 1 {
+                    FieldValue::OptF64(Some(values[0]))
+                } else {
+                    FieldValue::VecF64(values)
                 });
             }
             "ML" => {

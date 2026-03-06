@@ -20,7 +20,7 @@ pub use cpg::InCpG;
 mod denovo_cpg;
 pub use denovo_cpg::DeNovoCpGCandidate;
 mod methylation;
-pub use methylation::Methylated;
+pub use methylation::{Methylated, MethylationAltDepth, MethylationDepth};
 
 mod metrics_to_vcf;
 
@@ -139,6 +139,8 @@ vcf_record!(
         GenotypeConfidence default,
         SampleReadDepth default,
         Methylated default,
+        MethylationDepth default,
+        MethylationAltDepth default,
         MachineLearningPrediction default
     ],
     // hint to allocate this many slots for format data

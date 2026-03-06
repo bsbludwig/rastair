@@ -6,8 +6,8 @@ use crate::{
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
         Format, GenotypeConfidence, GenotypeLikelihood, Info, MachineLearningPrediction,
-        NumAlignedBases, NumIndels, PositionInRead, StrandSpecificBaseQuality,
-        StrandSpecificMappingQuality, low_ml_score,
+        MethylationAltDepth, MethylationDepth, NumAlignedBases, NumIndels, PositionInRead,
+        StrandSpecificBaseQuality, StrandSpecificMappingQuality, low_ml_score,
     },
 };
 use color_eyre::eyre::ensure;
@@ -371,12 +371,17 @@ impl PileupMetrics {
             Methylated::Unknown
         };
 
+        let methylation_depth = MethylationDepth::from(&methylated);
+        let methylation_alt_depth = MethylationAltDepth::from(&methylated);
+
         Format {
             genotype,
             genotype_likelihood,
             genotype_confidence,
             sample_read_depth: SampleReadDepth(self.pileup.reads.len()),
             methylated,
+            methylation_depth,
+            methylation_alt_depth,
             machine_learning_prediction: MachineLearningPrediction(if has_ml {
                 main_alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default()).collect()
             } else {
