@@ -569,7 +569,7 @@ if (params$plot_gc) {
   	scale_fill_gradient2(low = "black", mid = "orange", high="purple", midpoint = max(for_plot$N)/2) +
     xlab("CpGs in 100bp window") +
     ylab("Depth") +
+    ylim(0, quantile(depth_by_cpg$depth, 0.99)) +
     theme_classic()
 }
 ```
-
