@@ -1,6 +1,6 @@
 use crate::{
     call::variant_calling::GenotypeTag,
-    metrics::{AltCall, DenovoAdjecent, PileupMetrics},
+    metrics::{AltCall, DenovoAdjecent, PileupMetrics, ReadKey},
     utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
 };
@@ -25,7 +25,6 @@ pub fn call(current: &PileupMetrics) -> Result<Option<Methylated>> {
 fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
     let cpg = p.pos_metrics.cpg;
     let denovo_adj = p.pos_metrics.denovo_adj;
-    let ref_base = p.ref_base();
     let sequence_context = &p.pileup.context;
     let ref_before = sequence_context.before_1;
     let ref_after = sequence_context.after_1;
@@ -43,11 +42,9 @@ fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
     let has_denovo_c = p.alts.iter().any(|a| a.base == C && a.call == AltCall::RealVariant);
     let has_denovo_g = p.alts.iter().any(|a| a.base == G && a.call == AltCall::RealVariant);
     let denovo_beta = if has_denovo_c && ref_after == G {
-        // creating new CpG
-        if ref_base == T { Some(ref_t_to_c(p)?) } else { Some(ref_not_t_to_c(p)?) }
+        Some(denovo_to_c(p)?)
     } else if has_denovo_g && ref_before == C {
-        // creating new CpG
-        if ref_base == A { Some(ref_a_to_g(p)?) } else { Some(ref_not_a_to_g(p)?) }
+        Some(denovo_to_g(p)?)
     } else {
         None
     };
@@ -99,73 +96,53 @@ fn call_methylation(p: &PileupMetrics) -> Result<Methylated> {
     }
 }
 
-fn ref_t_to_c(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.after_counts.get(Strand::OT, T, G).f();
-    let unmod_count = record.after_counts.get(Strand::OT, C, G).f();
-    let total = mod_count + unmod_count;
-    if total == 0. {
+fn denovo_to_c(record: &PileupMetrics) -> Result<Methylated> {
+    let mod_count = record.after_counts.get(ReadKey { strand: Strand::OT, current: T, adj: G }).f();
+    let unmod_count =
+        record.after_counts.get(ReadKey { strand: Strand::OT, current: C, adj: G }).f();
+    if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
 
-    let beta = match record.pos_metrics.genotype {
-        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(mod_count, unmod_count),
-        _ => mod_count / total,
-    };
-
+    let het_confounded = record.ref_base() == T
+        && record.pos_metrics.genotype.is_some_and(|gt| gt.genotype.is_heterozygous());
+    let beta = adjusted_beta(mod_count, unmod_count, het_confounded, false);
     Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
-fn ref_not_t_to_c(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.after_counts.get(Strand::OT, T, G).f();
-    let unmod_count = record.after_counts.get(Strand::OT, C, G).f();
-    let total = mod_count + unmod_count;
-    if total == 0. {
+fn denovo_to_g(record: &PileupMetrics) -> Result<Methylated> {
+    let mod_count =
+        record.before_counts.get(ReadKey { strand: Strand::OB, current: A, adj: C }).f();
+    let unmod_count =
+        record.before_counts.get(ReadKey { strand: Strand::OB, current: G, adj: C }).f();
+    if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
 
-    Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
-}
-
-fn ref_a_to_g(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.before_counts.get(Strand::OB, A, C).f();
-    let unmod_count = record.before_counts.get(Strand::OB, G, C).f();
-    let total = mod_count + unmod_count;
-    if total == 0. {
-        return Ok(Methylated::NoEvidence);
-    }
-
-    let beta = match record.pos_metrics.genotype {
-        Some(gt) if gt.genotype.is_heterozygous() => calculate_het_snp_beta(mod_count, unmod_count),
-        _ => mod_count / total,
-    };
-
+    let het_confounded = record.ref_base() == A
+        && record.pos_metrics.genotype.is_some_and(|gt| gt.genotype.is_heterozygous());
+    let beta = adjusted_beta(mod_count, unmod_count, het_confounded, false);
     Ok(Methylated::DeNovoCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
-fn ref_not_a_to_g(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.before_counts.get(Strand::OB, A, C).f();
-    let unmod_count = record.before_counts.get(Strand::OB, G, C).f();
-    let total = mod_count + unmod_count;
-    if total == 0. {
-        return Ok(Methylated::NoEvidence);
-    }
-
-    Ok(Methylated::DeNovoCpG { beta: Probability::new(mod_count / total).this_is_a_bug()? })
-}
-
-/// Calculate beta value for heterozygous C>T or G>A variants.
+/// Compute beta with optional adjustments for genotype.
 ///
-/// For heterozygous SNPs, assume 50% of the modified reads are expected to come
-/// from the SNP allele itself, not from methylation. So we calculate beta by
-/// only counting the "excess" modified reads.
-fn calculate_het_snp_beta(mod_count: f64, unmod_count: f64) -> f64 {
-    let total = mod_count + unmod_count;
-    if total == 0. {
-        return 0.;
+/// - `het_confounded`: apply excess-mod correction (T/A reads are split between
+///   ref allele and methylation evidence, so raw ratio overcounts methylation).
+/// - `hom_alt`: the ref base is fully replaced by a variant; beta is 0.0
+///   because the original CpG no longer exists on either chromosome.
+fn adjusted_beta(mod_count: f64, unmod_count: f64, het_confounded: bool, hom_alt: bool) -> f64 {
+    if hom_alt {
+        0.0
+    } else if het_confounded {
+        // Assume half the mod reads come from the SNP allele, not methylation.
+        // Count only excess mod reads above the 50% baseline.
+        let total = mod_count + unmod_count;
+        let excess_mod = (mod_count - total / 2.).max(0.0);
+        excess_mod / (unmod_count + excess_mod)
+    } else {
+        mod_count / (mod_count + unmod_count)
     }
-
-    let excess_mod = (mod_count - total / 2.).max(0.0); // mod_count * (0.5 - unmod_fraction);
-    excess_mod / (unmod_count + excess_mod)
 }
 
 fn het_alt_is_base(record: &PileupMetrics, base: Base) -> bool {
@@ -189,41 +166,36 @@ fn het_alt_is_base(record: &PileupMetrics, base: Base) -> bool {
 }
 
 fn ref_c(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.after_counts.get(Strand::OT, T, G).f();
-    let unmod_count = record.after_counts.get(Strand::OT, C, G).f();
-    let total = mod_count + unmod_count;
-    if total == 0. {
+    let mod_count = record.after_counts.get(ReadKey { strand: Strand::OT, current: T, adj: G }).f();
+    let unmod_count =
+        record.after_counts.get(ReadKey { strand: Strand::OT, current: C, adj: G }).f();
+    if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
 
-    let beta_value = match record.pos_metrics.genotype {
-        Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, T) => {
-            calculate_het_snp_beta(mod_count, unmod_count)
-        }
-        Some(gt) if gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref() => 0.0,
-        _ => mod_count / total,
-    };
-
-    Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
+    let gt = record.pos_metrics.genotype;
+    let het_confounded =
+        gt.is_some_and(|gt| gt.genotype.is_heterozygous() && het_alt_is_base(record, T));
+    let hom_alt = gt.is_some_and(|gt| gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref());
+    let beta = adjusted_beta(mod_count, unmod_count, het_confounded, hom_alt);
+    Ok(Methylated::OriginalCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
 fn ref_g(record: &PileupMetrics) -> Result<Methylated> {
-    let mod_count = record.before_counts.get(Strand::OB, A, C).f();
-    let unmod_count = record.before_counts.get(Strand::OB, G, C).f();
-    let total = mod_count + unmod_count;
-    if total == 0. {
+    let mod_count =
+        record.before_counts.get(ReadKey { strand: Strand::OB, current: A, adj: C }).f();
+    let unmod_count =
+        record.before_counts.get(ReadKey { strand: Strand::OB, current: G, adj: C }).f();
+    if mod_count + unmod_count == 0. {
         return Ok(Methylated::NoEvidence);
     }
 
-    let beta_value = match record.pos_metrics.genotype {
-        Some(gt) if gt.genotype.is_heterozygous() && het_alt_is_base(record, A) => {
-            calculate_het_snp_beta(mod_count, unmod_count)
-        }
-        Some(gt) if gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref() => 0.0,
-        _ => mod_count / total,
-    };
-
-    Ok(Methylated::OriginalCpG { beta: Probability::new(beta_value).this_is_a_bug()? })
+    let gt = record.pos_metrics.genotype;
+    let het_confounded =
+        gt.is_some_and(|gt| gt.genotype.is_heterozygous() && het_alt_is_base(record, A));
+    let hom_alt = gt.is_some_and(|gt| gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref());
+    let beta = adjusted_beta(mod_count, unmod_count, het_confounded, hom_alt);
+    Ok(Methylated::OriginalCpG { beta: Probability::new(beta).this_is_a_bug()? })
 }
 
 #[cfg(test)]

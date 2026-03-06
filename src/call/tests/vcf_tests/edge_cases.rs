@@ -4,7 +4,7 @@
 //! by accident before the methylation calculation refactoring.
 
 use crate::{call::tests::utils::*, pileups, vcf_assert};
-use rastair_types::Base::*;
+use seqair_types::Base::*;
 
 /// Edge case 1: Het with non-confounding alt on original CpG
 ///

@@ -6,7 +6,7 @@ use crate::{
         },
         variant_calling::{EstimatedGenotype, indel_calling::IndelCall},
     },
-    metrics::{MethylationEvidenceStrandInfo, PairedCounts},
+    metrics::{MethylationEvidenceStrandInfo, PairedCounts, ReadKey},
     utils::{ByStrand, IntoF64, default, logging::ThisIsABug},
     vcf::{InCpG, Methylated},
 };
@@ -155,10 +155,18 @@ impl PileupMetrics {
                 continue;
             }
             if let Some(before) = read.before_base {
-                before_counts.increment(read.strand, read.base, before);
+                before_counts.increment(ReadKey {
+                    strand: read.strand,
+                    current: read.base,
+                    adj: before,
+                });
             }
             if let Some(after) = read.after_base {
-                after_counts.increment(read.strand, read.base, after);
+                after_counts.increment(ReadKey {
+                    strand: read.strand,
+                    current: read.base,
+                    adj: after,
+                });
             }
         }
 

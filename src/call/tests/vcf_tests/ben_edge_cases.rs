@@ -5,7 +5,7 @@
 //! denovo CpGs on each chromosome.
 
 use crate::{call::tests::utils::*, pileups, vcf_assert};
-use rastair_types::Base::*;
+use seqair_types::Base::*;
 
 // =============================================================================
 // CGG Context: Middle G with G→C variant
