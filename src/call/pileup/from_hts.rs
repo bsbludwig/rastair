@@ -325,6 +325,12 @@ fn alignment_to_read<'a>(
     let (matches, indels) = calc_cigar_data(record.raw_cigar());
     let (seq, qual) = record.seq_and_qual();
 
+    let before_base = pos.checked_sub(1).map(|i| Base::from(seq[i]));
+    let after_base = match a.indel() {
+        Indel::None if pos + 1 < seq.len() => Some(Base::from(seq[pos + 1])),
+        _ => None,
+    };
+
     Some((
         record.qname(),
         SimpleRead {
@@ -340,6 +346,8 @@ fn alignment_to_read<'a>(
             },
             matching_bases: matches,
             indels,
+            before_base,
+            after_base,
         },
     ))
 }

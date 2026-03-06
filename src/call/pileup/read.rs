@@ -51,6 +51,10 @@ pub struct SimpleRead {
     /// Number of indels in the read this base belongs to
     #[cfg_attr(test, default(2))]
     pub indels: u32,
+    /// Base in the read immediately before this position (in query coords)
+    pub before_base: Option<Base>,
+    /// Base in the read immediately after this position (in query coords)
+    pub after_base: Option<Base>,
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
