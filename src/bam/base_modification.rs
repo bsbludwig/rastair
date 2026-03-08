@@ -2,9 +2,74 @@ use color_eyre::eyre::{Context, Result};
 use rastair_types::SmallVec;
 use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
-use rustc_hash::FxHashSet;
+use rustc_hash::FxHashMap;
 use std::fmt::Write;
 use tracing::debug;
+
+/// Methylation context for XM tag annotation.
+///
+/// Determines which letter pair is used in the Bismark-style XM string:
+/// - CpG → `z`/`Z`
+/// - CHG → `x`/`X`
+/// - CHH → `h`/`H`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethylationContext {
+    CpG,
+    CHG,
+    CHH,
+}
+
+impl MethylationContext {
+    fn xm_char(self, methylated: bool) -> char {
+        match (self, methylated) {
+            (Self::CpG, true) => 'Z',
+            (Self::CpG, false) => 'z',
+            (Self::CHG, true) => 'X',
+            (Self::CHG, false) => 'x',
+            (Self::CHH, true) => 'H',
+            (Self::CHH, false) => 'h',
+        }
+    }
+}
+
+/// Determine the methylation context for a cytosine at a given reference position.
+///
+/// For OT strand (C on top strand at `pos`):
+/// - ref[pos+1] == G → CpG
+/// - ref[pos+1] != G but ref[pos+2] == G → CHG
+/// - otherwise → CHH
+///
+/// For OB strand (G on top strand at `pos`, i.e. C on bottom strand):
+/// - ref[pos-1] == C → CpG
+/// - ref[pos-1] != C but ref[pos-2] == C → CHG
+/// - otherwise → CHH
+pub fn determine_context(
+    pos: u32,
+    strand: Strand,
+    ref_base: impl Fn(u32) -> Option<Base>,
+) -> MethylationContext {
+    match strand {
+        Strand::OT => {
+            if ref_base(pos + 1) == Some(Base::G) {
+                MethylationContext::CpG
+            } else if ref_base(pos + 2) == Some(Base::G) {
+                MethylationContext::CHG
+            } else {
+                MethylationContext::CHH
+            }
+        }
+        Strand::OB => {
+            if pos > 0 && ref_base(pos - 1) == Some(Base::C) {
+                MethylationContext::CpG
+            } else if pos > 1 && ref_base(pos - 2) == Some(Base::C) {
+                MethylationContext::CHG
+            } else {
+                MethylationContext::CHH
+            }
+        }
+        Strand::Unknown => MethylationContext::CHH,
+    }
+}
 
 /// Conversion type for XR/XG tags (CT or GA)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,7 +238,7 @@ fn generate_xm_string(
     seq: &[u8],
     strand: Strand,
     methylated_positions: &[u32],
-    methylated_set: &mut FxHashSet<usize>,
+    methylated_set: &mut rustc_hash::FxHashSet<usize>,
 ) -> String {
     methylated_set.clear();
     methylated_set.extend(methylated_positions.iter().map(|&pos| pos as usize));
@@ -197,33 +262,29 @@ fn generate_xm_string(
         .collect()
 }
 
+/// Per-position annotation for a CpG site in the XM string.
+#[derive(Debug, Clone, Copy)]
+pub struct XmAnnotation {
+    pub methylated: bool,
+    pub context: MethylationContext,
+}
+
 /// Generate XM tag string for legacy mode (original, unrewritten sequence).
 ///
 /// In legacy mode the SEQ is not rewritten, so methylated positions still show
-/// T (OT) or A (OB). The XM tag marks:
-/// - `Z` at positions in `methylated_set` (methylated CpG)
-/// - `z` at positions in `cpg_set` but not in `methylated_set` (unmethylated CpG)
-/// - `.` everywhere else (positions that are NOT CpGs in the reference)
+/// T (OT) or A (OB). The XM tag uses context-dependent letters:
+/// - CpG: `z`/`Z` (unmethylated/methylated)
+/// - CHG: `x`/`X`
+/// - CHH: `h`/`H`
+/// - `.` for non-CpG positions
 pub fn generate_xm_string_legacy(
-    seq: &[u8],
-    strand: Strand,
-    methylated_set: &FxHashSet<usize>,
-    cpg_set: &FxHashSet<usize>,
+    seq_len: usize,
+    annotations: &FxHashMap<usize, XmAnnotation>,
 ) -> String {
-    if strand == Strand::Unknown {
-        return ".".repeat(seq.len());
-    }
-
-    seq.iter()
-        .enumerate()
-        .map(|(i, _)| {
-            if methylated_set.contains(&i) {
-                'Z'
-            } else if cpg_set.contains(&i) {
-                'z'
-            } else {
-                '.'
-            }
+    (0..seq_len)
+        .map(|i| match annotations.get(&i) {
+            Some(ann) => ann.context.xm_char(ann.methylated),
+            None => '.',
         })
         .collect()
 }
@@ -242,14 +303,13 @@ pub struct XrTags {
 impl XrTags {
     /// Create XR/XG/XM tags for legacy mode (original, unrewritten seq)
     pub fn new_legacy(
-        seq: &[u8],
+        seq_len: usize,
         strand: Strand,
         is_first_in_pair: bool,
-        methylated_set: &FxHashSet<usize>,
-        cpg_set: &FxHashSet<usize>,
+        annotations: &FxHashMap<usize, XmAnnotation>,
     ) -> Self {
         let (xr, xg) = xr_xg(strand, is_first_in_pair);
-        let xm = generate_xm_string_legacy(seq, strand, methylated_set, cpg_set);
+        let xm = generate_xm_string_legacy(seq_len, annotations);
         Self { xr, xg, xm }
     }
 
@@ -282,6 +342,7 @@ fn xr_xg(strand: Strand, is_first_in_pair: bool) -> (ConversionType, ConversionT
 mod tests {
     use super::*;
     use insta::{assert_compact_debug_snapshot, assert_snapshot};
+    use rustc_hash::FxHashSet;
     use std::iter::repeat_n;
 
     #[test]
@@ -367,5 +428,77 @@ mod tests {
         let xm = generate_xm_string(seq, Strand::OT, &methylated_positions, &mut methylated_set);
         // All Cs should be uppercase Z (methylated)
         assert_snapshot!(xm, @"Z.Z.Z.");
+    }
+
+    #[test]
+    fn context_ot_cpg() {
+        // Reference: C at pos 10, G at pos 11 → CpG
+        use Base::*;
+        let ref_bases = FxHashMap::from_iter([(10, C), (11, G), (12, A)]);
+        let lookup = |p: u32| ref_bases.get(&p).copied();
+        assert_eq!(determine_context(10, Strand::OT, lookup), MethylationContext::CpG);
+    }
+
+    #[test]
+    fn context_ot_chg() {
+        // Reference: C at pos 10, A at pos 11, G at pos 12 → CHG
+        use Base::*;
+        let ref_bases = FxHashMap::from_iter([(10, C), (11, A), (12, G)]);
+        let lookup = |p: u32| ref_bases.get(&p).copied();
+        assert_eq!(determine_context(10, Strand::OT, lookup), MethylationContext::CHG);
+    }
+
+    #[test]
+    fn context_ot_chh() {
+        // Reference: C at pos 10, A at pos 11, T at pos 12 → CHH
+        use Base::*;
+        let ref_bases = FxHashMap::from_iter([(10, C), (11, A), (12, T)]);
+        let lookup = |p: u32| ref_bases.get(&p).copied();
+        assert_eq!(determine_context(10, Strand::OT, lookup), MethylationContext::CHH);
+    }
+
+    #[test]
+    fn context_ob_cpg() {
+        // Reference: G at pos 10, C at pos 9 → CpG on bottom strand
+        use Base::*;
+        let ref_bases = FxHashMap::from_iter([(9, C), (10, G)]);
+        let lookup = |p: u32| ref_bases.get(&p).copied();
+        assert_eq!(determine_context(10, Strand::OB, lookup), MethylationContext::CpG);
+    }
+
+    #[test]
+    fn context_ob_chg() {
+        // Reference: G at pos 10, T at pos 9, C at pos 8 → CHG on bottom strand
+        use Base::*;
+        let ref_bases = FxHashMap::from_iter([(8, C), (9, T), (10, G)]);
+        let lookup = |p: u32| ref_bases.get(&p).copied();
+        assert_eq!(determine_context(10, Strand::OB, lookup), MethylationContext::CHG);
+    }
+
+    #[test]
+    fn context_ob_chh() {
+        // Reference: G at pos 10, T at pos 9, A at pos 8 → CHH on bottom strand
+        use Base::*;
+        let ref_bases = FxHashMap::from_iter([(8, A), (9, T), (10, G)]);
+        let lookup = |p: u32| ref_bases.get(&p).copied();
+        assert_eq!(determine_context(10, Strand::OB, lookup), MethylationContext::CHH);
+    }
+
+    #[test]
+    fn xm_legacy_context_letters() {
+        let mut annotations = FxHashMap::default();
+        // pos 0: methylated CpG → Z
+        annotations.insert(0, XmAnnotation { methylated: true, context: MethylationContext::CpG });
+        // pos 2: unmethylated CpG → z
+        annotations.insert(2, XmAnnotation { methylated: false, context: MethylationContext::CpG });
+        // pos 4: methylated CHG → X
+        annotations.insert(4, XmAnnotation { methylated: true, context: MethylationContext::CHG });
+        // pos 6: unmethylated CHH → h
+        annotations.insert(6, XmAnnotation { methylated: false, context: MethylationContext::CHH });
+        // pos 8: methylated CHH → H
+        annotations.insert(8, XmAnnotation { methylated: true, context: MethylationContext::CHH });
+
+        let xm = generate_xm_string_legacy(10, &annotations);
+        assert_snapshot!(xm, @"Z.z.X.h.H.");
     }
 }

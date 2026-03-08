@@ -284,3 +284,150 @@ fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
 
     Ok(())
 }
+
+/// Full CLI roundtrip: `rastair call` → `rastair bam legacy` + `standard` → verify XM content.
+/// Ensures the XM tag only annotates real CpG positions (not every C/G) and
+/// that both legacy and standard modes produce matching methylation calls.
+#[test]
+fn bam_rewrite_xm_content_matches_calls() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    let legacy_bam = temp_dir.path().join("legacy.bam");
+    let standard_bam = temp_dir.path().join("standard.bam");
+
+    let region = "chr19:6103075-6103200";
+
+    rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--no-ml",
+            &format!("--region={region}"),
+            "--cpgs-only",
+            "-o",
+        ])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    std::process::Command::new("tabix")
+        .args(["-p", "bed"])
+        .arg(&calls_bed)
+        .output()
+        .wrap_err("Failed to index calls file")?;
+
+    rastair()
+        .args([
+            "bam",
+            "legacy",
+            "--fasta-file=tests/data/test.fasta.gz",
+            &format!("--region={region}"),
+            "tests/data/test.bam",
+        ])
+        .arg(&calls_bed)
+        .args(["-o"])
+        .arg(&legacy_bam)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to rewrite legacy BAM")?;
+
+    rastair()
+        .args([
+            "bam",
+            "standard",
+            "--fasta-file=tests/data/test.fasta.gz",
+            &format!("--region={region}"),
+            "tests/data/test.bam",
+        ])
+        .arg(&calls_bed)
+        .args(["-o"])
+        .arg(&standard_bam)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to rewrite standard BAM")?;
+
+    let mut legacy_reader = bam::Reader::from_path(&legacy_bam).wrap_err("open legacy BAM")?;
+    let mut standard_reader =
+        bam::Reader::from_path(&standard_bam).wrap_err("open standard BAM")?;
+
+    let mut legacy_rec = bam::Record::new();
+    let mut standard_rec = bam::Record::new();
+    let mut records_checked = 0u32;
+
+    loop {
+        let legacy_ok = legacy_reader.read(&mut legacy_rec);
+        let standard_ok = standard_reader.read(&mut standard_rec);
+
+        match (legacy_ok, standard_ok) {
+            (Some(Ok(())), Some(Ok(()))) => {}
+            (None, None) => break,
+            _ => bail!("Legacy and standard BAMs have different record counts"),
+        }
+
+        records_checked += 1;
+        let flag = legacy_rec.flags();
+
+        ensure!(
+            legacy_rec.pos() == standard_rec.pos() && flag == standard_rec.flags(),
+            "Record mismatch at index {records_checked}"
+        );
+
+        // --- XM content checks ---
+        let xm = match legacy_rec.aux(b"XM") {
+            Ok(rust_htslib::bam::record::Aux::String(s)) => s,
+            _ => bail!("Missing/bad XM tag at record {records_checked}"),
+        };
+
+        ensure!(
+            xm.len() == legacy_rec.seq_len(),
+            "XM length {} != seq length {} for flag {flag}",
+            xm.len(),
+            legacy_rec.seq_len(),
+        );
+
+        // XM must only contain valid characters
+        for c in xm.chars() {
+            ensure!(
+                matches!(c, '.' | 'z' | 'Z' | 'x' | 'X' | 'h' | 'H'),
+                "Invalid XM character '{c}' in record flag={flag}: {xm}"
+            );
+        }
+
+        // Annotations must be much fewer than total C/G bases (sanity check
+        // that we're not marking every C/G as CpG)
+        let annotation_count = xm.chars().filter(|c| *c != '.').count();
+        let seq = legacy_rec.seq().as_bytes();
+        let cg_count = seq.iter().filter(|&&b| b == b'C' || b == b'G').count();
+        if cg_count > 4 {
+            ensure!(
+                annotation_count < cg_count,
+                "Too many XM annotations ({annotation_count}) vs C/G bases ({cg_count}) \
+                 for flag {flag}. XM: {xm}"
+            );
+        }
+
+        // --- Cross-check with MM tag ---
+        let mm = match standard_rec.aux(b"MM") {
+            Ok(rust_htslib::bam::record::Aux::String(s)) => s,
+            _ => bail!("Missing/bad MM tag at record {records_checked}"),
+        };
+
+        let xm_methylated_count = xm.chars().filter(|c| c.is_ascii_uppercase()).count();
+        let mm_methylated_count =
+            mm.trim_end_matches(';').split(',').skip(1).filter(|s| !s.is_empty()).count();
+
+        ensure!(
+            xm_methylated_count == mm_methylated_count,
+            "Methylated count mismatch for flag {flag}: XM has {xm_methylated_count}, \
+             MM has {mm_methylated_count}. XM: {xm}, MM: {mm}"
+        );
+    }
+
+    ensure!(records_checked > 0, "No records were checked");
+
+    Ok(())
+}

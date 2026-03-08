@@ -1,7 +1,11 @@
 use crate::{
     bed::reader::{RastairBedReader, RastairCall},
     sequence::{ChunkRegion, ReaderParams, Region},
-    utils::{cli, logging::ThisIsABug},
+    utils::{
+        cli,
+        file_helpers::{FastaReader, open_fasta},
+        logging::ThisIsABug,
+    },
 };
 use clap::{Parser, value_parser};
 use clio::ClioPath;
@@ -13,11 +17,13 @@ use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
 };
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::thread::available_parallelism;
 
 mod base_modification;
-pub use base_modification::{MethylatedPositions, XrTags};
+pub use base_modification::{
+    MethylatedPositions, MethylationContext, XmAnnotation, XrTags, determine_context,
+};
 use tracing::{instrument, trace, warn};
 
 /// Subcommands for `rastair bam`
@@ -153,36 +159,51 @@ fn rewrite_region_parallel(
             const { std::cell::RefCell::new(None) };
         static BED_READER: std::cell::RefCell<Option<RastairBedReader>> =
             const { std::cell::RefCell::new(None) };
+        static FASTA_READER: std::cell::RefCell<Option<FastaReader>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     let records = BAM_READER.with(|bam_cell| {
-        BED_READER.with(|bed_cell| -> Result<Vec<Record>> {
-            let mut bam_opt = bam_cell.borrow_mut();
-            let mut bed_opt = bed_cell.borrow_mut();
+        BED_READER.with(|bed_cell| {
+            FASTA_READER.with(|fasta_cell| -> Result<Vec<Record>> {
+                let mut bam_opt = bam_cell.borrow_mut();
+                let mut bed_opt = bed_cell.borrow_mut();
+                let mut fasta_opt = fasta_cell.borrow_mut();
 
-            if bam_opt.is_none() {
-                *bam_opt = Some(
-                    bam::IndexedReader::from_path(params.segments.bam_file.path())
-                        .wrap_err("Failed to open BAM in worker thread")?,
-                );
-            }
-            if bed_opt.is_none() {
-                *bed_opt = Some(
-                    RastairBedReader::new(params.calls_file.path())
-                        .wrap_err("Failed to open calls file in worker thread")?,
-                );
-            }
+                if bam_opt.is_none() {
+                    *bam_opt = Some(
+                        bam::IndexedReader::from_path(params.segments.bam_file.path())
+                            .wrap_err("Failed to open BAM in worker thread")?,
+                    );
+                }
+                if bed_opt.is_none() {
+                    *bed_opt = Some(
+                        RastairBedReader::new(params.calls_file.path())
+                            .wrap_err("Failed to open calls file in worker thread")?,
+                    );
+                }
+                if fasta_opt.is_none() {
+                    *fasta_opt = Some(
+                        open_fasta(params.segments.fasta_file.path())
+                            .wrap_err("Failed to open FASTA in worker thread")?,
+                    );
+                }
 
-            let bam = bam_opt
-                .as_mut()
-                .wrap_err("thread-local BAM reader not initialized")
-                .this_is_a_bug()?;
-            let bed = bed_opt
-                .as_mut()
-                .wrap_err("thread-local BED reader not initialized")
-                .this_is_a_bug()?;
+                let bam = bam_opt
+                    .as_mut()
+                    .wrap_err("thread-local BAM reader not initialized")
+                    .this_is_a_bug()?;
+                let bed = bed_opt
+                    .as_mut()
+                    .wrap_err("thread-local BED reader not initialized")
+                    .this_is_a_bug()?;
+                let fasta = fasta_opt
+                    .as_mut()
+                    .wrap_err("thread-local FASTA reader not initialized")
+                    .this_is_a_bug()?;
 
-            rewrite_region(bam, bed, &segment.region, mode, is_last)
+                rewrite_region(bam, bed, fasta, &segment.region, mode, is_last)
+            })
         })
     })?;
 
@@ -197,6 +218,7 @@ fn rewrite_region_parallel(
 fn rewrite_region(
     bam: &mut bam::IndexedReader,
     calls_reader: &mut RastairBedReader,
+    fasta: &mut FastaReader,
     region: &Region,
     mode: BamMode,
     is_last_segment: bool,
@@ -219,6 +241,23 @@ fn rewrite_region(
         .map(|call| (call.pos, call.call.clone()))
         .collect();
 
+    // Fetch the reference sequence for this region (with 2bp padding for context lookup).
+    // Reads may extend beyond the region, so lookups that fall outside return None.
+    let pad = 2u64;
+    let ref_start = region.start.saturating_sub(pad);
+    let ref_end = region.end.saturating_add(pad);
+    let ref_seq = {
+        let mut seq = Vec::new();
+        if fasta.fetch(&region.contig, ref_start, ref_end).is_ok() {
+            let _ = fasta.read(&mut seq);
+        }
+        seq
+    };
+    let ref_base = |pos: u32| -> Option<Base> {
+        let idx = (pos as u64).checked_sub(ref_start)? as usize;
+        ref_seq.get(idx).map(|&b| Base::from(b))
+    };
+
     let region_start = region.start.cast_signed();
     let region_end = region.end.cast_signed();
     let mut record = Record::new();
@@ -239,7 +278,8 @@ fn rewrite_region(
             continue;
         }
 
-        rewrite_record(&calls, &mut record, mode).wrap_err("failed to rewrite record")?;
+        rewrite_record(&calls, &mut record, mode, &ref_base)
+            .wrap_err("failed to rewrite record")?;
         out.push(record.clone());
     }
 
@@ -251,6 +291,7 @@ fn rewrite_record(
     calls: &FxHashMap<u32, RastairCall>,
     record: &mut Record,
     mode: BamMode,
+    ref_base: impl Fn(u32) -> Option<Base>,
 ) -> Result<()> {
     let strand = StrandFromRecord::strand(record);
     let is_first_in_pair = record.is_first_in_template();
@@ -291,11 +332,9 @@ fn rewrite_record(
             mods.apply_to_record(record)?;
         }
         BamMode::Legacy => {
-            let cpg = find_legacy_cpg_positions(calls, record);
-            let seq = record.seq().as_bytes();
-
+            let annotations = build_legacy_annotations(calls, record, ref_base);
             let xr_tags =
-                XrTags::new_legacy(&seq, strand, is_first_in_pair, &cpg.methylated, &cpg.all_cpg);
+                XrTags::new_legacy(record.seq_len(), strand, is_first_in_pair, &annotations);
             xr_tags.apply_to_record(record)?;
         }
     }
@@ -303,31 +342,24 @@ fn rewrite_record(
     Ok(())
 }
 
-struct LegacyCpgPositions {
-    /// Read positions where a methylated CpG was observed
-    methylated: FxHashSet<usize>,
-    /// All read positions that overlap a CpG call (methylated or not)
-    all_cpg: FxHashSet<usize>,
-}
-
-/// Find CpG positions for legacy XM tag generation.
+/// Build per-read-position XM annotations for legacy mode.
 ///
-/// Returns both the set of methylated positions and the set of all CpG
-/// positions (methylated + unmethylated) so the XM generator can distinguish
-/// "CpG but unmethylated" (`z`) from "not a CpG at all" (`.`).
-fn find_legacy_cpg_positions(
+/// For each position in the read that overlaps a CpG call (ref or de-novo),
+/// determines whether it's methylated and what the reference context is
+/// (CpG/CHG/CHH) so the XM tag uses the correct letter.
+fn build_legacy_annotations(
     calls: &FxHashMap<u32, RastairCall>,
     record: &Record,
-) -> LegacyCpgPositions {
+    ref_base: impl Fn(u32) -> Option<Base>,
+) -> FxHashMap<usize, XmAnnotation> {
     let strand = StrandFromRecord::strand(record);
     let seq = record.seq().as_bytes();
-    let mut methylated = FxHashSet::default();
-    let mut all_cpg = FxHashSet::default();
+    let mut annotations = FxHashMap::default();
 
     let target_base = match strand {
         Strand::OT => Base::C,
         Strand::OB => Base::G,
-        Strand::Unknown => return LegacyCpgPositions { methylated, all_cpg },
+        Strand::Unknown => return annotations,
     };
     let evidence_base = match strand {
         Strand::OT => Base::T,
@@ -341,10 +373,9 @@ fn find_legacy_cpg_positions(
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
         let pos_in_read = pos_in_read as usize;
 
-        let is_methylated = match calls.get(&pos_in_ref) {
-            Some(
-                RastairCall::Cpg { methylated, .. } | RastairCall::DeNovoCpg { methylated, .. },
-            ) => *methylated,
+        let (is_methylated, is_denovo) = match calls.get(&pos_in_ref) {
+            Some(RastairCall::Cpg { methylated, .. }) => (*methylated, false),
+            Some(RastairCall::DeNovoCpg { methylated, .. }) => (*methylated, true),
             _ => continue,
         };
 
@@ -353,14 +384,17 @@ fn find_legacy_cpg_positions(
         // A CpG position in the read shows either the target base (unmethylated)
         // or the evidence base (methylated, converted by TAPS)
         if observed_base == target_base || observed_base == evidence_base {
-            all_cpg.insert(pos_in_read);
-            if is_methylated && observed_base == evidence_base {
-                methylated.insert(pos_in_read);
-            }
+            let context = if is_denovo {
+                determine_context(pos_in_ref, strand, &ref_base)
+            } else {
+                MethylationContext::CpG
+            };
+            let methylated = is_methylated && observed_base == evidence_base;
+            annotations.insert(pos_in_read, XmAnnotation { methylated, context });
         }
     }
 
-    LegacyCpgPositions { methylated, all_cpg }
+    annotations
 }
 
 struct MethylatedInfo {
@@ -395,9 +429,9 @@ fn get_methylated_positions(
         let pos_in_read = pos_in_read as usize;
 
         let methylated = match calls.get(&pos_in_ref) {
-            Some(RastairCall::Cpg { methylated, .. } | RastairCall::DeNovoCpg { methylated, .. }) => {
-                *methylated
-            }
+            Some(
+                RastairCall::Cpg { methylated, .. } | RastairCall::DeNovoCpg { methylated, .. },
+            ) => *methylated,
             _ => continue,
         };
 
@@ -458,6 +492,240 @@ mod tests {
     use rust_htslib::bam::record::Aux;
 
     use super::*;
+
+    /// No-op reference lookup for tests that don't involve de-novo CpGs
+    fn no_ref(_pos: u32) -> Option<Base> {
+        None
+    }
+
+    /// Golden test: rewrite the same read through both Legacy (XM) and Standard (MM)
+    /// modes, verify exact output strings and cross-check that both agree on which
+    /// positions are methylated.
+    ///
+    /// Uses a real read from the test BAM with manually constructed calls that have
+    /// a known expected outcome.
+    #[test]
+    fn golden_legacy_and_standard_agree() -> Result<()> {
+        use Base::*;
+
+        // Read 2 in the test region: flag 163, OB strand, NOT reversed, second in pair
+        // SEQ: AAGGCATGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGT
+        // BAM pos: 6103076 (0-based)
+        // Ref: aaggcgtgcaccaccacgcctggcttggtttggtttttgattggttgGttggtcttttgagacagggtttctctgtgt
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch(FetchDefinition::All)?;
+        let mut record = Record::new();
+        while let Some(result) = bam.read(&mut record) {
+            result?;
+            if record.flags() == 163 && record.pos() == 6103076 {
+                break;
+            }
+        }
+        ensure!(record.flags() == 163, "could not find flag-163 record at 6103076");
+
+        let strand = StrandFromRecord::strand(&record);
+        assert_eq!(strand, Strand::OB, "expected OB strand");
+        assert!(!record.is_reverse(), "expected forward read");
+        let seq = record.seq().as_bytes();
+        assert_snapshot!(as_base_string(&seq), @"AAGGCATGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGT");
+
+        // Construct calls for two CpG positions (G side, matching OB strand):
+        //
+        // Ref pos 6103081 (read offset 5): methylated CpG
+        //   Read[5] = A → methylation evidence on OB (A at G ref position)
+        //
+        // Ref pos 6103093 (read offset 17): unmethylated CpG
+        //   Read[17] = G → target base, no methylation evidence
+        let calls = FxHashMap::from_iter([
+            (6103081, RastairCall::Cpg { base: G, methylated: true }),
+            (6103093, RastairCall::Cpg { base: G, methylated: false }),
+        ]);
+
+        // Reference lookup for context determination (both positions are real CpGs)
+        // Ref around 6103081: ...cgtgc... (pos-1=C → CpG context on bottom strand)
+        // Ref around 6103093: ...acgcc... (pos-1=C → CpG context on bottom strand)
+        let ref_bases = FxHashMap::from_iter([
+            (6103079, G),
+            (6103080, C),
+            (6103081, G),
+            (6103082, T),
+            (6103091, A),
+            (6103092, C),
+            (6103093, G),
+            (6103094, C),
+        ]);
+        let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+
+        // === Legacy mode ===
+        let mut legacy_record = record.clone();
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+
+        let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
+            bail!("XM not a string");
+        };
+        let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else {
+            bail!("XR not a string");
+        };
+        let Aux::String(xg_tag) = legacy_record.aux(b"XG")? else {
+            bail!("XG not a string");
+        };
+
+        // Flag 163: second in pair → XR=GA; OB → XG=GA
+        assert_snapshot!(xr_tag, @"GA");
+        assert_snapshot!(xg_tag, @"GA");
+
+        // XM: position 5 = Z (methylated CpG), position 17 = z (unmethylated CpG), rest = '.'
+        assert_eq!(xm_tag.len(), seq.len());
+        assert_snapshot!(xm_tag, @".....Z...........z............................................................");
+
+        // Verify no stray annotations
+        let xm_annotations: Vec<(usize, char)> =
+            xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+        assert_compact_debug_snapshot!(xm_annotations, @"[(5, 'Z'), (17, 'z')]");
+
+        // SEQ should NOT be rewritten in legacy mode
+        assert_eq!(legacy_record.seq().as_bytes(), seq, "Legacy mode should not modify SEQ");
+
+        // === Standard mode ===
+        let mut standard_record = record.clone();
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+
+        let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
+            bail!("MM not a string");
+        };
+
+        // OB strand, not reversed → MM uses G-m format with stored-SEQ positions
+        // Rewritten SEQ: position 5 changed from A→G (un-modify methylation evidence)
+        let new_seq = standard_record.seq().as_bytes();
+        assert_snapshot!(as_base_string(&new_seq), @"AAGGCGTGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGT");
+
+        // Verify position 5 was rewritten (A→G) and position 17 unchanged (G stays G)
+        assert_eq!(Base::from(seq[5]), A, "original should have A at pos 5");
+        assert_eq!(Base::from(new_seq[5]), G, "rewritten should have G at pos 5");
+        assert_eq!(Base::from(new_seq[17]), G, "pos 17 should stay G (unmethylated)");
+
+        // MM tag: G-m encoding with skip list
+        assert_snapshot!(mm_tag, @"G-m,2;");
+
+        // === Cross-check: both modes agree on methylated positions ===
+        let xm_methylated = decode_xm_to_positions(xm_tag);
+
+        let fwd_seq = seq_for_mm_tag(&standard_record);
+        let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+        assert_eq!(mm_base, G, "MM should target G for OB strand");
+
+        // Both should identify position 5 as the only methylated position
+        assert_eq!(xm_methylated, vec![5], "XM methylated positions");
+        assert_eq!(mm_methylated, vec![5], "MM methylated positions");
+
+        // Standard mode should NOT have XR/XG/XM tags
+        assert!(standard_record.aux(b"XR").is_err());
+        // Legacy mode should NOT have MM/ML tags
+        assert!(legacy_record.aux(b"MM").is_err());
+
+        Ok(())
+    }
+
+    /// Golden test for an OT strand read (flag 147, reversed, second in pair).
+    /// Verifies both modes produce correct output for the reverse-strand case
+    /// where MM tag positions must be flipped to original-read orientation.
+    #[test]
+    fn golden_ot_reversed_legacy_and_standard_agree() -> Result<()> {
+        use Base::*;
+
+        // Read 1: flag 83, OB strand, first in pair, REVERSED
+        // BAM pos: 6103075 (0-based)
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch((0, 6103075, 6103100))?;
+        let mut record = Record::new();
+        bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+
+        assert_eq!(record.flags(), 83);
+        let strand = StrandFromRecord::strand(&record);
+        assert_eq!(strand, Strand::OB);
+        assert!(record.is_reverse());
+        let seq = record.seq().as_bytes();
+
+        // Two CpG calls (G side for OB):
+        // Pos 6103081 (read offset 6): Read[6]=G → target, unmethylated in this read
+        // Pos 6103093 (read offset 18): Read[18]=G → target, unmethylated in this read
+        //
+        // Also add a methylated call where read actually shows evidence:
+        // Let's find a position where the read has A (OB evidence)
+        let mut evidence_pos = None;
+        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
+            if Base::from(seq[pos_in_read as usize]) == A {
+                evidence_pos = Some((pos_in_read as usize, pos_in_ref as u32));
+                break;
+            }
+        }
+        let (ev_read_pos, ev_ref_pos) = evidence_pos.wrap_err("no A base found in read")?;
+
+        let calls = FxHashMap::from_iter([
+            (6103081, RastairCall::Cpg { base: G, methylated: false }),
+            (6103093, RastairCall::Cpg { base: G, methylated: false }),
+            (ev_ref_pos, RastairCall::Cpg { base: G, methylated: true }),
+        ]);
+
+        let ref_bases = FxHashMap::from_iter([
+            (6103080, C),
+            (6103081, G),
+            (6103092, C),
+            (6103093, G),
+            (ev_ref_pos.saturating_sub(1), C),
+            (ev_ref_pos, G),
+        ]);
+        let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+
+        // === Legacy mode ===
+        let mut legacy_record = record.clone();
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+
+        let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
+            bail!("XM not a string");
+        };
+        assert_eq!(xm_tag.len(), seq.len());
+
+        // Verify the three annotated positions
+        let xm_annotations: Vec<(usize, char)> =
+            xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+        // ev_read_pos should be Z (methylated), positions 6 and 18 should be z (unmethylated)
+        let mut expected = vec![(6, 'z'), (18, 'z'), (ev_read_pos, 'Z')];
+        expected.sort();
+        assert_eq!(xm_annotations, expected, "XM annotations mismatch");
+
+        // === Standard mode ===
+        let mut standard_record = record.clone();
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+
+        let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
+            bail!("MM not a string");
+        };
+
+        // This is a reversed read, so MM positions are in original-read orientation
+        // (reverse complement of stored SEQ). The strand qualifier flips OB→OT.
+        assert_snapshot!(mm_tag.chars().take(3).collect::<String>(), @"C+m");
+
+        // === Cross-check ===
+        let xm_methylated = decode_xm_to_positions(xm_tag);
+        assert_eq!(xm_methylated, vec![ev_read_pos], "XM: only evidence position should be Z");
+
+        let fwd_seq = seq_for_mm_tag(&standard_record);
+        let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+        // For reversed OB→OT, MM uses C base
+        assert_eq!(mm_base, C);
+
+        // The methylated position in stored-SEQ is ev_read_pos.
+        // In original-read (RC) orientation: seq_len - 1 - ev_read_pos
+        let expected_mm_pos = seq.len() - 1 - ev_read_pos;
+        assert_eq!(
+            mm_methylated,
+            vec![expected_mm_pos],
+            "MM: methylated position in original-read coords"
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn sequence_transform() -> Result<()> {
@@ -616,7 +884,7 @@ mod tests {
             calls
         };
 
-        rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+        rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
         // Check XR tag (flag 83: first in pair => CT)
         let Aux::String(xr_tag) = record.aux(b"XR").wrap_err("missing XR tag")? else {
@@ -667,7 +935,7 @@ mod tests {
             ensure!(found, "No record with flag {flag} found in test BAM");
 
             let calls = FxHashMap::default();
-            rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
             let Aux::String(xr_tag) = record.aux(b"XR").wrap_err("missing XR tag")? else {
                 bail!("XR tag is not a string for flag {}", flag);
@@ -757,7 +1025,7 @@ mod tests {
             result?;
             let ol_seq = record.seq().as_bytes();
             let calls = build_cpg_calls(&record, &ol_seq);
-            rewrite_record(&calls, &mut record, BamMode::Standard)?;
+            rewrite_record(&calls, &mut record, BamMode::Standard, no_ref)?;
 
             let Aux::String(mm_tag) = record.aux(b"MM").wrap_err("missing MM tag")? else {
                 bail!("MM tag is not a string");
@@ -805,7 +1073,7 @@ mod tests {
             result?;
             let ol_seq = record.seq().as_bytes();
             let calls = build_cpg_calls(&record, &ol_seq);
-            rewrite_record(&calls, &mut record, BamMode::Standard)?;
+            rewrite_record(&calls, &mut record, BamMode::Standard, no_ref)?;
             writer.write(&record)?;
             records_written += 1;
         }
@@ -868,7 +1136,7 @@ mod tests {
             result?;
             let ol_seq = record.seq().as_bytes();
             let calls = build_cpg_calls(&record, &ol_seq);
-            rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
             writer.write(&record)?;
             records_written += 1;
         }
@@ -921,7 +1189,7 @@ mod tests {
         bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
 
         let calls = FxHashMap::default();
-        rewrite_record(&calls, &mut record, BamMode::Standard)?;
+        rewrite_record(&calls, &mut record, BamMode::Standard, no_ref)?;
         writer.write(&record)?;
         drop(writer);
 
@@ -958,7 +1226,7 @@ mod tests {
         bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
 
         let calls = FxHashMap::default();
-        rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+        rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
         writer.write(&record)?;
         drop(writer);
 
@@ -1039,26 +1307,20 @@ mod tests {
 
             // For OB: look for CA (methylation evidence for G on next pos)
             if strand == Strand::OB && current_base == C && next_base == A && cpg_count == 0 {
-                calls.insert(
-                    pos_in_ref as u32 + 1,
-                    RastairCall::Cpg { methylated: true, base: G },
-                );
+                calls.insert(pos_in_ref as u32 + 1, RastairCall::Cpg { methylated: true, base: G });
                 cpg_count += 1;
                 break;
             }
             // For OT: look for TG (methylation evidence for C)
             if strand == Strand::OT && current_base == T && next_base == G && cpg_count == 0 {
-                calls.insert(
-                    pos_in_ref as u32,
-                    RastairCall::Cpg { methylated: true, base: C },
-                );
+                calls.insert(pos_in_ref as u32, RastairCall::Cpg { methylated: true, base: C });
                 cpg_count += 1;
                 break;
             }
         }
         ensure!(cpg_count == 1, "need at least one CpG call for this test");
 
-        rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+        rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
         let Aux::String(xm_tag) = record.aux(b"XM")? else {
             bail!("XM not a string");
@@ -1107,17 +1369,14 @@ mod tests {
                     Strand::OB => G,
                     Strand::Unknown => unreachable!(),
                 };
-                calls.insert(
-                    pos_in_ref as u32,
-                    RastairCall::DeNovoCpg { methylated: true, base },
-                );
+                calls.insert(pos_in_ref as u32, RastairCall::DeNovoCpg { methylated: true, base });
                 found = true;
                 break;
             }
         }
         ensure!(found, "need a methylation-evidence base for this test");
 
-        rewrite_record(&calls, &mut record, BamMode::Legacy)?;
+        rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
         let Aux::String(xm_tag) = record.aux(b"XM")? else {
             bail!("XM not a string");
@@ -1161,10 +1420,7 @@ mod tests {
                     Strand::OB => G,
                     Strand::Unknown => unreachable!(),
                 };
-                calls.insert(
-                    pos_in_ref as u32,
-                    RastairCall::DeNovoCpg { methylated: true, base },
-                );
+                calls.insert(pos_in_ref as u32, RastairCall::DeNovoCpg { methylated: true, base });
                 expected_pos = Some(pos_in_read as u32);
                 break;
             }
@@ -1176,6 +1432,402 @@ mod tests {
             !data.methylated_positions.is_empty(),
             "get_methylated_positions should find DeNovoCpg calls, but found none"
         );
+
+        Ok(())
+    }
+
+    /// De-novo CpGs should use context-dependent letters (x/X for CHG, h/H for CHH)
+    /// rather than z/Z (which is reserved for reference CpG context).
+    #[test]
+    fn xm_denovo_uses_context_letters() -> Result<()> {
+        use Base::*;
+
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch((0, 6103075, 6103100))?;
+        let mut record = Record::new();
+        bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+
+        let strand = StrandFromRecord::strand(&record);
+        let seq = record.seq().as_bytes();
+
+        // Create a DeNovoCpg call and a synthetic ref lookup that returns
+        // non-CpG context (CHH: no G after C for OT, no C before G for OB)
+        let mut calls = FxHashMap::default();
+        let mut denovo_ref_pos = None;
+        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
+            let observed = Base::from(seq[pos_in_read as usize]);
+            let is_evidence = match strand {
+                Strand::OT => observed == T,
+                Strand::OB => observed == A,
+                Strand::Unknown => false,
+            };
+            if is_evidence {
+                let base = match strand {
+                    Strand::OT => C,
+                    Strand::OB => G,
+                    Strand::Unknown => unreachable!(),
+                };
+                calls.insert(pos_in_ref as u32, RastairCall::DeNovoCpg { methylated: true, base });
+                denovo_ref_pos = Some(pos_in_ref as u32);
+                break;
+            }
+        }
+        let denovo_ref_pos = denovo_ref_pos.wrap_err("no evidence base found")?;
+
+        // Synthetic reference that returns A at all neighboring positions → CHH context
+        let ref_lookup = |pos: u32| -> Option<Base> {
+            if pos == denovo_ref_pos {
+                match strand {
+                    Strand::OT => Some(C),
+                    Strand::OB => Some(G),
+                    Strand::Unknown => None,
+                }
+            } else {
+                Some(A) // non-CpG neighbor → CHH
+            }
+        };
+
+        rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
+
+        let Aux::String(xm_tag) = record.aux(b"XM")? else {
+            bail!("XM not a string");
+        };
+
+        // De-novo with CHH context should use H (methylated CHH), not Z
+        assert!(
+            xm_tag.contains('H'),
+            "De-novo CpG in CHH context should produce 'H', got: {xm_tag}"
+        );
+        assert!(
+            !xm_tag.contains('Z') && !xm_tag.contains('z'),
+            "De-novo CpG should not use z/Z (CpG context letters), got: {xm_tag}"
+        );
+
+        Ok(())
+    }
+
+    /// Golden test for an OT strand read (flag 99, forward, first in pair).
+    /// OT targets C positions with T as methylation evidence.
+    #[test]
+    fn golden_ot_forward_legacy_and_standard_agree() -> Result<()> {
+        use Base::*;
+
+        // Flag 99: OT, first in pair, NOT reversed
+        // SAM pos 6103079 (1-based) → BAM pos 6103078 (0-based)
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch(FetchDefinition::All)?;
+        let mut record = Record::new();
+        while let Some(result) = bam.read(&mut record) {
+            result?;
+            if record.flags() == 99 && record.pos() == 6103078 {
+                break;
+            }
+        }
+        ensure!(record.flags() == 99, "could not find flag-99 record at 6103078");
+
+        let strand = StrandFromRecord::strand(&record);
+        assert_eq!(strand, Strand::OT);
+        assert!(!record.is_reverse());
+        let seq = record.seq().as_bytes();
+        assert_snapshot!(as_base_string(&seq), @"GGTGTGCACCACCATGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGTAGCT");
+
+        // CpG calls (C side for OT):
+        // Ref pos 6103080 (read offset 2): methylated
+        //   Read[2] = T → methylation evidence on OT
+        // Ref pos 6103092 (read offset 14): methylated
+        //   Read[14] = T → methylation evidence on OT
+        let calls = FxHashMap::from_iter([
+            (6103080, RastairCall::Cpg { base: C, methylated: true }),
+            (6103092, RastairCall::Cpg { base: C, methylated: true }),
+        ]);
+
+        let ref_bases =
+            FxHashMap::from_iter([(6103080, C), (6103081, G), (6103092, C), (6103093, G)]);
+        let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+
+        // === Legacy mode ===
+        let mut legacy_record = record.clone();
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+
+        let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
+        let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else { bail!("XR") };
+        let Aux::String(xg_tag) = legacy_record.aux(b"XG")? else { bail!("XG") };
+
+        // Flag 99: first in pair → XR=CT; OT → XG=CT
+        assert_snapshot!(xr_tag, @"CT");
+        assert_snapshot!(xg_tag, @"CT");
+
+        let xm_annotations: Vec<(usize, char)> =
+            xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+        assert_compact_debug_snapshot!(xm_annotations, @"[(2, 'Z'), (14, 'Z')]");
+
+        // SEQ unchanged in legacy mode
+        assert_eq!(legacy_record.seq().as_bytes(), seq);
+
+        // === Standard mode ===
+        let mut standard_record = record.clone();
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+
+        let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
+        // OT, forward → C+m
+        assert_snapshot!(mm_tag.chars().take(3).collect::<String>(), @"C+m");
+        assert_snapshot!(mm_tag, @"C+m,0,5;");
+
+        // Rewritten SEQ: T→C at methylated positions 2 and 14
+        let new_seq = standard_record.seq().as_bytes();
+        assert_eq!(Base::from(seq[2]), T);
+        assert_eq!(Base::from(new_seq[2]), C);
+        assert_eq!(Base::from(seq[14]), T);
+        assert_eq!(Base::from(new_seq[14]), C);
+
+        // === Cross-check ===
+        let xm_methylated = decode_xm_to_positions(xm_tag);
+        let fwd_seq = seq_for_mm_tag(&standard_record);
+        let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+        assert_eq!(mm_base, C);
+        assert_eq!(xm_methylated, vec![2, 14]);
+        assert_eq!(mm_methylated, vec![2, 14]);
+
+        Ok(())
+    }
+
+    /// Golden test for a de-novo CpG: verify both modes produce correct output
+    /// and that the XM tag uses context-dependent letters (not z/Z).
+    #[test]
+    fn golden_denovo_legacy_and_standard_agree() -> Result<()> {
+        use Base::*;
+
+        // Use the flag-163 OB read (same as golden_legacy_and_standard_agree)
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch(FetchDefinition::All)?;
+        let mut record = Record::new();
+        while let Some(result) = bam.read(&mut record) {
+            result?;
+            if record.flags() == 163 && record.pos() == 6103076 {
+                break;
+            }
+        }
+        ensure!(record.flags() == 163, "could not find record");
+
+        let strand = StrandFromRecord::strand(&record);
+        assert_eq!(strand, Strand::OB);
+        let seq = record.seq().as_bytes();
+
+        // Read[5] = A → methylation evidence at ref pos 6103081 on OB
+        assert_eq!(Base::from(seq[5]), A);
+
+        // Make it a DeNovoCpg with CHG context:
+        // OB context looks at ref[pos-1] and ref[pos-2] (complement perspective)
+        // ref[pos-1]=T, ref[pos-2]=C → CHG (second base back is C)
+        let calls = FxHashMap::from_iter([(
+            6103081_u32,
+            RastairCall::DeNovoCpg { base: G, methylated: true },
+        )]);
+        let ref_bases = FxHashMap::from_iter([
+            (6103079_u32, C), // pos-2 → C → CHG
+            (6103080, T),     // pos-1 → T (complement=A, not G, so not CpG)
+            (6103081, G),
+        ]);
+        let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+
+        // === Legacy mode ===
+        let mut legacy_record = record.clone();
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+
+        let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
+        let xm_annotations: Vec<(usize, char)> =
+            xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+        // CHG methylated → 'X'
+        assert_compact_debug_snapshot!(xm_annotations, @"[(5, 'X')]");
+
+        // === Standard mode ===
+        let mut standard_record = record.clone();
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+
+        let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
+        // Should still produce MM tag (standard mode doesn't distinguish ref vs de-novo)
+        assert_snapshot!(mm_tag, @"G-m,2;");
+
+        // === Cross-check: both agree position 5 is methylated ===
+        let xm_methylated: Vec<usize> = xm_tag
+            .chars()
+            .enumerate()
+            .filter(|(_, c)| c.is_ascii_uppercase() && *c != '.')
+            .map(|(i, _)| i)
+            .collect();
+        let fwd_seq = seq_for_mm_tag(&standard_record);
+        let (_, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+        assert_eq!(xm_methylated, vec![5]);
+        assert_eq!(mm_methylated, vec![5]);
+
+        Ok(())
+    }
+
+    /// Reads with indels (insertions/deletions) must have correct position
+    /// mapping through aligned_pairs_full. Verify a read with a 1bp deletion
+    /// (61M1D19M) produces correct XM and MM output.
+    #[test]
+    fn golden_indel_read_legacy_and_standard_agree() -> Result<()> {
+        use Base::*;
+
+        // Flag 99 read at 6106220 (BAM 0-based) with CIGAR 61M1D19M
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch(FetchDefinition::All)?;
+        let mut record = Record::new();
+        while let Some(result) = bam.read(&mut record) {
+            result?;
+            if record.flags() == 99 && record.pos() == 6106220 {
+                break;
+            }
+        }
+        ensure!(record.flags() == 99 && record.pos() == 6106220, "could not find indel read");
+
+        let strand = StrandFromRecord::strand(&record);
+        assert_eq!(strand, Strand::OT);
+        let seq = record.seq().as_bytes();
+
+        // CIGAR: 61M1D19M
+        // Read[0-60] → ref[6106220-6106280] (61M)
+        // ref[6106281] deleted (1D)
+        // Read[61-79] → ref[6106282-6106300] (19M)
+        //
+        // CpG calls:
+        // Ref pos 6106229 (read offset 9): OT C side
+        //   Read[9] = T → methylation evidence → methylated
+        // Ref pos 6106300 (read offset 79): OT C side, AFTER the deletion
+        //   Read[79] = C → target base → unmethylated
+        assert_eq!(Base::from(seq[9]), T, "read[9] should be T (methylation evidence)");
+        assert_eq!(Base::from(seq[79]), C, "read[79] should be C (unmethylated, after deletion)");
+
+        let calls = FxHashMap::from_iter([
+            (6106229_u32, RastairCall::Cpg { base: C, methylated: true }),
+            (6106300, RastairCall::Cpg { base: C, methylated: false }),
+        ]);
+        let ref_bases =
+            FxHashMap::from_iter([(6106229_u32, C), (6106230, G), (6106300, C), (6106301, G)]);
+        let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+
+        // === Legacy mode ===
+        let mut legacy_record = record.clone();
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+
+        let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
+        assert_eq!(xm_tag.len(), seq.len());
+        let xm_annotations: Vec<(usize, char)> =
+            xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+        // Position 9 = Z (methylated), position 79 = z (unmethylated, AFTER deletion)
+        assert_compact_debug_snapshot!(xm_annotations, @"[(9, 'Z'), (79, 'z')]");
+
+        // === Standard mode ===
+        let mut standard_record = record.clone();
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+
+        let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
+
+        // Rewritten SEQ: T→C at position 9
+        let new_seq = standard_record.seq().as_bytes();
+        assert_eq!(Base::from(new_seq[9]), C, "methylated T should be rewritten to C");
+        assert_eq!(Base::from(new_seq[79]), C, "unmethylated C should stay C");
+
+        // === Cross-check ===
+        let xm_methylated = decode_xm_to_positions(xm_tag);
+        let fwd_seq = seq_for_mm_tag(&standard_record);
+        let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+        assert_eq!(mm_base, C);
+        // Only position 9 is methylated
+        assert_eq!(xm_methylated, vec![9]);
+        assert_eq!(mm_methylated, vec![9]);
+
+        Ok(())
+    }
+
+    /// All four standard flag combinations (99, 147, 83, 163) with the same
+    /// genomic CpG must produce consistent annotations. OT reads annotate the
+    /// C side, OB reads annotate the G side.
+    #[test]
+    fn all_four_flags_consistent_annotations() -> Result<()> {
+        use Base::*;
+
+        // The CpG at ref 6103080(C)/6103081(G) is covered by all four flags
+        // in the test region.
+        let ref_bases = FxHashMap::from_iter([(6103080_u32, C), (6103081, G)]);
+        let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+
+        let test_cases: [(u16, Strand, &str, &str); 4] = [
+            (99, Strand::OT, "CT", "CT"),
+            (147, Strand::OT, "GA", "CT"),
+            (83, Strand::OB, "CT", "GA"),
+            (163, Strand::OB, "GA", "GA"),
+        ];
+
+        for (flag, expected_strand, expected_xr, expected_xg) in test_cases {
+            let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+            bam.fetch(FetchDefinition::All)?;
+            let mut record = Record::new();
+            let mut found = false;
+            while let Some(result) = bam.read(&mut record) {
+                result?;
+                if record.flags() == flag {
+                    // Make sure this read covers our CpG position
+                    let start = record.pos() as u32;
+                    let end = start + record.seq_len() as u32;
+                    if start <= 6103081 && end > 6103081 {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            ensure!(found, "No record with flag {flag} covering CpG at 6103080/81");
+
+            let strand = StrandFromRecord::strand(&record);
+            assert_eq!(strand, expected_strand, "strand mismatch for flag {flag}");
+
+            // Build calls appropriate for this strand
+            let calls = if strand == Strand::OT {
+                FxHashMap::from_iter([(
+                    6103080_u32,
+                    RastairCall::Cpg { base: C, methylated: true },
+                )])
+            } else {
+                FxHashMap::from_iter([(
+                    6103081_u32,
+                    RastairCall::Cpg { base: G, methylated: true },
+                )])
+            };
+
+            // === Legacy ===
+            let mut legacy_record = record.clone();
+            rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+
+            let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else { bail!("XR for {flag}") };
+            let Aux::String(xg_tag) = legacy_record.aux(b"XG")? else { bail!("XG for {flag}") };
+            let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM for {flag}") };
+
+            assert_eq!(xr_tag, expected_xr, "XR mismatch for flag {flag}");
+            assert_eq!(xg_tag, expected_xg, "XG mismatch for flag {flag}");
+            assert_eq!(xm_tag.len(), record.seq_len(), "XM length mismatch for flag {flag}");
+
+            // Every flag should have at least one annotation (Z or z)
+            let has_annotation = xm_tag.chars().any(|c| c != '.');
+            assert!(has_annotation, "XM has no annotations for flag {flag}: {xm_tag}");
+
+            // === Standard ===
+            let mut standard_record = record.clone();
+            rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+
+            let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM for {flag}") };
+
+            // Cross-check: both modes find the same number of methylated positions
+            let xm_methylated = decode_xm_to_positions(xm_tag);
+            let fwd_seq = seq_for_mm_tag(&standard_record);
+            let (_, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+            assert_eq!(
+                xm_methylated.len(),
+                mm_methylated.len(),
+                "Methylated position count mismatch for flag {flag}: \
+                 XM={xm_methylated:?}, MM={mm_methylated:?}"
+            );
+        }
 
         Ok(())
     }
