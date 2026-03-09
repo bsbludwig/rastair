@@ -78,7 +78,7 @@ Then follow the platform-specific instructions below.
 
 #### Ubuntu
 ```bash
-sudo apt install libclang-dev cmake
+sudo apt install cmake
 ```
 
 #### Fedora
