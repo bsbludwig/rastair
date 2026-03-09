@@ -1,0 +1,36 @@
+FROM condaforge/mambaforge:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system deps for building rust-htslib
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake pkg-config curl ca-certificates libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain (pinned to match project MSRV)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- --default-toolchain 1.92.0 -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup component add clippy rustfmt llvm-tools-preview
+
+# Install bioinformatics tools
+RUN mamba install -y -c bioconda -c conda-forge \
+    samtools \
+    bismark \
+    ont-modkit \
+    && mamba clean -afy
+
+WORKDIR /rastair
+
+# Prepopulate cargo registry and dependency build cache:
+# copy only manifests + dep sources, build deps once, then copy real source.
+COPY Cargo.toml Cargo.lock LICENSE.txt ./
+COPY crates/ crates/
+COPY tools/ tools/
+# Create stub src so cargo can resolve the workspace and fetch+build deps
+RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
+    cargo fetch && \
+    cargo test --features external-tool-tests --no-run 2>/dev/null || true && \
+    rm -rf src
+
+CMD ["cargo", "test", "--features", "external-tool-tests", "--test", "bam_external_tools", "--", "--nocapture"]
