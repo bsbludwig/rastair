@@ -111,6 +111,9 @@ proptest = { workspace = true }
 tempfile = { workspace = true }
 pastey = { workspace = true }
 
+[features]
+external-tool-tests = []
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(coverage, coverage_nightly)',
