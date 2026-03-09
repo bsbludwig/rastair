@@ -428,31 +428,27 @@ fn get_methylated_positions(
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
         let pos_in_read = pos_in_read as usize;
 
-        let methylated = match calls.get(&pos_in_ref) {
-            Some(
-                RastairCall::Cpg { methylated, .. } | RastairCall::DeNovoCpg { methylated, .. },
-            ) => *methylated,
+        match calls.get(&pos_in_ref) {
+            Some(RastairCall::Cpg { .. } | RastairCall::DeNovoCpg { .. }) => {}
             _ => continue,
         };
 
-        if methylated {
-            let observed_base = Base::from(seq[pos_in_read]);
+        let observed_base = Base::from(seq[pos_in_read]);
 
-            match strand {
-                Strand::OT => {
-                    if observed_base == T {
-                        seq[pos_in_read] = *C;
-                        methylated_positions.push(pos_in_read as u32);
-                    }
+        match strand {
+            Strand::OT => {
+                if observed_base == T {
+                    seq[pos_in_read] = *C;
+                    methylated_positions.push(pos_in_read as u32);
                 }
-                Strand::OB => {
-                    if observed_base == A {
-                        seq[pos_in_read] = *G;
-                        methylated_positions.push(pos_in_read as u32);
-                    }
-                }
-                Strand::Unknown => continue,
             }
+            Strand::OB => {
+                if observed_base == A {
+                    seq[pos_in_read] = *G;
+                    methylated_positions.push(pos_in_read as u32);
+                }
+            }
+            Strand::Unknown => continue,
         }
     }
 
