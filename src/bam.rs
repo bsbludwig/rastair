@@ -428,27 +428,32 @@ fn get_methylated_positions(
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
         let pos_in_read = pos_in_read as usize;
 
+        // Only process positions that are called as CpG sites (ref or de-novo).
+        // Per-read methylation is determined by the observed base, not the
+        // position-level call: in TAPS, T at OT C = methylated, A at OB G = methylated.
         match calls.get(&pos_in_ref) {
             Some(RastairCall::Cpg { .. } | RastairCall::DeNovoCpg { .. }) => {}
             _ => continue,
         };
 
-        let observed_base = Base::from(seq[pos_in_read]);
+        {
+            let observed_base = Base::from(seq[pos_in_read]);
 
-        match strand {
-            Strand::OT => {
-                if observed_base == T {
-                    seq[pos_in_read] = *C;
-                    methylated_positions.push(pos_in_read as u32);
+            match strand {
+                Strand::OT => {
+                    if observed_base == T {
+                        seq[pos_in_read] = *C;
+                        methylated_positions.push(pos_in_read as u32);
+                    }
                 }
-            }
-            Strand::OB => {
-                if observed_base == A {
-                    seq[pos_in_read] = *G;
-                    methylated_positions.push(pos_in_read as u32);
+                Strand::OB => {
+                    if observed_base == A {
+                        seq[pos_in_read] = *G;
+                        methylated_positions.push(pos_in_read as u32);
+                    }
                 }
+                Strand::Unknown => continue,
             }
-            Strand::Unknown => continue,
         }
     }
 
@@ -618,6 +623,77 @@ mod tests {
         assert!(standard_record.aux(b"XR").is_err());
         // Legacy mode should NOT have MM/ML tags
         assert!(legacy_record.aux(b"MM").is_err());
+
+        Ok(())
+    }
+
+    /// XM and MM/ML tags must reflect per-read methylation evidence, not the
+    /// position-level call. A CpG with beta ≤ 0.5 (`methylated: false`) still
+    /// has individually methylated reads that must show Z (not z) in XM and
+    /// appear in MM/ML.
+    #[test]
+    fn per_read_methylation_independent_of_position_call() -> Result<()> {
+        use Base::*;
+
+        // Same OB flag-163 read as golden_legacy_and_standard_agree
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch(FetchDefinition::All)?;
+        let mut record = Record::new();
+        while let Some(result) = bam.read(&mut record) {
+            result?;
+            if record.flags() == 163 && record.pos() == 6103076 {
+                break;
+            }
+        }
+        ensure!(record.flags() == 163, "could not find flag-163 record at 6103076");
+
+        let strand = StrandFromRecord::strand(&record);
+        assert_eq!(strand, Strand::OB);
+
+        // Position 6103081 (read offset 5): Read[5] = A → evidence base for OB
+        // Position 6103093 (read offset 17): Read[17] = G → target base
+        //
+        // Mark BOTH as `methylated: false` (simulating beta ≤ 0.5).
+        // Despite the position-level call, read offset 5 shows methylation
+        // evidence (A at G ref) and must be annotated as Z, not z.
+        let calls = FxHashMap::from_iter([
+            (6103081, RastairCall::Cpg { base: G, methylated: false }),
+            (6103093, RastairCall::Cpg { base: G, methylated: false }),
+        ]);
+
+        let ref_bases =
+            FxHashMap::from_iter([(6103080, C), (6103081, G), (6103092, C), (6103093, G)]);
+        let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+
+        // === Legacy mode ===
+        let mut legacy_record = record.clone();
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+
+        let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
+            bail!("XM not a string");
+        };
+
+        // Offset 5 must be Z (methylated per-read), offset 17 must be z (unmethylated per-read)
+        let xm_annotations: Vec<(usize, char)> =
+            xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+        assert_compact_debug_snapshot!(xm_annotations, @"[(5, 'Z'), (17, 'z')]");
+
+        // === Standard mode ===
+        let mut standard_record = record.clone();
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+
+        let new_seq = standard_record.seq().as_bytes();
+        // Position 5 must be rewritten A→G (undo methylation evidence)
+        assert_eq!(Base::from(new_seq[5]), G, "position 5 should be rewritten A→G");
+
+        let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
+            bail!("MM not a string");
+        };
+        // MM tag should report the methylation at position 5
+        let fwd_seq = seq_for_mm_tag(&standard_record);
+        let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+        assert_eq!(mm_base, G);
+        assert_eq!(mm_methylated, vec![5], "MM should report methylation at offset 5");
 
         Ok(())
     }

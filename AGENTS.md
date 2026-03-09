@@ -71,6 +71,36 @@ Tests use the `pileups!` macro to create synthetic read data with format `[base1
 Test utilities in `src/call/tests/utils.rs` provide the `pileups!` macro for creating test data, and helper functions like `set_pass`/`set_fail` for modifying alt calls with ML scores.
 The `reprocess()` function recalculates methylation_strand_info, genotypes, alt calls, and methylation values after modifications.
 
+## BAM rewriting
+
+The BAM rewrite pipeline is in `src/bam.rs` with tag generation in `src/bam/base_modification.rs`.
+There are two modes: `legacy` (XR/XG/XM tags, SEQ unchanged) and `standard` (MM/ML tags, SEQ rewritten T→C / A→G).
+
+Critical invariant: **XM and MM/ML tags encode per-read methylation**, not position-level calls.
+A CpG with beta=0.3 (`methylated: false` in `RastairCall`) still has individually methylated reads
+that must show `Z` in XM and appear in MM/ML. The `methylated` field in `RastairCall::Cpg` only
+controls whether the position is recognized as a CpG site, not whether individual reads are methylated.
+Per-read methylation is determined solely by the observed base: T at OT C = methylated, A at OB G = methylated.
+
+### MM/ML vs XM paired-read asymmetry
+
+MM/ML tags only encode modifications at C bases in the stored SEQ. For paired reads overlapping a CpG,
+only one mate has C at that position (the other has G on the complementary strand). XM tags annotate
+both mates. This means tools reading MM/ML (like modkit) see roughly half the reads that XM-based
+counting does. Methylation **fractions** agree, but exact counts differ ~2:1.
+
+When comparing legacy (XM) and standard (MM/ML) output, always compare fractions, not absolute counts,
+and require minimum coverage to avoid noise at low-coverage positions.
+
+### External tool tests
+
+Tests are in `tests/bam_external_tools.rs` behind `--features external-tool-tests`.
+Run in Docker: `docker build -f Dockerfile.external-tool-tests -t rastair-ext-tests . && docker run --rm -v "$(pwd):/rastair" rastair-ext-tests`
+
+Cross-validation tests use `RASTAIR_TEST_MIN_COVERAGE` env var (default 5) to set the minimum read
+coverage at a position before comparing fractions between tools. Lower values check more positions
+but are noisier due to paired-read asymmetry.
+
 # Interactivity guidelines
 
 When you are asked to implement something, always ask for clarifications if needed.
