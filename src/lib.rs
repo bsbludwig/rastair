@@ -34,9 +34,7 @@ pub(crate) mod vcf;
 pub(crate) mod utils {
     pub use rastair_types::*;
 
-    mod base_counter;
     pub mod file_helpers;
-    pub use base_counter::Counter;
 
     pub mod logging;
 
