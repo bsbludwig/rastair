@@ -373,9 +373,9 @@ fn build_legacy_annotations(
         let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
         let pos_in_read = pos_in_read as usize;
 
-        let (is_methylated, is_denovo) = match calls.get(&pos_in_ref) {
-            Some(RastairCall::Cpg { methylated, .. }) => (*methylated, false),
-            Some(RastairCall::DeNovoCpg { methylated, .. }) => (*methylated, true),
+        let is_denovo = match calls.get(&pos_in_ref) {
+            Some(RastairCall::Cpg { .. }) => false,
+            Some(RastairCall::DeNovoCpg { .. }) => true,
             _ => continue,
         };
 
@@ -389,7 +389,7 @@ fn build_legacy_annotations(
             } else {
                 MethylationContext::CpG
             };
-            let methylated = is_methylated && observed_base == evidence_base;
+            let methylated = observed_base == evidence_base;
             annotations.insert(pos_in_read, XmAnnotation { methylated, context });
         }
     }

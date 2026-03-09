@@ -1,4 +1,5 @@
 mod utils;
+use rust_htslib::bam::ext::BamRecordExtensions as _;
 use rust_htslib::bam::{self, Read as BamRead};
 use utils::*;
 
@@ -428,6 +429,108 @@ fn bam_rewrite_xm_content_matches_calls() -> Result<()> {
     }
 
     ensure!(records_checked > 0, "No records were checked");
+
+    Ok(())
+}
+
+/// Regression test for mixed-methylation sites in legacy XM output.
+///
+/// At chr19:6103215 (1-based), the CpG C base is at 0-based position 6103214.
+/// In `tests/data/test.bam` there are 18 OT reads with evidence split:
+/// 8 methylated (T => `Z`) and 10 unmethylated (C => `z`).
+/// Legacy XM must preserve this per-read split even when the site-level beta is < 0.5.
+#[test]
+fn bam_rewrite_legacy_mixed_site_keeps_per_read_z_and_z_uppercase() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    let output_bam = temp_dir.path().join("legacy.bam");
+
+    let region = "chr19:6103000-6103300";
+    // User-facing coordinate is 1-based chr19:6103215; BAM/reference lookup is 0-based.
+    let target_pos_0_based = 6_103_214_i64;
+
+    rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--no-ml",
+            &format!("--region={region}"),
+            "--cpgs-only",
+            "-o",
+        ])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    // `rastair call` already writes the tabix index for BED output.
+    rastair()
+        .args([
+            "bam",
+            "legacy",
+            "--fasta-file=tests/data/test.fasta.gz",
+            &format!("--region={region}"),
+            "tests/data/test.bam",
+        ])
+        .arg(&calls_bed)
+        .args(["-o"])
+        .arg(&output_bam)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to rewrite legacy BAM")?;
+
+    let mut reader = bam::Reader::from_path(&output_bam).wrap_err("open legacy BAM")?;
+    let mut record = bam::Record::new();
+
+    let mut z_upper = 0usize;
+    let mut z_lower = 0usize;
+
+    while let Some(result) = reader.read(&mut record) {
+        result.wrap_err("Failed to read BAM record")?;
+
+        let xm = match record.aux(b"XM") {
+            Ok(rust_htslib::bam::record::Aux::String(s)) => s,
+            _ => bail!("Missing/bad XM tag for record with flag {}", record.flags()),
+        };
+        ensure!(
+            xm.len() == record.seq_len(),
+            "XM length {} != seq length {}",
+            xm.len(),
+            record.seq_len()
+        );
+
+        for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
+            let Some(pos_in_read) = pos_in_read else { continue };
+            let Some(pos_in_ref) = pos_in_ref else { continue };
+
+            if pos_in_ref != target_pos_0_based {
+                continue;
+            }
+
+            let idx =
+                usize::try_from(pos_in_read).wrap_err("read position does not fit in usize")?;
+            let symbol = xm
+                .as_bytes()
+                .get(idx)
+                .copied()
+                .map(char::from)
+                .ok_or_else(|| eyre!("XM index out of bounds"))?;
+
+            match symbol {
+                'Z' => z_upper += 1,
+                'z' => z_lower += 1,
+                '.' => {}
+                other => bail!("Unexpected XM symbol '{other}' at target position"),
+            }
+        }
+    }
+
+    ensure!(z_upper == 8, "Expected 8 uppercase Z calls at chr19:6103215, got {z_upper}");
+    ensure!(z_lower == 10, "Expected 10 lowercase z calls at chr19:6103215, got {z_lower}");
+    ensure!(z_upper + z_lower == 18, "Expected 18 CpG annotations at chr19:6103215");
 
     Ok(())
 }
