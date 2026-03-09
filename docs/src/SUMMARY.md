@@ -8,6 +8,7 @@
 - [Getting started](./examples.md)
 - [Command-line reference](./cli.md)
 - [Quality control report](./qc.md)
+- [GPU acceleration](./gpu.md)
 
 # Calling logic
 - [De-novo CpGs](calling/denovo.md)

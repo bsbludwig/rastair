@@ -411,3 +411,21 @@
   group: "Tools"
   description: |
     A tool to map bisulfite converted sequence reads and determine cytosine methylation states. [Homepage](https://felixkrueger.github.io/Bismark/)
+
+- key: GPU
+  long: "Graphics Processing Unit"
+  group: "Programming"
+  description: |
+    Graphics processor, originally designed for rendering graphics, but increasingly used for general-purpose computing due to its ability to perform parallel computations efficiently. GPUs are commonly used in machine learning, scientific simulations, and other computationally intensive tasks.
+
+- key: Vulkan
+  group: "Programming"
+  description: |
+    A graphics and compute API that provides high-performance access to modern GPUs. It is designed to be cross-platform and is used for developing applications that require high-performance graphics and compute capabilities, such as video games, scientific simulations, and machine learning.
+
+- key: SLURM
+  short: SLURM
+  long: "Simple Linux Utility for Resource Management"
+  group: "Tools"
+  description: |
+    An open-source job scheduler used in high-performance computing environments to manage and allocate resources for computational tasks. It allows users to submit, monitor, and control jobs on a cluster of computers. [Homepage](https://slurm.schedmd.com/)
