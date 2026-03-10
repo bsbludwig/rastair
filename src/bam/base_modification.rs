@@ -133,10 +133,16 @@ impl MethylatedPositions {
     /// 1. Rewrite the sequence to un-modify the methylated bases (T back to C, A back to G)
     /// 2. Add MM and ML tags to the record
     ///
-    /// When there are no methylated positions, MM/ML tags are not written.
-    /// An absent MM tag means "no modification data" per SAM spec, which is correct
-    /// for reads without CpG evidence. Writing an empty `C+m;` with an empty ML
-    /// array is technically valid SAM but crashes tools like modbedtools.
+    /// Apply the MM/ML modification tags to a BAM record.
+    ///
+    /// When there are no methylated positions, neither MM nor ML is written.
+    /// An absent MM means "no modification data" per the SAM spec, which is
+    /// correct for reads where no CpG positions had methylation evidence.
+    ///
+    /// Writing `C+m;` (empty position list) or an empty `ML:B:C` array causes
+    /// modbedtools to segfault, so we omit the tags entirely in that case.
+    /// The downside is that modkit cannot count unmethylated reads — those reads
+    /// simply contribute no data to modkit's per-position counts.
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
         if self.positions.is_empty() {
             return Ok(());
@@ -146,7 +152,6 @@ impl MethylatedPositions {
             .push_aux(b"MM", Aux::String(&self.to_mod_string()))
             .wrap_err("could not apply modification to record")?;
 
-        // also apply ML dummy tag with all 255 (unknown probability)
         record
             .push_aux(b"ML", Aux::ArrayU8(vec![255_u8; self.positions.len()].as_slice().into()))
             .wrap_err("could not apply ML tag to record")?;

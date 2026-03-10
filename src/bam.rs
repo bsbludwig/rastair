@@ -1277,8 +1277,9 @@ mod tests {
         let mut reader = bam::Reader::from_path(&temp_bam)?;
         reader.read(&mut record).wrap_err("no records")?.wrap_err("read back")?;
 
-        // With no methylated positions, MM/ML tags are not written at all (absent = "no data").
-        // An empty `C+m;` with empty ML array crashes tools like modbedtools.
+        // With no methylated positions, MM/ML tags are not written at all.
+        // An absent MM means "no modification data" per SAM spec.
+        // Writing empty C+m; or empty ML:B:C crashes tools like modbedtools.
         assert!(
             record.aux(b"MM").is_err(),
             "MM tag should not be present when there are no methylated positions"
@@ -1900,7 +1901,7 @@ mod tests {
             rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
 
             // Cross-check: both modes find the same number of methylated positions.
-            // MM/ML are absent when no reads show methylation evidence (absent = 0 positions).
+            // MM/ML are absent when no methylation evidence is found (absent = 0 positions).
             let xm_methylated = decode_xm_to_positions(xm_tag);
             let mm_methylated_count = match standard_record.aux(b"MM") {
                 Ok(Aux::String(mm_tag)) => {
