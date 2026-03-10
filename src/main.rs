@@ -80,6 +80,12 @@ enum Subcommand {
     /// you're using the official Docker image, you need to install R and the
     /// necessary packages yourself.
     Mbias(MBiasParams),
+    /// Verify calling output against truth sets and competitors
+    ///
+    /// Compare Rastair VCF output against a GIAB-style truth set and/or a
+    /// competitor caller, computing variant overlap, F1/precision/recall, and
+    /// methylation beta correlation.
+    Verify(VerifyParams),
     #[command(hide = true)]
     Internal {
         /// Generate documentation files
@@ -95,11 +101,6 @@ enum Subcommand {
 enum MlSubcommand {
     /// Train machine learning models
     Train(TrainModelParams),
-    /// Verify trained models against ground truth
-    ///
-    /// Compare predictions from a rastair2 call against a ground truth VCF
-    /// and calculate classification metrics (sensitivity, specificity, etc.)
-    Verify(VerifyParams),
     /// Pack three random forest models into a combined model file
     Pack(PackModelParams),
 }
@@ -174,14 +175,6 @@ fn main() -> Result<()> {
                 let duration = start.elapsed();
                 info!(?duration, "Training finished");
             }
-            MlSubcommand::Verify(params) => {
-                // track execution time
-                let start = std::time::Instant::now();
-                debug!(?params, "Running verify command");
-                rastair::verify(&params)?;
-                let duration = start.elapsed();
-                info!(?duration, "Verification finished");
-            }
             MlSubcommand::Pack(params) => {
                 let start = std::time::Instant::now();
                 debug!(?params, "Running pack command");
@@ -190,6 +183,13 @@ fn main() -> Result<()> {
                 info!(?duration, "Packing finished");
             }
         },
+        Subcommand::Verify(params) => {
+            let start = std::time::Instant::now();
+            debug!(?params, "Running verify command");
+            rastair::verify(&params)?;
+            let duration = start.elapsed();
+            info!(?duration, "Verification finished");
+        }
         Subcommand::Convert(params) => {
             // track execution time
             let start = std::time::Instant::now();

@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Rastair Verify Report</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: "Georgia", "Times New Roman", serif;
+      font-size: 15px;
+      line-height: 1.65;
+      max-width: 860px;
+      margin: 48px auto 96px;
+      padding: 0 24px;
+      background: #fff;
+      color: #111;
+    }
+
+    h1 {
+      font-size: 1.55rem;
+      font-weight: normal;
+      border-bottom: 2px solid #111;
+      padding-bottom: 8px;
+      margin: 0 0 4px;
+    }
+    .meta { font-size: 0.82rem; color: #555; margin: 0 0 40px; font-family: monospace; }
+
+    h2 { font-size: 1.1rem; font-weight: bold; margin: 48px 0 14px; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+    h3 { font-size: 0.92rem; font-weight: bold; margin: 28px 0 8px; color: #222; text-transform: uppercase; letter-spacing: .05em; }
+
+    p { margin: 8px 0 16px; }
+    .notice { color: #777; font-style: italic; margin: 16px 0; }
+    .caption { font-size: 0.8rem; color: #666; margin: -12px 0 24px; font-style: italic; }
+
+    /* ── stat cards ── */
+    .cards {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1px;
+      background: #ddd;
+      border: 1px solid #ddd;
+      margin: 0 0 32px;
+    }
+    .card {
+      flex: 1 1 auto;
+      background: #fff;
+      padding: 14px 16px 12px;
+      min-width: 0;
+    }
+    .card .val { font-size: 1.5rem; font-weight: bold; font-family: monospace; line-height: 1.1; }
+    .card .lbl { font-size: 0.73rem; color: #666; margin-top: 4px; text-transform: uppercase; letter-spacing: .05em; }
+
+    /* ── metrics table ── */
+    table.metrics {
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      margin: 4px 0 24px;
+      font-family: monospace;
+      width: auto;
+    }
+    table.metrics th {
+      font-family: "Georgia", serif;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      font-weight: bold;
+      padding: 6px 24px 6px 0;
+      border-bottom: 1px solid #aaa;
+      color: #333;
+      white-space: nowrap;
+    }
+    table.metrics td {
+      padding: 5px 24px 5px 0;
+      border-bottom: 1px solid #eee;
+      white-space: nowrap;
+    }
+    table.metrics tr:last-child td { border-bottom: none; }
+    table.metrics td.metric-label { color: #444; font-family: "Georgia", serif; font-size: 0.88rem; }
+    table.metrics td.num { text-align: right; padding-right: 8px; }
+    table.metrics td.good { color: #166534; }
+    table.metrics td.warn { color: #92400e; }
+    table.metrics td.bad  { color: #991b1b; }
+    .good { color: #166534; }
+    .warn { color: #92400e; }
+    .bad  { color: #991b1b; }
+    table.metrics td.cat-label { padding-left: 20px; color: #555; }
+    table.metrics tr.cat-row { background: #fafafa; }
+    table.metrics tr.cat-row td { border-bottom: 1px solid #f0f0f0; font-size: 0.84rem; }
+
+    /* ── plain table ── */
+    table.plain {
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      margin: 4px 0 24px;
+      font-family: monospace;
+    }
+    table.plain th {
+      font-family: "Georgia", serif;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      font-weight: bold;
+      padding: 6px 24px 6px 0;
+      border-bottom: 1px solid #aaa;
+      color: #333;
+    }
+    table.plain td { padding: 5px 24px 5px 0; border-bottom: 1px solid #eee; }
+    table.plain tr:last-child td { border-bottom: none; }
+    table.plain td.num { text-align: right; }
+    table.plain td.lbl { font-family: "Georgia", serif; font-size: 0.88rem; color: #444; }
+
+    /* ── venn ── */
+    .venn-wrap { display: flex; align-items: flex-start; gap: 32px; flex-wrap: wrap; margin: 8px 0 32px; }
+    .venn-wrap svg { flex-shrink: 0; }
+    .venn-legend { font-size: 0.82rem; font-family: monospace; padding-top: 8px; }
+    .venn-legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .venn-legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── svg charts ── */
+    .chart { margin: 8px 0 8px; }
+    .chart svg { display: block; max-width: 100%; }
+  </style>
+</head>
+<body>
+
+<h1>Rastair Verify Report</h1>
+<p class="meta">rastair verify</p>
+
+<div id="summary-cards"></div>
+<div id="variant-section"></div>
+<div id="methyl-section"></div>
+
+<script>
+(function () {
+  const data = {{DATA}};
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+
+  function fmt(n, d) {
+    if (n == null) return '—';
+    if (d != null) return n.toFixed(d);
+    return n.toLocaleString();
+  }
+
+  // Score color class (for precision/recall/f1, higher is better)
+  function scoreClass(v, invert) {
+    if (v == null) return '';
+    const good = invert ? v <= 0.03 : v >= 0.95;
+    const warn = invert ? v <= 0.10 : v >= 0.90;
+    return good ? 'good' : warn ? 'warn' : 'bad';
+  }
+
+  // ── summary cards ────────────────────────────────────────────────────────
+
+  function renderCards(variants, methyl) {
+    const cards = [];
+    if (variants) {
+      const pm = variants.predictions_vs_truth;
+      if (pm) {
+        cards.push({ val: fmt(pm.tp + pm.fn_count), lbl: 'Truth variants' });
+        cards.push({ val: fmt(pm.tp + pm.fp),       lbl: 'Predictions' });
+        cards.push({ val: fmt(pm.f1, 4),            lbl: 'F1 (predictions)' });
+        cards.push({ val: fmt(pm.precision, 4),     lbl: 'Precision' });
+        cards.push({ val: fmt(pm.recall, 4),        lbl: 'Recall' });
+      } else if (variants.overlap) {
+        const ol = variants.overlap;
+        const total = ol.predictions_only + ol.predictions_and_competitor + ol.all_three;
+        cards.push({ val: fmt(total), lbl: 'Predictions' });
+      }
+    }
+    if (methyl) {
+      cards.push({ val: fmt(methyl.n_compared), lbl: 'CpGs compared' });
+      cards.push({ val: fmt(methyl.pearson_r, 4), lbl: 'Pearson r' });
+      cards.push({ val: fmt(methyl.mean_abs_diff, 4), lbl: 'Mean |Δβ|' });
+    }
+    if (cards.length === 0) return;
+    document.getElementById('summary-cards').innerHTML =
+      '<div class="cards">' +
+      cards.map(c => `<div class="card"><div class="val">${c.val}</div><div class="lbl">${c.lbl}</div></div>`).join('') +
+      '</div>';
+  }
+
+  // ── venn diagram ─────────────────────────────────────────────────────────
+
+  // Colors: truth=steelblue, predictions=seagreen, competitor=coral
+  const V_COLORS = { truth: '#2166ac', pred: '#1b7837', comp: '#d6604d' };
+  const V_OPACITY = 0.28;
+
+  function vennSVG(overlap) {
+    const ol = overlap;
+    const hasTruth = ol.truth_only + ol.truth_and_predictions + ol.truth_and_competitor + ol.all_three > 0;
+    const hasComp  = ol.competitor_only + ol.truth_and_competitor + ol.predictions_and_competitor + ol.all_three > 0;
+
+    if (hasTruth && hasComp) {
+      return venn3(ol);
+    } else if (hasTruth) {
+      return venn2truth(ol);
+    } else {
+      return venn2comp(ol);
+    }
+  }
+
+  function label(x, y, txt, size, color) {
+    size = size || 13;
+    color = color || '#111';
+    return `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle"
+      font-family="monospace" font-size="${size}" fill="${color}">${txt}</text>`;
+  }
+
+  function setLabel(x, y, name, color) {
+    return `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle"
+      font-family="Georgia, serif" font-size="12" font-weight="bold" fill="${color}">${name}</text>`;
+  }
+
+  // 3-way Venn: classic arrangement
+  // truth = upper-left, predictions = upper-right, competitor = bottom
+  function venn3(ol) {
+    const W = 420, H = 320, r = 108;
+    const tx = 165, ty = 145;   // truth center
+    const px = 255, py = 145;   // predictions center
+    const cx = 210, cy = 225;   // competitor center
+
+    // 7 region label positions (tuned by eye)
+    const pos = {
+      truth:   [tx - 55, ty - 32],
+      pred:    [px + 55, py - 32],
+      comp:    [cx,      cy + 68],
+      tp:      [(tx+px)/2, ty - 52],  // truth ∩ pred only
+      tc:      [tx - 30, (ty+cy)/2 + 20], // truth ∩ comp only
+      pc:      [px + 30, (py+cy)/2 + 20], // pred ∩ comp only
+      all:     [(tx+px)/2, (ty+cy)/2 + 12], // all three
+    };
+
+    const nonZero = (v) => v > 0 ? fmt(v) : '';
+
+    const parts = [
+      `<circle cx="${tx}" cy="${ty}" r="${r}" fill="${V_COLORS.truth}" opacity="${V_OPACITY}" />`,
+      `<circle cx="${px}" cy="${py}" r="${r}" fill="${V_COLORS.pred}"  opacity="${V_OPACITY}" />`,
+      `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${V_COLORS.comp}"  opacity="${V_OPACITY}" />`,
+      label(...pos.truth, nonZero(ol.truth_only)),
+      label(...pos.pred,  nonZero(ol.predictions_only)),
+      label(...pos.comp,  nonZero(ol.competitor_only)),
+      label(...pos.tp,    nonZero(ol.truth_and_predictions), 12),
+      label(...pos.tc,    nonZero(ol.truth_and_competitor),  12),
+      label(...pos.pc,    nonZero(ol.predictions_and_competitor), 12),
+      label(...pos.all,   nonZero(ol.all_three), 13),
+      setLabel(tx - 70, ty - r - 14, 'Truth',       V_COLORS.truth),
+      setLabel(px + 70, py - r - 14, 'Predictions', V_COLORS.pred),
+      setLabel(cx,      cy + r + 16, 'Competitor',  V_COLORS.comp),
+    ];
+
+    return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="overflow:visible">`
+      + parts.join('\n') + '</svg>';
+  }
+
+  // 2-way: truth vs predictions
+  function venn2truth(ol) {
+    const W = 380, H = 220, r = 95;
+    const lx = 155, rx = 225, cy = 110;
+    const parts = [
+      `<circle cx="${lx}" cy="${cy}" r="${r}" fill="${V_COLORS.truth}" opacity="${V_OPACITY}" />`,
+      `<circle cx="${rx}" cy="${cy}" r="${r}" fill="${V_COLORS.pred}"  opacity="${V_OPACITY}" />`,
+      label(lx - 50, cy, fmt(ol.truth_only)),
+      label((lx+rx)/2, cy, fmt(ol.truth_and_predictions), 12),
+      label(rx + 50, cy, fmt(ol.predictions_only)),
+      setLabel(lx - 60, cy - r - 14, 'Truth',       V_COLORS.truth),
+      setLabel(rx + 60, cy - r - 14, 'Predictions', V_COLORS.pred),
+    ];
+    return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="overflow:visible">`
+      + parts.join('\n') + '</svg>';
+  }
+
+  // 2-way: predictions vs competitor
+  function venn2comp(ol) {
+    const W = 380, H = 220, r = 95;
+    const lx = 155, rx = 225, cy = 110;
+    const parts = [
+      `<circle cx="${lx}" cy="${cy}" r="${r}" fill="${V_COLORS.pred}"  opacity="${V_OPACITY}" />`,
+      `<circle cx="${rx}" cy="${cy}" r="${r}" fill="${V_COLORS.comp}"  opacity="${V_OPACITY}" />`,
+      label(lx - 50, cy, fmt(ol.predictions_only)),
+      label((lx+rx)/2, cy, fmt(ol.predictions_and_competitor), 12),
+      label(rx + 50, cy, fmt(ol.competitor_only)),
+      setLabel(lx - 60, cy - r - 14, 'Predictions', V_COLORS.pred),
+      setLabel(rx + 60, cy - r - 14, 'Competitor',  V_COLORS.comp),
+    ];
+    return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="overflow:visible">`
+      + parts.join('\n') + '</svg>';
+  }
+
+  // ── per-category mini Venn ───────────────────────────────────────────────
+
+  // Pie chart body: TP (green) / FP (red) sectors with precision in center.
+  function pieSVGBody(tp, fp, n, cx, cy, r) {
+    if (n === 0) {
+      return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#ccc" opacity="0.5" />`;
+    }
+    const p = tp / n;
+    let arcs = '';
+    if (p >= 1 - 1e-9) {
+      arcs = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#1b7837" opacity="0.45" />`;
+    } else if (p <= 1e-9) {
+      arcs = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#d6604d" opacity="0.38" />`;
+    } else {
+      const angle = p * 2 * Math.PI;
+      const x2 = (cx + r * Math.sin(angle)).toFixed(2);
+      const y2 = (cy - r * Math.cos(angle)).toFixed(2);
+      const la = p > 0.5 ? 1 : 0;
+      arcs =
+        `<path d="M${cx},${cy} L${cx},${cy - r} A${r},${r} 0 ${la} 1 ${x2},${y2} Z" fill="#1b7837" opacity="0.45"/>` +
+        `<path d="M${cx},${cy} L${x2},${y2} A${r},${r} 0 ${1-la} 1 ${cx},${cy - r} Z" fill="#d6604d" opacity="0.38"/>`;
+    }
+    // Center labels
+    arcs +=
+      `<text x="${cx}" y="${cy - 7}" text-anchor="middle" dominant-baseline="middle" ` +
+        `font-family="monospace" font-size="14" font-weight="bold" fill="#111">${fmt(p, 4)}</text>` +
+      `<text x="${cx}" y="${cy + 10}" text-anchor="middle" dominant-baseline="middle" ` +
+        `font-family="Georgia,serif" font-size="10" fill="#666">precision</text>`;
+    return arcs;
+  }
+
+  // 2-circle Venn card: predictions vs competitor overlap, with optional precision annotation.
+  function catVennCard(cat, ol, predTruth, compTruth) {
+    const W = 260, H = 174, r = 72, lx = 108, rx = 152, cy = 88;
+    const svgBody =
+      `<circle cx="${lx}" cy="${cy}" r="${r}" fill="${V_COLORS.pred}" opacity="${V_OPACITY}" />` +
+      `<circle cx="${rx}" cy="${cy}" r="${r}" fill="${V_COLORS.comp}" opacity="${V_OPACITY}" />` +
+      label(lx - 38, cy, fmt(ol.pred_only), 12) +
+      label((lx + rx) / 2, cy, fmt(ol.pred_and_comp), 12) +
+      label(rx + 38, cy, fmt(ol.comp_only), 12) +
+      setLabel(lx - 42, cy - r - 12, 'Pred', V_COLORS.pred) +
+      setLabel(rx + 42, cy - r - 12, 'Comp', V_COLORS.comp);
+
+    const rows = [];
+    if (predTruth) rows.push(`Pred: <span class="${scoreClass(predTruth.precision)}">${fmt(predTruth.precision, 4)}</span> prec &nbsp;(${fmt(predTruth.tp)} TP / ${fmt(predTruth.fp)} FP)`);
+    if (compTruth) rows.push(`Comp: <span class="${scoreClass(compTruth.precision)}">${fmt(compTruth.precision, 4)}</span> prec &nbsp;(${fmt(compTruth.tp)} TP / ${fmt(compTruth.fp)} FP)`);
+    const ann = rows.length > 0
+      ? `<div style="font-size:0.78rem;font-family:monospace;line-height:1.7;margin-top:6px">${rows.join('<br>')}</div>`
+      : '';
+
+    const svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="overflow:visible">${svgBody}</svg>`;
+    return catCard(cat, svg, ann);
+  }
+
+  // Pie card: TP (green) / FP (red) split for a single caller vs truth.
+  function catPieCard(cat, m) {
+    const W = 260, H = 174, r = 68, cx = W / 2, cy = 90;
+    const svgBody = pieSVGBody(m.tp, m.fp, m.n, cx, cy, r) +
+      setLabel(cx, cy - r - 14, 'Predictions', V_COLORS.pred);
+    const ann =
+      `<div style="font-size:0.78rem;font-family:monospace;line-height:1.6;margin-top:6px;color:#555">` +
+      `N = ${fmt(m.n)} &nbsp;&#x2022;&nbsp; ` +
+      `<span style="color:#166534">TP = ${fmt(m.tp)}</span> &nbsp;&#x2022;&nbsp; ` +
+      `<span style="color:#991b1b">FP = ${fmt(m.fp)}</span></div>`;
+    const svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="overflow:visible">${svgBody}</svg>`;
+    return catCard(cat, svg, ann);
+  }
+
+  function catCard(cat, svg, ann) {
+    return `<div style="border:1px solid #e8e8e8;padding:14px 16px 12px;background:#fafafa;min-width:0">` +
+           `<div style="font-size:0.8rem;font-weight:bold;text-transform:uppercase;letter-spacing:.06em;color:#333;margin-bottom:4px">${cat}</div>` +
+           svg + ann + `</div>`;
+  }
+
+  function miniCatVenn(cat, cm) {
+    if (cm.overlap) return catVennCard(cat, cm.overlap, cm.predictions_vs_truth, cm.competitor_vs_truth);
+    if (cm.predictions_vs_truth) return catPieCard(cat, cm.predictions_vs_truth);
+    return '';
+  }
+
+  // ── variant section ──────────────────────────────────────────────────────
+
+  function renderVariants(v) {
+    if (!v) {
+      document.getElementById('variant-section').innerHTML =
+        '<h2>Variant Verification</h2><p class="notice">No variant data available.</p>';
+      return;
+    }
+
+    let html = '<h2>Variant Verification</h2>';
+
+    // Venn diagram
+    if (v.overlap) {
+      html += '<h3>Set overlap</h3>';
+      html += '<div class="venn-wrap">' + vennSVG(v.overlap) + '</div>';
+    }
+
+    // Metrics table
+    if (v.predictions_vs_truth) {
+      const pm = v.predictions_vs_truth;
+      const cm = v.competitor_vs_truth;
+      html += '<h3>Performance vs truth</h3>';
+
+      const colHead = cm
+        ? '<th></th><th>Predictions</th><th>Competitor</th>'
+        : '<th></th><th>Predictions</th>';
+
+      function metricRow(name, getter, inv) {
+        const pv = getter(pm);
+        const cv = cm ? getter(cm) : null;
+        const pd = `<td class="num ${scoreClass(pv, inv)}">${fmt(pv, 4)}</td>`;
+        const cd = cm ? `<td class="num ${scoreClass(cv, inv)}">${fmt(cv, 4)}</td>` : '';
+        return `<tr><td class="metric-label">${name}</td>${pd}${cd}</tr>`;
+      }
+      function countRow(name, getter) {
+        const pv = getter(pm);
+        const cv = cm ? getter(cm) : null;
+        const pd = `<td class="num">${fmt(pv)}</td>`;
+        const cd = cm ? `<td class="num">${fmt(cv)}</td>` : '';
+        return `<tr><td class="metric-label">${name}</td>${pd}${cd}</tr>`;
+      }
+
+      html += `<table class="metrics"><thead><tr>${colHead}</tr></thead><tbody>`;
+      html += metricRow('Precision', m => m.precision);
+      html += metricRow('Recall',    m => m.recall);
+      html += metricRow('F1',        m => m.f1);
+      html += metricRow('FN rate',   m => m.fn_rate, true);
+      html += countRow('TP', m => m.tp);
+      html += countRow('FP', m => m.fp);
+      html += countRow('FN', m => m.fn_count);
+      html += '</tbody></table>';
+
+      // By-category breakdown — mini Venn per category
+      const cats = ['CpG', 'DeNovo', 'Other'].filter(c => v.by_category && v.by_category[c]);
+      if (cats.length > 0) {
+        html += '<h3>By category</h3>';
+        html += '<p style="font-size:0.82rem;color:#666;margin:-8px 0 16px;font-style:italic">' +
+                'Pred vs competitor overlap per category. Precision (vs truth) shown below each ' +
+                'diagram — recall is omitted because truth VCFs (e.g. GIAB) do not carry CpG/DeNovo flags.</p>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:24px;margin:0 0 24px">';
+        for (const cat of cats) {
+          const cm = v.by_category[cat];
+          html += miniCatVenn(cat, cm);
+        }
+        html += '</div>';
+      }
+    }
+
+    document.getElementById('variant-section').innerHTML = html;
+  }
+
+  // ── SVG chart utilities ──────────────────────────────────────────────────
+
+  // Viridis-like 5-stop palette (white → pale blue → blue → orange → dark red)
+  const PALETTE = [
+    [255, 255, 255],
+    [220, 230, 245],
+    [55,  95,  190],
+    [250, 160,  30],
+    [180,  10,  30],
+  ];
+
+  function paletteColor(t) {
+    const n = PALETTE.length - 1;
+    const i = Math.min(Math.floor(t * n), n - 1);
+    const f = t * n - i;
+    const [r1, g1, b1] = PALETTE[i];
+    const [r2, g2, b2] = PALETTE[i + 1];
+    return [
+      Math.round(r1 + (r2 - r1) * f),
+      Math.round(g1 + (g2 - g1) * f),
+      Math.round(b1 + (b2 - b1) * f),
+    ];
+  }
+
+  function svgAxisFrame(ML, MT, PW, PH, xTicks, yTicks, xTitle, yTitle) {
+    const W = ML + PW, H = MT + PH;
+    let s = `<rect x="${ML}" y="${MT}" width="${PW}" height="${PH}" fill="none" stroke="#aaa" stroke-width="1"/>`;
+    const tf = `font-family="monospace" font-size="11" fill="#333"`;
+    for (const [t, lbl] of xTicks) {
+      const x = ML + t * PW;
+      s += `<line x1="${x}" y1="${MT+PH}" x2="${x}" y2="${MT+PH+4}" stroke="#aaa"/>`;
+      s += `<text x="${x}" y="${MT+PH+16}" text-anchor="middle" ${tf}>${lbl}</text>`;
+    }
+    for (const [t, lbl] of yTicks) {
+      const y = MT + (1 - t) * PH;
+      s += `<line x1="${ML-4}" y1="${y}" x2="${ML}" y2="${y}" stroke="#aaa"/>`;
+      s += `<text x="${ML-7}" y="${y+4}" text-anchor="end" ${tf}>${lbl}</text>`;
+    }
+    const tf2 = `font-family="Georgia,serif" font-size="12" fill="#111"`;
+    s += `<text x="${ML+PW/2}" y="${H+36}" text-anchor="middle" ${tf2}>${xTitle}</text>`;
+    s += `<text transform="translate(13,${MT+PH/2}) rotate(-90)" text-anchor="middle" ${tf2}>${yTitle}</text>`;
+    return s;
+  }
+
+  // ── density heatmap SVG ──────────────────────────────────────────────────
+
+  function densityToSVG(density) {
+    const BINS = density.bins;
+    const ML = 62, MR = 16, MT = 16, MB = 52;
+    const PW = 600, PH = 600;
+    const W = ML + PW + MR, H = MT + PH + MB;
+    const cellW = (PW / BINS).toFixed(2);
+    const cellH = (PH / BINS).toFixed(2);
+    const logMax = Math.log1p(density.max_count);
+
+    let rects = `<rect x="${ML}" y="${MT}" width="${PW}" height="${PH}" fill="white"/>`;
+    for (let by = 0; by < BINS; by++) {
+      for (let bx = 0; bx < BINS; bx++) {
+        const count = density.counts[by * BINS + bx];
+        if (count === 0) continue;
+        const t = Math.log1p(count) / logMax;
+        const [r, g, b] = paletteColor(t);
+        // by=0 → competitor β near 0 → bottom of plot → y near MT+PH; flip Y
+        const x = (ML + bx * PW / BINS).toFixed(2);
+        const y = (MT + (BINS - 1 - by) * PH / BINS).toFixed(2);
+        rects += `<rect x="${x}" y="${y}" width="${cellW}" height="${cellH}" fill="rgb(${r},${g},${b})"/>`;
+      }
+    }
+
+    const diag = `<line x1="${ML}" y1="${MT+PH}" x2="${ML+PW}" y2="${MT}" ` +
+      `stroke="rgba(255,255,255,0.75)" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+    const border = `<rect x="${ML}" y="${MT}" width="${PW}" height="${PH}" fill="none" stroke="#aaa" stroke-width="1"/>`;
+
+    const ticks5 = [[0,'0.00'],[0.25,'0.25'],[0.5,'0.50'],[0.75,'0.75'],[1.0,'1.00']];
+    const axes = svgAxisFrame(ML, MT, PW, PH, ticks5, ticks5, 'Predictions β', 'Competitor β');
+
+    return `<svg viewBox="0 0 ${W} ${H+40}" style="width:100%;max-width:${W}px" xmlns="http://www.w3.org/2000/svg">`
+      + rects + diag + border + axes + '</svg>';
+  }
+
+  // ── |Δβ| histogram SVG ──────────────────────────────────────────────────
+
+  function histogramToSVG(hist, meanDiff) {
+    const ML = 70, MR = 16, MT = 16, MB = 52;
+    const PW = 600, PH = 220;
+    const W = ML + PW + MR, H = MT + PH + MB;
+    const NBINS = hist.nbins;
+
+    let maxCount = 0;
+    for (const c of hist.counts) if (c > maxCount) maxCount = c;
+
+    let bars = '';
+    for (let i = 0; i < NBINS; i++) {
+      const c = hist.counts[i];
+      if (c === 0) continue;
+      const x = (ML + (i / NBINS) * PW).toFixed(2);
+      const barH = maxCount > 0 ? (c / maxCount) * PH : 0;
+      const y = (MT + PH - barH).toFixed(2);
+      const w = Math.max(PW / NBINS - 0.5, 1).toFixed(2);
+      bars += `<rect x="${x}" y="${y}" width="${w}" height="${barH.toFixed(2)}" fill="rgba(33,102,172,0.68)"/>`;
+    }
+
+    const meanX = hist.max_diff > 0
+      ? (ML + (meanDiff / hist.max_diff) * PW).toFixed(2)
+      : ML;
+    const meanLine = `<line x1="${meanX}" y1="${MT}" x2="${meanX}" y2="${MT+PH}" ` +
+      `stroke="#d6604d" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+    const border = `<rect x="${ML}" y="${MT}" width="${PW}" height="${PH}" fill="none" stroke="#aaa" stroke-width="1"/>`;
+
+    const xTicks = [0, 0.25, 0.5, 0.75, 1.0].map(t => [t, (t * hist.max_diff).toFixed(3)]);
+    const yTicks = [0, 0.25, 0.5, 0.75, 1.0].map(t => [t, Math.round(t * maxCount).toLocaleString()]);
+    const axes = svgAxisFrame(ML, MT, PW, PH, xTicks, yTicks,
+      '|Predictions β − Competitor β|', 'Count');
+
+    return `<svg viewBox="0 0 ${W} ${H+40}" style="width:100%;max-width:${W}px" xmlns="http://www.w3.org/2000/svg">`
+      + `<rect width="${W}" height="${H+40}" fill="white"/>`
+      + bars + meanLine + border + axes + '</svg>';
+  }
+
+  // ── methylation section ──────────────────────────────────────────────────
+
+  function renderMethylation(m) {
+    if (!m) {
+      document.getElementById('methyl-section').innerHTML =
+        '<h2>Methylation Comparison</h2><p class="notice">No methylation data available.</p>';
+      return;
+    }
+
+    let html = '<h2>Methylation Comparison</h2>';
+    html += '<h3>Summary</h3>';
+    html += '<table class="plain"><thead><tr><th>Statistic</th><th>Value</th></tr></thead><tbody>';
+    const rows = [
+      ['Positions compared',  fmt(m.n_compared)],
+      ['Excluded (denovo)',   fmt(m.n_excluded_denovo)],
+      ['Excluded (SNP)',      fmt(m.n_excluded_snp)],
+      ['Predictions only',   fmt(m.n_predictions_only)],
+      ['Competitor only',    fmt(m.n_competitor_only)],
+      ['Pearson r',          fmt(m.pearson_r, 4)],
+      ['R²',                 fmt(m.r_squared, 4)],
+      ['Mean |Δβ|',          fmt(m.mean_abs_diff, 4)],
+    ];
+    for (const [lbl, val] of rows) {
+      html += `<tr><td class="lbl">${lbl}</td><td class="num">${val}</td></tr>`;
+    }
+    html += '</tbody></table>';
+
+    if (m.density) {
+      html += '<h3>Beta correlation density</h3>';
+      html += '<div class="chart">' + densityToSVG(m.density) + '</div>';
+      html += `<p class="caption">Log-scale 2D density heatmap. Dashed diagonal = perfect agreement. ` +
+              `r = ${fmt(m.pearson_r, 4)}, R² = ${fmt(m.r_squared, 4)}, ` +
+              `n = ${fmt(m.n_compared)}, mean |Δβ| = ${fmt(m.mean_abs_diff, 4)}. ` +
+              `Denovo and SNP-affected positions excluded.</p>`;
+    }
+
+    if (m.diff_histogram) {
+      html += '<h3>|Δβ| distribution</h3>';
+      html += '<div class="chart">' + histogramToSVG(m.diff_histogram, m.mean_abs_diff) + '</div>';
+      html += `<p class="caption">Absolute beta difference across ${fmt(m.n_compared)} compared positions. ` +
+              `Red dashed line at mean = ${fmt(m.mean_abs_diff, 4)}.</p>`;
+    }
+
+    if (!m.density && !m.diff_histogram) {
+      html += '<p class="notice">No methylation positions to compare.</p>';
+    }
+
+    document.getElementById('methyl-section').innerHTML = html;
+  }
+
+  // ── render ───────────────────────────────────────────────────────────────
+
+  renderCards(data.variants || null, data.methylation || null);
+  renderVariants(data.variants || null);
+  renderMethylation(data.methylation || null);
+})();
+</script>
+</body>
+</html>
