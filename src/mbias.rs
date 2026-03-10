@@ -36,6 +36,26 @@ pub struct MBiasParams {
     #[arg(help_heading = cli::sections::FILTER)]
     pub read_length: Option<i32>,
 
+    /// Reference FASTA file (required for V-bias and GC/CpG bias plots)
+    #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
+    #[arg(help_heading = cli::sections::INPUT)]
+    pub reference: Option<ClioPath>,
+
+    /// VCF file with methylation calls (required for GC/CpG bias plots)
+    #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
+    #[arg(help_heading = cli::sections::INPUT)]
+    pub vcf: Option<ClioPath>,
+
+    /// Do not generate V-bias plots (faster)
+    #[arg(long = "no-vbias")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub no_vbias: bool,
+
+    /// Do not generate GC/CpG bias plots
+    #[arg(long = "no-gc")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub no_gc: bool,
+
     /// Path to tabix executable
     #[arg(long = "tabix-path", default_value = "tabix")]
     #[arg(help_heading = cli::sections::PROCESSING)]
@@ -72,6 +92,21 @@ impl MBiasParams {
         if let Some(read_length) = self.read_length {
             params.push("--read-length".into());
             params.push(read_length.to_string());
+        }
+        if let Some(reference) = &self.reference {
+            params.push("--reference".into());
+            params.push(reference.path().to_string_lossy().into_owned());
+        }
+        if let Some(vcf) = &self.vcf {
+            params.push("--vcf".into());
+            params.push(vcf.path().to_string_lossy().into_owned());
+        }
+        // auto-disable plots that require inputs the user hasn't provided
+        if self.no_vbias || self.reference.is_none() {
+            params.push("--no-vbias".into());
+        }
+        if self.no_gc || self.reference.is_none() || self.vcf.is_none() {
+            params.push("--no-gc".into());
         }
         params
     }
@@ -137,6 +172,7 @@ pub fn mbias(params: &MBiasParams) -> Result<()> {
     ensure_tabix_index_exists(params).wrap_err("Failed to create tabix index file")?;
 
     let status = Command::new(r_script)
+        .arg("--bed")
         .arg(params.bed_file.path())
         .args(params.as_flags())
         .status()

@@ -19,20 +19,21 @@ RUN cargo xtask release
 FROM r-base:4.3.3 AS release
 
 # Install useful dependencies
-RUN apt update && apt-get -y upgrade && apt-get -y --no-install-recommends install procps bash-completion samtools bedtools vcftools tabix pandoc && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt update && apt-get -y upgrade && apt-get -y --no-install-recommends install procps bash-completion samtools bedtools bcftools vcftools tabix pandoc libcurl4-openssl-dev libssl-dev && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install BiocManager for Bioconductor package management
 RUN Rscript -e "install.packages('BiocManager', repos='https://cloud.r-project.org')"
 
 # Install required R and Bioconductor packages
-RUN Rscript -e "BiocManager::install('Rsamtools', version = '3.18', ask = FALSE)" \
-    -e "if (!requireNamespace('remotes', quietly = TRUE)) install.packages('remotes', repos = 'https://cloud.r-project.org')" \
+RUN Rscript -e "BiocManager::install(c('Rsamtools', 'Biostrings', 'GenomicRanges'), version = '3.18', ask = FALSE)"
+RUN Rscript -e "if (!requireNamespace('remotes', quietly = TRUE)) install.packages('remotes', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('argparser', version = '0.7.2', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('rmarkdown', version = '2.29', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('R.utils', version = '2.13.0', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('data.table', version = '1.17.8', repos = 'https://cloud.r-project.org')" \
-    -e "remotes::install_version('ggplot2', version = '3.5.1', repos = 'https://cloud.r-project.org')" \
-    -e "remotes::install_version('gtable', version = '0.3.6', repos = 'https://cloud.r-project.org')"
+    -e "remotes::install_version('ggplot2', version = '4.0.2', repos = 'https://cloud.r-project.org')" \
+    -e "remotes::install_version('gtable', version = '0.3.6', repos = 'https://cloud.r-project.org')" \
+    -e "remotes::install_version('ggside', version = '0.4.1', repos = 'https://cloud.r-project.org')"
 
 # Copy the compiled binary from the build stage
 # (up until here both stages can run in parallel)
