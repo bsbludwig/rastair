@@ -5,12 +5,16 @@ use crate::{
     vcf::{DeNovoCpGCandidate, InCpG, Methylated},
 };
 use clio::ClioPath;
-use color_eyre::eyre::{Result, WrapErr, ensure};
+use color_eyre::eyre::{Result, WrapErr, ensure, eyre};
 use rastair_types::{Base, RegionString, SmolStr};
 use rastair_vcf::VcfField as _;
 use rust_htslib::bcf::{self, Read as _, header::HeaderView};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{num::NonZeroU64, path::PathBuf, thread::available_parallelism};
+use std::{
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+    thread::available_parallelism,
+};
 use tracing::{info, instrument, warn};
 
 // ─── CLI params ────────────────────────────────────────────────────────────
@@ -215,42 +219,71 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
         "At least one of --truth or --competitor must be provided"
     );
 
-    let pred_variants = load_variants(&params.predictions, &params.regions, params.threads)
-        .wrap_err("Failed to load predictions variants")?;
+    let pred_path = params.predictions.path().to_path_buf();
+    let truth_path = params.truth.as_ref().map(|t| t.path().to_path_buf());
+    let comp_path = params.competitor.as_ref().map(|c| c.path().to_path_buf());
+    let regions = &params.regions;
+    let threads = params.threads;
+    let load_betas_for_methyl = comp_path.is_some();
+
+    // Slots filled by each rayon task.
+    let mut pred_variants: Result<FxHashMap<FullPositionKey, VariantCategory>> =
+        Err(eyre!("pred variants not loaded"));
+    let mut truth_variants: Result<Option<FxHashMap<FullPositionKey, VariantCategory>>> = Ok(None);
+    let mut comp_variants: Result<Option<FxHashMap<FullPositionKey, VariantCategory>>> = Ok(None);
+    let mut pred_betas: Result<Option<Vec<BetaRecord>>> = Ok(None);
+    let mut comp_betas: Result<Option<Vec<BetaRecord>>> = Ok(None);
+
+    rayon::scope(|s| {
+        s.spawn(|_| {
+            pred_variants = load_variants(&pred_path, regions, threads)
+                .wrap_err("Failed to load predictions variants");
+        });
+        if let Some(p) = truth_path.as_deref() {
+            s.spawn(|_| {
+                truth_variants = load_variants(p, regions, threads)
+                    .wrap_err("Failed to load truth variants")
+                    .map(Some);
+            });
+        }
+        if let Some(p) = comp_path.as_deref() {
+            s.spawn(|_| {
+                comp_variants = load_variants(p, regions, threads)
+                    .wrap_err("Failed to load competitor variants")
+                    .map(Some);
+            });
+        }
+        if load_betas_for_methyl {
+            s.spawn(|_| {
+                pred_betas = load_betas(&pred_path, regions, threads)
+                    .wrap_err("Failed to load predictions betas")
+                    .map(Some);
+            });
+            if let Some(p) = comp_path.as_deref() {
+                s.spawn(|_| {
+                    comp_betas = load_betas(p, regions, threads)
+                        .wrap_err("Failed to load competitor betas")
+                        .map(Some);
+                });
+            }
+        }
+    });
+
+    let pred_variants = pred_variants?;
+    let truth_variants = truth_variants?;
+    let comp_variants = comp_variants?;
+    let pred_betas = pred_betas?;
+    let comp_betas = comp_betas?;
+
     info!(count = pred_variants.len(), "Loaded predictions variants");
-
-    let truth_variants = params
-        .truth
-        .as_ref()
-        .map(|t| {
-            load_variants(t, &params.regions, params.threads)
-                .wrap_err("Failed to load truth variants")
-        })
-        .transpose()?;
-
-    let comp_variants = params
-        .competitor
-        .as_ref()
-        .map(|c| {
-            load_variants(c, &params.regions, params.threads)
-                .wrap_err("Failed to load competitor variants")
-        })
-        .transpose()?;
 
     let variant_report =
         compute_variant_report(&pred_variants, truth_variants.as_ref(), comp_variants.as_ref());
 
-    let methyl_comparison = params
-        .competitor
-        .as_ref()
-        .map(|comp_path| {
-            let pred_betas = load_betas(&params.predictions, &params.regions, params.threads)
-                .wrap_err("Failed to load predictions betas")?;
-            let comp_betas = load_betas(comp_path, &params.regions, params.threads)
-                .wrap_err("Failed to load competitor betas")?;
-            Ok::<_, color_eyre::eyre::Error>(compare_methylation(pred_betas, comp_betas))
-        })
-        .transpose()?;
+    let methyl_comparison = match (pred_betas, comp_betas) {
+        (Some(pb), Some(cb)) => Some(compare_methylation(pb, cb)),
+        _ => None,
+    };
 
     print_report(&variant_report, methyl_comparison.as_ref());
 
@@ -278,7 +311,7 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 /// Without regions: streams sequentially (no index required).
 #[instrument(level = "info", skip_all, fields(path = %path.display()))]
 fn load_variants(
-    path: &ClioPath,
+    path: &Path,
     regions: &[RegionString],
     threads: usize,
 ) -> Result<FxHashMap<FullPositionKey, VariantCategory>> {
@@ -287,7 +320,7 @@ fn load_variants(
     let mut result = FxHashMap::default();
 
     if regions.is_empty() {
-        let mut reader = bcf::Reader::from_path(path.path())
+        let mut reader = bcf::Reader::from_path(path)
             .wrap_err_with(|| format!("Failed to open VCF: {}", path.display()))?;
         reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
         let header = reader.header().clone();
@@ -299,7 +332,7 @@ fn load_variants(
         }
     } else {
         ensure_index_exists(path)?;
-        let mut reader = bcf::IndexedReader::from_path(path.path())
+        let mut reader = bcf::IndexedReader::from_path(path)
             .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
         reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
         for region in regions {
@@ -378,17 +411,13 @@ fn extract_variants(
 
 /// Load `M5mC` beta values from a VCF.
 #[instrument(level = "info", skip_all, fields(path = %path.display()))]
-fn load_betas(
-    path: &ClioPath,
-    regions: &[RegionString],
-    threads: usize,
-) -> Result<Vec<BetaRecord>> {
+fn load_betas(path: &Path, regions: &[RegionString], threads: usize) -> Result<Vec<BetaRecord>> {
     ensure!(path.exists(), "VCF file `{}` not found", path.display());
 
     let mut result = Vec::new();
 
     if regions.is_empty() {
-        let mut reader = bcf::Reader::from_path(path.path())
+        let mut reader = bcf::Reader::from_path(path)
             .wrap_err_with(|| format!("Failed to open VCF: {}", path.display()))?;
         reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
         let header = reader.header().clone();
@@ -400,7 +429,7 @@ fn load_betas(
         }
     } else {
         ensure_index_exists(path)?;
-        let mut reader = bcf::IndexedReader::from_path(path.path())
+        let mut reader = bcf::IndexedReader::from_path(path)
             .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
         reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
         for region in regions {
@@ -455,8 +484,8 @@ fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<Beta
     });
 }
 
-fn ensure_index_exists(path: &ClioPath) -> Result<()> {
-    let csi = PathBuf::from(format!("{}.csi", path.path().display()));
+fn ensure_index_exists(path: &Path) -> Result<()> {
+    let csi = PathBuf::from(format!("{}.csi", path.display()));
     ensure!(
         csi.exists(),
         "VCF index not found: `{}`. Create with `bcftools index {}`",
