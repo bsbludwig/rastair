@@ -274,10 +274,13 @@ fn samtools_tag_presence() -> Result<()> {
 
     let total_standard = samtools_count_total(&bams.standard)?;
     let mm_count = samtools_count_with_tag(&bams.standard, "MM")?;
-    assert_eq!(
-        mm_count, total_standard,
-        "Not all standard-mode reads have MM tags ({mm_count}/{total_standard})"
-    );
+    let ml_count = samtools_count_with_tag(&bams.standard, "ML")?;
+
+    // MM/ML are only written for reads with methylation evidence — not all reads.
+    // Both tags must be present together and on the same reads.
+    ensure!(mm_count > 0, "No standard-mode reads have MM tags");
+    ensure!(mm_count < total_standard, "Expected some reads without MM (no methylation evidence)");
+    assert_eq!(mm_count, ml_count, "MM and ML tag counts must match ({mm_count} vs {ml_count})");
 
     let total_legacy = samtools_count_total(&bams.legacy)?;
     let xm_count = samtools_count_with_tag(&bams.legacy, "XM")?;
@@ -729,6 +732,43 @@ fn legacy_standard_per_position_agreement() -> Result<()> {
         "Verified {positions_checked} CpG positions: \
          legacy XM and standard MM/ML fractions agree"
     );
+
+    Ok(())
+}
+
+/// Verify that modbedtools bam2mod does not crash on our standard modBAM output.
+///
+/// Empty ML:B:C arrays (written for reads with no methylated positions) cause modbedtools
+/// to segfault. This test ensures we no longer produce empty ML arrays.
+#[test]
+fn modbedtools_bam2mod_does_not_crash() -> Result<()> {
+    require_tool!("modbedtools");
+    let bams = setup_test_bams()?;
+    let temp_dir = bams._temp_dir.path().join("modbedtools_out");
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let output_prefix = temp_dir.join("out");
+
+    let output = Command::new("modbedtools")
+        .args(["bam2mod", "-o"])
+        .arg(&output_prefix)
+        .arg(&bams.standard)
+        .output()
+        .wrap_err("Failed to run modbedtools bam2mod")?;
+
+    ensure!(
+        output.status.success(),
+        "modbedtools bam2mod failed (exit {}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // At least one output modbed file should be non-empty
+    let has_output = ["C", "G"].iter().any(|base| {
+        let path = temp_dir.join(format!("out.{base}.modbed"));
+        path.exists() && path.metadata().is_ok_and(|m| m.len() > 0)
+    });
+    ensure!(has_output, "modbedtools produced no modbed output");
 
     Ok(())
 }

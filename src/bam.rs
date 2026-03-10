@@ -1099,21 +1099,27 @@ mod tests {
             let calls = build_cpg_calls(&record, &ol_seq);
             rewrite_record(&calls, &mut record, BamMode::Standard, no_ref)?;
 
-            let Aux::String(mm_tag) = record.aux(b"MM").wrap_err("missing MM tag")? else {
-                bail!("MM tag is not a string");
-            };
-
-            let fwd_seq = seq_for_mm_tag(&record);
-            let (_, mm_positions) =
-                decode_mm_to_positions(mm_tag, &fwd_seq).wrap_err_with(|| {
-                    format!("decode MM {:?} pos={} flag={}", mm_tag, record.pos(), record.flags())
-                })?;
-
             // Standard mode should NOT produce XR/XG/XM tags
             assert!(record.aux(b"XR").is_err(), "Standard mode should not produce XR tag");
 
-            // MM should produce valid positions
-            assert!(mm_positions.len() <= fwd_seq.len(), "MM positions out of range");
+            // MM/ML are omitted when there are no methylated positions (absent = "no data").
+            if let Ok(aux) = record.aux(b"MM") {
+                let Aux::String(mm_tag) = aux else {
+                    bail!("MM tag is not a string at pos={} flag={}", record.pos(), record.flags());
+                };
+
+                let fwd_seq = seq_for_mm_tag(&record);
+                let (_, mm_positions) =
+                    decode_mm_to_positions(mm_tag, &fwd_seq).wrap_err_with(|| {
+                        format!(
+                            "decode MM {:?} pos={} flag={}",
+                            mm_tag,
+                            record.pos(),
+                            record.flags()
+                        )
+                    })?;
+                assert!(mm_positions.len() <= fwd_seq.len(), "MM positions out of range");
+            }
 
             tested += 1;
         }
@@ -1162,20 +1168,23 @@ mod tests {
 
             let fwd_seq = seq_for_mm_tag(&record);
 
-            let Aux::String(mm_tag) = record.aux(b"MM").wrap_err("missing MM tag")? else {
-                bail!("MM not a string");
-            };
+            // MM/ML are omitted when there are no methylated positions (absent = "no data").
+            if let Ok(aux) = record.aux(b"MM") {
+                let Aux::String(mm_tag) = aux else {
+                    bail!("MM not a string");
+                };
 
-            let (_, mm_positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+                let (_, mm_positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
 
-            let Aux::ArrayU8(ml_data) = record.aux(b"ML").wrap_err("missing ML")? else {
-                bail!("ML not an array");
-            };
-            assert_eq!(
-                ml_data.iter().count(),
-                mm_positions.len(),
-                "ML length should match number of methylated positions"
-            );
+                let Aux::ArrayU8(ml_data) = record.aux(b"ML").wrap_err("missing ML")? else {
+                    bail!("ML not an array");
+                };
+                assert_eq!(
+                    ml_data.iter().count(),
+                    mm_positions.len(),
+                    "ML length should match number of methylated positions"
+                );
+            }
 
             assert!(record.aux(b"XR").is_err(), "Standard mode should not produce XR");
         }
@@ -1268,13 +1277,16 @@ mod tests {
         let mut reader = bam::Reader::from_path(&temp_bam)?;
         reader.read(&mut record).wrap_err("no records")?.wrap_err("read back")?;
 
-        let Aux::String(mm_tag) = record.aux(b"MM").wrap_err("missing MM")? else {
-            bail!("MM not a string");
-        };
-
-        let fwd_seq = seq_for_mm_tag(&record);
-        let (_, mm_positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
-        assert!(mm_positions.is_empty(), "expected no MM methylation");
+        // With no methylated positions, MM/ML tags are not written at all (absent = "no data").
+        // An empty `C+m;` with empty ML array crashes tools like modbedtools.
+        assert!(
+            record.aux(b"MM").is_err(),
+            "MM tag should not be present when there are no methylated positions"
+        );
+        assert!(
+            record.aux(b"ML").is_err(),
+            "ML tag should not be present when there are no methylated positions"
+        );
 
         Ok(())
     }
@@ -1887,17 +1899,23 @@ mod tests {
             let mut standard_record = record.clone();
             rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
 
-            let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM for {flag}") };
-
-            // Cross-check: both modes find the same number of methylated positions
+            // Cross-check: both modes find the same number of methylated positions.
+            // MM/ML are absent when no reads show methylation evidence (absent = 0 positions).
             let xm_methylated = decode_xm_to_positions(xm_tag);
-            let fwd_seq = seq_for_mm_tag(&standard_record);
-            let (_, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+            let mm_methylated_count = match standard_record.aux(b"MM") {
+                Ok(Aux::String(mm_tag)) => {
+                    let fwd_seq = seq_for_mm_tag(&standard_record);
+                    let (_, positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+                    positions.len()
+                }
+                Ok(_) => bail!("MM not a string for flag {flag}"),
+                Err(_) => 0,
+            };
             assert_eq!(
                 xm_methylated.len(),
-                mm_methylated.len(),
+                mm_methylated_count,
                 "Methylated position count mismatch for flag {flag}: \
-                 XM={xm_methylated:?}, MM={mm_methylated:?}"
+                 XM={xm_methylated:?}, MM_count={mm_methylated_count}"
             );
         }
 

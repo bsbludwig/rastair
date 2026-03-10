@@ -20,6 +20,11 @@ RUN mamba install -y -c bioconda -c conda-forge \
     ont-modkit \
     && mamba clean -afy
 
+# Install uv (Python package manager); pre-cache modbedtools so uvx works offline.
+# UV_CACHE_DIR is set so the same cache path is used at both build and run time.
+ENV UV_CACHE_DIR=/root/.cache/uv
+RUN pip install uv && uvx modbedtools --help
+
 WORKDIR /rastair
 
 # Prepopulate cargo registry and dependency build cache:

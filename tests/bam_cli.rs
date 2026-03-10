@@ -412,19 +412,20 @@ fn bam_rewrite_xm_content_matches_calls() -> Result<()> {
         }
 
         // --- Cross-check with MM tag ---
-        let mm = match standard_rec.aux(b"MM") {
-            Ok(rust_htslib::bam::record::Aux::String(s)) => s,
-            _ => bail!("Missing/bad MM tag at record {records_checked}"),
-        };
-
+        // MM/ML are absent when no reads show methylation evidence (absent = 0 positions).
         let xm_methylated_count = xm.chars().filter(|c| c.is_ascii_uppercase()).count();
-        let mm_methylated_count =
-            mm.trim_end_matches(';').split(',').skip(1).filter(|s| !s.is_empty()).count();
+        let mm_methylated_count = match standard_rec.aux(b"MM") {
+            Ok(rust_htslib::bam::record::Aux::String(mm)) => {
+                mm.trim_end_matches(';').split(',').skip(1).filter(|s| !s.is_empty()).count()
+            }
+            Ok(_) => bail!("MM tag is not a string at record {records_checked}"),
+            Err(_) => 0,
+        };
 
         ensure!(
             xm_methylated_count == mm_methylated_count,
             "Methylated count mismatch for flag {flag}: XM has {xm_methylated_count}, \
-             MM has {mm_methylated_count}. XM: {xm}, MM: {mm}"
+             MM has {mm_methylated_count}. XM: {xm}"
         );
     }
 
