@@ -248,9 +248,10 @@ fn rewrite_region(
     let ref_end = region.end.saturating_add(pad);
     let ref_seq = {
         let mut seq = Vec::new();
-        if fasta.fetch(&region.contig, ref_start, ref_end).is_ok() {
-            let _ = fasta.read(&mut seq);
-        }
+        fasta
+            .fetch(&region.contig, ref_start, ref_end)
+            .wrap_err("Failed to fetch FASTA region for context lookup")?;
+        fasta.read(&mut seq).wrap_err("Failed to read FASTA sequence")?;
         seq
     };
     let ref_base = |pos: u32| -> Option<Base> {
@@ -379,7 +380,8 @@ fn build_legacy_annotations(
             _ => continue,
         };
 
-        let observed_base = Base::from(seq[pos_in_read]);
+        let Some(&raw_base) = seq.get(pos_in_read) else { continue };
+        let observed_base = Base::from(raw_base);
 
         // A CpG position in the read shows either the target base (unmethylated)
         // or the evidence base (methylated, converted by TAPS)
@@ -437,7 +439,8 @@ fn get_methylated_positions(
         };
 
         {
-            let observed_base = Base::from(seq[pos_in_read]);
+            let Some(&raw_base) = seq.get(pos_in_read) else { continue };
+            let observed_base = Base::from(raw_base);
 
             match strand {
                 Strand::OT => {
@@ -1413,8 +1416,6 @@ mod tests {
 
         let z_count = xm_tag.chars().filter(|c| *c == 'Z' || *c == 'z').count();
 
-        // BUG: currently every C or G in the read is marked as z/Z, but only
-        // the one CpG position we called should be annotated.
         assert!(
             z_count < total_target_bases,
             "XM has {z_count} CpG annotations but only {cpg_count} CpG call(s) exist. \

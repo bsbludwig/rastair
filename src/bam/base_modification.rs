@@ -50,9 +50,9 @@ pub fn determine_context(
 ) -> MethylationContext {
     match strand {
         Strand::OT => {
-            if ref_base(pos + 1) == Some(Base::G) {
+            if pos.checked_add(1).and_then(|p| ref_base(p)) == Some(Base::G) {
                 MethylationContext::CpG
-            } else if ref_base(pos + 2) == Some(Base::G) {
+            } else if pos.checked_add(2).and_then(|p| ref_base(p)) == Some(Base::G) {
                 MethylationContext::CHG
             } else {
                 MethylationContext::CHH
@@ -126,13 +126,6 @@ impl MethylatedPositions {
         Self { base, strand, positions }
     }
 
-    /// Apply the modification information to a BAM record
-    ///
-    /// There are two steps to this:
-    ///
-    /// 1. Rewrite the sequence to un-modify the methylated bases (T back to C, A back to G)
-    /// 2. Add MM and ML tags to the record
-    ///
     /// Apply the MM/ML modification tags to a BAM record.
     ///
     /// When there are no methylated positions, neither MM nor ML is written.
@@ -185,12 +178,6 @@ impl MethylatedPositions {
 
         // Modification code: 'm' for 5-Methylcytosine
         mod_string.push('m');
-
-        if self.positions.is_empty() {
-            // Empty coordinate list - indicates this modification type is not present
-            mod_string.push(';');
-            return mod_string;
-        }
 
         // mod_string.push('.');
         mod_string.push(',');
