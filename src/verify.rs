@@ -95,6 +95,7 @@ struct MethylationKey {
 struct BetaRecord {
     key: MethylationKey,
     beta: f64,
+    is_cpg: bool,
     is_denovo: bool,
     /// True when this position has a PASS SNP call (methylation signal may be confounded).
     has_passing_snp: bool,
@@ -198,6 +199,12 @@ struct MethylationComparison {
     mean_abs_diff: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     density: Option<DensityGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    density_cpg: Option<DensityGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    density_denovo: Option<DensityGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    density_other: Option<DensityGrid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diff_histogram: Option<DiffHistogram>,
 }
@@ -471,6 +478,7 @@ fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<Beta
     };
 
     let pos = record.pos() as u64;
+    let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
     let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
     let is_pass = record.has_filter("PASS".as_bytes());
     let has_non_ref_alt = record.alleles().iter().skip(1).any(|a| *a != b".");
@@ -479,6 +487,7 @@ fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<Beta
     result.push(BetaRecord {
         key: MethylationKey { chrom, pos },
         beta,
+        is_cpg,
         is_denovo,
         has_passing_snp,
     });
@@ -680,6 +689,12 @@ fn compare_methylation(
 
     let mut xs = Vec::new();
     let mut ys = Vec::new();
+    let mut cpg_xs = Vec::new();
+    let mut cpg_ys = Vec::new();
+    let mut denovo_xs = Vec::new();
+    let mut denovo_ys = Vec::new();
+    let mut other_xs = Vec::new();
+    let mut other_ys = Vec::new();
     let mut n_excluded_denovo = 0usize;
     let mut n_excluded_snp = 0usize;
     let mut n_predictions_only = 0usize;
@@ -689,6 +704,21 @@ fn compare_methylation(
             n_predictions_only += 1;
             continue;
         };
+
+        // Collect per-category density data (SNP-affected excluded; denovo included in its own category).
+        if !pred.has_passing_snp && !comp.has_passing_snp {
+            if pred.is_denovo {
+                denovo_xs.push(pred.beta);
+                denovo_ys.push(comp.beta);
+            } else if pred.is_cpg {
+                cpg_xs.push(pred.beta);
+                cpg_ys.push(comp.beta);
+            } else {
+                other_xs.push(pred.beta);
+                other_ys.push(comp.beta);
+            }
+        }
+
         if pred.is_denovo || comp.is_denovo {
             n_excluded_denovo += 1;
             continue;
@@ -720,6 +750,11 @@ fn compare_methylation(
         (None, None)
     };
 
+    let density_cpg = (!cpg_xs.is_empty()).then(|| compute_density_grid(&cpg_xs, &cpg_ys));
+    let density_denovo =
+        (!denovo_xs.is_empty()).then(|| compute_density_grid(&denovo_xs, &denovo_ys));
+    let density_other = (!other_xs.is_empty()).then(|| compute_density_grid(&other_xs, &other_ys));
+
     MethylationComparison {
         n_compared,
         n_excluded_denovo,
@@ -730,6 +765,9 @@ fn compare_methylation(
         r_squared: r * r,
         mean_abs_diff,
         density,
+        density_cpg,
+        density_denovo,
+        density_other,
         diff_histogram,
     }
 }
@@ -1081,12 +1119,14 @@ mod tests {
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 100 },
                 beta: 0.8,
+                is_cpg: false,
                 is_denovo: false,
                 has_passing_snp: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 200 },
                 beta: 0.5,
+                is_cpg: false,
                 is_denovo: true, // should be excluded
                 has_passing_snp: false,
             },
@@ -1095,12 +1135,14 @@ mod tests {
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 100 },
                 beta: 0.75,
+                is_cpg: false,
                 is_denovo: false,
                 has_passing_snp: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 200 },
                 beta: 0.6,
+                is_cpg: false,
                 is_denovo: false,
                 has_passing_snp: false,
             },
@@ -1116,12 +1158,14 @@ mod tests {
         let pred_betas = vec![BetaRecord {
             key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 100 },
             beta: 0.8,
+            is_cpg: false,
             is_denovo: false,
             has_passing_snp: true, // should be excluded
         }];
         let comp_betas = vec![BetaRecord {
             key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 100 },
             beta: 0.75,
+            is_cpg: false,
             is_denovo: false,
             has_passing_snp: false,
         }];
@@ -1136,12 +1180,14 @@ mod tests {
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 100 },
                 beta: 0.8,
+                is_cpg: false,
                 is_denovo: false,
                 has_passing_snp: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 300 },
                 beta: 0.4,
+                is_cpg: false,
                 is_denovo: false,
                 has_passing_snp: false,
             },
@@ -1150,12 +1196,14 @@ mod tests {
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 100 },
                 beta: 0.75,
+                is_cpg: false,
                 is_denovo: false,
                 has_passing_snp: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 200 },
                 beta: 0.5,
+                is_cpg: false,
                 is_denovo: false,
                 has_passing_snp: false,
             },

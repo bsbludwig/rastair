@@ -485,10 +485,11 @@
 
   // ── density heatmap SVG ──────────────────────────────────────────────────
 
-  function densityToSVG(density) {
+  function densityToSVG(density, pw, ph) {
+    pw = pw || 600; ph = ph || pw;
     const BINS = density.bins;
     const ML = 62, MR = 16, MT = 16, MB = 52;
-    const PW = 600, PH = 600;
+    const PW = pw, PH = ph;
     const W = ML + PW + MR, H = MT + PH + MB;
     const cellW = (PW / BINS).toFixed(2);
     const cellH = (PH / BINS).toFixed(2);
@@ -585,13 +586,25 @@
     }
     html += '</tbody></table>';
 
-    if (m.density) {
+    const densityPlots = [
+      m.density     ? { key: 'density',       label: 'All',     caption: `r = ${fmt(m.pearson_r, 4)}, n = ${fmt(m.n_compared)}. Denovo and SNP-affected excluded.` } : null,
+      m.density_cpg ? { key: 'density_cpg',   label: 'CpG',     caption: 'Positions with the CPG flag. SNP-affected excluded.' } : null,
+      m.density_denovo ? { key: 'density_denovo', label: 'De-novo', caption: 'De-novo CpG positions (CPGnovo flag). SNP-affected excluded.' } : null,
+      m.density_other  ? { key: 'density_other',  label: 'Other',   caption: 'Positions without CPG or CPGnovo flags. SNP-affected excluded.' } : null,
+    ].filter(Boolean);
+
+    if (densityPlots.length > 0) {
       html += '<h3>Beta correlation density</h3>';
-      html += '<div class="chart">' + densityToSVG(m.density) + '</div>';
-      html += `<p class="caption">Log-scale 2D density heatmap. Dashed diagonal = perfect agreement. ` +
-              `r = ${fmt(m.pearson_r, 4)}, R² = ${fmt(m.r_squared, 4)}, ` +
-              `n = ${fmt(m.n_compared)}, mean |Δβ| = ${fmt(m.mean_abs_diff, 4)}. ` +
-              `Denovo and SNP-affected positions excluded.</p>`;
+      const CELL_PW = 320;
+      html += '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px 24px;margin:8px 0 24px">';
+      for (const p of densityPlots) {
+        html += '<div>';
+        html += `<div style="font-size:0.8rem;font-weight:bold;text-transform:uppercase;letter-spacing:.06em;color:#333;margin-bottom:4px">${p.label}</div>`;
+        html += densityToSVG(m[p.key], CELL_PW);
+        html += `<p class="caption" style="margin-top:6px">${p.caption}</p>`;
+        html += '</div>';
+      }
+      html += '</div>';
     }
 
     if (m.diff_histogram) {
