@@ -17,6 +17,7 @@ mod denovo_t_to_c;
 mod non_methylation;
 mod original_cpg_ref_c;
 mod original_cpg_ref_g;
+mod proptests;
 
 fn to_metrics(
     pileup: &Pileup,
