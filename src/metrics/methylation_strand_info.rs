@@ -1,5 +1,4 @@
 use crate::metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics};
-use crate::vcf::Methylated;
 use color_eyre::eyre::{Context, Result};
 use cstr8::{CStr8, cstr8};
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
@@ -60,11 +59,13 @@ impl MethylationEvidenceStrandInfo {
     }
 
     pub fn from_pileup_with_methylation(pileup: &PileupMetrics) -> Self {
-        match pileup.pos_metrics.extended.methylated {
-            Methylated::DeNovoCpG { .. } => {
-                Self::from_denovo_context(pileup).unwrap_or_else(|| Self::from_pileup(pileup))
-            }
-            _ => Self::from_pileup(pileup),
+        let m = &pileup.pos_metrics.extended.methylated;
+        let denovo_only = m.denovo().is_some_and(|b| b.has_evidence())
+            && !m.original().is_some_and(|b| b.has_evidence());
+        if denovo_only {
+            Self::from_denovo_context(pileup).unwrap_or_else(|| Self::from_pileup(pileup))
+        } else {
+            Self::from_pileup(pileup)
         }
     }
 
@@ -147,7 +148,10 @@ mod tests {
         metrics.pos_metrics.extended.methylated =
             metrics::methylation::call(&metrics)?.unwrap_or_default();
 
-        assert!(matches!(metrics.pos_metrics.extended.methylated, Methylated::DeNovoCpG { .. }));
+        assert!(metrics.pos_metrics.extended.methylated.denovo().is_some_and(|b| b.has_evidence()));
+        assert!(
+            !metrics.pos_metrics.extended.methylated.original().is_some_and(|b| b.has_evidence())
+        );
 
         let info = MethylationEvidenceStrandInfo::from_pileup_with_methylation(&metrics);
         assert_eq!(info.unmod, 2);

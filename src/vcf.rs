@@ -20,7 +20,7 @@ pub use cpg::InCpG;
 mod denovo_cpg;
 pub use denovo_cpg::DeNovoCpGCandidate;
 mod methylation;
-pub use methylation::{Methylated, MethylationAltDepth, MethylationDepth};
+pub use methylation::{CpgBeta, CpgOrigin, Methylated, MethylationAltDepth, MethylationDepth};
 
 mod metrics_to_vcf;
 

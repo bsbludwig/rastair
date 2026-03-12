@@ -3,7 +3,7 @@ use crate::{
     call::variant_calling::{EstimatedGenotype, GenotypeTag},
     metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
     utils::logging::ThisIsABug as _,
-    vcf::{InCpG, Methylated},
+    vcf::{CpgOrigin, InCpG},
 };
 use color_eyre::{Result, Section as _, SectionExt as _, eyre::eyre};
 use seqair_types::{Phred, Probability, Strand};
@@ -44,22 +44,16 @@ impl Rastair1BedFormat {
 
         let counts = pileup.pos_metrics.extended.methylation_strand_info;
 
-        let beta = match &pileup.pos_metrics.methylated {
-            Methylated::Unknown => {
-                warn!(in_cpg=?pileup.pos_metrics.cpg, ?de_novo, genotype=?pileup.pos_metrics.genotype, "why no beta?");
-                None
-            }
-            Methylated::NoEvidence => Some(Probability::ZERO),
-            Methylated::OriginalCpG { beta, .. } => Some(*beta),
-            Methylated::DeNovoCpG { beta, .. } => {
-                // only pick the de-novo beta if this is written as a de-novo CpG
-                if de_novo { Some(*beta) } else { Some(Probability::ZERO) }
-            }
-            Methylated::Both { original_beta, denovo_beta, .. } => {
-                // For dual context, use the beta matching the record type (in case
-                // its ever not REF)
-                if de_novo { Some(*denovo_beta) } else { Some(*original_beta) }
-            }
+        let methylated = &pileup.pos_metrics.methylated;
+        let beta = if methylated.is_empty() {
+            Some(Probability::ZERO)
+        } else {
+            let preferred_origin = if de_novo { CpgOrigin::DeNovo } else { CpgOrigin::Original };
+            let cpg = methylated
+                .iter()
+                .find(|b| b.origin == preferred_origin)
+                .or_else(|| methylated.iter().next());
+            cpg.map(|b| b.beta)
         };
 
         let strand = guess_strand_from_pileup(pileup);

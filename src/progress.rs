@@ -34,6 +34,8 @@ pub fn register_signal_handler() {
 
         // SAFETY: We only write to an atomic bool in the handler — async-signal-safe.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[allow(unknown_lints, reason = "from new rust version")]
+        #[expect(function_casts_as_integer, reason = "Required to set signal handler")]
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = on_progress_signal as libc::sighandler_t;

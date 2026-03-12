@@ -1,4 +1,4 @@
-use super::{Filters, Methylated, Record};
+use super::{MethylationAltDepth, MethylationDepth, Record};
 use crate::{
     call::{RecordFilters, pileup::indels::IndelAllele, variant_calling::ErrorModel},
     metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
@@ -6,8 +6,8 @@ use crate::{
     vcf::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
         Format, GenotypeConfidence, GenotypeLikelihood, Info, MachineLearningPrediction,
-        MethylationAltDepth, MethylationDepth, NumAlignedBases, NumIndels, PositionInRead,
-        StrandSpecificBaseQuality, StrandSpecificMappingQuality, low_ml_score,
+        NumAlignedBases, NumIndels, PositionInRead, StrandSpecificBaseQuality,
+        StrandSpecificMappingQuality, low_ml_score,
     },
 };
 use color_eyre::eyre::ensure;
@@ -67,12 +67,7 @@ impl PileupMetrics {
         }
 
         // Build main record
-        let main = self.build_main_record(
-            &real_variants,
-            &methylation_evidence,
-            ml_threshold,
-            error_model,
-        )?;
+        let main = self.build_main_record(&real_variants, ml_threshold, error_model)?;
 
         // Build rejected records
         let mut rejected = SmallVec::new();
@@ -90,13 +85,9 @@ impl PileupMetrics {
     fn build_main_record(
         &self,
         real_variants: &[&Alt],
-        methylation_evidence: &[&Alt],
         ml_threshold: Option<Probability>,
         error_model: &ErrorModel,
     ) -> Result<Record> {
-        // Determine alt alleles for main record
-        let has_methylation = !methylation_evidence.is_empty();
-
         let depth = self.pos_metrics.depth.max(1).f();
 
         // Build alt alleles for main record:
@@ -154,7 +145,7 @@ impl PileupMetrics {
         let info = self.build_info(main_alts);
 
         // Build format fields
-        let format = self.build_format(main_alts, has_methylation, ml_threshold);
+        let format = self.build_format(main_alts, ml_threshold);
 
         // Build filters
         let filters = {
@@ -181,7 +172,7 @@ impl PileupMetrics {
         };
 
         let info = self.build_info(&[alt]);
-        let format = self.build_format(&[alt], false, ml_threshold);
+        let format = self.build_format(&[alt], ml_threshold);
 
         let filters = {
             let mut filters = super::Filters::default();
@@ -270,12 +261,7 @@ impl PileupMetrics {
         }
     }
 
-    fn build_format(
-        &self,
-        main_alts: &[&Alt],
-        has_methylation: bool,
-        ml_threshold: Option<Probability>,
-    ) -> Format {
+    fn build_format(&self, main_alts: &[&Alt], ml_threshold: Option<Probability>) -> Format {
         // No more "." alt, so no index offset needed
         let vcf_index_offset = 0;
 
@@ -360,15 +346,13 @@ impl PileupMetrics {
 
         let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
 
-        // Determine methylation status - set for CpG positions and de-novo CpGs
         let is_cpg = matches!(self.pos_metrics.cpg, super::InCpG::C | super::InCpG::G);
-        // Check if this position is part of a de-novo CpG (check all alts, not just real_variants)
         let has_denovo =
             *self.pos_metrics.denovo_adj || self.alts.iter().any(|a| *a.metrics.denovo);
-        let methylated = if has_methylation || is_cpg || has_denovo {
-            self.pos_metrics.methylated.clone()
+        let methylated = if self.pos_metrics.methylated.is_empty() && (is_cpg || has_denovo) {
+            super::Methylated::no_evidence()
         } else {
-            Methylated::Unknown
+            self.pos_metrics.methylated.clone()
         };
 
         let methylation_depth = MethylationDepth::from(&methylated);
@@ -485,7 +469,7 @@ fn build_indel_records(
 
             let genotype = Genotype::from(call.genotype);
 
-            let mut filters = Filters::default();
+            let mut filters = super::Filters::default();
             let ml_below_threshold = call.ml.zip(ml_threshold).is_some_and(|(ml, t)| ml < t);
             if ml_below_threshold {
                 filters.add(low_ml_score.filter());

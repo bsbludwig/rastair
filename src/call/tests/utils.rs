@@ -291,29 +291,23 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
     if let Some(sample) = record.samples.first() {
         match field_id {
             "M5mC" => {
-                use crate::vcf::Methylated;
-                return Ok(match &sample.methylated {
-                    // Unknown: no data available
-                    Methylated::Unknown => FieldValue::OptF64(None),
-                    // NoEvidence: checked and found no methylation (beta = 0.0)
-                    Methylated::NoEvidence => FieldValue::OptF64(Some(0.0)),
-                    // Single context: one beta value
-                    Methylated::OriginalCpG { beta, .. } | Methylated::DeNovoCpG { beta, .. } => {
-                        FieldValue::OptF64(Some(beta.f()))
-                    }
-                    // Dual context: both beta values
-                    Methylated::Both { original_beta, denovo_beta, .. } => {
-                        FieldValue::VecF64(vec![original_beta.f(), denovo_beta.f()])
-                    }
+                let m = &sample.methylated;
+                let mut betas = Vec::new();
+                if let Some(b) = m.original() {
+                    betas.push(b.beta.f());
+                }
+                if let Some(b) = m.denovo() {
+                    betas.push(b.beta.f());
+                }
+                return Ok(match betas.len() {
+                    0 => FieldValue::OptF64(None),
+                    1 => FieldValue::OptF64(Some(betas[0])),
+                    _ => FieldValue::VecF64(betas),
                 });
             }
             "DPM5mC" => {
-                let values: Vec<f64> = sample
-                    .methylation_depth
-                    .0
-                    .iter()
-                    .filter_map(|v| v.map(|n| n as f64))
-                    .collect();
+                let values: Vec<f64> =
+                    sample.methylation_depth.0.iter().filter_map(|v| v.map(|n| n as f64)).collect();
                 return Ok(if values.len() == 1 {
                     FieldValue::OptF64(Some(values[0]))
                 } else {
@@ -580,6 +574,7 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
                 current.estimate_genotype(Some(ML_THRESHOLD), ErrorModel::default());
             current.pos_metrics.extended.methylated =
                 metrics::methylation::call(&current)?.unwrap_or_default();
+
             current.pos_metrics.extended.methylation_strand_info =
                 MethylationEvidenceStrandInfo::from_pileup_with_methylation(&current);
 

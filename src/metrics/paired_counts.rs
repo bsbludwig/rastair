@@ -11,7 +11,7 @@ pub struct ReadKey {
     pub adj: Base,
 }
 
-/// Counts of (current_base, adjacent_base) pairs by strand.
+/// Counts of (`current_base`, `adjacent_base`) pairs by strand.
 ///
 /// Array-backed for O(1) access. Indexed as `[strand][current_base][adj_base]`.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

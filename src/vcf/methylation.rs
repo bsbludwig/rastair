@@ -5,46 +5,91 @@ use rust_htslib::bcf::Record;
 use seqair_types::{Probability, SmallVec, smallvec::smallvec};
 use std::fmt;
 
-/// Methylation information
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-#[must_use]
-pub enum Methylated {
-    /// Unknown methylation status, i.e., no processing was done
-    #[default]
-    Unknown,
-    /// No evidence of methylation at this site
-    NoEvidence,
-    /// Original CpG site
-    OriginalCpG { beta: Probability, mod_count: u32, total_count: u32 },
-    /// De-novo CpG site
-    DeNovoCpG { beta: Probability, mod_count: u32, total_count: u32 },
-    /// Both original CpG and de-novo CpG at this position
-    Both {
-        original_beta: Probability,
-        original_mod_count: u32,
-        original_total_count: u32,
-        denovo_beta: Probability,
-        denovo_mod_count: u32,
-        denovo_total_count: u32,
-    },
+/// Whether a CpG is from the reference sequence or created by a de-novo variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CpgOrigin {
+    Original,
+    DeNovo,
+}
+
+/// Methylation measurement for one CpG allele at a position.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct CpgBeta {
+    pub origin: CpgOrigin,
+    pub beta: Probability,
+    pub mod_count: u32,
+    pub total_count: u32,
+}
+
+impl CpgBeta {
+    pub fn has_evidence(&self) -> bool {
+        self.total_count > 0
+    }
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
-impl fmt::Debug for Methylated {
+impl fmt::Debug for CpgBeta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Methylated::Unknown => f.debug_tuple("Methylated::Unknown").finish(),
-            Methylated::NoEvidence => f.debug_tuple("Methylated::NoEvidence").finish(),
-            Methylated::OriginalCpG { beta, .. } => {
-                f.debug_tuple("Methylated::OriginalCpG").field(beta).finish()
-            }
-            Methylated::DeNovoCpG { beta, .. } => {
-                f.debug_tuple("Methylated::DeNovoCpG").field(beta).finish()
-            }
-            Methylated::Both { original_beta, denovo_beta, .. } => {
-                f.debug_tuple("Methylated::Both").field(original_beta).field(denovo_beta).finish()
-            }
+        write!(
+            f,
+            "CpgBeta({:?}, beta={:.3}, {}/{})",
+            self.origin, *self.beta, self.mod_count, self.total_count
+        )
+    }
+}
+
+/// Methylation information for a position.
+///
+/// Empty means the position is not in a CpG context. One or two entries
+/// represent original and/or de-novo CpG measurements.
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[must_use]
+pub struct Methylated(pub SmallVec<CpgBeta, 2>);
+
+impl Methylated {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// CpG context exists but no informative reads were found.
+    pub fn no_evidence() -> Self {
+        Self(smallvec![CpgBeta {
+            origin: CpgOrigin::Original,
+            beta: Probability::ZERO,
+            mod_count: 0,
+            total_count: 0,
+        }])
+    }
+
+    pub fn has_evidence(&self) -> bool {
+        self.0.iter().any(CpgBeta::has_evidence)
+    }
+
+    pub fn original(&self) -> Option<&CpgBeta> {
+        self.0.iter().find(|b| b.origin == CpgOrigin::Original)
+    }
+
+    pub fn denovo(&self) -> Option<&CpgBeta> {
+        self.0.iter().find(|b| b.origin == CpgOrigin::DeNovo)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &CpgBeta> {
+        self.0.iter()
+    }
+
+    /// Extract values in canonical order (Original first, then de-novo) for VCF output.
+    fn ordered_values<T>(&self, f: impl Fn(&CpgBeta) -> T) -> SmallVec<Option<T>, 2> {
+        if self.is_empty() {
+            return smallvec![None];
         }
+        let mut out = SmallVec::new();
+        if let Some(b) = self.original() {
+            out.push(Some(f(b)));
+        }
+        if let Some(b) = self.denovo() {
+            out.push(Some(f(b)));
+        }
+        out
     }
 }
 
@@ -61,22 +106,9 @@ impl rastair_vcf::FormatField for Methylated {
     const NUMBER: FormatFieldNumber = FormatFieldNumber::OnePerPossibleBaseModification;
 
     fn write(&self, record: &mut Record) -> Result<()> {
-        let values: &[Option<f64>] = match self {
-            // Unknown: no processing was done, write None
-            Methylated::Unknown => &[None],
-            // NoEvidence: we checked and found no methylation, write 0.0
-            Methylated::NoEvidence => &[Some(0.0)],
-            // Single context: write one beta value
-            Methylated::OriginalCpG { beta, .. } | Methylated::DeNovoCpG { beta, .. } => {
-                &[Some(beta.f())]
-            }
-            // Dual context: write both beta values (original first, de-novo second)
-            Methylated::Both { original_beta, denovo_beta, .. } => {
-                &[Some(original_beta.f()), Some(denovo_beta.f())]
-            }
-        };
+        let values: SmallVec<Option<f64>, 2> = self.ordered_values(|b| b.beta.f());
 
-        <Option<f64> as FormatFieldValue>::write(record, Self::ID, values).wrap_err_with(|| {
+        <Option<f64> as FormatFieldValue>::write(record, Self::ID, &values).wrap_err_with(|| {
             format!(
                 "Failed to write format field {} (type {})",
                 Self::ID,
@@ -86,22 +118,13 @@ impl rastair_vcf::FormatField for Methylated {
     }
 }
 
-/// Total read depth for 5-methylcytosine detection (mod_count + unmod_count), before het adjustment.
+/// Total read depth for 5-methylcytosine detection (`mod_count` + `unmod_count`), before het adjustment.
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MethylationDepth(pub SmallVec<Option<u32>, 2>);
 
 impl From<&Methylated> for MethylationDepth {
     fn from(m: &Methylated) -> Self {
-        let values: SmallVec<Option<u32>, 2> = match m {
-            Methylated::Unknown => smallvec![None],
-            Methylated::NoEvidence => smallvec![Some(0)],
-            Methylated::OriginalCpG { total_count, .. }
-            | Methylated::DeNovoCpG { total_count, .. } => smallvec![Some(*total_count)],
-            Methylated::Both { original_total_count, denovo_total_count, .. } => {
-                smallvec![Some(*original_total_count), Some(*denovo_total_count)]
-            }
-        };
-        Self(values)
+        Self(m.ordered_values(|b| b.total_count))
     }
 }
 
@@ -123,23 +146,13 @@ impl rastair_vcf::FormatField for MethylationDepth {
     }
 }
 
-/// Read depth supporting 5-methylcytosine modification (mod_count only), before het adjustment.
+/// Read depth supporting 5-methylcytosine modification (`mod_count` only), before het adjustment.
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MethylationAltDepth(pub SmallVec<Option<u32>, 2>);
 
 impl From<&Methylated> for MethylationAltDepth {
     fn from(m: &Methylated) -> Self {
-        let values: SmallVec<Option<u32>, 2> = match m {
-            Methylated::Unknown => smallvec![None],
-            Methylated::NoEvidence => smallvec![Some(0)],
-            Methylated::OriginalCpG { mod_count, .. } | Methylated::DeNovoCpG { mod_count, .. } => {
-                smallvec![Some(*mod_count)]
-            }
-            Methylated::Both { original_mod_count, denovo_mod_count, .. } => {
-                smallvec![Some(*original_mod_count), Some(*denovo_mod_count)]
-            }
-        };
-        Self(values)
+        Self(m.ordered_values(|b| b.mod_count))
     }
 }
 
