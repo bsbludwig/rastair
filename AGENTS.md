@@ -76,3 +76,9 @@ The `reprocess()` function recalculates methylation_strand_info, genotypes, alt 
 When you are asked to implement something, always ask for clarifications if needed.
 If you are unsure about the requirements, ask for more details.
 If you think there is a better way to implement something, suggest it and explain your reasoning, but don't implement it immediately without approval.
+
+# Keep this updated
+
+**Important:** Whenever you learned something new about how to develop features, find code, or how to debug issues, you **must** add it to this document.
+This is the single source of truth for how to work on this codebase, and it must be kept up-to-date with any new insights or changes.
+If you find yourself asking "How do I do X?" and you figure it out, add a section here so that the next person doesn't have to ask the same question.
