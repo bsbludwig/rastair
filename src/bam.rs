@@ -1,6 +1,6 @@
 use crate::{
     bed::reader::{RastairBedReader, RastairCall},
-    sequence::{ChunkRegion, ReaderParams, Region},
+    sequence::{ChunkRegion, ReaderParams},
     utils::{
         cli,
         file_helpers::{FastaReader, open_fasta},
@@ -202,7 +202,7 @@ fn rewrite_region_parallel(
                     .wrap_err("thread-local FASTA reader not initialized")
                     .this_is_a_bug()?;
 
-                rewrite_region(bam, bed, fasta, &segment.region, mode, is_last)
+                rewrite_region(bam, bed, fasta, &segment, mode, is_last)
             })
         })
     })?;
@@ -214,21 +214,22 @@ fn rewrite_region_parallel(
     Ok(())
 }
 
-#[instrument(level = "debug", skip_all, fields(region = %region))]
+#[instrument(level = "debug", skip_all, fields(region = %region.region))]
 fn rewrite_region(
     bam: &mut bam::IndexedReader,
     calls_reader: &mut RastairBedReader,
     fasta: &mut FastaReader,
-    region: &Region,
+    region: &ChunkRegion,
     mode: BamMode,
     is_last_segment: bool,
 ) -> Result<Vec<Record>> {
-    FetchDefinition::try_from(region)
+    FetchDefinition::try_from(&region.region)
         .wrap_err("Could not convert region string")
         .and_then(|r| bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
-        .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region))?;
+        .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
 
     let noodle_region = region
+        .region
         .clone()
         .try_into()
         .wrap_err("Failed to convert region representation")
@@ -245,7 +246,7 @@ fn rewrite_region(
     // Reads may extend beyond the region, so lookups that fall outside return None.
     let pad = 2u64;
     let ref_start = region.start.saturating_sub(pad);
-    let ref_end = region.end.saturating_add(pad);
+    let ref_end = region.end.saturating_add(pad).min(region.last_position);
     let ref_seq = {
         let mut seq = Vec::new();
         fasta
