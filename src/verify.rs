@@ -97,6 +97,7 @@ struct BetaRecord {
     beta: f64,
     is_cpg: bool,
     is_denovo: bool,
+    has_variant: bool,
 }
 
 // ─── Output types (serde for JSON) ─────────────────────────────────────────
@@ -198,7 +199,15 @@ struct MethylationComparison {
     #[serde(skip_serializing_if = "Option::is_none")]
     density_cpg: Option<DensityGrid>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    density_cpg_variant: Option<DensityGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    density_cpg_no_variant: Option<DensityGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     density_denovo: Option<DensityGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    density_denovo_variant: Option<DensityGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    density_denovo_no_variant: Option<DensityGrid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diff_histogram: Option<DiffHistogram>,
 }
@@ -474,7 +483,15 @@ fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<Beta
     let pos = record.pos() as u64;
     let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
     let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
-    result.push(BetaRecord { key: MethylationKey { chrom, pos }, beta, is_cpg, is_denovo });
+    let has_variant =
+        record.has_filter("PASS".as_bytes()) && record.alleles().iter().skip(1).any(|a| *a != b".");
+    result.push(BetaRecord {
+        key: MethylationKey { chrom, pos },
+        beta,
+        is_cpg,
+        is_denovo,
+        has_variant,
+    });
 }
 
 fn ensure_index_exists(path: &Path) -> Result<()> {
@@ -675,8 +692,16 @@ fn compare_methylation(
     let mut ys = Vec::new();
     let mut cpg_xs = Vec::new();
     let mut cpg_ys = Vec::new();
+    let mut cpg_var_xs = Vec::new();
+    let mut cpg_var_ys = Vec::new();
+    let mut cpg_novar_xs = Vec::new();
+    let mut cpg_novar_ys = Vec::new();
     let mut denovo_xs = Vec::new();
     let mut denovo_ys = Vec::new();
+    let mut denovo_var_xs = Vec::new();
+    let mut denovo_var_ys = Vec::new();
+    let mut denovo_novar_xs = Vec::new();
+    let mut denovo_novar_ys = Vec::new();
     let mut n_predictions_only = 0usize;
 
     for pred in &pred_betas {
@@ -692,9 +717,23 @@ fn compare_methylation(
         if pred.is_denovo {
             denovo_xs.push(pred.beta);
             denovo_ys.push(comp.beta);
+            if pred.has_variant {
+                denovo_var_xs.push(pred.beta);
+                denovo_var_ys.push(comp.beta);
+            } else {
+                denovo_novar_xs.push(pred.beta);
+                denovo_novar_ys.push(comp.beta);
+            }
         } else if pred.is_cpg {
             cpg_xs.push(pred.beta);
             cpg_ys.push(comp.beta);
+            if pred.has_variant {
+                cpg_var_xs.push(pred.beta);
+                cpg_var_ys.push(comp.beta);
+            } else {
+                cpg_novar_xs.push(pred.beta);
+                cpg_novar_ys.push(comp.beta);
+            }
         }
     }
 
@@ -718,8 +757,16 @@ fn compare_methylation(
     };
 
     let density_cpg = (!cpg_xs.is_empty()).then(|| compute_density_grid(&cpg_xs, &cpg_ys));
+    let density_cpg_variant =
+        (!cpg_var_xs.is_empty()).then(|| compute_density_grid(&cpg_var_xs, &cpg_var_ys));
+    let density_cpg_no_variant =
+        (!cpg_novar_xs.is_empty()).then(|| compute_density_grid(&cpg_novar_xs, &cpg_novar_ys));
     let density_denovo =
         (!denovo_xs.is_empty()).then(|| compute_density_grid(&denovo_xs, &denovo_ys));
+    let density_denovo_variant =
+        (!denovo_var_xs.is_empty()).then(|| compute_density_grid(&denovo_var_xs, &denovo_var_ys));
+    let density_denovo_no_variant = (!denovo_novar_xs.is_empty())
+        .then(|| compute_density_grid(&denovo_novar_xs, &denovo_novar_ys));
 
     MethylationComparison {
         n_compared,
@@ -730,7 +777,11 @@ fn compare_methylation(
         mean_abs_diff,
         density,
         density_cpg,
+        density_cpg_variant,
+        density_cpg_no_variant,
         density_denovo,
+        density_denovo_variant,
+        density_denovo_no_variant,
         diff_histogram,
     }
 }
@@ -1082,12 +1133,14 @@ mod tests {
                 beta: 0.8,
                 is_cpg: true,
                 is_denovo: false,
+                has_variant: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 200 },
                 beta: 0.5,
                 is_cpg: false,
                 is_denovo: true,
+                has_variant: false,
             },
         ];
         let comp_betas = vec![
@@ -1096,12 +1149,14 @@ mod tests {
                 beta: 0.75,
                 is_cpg: false,
                 is_denovo: false,
+                has_variant: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 200 },
                 beta: 0.6,
                 is_cpg: false,
                 is_denovo: false,
+                has_variant: false,
             },
         ];
         let result = compare_methylation(pred_betas, comp_betas);
@@ -1118,12 +1173,14 @@ mod tests {
                 beta: 0.8,
                 is_cpg: false,
                 is_denovo: false,
+                has_variant: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 300 },
                 beta: 0.4,
                 is_cpg: false,
                 is_denovo: false,
+                has_variant: false,
             },
         ];
         let comp_betas = vec![
@@ -1132,12 +1189,14 @@ mod tests {
                 beta: 0.75,
                 is_cpg: false,
                 is_denovo: false,
+                has_variant: false,
             },
             BetaRecord {
                 key: MethylationKey { chrom: SmolStr::from("chr1"), pos: 200 },
                 beta: 0.5,
                 is_cpg: false,
                 is_denovo: false,
+                has_variant: false,
             },
         ];
         let result = compare_methylation(pred_betas, comp_betas);
