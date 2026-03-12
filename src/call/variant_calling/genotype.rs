@@ -402,6 +402,189 @@ impl TryFrom<&[GenotypeAllele]> for GenotypeTag {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const ALT_INDEX_1: NonZeroU8 = NonZeroU8::new(1).unwrap();
+
+    // Strategy: realistic read counts (1..=500 each, not both zero)
+    fn read_counts() -> impl Strategy<Value = (usize, usize)> {
+        (1usize..=500, 0usize..=500)
+            .prop_filter("at least one read required", |&(ref_c, alt_c)| ref_c > 0 || alt_c > 0)
+    }
+
+    // Strategy: a valid error rate well above f64::MIN
+    fn error_model() -> impl Strategy<Value = ErrorModel> {
+        (1u32..=100u32).prop_map(|n| {
+            ErrorModel::Custom(Probability::new(f64::from(n) / 10_000.0).expect("valid rate"))
+        })
+    }
+
+    proptest! {
+        /// Likelihood and confidence are always valid probabilities (in [0,1], not NaN).
+        #[test]
+        fn outputs_are_valid_probabilities(
+            (ref_count, alt_count) in read_counts(),
+            error in error_model(),
+        ) {
+            let result = EstimatedGenotype::calculate_for_alt(ref_count, alt_count, ALT_INDEX_1, error);
+            let Ok(gt) = result else { return Ok(()); };
+
+            prop_assert!(*gt.likelihood >= 0.0 && *gt.likelihood <= 1.0,
+                "likelihood out of range: {}", *gt.likelihood);
+            prop_assert!(*gt.confidence >= 0.0 && *gt.confidence <= 1.0,
+                "confidence out of range: {}", *gt.confidence);
+            prop_assert!(gt.likelihood.is_finite(), "likelihood is NaN/inf");
+            prop_assert!(gt.confidence.is_finite(), "confidence is NaN/inf");
+        }
+
+        /// When all reads support the reference (alt_count == 0), genotype must be HomRef.
+        #[test]
+        fn all_ref_reads_gives_hom_ref(
+            ref_count in 10usize..=500,
+            error in error_model(),
+        ) {
+            let gt = EstimatedGenotype::calculate_for_alt(ref_count, 0, ALT_INDEX_1, error)
+                .expect("should succeed with nonzero counts");
+            prop_assert_eq!(gt.genotype, GenotypeTag::HomRef,
+                "expected HomRef with ref={} alt=0", ref_count);
+        }
+
+        /// When all reads support the alt (ref_count == 0), genotype must be HomAlt.
+        #[test]
+        fn all_alt_reads_gives_hom_alt(
+            alt_count in 10usize..=500,
+            error in error_model(),
+        ) {
+            let gt = EstimatedGenotype::calculate_for_alt(0, alt_count, ALT_INDEX_1, error)
+                .expect("should succeed with nonzero counts");
+            prop_assert_eq!(gt.genotype, GenotypeTag::HomAlt(ALT_INDEX_1),
+                "expected HomAlt with ref=0 alt={}", alt_count);
+        }
+
+        /// ref > alt never produces HomAlt; alt > ref never produces HomRef.
+        ///
+        /// The majority base should always "win" — the model must not call the
+        /// minority allele as homozygous.
+        #[test]
+        fn majority_base_determines_hom_direction(
+            ref_count in 1usize..=500,
+            extra in 10usize..=200,
+            error in error_model(),
+        ) {
+            let alt_count = ref_count + extra; // alt clearly dominates
+            let gt_alt_wins = EstimatedGenotype::calculate_for_alt(ref_count, alt_count, ALT_INDEX_1, error)
+                .expect("nonzero counts");
+            prop_assert_ne!(gt_alt_wins.genotype, GenotypeTag::HomRef,
+                "got HomRef even though alt ({}) > ref ({})", alt_count, ref_count);
+
+            let gt_ref_wins = EstimatedGenotype::calculate_for_alt(alt_count, ref_count, ALT_INDEX_1, error)
+                .expect("nonzero counts");
+            prop_assert_ne!(gt_ref_wins.genotype, GenotypeTag::HomAlt(ALT_INDEX_1),
+                "got HomAlt even though ref ({}) > alt ({})", alt_count, ref_count);
+        }
+
+        /// Confidence increases as the read counts become more extreme.
+        ///
+        /// A site with 490 ref / 10 alt should have higher confidence in HomRef
+        /// than a site with 300 ref / 200 alt.
+        #[test]
+        fn more_extreme_counts_give_higher_confidence(
+            base in 100usize..=400,
+            small_imbalance in 10usize..=40,
+            large_imbalance in 80usize..=200,
+            error in error_model(),
+        ) {
+            prop_assume!(base > large_imbalance);
+            let ref_large = base + large_imbalance;
+            let alt_large = base - large_imbalance;
+            let ref_small = base + small_imbalance;
+            let alt_small = base - small_imbalance;
+
+            let gt_extreme = EstimatedGenotype::calculate_for_alt(ref_large, alt_large, ALT_INDEX_1, error)
+                .expect("nonzero counts");
+            let gt_moderate = EstimatedGenotype::calculate_for_alt(ref_small, alt_small, ALT_INDEX_1, error)
+                .expect("nonzero counts");
+
+            // Only compare when both agree on the same genotype class to avoid
+            // comparing confidence values across different decision boundaries.
+            if gt_extreme.genotype == gt_moderate.genotype {
+                prop_assert!(
+                    *gt_extreme.confidence >= *gt_moderate.confidence,
+                    "more extreme counts ({ref_large}/{alt_large}) should have confidence >= moderate ({ref_small}/{alt_small}): \
+                     extreme={:.4} moderate={:.4}",
+                    *gt_extreme.confidence,
+                    *gt_moderate.confidence,
+                );
+            }
+        }
+
+        /// Zero counts for both ref and alt must return an error.
+        #[test]
+        fn zero_counts_is_error(error in error_model()) {
+            let result = EstimatedGenotype::calculate_for_alt(0, 0, ALT_INDEX_1, error);
+            prop_assert!(result.is_err(), "expected error for (0, 0) counts");
+        }
+    }
+
+    // --- GenotypeTag property tests ---
+
+    fn nonzero_u8_strategy() -> impl Strategy<Value = NonZeroU8> {
+        (1u8..=255).prop_map(|n| NonZeroU8::new(n).expect("nonzero"))
+    }
+
+    proptest! {
+        /// GenotypeTag → [GenotypeAllele; 2] → GenotypeTag must roundtrip.
+        #[test]
+        fn genotype_tag_roundtrips_through_alleles(
+            n in nonzero_u8_strategy(),
+        ) {
+            for tag in [
+                GenotypeTag::HomRef,
+                GenotypeTag::RefHet(n),
+                GenotypeTag::HomAlt(n),
+            ] {
+                let alleles: [GenotypeAllele; 2] = tag.into();
+                let roundtripped = GenotypeTag::try_from(alleles.as_slice())
+                    .expect("valid alleles should roundtrip");
+                prop_assert_eq!(roundtripped, tag, "roundtrip failed for {:?}", tag);
+            }
+        }
+
+        /// AltHet alleles are always stored in sorted (canonical) order.
+        #[test]
+        fn alt_het_is_canonically_sorted(
+            a in nonzero_u8_strategy(),
+            b in nonzero_u8_strategy(),
+        ) {
+            prop_assume!(a != b);
+            let tag = GenotypeTag::alt_het(a, b);
+            let GenotypeTag::AltHet(lo, hi) = tag else {
+                prop_assert!(false, "expected AltHet");
+                return Ok(());
+            };
+            prop_assert!(lo <= hi, "alleles not sorted: {lo} > {hi}");
+        }
+
+        /// is_heterozygous and is_homozygous are always opposite.
+        #[test]
+        fn het_and_hom_are_exclusive(n in nonzero_u8_strategy()) {
+            for tag in [
+                GenotypeTag::HomRef,
+                GenotypeTag::RefHet(n),
+                GenotypeTag::HomAlt(n),
+            ] {
+                prop_assert_ne!(
+                    tag.is_heterozygous(), tag.is_homozygous(),
+                    "het and hom should be mutually exclusive for {:?}", tag
+                );
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct EstimatedGenotype {
