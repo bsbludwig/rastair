@@ -1,4 +1,4 @@
-use crate::utils::{Base, Counter, Strand};
+use crate::utils::{Base, Strand};
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// A collection of bases seen in a pileup

@@ -2,6 +2,119 @@ mod utils;
 use utils::*;
 
 #[test]
+fn convert_vcf_to_vcf_just_copies_the_file() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("test.vcf");
+    let vcf2 = temp_dir.path().join("test2.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, CHR19_SMALL, "-o"])
+        .arg(&vcf)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to run rastair call")?;
+
+    rastair()
+        .args(["convert", "--input"])
+        .arg(&vcf)
+        .arg("--output")
+        .arg(&vcf2)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to convert to vcf")?;
+
+    // assert that the files are identical
+    let vcf_content = std::fs::read(&vcf)?;
+    let vcf2_content = std::fs::read(&vcf2)?;
+    assert_eq!(vcf_content, vcf2_content, "VCF files are not identical after conversion");
+
+    Ok(())
+}
+
+#[test]
+fn convert_vcf_to_bcf() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("test.vcf");
+    let bcf = temp_dir.path().join("test.bcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, CHR19_SMALL, "-o"])
+        .arg(&vcf)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to run rastair call")?;
+
+    rastair()
+        .args(["convert", "--input"])
+        .arg(&vcf)
+        .arg("--output")
+        .arg(&bcf)
+        .succeeds()
+        .wrap_err("Failed to convert to bcf")?;
+
+    Ok(())
+}
+
+#[test]
+fn convert_bcf_to_vcf() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let bcf = temp_dir.path().join("test.bcf");
+    let vcf = temp_dir.path().join("test.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, CHR19_SMALL, "-o"])
+        .arg(&bcf)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to run rastair call")?;
+
+    rastair()
+        .args(["convert", "--input"])
+        .arg(&bcf)
+        .arg("--output")
+        .arg(&vcf)
+        .succeeds()
+        .wrap_err("Failed to convert to vcf")?;
+
+    Ok(())
+}
+
+#[test]
+fn convert_bcf_to_vcf_stdout() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let bcf = temp_dir.path().join("test.bcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, CHR19_SMALL, "-o"])
+        .arg(&bcf)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to run rastair call")?;
+
+    rastair()
+        .args(["convert", "--input"])
+        .arg(&bcf)
+        .args(["--output-format=vcf", "-o", "-"])
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to convert to vcf")?;
+
+    Ok(())
+}
+
+#[test]
 fn convert_from_mpk() -> Result<()> {
     apply_common_filters!();
 
@@ -9,14 +122,8 @@ fn convert_from_mpk() -> Result<()> {
     let mpk = temp_dir.path().join("test.mpk.lz4");
 
     rastair()
-        .args([
-            "call",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "tests/data/test.bam",
-            "--no-ml", // disable ML for faster test
-            "--region=chr19:6105700-6105800",
-            "-o",
-        ])
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, CHR19_SMALL, "-o"])
         .arg(&mpk)
         .silent()
         .succeeds()
@@ -61,15 +168,9 @@ fn convert_vcf_to_same_bed() -> Result<()> {
     let bed = temp_dir.path().join("test.bed");
     let bed_from_vcf = temp_dir.path().join("from_vcf.bed");
 
-    let args = &[
-        "call",
-        "--fasta-file=tests/data/test.fasta.gz",
-        "tests/data/test.bam",
-        "--region=chr19:6105700-6105800",
-    ];
-
     rastair()
-        .args(args)
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, CHR19_SMALL])
         .arg("-o")
         .arg(&vcf)
         .silent()
@@ -77,7 +178,8 @@ fn convert_vcf_to_same_bed() -> Result<()> {
         .wrap_err("Failed to run rastair call to vcf")?;
 
     rastair()
-        .args(args)
+        .args(CALL_TEST_BAM)
+        .args([NO_ML, CHR19_SMALL])
         .arg("-c")
         .arg("--bed")
         .arg(&bed)
@@ -107,10 +209,13 @@ fn convert_vcf_to_same_bed() -> Result<()> {
 fn can_pipe_through() -> Result<()> {
     apply_common_filters!();
 
+    let call_args =
+        CALL_TEST_BAM.iter().chain(&[CHR19_SMALL, NO_ML]).copied().collect::<Vec<&str>>().join(" ");
+
     let mut cmd = Command::new(insta_cmd::get_cargo_bin("/bin/bash"));
     cmd.arg("-c");
     cmd.env("NO_COLOR", "1");
-    cmd.arg("cargo run -q -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105000-6105800 --vcf | head -n1000 | cargo run -q -- convert -f bcf -F bed | head -n5");
+    cmd.arg(format!("cargo run -q -- {call_args} --vcf | head -n1000 | cargo run -q -- convert -f bcf -F bed | head -n5"));
 
     assert_cmd_snapshot!(cmd);
 

@@ -72,6 +72,11 @@ pub struct ConvertParams {
     #[arg(long = "bed-ml", default_value_t = Probability::new_panicky(0.5))]
     #[arg(help_heading = cli::sections::FILTER)]
     pub ml_threshold: Probability,
+
+    /// Total number of threads to use (e.g. for parallel compression)
+    #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = std::thread::available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub total_threads: usize,
 }
 
 pub fn convert(params: &ConvertParams) -> Result<()> {
@@ -79,6 +84,7 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
         params.formats().wrap_err("Failed to determine input and output formats")?;
 
     match (input_format, output_format) {
+        // same format: copy the file
         (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) if input == output => {
             warn!("Input and output formats are the same, no conversion will be performed");
 
@@ -96,6 +102,50 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             std::io::copy(&mut from, &mut to).wrap_err("Failed to copy input to output")?;
 
             info!("Copied input to output without conversion");
+            Ok(())
+        }
+        // converting from vcf to bcf or vice versa using htslib directly
+        (InputFormat::VcfLike(vcf_writer::Format::Vcf(input)), OutputFormat::VcfLike(output)) => {
+            use vcf_writer::*;
+
+            // htslib allows setting the number of background compression
+            // threads, so we take the total (without the main thread) and give
+            // 1/3 to the reader and 2/3 to the writer, with a minimum of 1
+            // thread for each.
+            let background_threads = params.total_threads.saturating_sub(1);
+            let reader_threads = background_threads.div_ceil(3).max(1);
+            let writer_threads = background_threads.saturating_sub(reader_threads).max(1);
+
+            let mut reader = bcf::Reader::from_path(params.input.path())
+                .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?;
+
+            reader.set_threads(reader_threads).wrap_err("Failed to set VCF reader threads")?;
+
+            let header = bcf::Header::from_template(reader.header());
+
+            let (format, uncompressed) = match output {
+                Format::Vcf(VcfFormat::Bcf) => (bcf::Format::Bcf, false),
+                Format::Vcf(VcfFormat::Vcf) => (bcf::Format::Vcf, true),
+                Format::Vcf(VcfFormat::VcfCompressed) => (bcf::Format::Vcf, false),
+                Format::MessagePack => {
+                    bail!("Cannot convert {input:?} to MessagePack format")
+                }
+            };
+
+            info!(from=?input, to=?output, "Converting using htslib");
+
+            let mut writer =
+                bcf::Writer::from_path(params.output.path(), &header, uncompressed, format)
+                    .wrap_err_with(|| {
+                        format!("Failed to create VCF writer for output file `{}`", params.output)
+                    })?;
+            writer.set_threads(writer_threads).wrap_err("Failed to set VCF writer threads")?;
+
+            for result in reader.records() {
+                let record = result.wrap_err("Failed to read record from VCF file")?;
+                writer.write(&record).wrap_err("Failed to write record to output file")?;
+            }
+
             Ok(())
         }
         (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed(format)) => {
