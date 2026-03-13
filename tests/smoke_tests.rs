@@ -8,6 +8,14 @@ const CHR19: &str = "--region=chr19";
 const NO_ML: &str = "--no-ml"; // disable ML for faster tests
 
 #[test]
+fn cli_help() -> Result<()> {
+    apply_common_filters!();
+    rastair().arg("--help").silent().succeeds().wrap_err("Failed to run rastair --help")?;
+
+    Ok(())
+}
+
+#[test]
 fn count_bed_lines() -> Result<()> {
     apply_common_filters!();
 
