@@ -4,10 +4,10 @@ use crate::{
     metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
     utils::{IntoF64 as _, default},
     vcf::{
-        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, DeNovoCpGCandidate, Entropy,
-        Format, GenotypeConfidence, GenotypeLikelihood, Info, MachineLearningPrediction,
-        NumAlignedBases, NumIndels, PositionInRead, StrandSpecificBaseQuality,
-        StrandSpecificMappingQuality, low_ml_score,
+        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, CpgBeta, CpgOrigin,
+        DeNovoCpGCandidate, Entropy, Format, GenotypeConfidence, GenotypeLikelihood, Info,
+        MachineLearningPrediction, Methylated, NumAlignedBases, NumIndels, PositionInRead,
+        StrandSpecificBaseQuality, StrandSpecificMappingQuality, low_ml_score,
     },
 };
 use color_eyre::eyre::ensure;
@@ -347,10 +347,30 @@ impl PileupMetrics {
         let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
 
         let is_cpg = matches!(self.pos_metrics.cpg, super::InCpG::C | super::InCpG::G);
-        let has_denovo =
-            *self.pos_metrics.denovo_adj || self.alts.iter().any(|a| *a.metrics.denovo);
-        let methylated = if self.pos_metrics.methylated.is_empty() && (is_cpg || has_denovo) {
-            super::Methylated::no_evidence()
+        // Original CpG context: either the position itself is a CpG in the reference,
+        // or it is the matching partner of a de-novo CpG (denovo_adj flag).
+        let is_orig_cpg = is_cpg || *self.pos_metrics.denovo_adj;
+        // De-novo CpG context: any alt whose base + adjacent reference base creates a new
+        // CpG dinucleotide. FormsDenovo already encodes the adjacency check, so we don't
+        // need to replicate it here. We include all call types (not just RealVariant) so
+        // that rejected records written with --all also receive a beta value.
+        let is_denovo_cpg = self.alts.iter().any(|a| *a.metrics.denovo);
+        let methylated = if self.pos_metrics.methylated.is_empty() && (is_orig_cpg || is_denovo_cpg)
+        {
+            let zero = CpgBeta {
+                origin: CpgOrigin::Original,
+                beta: Probability::ZERO,
+                mod_count: 0,
+                total_count: 0,
+            };
+            let mut betas = rastair_types::SmallVec::new();
+            if is_orig_cpg {
+                betas.push(zero);
+            }
+            if is_denovo_cpg {
+                betas.push(CpgBeta { origin: CpgOrigin::DeNovo, ..zero });
+            }
+            Methylated(betas)
         } else {
             self.pos_metrics.methylated.clone()
         };

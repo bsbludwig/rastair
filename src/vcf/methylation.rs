@@ -51,16 +51,6 @@ impl Methylated {
         self.0.is_empty()
     }
 
-    /// CpG context exists but no informative reads were found.
-    pub fn no_evidence() -> Self {
-        Self(smallvec![CpgBeta {
-            origin: CpgOrigin::Original,
-            beta: Probability::ZERO,
-            mod_count: 0,
-            total_count: 0,
-        }])
-    }
-
     pub fn has_evidence(&self) -> bool {
         self.0.iter().any(CpgBeta::has_evidence)
     }

@@ -144,6 +144,7 @@ fn read_counts(record: &PileupMetrics, side: CpgSide) -> (u32, u32) {
 }
 
 /// How the genotype at this position affects the beta calculation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GenotypeAdjustment {
     /// Normal beta: mod / (mod + unmod).
     None,
