@@ -50,4 +50,6 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`GC`** | Genotype confidence, Phred-scaled | `Float` | `Phred>` | G |
 | **`DP`** | Read depth | `Integer` | `usize` | 1 |
 | **`M5mC`** | Methylation level at CpG sites | `Float` | `Option<f64>` | M |
+| **`DPM5mC`** | Total read depth for 5-methylcytosine detection | `Integer` | `Option<u32>` | M |
+| **`ADM5mC`** | Read depth supporting 5-methylcytosine modification | `Integer` | `Option<u32>` | M |
 | **`ML`** | Prediction of methylation/variant likelihood by rastair's machine learning model | `Float` | `f64` | A |

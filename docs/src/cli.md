@@ -209,7 +209,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    By default, only a minimal set is included.
 
-  Possible values: `GT`, `GL`, `GC`, `DP`, `M5mC`, `ML`
+  Possible values: `GT`, `GL`, `GC`, `DP`, `M5mC`, `DPM5mC`, `ADM5mC`, `ML`
 
 * `--vcf-all-fields`
 
