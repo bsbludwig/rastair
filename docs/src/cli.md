@@ -12,7 +12,6 @@ This document contains the help content for the `rastair` command-line program.
 * [`rastair convert`↴](#rastair-convert)
 * [`rastair view`↴](#rastair-view)
 * [`rastair mbias`↴](#rastair-mbias)
-* [`rastair verify`↴](#rastair-verify)
 * [`rastair license`↴](#rastair-license)
 
 ## `rastair`
@@ -30,7 +29,6 @@ See <https://docs.rastair.com/> for more information.
 * `convert` — Convert between different file formats
 * `view` — View internal format as JSON lines
 * `mbias` — Calculate conversion per base position in read
-* `verify` — Verify calling output against truth sets and competitors
 * `license` — Show license -- rastair is licensed under a non-commercial use licence
 
 ###### **Options:**
@@ -476,6 +474,11 @@ Please note that this is currently implemented as an R script. Unless you're usi
   Default value: `3852`
 * `--read-length <READ_LENGTH>` — Read length as integer
 
+###### **Input Options:**
+
+* `--reference <REFERENCE>` — Reference FASTA file (required for V-bias and GC/CpG bias plots)
+* `--vcf <VCF>` — VCF file with methylation calls (required for GC/CpG bias plots)
+
 ###### **Options:**
 
 * `--r-script-dir <R_SCRIPT_DIR>` — Override directory to find R scripts
@@ -491,41 +494,11 @@ Please note that this is currently implemented as an R script. Unless you're usi
 
 ###### **Processing Options:**
 
+* `--no-vbias` — Do not generate V-bias plots (faster)
+* `--no-gc` — Do not generate GC/CpG bias plots
 * `--tabix-path <TABIX_PATH>` — Path to tabix executable
 
   Default value: `tabix`
-
-
-
-## `rastair verify`
-
-Verify calling output against truth sets and competitors
-
-Compare Rastair VCF output against a GIAB-style truth set and/or a competitor caller, computing variant overlap, F1/precision/recall, and methylation beta correlation.
-
-**Usage:** `rastair verify [OPTIONS] <PREDICTIONS>`
-
-###### **Arguments:**
-
-* `<PREDICTIONS>` — Predictions VCF file (output from rastair call)
-
-###### **Input Options:**
-
-* `--truth <TRUTH>` — Ground truth VCF file (e.g., GIAB)
-* `--competitor <COMPETITOR>` — Competitor VCF file (e.g., DRAGEN or another Rastair version)
-* `-l`, `--region <REGIONS>` — Regions to analyze (repeatable, e.g. -l chr1 -l chr2:100-200)
-
-###### **Output Options:**
-
-* `--output-json <OUTPUT_JSON>` — Write JSON report to file
-* `--output-html <OUTPUT_HTML>` — Write interactive HTML report to file
-
-###### **Processing Options:**
-
-* `-@`, `--threads <THREADS>` — Number of threads
-
-  Default value: `14`
-  [env: `RASTAIR_THREADS`]
 
 
 

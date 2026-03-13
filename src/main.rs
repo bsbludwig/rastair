@@ -85,6 +85,7 @@ enum Subcommand {
     /// Compare Rastair VCF output against a GIAB-style truth set and/or a
     /// competitor caller, computing variant overlap, F1/precision/recall, and
     /// methylation beta correlation.
+    #[command(hide = true)]
     Verify(VerifyParams),
     #[command(hide = true)]
     Internal {
