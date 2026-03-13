@@ -42,6 +42,7 @@ impl InCpG {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for InCpG {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

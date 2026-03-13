@@ -19,6 +19,7 @@ pub struct FastaReader {
     reader: IndexedReader<Box<dyn ReadAndSeek>>,
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for FastaReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FastaReader")
@@ -213,6 +214,7 @@ impl BgzipReader {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for BgzipReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

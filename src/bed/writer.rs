@@ -162,6 +162,7 @@ impl<R: BedRecord> BedWriter<R> {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl<R: BedRecord> fmt::Debug for BedWriter<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BedWriter")

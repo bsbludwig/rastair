@@ -1,5 +1,6 @@
 //! Helpers for writing concise tests.
 #![allow(unused, clippy::unwrap_in_result, reason = "test code")]
+#![cfg_attr(coverage_nightly, coverage(off))]
 
 use crate::{
     call::{

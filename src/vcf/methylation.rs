@@ -24,6 +24,7 @@ pub enum Methylated {
     Both { original_beta: Probability, denovo_beta: Probability },
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Debug for Methylated {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
