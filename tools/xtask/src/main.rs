@@ -209,8 +209,8 @@ fn run_tests(with_coverage: bool) -> Result<Child> {
         StdCommand::new("cargo")
             .arg("llvm-cov")
             .arg("test")
-            .arg("--workspace")
             .arg("--doctests")
+            .arg("--branch")
             .env("RUSTC_BOOTSTRAP", "1") // for doctests, don't worry about it
             .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
             .spawn()
