@@ -4,7 +4,6 @@ use rastair_types::RootMeanSquare;
 use rastair_types::SmallVec;
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf::Record;
-use std::ops::Deref;
 
 /// Allele-specific RMS base quality by strand
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -12,16 +11,7 @@ pub struct StrandSpecificBaseQuality(pub SmallVec<ByStrand<RootMeanSquare>, 4>);
 
 mod as_ss_bq {
     use super::*;
-    use crate::utils::ByStrand;
     use rastair_vcf::StrandSpecificInfoField;
-
-    impl Deref for StrandSpecificBaseQuality {
-        type Target = SmallVec<ByStrand<RootMeanSquare>, 4>;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
 
     impl VcfField for StrandSpecificBaseQuality {
         const ID: &'static cstr8::CStr8 = cstr8::cstr8!("AS_SS_BQ");
@@ -80,14 +70,6 @@ pub struct StrandSpecificMappingQuality(pub SmallVec<ByStrand<RootMeanSquare>, 4
 mod as_ss_mq {
     use super::*;
     use rastair_vcf::StrandSpecificInfoField;
-
-    impl Deref for StrandSpecificMappingQuality {
-        type Target = SmallVec<ByStrand<RootMeanSquare>, 4>;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
 
     impl VcfField for StrandSpecificMappingQuality {
         const ID: &'static cstr8::CStr8 = cstr8::cstr8!("AS_SS_MQ");

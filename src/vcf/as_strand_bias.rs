@@ -3,19 +3,10 @@ use color_eyre::eyre::{Context as _, Result};
 use rastair_types::SmallVec;
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, StrandSpecificInfoField, VcfField};
 use rust_htslib::bcf::Record;
-use std::ops::Deref;
 
 /// Allele-specific strand bias information for a variant
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AlleleSpecificStrandBias(pub SmallVec<ByStrand<u32>, 4>);
-
-impl Deref for AlleleSpecificStrandBias {
-    type Target = SmallVec<ByStrand<u32>, 4>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 impl VcfField for AlleleSpecificStrandBias {
     const ID: &'static cstr8::CStr8 = cstr8::cstr8!("AS_SB");
