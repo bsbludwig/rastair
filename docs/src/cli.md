@@ -185,6 +185,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
   Possible values: `GT`, `GL`, `GC`, `DP`, `M5mC`, `ML`
 
+* `--vcf-all-fields`
+
+  Default value: `false`
 * `--bed <BED>` — Output BED file with the called methylated positions
 * `--bed-format <BED_FORMAT>` — Format of the output BED file
 
@@ -421,6 +424,10 @@ Convert between different file formats
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
+* `-@`, `--threads <TOTAL_THREADS>` — Total number of threads to use (e.g. for parallel compression)
+
+  Default value: `14`
+  [env: `RASTAIR_THREADS`]
 
 
 

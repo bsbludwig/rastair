@@ -248,6 +248,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         vcf_threads: NonZeroUsize::new(4).expect("valid number"),
         vcf_info_fields: Vec::new(),
         vcf_format_fields: Vec::new(),
+        vcf_all_fields: false,
     };
 
     let (format, compression) = format.into();

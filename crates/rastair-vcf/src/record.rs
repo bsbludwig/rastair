@@ -393,6 +393,13 @@ macro_rules! vcf_record {
                 }
                 self
             }
+
+            #[allow(unused)]
+            pub fn with_all_fields(mut self) -> Self {
+                $( self.info.[<$info:snake>] = true; )*
+                $( self.format.[<$format:snake>] = true; )*
+                self
+            }
         }
 
         /// A VCF record containing fixed fields, filters, info, and format data
@@ -543,6 +550,20 @@ mod tests {
 
             let result = "INVALID".parse::<FormatFieldId>();
             assert!(result.is_err(), "Should error on invalid FORMAT field");
+        }
+
+        #[test]
+        fn test_with_all_fields() {
+            let config = FieldConfig::default().with_all_fields();
+
+            // Default fields should still be enabled
+            assert!(config.info.test_depth, "TestDepth should still be default");
+            assert!(config.format.test_genotype, "TestGenotype should still be default");
+
+            // Additional fields should now be enabled
+            assert!(config.info.test_quality, "TestQuality should be enabled");
+            assert!(config.info.test_flag, "TestFlag should be enabled");
+            assert!(config.format.test_score, "TestScore should be enabled");
         }
     }
 }

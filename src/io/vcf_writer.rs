@@ -67,6 +67,11 @@ pub struct VcfParams {
     )]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_format_fields: Vec<crate::vcf::FormatFieldId>,
+
+    // Include all possible fields in VCF
+    #[arg(long, default_value_t = false, conflicts_with_all = &["vcf_info_fields", "vcf_format_fields"])]
+    #[arg(help_heading = cli::sections::OUTPUT)]
+    pub vcf_all_fields: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,8 +178,14 @@ impl VcfParams {
         };
 
         // Build field configuration from CLI flags
-        let field_config = crate::vcf::FieldConfig::default()
-            .with_field_ids(&self.vcf_info_fields, &self.vcf_format_fields);
+        let field_config = {
+            let config = crate::vcf::FieldConfig::default();
+            if self.vcf_all_fields {
+                config.with_all_fields()
+            } else {
+                config.with_field_ids(&self.vcf_info_fields, &self.vcf_format_fields)
+            }
+        };
 
         Ok(Some(Writer::Vcf(
             self.vcf_writer(&contigs, &samples, metadata, format, compression)

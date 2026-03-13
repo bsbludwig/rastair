@@ -34,6 +34,15 @@ fn vcf_with_ml() -> Result<()> {
 }
 
 #[test]
+fn vcf_with_all_fields() -> Result<()> {
+    apply_common_filters!();
+
+    assert_cmd_snapshot!(rastair().args(CALL_TEST_BAM).arg(CHR19_SMALL).arg("--vcf-all-fields",));
+
+    Ok(())
+}
+
+#[test]
 fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
     apply_common_filters!();
 
