@@ -61,17 +61,6 @@ impl fmt::Debug for SimpleRead {
     }
 }
 
-impl SimpleReads {
-    pub fn matches(&self, base: Base) -> bool {
-        self.iter().all(|b| b.base == base)
-    }
-
-    pub fn is_variant_candidate(&self) -> bool {
-        let counter: Counter = self.iter().map(|x| x.base).collect();
-        counter.multiple_bases()
-    }
-}
-
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct PositionInRead {
     /// Position in the read, 0-based
