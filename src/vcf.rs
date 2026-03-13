@@ -22,8 +22,6 @@ pub use denovo_cpg::DeNovoCpGCandidate;
 mod methylation;
 pub use methylation::Methylated;
 
-pub mod utils;
-
 mod metrics_to_vcf;
 
 use crate::metrics::MethylationEvidenceStrandInfo;

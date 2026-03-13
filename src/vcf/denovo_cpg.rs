@@ -27,16 +27,6 @@ pub enum DeNovoCpGCandidate {
     },
 }
 
-impl DeNovoCpGCandidate {
-    pub fn alt_base(&self) -> Option<Base> {
-        match self {
-            DeNovoCpGCandidate::NotCandidate => None,
-            DeNovoCpGCandidate::Candidate { alt_base, .. } => Some(*alt_base),
-            DeNovoCpGCandidate::Adjecent { ref_base } => Some(*ref_base),
-        }
-    }
-}
-
 impl Deref for DeNovoCpGCandidate {
     type Target = bool;
 

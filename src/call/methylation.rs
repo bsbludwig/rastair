@@ -9,8 +9,5 @@
 mod filters;
 pub use filters::add_filters;
 
-#[deprecated]
-mod utils;
-
 pub mod params;
 pub use params::ThresholdParams;
