@@ -79,11 +79,19 @@ impl PileupMetrics {
         let ref_base = pileup.reference_base;
         let total_reads = pileup.reads.len();
 
-        // Single pass: accumulate per-base metrics and discover alleles in pileup order
+        // Single pass: accumulate per-base metrics, position-level RMS, and discover alleles
         let mut accumulators = PerBaseAccumulators::default();
+        let mut pos_baseq = RmsAccumulator::new();
+        let mut pos_mapq = RmsAccumulator::new();
+        let mut mapq0: u32 = 0;
         let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
         for read in pileup.reads.iter() {
             accumulators.accumulate(read);
+            pos_baseq.add(f64::from(read.qual));
+            pos_mapq.add(f64::from(read.mapq));
+            if read.mapq == 0 {
+                mapq0 += 1;
+            }
             if read.base.known_index().is_some()
                 && read.base != ref_base
                 && !alt_bases.contains(&read.base)
@@ -94,18 +102,31 @@ impl PileupMetrics {
 
         trace!(pos = pileup.pos, ?ref_base, ?alt_bases, "New pileup");
 
-        let pos_metrics = PositionMetrics::from_pileup(&pileup, PositionMetricsExt::default());
+        let pos_metrics = PositionMetrics::from_pileup(
+            &pileup,
+            PositionMetricsExt::default(),
+            pos_baseq.finish(),
+            pos_mapq.finish(),
+            mapq0,
+        );
 
-        let ref_metrics = accumulators
-            .take(ref_base)?
-            .finish(ref_base, total_reads, &pileup)
-            .wrap_err("Failed to compute allele metrics for reference")?;
+        // Reference base can be Unknown (N in FASTA) — no accumulator slot exists for it,
+        // and no reads will ever match it, so just use default metrics.
+        let ref_metrics = if let Some(acc) = accumulators.take(ref_base) {
+            acc.finish(ref_base, total_reads, &pileup)
+                .wrap_err("Failed to compute allele metrics for reference")?
+        } else {
+            AlleleMetrics { base: ref_base, ..default() }
+        };
 
         let alts = alt_bases
             .iter()
             .map(|&base| {
-                let metrics = accumulators
-                    .take(base)?
+                // alt_bases only contains known bases (filtered above), so take always succeeds
+                let acc = accumulators
+                    .take(base)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("unknown base {base} in alt_bases"))?;
+                let metrics = acc
                     .finish(base, total_reads, &pileup)
                     .wrap_err("Failed to compute allele metrics for alt")?;
                 Ok(Alt { base, metrics, filters: AltFilters::default(), call: default() })
@@ -248,13 +269,18 @@ impl Deref for DenovoAdjecent {
 }
 
 impl PositionMetrics {
-    pub fn from_pileup(pileup: &Pileup, extended: PositionMetricsExt) -> Self {
+    pub fn from_pileup(
+        pileup: &Pileup,
+        extended: PositionMetricsExt,
+        baseq: RootMeanSquare,
+        mapq: RootMeanSquare,
+        mapq0: u32,
+    ) -> Self {
         PositionMetrics {
             depth: u32::try_from(pileup.reads.len()).expect("depth fits into u32"),
-            baseq: pileup.reads.iter().map(|x| x.qual).collect(),
-            mapq: pileup.reads.iter().map(|x| x.mapq).collect(),
-            mapq0: u32::try_from(pileup.reads.iter().filter(|x| x.mapq == 0).count())
-                .expect("mapq0 count fits into u32"),
+            baseq,
+            mapq,
+            mapq0,
             cpg: InCpG::from(pileup),
 
             // These fields are given by all
@@ -484,11 +510,9 @@ impl PerBaseAccumulators {
         self.0[idx].add(read);
     }
 
-    fn take(&mut self, base: Base) -> Result<AlleleAccumulator> {
-        let idx = base.known_index().ok_or_else(|| {
-            color_eyre::eyre::eyre!("cannot compute allele metrics for unknown base")
-        })?;
-        Ok(std::mem::take(&mut self.0[idx]))
+    fn take(&mut self, base: Base) -> Option<AlleleAccumulator> {
+        let idx = base.known_index()?;
+        Some(std::mem::take(&mut self.0[idx]))
     }
 }
 
