@@ -19,6 +19,11 @@ pub enum Base {
     Unknown = b'N',
 }
 
+const _: () = {
+    assert!(size_of::<Base>() == 1);
+    assert!(size_of::<Option<Base>>() == 1);
+};
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Display for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
