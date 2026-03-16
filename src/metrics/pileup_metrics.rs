@@ -86,9 +86,11 @@ impl PileupMetrics {
         let mut mapq0: u32 = 0;
         let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
         for read in pileup.reads.iter() {
-            accumulators.accumulate(read);
-            pos_baseq.add(f64::from(read.qual));
-            pos_mapq.add(f64::from(read.mapq));
+            let qual_sq = f64::from(read.qual).powi(2);
+            let mapq_sq = f64::from(read.mapq).powi(2);
+            accumulators.accumulate(read, qual_sq, mapq_sq);
+            pos_baseq.add_squared(qual_sq);
+            pos_mapq.add_squared(mapq_sq);
             if read.mapq == 0 {
                 mapq0 += 1;
             }
@@ -425,22 +427,20 @@ struct AlleleAccumulator {
 }
 
 impl AlleleAccumulator {
-    fn add(&mut self, read: &SimpleRead) {
+    fn add(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
         self.depth += 1;
-        let q = f64::from(read.qual);
-        let m = f64::from(read.mapq);
-        self.baseq.add(q);
-        self.mapq.add(m);
+        self.baseq.add_squared(qual_sq);
+        self.mapq.add_squared(mapq_sq);
         match read.strand {
             Strand::OT => {
                 self.ot_count += 1;
-                self.baseq_ot.add(q);
-                self.mapq_ot.add(m);
+                self.baseq_ot.add_squared(qual_sq);
+                self.mapq_ot.add_squared(mapq_sq);
             }
             Strand::OB => {
                 self.ob_count += 1;
-                self.baseq_ob.add(q);
-                self.mapq_ob.add(m);
+                self.baseq_ob.add_squared(qual_sq);
+                self.mapq_ob.add_squared(mapq_sq);
             }
             Strand::Unknown => {}
         }
@@ -505,9 +505,9 @@ impl AlleleAccumulator {
 struct PerBaseAccumulators([AlleleAccumulator; 4]);
 
 impl PerBaseAccumulators {
-    fn accumulate(&mut self, read: &SimpleRead) {
+    fn accumulate(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
         let Some(idx) = read.base.known_index() else { return };
-        self.0[idx].add(read);
+        self.0[idx].add(read, qual_sq, mapq_sq);
     }
 
     fn take(&mut self, base: Base) -> Option<AlleleAccumulator> {
