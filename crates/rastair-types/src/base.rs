@@ -165,15 +165,25 @@ impl std::str::FromStr for Base {
     }
 }
 
+/// Lookup table for branchless u8 → Base conversion.
+/// A single indexed load instead of a chain of comparisons.
+static BASE_LUT: [Base; 256] = {
+    let mut table = [Base::Unknown; 256];
+    table[b'A' as usize] = Base::A;
+    table[b'a' as usize] = Base::A;
+    table[b'C' as usize] = Base::C;
+    table[b'c' as usize] = Base::C;
+    table[b'G' as usize] = Base::G;
+    table[b'g' as usize] = Base::G;
+    table[b'T' as usize] = Base::T;
+    table[b't' as usize] = Base::T;
+    table
+};
+
 impl From<u8> for Base {
+    #[inline]
     fn from(value: u8) -> Self {
-        match value {
-            b'A' | b'a' => Base::A,
-            b'C' | b'c' => Base::C,
-            b'G' | b'g' => Base::G,
-            b'T' | b't' => Base::T,
-            _ => Base::Unknown,
-        }
+        BASE_LUT[value as usize]
     }
 }
 
