@@ -12,7 +12,7 @@ fn simple_per_read_call() -> Result<()> {
         "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
         "--region=chr19:6105900-6105950",
-    ]), @r"
+    ]), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -48,6 +48,11 @@ fn enhance_with_calls_bed_file_to_add_denovo_counts() -> Result<()> {
     let tmp_dir = PathBuf::from("tmp/tests");
     fs::create_dir_all(&tmp_dir)?;
     let calls_bed = tmp_dir.join("calls.bed.gz");
+    match fs::remove_file(&calls_bed) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
 
     rastair()
         .args([

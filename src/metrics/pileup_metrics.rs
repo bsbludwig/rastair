@@ -17,7 +17,6 @@ use rastair_types::SmolStr;
 use rastair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
 use rastair_vcf::VcfFilter;
 use std::ops::Deref;
-use thiserror::Error;
 use tracing::trace;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -77,65 +76,50 @@ impl PileupMetrics {
     /// NOTE: The extended metrics in `PositionMetrics` are not set here and
     /// need to be set later using `set_extended_metrics`.
     pub fn new(pileup: Pileup) -> Result<Self> {
-        let by_allele = pileup.by_allele();
-        let [reference, alts_reads @ ..] = by_allele.as_slice() else {
-            // This should never happen because by_allele() always includes the reference base,
-            // even when there are no reads
-            bail!("No alleles found in pileup");
-        };
-        trace!(
-            pos = pileup.pos,
-            ref_base = ?reference.base,
-            alt_bases = ?alts_reads.iter().map(|b| b.base).collect::<Vec<_>>(),
-            "New pileup"
-        );
+        let ref_base = pileup.reference_base;
+        let total_reads = pileup.reads.len();
 
-        let ref_base = reference.base;
+        // Single pass: accumulate per-base metrics and discover alleles in pileup order
+        let mut accumulators = PerBaseAccumulators::default();
+        let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
+        for read in pileup.reads.iter() {
+            accumulators.accumulate(read);
+            if read.base.known_index().is_some()
+                && read.base != ref_base
+                && !alt_bases.contains(&read.base)
+            {
+                alt_bases.push(read.base);
+            }
+        }
 
-        #[derive(Debug, Error)]
-        #[error("Failed to compute allele metric for {0}")]
-        struct AlleleMetricError(Base);
+        trace!(pos = pileup.pos, ?ref_base, ?alt_bases, "New pileup");
 
-        // Compute initial metrics but keep extended empty to set later
         let pos_metrics = PositionMetrics::from_pileup(&pileup, PositionMetricsExt::default());
 
-        let ref_metrics = if reference.is_empty() {
-            // this can happen at canonical cpg sites with no evidence
-            AlleleMetrics { base: ref_base, ..AlleleMetrics::default() }
-        } else {
-            AlleleMetrics::from_bases(reference, &pileup).wrap_err(AlleleMetricError(ref_base))?
-        };
+        let ref_metrics = accumulators
+            .take(ref_base)?
+            .finish(ref_base, total_reads, &pileup)
+            .wrap_err("Failed to compute allele metrics for reference")?;
 
-        let alts = alts_reads
+        let alts = alt_bases
             .iter()
-            .map(|pile| {
-                let base = pile.base;
-                AlleleMetrics::from_bases(pile, &pileup).wrap_err(AlleleMetricError(base)).map(
-                    |metrics| Alt {
-                        base,
-                        metrics,
-                        filters: AltFilters::default(),
-                        call: default(),
-                    },
-                )
+            .map(|&base| {
+                let metrics = accumulators
+                    .take(base)?
+                    .finish(base, total_reads, &pileup)
+                    .wrap_err("Failed to compute allele metrics for alt")?;
+                Ok(Alt { base, metrics, filters: AltFilters::default(), call: default() })
             })
-            .collect::<Result<_>>()
-            .wrap_err("Failed to compute allele metrics for alt alleles")?;
+            .collect::<Result<_>>()?;
 
-        drop(by_allele);
-
-        let pos_filters = Filters::default();
-
-        let metrics = PileupMetrics {
+        Ok(PileupMetrics {
             pileup,
             pos_metrics,
-            pos_filters,
+            pos_filters: Filters::default(),
             ref_metrics,
             alts,
             tags: RecordTags::default(),
-        };
-
-        Ok(metrics)
+        })
     }
 
     /// Get reference base
@@ -398,91 +382,113 @@ impl Deref for Filters {
     }
 }
 
-impl AlleleMetrics {
-    pub fn from_bases(reads: &[&SimpleRead], pileup: &Pileup) -> Result<Self> {
+#[derive(Debug, Clone, Default)]
+struct AlleleAccumulator {
+    depth: u32,
+    baseq: RmsAccumulator,
+    mapq: RmsAccumulator,
+    baseq_ot: RmsAccumulator,
+    baseq_ob: RmsAccumulator,
+    mapq_ot: RmsAccumulator,
+    mapq_ob: RmsAccumulator,
+    aligned: RmsAccumulator,
+    indels: RmsAccumulator,
+    pos_in_read: RmsAccumulator,
+    ot_count: u32,
+    ob_count: u32,
+}
+
+impl AlleleAccumulator {
+    fn add(&mut self, read: &SimpleRead) {
+        self.depth += 1;
+        let q = f64::from(read.qual);
+        let m = f64::from(read.mapq);
+        self.baseq.add(q);
+        self.mapq.add(m);
+        match read.strand {
+            Strand::OT => {
+                self.ot_count += 1;
+                self.baseq_ot.add(q);
+                self.mapq_ot.add(m);
+            }
+            Strand::OB => {
+                self.ob_count += 1;
+                self.baseq_ob.add(q);
+                self.mapq_ob.add(m);
+            }
+            Strand::Unknown => {}
+        }
+        self.aligned.add(f64::from(read.matching_bases));
+        self.indels.add(f64::from(read.indels));
+        self.pos_in_read.add(f64::from(read.position.pos) / f64::from(read.position.read_length));
+    }
+
+    fn finish(self, base: Base, total_reads: usize, pileup: &Pileup) -> Result<AlleleMetrics> {
         use Base::*;
-        use Strand::*;
 
-        let allele_depth = u32::try_from(reads.len()).wrap_err("read count fits into u32")?;
-        if allele_depth == 0 {
+        if self.depth == 0 {
+            // Can happen at canonical CpG sites with no evidence for a particular allele
             trace!(
-                %pileup.pos,
-                base=%pileup.reference_base,
-                pileup_reads=?pileup.reads.len(),
-                allele_reads=?reads.len(),
-                "Why are we here? No reads for allele metrics calculation"
+                pos = pileup.pos,
+                ref_base = ?pileup.reference_base,
+                ?base,
+                pileup_reads = pileup.reads.len(),
+                "No reads for allele"
             );
-
-            return Ok(AlleleMetrics { base: pileup.reference_base, ..default() });
+            return Ok(AlleleMetrics { base, ..default() });
         }
 
-        let base = reads[0].base;
+        // Should be impossible: depth > 0 implies total_reads > 0 since reads were counted
+        // from the same pileup. Guard defensively since a division by zero here would produce
+        // NaN/Inf which Probability::new rejects anyway, but better to fail with a clear message.
+        if total_reads == 0 {
+            bail!("allele has depth {} but pileup has 0 total reads — this is a bug", self.depth);
+        }
 
-        let denovo = {
-            if base == pileup.reference_base {
-                FormsDenovo::No
-            } else if pileup.ref_before() == C && base == G {
-                FormsDenovo::ThisBecomesG
-            } else if pileup.ref_after() == G && base == C {
-                FormsDenovo::ThisBecomesC
-            } else {
-                FormsDenovo::No
-            }
+        let denovo = if base == pileup.reference_base {
+            FormsDenovo::No
+        } else if pileup.ref_before() == C && base == G {
+            FormsDenovo::ThisBecomesG
+        } else if pileup.ref_after() == G && base == C {
+            FormsDenovo::ThisBecomesC
+        } else {
+            FormsDenovo::No
         };
-
-        let mut baseq = RmsAccumulator::new();
-        let mut mapq = RmsAccumulator::new();
-        let mut baseq_ot = RmsAccumulator::new();
-        let mut baseq_ob = RmsAccumulator::new();
-        let mut mapq_ot = RmsAccumulator::new();
-        let mut mapq_ob = RmsAccumulator::new();
-        let mut aligned = RmsAccumulator::new();
-        let mut indels = RmsAccumulator::new();
-        let mut pos_in_read = RmsAccumulator::new();
-        let mut ot_count = 0u32;
-        let mut ob_count = 0u32;
-
-        for r in reads {
-            let q = f64::from(r.qual);
-            let m = f64::from(r.mapq);
-            baseq.add(q);
-            mapq.add(m);
-            match r.strand {
-                OT => {
-                    ot_count += 1;
-                    baseq_ot.add(q);
-                    mapq_ot.add(m);
-                }
-                OB => {
-                    ob_count += 1;
-                    baseq_ob.add(q);
-                    mapq_ob.add(m);
-                }
-                Strand::Unknown => {
-                    // Reads with unknown strand are not counted in strand-specific metrics
-                }
-            }
-            aligned.add(f64::from(r.matching_bases));
-            indels.add(f64::from(r.indels));
-            pos_in_read.add(f64::from(r.position.pos) / f64::from(r.position.read_length));
-        }
 
         Ok(AlleleMetrics {
             base,
-            depth: allele_depth,
-            baseq: baseq.finish(),
-            mapq: mapq.finish(),
-            strand_count: ByStrand { base, ot: ot_count, ob: ob_count },
-            baseq_s: ByStrand { base, ot: baseq_ot.finish(), ob: baseq_ob.finish() },
-            mapq_s: ByStrand { base, ot: mapq_ot.finish(), ob: mapq_ob.finish() },
-            num_aligned_bases: aligned.finish(),
-            num_indels: indels.finish(),
-            position_in_read: pos_in_read.finish(),
-            allele_frequency: Probability::new(allele_depth.f() / pileup.reads.len().f())
-                .wrap_err("allele frequency not in in [0,1]")
+            depth: self.depth,
+            baseq: self.baseq.finish(),
+            mapq: self.mapq.finish(),
+            strand_count: ByStrand { base, ot: self.ot_count, ob: self.ob_count },
+            baseq_s: ByStrand { base, ot: self.baseq_ot.finish(), ob: self.baseq_ob.finish() },
+            mapq_s: ByStrand { base, ot: self.mapq_ot.finish(), ob: self.mapq_ob.finish() },
+            num_aligned_bases: self.aligned.finish(),
+            num_indels: self.indels.finish(),
+            position_in_read: self.pos_in_read.finish(),
+            allele_frequency: Probability::new(self.depth.f() / total_reads.f())
+                .wrap_err("allele frequency not in [0,1]")
                 .this_is_a_bug()?,
             denovo,
         })
+    }
+}
+
+/// Per-base accumulators indexed by [`Base::known_index`], one slot per `Base::KNOWN`.
+#[derive(Debug, Default)]
+struct PerBaseAccumulators([AlleleAccumulator; 4]);
+
+impl PerBaseAccumulators {
+    fn accumulate(&mut self, read: &SimpleRead) {
+        let Some(idx) = read.base.known_index() else { return };
+        self.0[idx].add(read);
+    }
+
+    fn take(&mut self, base: Base) -> Result<AlleleAccumulator> {
+        let idx = base.known_index().ok_or_else(|| {
+            color_eyre::eyre::eyre!("cannot compute allele metrics for unknown base")
+        })?;
+        Ok(std::mem::take(&mut self.0[idx]))
     }
 }
 

@@ -1,8 +1,4 @@
-use crate::{
-    sequence::ChunkRegion,
-    utils::{Base, ByAllele},
-    vcf::SequenceContext,
-};
+use crate::{sequence::ChunkRegion, utils::Base, vcf::SequenceContext};
 use rastair_types::{SmallVec, SmolStr};
 
 mod read;
@@ -55,22 +51,6 @@ impl Pileup {
             }
             acc
         })
-    }
-
-    /// Get tuples of alleles (in order) and their corresponding evidence
-    pub fn by_allele(&self) -> SmallVec<ByAllele<SmallVec<&SimpleRead, 20>>, 4> {
-        self.alleles()
-            .iter()
-            .map(|base| {
-                let matching_bases = self.reads.iter().filter(|b| b.base == *base).collect();
-                ByAllele { base: *base, value: matching_bases }
-            })
-            .collect()
-    }
-
-    /// Alternative allele bases
-    pub fn alts(&self) -> SmallVec<Base, 4> {
-        self.alleles().into_iter().filter(|base| self.reference_base != *base).collect()
     }
 }
 

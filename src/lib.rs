@@ -49,7 +49,7 @@ pub(crate) mod utils {
     pub use conversion::{IntoF64, default};
 
     mod grouping;
-    pub use grouping::{ByAllele, ByStrand};
+    pub use grouping::ByStrand;
 
     mod sequence_context;
     pub use sequence_context::SequenceContext;

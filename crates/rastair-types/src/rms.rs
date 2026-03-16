@@ -37,7 +37,7 @@ impl<T: Into<f64>> FromIterator<T> for RootMeanSquare {
 ///
 /// Useful when multiple RMS values need to be computed from the same data
 /// without iterating multiple times.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct RmsAccumulator {
     sum_of_squares: f64,
     count: u32,

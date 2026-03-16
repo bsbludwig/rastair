@@ -27,6 +27,20 @@ impl std::fmt::Display for Base {
 }
 
 impl Base {
+    /// The four canonical DNA bases: A, C, G, T.
+    pub const KNOWN: [Base; 4] = [Base::A, Base::C, Base::G, Base::T];
+
+    /// Returns the index of this base in [`Base::KNOWN`], or `None` for `Unknown`.
+    pub fn known_index(&self) -> Option<usize> {
+        match self {
+            Base::A => Some(0),
+            Base::C => Some(1),
+            Base::G => Some(2),
+            Base::T => Some(3),
+            Base::Unknown => None,
+        }
+    }
+
     /// Get the inverse base (complementary base)
     pub fn inverse(&self) -> Base {
         match self {
