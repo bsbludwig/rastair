@@ -305,7 +305,7 @@ fn rewrite_record(
             // Methylation detection works in stored (+ strand) orientation:
             // T→C for OT, A→G for OB. Positions are stored-SEQ indices.
             let MethylatedInfo { seq, methylated_positions } =
-                get_methylated_positions(calls, record);
+                get_methylated_positions(calls, record)?;
 
             // The MM tag spec requires positions relative to the original read
             // (5' to 3'). For forward reads this equals the stored SEQ. For
@@ -316,8 +316,11 @@ fn rewrite_record(
                 let seq_len = seq.len();
                 let original_positions: SmallVec<u32, 10> = methylated_positions
                     .iter()
-                    .map(|&p| u32::try_from(seq_len - 1 - p as usize).expect("position fits"))
-                    .collect();
+                    .map(|&p| {
+                        let flipped = seq_len - 1 - p as usize;
+                        u32::try_from(flipped).wrap_err("flipped position does not fit in u32")
+                    })
+                    .collect::<Result<_>>()?;
                 let original_seq = reverse_complement(&seq);
                 let flipped_strand = match strand {
                     Strand::OT => Strand::OB,
@@ -334,7 +337,7 @@ fn rewrite_record(
             mods.apply_to_record(record)?;
         }
         BamMode::Legacy => {
-            let annotations = build_legacy_annotations(calls, record, ref_base);
+            let annotations = build_legacy_annotations(calls, record, ref_base)?;
             let xr_tags =
                 XrTags::new_legacy(record.seq_len(), strand, is_first_in_pair, &annotations);
             xr_tags.apply_to_record(record)?;
@@ -353,27 +356,22 @@ fn build_legacy_annotations(
     calls: &FxHashMap<u32, RastairCall>,
     record: &Record,
     ref_base: impl Fn(u32) -> Option<Base>,
-) -> FxHashMap<usize, XmAnnotation> {
+) -> Result<FxHashMap<usize, XmAnnotation>> {
     let strand = StrandFromRecord::strand(record);
     let seq = record.seq().as_bytes();
     let mut annotations = FxHashMap::default();
 
-    let target_base = match strand {
-        Strand::OT => Base::C,
-        Strand::OB => Base::G,
-        Strand::Unknown => return annotations,
-    };
-    let evidence_base = match strand {
-        Strand::OT => Base::T,
-        Strand::OB => Base::A,
-        Strand::Unknown => unreachable!(),
+    let (target_base, evidence_base) = match strand {
+        Strand::OT => (Base::C, Base::T),
+        Strand::OB => (Base::G, Base::A),
+        Strand::Unknown => return Ok(annotations),
     };
 
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
         let Some(pos_in_read) = pos_in_read else { continue };
         let Some(pos_in_ref) = pos_in_ref else { continue };
-        let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
-        let pos_in_read = pos_in_read as usize;
+        let pos_in_ref = u32::try_from(pos_in_ref).wrap_err("reference position does not fit in u32")?;
+        let pos_in_read = usize::try_from(pos_in_read).wrap_err("read position does not fit in usize")?;
 
         let is_denovo = match calls.get(&pos_in_ref) {
             Some(RastairCall::Cpg { .. }) => false,
@@ -397,7 +395,7 @@ fn build_legacy_annotations(
         }
     }
 
-    annotations
+    Ok(annotations)
 }
 
 struct MethylatedInfo {
@@ -408,7 +406,7 @@ struct MethylatedInfo {
 fn get_methylated_positions(
     calls: &FxHashMap<u32, RastairCall>,
     record: &Record,
-) -> MethylatedInfo {
+) -> Result<MethylatedInfo> {
     use Base::*;
 
     let strand = StrandFromRecord::strand(record);
@@ -428,8 +426,8 @@ fn get_methylated_positions(
         let Some(pos_in_ref) = pos_in_ref else {
             continue;
         };
-        let pos_in_ref = u32::try_from(pos_in_ref).expect("position fits in u32");
-        let pos_in_read = pos_in_read as usize;
+        let pos_in_ref = u32::try_from(pos_in_ref).wrap_err("reference position does not fit in u32")?;
+        let pos_in_read = usize::try_from(pos_in_read).wrap_err("read position does not fit in usize")?;
 
         // Only process positions that are called as CpG sites (ref or de-novo).
         // Per-read methylation is determined by the observed base, not the
@@ -447,13 +445,13 @@ fn get_methylated_positions(
                 Strand::OT => {
                     if observed_base == T {
                         seq[pos_in_read] = *C;
-                        methylated_positions.push(pos_in_read as u32);
+                        methylated_positions.push(u32::try_from(pos_in_read).wrap_err("read position does not fit in u32")?);
                     }
                 }
                 Strand::OB => {
                     if observed_base == A {
                         seq[pos_in_read] = *G;
-                        methylated_positions.push(pos_in_read as u32);
+                        methylated_positions.push(u32::try_from(pos_in_read).wrap_err("read position does not fit in u32")?);
                     }
                 }
                 Strand::Unknown => continue,
@@ -461,7 +459,7 @@ fn get_methylated_positions(
         }
     }
 
-    MethylatedInfo { seq, methylated_positions }
+    Ok(MethylatedInfo { seq, methylated_positions })
 }
 
 fn reverse_complement(seq: &[u8]) -> Vec<u8> {
@@ -858,7 +856,7 @@ mod tests {
             calls
         };
 
-        let data = get_methylated_positions(&calls, &record);
+        let data = get_methylated_positions(&calls, &record)?;
         let new_seq = &data.seq;
 
         // for human comparison
@@ -1514,7 +1512,7 @@ mod tests {
         }
         ensure!(expected_pos.is_some(), "need a methylation-evidence base");
 
-        let data = get_methylated_positions(&calls, &record);
+        let data = get_methylated_positions(&calls, &record)?;
         assert!(
             !data.methylated_positions.is_empty(),
             "get_methylated_positions should find DeNovoCpg calls, but found none"

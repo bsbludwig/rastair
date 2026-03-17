@@ -4,7 +4,7 @@ use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
 use rustc_hash::FxHashMap;
 use std::fmt::Write;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Methylation context for XM tag annotation.
 ///
@@ -67,7 +67,10 @@ pub fn determine_context(
                 MethylationContext::CHH
             }
         }
-        Strand::Unknown => MethylationContext::CHH,
+        Strand::Unknown => {
+            warn!(pos, "determine_context called with Unknown strand, defaulting to CHH");
+            MethylationContext::CHH
+        }
     }
 }
 
