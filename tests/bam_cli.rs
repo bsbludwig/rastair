@@ -31,7 +31,11 @@ fn bam_rewrite_legacy_adds_xr_xg_xm_tags() -> Result<()> {
         .arg(&calls_bed)
         .output()
         .wrap_err("Failed to run tabix")?;
-    ensure!(tabix_output.status.success(), "tabix failed: {}", String::from_utf8_lossy(&tabix_output.stderr));
+    ensure!(
+        tabix_output.status.success(),
+        "tabix failed: {}",
+        String::from_utf8_lossy(&tabix_output.stderr)
+    );
 
     rastair()
         .args([
@@ -156,7 +160,11 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
         .arg(&calls_bed)
         .output()
         .wrap_err("Failed to run tabix")?;
-    ensure!(tabix_output.status.success(), "tabix failed: {}", String::from_utf8_lossy(&tabix_output.stderr));
+    ensure!(
+        tabix_output.status.success(),
+        "tabix failed: {}",
+        String::from_utf8_lossy(&tabix_output.stderr)
+    );
 
     rastair()
         .args([
@@ -230,7 +238,11 @@ fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
         .arg(&calls_bed)
         .output()
         .wrap_err("Failed to run tabix")?;
-    ensure!(tabix_output.status.success(), "tabix failed: {}", String::from_utf8_lossy(&tabix_output.stderr));
+    ensure!(
+        tabix_output.status.success(),
+        "tabix failed: {}",
+        String::from_utf8_lossy(&tabix_output.stderr)
+    );
 
     // Use a very small segment length to force many segment boundaries,
     // maximising the chance that reads straddle them.
@@ -323,7 +335,11 @@ fn bam_rewrite_xm_content_matches_calls() -> Result<()> {
         .arg(&calls_bed)
         .output()
         .wrap_err("Failed to run tabix")?;
-    ensure!(tabix_output.status.success(), "tabix failed: {}", String::from_utf8_lossy(&tabix_output.stderr));
+    ensure!(
+        tabix_output.status.success(),
+        "tabix failed: {}",
+        String::from_utf8_lossy(&tabix_output.stderr)
+    );
 
     rastair()
         .args([

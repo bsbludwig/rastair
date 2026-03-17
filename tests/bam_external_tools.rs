@@ -58,7 +58,11 @@ fn setup_test_bams() -> Result<TestBams> {
         .arg(&calls_bed)
         .output()
         .wrap_err("Failed to run tabix")?;
-    ensure!(tabix_output.status.success(), "tabix failed: {}", String::from_utf8_lossy(&tabix_output.stderr));
+    ensure!(
+        tabix_output.status.success(),
+        "tabix failed: {}",
+        String::from_utf8_lossy(&tabix_output.stderr)
+    );
 
     rastair()
         .args([

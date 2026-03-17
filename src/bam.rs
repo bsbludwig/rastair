@@ -370,8 +370,10 @@ fn build_legacy_annotations(
     for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
         let Some(pos_in_read) = pos_in_read else { continue };
         let Some(pos_in_ref) = pos_in_ref else { continue };
-        let pos_in_ref = u32::try_from(pos_in_ref).wrap_err("reference position does not fit in u32")?;
-        let pos_in_read = usize::try_from(pos_in_read).wrap_err("read position does not fit in usize")?;
+        let pos_in_ref =
+            u32::try_from(pos_in_ref).wrap_err("reference position does not fit in u32")?;
+        let pos_in_read =
+            usize::try_from(pos_in_read).wrap_err("read position does not fit in usize")?;
 
         let is_denovo = match calls.get(&pos_in_ref) {
             Some(RastairCall::Cpg { .. }) => false,
@@ -426,8 +428,10 @@ fn get_methylated_positions(
         let Some(pos_in_ref) = pos_in_ref else {
             continue;
         };
-        let pos_in_ref = u32::try_from(pos_in_ref).wrap_err("reference position does not fit in u32")?;
-        let pos_in_read = usize::try_from(pos_in_read).wrap_err("read position does not fit in usize")?;
+        let pos_in_ref =
+            u32::try_from(pos_in_ref).wrap_err("reference position does not fit in u32")?;
+        let pos_in_read =
+            usize::try_from(pos_in_read).wrap_err("read position does not fit in usize")?;
 
         // Only process positions that are called as CpG sites (ref or de-novo).
         // Per-read methylation is determined by the observed base, not the
@@ -445,13 +449,19 @@ fn get_methylated_positions(
                 Strand::OT => {
                     if observed_base == T {
                         seq[pos_in_read] = *C;
-                        methylated_positions.push(u32::try_from(pos_in_read).wrap_err("read position does not fit in u32")?);
+                        methylated_positions.push(
+                            u32::try_from(pos_in_read)
+                                .wrap_err("read position does not fit in u32")?,
+                        );
                     }
                 }
                 Strand::OB => {
                     if observed_base == A {
                         seq[pos_in_read] = *G;
-                        methylated_positions.push(u32::try_from(pos_in_read).wrap_err("read position does not fit in u32")?);
+                        methylated_positions.push(
+                            u32::try_from(pos_in_read)
+                                .wrap_err("read position does not fit in u32")?,
+                        );
                     }
                 }
                 Strand::Unknown => continue,
@@ -1744,6 +1754,182 @@ mod tests {
         let (_, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
         assert_eq!(xm_methylated, vec![5]);
         assert_eq!(mm_methylated, vec![5]);
+
+        Ok(())
+    }
+
+    /// De-novo CpGs must produce context-dependent XM letters (z/Z for CpG,
+    /// x/X for CHG, h/H for CHH) through the full rewrite_record path, for
+    /// both OT and OB strands, and both methylated and unmethylated reads.
+    #[test]
+    fn denovo_all_contexts_both_strands() -> Result<()> {
+        use Base::*;
+
+        // === OB strand (flag-163 read at 6103076) ===
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch(FetchDefinition::All)?;
+        let mut ob_record = Record::new();
+        while let Some(result) = bam.read(&mut ob_record) {
+            result?;
+            if ob_record.flags() == 163 && ob_record.pos() == 6103076 {
+                break;
+            }
+        }
+        ensure!(ob_record.flags() == 163, "could not find OB record");
+        let ob_seq = ob_record.seq().as_bytes();
+        // Read[5]=A (evidence), Read[17]=G (target) on OB
+        assert_eq!(Base::from(ob_seq[5]), A);
+        assert_eq!(Base::from(ob_seq[17]), G);
+
+        // OB de-novo CpG context: ref[pos-1]==C → CpG
+        {
+            let calls = FxHashMap::from_iter([
+                (6103081_u32, RastairCall::DeNovoCpg { base: G, methylated: true }),
+                (6103093, RastairCall::DeNovoCpg { base: G, methylated: false }),
+            ]);
+            let ref_bases = FxHashMap::from_iter([
+                (6103080_u32, C), // pos-1 for 6103081 → CpG
+                (6103081, G),
+                (6103092, C), // pos-1 for 6103093 → CpG
+                (6103093, G),
+            ]);
+            let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+            let mut record = ob_record.clone();
+            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+            let annotations: Vec<(usize, char)> =
+                xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+            assert_compact_debug_snapshot!(annotations, @"[(5, 'Z'), (17, 'z')]");
+        }
+
+        // OB de-novo CHG context: ref[pos-1]!=C, ref[pos-2]==C → CHG
+        {
+            let calls = FxHashMap::from_iter([
+                (6103081_u32, RastairCall::DeNovoCpg { base: G, methylated: true }),
+                (6103093, RastairCall::DeNovoCpg { base: G, methylated: false }),
+            ]);
+            let ref_bases = FxHashMap::from_iter([
+                (6103079_u32, C), // pos-2 for 6103081 → CHG
+                (6103080, T),     // pos-1 ≠ C
+                (6103081, G),
+                (6103091, C), // pos-2 for 6103093 → CHG
+                (6103092, T), // pos-1 ≠ C
+                (6103093, G),
+            ]);
+            let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+            let mut record = ob_record.clone();
+            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+            let annotations: Vec<(usize, char)> =
+                xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+            assert_compact_debug_snapshot!(annotations, @"[(5, 'X'), (17, 'x')]");
+        }
+
+        // OB de-novo CHH context: ref[pos-1]!=C, ref[pos-2]!=C → CHH
+        {
+            let calls = FxHashMap::from_iter([
+                (6103081_u32, RastairCall::DeNovoCpg { base: G, methylated: true }),
+                (6103093, RastairCall::DeNovoCpg { base: G, methylated: false }),
+            ]);
+            let ref_bases = FxHashMap::from_iter([
+                (6103079_u32, A), // pos-2 ≠ C
+                (6103080, T),     // pos-1 ≠ C
+                (6103081, G),
+                (6103091, A), // pos-2 ≠ C
+                (6103092, T), // pos-1 ≠ C
+                (6103093, G),
+            ]);
+            let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+            let mut record = ob_record.clone();
+            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+            let annotations: Vec<(usize, char)> =
+                xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+            assert_compact_debug_snapshot!(annotations, @"[(5, 'H'), (17, 'h')]");
+        }
+
+        // === OT strand (flag-99 read at 6103078) ===
+        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+        bam.fetch(FetchDefinition::All)?;
+        let mut ot_record = Record::new();
+        while let Some(result) = bam.read(&mut ot_record) {
+            result?;
+            if ot_record.flags() == 99 && ot_record.pos() == 6103078 {
+                break;
+            }
+        }
+        ensure!(ot_record.flags() == 99, "could not find OT record");
+        let ot_seq = ot_record.seq().as_bytes();
+        // Read[2]=T (evidence), Read[14]=T (evidence) on OT
+        assert_eq!(Base::from(ot_seq[2]), T);
+        assert_eq!(Base::from(ot_seq[14]), T);
+
+        // OT de-novo CpG context: ref[pos+1]==G → CpG
+        {
+            let calls = FxHashMap::from_iter([
+                (6103080_u32, RastairCall::DeNovoCpg { base: C, methylated: true }),
+                (6103092, RastairCall::DeNovoCpg { base: C, methylated: true }),
+            ]);
+            let ref_bases = FxHashMap::from_iter([
+                (6103080_u32, C),
+                (6103081, G), // pos+1 → CpG
+                (6103092, C),
+                (6103093, G), // pos+1 → CpG
+            ]);
+            let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+            let mut record = ot_record.clone();
+            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+            let annotations: Vec<(usize, char)> =
+                xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+            assert_compact_debug_snapshot!(annotations, @"[(2, 'Z'), (14, 'Z')]");
+        }
+
+        // OT de-novo CHG context: ref[pos+1]!=G, ref[pos+2]==G → CHG
+        {
+            let calls = FxHashMap::from_iter([
+                (6103080_u32, RastairCall::DeNovoCpg { base: C, methylated: true }),
+                (6103092, RastairCall::DeNovoCpg { base: C, methylated: true }),
+            ]);
+            let ref_bases = FxHashMap::from_iter([
+                (6103080_u32, C),
+                (6103081, A), // pos+1 ≠ G
+                (6103082, G), // pos+2 → CHG
+                (6103092, C),
+                (6103093, A), // pos+1 ≠ G
+                (6103094, G), // pos+2 → CHG
+            ]);
+            let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+            let mut record = ot_record.clone();
+            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+            let annotations: Vec<(usize, char)> =
+                xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+            assert_compact_debug_snapshot!(annotations, @"[(2, 'X'), (14, 'X')]");
+        }
+
+        // OT de-novo CHH context: ref[pos+1]!=G, ref[pos+2]!=G → CHH
+        {
+            let calls = FxHashMap::from_iter([
+                (6103080_u32, RastairCall::DeNovoCpg { base: C, methylated: true }),
+                (6103092, RastairCall::DeNovoCpg { base: C, methylated: true }),
+            ]);
+            let ref_bases = FxHashMap::from_iter([
+                (6103080_u32, C),
+                (6103081, A), // pos+1 ≠ G
+                (6103082, A), // pos+2 ≠ G → CHH
+                (6103092, C),
+                (6103093, A), // pos+1 ≠ G
+                (6103094, A), // pos+2 ≠ G → CHH
+            ]);
+            let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
+            let mut record = ot_record.clone();
+            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+            let annotations: Vec<(usize, char)> =
+                xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
+            assert_compact_debug_snapshot!(annotations, @"[(2, 'H'), (14, 'H')]");
+        }
 
         Ok(())
     }
