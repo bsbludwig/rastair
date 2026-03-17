@@ -45,6 +45,7 @@ pub mod denovo_cpg;
 pub mod methylation;
 pub mod ml;
 pub mod pileup;
+mod progress;
 mod record_filters;
 mod require_tags;
 pub mod variant_calling;
@@ -178,6 +179,8 @@ pub fn call(mut params: CallParams) -> Result<()> {
     let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
     debug!("Going to process {} segments", regions.len());
+
+    progress::register_signal_handler();
 
     // Process each region and write results to the VCF
     //

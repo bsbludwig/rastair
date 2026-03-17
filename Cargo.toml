@@ -102,6 +102,7 @@ better_default = "1.0.5"
 # just so that rust-htslib builds it statically
 bzip2-sys = { version = "0.1.13", features = ["static"] }
 pollster = "0.4.0"
+jiff = "0.2.23"
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -1,6 +1,6 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
-    call::CallParams,
+    call::{CallParams, progress::ProgressTracker},
     metrics::PileupMetrics,
     sequence::ChunkRegion,
     utils::logging::ThisIsABug as _,
@@ -40,6 +40,8 @@ pub fn writer_thread(
     let ml_threshold = params.ml.threshold();
     let error_model = params.variant_calling.error_model;
 
+    let total_segments = regions.len();
+
     // Spawn the actual VCF writer thread. Everything in here is driven by the
     // incoming records from the processing threads.
     //
@@ -47,6 +49,7 @@ pub fn writer_thread(
     thread::Builder::new()
         .name("writer".to_string())
         .spawn(move || -> Result<()> {
+            let mut progress = ProgressTracker::new(total_segments);
             let span =
                 tracing::debug_span!("writer", vcf=%vcf_output.is_some(), bed=%bed_writer.is_some());
             let _guard = span.enter();
@@ -95,6 +98,8 @@ pub fn writer_thread(
                         }
                     }
                 }
+
+                progress.segment_done();
             }
 
             if let Some(vcf_output) = vcf_output.as_ref() {
