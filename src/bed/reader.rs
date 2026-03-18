@@ -46,6 +46,24 @@ impl RastairBedReader {
             })?
         };
 
+        // Warn if the tabix index is older than the BED file
+        let tbi_path = {
+            let mut p = bed_path.as_os_str().to_owned();
+            p.push(".tbi");
+            std::path::PathBuf::from(p)
+        };
+        if let (Ok(bed_meta), Ok(tbi_meta)) =
+            (std::fs::metadata(bed_path), std::fs::metadata(&tbi_path))
+            && let (Ok(bed_modified), Ok(tbi_modified)) = (bed_meta.modified(), tbi_meta.modified())
+            && bed_modified > tbi_modified
+        {
+            let path = bed_path.display();
+            warn!(
+                "Tabix index for {path} appears to be older than the BED file. \
+                         This can cause query errors. Regenerate it with: tabix {path}"
+            );
+        }
+
         Ok(RastairBedReader { reader })
     }
 
