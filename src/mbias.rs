@@ -1,5 +1,5 @@
 use crate::utils::cli;
-use clap::value_parser;
+use clap::{ArgGroup, value_parser};
 use clio::ClioPath;
 use color_eyre::{
     Result, Section as _,
@@ -10,11 +10,21 @@ use std::{env, path::PathBuf, process::Command};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, clap::Args)]
+#[command(group(
+    ArgGroup::new("input")
+        .args(["bed_file", "bam_file"])
+        .required(true)
+))]
 pub struct MBiasParams {
-    /// Input per-read BED file (can be gzipped)
-    #[arg(value_name="BED_FILE", value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
+    /// Input per-read BED file (must be tabix indexed or indexable)
+    #[arg(long = "bed", value_name="BED_FILE", value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
-    pub bed_file: ClioPath,
+    pub bed_file: Option<ClioPath>,
+
+    /// Input BAM file
+    #[arg(long = "bam", value_name="BAM_FILE", value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
+    #[arg(help_heading = cli::sections::INPUT)]
+    pub bam_file: Option<ClioPath>,
 
     /// Genomic region
     #[arg(long)]
@@ -61,6 +71,26 @@ pub struct MBiasParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub tabix_path: String,
 
+    /// Path to bcftools executable
+    #[arg(long = "bcftools-path", default_value = "bcftools")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub bcftools_path: String,
+
+    /// Path to rastair executable
+    #[arg(long = "rastair-path", default_value = "rastair")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub rastair_path: String,
+
+    /// Number of threads to use
+    #[arg(long, default_value_t = 1)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub threads: i32,
+
+    /// Treat the input as inverted, i.e. mod=unmod and unmod=mod
+    #[arg(long)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub wgbs: bool,
+
     /// Output path prefix
     #[arg(long = "output-prefix", default_value = ".")]
     #[arg(help_heading = cli::sections::OUTPUT)]
@@ -75,6 +105,7 @@ pub struct MBiasParams {
 
 impl MBiasParams {
     fn as_flags(&self) -> Vec<String> {
+        let rastair_path = self.current_rastair_executable();
         let mut params = vec![
             "--include-flag".into(),
             self.include_flag.to_string(),
@@ -82,8 +113,14 @@ impl MBiasParams {
             self.exclude_flag.to_string(),
             "--tabix-path".into(),
             self.tabix_path.clone(),
+            "--bcftools-path".into(),
+            self.bcftools_path.clone(),
+            "--rastair-path".into(),
+            rastair_path,
             "--output-prefix".into(),
             self.output_prefix.clone(),
+            "--threads".into(),
+            self.threads.to_string(),
         ];
         if let Some(region) = &self.region {
             params.push("--region".into());
@@ -100,6 +137,9 @@ impl MBiasParams {
         if let Some(vcf) = &self.vcf {
             params.push("--vcf".into());
             params.push(vcf.path().to_string_lossy().into_owned());
+        }
+        if self.wgbs {
+            params.push("--wgbs".into());
         }
         // auto-disable plots that require inputs the user hasn't provided
         if self.no_vbias || self.reference.is_none() {
@@ -161,6 +201,23 @@ impl MBiasParams {
             paths_to_try.iter().flatten().collect::<Vec<_>>()
         )).suggestion("You can set the R script directory using the --r-script-dir option or the R_SCRIPT_DIR environment variable.")
     }
+
+    fn current_rastair_executable(&self) -> String {
+        if self.rastair_path != "rastair" {
+            return self.rastair_path.clone();
+        }
+
+        match env::current_exe() {
+            Ok(path) => path.to_string_lossy().into_owned(),
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "Failed to determine current rastair executable path, falling back to default"
+                );
+                self.rastair_path.clone()
+            }
+        }
+    }
 }
 
 // Call R script with right parameters
@@ -171,21 +228,27 @@ pub fn mbias(params: &MBiasParams) -> Result<()> {
 
     ensure_tabix_index_exists(params).wrap_err("Failed to create tabix index file")?;
 
-    let status = Command::new(r_script)
-        .arg("--bed")
-        .arg(params.bed_file.path())
-        .args(params.as_flags())
-        .status()
-        .wrap_err("Failed to execute mbias script")?;
+    let mut command = Command::new(r_script);
+    if let Some(bed_file) = &params.bed_file {
+        command.arg("--bed").arg(bed_file.path());
+    }
+    if let Some(bam_file) = &params.bam_file {
+        command.arg("--bam").arg(bam_file.path());
+    }
+
+    let status =
+        command.args(params.as_flags()).status().wrap_err("Failed to execute mbias script")?;
 
     ensure!(status.success(), "R script exited with {status}");
     Ok(())
 }
 
 fn ensure_tabix_index_exists(params: &MBiasParams) -> Result<()> {
-    let tabix_index = params.bed_file.with_file_name({
-        let mut name = params
-            .bed_file
+    let Some(bed_file) = &params.bed_file else {
+        return Ok(());
+    };
+    let tabix_index = bed_file.with_file_name({
+        let mut name = bed_file
             .file_name()
             .wrap_err("Failed to get file name from BED file")
             .note("Make sure the BED file exists and is accessible")?
@@ -198,7 +261,7 @@ fn ensure_tabix_index_exists(params: &MBiasParams) -> Result<()> {
         let status = Command::new(&params.tabix_path)
             .arg("-p")
             .arg("bed")
-            .arg(params.bed_file.path())
+            .arg(bed_file.path())
             .status()
             .wrap_err("Failed to execute `tabix` to create index")
             .with_note(|| {
@@ -217,4 +280,68 @@ fn ensure_tabix_index_exists(params: &MBiasParams) -> Result<()> {
         info!(path = ?tabix_index, "Created tabix index file");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MBiasParams;
+
+    #[test]
+    fn as_flags_includes_extended_script_options() {
+        let params = MBiasParams {
+            bed_file: None,
+            bam_file: None,
+            region: None,
+            include_flag: 3,
+            exclude_flag: 3852,
+            read_length: None,
+            reference: None,
+            vcf: None,
+            no_vbias: false,
+            no_gc: false,
+            tabix_path: "tabix".into(),
+            bcftools_path: "bcftools".into(),
+            rastair_path: "rastair".into(),
+            threads: 4,
+            wgbs: true,
+            output_prefix: ".".into(),
+            r_script_dir: None,
+        };
+
+        let flags = params.as_flags();
+
+        assert!(flags.windows(2).any(|window| window == ["--bcftools-path", "bcftools"]));
+        assert!(flags.windows(2).any(|window| window == ["--threads", "4"]));
+        assert!(flags.iter().any(|flag| flag == "--wgbs"));
+        assert!(flags.iter().any(|flag| flag == "--no-vbias"));
+        assert!(flags.iter().any(|flag| flag == "--no-gc"));
+        assert!(flags.windows(2).any(|window| window[0] == "--rastair-path"));
+    }
+
+    #[test]
+    fn as_flags_preserves_explicit_rastair_path_override() {
+        let params = MBiasParams {
+            bed_file: None,
+            bam_file: None,
+            region: None,
+            include_flag: 3,
+            exclude_flag: 3852,
+            read_length: None,
+            reference: None,
+            vcf: None,
+            no_vbias: false,
+            no_gc: false,
+            tabix_path: "tabix".into(),
+            bcftools_path: "bcftools".into(),
+            rastair_path: "/tmp/custom-rastair".into(),
+            threads: 1,
+            wgbs: false,
+            output_prefix: ".".into(),
+            r_script_dir: None,
+        };
+
+        let flags = params.as_flags();
+
+        assert!(flags.windows(2).any(|window| window == ["--rastair-path", "/tmp/custom-rastair"]));
+    }
 }
