@@ -21,6 +21,7 @@ use rustc_hash::FxHashMap;
 use std::thread::available_parallelism;
 
 mod base_modification;
+use crate::progress::ProgressTracker;
 pub use base_modification::{
     MethylatedPositions, MethylationContext, XmAnnotation, XrTags, determine_context,
 };
@@ -77,6 +78,8 @@ pub struct BamRewriteArgs {
     ?mode,
 ))]
 pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
+    crate::progress::register_signal_handler();
+
     // Open BAM on the main thread to get header and compute regions
     let (header, regions) = {
         let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
@@ -95,6 +98,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
     let worker_threads = params.threads.saturating_sub(1).max(1);
     let (bam_sender, bam_receiver) = ordered_channel::bounded::<Vec<Record>>(worker_threads * 10);
 
+    let total_segments = regions.len();
     let output_file = params.output.clone();
     let writer_thread = std::thread::Builder::new()
         .name("bam-writer".to_string())
@@ -110,10 +114,12 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
                 .wrap_err("failed to set compression level")?;
             writer.set_threads(3).wrap_err("failed to set threads")?;
 
+            let mut progress = ProgressTracker::new(total_segments);
             for records in bam_receiver {
                 for record in records {
                     writer.write(&record).wrap_err("failed to write record to new BAM file")?;
                 }
+                progress.segment_done();
             }
             Ok(())
         })

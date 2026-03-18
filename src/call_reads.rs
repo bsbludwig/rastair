@@ -4,6 +4,7 @@ use crate::{
         reader::{RastairBedReader, RastairCall},
     },
     call::variant_calling::ReadFlags,
+    progress::ProgressTracker,
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
     utils::{cli, logging::ThisIsABug},
 };
@@ -115,6 +116,8 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
 
+    crate::progress::register_signal_handler();
+
     if let Some(bed_path) = &params.calls {
         // if we're gonna try to read a calls file, make sure we can open it
         let _ = RastairBedReader::new(bed_path)
@@ -147,6 +150,7 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
     };
 
     // Create a writer for the output
+    let total_segments = regions.len();
     let writer_thread = thread::Builder::new()
         .name("writer".to_string())
         .spawn({
@@ -154,11 +158,13 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
             move || -> Result<()> {
                 let mut bed_writer =
                     params.bed_reads.writer().wrap_err("Failed to open BED file")?;
+                let mut progress = ProgressTracker::new(total_segments);
 
                 for records in receiver {
                     for row in records {
                         bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
                     }
+                    progress.segment_done();
                 }
 
                 bed_writer.close().wrap_err("Failed to close BED writer")?;
