@@ -19,7 +19,7 @@ RUN cargo xtask release
 FROM r-base:4.3.3 AS release
 
 # Install useful dependencies
-RUN apt update && apt-get -y upgrade && apt-get -y --no-install-recommends install procps bash-completion samtools bedtools bcftools vcftools tabix pandoc libcurl4-openssl-dev libssl-dev && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt update && apt-get -y upgrade && apt-get -y --no-install-recommends install procps bash-completion samtools bedtools bcftools vcftools tabix pandoc gzip libcurl4-openssl-dev libssl-dev && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install BiocManager for Bioconductor package management
 RUN Rscript -e "install.packages('BiocManager', repos='https://cloud.r-project.org')"
@@ -28,6 +28,7 @@ RUN Rscript -e "install.packages('BiocManager', repos='https://cloud.r-project.o
 RUN Rscript -e "BiocManager::install(c('Rsamtools', 'Biostrings', 'GenomicRanges'), version = '3.18', ask = FALSE)"
 RUN Rscript -e "if (!requireNamespace('remotes', quietly = TRUE)) install.packages('remotes', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('argparser', version = '0.7.2', repos = 'https://cloud.r-project.org')" \
+    -e "remotes::install_version('knitr', version = '1.50', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('rmarkdown', version = '2.29', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('R.utils', version = '2.13.0', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('data.table', version = '1.17.8', repos = 'https://cloud.r-project.org')" \
