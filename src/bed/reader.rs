@@ -51,7 +51,14 @@ impl RastairBedReader {
 
     #[instrument(level = "debug", skip(self))]
     pub fn query(&mut self, region: &Region) -> Result<Vec<SimpleRastairBedRecord>> {
-        let query = self.reader.query(region).wrap_err("Failed to query tabix file")?;
+        let query = match self.reader.query(region) {
+            Ok(query) => query,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                // Region's chromosome not in the tabix index — no calls for this region
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e).wrap_err("Failed to query tabix file"),
+        };
         let mut records = Vec::new();
         for result in query {
             let record =
@@ -177,8 +184,77 @@ impl SimpleRastairBedRecord {
 #[cfg(test)]
 mod tests {
     use insta::assert_debug_snapshot;
+    use std::io::Write;
 
     use super::*;
+
+    /// Creates a small bgzf-compressed BED file with records only on chr19,
+    /// runs `tabix` to index it, and returns the path to the .bed.gz file.
+    fn create_test_bed_gz(dir: &std::path::Path) -> Result<std::path::PathBuf> {
+        let bed_path = dir.join("test.bed.gz");
+        let compression_level =
+            bgzf::CompressionLevel::try_from(6).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+        let mut writer =
+            bgzf::Writer::new(std::io::BufWriter::new(File::create(&bed_path)?), compression_level);
+        writeln!(
+            writer,
+            "#chr\tstart\tend\tname\tbeta_est\tstrand\tunmod\tmod\tno_snp\tsnp\tcoverage\tgenotype\tgt_p_score\tgt_conf_score\tcpg"
+        )?;
+        writeln!(
+            writer,
+            "chr19\t6107663\t6107664\t.\t0.05\t+\t19\t1\t20\t0\t41\tC/C\t99\t60\tNEW"
+        )?;
+        writeln!(writer, "chr19\t6107750\t6107751\t.\t0.73\t+\t3\t8\t7\t0\t18\tC/C\t99\t21\tREF")?;
+        writer.finish().map_err(|e| color_eyre::eyre::eyre!("Failed to finish bgzf: {e}"))?;
+
+        let output = std::process::Command::new("tabix")
+            .args(["-p", "bed"])
+            .arg(&bed_path)
+            .output()
+            .wrap_err("Failed to run tabix")?;
+        color_eyre::eyre::ensure!(
+            output.status.success(),
+            "tabix failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        Ok(bed_path)
+    }
+
+    #[test]
+    fn query_missing_chromosome_returns_empty() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bed_path = create_test_bed_gz(dir.path())?;
+
+        let mut reader = RastairBedReader::new(&bed_path)?;
+
+        // chr19 exists in the file
+        let region: Region = "chr19:6107663-6107751".parse()?;
+        let records = reader.query(&region)?;
+        assert_eq!(records.len(), 2);
+
+        // chrX does NOT exist in the tabix index — should return empty, not error
+        let region: Region = "chrX:1-1000".parse()?;
+        let records = reader.query(&region)?;
+        assert!(records.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn query_region_with_no_records_returns_empty() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bed_path = create_test_bed_gz(dir.path())?;
+
+        let mut reader = RastairBedReader::new(&bed_path)?;
+
+        // chr19 exists but this region has no records
+        let region: Region = "chr19:1-100".parse()?;
+        let records = reader.query(&region)?;
+        assert!(records.is_empty());
+
+        Ok(())
+    }
 
     #[test]
     fn parse_rastair_bed_file() -> Result<()> {
