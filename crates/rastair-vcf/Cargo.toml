@@ -1,6 +1,6 @@
 [package]
 name = "rastair-vcf"
-version = "0.1.0"
+version = "0.2.0"
 description = "A VCF writer for Rastair."
 authors = ["Pascal Hertleif <pascal@softleif.se>"]
 license-file = "../LICENSE.txt"
@@ -11,7 +11,7 @@ rust-htslib = { workspace = true }
 color-eyre = { workspace = true }
 serde = { workspace = true }
 cstr8 = { workspace = true }
-rastair-types = { version = "0.1.0", path = "../rastair-types" }
+rastair-types = { version = "0.2.0", path = "../rastair-types" }
 
 [dev-dependencies]
 insta = { workspace = true }
@@ -22,7 +22,7 @@ pastey = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(coverage, coverage_nightly)',
+    'cfg(coverage, coverage_nightly)',
 ] }
 
 [lints.clippy]
