@@ -208,7 +208,7 @@ fn rewrite_region_parallel(
                     .wrap_err("thread-local FASTA reader not initialized")
                     .this_is_a_bug()?;
 
-                rewrite_region(bam, bed, fasta, &segment, mode, is_last)
+                rewrite_region(bam, bed, fasta, segment, mode, is_last)
             })
         })
     })?;
@@ -262,7 +262,7 @@ fn rewrite_region(
         seq
     };
     let ref_base = |pos: u32| -> Option<Base> {
-        let idx = (pos as u64).checked_sub(ref_start)? as usize;
+        let idx = u64::from(pos).checked_sub(ref_start)? as usize;
         ref_seq.get(idx).map(|&b| Base::from(b))
     };
 
@@ -286,8 +286,7 @@ fn rewrite_region(
             continue;
         }
 
-        rewrite_record(&calls, &mut record, mode, &ref_base)
-            .wrap_err("failed to rewrite record")?;
+        rewrite_record(&calls, &mut record, mode, ref_base).wrap_err("failed to rewrite record")?;
         out.push(record.clone());
     }
 

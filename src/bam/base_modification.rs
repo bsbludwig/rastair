@@ -50,9 +50,9 @@ pub fn determine_context(
 ) -> MethylationContext {
     match strand {
         Strand::OT => {
-            if pos.checked_add(1).and_then(|p| ref_base(p)) == Some(Base::G) {
+            if pos.checked_add(1).and_then(&ref_base) == Some(Base::G) {
                 MethylationContext::CpG
-            } else if pos.checked_add(2).and_then(|p| ref_base(p)) == Some(Base::G) {
+            } else if pos.checked_add(2).and_then(&ref_base) == Some(Base::G) {
                 MethylationContext::CHG
             } else {
                 MethylationContext::CHH

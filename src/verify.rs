@@ -953,16 +953,14 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
                     fmt_n(m.fp),
                     m.precision
                 );
-                if has_comp_cat {
-                    if let Some(c) = &cat_metrics.competitor_vs_truth {
-                        print!(
-                            "   comp: n={} tp={} fp={} prec={:.4}",
-                            fmt_n(c.n),
-                            fmt_n(c.tp),
-                            fmt_n(c.fp),
-                            c.precision
-                        );
-                    }
+                if has_comp_cat && let Some(c) = &cat_metrics.competitor_vs_truth {
+                    print!(
+                        "   comp: n={} tp={} fp={} prec={:.4}",
+                        fmt_n(c.n),
+                        fmt_n(c.tp),
+                        fmt_n(c.fp),
+                        c.precision
+                    );
                 }
                 println!();
             }
