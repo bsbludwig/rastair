@@ -12,7 +12,7 @@ fn simple_per_read_call() -> Result<()> {
         "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
         "--region=chr19:6105900-6105950",
-    ]), @r"
+    ]), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -158,11 +158,8 @@ fn can_tabix_files() -> Result<()> {
         .succeeds()
         .wrap_err("Failed to run per-read")?;
 
-    fs::remove_file(temp_dir.path().join("test.bed.gz.tbi"))
-        .wrap_err("Failed to remove existing tabix index")?;
-
     assert_cmd_snapshot!(Command::new("tabix")
-        .args(["-p", "bed"])
+        .args(["-f", "-p", "bed"])
         .arg(&bed_file)
         .current_dir(temp_dir.path()),
         @r"

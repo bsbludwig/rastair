@@ -487,7 +487,6 @@ fn bam_rewrite_legacy_mixed_site_keeps_per_read_z_and_z_uppercase() -> Result<()
         .succeeds()
         .wrap_err("Failed to generate calls")?;
 
-    // `rastair call` already writes the tabix index for BED output.
     rastair()
         .args([
             "bam",

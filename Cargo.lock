@@ -178,6 +178,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgzf"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ceb34b265c76cea4adf8478fc193bc159c4df33ceca9044f8576f709df87b4bf"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "libdeflater",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "bio"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2597,6 +2609,7 @@ name = "rastair"
 version = "2.1.0"
 dependencies = [
  "better_default",
+ "bgzf",
  "bio",
  "biosphere",
  "bzip2-sys",
@@ -2779,7 +2792,7 @@ dependencies = [
 [[package]]
 name = "rust-htslib"
 version = "1.0.0"
-source = "git+https://github.com/Softleif/rust-htslib.git#2458224684b34ee384cfb32823be89287fa77348"
+source = "git+https://github.com/Softleif/rust-htslib.git#3bc5d41492f5fce4691d41ba99a33e0ceee516f5"
 dependencies = [
  "bio-types",
  "byteorder",

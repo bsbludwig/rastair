@@ -103,6 +103,7 @@ better_default = "1.0.5"
 bzip2-sys = { version = "0.1.13", features = ["static"] }
 pollster = "0.4.0"
 jiff = "0.2.23"
+bgzf = "0.3.0"
 
 [dev-dependencies]
 insta = { workspace = true }
