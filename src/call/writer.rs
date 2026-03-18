@@ -1,7 +1,8 @@
 use crate::{
     bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
-    call::{CallParams, progress::ProgressTracker},
+    call::CallParams,
     metrics::PileupMetrics,
+    progress::ProgressTracker,
     sequence::ChunkRegion,
     utils::logging::ThisIsABug as _,
 };

@@ -45,7 +45,6 @@ pub mod denovo_cpg;
 pub mod methylation;
 pub mod ml;
 pub mod pileup;
-mod progress;
 mod record_filters;
 mod require_tags;
 pub mod variant_calling;
@@ -180,7 +179,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     debug!("Going to process {} segments", regions.len());
 
-    progress::register_signal_handler();
+    crate::progress::register_signal_handler();
 
     // Process each region and write results to the VCF
     //

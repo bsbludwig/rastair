@@ -90,32 +90,49 @@ impl ProgressTracker {
             && self.start.elapsed() >= MIN_CALIBRATION_TIME
         {
             self.calibrated = true;
-            self.log();
+            self.log_one_off_estimate();
         }
     }
 
     fn log(&self) {
-        let elapsed = self.start.elapsed();
-        let pct = self.completed as f64 / self.total as f64 * 100.0;
-        let remaining = self.total - self.completed;
+        let Estimate { percent, eta, done } = self.estimate();
 
-        if remaining == 0 {
-            info!(percent = %"100%", "[progress] {}/{} segments", self.completed, self.total);
-            return;
-        }
-
-        let secs_per_segment = elapsed.as_secs_f64() / self.completed as f64;
-        let eta = Duration::from_secs_f64(secs_per_segment * remaining as f64);
-        let done = Timestamp::now().add(eta);
         info!(
-            percent = %format!("{pct:.1}%"),
-            eta = %format_duration(eta),
-            done = %done,
-            "[progress] {}/{} segments",
+            percent = %format!("{percent:.1}%"),
+            time_left = %format_duration(eta),
+            done_at = %done,
+            "{}/{} segments",
             self.completed,
             self.total,
         );
     }
+
+    fn log_one_off_estimate(&self) {
+        let Estimate { eta, done, .. } = self.estimate();
+
+        info!(
+            time_left = %format_duration(eta),
+            done_at = %done,
+            "Runtime estimate",
+        );
+    }
+
+    fn estimate(&self) -> Estimate {
+        let elapsed = self.start.elapsed();
+        let pct = self.completed as f64 / self.total as f64 * 100.0;
+        let remaining = self.total - self.completed;
+        let secs_per_segment = elapsed.as_secs_f64() / self.completed as f64;
+        let eta = Duration::from_secs_f64(secs_per_segment * remaining as f64);
+        let done = Timestamp::now().add(eta);
+
+        Estimate { percent: pct, eta, done }
+    }
+}
+
+struct Estimate {
+    percent: f64,
+    eta: Duration,
+    done: Timestamp,
 }
 
 fn format_duration(d: Duration) -> String {
