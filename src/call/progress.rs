@@ -51,6 +51,7 @@ const MIN_CALIBRATION_TIME: Duration = Duration::from_secs(5);
 
 /// Tracks segment completion in the writer thread and logs ETA estimates.
 pub struct ProgressTracker {
+    enabled: bool,
     total: usize,
     completed: usize,
     calibrated: bool,
@@ -58,12 +59,24 @@ pub struct ProgressTracker {
 }
 
 impl ProgressTracker {
+    /// Create a progress tracker, disabled if the "CI" environment variable is set (to avoid spamming CI logs).
     pub fn new(total_segments: usize) -> Self {
-        Self { total: total_segments, completed: 0, calibrated: false, start: Instant::now() }
+        let enabled = std::env::var("CI").err() == Some(std::env::VarError::NotPresent);
+        Self {
+            total: total_segments,
+            completed: 0,
+            calibrated: false,
+            start: Instant::now(),
+            enabled,
+        }
     }
 
     /// Call after each segment has been fully written
     pub fn segment_done(&mut self) {
+        if !self.enabled {
+            return;
+        }
+
         self.completed += 1;
 
         let signal_requested = PRINT_REQUESTED
