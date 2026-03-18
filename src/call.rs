@@ -39,7 +39,7 @@ use color_eyre::{
 };
 use rayon::prelude::*;
 use std::{ops::Mul as _, rc::Rc, thread::available_parallelism};
-use tracing::{Level, debug, instrument, trace, warn};
+use tracing::{Level, debug, error, instrument, trace, warn};
 
 pub mod denovo_cpg;
 pub mod methylation;
@@ -334,7 +334,7 @@ fn process_region_wrapper(
         match res {
             Ok(records) => Ok(records),
             Err(e) => {
-                warn!(error = format!("{e:#}"), "Failed to process region");
+                error!(error = format!("{e:#}"), "Failed to process region");
                 // We still send an empty vector to the channel to increment the index
                 Ok(Vec::new())
             }

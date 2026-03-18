@@ -21,7 +21,7 @@ use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use rustc_hash::FxHashMap;
 use std::thread::{self, available_parallelism};
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct PerReadParams {
@@ -251,7 +251,7 @@ fn process_region_wrapper(
     let records = match res {
         Ok(records) => records,
         Err(e) => {
-            warn!(error = format!("{e:#}"), "Failed to process region");
+            error!(error = format!("{e:#}"), "Failed to process region");
             // We still send an empty vector to the channel to increment the index
             Vec::new()
         }

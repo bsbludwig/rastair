@@ -25,7 +25,7 @@ use crate::progress::ProgressTracker;
 pub use base_modification::{
     MethylatedPositions, MethylationContext, XmAnnotation, XrTags, determine_context,
 };
-use tracing::{instrument, trace, warn};
+use tracing::{error, instrument, trace, warn};
 
 /// Subcommands for `rastair bam`
 #[derive(Debug, clap::Subcommand)]
@@ -134,9 +134,14 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
         .install(move || {
             regions.iter().enumerate().par_bridge().try_for_each_with(
                 bam_sender,
-                |sender, (index, segment)| {
+                |sender, (index, segment)| -> Result<()> {
                     let is_last = index == n_regions - 1;
-                    rewrite_region_parallel(index, segment, is_last, sender, params, mode)
+                    if let Err(error) =
+                        rewrite_region_parallel(index, segment, is_last, sender, params, mode)
+                    {
+                        error!(error = format!("{error:#}"), "Failed to process region");
+                    }
+                    Ok(())
                 },
             )
         })
