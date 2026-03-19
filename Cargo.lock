@@ -1188,7 +1188,7 @@ dependencies = [
 [[package]]
 name = "hts-sys"
 version = "2.2.0"
-source = "git+https://github.com/Softleif/hts-sys.git#f1e6ce2b5a56f5d1b2aff7eb2bd43ceb16c73f09"
+source = "git+https://github.com/Softleif/hts-sys.git#a1c41afcdffbb4b7ce2314dbfd5c5d4710c97060"
 dependencies = [
  "bzip2-sys",
  "cc",
