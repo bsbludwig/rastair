@@ -14,9 +14,8 @@ use color_eyre::{
     Result, Section,
     eyre::{Context as _, ContextCompat, eyre},
 };
-
-use rastair_types::SmallVec;
 use rastair_types::Strand;
+use rastair_types::{Base, SmallVec};
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use rustc_hash::FxHashMap;
@@ -364,12 +363,12 @@ fn record_to_row(
     count_clipped: bool,
 ) -> Result<PerRead> {
     let segment_start_pos =
-        usize::try_from(segment.range.start).expect("segment range fits in usize");
+        usize::try_from(segment.range.start).wrap_err("segment range exceeded usize")?;
     let ref_seq = &segment.sequence;
     let read_seq = record.seq();
     let cigar = record.cigar();
     let clipping_length = usize::try_from(cigar.leading_softclips() + cigar.leading_hardclips())
-        .expect("clipping length fits in usize");
+        .wrap_err("clipping length exceeded usize")?;
 
     let mut cpg_count = 0;
     let mut mod_cpgs = SmallVec::new();
@@ -385,13 +384,15 @@ fn record_to_row(
         let Some(pos_in_ref) = pos_in_ref else {
             continue;
         };
-        let pos_in_read = usize::try_from(pos_in_read).expect("position fits in usize");
-        let pos_in_ref = usize::try_from(pos_in_ref).expect("position fits in usize");
+        let pos_in_read =
+            usize::try_from(pos_in_read).wrap_err("position in read exceeded usize")?;
+        let pos_in_ref = usize::try_from(pos_in_ref).wrap_err("position in ref exceeded usize")?;
         let idx = pos_in_ref
             .checked_sub(segment_start_pos)
             .wrap_err("Failed to calculate index for position")?;
-        let read_base = read_seq[pos_in_read];
-        let ref_base = ref_seq.get(idx).copied().wrap_err("reading seq")?;
+        let read_base = Base::from(read_seq[pos_in_read]);
+        let ref_base =
+            ref_seq.get(idx).map(Base::from).wrap_err("reading ref base from sequence")?;
         let orientation = orientation(record, exclude_ambiguous, unpaired);
         let pos_rel = if count_clipped {
             pos_in_read
@@ -403,31 +404,24 @@ fn record_to_row(
                 .note("When subtracting leading clippings, the position would be negative")?
         };
 
-        if orientation == Strand::OT && ref_base == b'C' {
-            let next_base = ref_seq.get(idx + 1).copied().wrap_err_with(|| {
-                format!(
-                    "reading seq + 1 at pos {} in segment {}, seq len {}",
-                    idx + 1,
-                    segment.region,
-                    ref_seq.len()
-                )
-            })?;
-            if next_base == b'G' {
+        if orientation == Strand::OT && ref_base == Base::C {
+            let next_base = ref_seq.get(idx + 1).map(Base::from).unwrap_or_default();
+            if next_base == Base::G {
                 cpg_count += 1;
                 match read_base {
-                    b'C' => unmod_cpgs.push(pos_rel),
-                    b'T' => mod_cpgs.push(pos_rel),
+                    Base::C => unmod_cpgs.push(pos_rel),
+                    Base::T => mod_cpgs.push(pos_rel),
                     _ => snp_cpgs.push(pos_rel),
                 }
             }
-        } else if orientation == Strand::OB && ref_base == b'G' {
+        } else if orientation == Strand::OB && ref_base == Base::G {
             let prev_base =
-                idx.checked_sub(1).and_then(|i| ref_seq.get(i)).copied().unwrap_or(b'N');
-            if prev_base == b'C' {
+                idx.checked_sub(1).and_then(|i| ref_seq.get(i)).map(Base::from).unwrap_or_default();
+            if prev_base == Base::C {
                 cpg_count += 1;
                 match read_base {
-                    b'G' => unmod_cpgs.push(pos_rel),
-                    b'A' => mod_cpgs.push(pos_rel),
+                    Base::G => unmod_cpgs.push(pos_rel),
+                    Base::A => mod_cpgs.push(pos_rel),
                     _ => snp_cpgs.push(pos_rel),
                 }
             }
@@ -448,8 +442,8 @@ fn record_to_row(
     Ok(PerRead {
         region: Region {
             contig: segment.range.contig.clone(),
-            start: u64::try_from(record.pos()).expect("pos fits in u64"),
-            end: u64::try_from(cigar.end_pos()).expect("pos fits in u64"),
+            start: u64::try_from(record.pos()).wrap_err("start pos does not fit in u64")?,
+            end: u64::try_from(cigar.end_pos()).wrap_err("end pos does not fit in u64")?,
         },
         flag: record.flags(),
         mapq: record.mapq(),
