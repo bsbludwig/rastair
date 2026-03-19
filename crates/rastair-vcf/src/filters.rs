@@ -64,7 +64,7 @@ macro_rules! filter {
             fn id_from_header(
                 &self,
                 header: &rust_htslib::bcf::header::HeaderView,
-            ) -> rust_htslib::errors::Result<rust_htslib::bcf::header::Id> {
+            ) -> Result<rust_htslib::bcf::header::Id, rust_htslib::bcf::BcfError> {
                 header.name_to_id(cstr8::cstr8!(stringify!($name)))
             }
 
