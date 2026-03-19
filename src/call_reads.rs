@@ -8,7 +8,7 @@ use crate::{
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
     utils::{cli, logging::ThisIsABug},
 };
-use bio::bio_types::sequence::SequenceReadPairOrientation;
+use bio_types::sequence::SequenceReadPairOrientation;
 use clio::ClioPath;
 use color_eyre::{
     Result, Section,
