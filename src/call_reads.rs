@@ -405,14 +405,7 @@ fn record_to_row(
         };
 
         if orientation == Strand::OT && ref_base == b'C' {
-            let next_base = ref_seq.get(idx + 1).copied().wrap_err_with(|| {
-                format!(
-                    "reading seq + 1 at pos {} in segment {}, seq len {}",
-                    idx + 1,
-                    segment.region,
-                    ref_seq.len()
-                )
-            })?;
+            let next_base = ref_seq.get(idx + 1).copied().unwrap_or(b'N');
             if next_base == b'G' {
                 cpg_count += 1;
                 match read_base {
