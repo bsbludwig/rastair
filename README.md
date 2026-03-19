@@ -27,10 +27,10 @@ We provide binary releases for Linux and Mac. Visit [www.rastair.com](https://ww
 
 ### Docker
 
-You can install the pre-built docker image in the usual way. For example, to install version 2.1.0-rc1, you could do:
+You can install the pre-built docker image in the usual way. For example, to install version 2.1.0, you could do:
 
 ```bash
-docker pull sbludwig/rastair:version-2.1.0-rc1
+docker pull sbludwig/rastair:version-2.1.0
 ```
 
 ## Usage examples
