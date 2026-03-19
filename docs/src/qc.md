@@ -8,23 +8,34 @@ The QC tool requires a working installation of R with [RMarkdown](https://cran.r
 > ```r
 > install.packages(c("argparser", "data.table", "ggplot2", "rmarkdown"))
 > ```
+
+For V-bias and GC-bias plots, it also requires [Rsamtools](https://bioconductor.org/packages//release/bioc/html/Rsamtools.html) from Bioconductor. This can be installed with
+>```r
+> if (!require("BiocManager", quietly = TRUE))
+>   install.packages("BiocManager")
+>
+> BiocManager::install("Rsamtools")
+>```
+
+It also requires [pandoc](https://pandoc.org) for rendering and [bcftools](https://github.com/samtools/bcftools) for GC and CpG bias plots.
 ```
 
 ## Generating QC reports
-To generate the report, you need to first generate per-read bed output as described in the [examples section](src/examples.md#3-report-methylation-per-read).
-
-```admonish tip
-You can speed this up by e.g. restricting to a smaller chromosome with e.g. `-l chr17` as an additional argument to `rastair per-read`.
-```
-
-Once you have your per-read output, you generate the html report with
+The qc report can be generated directly from a bam file, or from pre-generated per-read and per-position bed files:
 
 ```bash
 mkdir -p test_qc
-rastair mbias --output-prefix test_qc test_per-read.bed.gz
+rastair mbias --output-prefix test_qc --bam test.bam
 ```
 
-This will produce a file called `mbias.html` in the `test_qc` directory.
+This will produce a file called `qc_report.html` in the `test_qc` directory.
+
+You can selectively disable the V-bias and GC/CpG bias plots to speed up processing and/or reduce dependencies:
+
+```bash
+mkdir -p test_qc
+rastair mbias --output-prefix test_qc --no-vbias --no-gc --bam test.bam
+```
 
 ## Elements of the QC report
 
@@ -66,3 +77,17 @@ In some cases, for example when DNA is enzymatically digested *in vivo* or *in v
 ![Example V-bias plot](img/vbias_example.png "Example V-bias plot")
 
 Here, colour denotes methylation, while the y-axis reflects the length of the original fragment, assuming paired-end sequencing.
+
+### GC/CpG bias
+
+We also provide some plots to visualise the relationship between local GC content and CpG density per read vs methylation and coverage:
+
+![Example GC-bias plot](img/gc_bias_example.png "Example GC-bias plot")
+
+Here, you can see whether highly/lowly methylated reads fall into high/low GC-content regions.
+
+Another occasional issue is coverage differences depending on CpG density of the read:
+
+![Example CpG-bias plot](img/cpg_cov_bias_example.png "Example CpG-bias plot")
+
+Here, you can see that there's a slight negative correlation for 100bp regions with many CpGs to have lower coverage.

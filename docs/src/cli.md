@@ -387,7 +387,7 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
   Default value: `100000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
-  Default value: `14`
+  Default value: `10`
 
 
 
@@ -422,7 +422,7 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
   Default value: `100000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
-  Default value: `14`
+  Default value: `10`
 
 
 
@@ -515,7 +515,7 @@ Convert between different file formats
 
 * `-@`, `--threads <TOTAL_THREADS>` — Total number of threads to use (e.g. for parallel compression)
 
-  Default value: `14`
+  Default value: `10`
   [env: `RASTAIR_THREADS`]
 
 
