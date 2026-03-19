@@ -30,10 +30,7 @@ impl<'a> SlidingEntropy<'a> {
         let new_start = idx.saturating_sub(HALF_WINDOW).min(self.sequence.len());
         let new_end = idx.saturating_add(HALF_WINDOW + 1).min(self.sequence.len());
 
-        if !self.initialized
-            || new_start >= self.window_end
-            || new_end <= self.window_start
-        {
+        if !self.initialized || new_start >= self.window_end || new_end <= self.window_start {
             self.initialize(new_start, new_end);
         } else {
             self.slide_to(new_start, new_end);
