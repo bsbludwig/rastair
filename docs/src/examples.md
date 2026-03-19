@@ -113,6 +113,18 @@ rastair per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 
 For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
 
-```admonish info
-The per-read output is also the input for your QC pipeline. For more details, read the [qc section](src/qc.md) of this manual.
+Alternatively, we also support two different ways to include methylation information in the bam file directly. To do this, you need to first generate a per-position bed file with `rastair call` as described earler. Once you have this, you can annotate your input bam with the `XM`/`XR` tags used in [Bismark](https://felixkrueger.github.io/Bismark/bismark/alignment/) and several other short-read methylation callers:
+
+```bash
+rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
+```
+
+Alternatively, we also support the new official SAM standard for recording per-read methylation via [the `MM` tags](https://samtools.github.io/hts-specs/SAMtags.pdf):
+
+```bash
+rastair bam standard -r reference.fa.gz --bam test_mm.bam test.bam test.bed.gz
+```
+
+```admonish warn
+Be aware that `rastair bam standard` will produce bam files where any T that was deemed a "conversion" in a read is converted back to C, so the sequence information in the source and `MM` annotated files will differ!
 ```
