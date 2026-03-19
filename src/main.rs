@@ -55,7 +55,6 @@ enum Subcommand {
     ///
     /// Writes a new BAM file that includes methylation tags derived from
     /// Rastair calls.
-    #[command(hide = true)]
     Bam {
         #[command(subcommand)]
         command: BamSubcommand,

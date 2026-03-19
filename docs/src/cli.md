@@ -2,13 +2,16 @@
 
 This document contains the help content for the `rastair` command-line program.
 
-**Version:** `2.0.0`
+**Version:** `2.1.0`
 
 **Command Overview:**
 
 * [`rastair`↴](#rastair)
 * [`rastair call`↴](#rastair-call)
 * [`rastair per-read`↴](#rastair-per-read)
+* [`rastair bam`↴](#rastair-bam)
+* [`rastair bam standard`↴](#rastair-bam-standard)
+* [`rastair bam legacy`↴](#rastair-bam-legacy)
 * [`rastair convert`↴](#rastair-convert)
 * [`rastair view`↴](#rastair-view)
 * [`rastair mbias`↴](#rastair-mbias)
@@ -26,6 +29,7 @@ See <https://docs.rastair.com/> for more information.
 
 * `call` — Call methylated positions
 * `per-read` — Call methylation per-read
+* `bam` — Add methylation information to BAM files
 * `convert` — Convert between different file formats
 * `view` — View internal format as JSON lines
 * `mbias` — Calculate conversion per base position in read
@@ -337,6 +341,91 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 
 
+## `rastair bam`
+
+Add methylation information to BAM files
+
+Writes a new BAM file that includes methylation tags derived from Rastair calls.
+
+**Usage:** `rastair bam <COMMAND>`
+
+###### **Subcommands:**
+
+* `standard` — Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite SEQ to un-modify bases that have methylation evidence
+* `legacy` — Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bismark
+
+
+
+## `rastair bam standard`
+
+Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite SEQ to un-modify bases that have methylation evidence
+
+**Usage:** `rastair bam standard [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE> <CALLS_FILE>`
+
+###### **Arguments:**
+
+* `<BAM_FILE>` — Path to sorted and indexed BAM file
+* `<CALLS_FILE>` — Rastair's calls to determine methylation
+
+###### **Input Options:**
+
+* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
+* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+
+###### **Output Options:**
+
+* `-o`, `--output <OUTPUT>` — Output file
+
+  Default value: `-`
+
+###### **Processing Options:**
+
+* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
+
+   Used for splitting work between threads. Tweak this to adjust memory usage.
+
+  Default value: `100000`
+* `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
+
+  Default value: `14`
+
+
+
+## `rastair bam legacy`
+
+Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bismark
+
+**Usage:** `rastair bam legacy [OPTIONS] --fasta-file <FASTA_FILE> <BAM_FILE> <CALLS_FILE>`
+
+###### **Arguments:**
+
+* `<BAM_FILE>` — Path to sorted and indexed BAM file
+* `<CALLS_FILE>` — Rastair's calls to determine methylation
+
+###### **Input Options:**
+
+* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
+* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+
+###### **Output Options:**
+
+* `-o`, `--output <OUTPUT>` — Output file
+
+  Default value: `-`
+
+###### **Processing Options:**
+
+* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
+
+   Used for splitting work between threads. Tweak this to adjust memory usage.
+
+  Default value: `100000`
+* `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
+
+  Default value: `14`
+
+
+
 ## `rastair convert`
 
 Convert between different file formats
@@ -457,11 +546,7 @@ This will produce a `mbias.html` file with information about conversion counts r
 
 Please note that this is currently implemented as an R script. Unless you're using the official Docker image, you need to install R and the necessary packages yourself.
 
-**Usage:** `rastair mbias [OPTIONS] <BED_FILE>`
-
-###### **Arguments:**
-
-* `<BED_FILE>` — Input per-read BED file (can be gzipped)
+**Usage:** `rastair mbias [OPTIONS] <--bed <BED_FILE>|--bam <BAM_FILE>>`
 
 ###### **Filter Options:**
 
@@ -476,6 +561,8 @@ Please note that this is currently implemented as an R script. Unless you're usi
 
 ###### **Input Options:**
 
+* `--bed <BED_FILE>` — Input per-read BED file (must be tabix indexed or indexable)
+* `--bam <BAM_FILE>` — Input BAM file
 * `--reference <REFERENCE>` — Reference FASTA file (required for V-bias and GC/CpG bias plots)
 * `--vcf <VCF>` — VCF file with methylation calls (required for GC/CpG bias plots)
 
@@ -499,6 +586,16 @@ Please note that this is currently implemented as an R script. Unless you're usi
 * `--tabix-path <TABIX_PATH>` — Path to tabix executable
 
   Default value: `tabix`
+* `--bcftools-path <BCFTOOLS_PATH>` — Path to bcftools executable
+
+  Default value: `bcftools`
+* `--rastair-path <RASTAIR_PATH>` — Path to rastair executable
+
+  Default value: `rastair`
+* `--threads <THREADS>` — Number of threads to use
+
+  Default value: `1`
+* `--wgbs` — Treat the input as inverted, i.e. mod=unmod and unmod=mod
 
 
 
