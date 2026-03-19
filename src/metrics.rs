@@ -1,7 +1,7 @@
 mod pileup_metrics;
 pub use pileup_metrics::*;
 
-mod entropy;
+pub mod entropy;
 pub mod methylation;
 mod methylation_strand_info;
 pub mod ml;
