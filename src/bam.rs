@@ -258,14 +258,9 @@ fn rewrite_region(
     let pad = 2u64;
     let ref_start = region.start.saturating_sub(pad);
     let ref_end = region.end.saturating_add(pad).min(region.last_position);
-    let ref_seq = {
-        let mut seq = Vec::new();
-        fasta
-            .fetch(&region.contig, ref_start, ref_end)
-            .wrap_err("Failed to fetch FASTA region for context lookup")?;
-        fasta.read(&mut seq).wrap_err("Failed to read FASTA sequence")?;
-        seq
-    };
+    let ref_seq = fasta
+        .fetch_seq(&region.contig, ref_start, ref_end)
+        .wrap_err("Failed to fetch FASTA region for context lookup")?;
     let ref_base = |pos: u32| -> Option<Base> {
         let idx = u64::from(pos).checked_sub(ref_start)? as usize;
         ref_seq.get(idx).map(|&b| Base::from(b))

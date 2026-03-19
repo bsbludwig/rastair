@@ -52,7 +52,7 @@ rastair-vcf = { version = "0.2.0", path = "crates/rastair-vcf" }
 rastair-types = { version = "0.2.0", path = "crates/rastair-types" }
 
 # bio tools
-bio = "2.2.0"
+bio-types = "1"
 noodles = { version = "0.108.0", features = ["tabix", "csi", "bgzf", "core"] }
 noodles-bgzf = { version = "0.46.0", features = ["libdeflate"] }
 rust-htslib = { workspace = true }

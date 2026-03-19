@@ -107,12 +107,9 @@ impl Readers {
             .wrap_err("Failed to convert segment length to usize")?;
 
         trace!(?region, len, "fetching segment");
-        let mut seq = Vec::with_capacity(len);
-        self.fasta
-            .fetch(&region.contig, region.start, last_position_to_fetch)
-            .wrap_err("Failed to fetch region")
-            .and_then(|_| self.fasta.read(&mut seq).wrap_err("Failed to read sequence from region"))
-            // chain the calls so we can add this nice error:
+        let seq = self
+            .fasta
+            .fetch_seq(&region.contig, region.start, last_position_to_fetch)
             .wrap_err_with(|| format!("Failed to get region {} from FASTA file", region.region))?;
 
         Ok(Segment {
