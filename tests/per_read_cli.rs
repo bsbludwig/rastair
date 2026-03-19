@@ -48,6 +48,11 @@ fn enhance_with_calls_bed_file_to_add_denovo_counts() -> Result<()> {
     let tmp_dir = PathBuf::from("tmp/tests");
     fs::create_dir_all(&tmp_dir)?;
     let calls_bed = tmp_dir.join("calls.bed.gz");
+    match fs::remove_file(&calls_bed) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
 
     rastair()
         .args([

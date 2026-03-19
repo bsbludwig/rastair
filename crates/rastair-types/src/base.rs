@@ -19,6 +19,11 @@ pub enum Base {
     Unknown = b'N',
 }
 
+const _: () = {
+    assert!(size_of::<Base>() == 1);
+    assert!(size_of::<Option<Base>>() == 1);
+};
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Display for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -27,6 +32,20 @@ impl std::fmt::Display for Base {
 }
 
 impl Base {
+    /// The four canonical DNA bases: A, C, G, T.
+    pub const KNOWN: [Base; 4] = [Base::A, Base::C, Base::G, Base::T];
+
+    /// Returns the index of this base in [`Base::KNOWN`], or `None` for `Unknown`.
+    pub fn known_index(&self) -> Option<usize> {
+        match self {
+            Base::A => Some(0),
+            Base::C => Some(1),
+            Base::G => Some(2),
+            Base::T => Some(3),
+            Base::Unknown => None,
+        }
+    }
+
     /// Get the inverse base (complementary base)
     pub fn inverse(&self) -> Base {
         match self {
@@ -151,15 +170,25 @@ impl std::str::FromStr for Base {
     }
 }
 
+/// Lookup table for branchless u8 → Base conversion.
+/// A single indexed load instead of a chain of comparisons.
+static BASE_LUT: [Base; 256] = {
+    let mut table = [Base::Unknown; 256];
+    table[b'A' as usize] = Base::A;
+    table[b'a' as usize] = Base::A;
+    table[b'C' as usize] = Base::C;
+    table[b'c' as usize] = Base::C;
+    table[b'G' as usize] = Base::G;
+    table[b'g' as usize] = Base::G;
+    table[b'T' as usize] = Base::T;
+    table[b't' as usize] = Base::T;
+    table
+};
+
 impl From<u8> for Base {
+    #[inline]
     fn from(value: u8) -> Self {
-        match value {
-            b'A' | b'a' => Base::A,
-            b'C' | b'c' => Base::C,
-            b'G' | b'g' => Base::G,
-            b'T' | b't' => Base::T,
-            _ => Base::Unknown,
-        }
+        BASE_LUT[value as usize]
     }
 }
 

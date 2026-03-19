@@ -37,7 +37,7 @@ impl<T: Into<f64>> FromIterator<T> for RootMeanSquare {
 ///
 /// Useful when multiple RMS values need to be computed from the same data
 /// without iterating multiple times.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct RmsAccumulator {
     sum_of_squares: f64,
     count: u32,
@@ -52,7 +52,15 @@ impl RmsAccumulator {
     /// Adds a value to the accumulator.
     #[inline]
     pub fn add(&mut self, x: f64) {
-        self.sum_of_squares += x * x;
+        self.add_squared(x * x);
+    }
+
+    /// Adds a pre-computed squared value to the accumulator.
+    ///
+    /// Use this when the square of `x` is already available to avoid redundant multiplication.
+    #[inline]
+    pub fn add_squared(&mut self, x_sq: f64) {
+        self.sum_of_squares += x_sq;
         self.count += 1;
     }
 

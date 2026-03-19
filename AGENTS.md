@@ -107,6 +107,28 @@ When you are asked to implement something, always ask for clarifications if need
 If you are unsure about the requirements, ask for more details.
 If you think there is a better way to implement something, suggest it and explain your reasoning, but don't implement it immediately without approval.
 
+# Key data flow details
+
+## Pileup construction and `Base::Unknown`
+
+`Pileup` objects are constructed in `src/call/pileup/from_hts.rs` via `Pileup::from_hts()`.
+The `reference_base` comes from the FASTA sequence via `Base::from(u8)`, which maps any non-ACGT byte (e.g. `N`) to `Base::Unknown`.
+There is **no filtering** to skip pileups with zero reads or Unknown reference bases before `PileupMetrics::new()` is called.
+
+Important implications:
+* `pileup.reference_base` can be `Base::Unknown` at N-positions in the reference — code must handle this gracefully (return default metrics), not treat it as an error.
+* A pileup can have zero reads after filtering (all reads removed by quality/flag/overlap filters) — the zero-depth allele path is a real code path, not dead code.
+* `Base::known_index()` maps A/C/G/T → `Some(0..3)` and Unknown → `None`. Use it to safely index into per-base arrays without needing an Unknown slot.
+
+## Single-pass accumulator pattern
+
+When computing grouped statistics from a collection of items (e.g. per-base metrics from reads), prefer a single-pass accumulator over collect-then-compute:
+1. Create an accumulator struct with `Default` that holds incremental state (e.g. `RmsAccumulator`, running counts).
+2. Feed items in one loop via an `add(&mut self, item)` method.
+3. Finalize with `finish(self) -> Result<T>` that **takes `self` by value** to prevent accidental double-use.
+4. When grouping by key (e.g. per-base), use `[Accumulator; N]` indexed by a method like `Base::known_index()` rather than named fields — this eliminates match arms for invalid variants and works naturally with const arrays like `Base::KNOWN`.
+5. To extract a single group's accumulator, use a `take(&mut self, key) -> Option<Accumulator>` method via `mem::take` — `None` signals "not applicable" (e.g. Unknown base) rather than an error.
+
 # Keep this updated
 
 **Important:** Whenever you learned something new about how to develop features, find code, or how to debug issues, you **must** add it to this document.

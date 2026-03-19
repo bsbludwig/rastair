@@ -18,28 +18,3 @@ impl<T: Default> Default for ByStrand<T> {
         ByStrand { base: Base::Unknown, ot: T::default(), ob: T::default() }
     }
 }
-
-/// Helper struct to group values by allele
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ByAllele<T> {
-    /// Base of the allele
-    pub base: Base,
-    /// Value for the allele
-    pub value: T,
-}
-
-impl<T> std::ops::Deref for ByAllele<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
-
-impl<T: Copy> Copy for ByAllele<T> {}
-
-impl<T: Default> Default for ByAllele<T> {
-    fn default() -> Self {
-        ByAllele { base: Base::Unknown, value: T::default() }
-    }
-}
