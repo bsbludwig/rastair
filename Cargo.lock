@@ -1188,7 +1188,7 @@ dependencies = [
 [[package]]
 name = "hts-sys"
 version = "2.2.0"
-source = "git+https://github.com/Softleif/hts-sys.git#2b47bdef0e57ad02847c7b07c60db8577c1f07fb"
+source = "git+https://github.com/Softleif/hts-sys.git#f1e6ce2b5a56f5d1b2aff7eb2bd43ceb16c73f09"
 dependencies = [
  "bzip2-sys",
  "cc",
@@ -2519,7 +2519,7 @@ dependencies = [
 [[package]]
 name = "rust-htslib"
 version = "1.0.0"
-source = "git+https://github.com/Softleif/rust-htslib.git#e733629a39395469f4f23809a040b9b0ffcbeb4d"
+source = "git+https://github.com/Softleif/rust-htslib.git#946a1da45314ded567052abd666a0ef78d18526c"
 dependencies = [
  "bio-types",
  "byteorder",
@@ -3930,18 +3930,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.42"
+version = "0.8.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2578b716f8a7a858b7f02d5bd870c14bf4ddbbcf3a4c05414ba6503640505e3"
+checksum = "5c5030500cb2d66bdfbb4ebc9563be6ce7005a4b5d0f26be0c523870fe372ca6"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.42"
+version = "0.8.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e6cc098ea4d3bd6246687de65af3f920c430e236bee1e3bf2e441463f08a02f"
+checksum = "a5f86989a046a79640b9d8867c823349a139367bda96549794fcc3313ce91f4e"
 dependencies = [
  "proc-macro2",
  "quote",
