@@ -14,9 +14,8 @@ use color_eyre::{
     Result, Section,
     eyre::{Context as _, ContextCompat, eyre},
 };
-
-use rastair_types::SmallVec;
 use rastair_types::Strand;
+use rastair_types::{Base, SmallVec};
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use rustc_hash::FxHashMap;
@@ -391,8 +390,9 @@ fn record_to_row(
         let idx = pos_in_ref
             .checked_sub(segment_start_pos)
             .wrap_err("Failed to calculate index for position")?;
-        let read_base = read_seq[pos_in_read];
-        let ref_base = ref_seq.get(idx).copied().wrap_err("reading ref base from sequence")?;
+        let read_base = Base::from(read_seq[pos_in_read]);
+        let ref_base =
+            ref_seq.get(idx).map(Base::from).wrap_err("reading ref base from sequence")?;
         let orientation = orientation(record, exclude_ambiguous, unpaired);
         let pos_rel = if count_clipped {
             pos_in_read
@@ -404,24 +404,24 @@ fn record_to_row(
                 .note("When subtracting leading clippings, the position would be negative")?
         };
 
-        if orientation == Strand::OT && ref_base == b'C' {
-            let next_base = ref_seq.get(idx + 1).copied().unwrap_or(b'N');
-            if next_base == b'G' {
+        if orientation == Strand::OT && ref_base == Base::C {
+            let next_base = ref_seq.get(idx + 1).map(Base::from).unwrap_or_default();
+            if next_base == Base::G {
                 cpg_count += 1;
                 match read_base {
-                    b'C' => unmod_cpgs.push(pos_rel),
-                    b'T' => mod_cpgs.push(pos_rel),
+                    Base::C => unmod_cpgs.push(pos_rel),
+                    Base::T => mod_cpgs.push(pos_rel),
                     _ => snp_cpgs.push(pos_rel),
                 }
             }
-        } else if orientation == Strand::OB && ref_base == b'G' {
+        } else if orientation == Strand::OB && ref_base == Base::G {
             let prev_base =
-                idx.checked_sub(1).and_then(|i| ref_seq.get(i)).copied().unwrap_or(b'N');
-            if prev_base == b'C' {
+                idx.checked_sub(1).and_then(|i| ref_seq.get(i)).map(Base::from).unwrap_or_default();
+            if prev_base == Base::C {
                 cpg_count += 1;
                 match read_base {
-                    b'G' => unmod_cpgs.push(pos_rel),
-                    b'A' => mod_cpgs.push(pos_rel),
+                    Base::G => unmod_cpgs.push(pos_rel),
+                    Base::A => mod_cpgs.push(pos_rel),
                     _ => snp_cpgs.push(pos_rel),
                 }
             }
