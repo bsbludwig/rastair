@@ -17,6 +17,17 @@ pub struct VariantCallingParams {
     #[arg(help_heading = cli::sections::FILTER)]
     pub unpaired: bool,
 
+    /// Guess OT/OB read orientation from mismatch motifs instead of SAM flags
+    ///
+    /// Scans read mismatches against the reference and counts `TG` versus `CA`
+    /// motifs in a 2 bp window anchored at each mismatch (current+next and
+    /// previous+current), using the htslib/reference-oriented read sequence.
+    /// `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads
+    /// are split pseudo-randomly but reproducibly per read.
+    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub guess_read_orientation: bool,
+
     /// The error model to use
     ///
     /// Accepts platform names or a custom error rate (e.g., 0.005)

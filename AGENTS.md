@@ -129,6 +129,22 @@ When computing grouped statistics from a collection of items (e.g. per-base metr
 4. When grouping by key (e.g. per-base), use `[Accumulator; N]` indexed by a method like `Base::known_index()` rather than named fields — this eliminates match arms for invalid variants and works naturally with const arrays like `Base::KNOWN`.
 5. To extract a single group's accumulator, use a `take(&mut self, key) -> Option<Accumulator>` method via `mem::take` — `None` signals "not applicable" (e.g. Unknown base) rather than an error.
 
+## Read orientation modes
+
+The main pileup-based `call` path assigns OT/OB in `src/call/pileup/from_hts.rs` before `PileupMetrics::new()` sees a `SimpleRead`.
+The default `VariantCallingParams.read_orientation=flags` path still uses `strand_from_flags()`.
+The opt-in `--guess-read-orientation` mode does **not** require reference CpG annotation. Instead it scans each read over `aligned_pairs_full()` and only looks at read positions where the observed base mismatches the reference:
+* at each mismatch, inspect both 2 bp windows that include that read base: current+next and previous+current
+* count `TG` motifs and `CA` motifs in the htslib/reference-oriented read sequence
+* `TG > CA` means OT, `CA > TG` means OB
+* ties / no evidence: split deterministically from a hash of qname + start + flags so repeated runs stay reproducible
+
+Implementation detail: `src/call/process/pileups.rs` keeps a per-segment `ReadOrientationCache`, because `alignment_to_read()` is called once per pileup column and mismatch scoring would otherwise rescan the full read for every covered base.
+
+Current scope: this new evidence-based OT/OB assignment only affects the main pileup-based `call` path. `call-reads` and BAM rewriting still use their existing orientation logic.
+
+For BAM-backed regression tests that compare strand-assignment modes, `tests/call_cli.rs` can write plain BED output with `call --cpgs-only --bed <path>` and compare per-CpG `(start, strand)` records via the BED columns `beta_est`, `unmod`, and `mod`. This is a convenient way to inspect differences before choosing hard thresholds.
+
 ## Release version bump checklist
 
 When bumping Rastair's release version, update all user-facing version strings together:

@@ -2,7 +2,156 @@
 
 mod utils;
 use insta::assert_compact_debug_snapshot;
+use std::collections::{BTreeMap, BTreeSet};
 use utils::*;
+
+#[derive(Debug, Clone, PartialEq)]
+struct CpgBedCall {
+    pos: u32,
+    strand: char,
+    beta_est: f64,
+    unmod_count: u32,
+    mod_count: u32,
+}
+
+#[derive(Debug, PartialEq)]
+struct CpgEvidenceComparisonSummary {
+    flag_calls: usize,
+    evidence_calls: usize,
+    shared_calls: usize,
+    flag_only: usize,
+    evidence_only: usize,
+    mod_diff_positions: usize,
+    unmod_diff_positions: usize,
+    mean_abs_beta_diff: f64,
+    max_abs_beta_diff: f64,
+    mean_abs_mod_diff: f64,
+    max_abs_mod_diff: u32,
+    mean_abs_unmod_diff: f64,
+    max_abs_unmod_diff: u32,
+    largest_beta_diffs: Vec<CpgEvidenceDiff>,
+}
+
+#[derive(Debug, PartialEq)]
+struct CpgEvidenceDiff {
+    pos: u32,
+    strand: char,
+    flag_beta: f64,
+    evidence_beta: f64,
+    beta_abs_diff: f64,
+    flag_mod: u32,
+    evidence_mod: u32,
+    mod_abs_diff: u32,
+    flag_unmod: u32,
+    evidence_unmod: u32,
+    unmod_abs_diff: u32,
+}
+
+fn parse_cpg_bed(path: &std::path::Path) -> Result<BTreeMap<(u32, char), CpgBedCall>> {
+    let text = std::fs::read_to_string(path).wrap_err("read BED output")?;
+    let mut calls = BTreeMap::new();
+
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+
+        let fields: Vec<&str> = line.split('\t').collect();
+        ensure!(fields.len() >= 8, "BED line has too few fields: {line}");
+
+        let pos: u32 = fields[1].parse().wrap_err("parse start")?;
+        let beta_est: f64 = fields[4].parse().wrap_err("parse beta_est")?;
+        let strand = fields[5].chars().next().ok_or_else(|| eyre!("missing strand"))?;
+        let unmod_count: u32 = fields[6].parse().wrap_err("parse unmod")?;
+        let mod_count: u32 = fields[7].parse().wrap_err("parse mod")?;
+
+        calls.insert((pos, strand), CpgBedCall { pos, strand, beta_est, unmod_count, mod_count });
+    }
+
+    Ok(calls)
+}
+
+fn compare_cpg_calls(
+    flag_calls: &BTreeMap<(u32, char), CpgBedCall>,
+    evidence_calls: &BTreeMap<(u32, char), CpgBedCall>,
+) -> CpgEvidenceComparisonSummary {
+    let flag_keys: BTreeSet<_> = flag_calls.keys().copied().collect();
+    let evidence_keys: BTreeSet<_> = evidence_calls.keys().copied().collect();
+
+    let shared_keys: Vec<_> = flag_keys.intersection(&evidence_keys).copied().collect();
+    let flag_only = flag_keys.difference(&evidence_keys).count();
+    let evidence_only = evidence_keys.difference(&flag_keys).count();
+
+    let mut diffs = Vec::with_capacity(shared_keys.len());
+    let mut beta_sum = 0.0_f64;
+    let mut mod_sum = 0.0_f64;
+    let mut unmod_sum = 0.0_f64;
+    let mut max_beta = 0.0_f64;
+    let mut max_mod = 0_u32;
+    let mut max_unmod = 0_u32;
+    let mut mod_diff_positions = 0_usize;
+    let mut unmod_diff_positions = 0_usize;
+
+    for key in shared_keys {
+        let flag = &flag_calls[&key];
+        let evidence = &evidence_calls[&key];
+        let beta_abs_diff = (flag.beta_est - evidence.beta_est).abs();
+        let mod_abs_diff = flag.mod_count.abs_diff(evidence.mod_count);
+        let unmod_abs_diff = flag.unmod_count.abs_diff(evidence.unmod_count);
+
+        beta_sum += beta_abs_diff;
+        mod_sum += f64::from(mod_abs_diff);
+        unmod_sum += f64::from(unmod_abs_diff);
+        max_beta = max_beta.max(beta_abs_diff);
+        max_mod = max_mod.max(mod_abs_diff);
+        max_unmod = max_unmod.max(unmod_abs_diff);
+        mod_diff_positions += usize::from(mod_abs_diff > 0);
+        unmod_diff_positions += usize::from(unmod_abs_diff > 0);
+
+        diffs.push(CpgEvidenceDiff {
+            pos: flag.pos,
+            strand: flag.strand,
+            flag_beta: flag.beta_est,
+            evidence_beta: evidence.beta_est,
+            beta_abs_diff,
+            flag_mod: flag.mod_count,
+            evidence_mod: evidence.mod_count,
+            mod_abs_diff,
+            flag_unmod: flag.unmod_count,
+            evidence_unmod: evidence.unmod_count,
+            unmod_abs_diff,
+        });
+    }
+
+    diffs.sort_by(|a, b| {
+        b.beta_abs_diff
+            .total_cmp(&a.beta_abs_diff)
+            .then_with(|| b.mod_abs_diff.cmp(&a.mod_abs_diff))
+            .then_with(|| b.unmod_abs_diff.cmp(&a.unmod_abs_diff))
+            .then_with(|| a.pos.cmp(&b.pos))
+            .then_with(|| a.strand.cmp(&b.strand))
+    });
+    diffs.truncate(10);
+
+    let shared_count = flag_keys.intersection(&evidence_keys).count();
+
+    CpgEvidenceComparisonSummary {
+        flag_calls: flag_calls.len(),
+        evidence_calls: evidence_calls.len(),
+        shared_calls: shared_count,
+        flag_only,
+        evidence_only,
+        mod_diff_positions,
+        unmod_diff_positions,
+        mean_abs_beta_diff: if shared_count == 0 { 0.0 } else { beta_sum / shared_count as f64 },
+        max_abs_beta_diff: max_beta,
+        mean_abs_mod_diff: if shared_count == 0 { 0.0 } else { mod_sum / shared_count as f64 },
+        max_abs_mod_diff: max_mod,
+        mean_abs_unmod_diff: if shared_count == 0 { 0.0 } else { unmod_sum / shared_count as f64 },
+        max_abs_unmod_diff: max_unmod,
+        largest_beta_diffs: diffs,
+    }
+}
 
 #[test]
 fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
@@ -38,6 +187,88 @@ fn vcf_with_all_fields() -> Result<()> {
     apply_common_filters!();
 
     assert_cmd_snapshot!(rastair().args(CALL_TEST_BAM).arg(CHR19_SMALL).arg("--vcf-all-fields",));
+
+    Ok(())
+}
+
+#[test]
+fn call_accepts_guess_read_orientation_flag() -> Result<()> {
+    apply_common_filters!();
+
+    let mut call = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--guess-read-orientation"])
+        .output()?;
+
+    call.succeeds()?;
+    assert!(call.stdout().trim().starts_with("##fileformat=VCF"));
+
+    Ok(())
+}
+
+#[test]
+fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
+    const REGION: &str = "--region=chr19:6103000-6106000";
+
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let flag_bed = temp_dir.path().join("flag-strands.bed");
+    let evidence_bed = temp_dir.path().join("guess-read-orientation.bed");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--bed"])
+        .arg(&flag_bed)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--guess-read-orientation", "--bed"])
+        .arg(&evidence_bed)
+        .succeeds()?;
+
+    let flag_calls = parse_cpg_bed(&flag_bed)?;
+    let evidence_calls = parse_cpg_bed(&evidence_bed)?;
+    let summary = compare_cpg_calls(&flag_calls, &evidence_calls);
+
+    //eprintln!("largest beta diffs: {:#?}", summary.largest_beta_diffs);
+
+    let min_shared = ((summary.flag_calls as f64) * 0.8).ceil() as usize;
+    assert!(
+        summary.shared_calls >= min_shared,
+        "expected at least 80% shared CpG calls, got {} shared out of {} flag-mode calls",
+        summary.shared_calls,
+        summary.flag_calls,
+    );
+    assert!(
+        summary.mean_abs_beta_diff <= 0.1,
+        "mean absolute beta difference too large: {}",
+        summary.mean_abs_beta_diff,
+    );
+    assert!(
+        summary.mean_abs_mod_diff <= 1.1,
+        "mean absolute mod-count difference too large: {}",
+        summary.mean_abs_mod_diff,
+    );
+    assert!(
+        summary.mean_abs_unmod_diff <= 1.1,
+        "mean absolute unmod-count difference too large: {}",
+        summary.mean_abs_unmod_diff,
+    );
+    // assert!(
+    //     summary.mod_diff_positions * 2 <= summary.shared_calls,
+    //     "too many positions with mod-count differences: {} of {}",
+    //     summary.mod_diff_positions,
+    //     summary.shared_calls,
+    // );
+    // assert!(
+    //     summary.unmod_diff_positions * 2 <= summary.shared_calls,
+    //     "too many positions with unmod-count differences: {} of {}",
+    //     summary.unmod_diff_positions,
+    //     summary.shared_calls,
+    // );
+    assert_compact_debug_snapshot!(summary);
 
     Ok(())
 }
