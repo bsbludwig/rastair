@@ -19,11 +19,8 @@ Rastair does not use Nvidia's CUDA!
 If you are running other @ML workloads, it might still be necessary to ensure Vulkan drivers are installed.
 ```
 
-For example, when using @SLURM, you can request a job with access to a @GPU
-using `-p gpu_short --gres gpu:1`.
-You might also need to run `module load Vulkan;` before running Rastair.
-
 ### Tested Hardware
 
 - Built-in GPU on M4 MacBook Pro
-- Dedicated RTX 8000 Quadro
+- NVIDIA RTX 6000/8000 Quadro
+- NVIDIA A100

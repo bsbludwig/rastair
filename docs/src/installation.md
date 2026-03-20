@@ -33,11 +33,10 @@ to also run the bundled R scripts.
 
 ## Conda
 
-```admonish warning
-This is not yet available.
+```bash
+conda create -n rastair_env -c conda-forge -c bioconda rastair={{VERSION}}
+conda activate rastair_env
 ```
-
-This is still work in progress: we hope to soon provide a bioconda recipe to install rastair.
 
 ## Pre-built binaries
 
