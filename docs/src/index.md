@@ -10,6 +10,8 @@ Traditional @bisulfite sequencing (BS-seq) converts *all* non-modified cytosine 
 
 In contrast, mod-C&rarr;T methods only affect around 60M positions in the human genome, equivalent to only approx. 2% of all nucleotides. This leads to greatly improved sequencing quality, higher mapping rates, and better yield from low-input DNA. It also makes it possible to identify genetic variation - in addition to epigenetic changes - with much higher accuracy. **Rastair implements a fast and accurate algorithm to simultaneously provide such high-quality variant *and* methylation calls.**
 
+You can read more in our paper, [Rastair: an integrated variant and methylation caller](https://www.biorxiv.org/content/10.64898/2026.03.19.712983v1).
+
 ## Latest Updates
 <section id="news">
   <a class="mastodon-feed"
@@ -88,4 +90,8 @@ You can file an issue or question on our [issue tracker over on bitbucket](https
 
 
 ## Citing rastair
-A publication for rastair is in progress. We will update this page with a reference to the biorxiv preprint shortly.
+
+> Rastair: an integrated variant and methylation caller  
+> Zohar Etzioni, Liyuan Zhao, Pascal Hertleif, Benjamin Schuster-Boeckler  
+> [bioRxiv 2026.03.19.712983](https://www.biorxiv.org/content/10.64898/2026.03.19.712983v1);
+> [doi.org/10.64898/2026.03.19.712983](https://doi.org/10.64898/2026.03.19.712983)
