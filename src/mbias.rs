@@ -145,7 +145,7 @@ impl MBiasParams {
         if self.no_vbias || self.reference.is_none() {
             params.push("--no-vbias".into());
         }
-        if self.no_gc || self.reference.is_none() || self.vcf.is_none() {
+        if self.no_gc || self.reference.is_none() {
             params.push("--no-gc".into());
         }
         params
