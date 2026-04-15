@@ -129,6 +129,27 @@ When computing grouped statistics from a collection of items (e.g. per-base metr
 4. When grouping by key (e.g. per-base), use `[Accumulator; N]` indexed by a method like `Base::known_index()` rather than named fields — this eliminates match arms for invalid variants and works naturally with const arrays like `Base::KNOWN`.
 5. To extract a single group's accumulator, use a `take(&mut self, key) -> Option<Accumulator>` method via `mem::take` — `None` signals "not applicable" (e.g. Unknown base) rather than an error.
 
+## Release version bump checklist
+
+When bumping Rastair's release version, update all user-facing version strings together:
+* Root crate version in `Cargo.toml` (`[package].version`)
+* Root package entry in `Cargo.lock` (`name = "rastair"`)
+* CLI docs version in `docs/src/cli.md`
+* README example tag references in `README.md` (e.g. `version-X.Y.Z`)
+* Snapshot VCF header lines in `tests/snapshots/` containing `##rastairVersion=...`
+
+## QC report M-bias orientation
+
+In `scripts/QC_report.Rmd`, OT/OB assignment for the M-bias table must use the same pair-orientation logic as Rust:
+* OT if `bitwAnd(flag, 96) == 96` (F1R2) or `bitwAnd(flag, 144) == 144` (R2F1)
+* OB otherwise
+
+Using `80/160` (first+reverse / second+mate_reverse) swaps OT and OB labels and flips the wrong mate.
+
+To plot/read cutoffs in read 5'->3' coordinates, flip positions for reverse-aligned mates only:
+* OT + `Second`
+* OB + `First`
+
 # Keep this updated
 
 **Important:** Whenever you learned something new about how to develop features, find code, or how to debug issues, you **must** add it to this document.

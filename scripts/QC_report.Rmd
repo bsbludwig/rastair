@@ -153,7 +153,15 @@ data <- data[, .N, by=.(chr, start, end, read_id, mapq, orientation, insert_size
 # Break comma-separated pos_in_read into a list
 data <- data[, parse_positions(mod_cpgs, unmod_cpgs, snp_cpgs, mod_denovos, unmod_denovos), by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag)]
 
-mbias_table <- data[, .(mod=sum(type %in% c("M", "m")), unmod=sum(type %in% c("U","u"))), by=.(chr, pos=pos_in_read, read_pair=as.factor(fifelse(bitwAnd(flag, 64)>0, "First", "Second")), strand=as.factor(fifelse(bitwAnd(flag, 80)==80 | bitwAnd(flag, 160)==160, "OT", "OB")))]
+mbias_table <- data[, .(
+  mod = sum(type %in% c("M", "m")),
+  unmod = sum(type %in% c("U", "u"))
+), by = .(
+  chr,
+  pos = pos_in_read,
+  read_pair = as.factor(fifelse(bitwAnd(flag, 64) > 0, "First", "Second")),
+  strand = as.factor(fifelse(bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144, "OT", "OB"))
+)]
 
 # Flip the OB reads so that mbias is always reported 5' -> 3'
 mbias_table[strand=="OT" & read_pair == "Second" | strand=="OB" & read_pair == "First", pos := read_len-pos]
