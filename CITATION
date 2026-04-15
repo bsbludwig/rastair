@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Rastair: an integrated variant and methylation caller"
+version: 2.1.0
+doi: "10.64898/2026.03.19.712983"
+date-released: 2026-03-19
+url: "https://bitbucket.org/bsblabludwig/rastair/"
+authors:
+    - family-names: "Hertleif"
+      given-names: "Pascal"
+      orcid: "https://orcid.org/0009-0009-1623-6388"
+    - family-names: "Schuster-Boeckler"
+      given-names: "Benjamin"
+      orcid: "https://orcid.org/0000-0002-8892-5133"
+
+preferred-citation:
+    title: "Rastair: an integrated variant and methylation caller"
+    type: article
+    authors:
+    - family-names: "Etzioni"
+      given-names: "Zohar"
+    - family-names: "Zhao"
+      given-names: "Liyuan"
+      orcid: "https://orcid.org/0009-0004-4428-7805"
+    - family-names: "Hertleif"
+      given-names: "Pascal"
+      orcid: "https://orcid.org/0009-0009-1623-6388"
+    - family-names: "Schuster-Boeckler"
+      given-names: "Benjamin"
+      orcid: "https://orcid.org/0000-0002-8892-5133"
+
+    doi: "10.64898/2026.03.19.712983"
+    url: "https://www.biorxiv.org/content/10.64898/2026.03.19.712983v1"
+
+    journal: "bioRxiv"
+    publisher: "Cold Spring Harbor Laboratory"
+    year: 2026
+    month: 3
+    day: 19
+
+    abstract: >
+      Cytosine methylation is a crucial epigenetic mark that impact tissue-specific chromatin conformation and gene expression. For many years, bisulfite sequencing (BS-seq), which converts all non-methylated cytosine (C) to thymine (T), remained the only approach to measure cytosine methylation at base resolution. Recently, however, several new methods that convert only methylated cytosines to thymine (mC{\textrightarrow}T) have become widely available. Here we present rastair, an integrated software toolkit for simultaneous SNP detection and methylation calling from mC{\textrightarrow}T sequencing data such as those created with Watchmaker{\textquoteright}s TAPS+ and Illumina{\textquoteright}s 5-Base chemistries. Rastair combines machine-learning-based variant detection with genotype-aware methylation estimation. Using NA12878 benchmark datasets, we show that rastair outperforms existing methylation-aware SNP callers and achieves F1 scores exceeding 0.99 for datasets above 30x depth, matching the accuracy of state-of-the-art tools run on whole-genome sequencing data. At the same time, rastair is significantly faster than other genetic variant callers, processing a 30x depth file takes less than 30 minutes given 32 CPU cores on an Intel Xeon, and half as long when a GPU is available. By integrating genotyping with methylation calling, rastair reports an additional 500,000 positions in NA12878 where a SNP turns a non-CpG reference position into a "de-novo" CpG. Vice-versa, rastair also identifies positions where a variant disrupts a CpG and corrects their reported methylation levels. Rastair produces standard-compliant outputs in vcf, bam and bed formats, facilitating integration into downstream analyses pipelines. Rastair is open-source and available via conda, Dockerhub, and as pre-compiled binaries from https://www.rastair.com.
+
+    license: "CC-BY-NC-ND-4.0"
