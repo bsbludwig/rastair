@@ -138,6 +138,18 @@ When bumping Rastair's release version, update all user-facing version strings t
 * README example tag references in `README.md` (e.g. `version-X.Y.Z`)
 * Snapshot VCF header lines in `tests/snapshots/` containing `##rastairVersion=...`
 
+## QC report M-bias orientation
+
+In `scripts/QC_report.Rmd`, OT/OB assignment for the M-bias table must use the same pair-orientation logic as Rust:
+* OT if `bitwAnd(flag, 96) == 96` (F1R2) or `bitwAnd(flag, 144) == 144` (R2F1)
+* OB otherwise
+
+Using `80/160` (first+reverse / second+mate_reverse) swaps OT and OB labels and flips the wrong mate.
+
+To plot/read cutoffs in read 5'->3' coordinates, flip positions for reverse-aligned mates only:
+* OT + `Second`
+* OB + `First`
+
 # Keep this updated
 
 **Important:** Whenever you learned something new about how to develop features, find code, or how to debug issues, you **must** add it to this document.
