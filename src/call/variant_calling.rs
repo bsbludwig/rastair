@@ -4,6 +4,8 @@ mod error_model;
 pub use error_model::ErrorModel;
 mod genotype;
 pub use genotype::{EstimatedGenotype, GenotypeTag};
+pub mod indel_calling;
+pub use indel_calling::IndelParams;
 mod read_flags;
 pub use read_flags::ReadFlags;
 mod quality_filters;

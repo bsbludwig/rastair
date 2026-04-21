@@ -78,6 +78,8 @@ pub struct CallParams {
     #[command(flatten)]
     pub variant_calling: VariantCallingParams,
     #[command(flatten)]
+    pub indel: variant_calling::IndelParams,
+    #[command(flatten)]
     pub denovo_cpg: denovo_cpg::DenovoParams,
     #[command(flatten)]
     pub methylation: MethylationCallingParams,
@@ -325,6 +327,7 @@ fn process_region_wrapper(
         let pileup_mapping_params = process::PileupMappingParams {
             variant_calling: params.variant_calling.clone(),
             require_tags: params.require_tags.filter(),
+            ..Default::default()
         };
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
 
@@ -439,6 +442,11 @@ fn process_region(
                 metrics::methylation::call(&pileup)?.unwrap_or_default();
             pileup.pos_metrics.extended.methylation_strand_info =
                 MethylationEvidenceStrandInfo::from_pileup_with_methylation(&pileup);
+
+            // Call indels (independent of SNV pipeline)
+            pileup.indel_calls =
+                variant_calling::indel_calling::call_indels(&pileup.indels, &params.indel);
+
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))

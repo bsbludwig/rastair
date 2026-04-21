@@ -1,4 +1,7 @@
-use super::overlapping_reads::{NameCollector, resolve_pair};
+use super::{
+    indels::{IndelAllele, IndelObservation},
+    overlapping_reads::{NameCollector, resolve_pair},
+};
 use crate::{
     call::{
         pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
@@ -12,7 +15,7 @@ use rastair_types::{Base, SmallVec, Strand, strand_from_flags};
 use rust_htslib::bam::{
     Record,
     ext::BamRecordExtensions as _,
-    pileup::{Alignment, Pileup as HtsPileup},
+    pileup::{Alignment, Indel, Pileup as HtsPileup},
 };
 use rustc_hash::{FxHashMap, FxHasher};
 use std::{
@@ -139,11 +142,82 @@ impl Pileup {
             }
         };
 
-        let reference_base =
+        let reference_base: Base =
             segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
 
         let context =
             SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
+
+        // Second pass: collect indel observations and compute depth_offset.
+        // FIXME: Do in same pass
+        let segment_start = segment.range.region.start as usize;
+        let indel_cutoff = params.indel_end_of_read_cutoff;
+        let repeat_limit = params.indel_repeat_limit;
+        let mut indel_observations = SmallVec::new();
+        let mut depth_offset: u32 = 0;
+
+        for a in pile.alignments() {
+            let record = a.record_view();
+            let flags = record.flags();
+            let (seq, _qual) = record.seq_and_qual();
+            let read_len = seq.len();
+
+            match a.indel() {
+                Indel::None => {
+                    if has_soft_clip(record.raw_cigar())
+                        || has_repeat_seq(&seq, 1, repeat_limit)
+                        || has_repeat_seq(&seq, 2, repeat_limit)
+                    {
+                        depth_offset += 1;
+                    }
+                }
+                indel => {
+                    let Some(qpos) = a.qpos() else { continue };
+
+                    // End-of-read filter (stricter than SNVs)
+                    if qpos < indel_cutoff || qpos >= read_len.saturating_sub(indel_cutoff) {
+                        continue;
+                    }
+
+                    let strand = strand_from_flags(flags);
+
+                    let allele = match indel {
+                        Indel::Ins(len) => {
+                            let start = qpos + 1;
+                            let end = start + len as usize;
+                            let bases: SmallVec<Base, 4> =
+                                (start..end).filter_map(|i| seq.get(i).map(Base::from)).collect();
+                            if bases.is_empty() {
+                                continue;
+                            }
+                            IndelAllele::Insertion(bases)
+                        }
+                        Indel::Del(len) => {
+                            let ref_start = (pos as usize + 1).saturating_sub(segment_start);
+                            let ref_end = ref_start + len as usize;
+                            let bases: SmallVec<Base, 4> = segment
+                                .sequence
+                                .get(ref_start..ref_end)
+                                .map(|slice| slice.iter().copied().map(Base::from).collect())
+                                .unwrap_or_default();
+                            if bases.is_empty() {
+                                continue;
+                            }
+                            IndelAllele::Deletion(bases)
+                        }
+                        Indel::None => unreachable!(),
+                    };
+
+                    indel_observations.push(IndelObservation {
+                        allele,
+                        strand,
+                        reverse: flags & 0x10 != 0,
+                        pos_in_read: qpos as u32,
+                        read_length: read_len as u32,
+                    });
+                }
+            }
+        }
 
         Ok(Pileup {
             region: segment.range.clone(),
@@ -151,6 +225,8 @@ impl Pileup {
             pos: pile.pos(),
             reads,
             reference_base,
+            indel_observations,
+            depth_offset,
         })
     }
 }
@@ -297,6 +373,46 @@ fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
     (matches, indels)
 }
 
+/// Check if a CIGAR array contains a soft-clip operation (op 4).
+fn has_soft_clip(cigar: &[u32]) -> bool {
+    cigar.iter().any(|&c| c & 0xF == 4)
+}
+
+/// Check if first or last `cutoff` bases of a read form a repeating pattern of length `n`.
+fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, cutoff: usize) -> bool {
+    let len = seq.len();
+    if len < cutoff || n == 0 || cutoff < n {
+        return false;
+    }
+
+    // Check start: do first `cutoff` bases repeat a pattern of length `n`?
+    let start_pattern: SmallVec<u8, 4> = (0..n).filter_map(|i| seq.get(i)).collect();
+    if start_pattern.len() == n {
+        let start_repeat = (n..cutoff).all(|i| {
+            seq.get(i).map_or(false, |b| start_pattern.get(i % n).map_or(false, |&p| b == p))
+        });
+        if start_repeat {
+            return true;
+        }
+    }
+
+    // Check end: do last `cutoff` bases repeat a pattern of length `n`?
+    let end_start = len.saturating_sub(n);
+    let end_pattern: SmallVec<u8, 4> = (end_start..len).filter_map(|i| seq.get(i)).collect();
+    if end_pattern.len() == n {
+        let check_start = len.saturating_sub(cutoff);
+        (check_start..end_start).all(|i| {
+            seq.get(i).map_or(false, |b| {
+                let offset = (i - check_start) % n;
+                // Align pattern index: the tail pattern repeats back from end
+                end_pattern.get(offset % n).map_or(false, |&p| b == p)
+            })
+        })
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,14 +455,14 @@ mod tests {
     fn name_collector_skip_when_keep_overlapping() {
         let params = PileupMappingParams {
             variant_calling: VariantCallingParams { keep_overlapping_reads: true, ..default() },
-            require_tags: default(),
+            ..default()
         };
         assert!(matches!(NameCollector::new(&params), NameCollector::Skip));
     }
 
     #[test]
     fn name_collector_collect_by_default() {
-        let params = PileupMappingParams { variant_calling: default(), require_tags: default() };
+        let params = PileupMappingParams::default();
         assert!(matches!(NameCollector::new(&params), NameCollector::Collect(_)));
     }
 

@@ -1,7 +1,10 @@
 use crate::{
     call::{
-        pileup::{Pileup, SimpleRead},
-        variant_calling::EstimatedGenotype,
+        pileup::{
+            Pileup, SimpleRead,
+            indels::{IndelAlleleCounts, IndelCounts},
+        },
+        variant_calling::{EstimatedGenotype, indel_calling::IndelCall},
     },
     metrics::MethylationEvidenceStrandInfo,
     utils::{ByStrand, IntoF64, default, logging::ThisIsABug},
@@ -33,6 +36,12 @@ pub struct PileupMetrics {
     pub alts: SmallVec<Alt, 2>,
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
+    /// Aggregated indel counts at this position.
+    #[serde(default)]
+    pub indels: IndelCounts,
+    /// Called indel variants at this position (populated during process_region).
+    #[serde(default)]
+    pub indel_calls: Vec<IndelCall>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -135,6 +144,8 @@ impl PileupMetrics {
             })
             .collect::<Result<_>>()?;
 
+        let indels = aggregate_indels(&pileup);
+
         Ok(PileupMetrics {
             pileup,
             pos_metrics,
@@ -142,6 +153,8 @@ impl PileupMetrics {
             ref_metrics,
             alts,
             tags: RecordTags::default(),
+            indels,
+            indel_calls: Vec::new(),
         })
     }
 
@@ -526,4 +539,30 @@ impl MetricsForAlt<'_> {
         (self.metrics.pos_metrics.cpg == InCpG::C && self.alt.base == Base::T)
             || (self.metrics.pos_metrics.cpg == InCpG::G && self.alt.base == Base::A)
     }
+}
+
+fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
+    if pileup.indel_observations.is_empty() {
+        return IndelCounts { ref_count: pileup.reads.len() as u32, ..Default::default() };
+    }
+
+    let mut alleles: SmallVec<IndelAlleleCounts, 2> = SmallVec::new();
+
+    for obs in &pileup.indel_observations {
+        if let Some(entry) = alleles.iter_mut().find(|e| e.allele == obs.allele) {
+            if obs.reverse {
+                entry.rev += 1;
+            } else {
+                entry.fwd += 1;
+            }
+        } else {
+            let (fwd, rev) = if obs.reverse { (0, 1) } else { (1, 0) };
+            alleles.push(IndelAlleleCounts { allele: obs.allele.clone(), fwd, rev });
+        }
+    }
+
+    let total_indel_reads: u32 = alleles.iter().map(|a| a.total()).sum();
+    let ref_count = (pileup.reads.len() as u32).saturating_sub(total_indel_reads);
+
+    IndelCounts { alleles, ref_count, depth_offset: pileup.depth_offset }
 }

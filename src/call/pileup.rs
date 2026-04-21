@@ -1,6 +1,7 @@
 use crate::{sequence::ChunkRegion, utils::Base, vcf::SequenceContext};
 use rastair_types::{SmallVec, SmolStr};
 
+pub mod indels;
 mod read;
 pub use read::*;
 pub(crate) mod from_hts;
@@ -19,6 +20,14 @@ pub struct Pileup {
     pub reads: SimpleReads,
     /// Reference base at this position
     pub reference_base: Base,
+    /// Indel observations collected from reads at this position.
+    /// Empty at most positions — `SmallVec<_, 0>` avoids heap allocation when empty.
+    #[serde(default)]
+    pub indel_observations: SmallVec<indels::IndelObservation, 0>,
+    /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
+    /// for indel depth adjustment.
+    #[serde(default)]
+    pub depth_offset: u32,
 }
 
 impl Pileup {
@@ -98,6 +107,8 @@ mod tests {
             pos: 1002, // Corresponds to index in the segment
             reads: bases,
             reference_base: Base::T, // Assume T is the reference base at this position
+            indel_observations: default(),
+            depth_offset: 0,
         };
 
         let alleles = variant_candidate.alleles();

@@ -1,6 +1,6 @@
-use super::{Methylated, Record};
+use super::{Filters, Methylated, Record};
 use crate::{
-    call::{RecordFilters, variant_calling::ErrorModel},
+    call::{RecordFilters, pileup::indels::IndelAllele, variant_calling::ErrorModel},
     metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
     utils::{IntoF64 as _, default},
     vcf::{
@@ -82,7 +82,9 @@ impl PileupMetrics {
             rejected.push(self.build_rejected_record(alt, ml_threshold)?);
         }
 
-        Ok(VcfRecordSet { pileup: self, main, rejected })
+        let indel_records = build_indel_records(self);
+
+        Ok(VcfRecordSet { pileup: self, main, rejected, indel_records })
     }
 
     fn build_main_record(
@@ -388,6 +390,7 @@ pub struct VcfRecordSet<'p> {
     pileup: &'p PileupMetrics,
     main: Record,
     rejected: SmallVec<Record, 2>,
+    indel_records: SmallVec<Record, 1>,
 }
 
 impl<'p> VcfRecordSet<'p> {
@@ -395,7 +398,7 @@ impl<'p> VcfRecordSet<'p> {
         let t = &self.pileup.tags;
         let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
 
-        match (filters.vcf_all, filters.cpgs_only) {
+        let mut v = match (filters.vcf_all, filters.cpgs_only) {
             (false, false) => {
                 if t.covered {
                     smallvec![&self.main]
@@ -424,6 +427,71 @@ impl<'p> VcfRecordSet<'p> {
                     smallvec![]
                 }
             }
-        }
+        };
+
+        // Indel records are always emitted when present (they already passed filters).
+        v.extend(&self.indel_records);
+        v
     }
+}
+
+fn build_indel_records(metrics: &PileupMetrics) -> SmallVec<Record, 1> {
+    metrics
+        .indel_calls
+        .iter()
+        .map(|call| {
+            let anchor: rastair_types::SmolStr = metrics.pileup.reference_base.into();
+
+            let (ref_allele, alt_allele) = match &call.allele {
+                IndelAllele::Insertion(bases) => {
+                    let mut alt = String::with_capacity(1 + bases.len());
+                    alt.push_str(&anchor);
+                    for b in bases {
+                        alt.push_str(b.as_str());
+                    }
+                    (anchor, alt.into())
+                }
+                IndelAllele::Deletion(bases) => {
+                    let mut refr = String::with_capacity(1 + bases.len());
+                    refr.push_str(&anchor);
+                    for b in bases {
+                        refr.push_str(b.as_str());
+                    }
+                    (refr.into(), anchor)
+                }
+            };
+
+            let main = VcfFixedFields {
+                chrom: metrics.pileup.contig(),
+                pos: metrics.pileup.pos,
+                id: default(),
+                r#ref: ref_allele,
+                alt: smallvec![alt_allele],
+                qual: Some(call.quality.as_int()),
+            };
+
+            let genotype = Genotype::from(call.genotype);
+
+            let mut filters = Filters::default();
+            filters.add(PASS.filter());
+
+            Record {
+                main,
+                filters,
+                info: Info {
+                    read_depth: ReadDepth(call.depth as usize),
+                    allele_read_depth: AlleleReadDepth(smallvec![
+                        (call.depth.saturating_sub(call.alt_count)) as usize,
+                        call.alt_count as usize,
+                    ]),
+                    ..default()
+                },
+                samples: smallvec_inline![Format {
+                    genotype,
+                    sample_read_depth: SampleReadDepth(call.depth as usize),
+                    ..default()
+                }],
+            }
+        })
+        .collect()
 }

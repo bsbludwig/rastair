@@ -100,6 +100,8 @@ pub(crate) fn create_pileups(
                 pos: pos as u32,
                 reads: SimpleReads(reads.into()),
                 reference_base,
+                indel_observations: Default::default(),
+                depth_offset: 0,
             }
         })
         .collect();
@@ -475,6 +477,7 @@ pub(crate) fn test_call(
         segmentation: default(),
         require_tags: default(),
         variant_calling: default(),
+        indel: default(),
         denovo_cpg: default(),
         methylation: default(),
         ml: default(),

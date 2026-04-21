@@ -19,6 +19,7 @@ mod figure_out_outputs_tests {
             segmentation: default(),
             require_tags: default(),
             variant_calling: default(),
+            indel: default(),
             denovo_cpg: default(),
             methylation: default(),
             ml: default(),

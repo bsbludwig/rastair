@@ -12,10 +12,16 @@ use rust_htslib::bam::{FetchDefinition, Read as _};
 use std::{ops::Deref, rc::Rc};
 use tracing::{Level, debug, instrument, trace, warn};
 
-#[derive(Default)]
+#[derive(better_default::Default)]
 pub struct PileupMappingParams {
     pub variant_calling: VariantCallingParams,
     pub require_tags: TagRequirement,
+    /// Ignore indels within this distance from read ends.
+    #[default(20)]
+    pub indel_end_of_read_cutoff: usize,
+    /// Homopolymer repeat length cutoff for indel depth filtering.
+    #[default(3)]
+    pub indel_repeat_limit: usize,
 }
 
 impl Deref for PileupMappingParams {

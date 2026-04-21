@@ -177,6 +177,8 @@ mod tests {
             pos: pos as u32,
             reads: SimpleReads(vec![].into()),
             reference_base: Base::C,
+            indel_observations: Default::default(),
+            depth_offset: 0,
         };
 
         PileupMetrics::new(pileup).unwrap()

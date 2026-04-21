@@ -25,6 +25,7 @@ fn call_default_bed() -> Result<()> {
         segmentation: default(),
         require_tags: default(),
         variant_calling: default(),
+        indel: default(),
         denovo_cpg: default(),
         methylation: default(),
         ml: default(),
