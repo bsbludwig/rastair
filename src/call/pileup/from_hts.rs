@@ -27,7 +27,6 @@ use tracing::{debug, instrument, trace};
 #[derive(Default)]
 pub(crate) struct ReadOrientationCache {
     strands: FxHashMap<ReadOrientationCacheKey, Strand>,
-    mismatches: FxHashMap<ReadOrientationCacheKey, u32>,
 }
 
 impl ReadOrientationCache {
@@ -51,7 +50,14 @@ impl ReadOrientationCache {
         self.strands.insert(key, strand);
         Some(strand)
     }
+}
 
+#[derive(Default)]
+pub(crate) struct ReadMismatchCache {
+    counts: FxHashMap<ReadOrientationCacheKey, u32>,
+}
+
+impl ReadMismatchCache {
     fn mismatch_count_for_alignment(
         &mut self,
         alignment: &Alignment<'_>,
@@ -59,11 +65,11 @@ impl ReadOrientationCache {
         strand: Strand,
     ) -> u32 {
         let key = ReadOrientationCacheKey::from_alignment(alignment);
-        if let Some(&count) = self.mismatches.get(&key) {
+        if let Some(&count) = self.counts.get(&key) {
             return count;
         }
         let count = count_taps_aware_mismatches(&alignment.record(), segment, strand);
-        self.mismatches.insert(key, count);
+        self.counts.insert(key, count);
         count
     }
 }
@@ -108,6 +114,7 @@ impl Pileup {
         params: &PileupMappingParams,
         collector: &mut NameCollector,
         orientation_cache: &mut ReadOrientationCache,
+        mismatch_cache: &mut ReadMismatchCache,
     ) -> Result<Pileup> {
         let pos = pile.pos();
         let idx = segment.pos_to_idx(pos)?;
@@ -200,7 +207,7 @@ impl Pileup {
                         .unwrap_or(Strand::Unknown);
 
                     let mismatches =
-                        orientation_cache.mismatch_count_for_alignment(&a, &segment, strand);
+                        mismatch_cache.mismatch_count_for_alignment(&a, &segment, strand);
                     if mismatches > params.indel_max_mismatches {
                         trace!(
                             mismatches,
