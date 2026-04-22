@@ -327,6 +327,7 @@ fn process_region_wrapper(
         let pileup_mapping_params = process::PileupMappingParams {
             variant_calling: params.variant_calling.clone(),
             require_tags: params.require_tags.filter(),
+            indel_max_mismatches: params.indel.indel_max_mismatches,
             ..Default::default()
         };
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;

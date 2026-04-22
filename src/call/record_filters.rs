@@ -41,13 +41,14 @@ impl RecordFilters {
     pub fn pre_filter(&self, pileup: &PileupMetrics) -> bool {
         let has_alts = !pileup.alts.is_empty();
         let cpg = *pileup.pos_metrics.cpg || pileup.forms_denovo();
+        let has_indels = !pileup.indels.is_empty();
 
         if self.cpgs_only {
             // Filter out pileups that are not CpG if requested
             cpg
         } else {
-            // Otherwise, keep all variant evidence + methylation evidence
-            has_alts || cpg
+            // Otherwise, keep all variant evidence + methylation evidence + indel evidence
+            has_alts || cpg || has_indels
         }
     }
 

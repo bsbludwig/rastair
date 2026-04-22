@@ -26,6 +26,15 @@ pub struct IndelParams {
     #[arg(help_heading = crate::utils::cli::sections::PROCESSING)]
     #[default(0.05)]
     pub indel_error_rate: f64,
+
+    /// Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
+    ///
+    /// C->T mismatches on OT reads and G->A mismatches on OB reads are excluded
+    /// from the count as they are expected TAPS methylation signal.
+    #[arg(long, default_value_t = 5)]
+    #[arg(help_heading = crate::utils::cli::sections::FILTER)]
+    #[default(5)]
+    pub indel_max_mismatches: u32,
 }
 
 /// Result of indel calling at a single position for one allele.

@@ -22,6 +22,9 @@ pub struct PileupMappingParams {
     /// Homopolymer repeat length cutoff for indel depth filtering.
     #[default(3)]
     pub indel_repeat_limit: usize,
+    /// Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
+    #[default(5)]
+    pub indel_max_mismatches: u32,
 }
 
 impl Deref for PileupMappingParams {
