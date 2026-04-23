@@ -10,6 +10,7 @@ use crate::{
             types::{MlFeatureSet, PlattScaling, RastairFlatModel},
         },
     },
+    rayon_all,
     sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli},
 };
@@ -255,14 +256,10 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let features = params.ml_features.get_calculator().feature_num();
 
     info!("Training all 3 models in parallel");
-    let ((cpg_result, denovo_result), others_result) = rayon::join(
-        || {
-            rayon::join(
-                || train_and_save_model("cpg", cpg_data, params),
-                || train_and_save_model("denovo", denovo_data, params),
-            )
-        },
-        || train_and_save_model("other", other_data, params),
+    let (cpg_result, denovo_result, others_result) = rayon_all!(
+        train_and_save_model("cpg", cpg_data, params),
+        train_and_save_model("denovo", denovo_data, params),
+        train_and_save_model("other", other_data, params),
     );
 
     let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
