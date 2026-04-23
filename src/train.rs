@@ -60,22 +60,22 @@ pub struct TrainModelParams {
 #[derive(Debug, clap::Args)]
 struct ModelParameters {
     /// Number of trees in the random forest
-    #[arg(long = "n-trees", default_value = "800")]
+    #[arg(long = "n-trees", default_value_t = 800)]
     #[arg(help_heading = cli::sections::TRAINING)]
     pub n_trees: usize,
 
     /// Number of features to consider at each split (mtry parameter)
-    #[arg(long = "max-features", default_value = "2")]
+    #[arg(long = "max-features", default_value_t = 2)]
     #[arg(help_heading = cli::sections::TRAINING)]
     pub max_features: usize,
 
     /// Number of positive examples (SNPs) to sample for training
-    #[arg(long = "n-positive", default_value = "4000")]
+    #[arg(long = "n-positive", default_value_t = 8_000)]
     #[arg(help_heading = cli::sections::TRAINING)]
     pub n_positive: usize,
 
     /// Number of negative examples (REF positions) to sample for training
-    #[arg(long = "n-negative", default_value = "16000")]
+    #[arg(long = "n-negative", default_value_t = 20_000)]
     #[arg(help_heading = cli::sections::TRAINING)]
     pub n_negative: usize,
 }
