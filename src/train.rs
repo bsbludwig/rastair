@@ -551,6 +551,113 @@ fn subsample_training_data(
     Ok((features, labels))
 }
 
+/// Fit Platt scaling parameters A and B so that
+/// `P(y=1|f) = 1 / (1 + exp(A*f + B))` is a well-calibrated probability.
+///
+/// Uses Newton's method with backtracking line search and Bayesian-smoothed
+/// targets, following Lin, Lin, and Weng (2007).
+fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
+    let n = scores.len();
+    if n == 0 {
+        return PlattScaling::default();
+    }
+
+    let n_pos = labels.iter().filter(|&&y| y > 0.5).count() as f64;
+    let n_neg = n as f64 - n_pos;
+
+    if n_pos == 0.0 || n_neg == 0.0 {
+        return PlattScaling::default();
+    }
+
+    // Bayesian-smoothed targets avoid log(0)
+    let hi_target = (n_pos + 1.0) / (n_pos + 2.0);
+    let lo_target = 1.0 / (n_neg + 2.0);
+
+    let mut a = 0.0_f64;
+    let mut b = ((n_neg + 1.0) / (n_pos + 1.0)).ln();
+
+    // Initial objective value
+    let mut fval = 0.0;
+    for i in 0..n {
+        let t = if labels[i] > 0.5 { hi_target } else { lo_target };
+        let z = scores[i] * a + b;
+        fval += if z >= 0.0 {
+            t * z + (1.0 + (-z).exp()).ln()
+        } else {
+            (t - 1.0) * z + (1.0 + z.exp()).ln()
+        };
+    }
+
+    const MAX_ITER: usize = 100;
+    const MIN_STEP: f64 = 1e-10;
+    const SIGMA: f64 = 1e-12;
+
+    for _ in 0..MAX_ITER {
+        let mut h11 = SIGMA;
+        let mut h22 = SIGMA;
+        let mut h12 = 0.0_f64;
+        let mut g1 = 0.0_f64;
+        let mut g2 = 0.0_f64;
+
+        for i in 0..n {
+            let t = if labels[i] > 0.5 { hi_target } else { lo_target };
+            let z = scores[i] * a + b;
+            let (p, q) = if z >= 0.0 {
+                let ez = (-z).exp();
+                (ez / (1.0 + ez), 1.0 / (1.0 + ez))
+            } else {
+                let ez = z.exp();
+                (1.0 / (1.0 + ez), ez / (1.0 + ez))
+            };
+            let d2 = p * q;
+            h11 += scores[i] * scores[i] * d2;
+            h22 += d2;
+            h12 += scores[i] * d2;
+            let d1 = t - p;
+            g1 += scores[i] * d1;
+            g2 += d1;
+        }
+
+        // Newton step: H * [dA, dB] = -[g1, g2]
+        let det = h11 * h22 - h12 * h12;
+        let da = -(h22 * g1 - h12 * g2) / det;
+        let db = -(-h12 * g1 + h11 * g2) / det;
+        let gd = g1 * da + g2 * db;
+
+        // Backtracking line search with Armijo condition
+        let mut stepsize = 1.0_f64;
+        while stepsize >= MIN_STEP {
+            let new_a = a + stepsize * da;
+            let new_b = b + stepsize * db;
+
+            let mut newf = 0.0;
+            for i in 0..n {
+                let t = if labels[i] > 0.5 { hi_target } else { lo_target };
+                let z = scores[i] * new_a + new_b;
+                newf += if z >= 0.0 {
+                    t * z + (1.0 + (-z).exp()).ln()
+                } else {
+                    (t - 1.0) * z + (1.0 + z.exp()).ln()
+                };
+            }
+
+            if newf < fval + 0.0001 * stepsize * gd {
+                a = new_a;
+                b = new_b;
+                fval = newf;
+                break;
+            }
+            stepsize /= 2.0;
+        }
+
+        if stepsize < MIN_STEP || (g1.abs() < 1e-5 && g2.abs() < 1e-5) {
+            break;
+        }
+    }
+
+    PlattScaling { a, b }
+}
+
 /// Serialize a model to disk with LZ4 compression
 fn serialize_model(model: &RastairFlatModel, path: ClioPath) -> Result<()> {
     let file = path.create().wrap_err("Failed to create output file for model serialization")?;
