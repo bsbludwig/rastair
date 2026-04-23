@@ -253,14 +253,23 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     );
 
     let features = params.ml_features.get_calculator().feature_num();
-    let (cpg, cpg_platt) =
-        train_and_save_model("cpg", cpg_data, params).wrap_err("Failed to train CpG model")?;
+
+    info!("Training all 3 models in parallel");
+    let ((cpg_result, denovo_result), others_result) = rayon::join(
+        || {
+            rayon::join(
+                || train_and_save_model("cpg", cpg_data, params),
+                || train_and_save_model("denovo", denovo_data, params),
+            )
+        },
+        || train_and_save_model("other", other_data, params),
+    );
+
+    let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
     let cpg = FlatForest::from_forest(&cpg, features.cpg);
-    let (denovo, denovo_platt) = train_and_save_model("denovo", denovo_data, params)
-        .wrap_err("Failed to train de-novo CpG model")?;
+    let (denovo, denovo_platt) = denovo_result.wrap_err("Failed to train de-novo CpG model")?;
     let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
-    let (others, others_platt) = train_and_save_model("other", other_data, params)
-        .wrap_err("Failed to train other model")?;
+    let (others, others_platt) = others_result.wrap_err("Failed to train other model")?;
     let others = FlatForest::from_forest(&others, features.others);
 
     let model = RastairFlatModel {
