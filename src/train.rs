@@ -1,3 +1,14 @@
+//! Train random forest classifiers for variant filtering.
+//!
+//! Rastair uses three separate RF models right now: CpG, de-novo CpG, and "other".
+//! Training works like this:
+//!
+//! 1. Collect: iterate pileups, compute ML for alts, put into model bucket
+//! 2. Sample: pick `n_positive` and `n_negative` examples
+//! 3. Train a `RandomForest` (params from CLI) on the samples
+//! 4. Scaling: do Platt scaling on everything but the sampled data
+//! 5. Export: Build `RastairFlatModel` and write to file
+
 use crate::{
     call::{
         ml::DEFAULT_ML_THRESHOLD,
