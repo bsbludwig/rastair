@@ -7,7 +7,7 @@ use crate::{
         PileupMetrics,
         ml::{
             features::FeatureCalculatorBox,
-            types::{MlFeatureSet, RastairFlatModel},
+            types::{MlFeatureSet, PlattScaling, RastairFlatModel},
         },
     },
     sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
@@ -117,7 +117,7 @@ impl TrainingData {
     }
 }
 
-#[instrument(level = "info", skip_all)]
+#[instrument(level = "debug", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
     // Create output directory if it doesn't exist
     params
@@ -253,13 +253,13 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     );
 
     let features = params.ml_features.get_calculator().feature_num();
-    let cpg =
+    let (cpg, cpg_platt) =
         train_and_save_model("cpg", cpg_data, params).wrap_err("Failed to train CpG model")?;
     let cpg = FlatForest::from_forest(&cpg, features.cpg);
-    let denovo = train_and_save_model("denovo", denovo_data, params)
+    let (denovo, denovo_platt) = train_and_save_model("denovo", denovo_data, params)
         .wrap_err("Failed to train de-novo CpG model")?;
     let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
-    let others = train_and_save_model("other", other_data, params)
+    let (others, others_platt) = train_and_save_model("other", other_data, params)
         .wrap_err("Failed to train other model")?;
     let others = FlatForest::from_forest(&others, features.others);
 
@@ -268,9 +268,9 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         cpg,
         denovo,
         others,
-        cpg_platt: Default::default(),
-        denovo_platt: Default::default(),
-        others_platt: Default::default(),
+        cpg_platt,
+        denovo_platt,
+        others_platt,
     };
 
     serialize_model(&model, params.output.clone())
@@ -455,12 +455,12 @@ fn collect_training_data_from_segment(
     Ok((cpg_data, denovo_data, other_data))
 }
 
-/// Train a model and save it to disk
+/// Train a random forest and fit Platt scaling calibration
 fn train_and_save_model(
     model_name: &str,
     data: TrainingData,
     params: &TrainModelParams,
-) -> Result<RandomForest> {
+) -> Result<(RandomForest, PlattScaling)> {
     ensure!(!data.is_empty(), "No training data for {model_name} model, skipping");
 
     info!("Training {} model with {} examples", model_name, data.len());
@@ -491,7 +491,13 @@ fn train_and_save_model(
 
     info!("Finished training {} model", model_name);
 
-    Ok(model)
+    // Fit Platt scaling: predict on training data, then calibrate
+    let raw_scores = model.predict(&features.view());
+    let platt =
+        fit_platt_scaling(raw_scores.as_slice().unwrap_or(&[]), labels.as_slice().unwrap_or(&[]));
+    info!(model_name, a = platt.a, b = platt.b, "Fitted Platt scaling parameters");
+
+    Ok((model, platt))
 }
 
 /// Subsample training data to balance positive and negative examples
