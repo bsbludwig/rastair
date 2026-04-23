@@ -472,7 +472,6 @@ fn collect_training_data_from_segment(
     Ok((cpg_data, denovo_data, other_data))
 }
 
-/// Train a random forest and fit Platt scaling calibration
 fn train_and_save_model(
     model_name: &str,
     data: TrainingData,
@@ -482,18 +481,19 @@ fn train_and_save_model(
 
     info!("Training {} model with {} examples", model_name, data.len());
 
-    // Subsample data
-    let (features, labels) = subsample_training_data(
-        data,
+    // Subsample for training, keep held-out data for Platt calibration
+    let (train_features, train_labels, holdout_features, holdout_labels) = subsample_training_data(
+        &data,
         params.model_params.n_positive,
         params.model_params.n_negative,
     )?;
 
     info!(
-        "Subsampled to {} examples ({} positive, {} negative)",
-        labels.len(),
-        labels.iter().filter(|&&l| l == 1.0).count(),
-        labels.iter().filter(|&&l| l == 0.0).count()
+        "Subsampled to {} training examples ({} positive, {} negative), {} held-out for Platt calibration",
+        train_labels.len(),
+        train_labels.iter().filter(|&&l| l == 1.0).count(),
+        train_labels.iter().filter(|&&l| l == 0.0).count(),
+        holdout_labels.len(),
     );
 
     // Train model
@@ -504,25 +504,32 @@ fn train_and_save_model(
         .with_n_jobs(i32::try_from(params.threads).ok());
 
     let mut model = RandomForest::new(rf_params);
-    model.fit(&features.view(), &labels.view());
+    model.fit(&train_features.view(), &train_labels.view());
 
     info!("Finished training {} model", model_name);
 
-    // Fit Platt scaling: predict on training data, then calibrate
-    let raw_scores = model.predict(&features.view());
-    let platt =
-        fit_platt_scaling(raw_scores.as_slice().unwrap_or(&[]), labels.as_slice().unwrap_or(&[]));
+    // Fit Platt scaling on held-out predictions
+    let raw_scores = model.predict(&holdout_features.view());
+    let platt = fit_platt_scaling(
+        raw_scores.as_slice().unwrap_or(&[]),
+        holdout_labels.as_slice().unwrap_or(&[]),
+    );
     info!(model_name, a = platt.a, b = platt.b, "Fitted Platt scaling parameters");
 
     Ok((model, platt))
 }
 
-/// Subsample training data to balance positive and negative examples
+/// Subsample training data to balance positive and negative examples.
+///
+/// Returns `(train_features, train_labels, holdout_features, holdout_labels)`.
+/// The held-out set is capped at `MAX_HOLDOUT` to keep memory bounded while
+/// still providing enough data for a stable Platt scaling fit.
 fn subsample_training_data(
-    data: TrainingData,
+    data: &TrainingData,
     n_positive: usize,
     n_negative: usize,
-) -> Result<(Array2<f64>, Array1<f64>)> {
+) -> Result<(Array2<f64>, Array1<f64>, Array2<f64>, Array1<f64>)> {
+    const MAX_HOLDOUT: usize = 100_000;
     let mut rng = rand::rng();
 
     // Separate positive and negative indices
@@ -537,7 +544,7 @@ fn subsample_training_data(
         }
     }
 
-    // Sample indices
+    // Sample indices for training
     let n_pos_actual = positive_indices.len().min(n_positive);
     let n_neg_actual = negative_indices.len().min(n_negative);
 
@@ -550,21 +557,37 @@ fn subsample_training_data(
     let selected_pos = &positive_indices[..n_pos_actual];
     let selected_neg = &negative_indices[..n_neg_actual];
 
-    // Combine and sort indices
-    let mut all_indices: Vec<usize> =
+    let train_indices: HashSet<usize> =
         selected_pos.iter().chain(selected_neg.iter()).copied().collect();
-    all_indices.sort_unstable();
 
-    // Extract features and labels for selected indices
-    let mut feature_rows = Vec::with_capacity(all_indices.len());
-    let mut label_vec = Vec::with_capacity(all_indices.len());
+    // Build training matrix
+    let train_matrix = build_matrix(data, &mut train_indices.iter().copied().collect())?;
 
-    for &idx in &all_indices {
+    // Build held-out matrix from remaining indices, capped for memory
+    let mut holdout_indices: Vec<usize> =
+        (0..data.len()).filter(|i| !train_indices.contains(i)).collect();
+    holdout_indices.shuffle(&mut rng);
+    holdout_indices.truncate(MAX_HOLDOUT);
+
+    let holdout_matrix = build_matrix(data, &mut holdout_indices)?;
+
+    Ok((train_matrix.0, train_matrix.1, holdout_matrix.0, holdout_matrix.1))
+}
+
+fn build_matrix(
+    data: &TrainingData,
+    indices: &mut Vec<usize>,
+) -> Result<(Array2<f64>, Array1<f64>)> {
+    indices.sort_unstable();
+
+    let mut feature_rows = Vec::with_capacity(indices.len());
+    let mut label_vec = Vec::with_capacity(indices.len());
+
+    for &idx in indices.iter() {
         feature_rows.push(data.features[idx].row(0).to_owned());
         label_vec.push(data.labels[idx]);
     }
 
-    // Stack feature rows into a single matrix
     let feature_views: Vec<_> = feature_rows.iter().map(|r| r.view()).collect();
     let features =
         ndarray::stack(Axis(0), &feature_views).wrap_err("Failed to stack feature arrays")?;
