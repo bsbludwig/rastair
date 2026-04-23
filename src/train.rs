@@ -89,6 +89,12 @@ struct ModelParameters {
     #[arg(long = "n-negative", default_value_t = 20_000)]
     #[arg(help_heading = cli::sections::TRAINING)]
     pub n_negative: usize,
+
+    /// Random seed for reproducibility (subsampling and forest training).
+    /// Omit for a random seed.
+    #[arg(long)]
+    #[arg(help_heading = cli::sections::TRAINING)]
+    pub seed: Option<u64>,
 }
 
 /// Key for indexing positions in truth set
@@ -131,6 +137,16 @@ impl TrainingData {
 
 #[instrument(level = "debug", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
+    let seed = params.model_params.seed.unwrap_or_else(rand::random);
+    info!(
+        seed,
+        n_trees = params.model_params.n_trees,
+        max_features = params.model_params.max_features,
+        n_positive = params.model_params.n_positive,
+        n_negative = params.model_params.n_negative,
+        "Training parameters",
+    );
+
     // Create output directory if it doesn't exist
     params
         .output
@@ -266,11 +282,17 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     let features = params.ml_features.get_calculator().feature_num();
 
+    // Derive independent seeds for each model from the base seed
+    let mut seed_rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let cpg_seed: u64 = seed_rng.random();
+    let denovo_seed: u64 = seed_rng.random();
+    let others_seed: u64 = seed_rng.random();
+
     info!("Training all 3 models in parallel");
     let (cpg_result, denovo_result, others_result) = rayon_all!(
-        train_and_save_model("cpg", cpg_data, params),
-        train_and_save_model("denovo", denovo_data, params),
-        train_and_save_model("other", other_data, params),
+        train_and_save_model("cpg", cpg_data, params, cpg_seed),
+        train_and_save_model("denovo", denovo_data, params, denovo_seed),
+        train_and_save_model("other", other_data, params, others_seed),
     );
 
     let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
@@ -476,16 +498,18 @@ fn train_and_save_model(
     model_name: &str,
     data: TrainingData,
     params: &TrainModelParams,
+    seed: u64,
 ) -> Result<(RandomForest, PlattScaling)> {
     ensure!(!data.is_empty(), "No training data for {model_name} model, skipping");
 
-    info!("Training {} model with {} examples", model_name, data.len());
+    info!(model_name, seed, examples = data.len(), "Training model");
 
     // Subsample for training, keep held-out data for Platt calibration
     let (train_features, train_labels, holdout_features, holdout_labels) = subsample_training_data(
         &data,
         params.model_params.n_positive,
         params.model_params.n_negative,
+        seed,
     )?;
 
     info!(
@@ -501,7 +525,8 @@ fn train_and_save_model(
         .with_max_features(MaxFeatures::Value(params.model_params.max_features))
         .with_n_estimators(params.model_params.n_trees)
         .with_max_depth(None)
-        .with_n_jobs(i32::try_from(params.threads).ok());
+        .with_n_jobs(i32::try_from(params.threads).ok())
+        .with_seed(seed);
 
     let mut model = RandomForest::new(rf_params);
     model.fit(&train_features.view(), &train_labels.view());
@@ -528,9 +553,10 @@ fn subsample_training_data(
     data: &TrainingData,
     n_positive: usize,
     n_negative: usize,
+    seed: u64,
 ) -> Result<(Array2<f64>, Array1<f64>, Array2<f64>, Array1<f64>)> {
     const MAX_HOLDOUT: usize = 100_000;
-    let mut rng = rand::rng();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
     // Separate positive and negative indices
     let mut positive_indices = Vec::new();
