@@ -192,11 +192,11 @@ impl FeatureCalculator for SimpleFeatures {
         self.calculate_basic(current)
     }
 
-    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+    fn calculate_insertion(&self, _current: &MetricsForIndel) -> Result<Array2<f64>> {
         todo!()
     }
 
-    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+    fn calculate_deletion(&self, _current: &MetricsForIndel) -> Result<Array2<f64>> {
         todo!()
     }
 }

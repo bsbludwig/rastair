@@ -2,7 +2,7 @@ use crate::metrics::ml::features::FeatureCalculatorBox;
 use biosphere::FlatForest;
 use biosphere::gpu::GpuForest;
 use ndarray::Array1;
-use rastair_types::{Base, Probability, SmolStr};
+use rastair_types::{Probability, SmolStr};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]

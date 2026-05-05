@@ -1,9 +1,10 @@
 //! Train random forest classifiers for variant filtering.
 //!
-//! Rastair uses three separate RF models right now: CpG, de-novo CpG, and "other".
+//! Rastair uses five separate RF models: CpG, de-novo CpG, "other" (SNVs),
+//! insertion, and deletion.
 //! Training works like this:
 //!
-//! 1. Collect: iterate pileups, compute ML for alts, put into model bucket
+//! 1. Collect: iterate pileups, compute ML for alts & indels, put into model buckets
 //! 2. Sample: pick `n_positive` and `n_negative` examples
 //! 3. Train a `RandomForest` (params from CLI) on the samples
 //! 4. Scaling: do Platt scaling on everything but the sampled data
@@ -12,12 +13,14 @@
 use crate::{
     call::{
         ml::DEFAULT_ML_THRESHOLD,
+        pileup::indels::IndelAllele,
         process::{PileupMappingParams, calculate_pileup_metrics, get_pileups},
+        variant_calling::indel_calling::{self, IndelParams},
     },
     metrics::{
-        PileupMetrics,
+        MetricsForIndel, PileupMetrics,
         ml::{
-            features::FeatureCalculatorBox,
+            features::FeatureCalculator,
             types::{MlFeatureSet, PlattScaling, RastairFlatModel},
         },
     },
@@ -105,7 +108,14 @@ pub struct PositionKey {
     pub alt_base: Base,
 }
 
-/// Training data for a specific model type (CpG, denovo, or other)
+/// Key for indexing indel positions in truth set
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct IndelKey {
+    pub pos: u64,
+    pub allele: IndelAllele,
+}
+
+/// Training data for a specific model type
 struct TrainingData {
     features: Vec<Array2<f64>>,
     labels: Vec<f64>,
@@ -133,6 +143,18 @@ impl TrainingData {
     fn is_empty(&self) -> bool {
         self.labels.is_empty()
     }
+}
+
+type SegmentResult = (TrainingData, TrainingData, TrainingData, TrainingData, TrainingData);
+
+fn empty_segment_result() -> SegmentResult {
+    (
+        TrainingData::new(),
+        TrainingData::new(),
+        TrainingData::new(),
+        TrainingData::new(),
+        TrainingData::new(),
+    )
 }
 
 #[instrument(level = "debug", skip_all)]
@@ -166,9 +188,13 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         start: None,
         end: None,
     });
-    let truth_variants = load_truth_vcf(&params.truth, &region, params.threads)
+    let (snp_variants, indel_variants) = load_truth_vcf(&params.truth, &region, params.threads)
         .wrap_err("Failed to load truth VCF")?;
-    info!("Loaded {} true variants from truth VCF", truth_variants.len());
+    info!(
+        snps = snp_variants.len(),
+        indels = indel_variants.len(),
+        "Loaded true variants from truth VCF"
+    );
 
     // Get segments to process
     let segmentation = SegmentationParams::default();
@@ -186,97 +212,101 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     info!("Processing {} segments to collect training data", regions.len());
 
+    // Use default IndelParams with experimental_indels enabled so we can
+    // collect training examples for insertion/deletion models.
+    let indel_params = IndelParams { experimental_indels: true, ..IndelParams::default() };
+    let calculator = params.ml_features.get_calculator();
+
     // Process segments in parallel to collect training data
-    let results: Vec<(TrainingData, TrainingData, TrainingData)> =
-        rayon::ThreadPoolBuilder::new()
-            .thread_name(|idx| format!("training-worker-{idx}"))
-            .num_threads(params.threads)
-            .start_handler(|idx| trace!(idx, "Starting training worker thread"))
-            .exit_handler(|idx| trace!(idx, "Closing training worker thread"))
-            .build()
-            .wrap_err("Failed to create thread pool for rayon")?
-            .install(move || {
-                thread_local! {
-                    /// Readers for the BAM and FASTA files, initialized per thread to avoid
-                    /// re-opening files or having a lock
-                    static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
-                }
+    let results: Vec<SegmentResult> = rayon::ThreadPoolBuilder::new()
+        .thread_name(|idx| format!("training-worker-{idx}"))
+        .num_threads(params.threads)
+        .start_handler(|idx| trace!(idx, "Starting training worker thread"))
+        .exit_handler(|idx| trace!(idx, "Closing training worker thread"))
+        .build()
+        .wrap_err("Failed to create thread pool for rayon")?
+        .install(move || {
+            thread_local! {
+                /// Readers for the BAM and FASTA files, initialized per thread to avoid
+                /// re-opening files or having a lock
+                static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+            }
 
-                regions
-                    .par_iter()
-                    .map(|chunk_region| {
-                        // Use thread-local readers to avoid re-opening files in each thread
-                        READERS.with(|local_readers| -> (TrainingData, TrainingData, TrainingData) {
-                            let mut local_readers = local_readers.borrow_mut();
-                            let readers = {
-                                // Initialize thread-local readers first time the thread accesses them
-                                if local_readers.is_none() {
-                                    match params.reader.readers() {
-                                        Ok(readers) => {
-                                            *local_readers = Some(readers);
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                error = format!("{e:#}"),
-                                                "Failed to open readers in worker thread"
-                                            );
-                                            return (
-                                                TrainingData::new(),
-                                                TrainingData::new(),
-                                                TrainingData::new(),
-                                            );
-                                        }
+            regions
+                .par_iter()
+                .map(|chunk_region| {
+                    // Use thread-local readers to avoid re-opening files in each thread
+                    READERS.with(|local_readers| -> SegmentResult {
+                        let mut local_readers = local_readers.borrow_mut();
+                        let readers = {
+                            // Initialize thread-local readers first time the thread accesses them
+                            if local_readers.is_none() {
+                                match params.reader.readers() {
+                                    Ok(readers) => {
+                                        *local_readers = Some(readers);
                                     }
-                                }
-                                match local_readers.as_mut() {
-                                    Some(readers) => readers,
-                                    None => {
-                                        warn!("Failed to access thread-local readers");
-                                        return (
-                                            TrainingData::new(),
-                                            TrainingData::new(),
-                                            TrainingData::new(),
+                                    Err(e) => {
+                                        warn!(
+                                            error = format!("{e:#}"),
+                                            "Failed to open readers in worker thread"
                                         );
+                                        return empty_segment_result();
                                     }
-                                }
-                            };
-
-                            // Collect training data from this segment
-                            match collect_training_data_from_segment(
-                                chunk_region,
-                                readers,
-                                &truth_variants,
-                                params.ml_features.get_calculator(),
-                            ) {
-                                Ok(data) => data,
-                                Err(e) => {
-                                    warn!(
-                                        error = format!("{e:#}"),
-                                        "Failed to collect training data from segment"
-                                    );
-                                    (TrainingData::new(), TrainingData::new(), TrainingData::new())
                                 }
                             }
-                        })
+                            match local_readers.as_mut() {
+                                Some(readers) => readers,
+                                None => {
+                                    warn!("Failed to access thread-local readers");
+                                    return empty_segment_result();
+                                }
+                            }
+                        };
+
+                        // Collect training data from this segment
+                        match collect_training_data_from_segment(
+                            chunk_region,
+                            readers,
+                            &snp_variants,
+                            &indel_variants,
+                            &indel_params,
+                            &*calculator,
+                        ) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                warn!(
+                                    error = format!("{e:#}"),
+                                    "Failed to collect training data from segment"
+                                );
+                                empty_segment_result()
+                            }
+                        }
                     })
-                    .collect()
-            });
+                })
+                .collect()
+        });
 
     // Merge all results from parallel processing
     let mut cpg_data = TrainingData::new();
     let mut denovo_data = TrainingData::new();
     let mut other_data = TrainingData::new();
+    let mut insertion_data = TrainingData::new();
+    let mut deletion_data = TrainingData::new();
 
-    for (cpg, denovo, other) in results {
+    for (cpg, denovo, other, insertion, deletion) in results {
         cpg_data.merge(cpg);
         denovo_data.merge(denovo);
         other_data.merge(other);
+        insertion_data.merge(insertion);
+        deletion_data.merge(deletion);
     }
 
     info!(
         cpg = cpg_data.len(),
         denovo = denovo_data.len(),
         other = other_data.len(),
+        insertion = insertion_data.len(),
+        deletion = deletion_data.len(),
         "Collected training examples",
     );
 
@@ -287,8 +317,10 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let cpg_seed: u64 = seed_rng.random();
     let denovo_seed: u64 = seed_rng.random();
     let others_seed: u64 = seed_rng.random();
+    let insertion_seed: u64 = seed_rng.random();
+    let deletion_seed: u64 = seed_rng.random();
 
-    info!("Training all 3 models in parallel");
+    info!("Training all 5 models in parallel");
     let (cpg_result, denovo_result, others_result, insertion_result, deletion_result) = rayon_all!(
         train_and_save_model("cpg", cpg_data, params, cpg_seed),
         train_and_save_model("denovo", denovo_data, params, denovo_seed),
@@ -331,13 +363,13 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     Ok(())
 }
 
-/// Load truth VCF and create an index of variant positions
+/// Load truth VCF and create an index of variant positions (SNPs and indels).
 #[instrument(level = "info", skip_all)]
 pub fn load_truth_vcf(
     vcf_path: &ClioPath,
     region: &RegionString,
     threads: usize,
-) -> Result<HashSet<PositionKey>> {
+) -> Result<(HashSet<PositionKey>, HashSet<IndelKey>)> {
     ensure!(vcf_path.exists(), "Predictions VCF file `{vcf_path:?}` not found.");
     let index_path = PathBuf::from(format!("{}.csi", vcf_path.path().display()));
     ensure!(
@@ -349,7 +381,8 @@ pub fn load_truth_vcf(
         .wrap_err_with(|| format!("Failed to open truth VCF file: {}", vcf_path.display()))?;
     reader.set_threads(threads.max(2)).wrap_err("Failed to set threads for truth VCF reader")?;
 
-    let mut variants = HashSet::new();
+    let mut snp_variants = HashSet::new();
+    let mut indel_variants = HashSet::new();
     let header = reader.header();
 
     reader
@@ -372,70 +405,112 @@ pub fn load_truth_vcf(
             }
         };
 
-        variants.extend(process_truth_record(&record));
+        let (snps, indels) = process_truth_record(&record);
+        snp_variants.extend(snps);
+        indel_variants.extend(indels);
     }
 
-    Ok(variants)
+    Ok((snp_variants, indel_variants))
 }
 
 /// Process a truth VCF record and extract variant information.
-/// Returns a list of `PositionKeys` for each valid SNP alt allele.
+///
+/// Returns SNP [`PositionKey`]s for single-base substitutions and
+/// [`IndelKey`]s for insertions/deletions.
 /// Multi-allelic sites produce multiple keys (one per alt).
-fn process_truth_record(record: &bcf::Record) -> SmallVec<PositionKey, 2> {
+fn process_truth_record(record: &bcf::Record) -> (SmallVec<PositionKey, 2>, SmallVec<IndelKey, 2>) {
     // Filter: only PASS variants
-    // Note: has_filter returns true if the filter is NOT PASS
     if !record.has_filter("PASS".as_bytes()) {
-        return SmallVec::new();
+        return (SmallVec::new(), SmallVec::new());
     }
 
     let alleles = record.alleles();
     if alleles.is_empty() {
-        return SmallVec::new();
+        return (SmallVec::new(), SmallVec::new());
     }
 
     let ref_allele = alleles.first().expect("alleles is not empty");
-
-    // Reference must be single base (SNP)
-    if ref_allele.len() != 1 {
-        return SmallVec::new();
-    }
-
-    let ref_base = Base::from(ref_allele[0]);
-    if ref_base == Base::Unknown {
-        return SmallVec::new();
-    }
-
     let pos = record.pos() as u64;
 
-    // Process each alt allele (indices 1 onwards)
-    alleles
-        .iter()
-        .skip(1)
-        .filter_map(|alt_allele| {
-            // Alt must be single base (SNP)
-            if alt_allele.len() != 1 {
-                return None;
-            }
+    let mut snps = SmallVec::new();
+    let mut indels = SmallVec::new();
+
+    let ref_base = if ref_allele.is_empty() { Base::Unknown } else { Base::from(ref_allele[0]) };
+
+    for alt_allele in alleles.iter().skip(1) {
+        if alt_allele.is_empty() {
+            continue;
+        }
+
+        // Both ref and alt are single base → SNP
+        if ref_allele.len() == 1 && alt_allele.len() == 1 {
             let alt_base = Base::from(alt_allele[0]);
-            if alt_base == Base::Unknown {
-                return None;
+            if ref_base != Base::Unknown && alt_base != Base::Unknown {
+                snps.push(PositionKey { pos, ref_base, alt_base });
             }
-            Some(PositionKey { pos, ref_base, alt_base })
-        })
-        .collect()
+            continue;
+        }
+
+        // Multi-base allele → indel
+        // The first base of REF and ALT must match (VCF anchor base).
+        // The remainder determines whether it's an insertion or deletion.
+        if ref_allele.len() < 2 && alt_allele.len() < 2 {
+            // One of them is empty or just the anchor — can't determine
+            continue;
+        }
+
+        // Parse the first base from each
+        let ref_first = ref_allele.first().copied().unwrap_or(b'N');
+        let alt_first = alt_allele.first().copied().unwrap_or(b'N');
+        if ref_first != alt_first {
+            // Anchor base mismatch — skip (complex variant, not a simple indel)
+            continue;
+        }
+
+        let ref_rest = &ref_allele[1..];
+        let alt_rest = &alt_allele[1..];
+
+        let allele = if ref_rest.len() > alt_rest.len() {
+            // Deletion: REF has extra bases
+            let del_bases: SmallVec<Base, 4> = ref_rest.iter().map(|&b| Base::from(b)).collect();
+            if del_bases.contains(&Base::Unknown) {
+                continue;
+            }
+            IndelAllele::Deletion(del_bases)
+        } else if alt_rest.len() > ref_rest.len() {
+            // Insertion: ALT has extra bases
+            let ins_bases: SmallVec<Base, 4> = alt_rest.iter().map(|&b| Base::from(b)).collect();
+            if ins_bases.contains(&Base::Unknown) {
+                continue;
+            }
+            IndelAllele::Insertion(ins_bases)
+        } else {
+            // Same length but multi-base (e.g. MNP) — skip for now
+            continue;
+        };
+
+        indels.push(IndelKey { pos, allele });
+    }
+
+    (snps, indels)
 }
 
 /// Collect training data from a single segment
 fn collect_training_data_from_segment(
     chunk_region: &ChunkRegion,
     readers: &mut Readers,
-    truth_variants: &HashSet<PositionKey>,
-    calculator: FeatureCalculatorBox,
-) -> Result<(TrainingData, TrainingData, TrainingData)> {
+    snp_truth: &HashSet<PositionKey>,
+    indel_truth: &HashSet<IndelKey>,
+    indel_params: &IndelParams,
+    calculator: &dyn FeatureCalculator,
+) -> Result<SegmentResult> {
     // Create local training data for this segment
     let mut cpg_data = TrainingData::new();
     let mut denovo_data = TrainingData::new();
     let mut other_data = TrainingData::new();
+    let mut insertion_data = TrainingData::new();
+    let mut deletion_data = TrainingData::new();
+
     // Build pileups
     let mapping_params = PileupMappingParams::default();
     let (segment, pileup_iter) =
@@ -455,7 +530,7 @@ fn collect_training_data_from_segment(
         .map_surrounding(|before, current, after| {
             let pos = u64::from(current.pileup.pos);
 
-            // Process each alt allele
+            // -- SNP alt alleles --
             for alt in &current.alts {
                 let ref_base = current.pileup.reference_base;
                 let alt_base = alt.base;
@@ -467,11 +542,7 @@ fn collect_training_data_from_segment(
 
                 // Determine label: is this position in truth set?
                 let key = PositionKey { pos, ref_base, alt_base };
-                let label = if truth_variants.contains(&key) {
-                    1.0 // True variant
-                } else {
-                    0.0 // Reference position
-                };
+                let label = if snp_truth.contains(&key) { 1.0 } else { 0.0 };
 
                 // Create MetricsForAlt for this alternative allele
                 let alt_metrics_for_ml = current.alt_metrics(alt_base);
@@ -498,11 +569,39 @@ fn collect_training_data_from_segment(
                 }
             }
 
+            // -- Indel alleles --
+            if !current.indels.is_empty() {
+                let indel_calls = indel_calling::call_indels(&current.indels, indel_params);
+                for call in &indel_calls {
+                    let indel_key = IndelKey { pos, allele: call.allele.clone() };
+                    let label = if indel_truth.contains(&indel_key) { 1.0 } else { 0.0 };
+
+                    let indel_m = MetricsForIndel { metrics: current, indel: call };
+
+                    match &call.allele {
+                        IndelAllele::Insertion(_) => {
+                            if let Ok(features) = calculator.calculate_insertion(&indel_m)
+                                && !features.is_any_nan()
+                            {
+                                insertion_data.add_example(features, label);
+                            }
+                        }
+                        IndelAllele::Deletion(_) => {
+                            if let Ok(features) = calculator.calculate_deletion(&indel_m)
+                                && !features.is_any_nan()
+                            {
+                                deletion_data.add_example(features, label);
+                            }
+                        }
+                    }
+                }
+            }
+
             Ok(())
         })
         .for_each(|_x| {});
 
-    Ok((cpg_data, denovo_data, other_data))
+    Ok((cpg_data, denovo_data, other_data, insertion_data, deletion_data))
 }
 
 fn train_and_save_model(

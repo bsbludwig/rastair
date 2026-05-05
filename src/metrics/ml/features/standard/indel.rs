@@ -97,7 +97,7 @@ impl DeletionFeatures {
 
     fn extract(current: &MetricsForIndel) -> DeletionFeatures {
         let common = CommonIndelFeatures::extract(current);
-        let ref_one_hot = one_hot_encode_base(current.metrics.ref_base()).try_into().unwrap();
+        let ref_one_hot = one_hot_encode_base(current.metrics.ref_base()).into();
         DeletionFeatures { common, ref_one_hot }
     }
 }
