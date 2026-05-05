@@ -541,6 +541,11 @@ impl MetricsForAlt<'_> {
     }
 }
 
+pub struct MetricsForIndel<'p> {
+    pub metrics: &'p PileupMetrics,
+    pub indel: &'p IndelCall,
+}
+
 fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     if pileup.indel_observations.is_empty() {
         return IndelCounts { ref_count: pileup.reads.len() as u32, ..Default::default() };
