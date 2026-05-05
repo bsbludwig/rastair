@@ -563,8 +563,9 @@ mod tests {
         let segment = test_segment(b"ACGACG");
         let record = test_record(b"ot-paired", FLAGS_F1R2_FIRST, 100, b"ATGATG");
 
-        let row = record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-            .unwrap();
+        let row =
+            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
+                .unwrap();
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
@@ -579,8 +580,9 @@ mod tests {
         let segment = test_segment(b"ACGACG");
         let record = test_record(b"ob-paired", FLAGS_R1F2_FIRST, 100, b"ACAACA");
 
-        let row = record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-            .unwrap();
+        let row =
+            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
+                .unwrap();
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
