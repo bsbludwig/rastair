@@ -100,8 +100,6 @@ enum Subcommand {
 enum MlSubcommand {
     /// Train machine learning models
     Train(TrainModelParams),
-    /// Pack three random forest models into a combined model file
-    Pack(PackModelParams),
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -173,13 +171,6 @@ fn main() -> Result<()> {
                 rastair::train_model(&params)?;
                 let duration = start.elapsed();
                 info!(?duration, "Training finished");
-            }
-            MlSubcommand::Pack(params) => {
-                let start = std::time::Instant::now();
-                debug!(?params, "Running pack command");
-                rastair::pack_models(&params)?;
-                let duration = start.elapsed();
-                info!(?duration, "Packing finished");
             }
         },
         Subcommand::Verify(params) => {
