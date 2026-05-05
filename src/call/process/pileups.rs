@@ -1,6 +1,10 @@
 use crate::{
     call::{
-        pileup::{Pileup, from_hts::{ReadMismatchCache, ReadOrientationCache}, overlapping_reads::NameCollector},
+        pileup::{
+            Pileup,
+            from_hts::{ReadMismatchCache, ReadOrientationCache},
+            overlapping_reads::NameCollector,
+        },
         require_tags::TagRequirement,
         variant_calling::VariantCallingParams,
     },
@@ -90,10 +94,17 @@ pub fn get_pileups(
             region.contains(u64::from(p.pos()))
         })
         .map(move |pile| {
-            Pileup::from_hts(&pile, segment.clone(), params, &mut collector, &mut orientation_cache, &mut mismatch_cache)
-                .wrap_err_with(|| {
-                    format!("Failed to get candidate from pileup at position {}", pile.pos())
-                })
+            Pileup::from_hts(
+                &pile,
+                segment.clone(),
+                params,
+                &mut collector,
+                &mut orientation_cache,
+                &mut mismatch_cache,
+            )
+            .wrap_err_with(|| {
+                format!("Failed to get candidate from pileup at position {}", pile.pos())
+            })
         })
         .filter_map(|res| match res {
             Ok(x) => Some(x),
