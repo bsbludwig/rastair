@@ -445,8 +445,10 @@ fn process_region(
                 MethylationEvidenceStrandInfo::from_pileup_with_methylation(&pileup);
 
             // Call indels (independent of SNV pipeline)
-            pileup.indel_calls =
-                variant_calling::indel_calling::call_indels(&pileup.indels, &params.indel);
+            if params.indel.experimental_indels {
+                pileup.indel_calls =
+                    variant_calling::indel_calling::call_indels(&pileup.indels, &params.indel);
+            }
 
             Ok(pileup)
         })

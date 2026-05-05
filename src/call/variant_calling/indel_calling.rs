@@ -9,6 +9,10 @@ use tracing::{instrument, trace};
 /// CLI parameters for indel calling.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, Default)]
 pub struct IndelParams {
+    /// Enable experimental indel calling
+    #[arg(long, default_value_t = false)]
+    pub experimental_indels: bool,
+
     /// Minimum alternate observations to call an indel
     #[arg(long, default_value_t = 2)]
     #[arg(help_heading = crate::utils::cli::sections::FILTER)]
