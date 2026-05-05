@@ -187,7 +187,7 @@ fn alignment_to_read<'a>(
     ))
 }
 
-fn infer_strand_from_mismatch_motifs(record: &Record, segment: &Segment) -> Strand {
+pub(crate) fn infer_strand_from_mismatch_motifs(record: &Record, segment: &Segment) -> Strand {
     let evidence = collect_mismatch_motif_evidence(record, segment);
     let likelihood = evidence.ot_likelihood();
     let strand = match evidence.tg.cmp(&evidence.ca) {
