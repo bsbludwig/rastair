@@ -20,7 +20,7 @@ use tracing::{debug, instrument, trace};
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct ReaderParams {
-    /// Path to sorted and indexed BAM file
+    /// Path to sorted and indexed BAM or CRAM file
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub bam_file: ClioPath,
@@ -46,11 +46,11 @@ impl ReaderParams {
         let mut bam = bam::IndexedReader::from_path(bam_path)
             .with_suggestion(|| {
                 format!(
-                    "Ensure the BAM file is sorted and indexed with \
+                    "Ensure the BAM/CRAM file is sorted and indexed with \
                     `samtools sort {bam_path:?}` and `samtools index {bam_path:?}`, respectively."
                 )
             })
-            .note("If you have a .bai file, ensure it is in the same directory as the BAM file.")?;
+            .note("If you have a .bai/.crai file, ensure it is in the same directory as the BAM/CRAM file.")?;
         bam.set_reference(self.fasta_file.path())
             .wrap_err("Failed to set FASTA reference for BAM reader")
             .note("Rastair itself already opened the FASTA file successfully, this error is from the BAM reader implementation")?;

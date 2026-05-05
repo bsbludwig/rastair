@@ -182,10 +182,12 @@ fn rewrite_region_parallel(
                 let mut fasta_opt = fasta_cell.borrow_mut();
 
                 if bam_opt.is_none() {
-                    *bam_opt = Some(
-                        bam::IndexedReader::from_path(params.segments.bam_file.path())
-                            .wrap_err("Failed to open BAM in worker thread")?,
-                    );
+                    let mut reader = bam::IndexedReader::from_path(params.segments.bam_file.path())
+                        .wrap_err("Failed to open BAM/CRAM in worker thread")?;
+                    reader.set_reference(params.segments.fasta_file.path()).wrap_err(
+                        "Failed to set FASTA reference for BAM/CRAM reader in worker thread",
+                    )?;
+                    *bam_opt = Some(reader);
                 }
                 if bed_opt.is_none() {
                     *bed_opt = Some(

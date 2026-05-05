@@ -120,8 +120,8 @@ fn invalid_bam_file() -> Result<()> {
        0: Failed to read BAM/FASTA files
        1: unable to open SAM/BAM/CRAM file at [PATH]
 
-    Suggestion: Ensure the BAM file is sorted and indexed with `samtools sort "[PATH]"`, respectively.
-    Note: If you have a .bai file, ensure it is in the same directory as the BAM file.
+    Suggestion: Ensure the BAM/CRAM file is sorted and indexed with `samtools sort "[PATH]"`, respectively.
+    Note: If you have a .bai/.crai file, ensure it is in the same directory as the BAM/CRAM file.
     "#);
 
     Ok(())

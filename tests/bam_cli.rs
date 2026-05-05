@@ -554,3 +554,198 @@ fn bam_rewrite_legacy_mixed_site_keeps_per_read_z_and_z_uppercase() -> Result<()
 
     Ok(())
 }
+
+/// `bam legacy` must accept a CRAM input file (using the required FASTA as the
+/// decoding reference) and produce a valid BAM with XR/XG/XM tags.
+#[test]
+fn bam_legacy_accepts_cram_input() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    let output_bam = temp_dir.path().join("output.bam");
+
+    rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--no-ml",
+            "--region=chr19:6103075-6103100",
+            "--cpgs-only",
+            "-o",
+        ])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    std::process::Command::new("tabix")
+        .args(["-p", "bed", "-f"])
+        .arg(&calls_bed)
+        .status()
+        .wrap_err("Failed to run tabix")?
+        .succeeds()
+        .wrap_err("tabix failed")?;
+
+    rastair()
+        .args([
+            "bam",
+            "legacy",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "--region=chr19:6103075-6103100",
+            "tests/data/test.cram",
+        ])
+        .arg(&calls_bed)
+        .args(["-o"])
+        .arg(&output_bam)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to rewrite CRAM to legacy BAM")?;
+
+    let mut reader = bam::Reader::from_path(&output_bam).wrap_err("Failed to open output BAM")?;
+    let mut record = bam::Record::new();
+    let mut records_checked = 0u32;
+
+    while let Some(result) = reader.read(&mut record) {
+        result.wrap_err("Failed to read record")?;
+        records_checked += 1;
+
+        record
+            .aux(b"XR")
+            .wrap_err_with(|| format!("Missing XR tag for flag {}", record.flags()))?;
+        record
+            .aux(b"XG")
+            .wrap_err_with(|| format!("Missing XG tag for flag {}", record.flags()))?;
+        let xm = match record.aux(b"XM") {
+            Ok(bam::record::Aux::String(s)) => s,
+            _ => bail!("Missing/bad XM tag for flag {}", record.flags()),
+        };
+        ensure!(
+            xm.len() == record.seq_len(),
+            "XM length {} != seq length {} for flag {}",
+            xm.len(),
+            record.seq_len(),
+            record.flags()
+        );
+        // Output must be BAM, not CRAM
+        assert!(
+            record.aux(b"MM").is_err(),
+            "Legacy mode should not produce MM tag (flag {})",
+            record.flags()
+        );
+    }
+
+    ensure!(records_checked > 0, "No records were written to output BAM");
+    Ok(())
+}
+
+/// CRAM and BAM inputs must produce identical XR/XG/XM tag content for every
+/// record when running `bam legacy` over the same region.
+#[test]
+fn bam_legacy_cram_matches_bam_output() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    let bam_out = temp_dir.path().join("from_bam.bam");
+    let cram_out = temp_dir.path().join("from_cram.bam");
+
+    let region = "chr19:6103075-6103200";
+
+    rastair()
+        .args([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--no-ml",
+            &format!("--region={region}"),
+            "--cpgs-only",
+            "-o",
+        ])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    std::process::Command::new("tabix")
+        .args(["-p", "bed", "-f"])
+        .arg(&calls_bed)
+        .status()
+        .wrap_err("Failed to run tabix")?
+        .succeeds()
+        .wrap_err("tabix failed")?;
+
+    for (input, output) in [("tests/data/test.bam", &bam_out), ("tests/data/test.cram", &cram_out)]
+    {
+        rastair()
+            .args([
+                "bam",
+                "legacy",
+                "--fasta-file=tests/data/test.fasta.gz",
+                &format!("--region={region}"),
+                input,
+            ])
+            .arg(&calls_bed)
+            .args(["-o"])
+            .arg(output)
+            .silent()
+            .succeeds()
+            .wrap_err_with(|| format!("Failed to rewrite {input} to legacy BAM"))?;
+    }
+
+    let mut bam_reader = bam::Reader::from_path(&bam_out).wrap_err("open BAM-sourced output")?;
+    let mut cram_reader = bam::Reader::from_path(&cram_out).wrap_err("open CRAM-sourced output")?;
+
+    let mut bam_rec = bam::Record::new();
+    let mut cram_rec = bam::Record::new();
+    let mut records_compared = 0u32;
+
+    loop {
+        let bam_ok = bam_reader.read(&mut bam_rec);
+        let cram_ok = cram_reader.read(&mut cram_rec);
+
+        match (bam_ok, cram_ok) {
+            (None, None) => break,
+            (Some(Ok(())), Some(Ok(()))) => {}
+            _ => bail!("BAM-sourced and CRAM-sourced outputs have different record counts"),
+        }
+
+        records_compared += 1;
+        let flag = bam_rec.flags();
+
+        ensure!(
+            bam_rec.pos() == cram_rec.pos() && flag == cram_rec.flags(),
+            "Record mismatch at index {records_compared}: pos {}/{}, flag {}/{}",
+            bam_rec.pos(),
+            cram_rec.pos(),
+            flag,
+            cram_rec.flags()
+        );
+
+        for tag in [b"XR", b"XG", b"XM"] {
+            let bam_val = match bam_rec.aux(tag) {
+                Ok(bam::record::Aux::String(s)) => s.to_owned(),
+                _ => bail!(
+                    "Missing/bad {} tag in BAM-sourced output (flag {flag})",
+                    String::from_utf8_lossy(tag)
+                ),
+            };
+            let cram_val = match cram_rec.aux(tag) {
+                Ok(bam::record::Aux::String(s)) => s.to_owned(),
+                _ => bail!(
+                    "Missing/bad {} tag in CRAM-sourced output (flag {flag})",
+                    String::from_utf8_lossy(tag)
+                ),
+            };
+            ensure!(
+                bam_val == cram_val,
+                "{} mismatch at record {records_compared} (flag {flag}): BAM={bam_val:?} CRAM={cram_val:?}",
+                String::from_utf8_lossy(tag)
+            );
+        }
+    }
+
+    ensure!(records_compared > 0, "No records were compared");
+    Ok(())
+}
