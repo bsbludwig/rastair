@@ -4,7 +4,7 @@ use crate::{metrics::PileupMetrics, utils::IntoF64 as _};
 use color_eyre::Result;
 use rastair_types::{Base, RootMeanSquare};
 
-struct CommonIndelFeatures {
+pub struct CommonIndelFeatures {
     mapq: RootMeanSquare,
     mapq0: f64,
     read_complexity: RootMeanSquare,
@@ -16,32 +16,52 @@ struct CommonIndelFeatures {
     indel_base_count: [f64; 4],
 }
 
-struct InsertionFeatures {
+pub struct InsertionFeatures {
     common: CommonIndelFeatures,
     insertion_baseq: RootMeanSquare,
 }
 
-struct DeletionFeatures {
+pub struct DeletionFeatures {
     common: CommonIndelFeatures,
     ref_one_hot: [f64; 4],
 }
 
 pub fn insertion(
-    _current: &MetricsForIndel,
-    _buf: &mut [f64; InsertionFeatures::FEATURES],
+    current: &MetricsForIndel,
+    buf: &mut [f64; InsertionFeatures::FEATURES],
 ) -> Result<()> {
-    todo!()
+    let features = InsertionFeatures::extract(current);
+    let common_len = CommonIndelFeatures::FEATURES;
+    features.common.write_to(&mut buf[..common_len]);
+    buf[CommonIndelFeatures::FEATURES] = features.insertion_baseq.f();
+    Ok(())
 }
 
 pub fn deletion(
-    _current: &MetricsForIndel,
-    _buf: &mut [f64; DeletionFeatures::FEATURES],
+    current: &MetricsForIndel,
+    buf: &mut [f64; DeletionFeatures::FEATURES],
 ) -> Result<()> {
-    todo!()
+    let features = DeletionFeatures::extract(current);
+    let common_len = CommonIndelFeatures::FEATURES;
+    features.common.write_to(&mut buf[..common_len]);
+    buf[CommonIndelFeatures::FEATURES..].copy_from_slice(&features.ref_one_hot);
+    Ok(())
 }
 
 impl CommonIndelFeatures {
-    const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
+    pub const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
+
+    fn write_to(&self, buf: &mut [f64]) {
+        buf[0] = self.mapq.f();
+        buf[1] = self.mapq0;
+        buf[2] = self.read_complexity.f();
+        buf[3] = self.position_in_read.f();
+        buf[4] = self.num_aligned_bases.f();
+        buf[5] = self.num_indels_in_read.f();
+        buf[6] = self.indel_len;
+        buf[7] = self.indel_complexity;
+        buf[8..12].copy_from_slice(&self.indel_base_count);
+    }
 
     fn extract(current: &MetricsForIndel) -> CommonIndelFeatures {
         let indel = &current.indel;
@@ -63,7 +83,7 @@ impl CommonIndelFeatures {
 }
 
 impl InsertionFeatures {
-    const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
+    pub const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
 
     fn extract(current: &MetricsForIndel) -> InsertionFeatures {
         let common = CommonIndelFeatures::extract(current);
@@ -73,7 +93,7 @@ impl InsertionFeatures {
 }
 
 impl DeletionFeatures {
-    const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
+    pub const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
 
     fn extract(current: &MetricsForIndel) -> DeletionFeatures {
         let common = CommonIndelFeatures::extract(current);

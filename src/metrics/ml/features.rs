@@ -5,7 +5,7 @@
 //! model variants.
 
 use super::types::MlFeatureSet;
-use crate::metrics::{MetricsForAlt, PileupMetrics};
+use crate::metrics::{MetricsForAlt, MetricsForIndel, PileupMetrics};
 use color_eyre::{Result, eyre::Context as _};
 use ndarray::Array2;
 use std::fmt;
@@ -19,6 +19,8 @@ pub struct FeatureNum {
     pub cpg: usize,
     pub denovo_cpg: usize,
     pub others: usize,
+    pub insertion: usize,
+    pub deletion: usize,
 }
 
 pub type FeatureCalculatorBox = Box<dyn FeatureCalculator>;
@@ -50,6 +52,12 @@ pub trait FeatureCalculator: fmt::Debug + Send + Sync {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>>;
+
+    /// Calculate features for insertion
+    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f64>>;
+
+    /// Calculate features for deletion
+    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f64>>;
 }
 
 impl MlFeatureSet {
@@ -81,6 +89,8 @@ impl FeatureCalculator for StandardFeatures {
             cpg: standard::cpg::FEATURES,
             denovo_cpg: standard::denovo_cpg::FEATURES,
             others: standard::others::FEATURES,
+            insertion: standard::indel::InsertionFeatures::FEATURES,
+            deletion: standard::indel::DeletionFeatures::FEATURES,
         }
     }
 
@@ -116,6 +126,18 @@ impl FeatureCalculator for StandardFeatures {
         standard::others(current, before, after, row_buf(&mut arr))?;
         Ok(arr)
     }
+
+    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+        let mut arr = Array2::zeros((1, standard::indel::InsertionFeatures::FEATURES));
+        standard::insertion(current, row_buf(&mut arr))?;
+        Ok(arr)
+    }
+
+    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+        let mut arr = Array2::zeros((1, standard::indel::DeletionFeatures::FEATURES));
+        standard::deletion(current, row_buf(&mut arr))?;
+        Ok(arr)
+    }
 }
 
 /// Very basic feature calculation using small subset of features
@@ -140,7 +162,7 @@ impl SimpleFeatures {
 
 impl FeatureCalculator for SimpleFeatures {
     fn feature_num(&self) -> FeatureNum {
-        FeatureNum { cpg: 48, denovo_cpg: 48, others: 48 }
+        FeatureNum { cpg: 48, denovo_cpg: 48, others: 48, insertion: 0, deletion: 0 }
     }
 
     fn calculate_cpg(
@@ -168,5 +190,13 @@ impl FeatureCalculator for SimpleFeatures {
         _after: Option<&PileupMetrics>,
     ) -> Result<Array2<f64>> {
         self.calculate_basic(current)
+    }
+
+    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+        todo!()
+    }
+
+    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+        todo!()
     }
 }

@@ -97,6 +97,8 @@ impl MachineLearningParams {
                 cpg: gpu_forest(&model.cpg)?,
                 denovo: gpu_forest(&model.denovo)?,
                 others: gpu_forest(&model.others)?,
+                insertion: gpu_forest(&model.insertion)?,
+                deletion: gpu_forest(&model.deletion)?,
             })
         } else {
             None

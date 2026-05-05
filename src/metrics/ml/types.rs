@@ -2,7 +2,7 @@ use crate::metrics::ml::features::FeatureCalculatorBox;
 use biosphere::FlatForest;
 use biosphere::gpu::GpuForest;
 use ndarray::Array1;
-use rastair_types::{Base, Probability};
+use rastair_types::{Base, Probability, SmolStr};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -34,14 +34,20 @@ impl PlattScaling {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RastairFlatModel {
     pub cpg: FlatForest,
-    pub denovo: FlatForest,
-    pub others: FlatForest,
     #[serde(default)]
     pub cpg_platt: PlattScaling,
+    pub denovo: FlatForest,
     #[serde(default)]
     pub denovo_platt: PlattScaling,
+    pub others: FlatForest,
     #[serde(default)]
     pub others_platt: PlattScaling,
+    pub insertion: FlatForest,
+    #[serde(default)]
+    pub insertion_platt: PlattScaling,
+    pub deletion: FlatForest,
+    #[serde(default)]
+    pub deletion_platt: PlattScaling,
     #[serde(default)]
     pub feature_set: MlFeatureSet,
 }
@@ -70,6 +76,8 @@ pub struct FlatRastairModel {
     pub cpg: FlatForest,
     pub denovo: FlatForest,
     pub others: FlatForest,
+    pub insertion: FlatForest,
+    pub deletion: FlatForest,
 }
 
 /// GPU-accelerated forests for each model type, used as per-thread prototypes.
@@ -81,6 +89,8 @@ pub struct GpuRastairModel {
     pub cpg: GpuForest,
     pub denovo: GpuForest,
     pub others: GpuForest,
+    pub insertion: GpuForest,
+    pub deletion: GpuForest,
 }
 
 impl GpuRastairModel {
@@ -90,6 +100,8 @@ impl GpuRastairModel {
             cpg: self.cpg.fork(max_samples),
             denovo: self.denovo.fork(max_samples),
             others: self.others.fork(max_samples),
+            insertion: self.insertion.fork(max_samples),
+            deletion: self.deletion.fork(max_samples),
         }
     }
 }
@@ -127,8 +139,7 @@ impl MachineLearning {
 pub struct Prediction {
     /// The model used for this prediction
     pub model: MlModel,
-    /// The alt base this prediction is for
-    pub allele: Base,
+    pub allele: SmolStr,
     /// Probability of the alt being a variant
     pub prediction: Probability,
     /// Threshold for calling a variant
@@ -146,7 +157,9 @@ impl Prediction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MlModel {
+    Others,
     Cpg,
     DenovoCpg,
-    Others,
+    Insertion,
+    Deletion,
 }

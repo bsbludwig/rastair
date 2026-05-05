@@ -289,10 +289,12 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let others_seed: u64 = seed_rng.random();
 
     info!("Training all 3 models in parallel");
-    let (cpg_result, denovo_result, others_result) = rayon_all!(
+    let (cpg_result, denovo_result, others_result, insertion_result, deletion_result) = rayon_all!(
         train_and_save_model("cpg", cpg_data, params, cpg_seed),
         train_and_save_model("denovo", denovo_data, params, denovo_seed),
         train_and_save_model("other", other_data, params, others_seed),
+        train_and_save_model("insertion", insertion_data, params, insertion_seed),
+        train_and_save_model("deletion", deletion_data, params, deletion_seed),
     );
 
     let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
@@ -301,15 +303,24 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
     let (others, others_platt) = others_result.wrap_err("Failed to train other model")?;
     let others = FlatForest::from_forest(&others, features.others);
+    let (insertion, insertion_platt) =
+        insertion_result.wrap_err("Failed to train insertion model")?;
+    let insertion = FlatForest::from_forest(&insertion, features.insertion);
+    let (deletion, deletion_platt) = deletion_result.wrap_err("Failed to train deletion model")?;
+    let deletion = FlatForest::from_forest(&deletion, features.deletion);
 
     let model = RastairFlatModel {
         feature_set: params.ml_features,
         cpg,
-        denovo,
-        others,
         cpg_platt,
+        denovo,
         denovo_platt,
+        others,
         others_platt,
+        insertion,
+        insertion_platt,
+        deletion,
+        deletion_platt,
     };
 
     serialize_model(&model, params.output.clone())

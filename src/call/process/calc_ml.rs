@@ -116,6 +116,12 @@ pub fn batch_add_ml_metrics(
         others: Vec::with_capacity(positions),
         others_features: Array2::zeros((max_alts, feature_num.others)),
         others_count: 0,
+        insertion: Vec::with_capacity(positions),
+        insertion_features: Array2::zeros((max_alts, feature_num.insertion)),
+        insertion_count: 0,
+        deletion: Vec::with_capacity(positions),
+        deletion_features: Array2::zeros((max_alts, feature_num.deletion)),
+        deletion_count: 0,
     };
     // (pileup_idx, alt_base) pairs that failed pre_ml_filter
     let mut pre_ml_rejected: Vec<(usize, Base)> = Vec::new();
@@ -190,6 +196,22 @@ pub fn batch_add_ml_metrics(
                             .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
                         pending.others.push(pending_item);
                         pending.others_count += 1;
+                    }
+                    MlModel::Insertion => {
+                        pending
+                            .insertion_features
+                            .row_mut(pending.insertion_count)
+                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending.insertion.push(pending_item);
+                        pending.insertion_count += 1;
+                    }
+                    MlModel::Deletion => {
+                        pending
+                            .deletion_features
+                            .row_mut(pending.deletion_count)
+                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending.deletion.push(pending_item);
+                        pending.deletion_count += 1;
                     }
                 }
             }
@@ -282,6 +304,12 @@ struct PendingGroups {
     others: Vec<Pending>,
     others_features: Array2<f32>,
     others_count: usize,
+    insertion: Vec<Pending>,
+    insertion_features: Array2<f32>,
+    insertion_count: usize,
+    deletion: Vec<Pending>,
+    deletion_features: Array2<f32>,
+    deletion_count: usize,
 }
 
 /// Each pending prediction records where to write the result back.
