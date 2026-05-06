@@ -697,7 +697,7 @@ fn subsample_training_data(
         selected_pos.iter().chain(selected_neg.iter()).copied().collect();
 
     // Build training matrix
-    let train_matrix = build_matrix(data, &mut train_indices.iter().copied().collect())?;
+    let train_matrix = build_matrix(data, &mut train_indices.iter().copied().collect::<Vec<_>>())?;
 
     // Build held-out matrix from remaining indices, capped for memory
     let mut holdout_indices: Vec<usize> =
@@ -710,10 +710,15 @@ fn subsample_training_data(
     Ok((train_matrix.0, train_matrix.1, holdout_matrix.0, holdout_matrix.1))
 }
 
-fn build_matrix(
-    data: &TrainingData,
-    indices: &mut Vec<usize>,
-) -> Result<(Array2<f64>, Array1<f64>)> {
+fn build_matrix(data: &TrainingData, indices: &mut [usize]) -> Result<(Array2<f64>, Array1<f64>)> {
+    ensure!(
+        !indices.is_empty(),
+        "Cannot build matrix from empty indices — no holdout examples available. \
+         This happens when all training examples are consumed for the training set, \
+         leaving none for Platt calibration. Consider reducing --n-positive / --n-negative \
+         or providing more training data."
+    );
+
     indices.sort_unstable();
 
     let mut feature_rows = Vec::with_capacity(indices.len());
@@ -725,8 +730,8 @@ fn build_matrix(
     }
 
     let feature_views: Vec<_> = feature_rows.iter().map(|r| r.view()).collect();
-    let features =
-        ndarray::stack(Axis(0), &feature_views).wrap_err("Failed to stack feature arrays")?;
+    let features = ndarray::stack(Axis(0), &feature_views)
+        .wrap_err_with(|| format!("Failed to stack feature arrays: {}", feature_rows.len()))?;
 
     let labels = Array1::from_vec(label_vec);
 
