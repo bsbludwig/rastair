@@ -396,6 +396,12 @@ fn process_region(
         .filter(|p| params.record_filters.pre_filter(p))
         .collect();
 
+    if params.indel.experimental_indels {
+        for p in &mut pileups {
+            p.indel_calls = variant_calling::indel_calling::call_indels(&p.indels, &params.indel);
+        }
+    }
+
     // Pass 2: ML prediction — GPU batch if available, otherwise or on error,
     // use sequential CPU fallback.
     GPU_FORESTS.with(|gf| -> Result<()> {
@@ -443,12 +449,6 @@ fn process_region(
                 metrics::methylation::call(&pileup)?.unwrap_or_default();
             pileup.pos_metrics.extended.methylation_strand_info =
                 MethylationEvidenceStrandInfo::from_pileup_with_methylation(&pileup);
-
-            // Call indels (independent of SNV pipeline)
-            if params.indel.experimental_indels {
-                pileup.indel_calls =
-                    variant_calling::indel_calling::call_indels(&pileup.indels, &params.indel);
-            }
 
             Ok(pileup)
         })

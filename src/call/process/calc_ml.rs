@@ -1,6 +1,7 @@
 use crate::{
+    call::pileup::indels::IndelAllele,
     metrics::{
-        MetricsForAlt, PileupMetrics,
+        MetricsForAlt, MetricsForIndel, PileupMetrics,
         ml::types::{GpuRastairModel, MachineLearning, MlModel, PlattScaling},
     },
     utils::logging::ThisIsABug,
@@ -62,6 +63,19 @@ pub fn add_ml_metrics(
         }
     }
 
+    let mut indel_scores: Vec<(usize, Probability)> = Vec::new();
+    for (i, call) in current.indel_calls.iter().enumerate() {
+        let m = MetricsForIndel { metrics: current, indel: call };
+        if let Some(pred) = ml.predict_indels(&m) {
+            indel_scores.push((i, pred.prediction));
+        }
+    }
+    for (i, score) in indel_scores {
+        if let Some(call) = current.indel_calls.get_mut(i) {
+            call.ml = Some(score);
+        }
+    }
+
     Ok(())
 }
 
@@ -79,9 +93,9 @@ pub fn add_ml_metrics_vec(pileups: &mut [PileupMetrics], ml: &MachineLearning) -
         let after = right.first().map(|p| p as &_);
         add_ml_metrics(before, current, after, ml)?;
     }
+
     Ok(())
 }
-
 /// Batch GPU ML prediction over a full chunk of pileups.
 ///
 /// Groups all passing alts by model type (CpG / de-novo CpG / others), runs
@@ -170,7 +184,7 @@ pub fn batch_add_ml_metrics(
                     Ok(f) => f,
                 };
 
-                let pending_item = Pending { pileup_idx: i, alt_base, platt };
+                let pending_item = Pending::snp(i, alt_base, platt);
 
                 match model_type {
                     MlModel::Cpg => {
@@ -197,6 +211,40 @@ pub fn batch_add_ml_metrics(
                         pending.others.push(pending_item);
                         pending.others_count += 1;
                     }
+                    MlModel::Insertion | MlModel::Deletion => {
+                        unreachable!("indels are handled in a separate loop below")
+                    }
+                }
+            }
+
+            for (indel_idx, call) in pileups_ref[i].indel_calls.iter().enumerate() {
+                let indel_m = MetricsForIndel { metrics: &pileups_ref[i], indel: call };
+
+                let (model_type, platt, features_result) = match &call.allele {
+                    IndelAllele::Insertion(_) => (
+                        MlModel::Insertion,
+                        rastair_model.insertion_platt,
+                        calc.calculate_insertion(&indel_m),
+                    ),
+                    IndelAllele::Deletion(_) => (
+                        MlModel::Deletion,
+                        rastair_model.deletion_platt,
+                        calc.calculate_deletion(&indel_m),
+                    ),
+                };
+
+                let f = match features_result {
+                    Err(error) => {
+                        debug!(%error, "Failed to calculate indel features for ML prediction");
+                        continue;
+                    }
+                    Ok(f) if f.is_any_nan() => continue,
+                    Ok(f) => f,
+                };
+
+                let pending_item = Pending::indel(i, indel_idx, platt);
+
+                match model_type {
                     MlModel::Insertion => {
                         pending
                             .insertion_features
@@ -213,6 +261,7 @@ pub fn batch_add_ml_metrics(
                         pending.deletion.push(pending_item);
                         pending.deletion_count += 1;
                     }
+                    _ => unreachable!("indel alleles always map to Insertion or Deletion"),
                 }
             }
         }
@@ -226,18 +275,27 @@ pub fn batch_add_ml_metrics(
     }
 
     // Phase 2b: predict in sub-batches that fit the GPU buffer.
-    // Within each round, submit all 3 models before collecting so GPU work overlaps.
+    // Within each round, submit all models before collecting so GPU work overlaps.
     let cpg_features = pending.cpg_features.slice(s![..pending.cpg_count, ..]);
     let denovo_features = pending.denovo_features.slice(s![..pending.denovo_count, ..]);
     let others_features = pending.others_features.slice(s![..pending.others_count, ..]);
+    let insertion_features = pending.insertion_features.slice(s![..pending.insertion_count, ..]);
+    let deletion_features = pending.deletion_features.slice(s![..pending.deletion_count, ..]);
 
-    let max_count = pending.cpg_count.max(pending.denovo_count).max(pending.others_count);
+    let max_count = pending
+        .cpg_count
+        .max(pending.denovo_count)
+        .max(pending.others_count)
+        .max(pending.insertion_count)
+        .max(pending.deletion_count);
     let mut cpg_preds = Vec::with_capacity(pending.cpg_count);
     let mut denovo_preds = Vec::with_capacity(pending.denovo_count);
     let mut others_preds = Vec::with_capacity(pending.others_count);
+    let mut insertion_preds = Vec::with_capacity(pending.insertion_count);
+    let mut deletion_preds = Vec::with_capacity(pending.deletion_count);
 
     for start in (0..max_count).step_by(GPU_BATCH_BUFFER_SIZE) {
-        // Submit all 3 models for this sub-batch round concurrently.
+        // Submit all models for this sub-batch round concurrently.
         let h_cpg = {
             if start < pending.cpg_count {
                 let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.cpg_count);
@@ -262,8 +320,24 @@ pub fn batch_add_ml_metrics(
                 None
             }
         };
+        let h_insertion = {
+            if start < pending.insertion_count {
+                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.insertion_count);
+                gpu.insertion.predict_submit(&insertion_features.slice(s![start..end, ..]))?
+            } else {
+                None
+            }
+        };
+        let h_deletion = {
+            if start < pending.deletion_count {
+                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.deletion_count);
+                gpu.deletion.predict_submit(&deletion_features.slice(s![start..end, ..]))?
+            } else {
+                None
+            }
+        };
 
-        // Collect all 3 before next round.
+        // Collect all before next round.
         if let Some(h) = h_cpg {
             cpg_preds.extend(h.collect()?.iter().copied());
         }
@@ -273,18 +347,30 @@ pub fn batch_add_ml_metrics(
         if let Some(h) = h_others {
             others_preds.extend(h.collect()?.iter().copied());
         }
+        if let Some(h) = h_insertion {
+            insertion_preds.extend(h.collect()?.iter().copied());
+        }
+        if let Some(h) = h_deletion {
+            deletion_preds.extend(h.collect()?.iter().copied());
+        }
     }
 
-    // Phase 2c: write calibrated predictions back into pileup filters.
+    // Phase 2c: write calibrated predictions back.
     for (items, preds) in [
         (&pending.cpg, &cpg_preds),
         (&pending.denovo, &denovo_preds),
         (&pending.others, &others_preds),
+        (&pending.insertion, &insertion_preds),
+        (&pending.deletion, &deletion_preds),
     ] {
         for (p, &raw_pred) in items.iter().zip(preds.iter()) {
             let calibrated: Probability = p.platt.calibrate_score(f64::from(raw_pred));
             let threshold = ml.threshold;
-            if let Some(filters) = pileups[p.pileup_idx].alt_filters_mut(p.alt_base) {
+            if let Some(indel_idx) = p.indel_idx {
+                if let Some(call) = pileups[p.pileup_idx].indel_calls.get_mut(indel_idx) {
+                    call.ml = Some(calibrated);
+                }
+            } else if let Some(filters) = pileups[p.pileup_idx].alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);
                 filters.filters.add(low_ml_score, move || calibrated < threshold);
             }
@@ -315,6 +401,19 @@ struct PendingGroups {
 /// Each pending prediction records where to write the result back.
 struct Pending {
     pileup_idx: usize,
+    /// For SNPs: the alt base. For indels: unused.
     alt_base: Base,
+    /// For indels: index into `indel_calls`. For SNPs: `None`.
+    indel_idx: Option<usize>,
     platt: PlattScaling,
+}
+
+impl Pending {
+    fn snp(pileup_idx: usize, alt_base: Base, platt: PlattScaling) -> Self {
+        Self { pileup_idx, alt_base, indel_idx: None, platt }
+    }
+
+    fn indel(pileup_idx: usize, indel_idx: usize, platt: PlattScaling) -> Self {
+        Self { pileup_idx, alt_base: Base::Unknown, indel_idx: Some(indel_idx), platt }
+    }
 }

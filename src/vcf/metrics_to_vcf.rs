@@ -82,7 +82,7 @@ impl PileupMetrics {
             rejected.push(self.build_rejected_record(alt, ml_threshold)?);
         }
 
-        let indel_records = build_indel_records(self);
+        let indel_records = build_indel_records(self, ml_threshold);
 
         Ok(VcfRecordSet { pileup: self, main, rejected, indel_records })
     }
@@ -435,7 +435,10 @@ impl<'p> VcfRecordSet<'p> {
     }
 }
 
-fn build_indel_records(metrics: &PileupMetrics) -> SmallVec<Record, 1> {
+fn build_indel_records(
+    metrics: &PileupMetrics,
+    ml_threshold: Option<Probability>,
+) -> SmallVec<Record, 1> {
     metrics
         .indel_calls
         .iter()
@@ -461,19 +464,29 @@ fn build_indel_records(metrics: &PileupMetrics) -> SmallVec<Record, 1> {
                 }
             };
 
+            let qual = call
+                .ml
+                .map(|ml| Phred::from(ml.inverted()).as_int())
+                .or_else(|| Some(call.quality.as_int()));
+
             let main = VcfFixedFields {
                 chrom: metrics.pileup.contig(),
                 pos: metrics.pileup.pos,
                 id: default(),
                 r#ref: ref_allele,
                 alt: smallvec![alt_allele],
-                qual: Some(call.quality.as_int()),
+                qual,
             };
 
             let genotype = Genotype::from(call.genotype);
 
             let mut filters = Filters::default();
-            filters.add(PASS.filter());
+            let ml_below_threshold = call.ml.zip(ml_threshold).is_some_and(|(ml, t)| ml < t);
+            if ml_below_threshold {
+                filters.add(low_ml_score.filter());
+            } else {
+                filters.add(PASS.filter());
+            }
 
             Record {
                 main,
@@ -489,6 +502,9 @@ fn build_indel_records(metrics: &PileupMetrics) -> SmallVec<Record, 1> {
                 samples: smallvec_inline![Format {
                     genotype,
                     sample_read_depth: SampleReadDepth(call.depth as usize),
+                    machine_learning_prediction: MachineLearningPrediction(
+                        if let Some(ml) = call.ml { smallvec![*ml] } else { smallvec![] }
+                    ),
                     ..default()
                 }],
             }

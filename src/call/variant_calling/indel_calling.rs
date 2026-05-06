@@ -2,7 +2,7 @@ use super::GenotypeTag;
 use crate::call::pileup::indels::{IndelAllele, IndelCounts};
 use better_default::Default;
 use probability::prelude::{Binomial, Discrete as _};
-use rastair_types::Phred;
+use rastair_types::{Phred, Probability};
 use std::num::NonZeroU8;
 use tracing::{instrument, trace};
 
@@ -47,6 +47,8 @@ pub struct IndelCall {
     pub allele: IndelAllele,
     pub genotype: GenotypeTag,
     pub quality: Phred,
+    /// ML score: probability this indel is a true variant.
+    pub ml: Option<Probability>,
     /// Filtered depth (total minus `depth_offset`).
     pub depth: u32,
     /// Reads supporting this indel allele.
@@ -112,6 +114,7 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams) -> Vec<IndelCall>
             allele: allele_counts.allele.clone(),
             genotype: genotype.tag,
             quality: genotype.quality,
+            ml: None,
             depth: filtered_depth,
             alt_count,
         });
