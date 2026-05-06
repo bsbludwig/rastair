@@ -6,7 +6,7 @@ use crate::{
 };
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr, ensure, eyre};
-use rastair_types::{Base, RegionString, SmolStr};
+use rastair_types::{RegionString, SmolStr};
 use rastair_vcf::VcfField as _;
 use rust_htslib::bcf::{self, Read as _, header::HeaderView};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -45,6 +45,10 @@ pub struct VerifyParams {
     #[arg(long = "output-html", help_heading = cli::sections::OUTPUT, value_hint = clap::ValueHint::FilePath)]
     output_html: Option<ClioPath>,
 
+    /// Enable experimental indel loading from VCF records.
+    #[arg(long, default_value_t = false, help_heading = cli::sections::PROCESSING)]
+    experimental_indels: bool,
+
     /// Number of threads
     #[arg(
         short = '@',
@@ -63,6 +67,8 @@ enum VariantCategory {
     CpG,
     DeNovo,
     Other,
+    Insertion,
+    Deletion,
 }
 
 impl std::fmt::Display for VariantCategory {
@@ -71,17 +77,20 @@ impl std::fmt::Display for VariantCategory {
             VariantCategory::CpG => write!(f, "CpG"),
             VariantCategory::DeNovo => write!(f, "DeNovo"),
             VariantCategory::Other => write!(f, "Other"),
+            VariantCategory::Insertion => write!(f, "Insertion"),
+            VariantCategory::Deletion => write!(f, "Deletion"),
         }
     }
 }
 
 /// Position key for variant matching. Uses chromosome name (not rid) for cross-VCF compatibility.
+/// Represents both SNVs (single-base alleles) and indels (multi-base alleles).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FullPositionKey {
     chrom: SmolStr,
     pos: u64,
-    ref_base: Base,
-    alt_base: Base,
+    ref_allele: SmolStr,
+    alt_allele: SmolStr,
 }
 
 /// Position key for methylation beta matching.
@@ -236,6 +245,8 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
     let threads = params.threads;
     let load_betas_for_methyl = comp_path.is_some();
 
+    let experimental_indels = params.experimental_indels;
+
     // Slots filled by each rayon task.
     let mut pred_variants: Result<FxHashMap<FullPositionKey, VariantCategory>> =
         Err(eyre!("pred variants not loaded"));
@@ -246,19 +257,19 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 
     rayon::scope(|s| {
         s.spawn(|_| {
-            pred_variants = load_variants(&pred_path, regions, threads)
+            pred_variants = load_variants(&pred_path, regions, threads, experimental_indels)
                 .wrap_err("Failed to load predictions variants");
         });
         if let Some(p) = truth_path.as_deref() {
             s.spawn(|_| {
-                truth_variants = load_variants(p, regions, threads)
+                truth_variants = load_variants(p, regions, threads, experimental_indels)
                     .wrap_err("Failed to load truth variants")
                     .map(Some);
             });
         }
         if let Some(p) = comp_path.as_deref() {
             s.spawn(|_| {
-                comp_variants = load_variants(p, regions, threads)
+                comp_variants = load_variants(p, regions, threads, experimental_indels)
                     .wrap_err("Failed to load competitor variants")
                     .map(Some);
             });
@@ -316,7 +327,7 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 
 // ─── VCF loading ───────────────────────────────────────────────────────────
 
-/// Load PASS SNP variants from a VCF, returning position key → category.
+/// Load PASS variants from a VCF, returning position key → category.
 /// With regions: uses `IndexedReader` (requires `.csi` index).
 /// Without regions: streams sequentially (no index required).
 #[instrument(level = "info", skip_all, fields(path = %path.display()))]
@@ -324,6 +335,7 @@ fn load_variants(
     path: &Path,
     regions: &[RegionString],
     threads: usize,
+    experimental_indels: bool,
 ) -> Result<FxHashMap<FullPositionKey, VariantCategory>> {
     ensure!(path.exists(), "VCF file `{}` not found", path.display());
 
@@ -336,7 +348,7 @@ fn load_variants(
         let header = reader.header().clone();
         for rec in reader.records() {
             match rec {
-                Ok(r) => extract_variants(&r, &header, &mut result),
+                Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
                 Err(e) => warn!(error = %e, "Failed to read VCF record"),
             }
         }
@@ -359,7 +371,7 @@ fn load_variants(
                 .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
             for rec in reader.records() {
                 match rec {
-                    Ok(r) => extract_variants(&r, &header, &mut result),
+                    Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
                     Err(e) => warn!(error = %e, "Failed to read VCF record"),
                 }
             }
@@ -373,6 +385,7 @@ fn extract_variants(
     record: &bcf::Record,
     header: &HeaderView,
     result: &mut FxHashMap<FullPositionKey, VariantCategory>,
+    experimental_indels: bool,
 ) {
     if !record.has_filter("PASS".as_bytes()) {
         return;
@@ -380,13 +393,21 @@ fn extract_variants(
 
     let alleles = record.alleles();
     let ref_allele = match alleles.first() {
-        Some(a) if a.len() == 1 => *a,
+        Some(a) if !a.is_empty() => a,
         _ => return,
     };
 
-    let ref_base = match ref_allele.first().copied().map(Base::from) {
-        Some(b) if b != Base::Unknown => b,
-        _ => return,
+    // Skip records where REF contains non-ACGT bases (e.g. N-masked regions).
+    if ref_allele
+        .iter()
+        .any(|&b| !b.is_ascii_alphabetic() || !matches!(b, b'A' | b'C' | b'G' | b'T'))
+    {
+        return;
+    }
+
+    let ref_str = match std::str::from_utf8(ref_allele) {
+        Ok(s) => SmolStr::from(s),
+        Err(_) => return,
     };
 
     let chrom = match record.rid().and_then(|rid| header.rid2name(rid).ok()) {
@@ -398,7 +419,7 @@ fn extract_variants(
     let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
     let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
 
-    let category = if is_denovo {
+    let snv_category = if is_denovo {
         VariantCategory::DeNovo
     } else if is_cpg {
         VariantCategory::CpG
@@ -407,15 +428,51 @@ fn extract_variants(
     };
 
     for alt_allele in alleles.iter().skip(1) {
-        if alt_allele.len() != 1 {
+        if alt_allele.is_empty() {
             continue;
         }
-        let Some(alt_base) =
-            alt_allele.first().copied().map(Base::from).filter(|b| *b != Base::Unknown)
-        else {
+        // Skip alt alleles with non-ACGT bases (e.g. symbolic like <*>).
+        if alt_allele
+            .iter()
+            .any(|&b| !b.is_ascii_alphabetic() || !matches!(b, b'A' | b'C' | b'G' | b'T'))
+        {
             continue;
+        }
+        let alt_str = match std::str::from_utf8(alt_allele) {
+            Ok(s) => SmolStr::from(s),
+            Err(_) => continue,
         };
-        result.insert(FullPositionKey { chrom: chrom.clone(), pos, ref_base, alt_base }, category);
+
+        // When indels are not enabled, skip multi-base alleles entirely
+        // (preserves the pre-indel behavior of only matching SNVs).
+        if !experimental_indels && (ref_allele.len() != 1 || alt_allele.len() != 1) {
+            continue;
+        }
+
+        // Classify by allele lengths (VCF anchor-base convention: first base is shared).
+        let category = if ref_allele.len() == 1 && alt_allele.len() == 1 {
+            // Single-base substitution → use INFO flag-based category.
+            snv_category
+        } else if ref_allele.len() == 1 && alt_allele.len() > 1 {
+            // REF shorter than ALT → insertion after anchor base.
+            VariantCategory::Insertion
+        } else if ref_allele.len() > 1 && alt_allele.len() == 1 {
+            // REF longer than ALT → deletion after anchor base.
+            VariantCategory::Deletion
+        } else {
+            // Both multi-base (MNP or complex): treat as Other.
+            VariantCategory::Other
+        };
+
+        result.insert(
+            FullPositionKey {
+                chrom: chrom.clone(),
+                pos,
+                ref_allele: ref_str.clone(),
+                alt_allele: alt_str,
+            },
+            category,
+        );
     }
 }
 
@@ -531,7 +588,13 @@ fn compute_variant_report(
     // Per-category precision: compare each category's predictions against the *full* truth set.
     // We cannot compute recall because GIAB-style truth VCFs carry no CPG/CPGnovo flags.
     let mut by_category: FxHashMap<String, CategoryMetrics> = FxHashMap::default();
-    for cat in [VariantCategory::CpG, VariantCategory::DeNovo, VariantCategory::Other] {
+    for cat in [
+        VariantCategory::CpG,
+        VariantCategory::DeNovo,
+        VariantCategory::Other,
+        VariantCategory::Insertion,
+        VariantCategory::Deletion,
+    ] {
         let pred_cat = pred_by_cat.get(&cat).cloned().unwrap_or_default();
         let comp_cat = comp_by_cat.as_ref().and_then(|m| m.get(&cat)).cloned().unwrap_or_default();
 
@@ -930,39 +993,51 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
     if !variant_report.by_category.is_empty() {
         let has_comp_cat =
             variant_report.by_category.values().any(|m| m.competitor_vs_truth.is_some());
-        if has_comp_cat {
-            println!(
-                "{:<10} {:>8}  {:>10}  {:>10}  {:>10}",
-                "Category", "N", "TP", "FP", "Precision"
-            );
-        } else {
-            println!(
-                "{:<10} {:>8}  {:>10}  {:>10}  {:>10}",
-                "Category", "N", "TP", "FP", "Precision"
-            );
-        }
-        for cat in [VariantCategory::CpG, VariantCategory::DeNovo, VariantCategory::Other] {
+        println!("{:<10} {:>8}  {:>10}  {:>10}  {:>10}", "Category", "N", "TP", "FP", "Precision");
+        for cat in [
+            VariantCategory::CpG,
+            VariantCategory::DeNovo,
+            VariantCategory::Other,
+            VariantCategory::Insertion,
+            VariantCategory::Deletion,
+        ] {
             let Some(cat_metrics) = variant_report.by_category.get(&cat.to_string()) else {
                 continue;
             };
-            if let Some(m) = &cat_metrics.predictions_vs_truth {
-                print!(
-                    "  {cat:<8} {:>8}  {:>10}  {:>10}  {:>10.4}",
-                    fmt_n(m.n),
-                    fmt_n(m.tp),
-                    fmt_n(m.fp),
-                    m.precision
-                );
-                if has_comp_cat && let Some(c) = &cat_metrics.competitor_vs_truth {
+            match (&cat_metrics.predictions_vs_truth, &cat_metrics.competitor_vs_truth) {
+                (Some(m), comp) => {
                     print!(
-                        "   comp: n={} tp={} fp={} prec={:.4}",
+                        "  {cat:<8} {:>8}  {:>10}  {:>10}  {:>10.4}",
+                        fmt_n(m.n),
+                        fmt_n(m.tp),
+                        fmt_n(m.fp),
+                        m.precision
+                    );
+                    if has_comp_cat && let Some(c) = comp {
+                        print!(
+                            "   comp: n={} tp={} fp={} prec={:.4}",
+                            fmt_n(c.n),
+                            fmt_n(c.tp),
+                            fmt_n(c.fp),
+                            c.precision
+                        );
+                    }
+                    println!();
+                }
+                (None, Some(c)) if has_comp_cat => {
+                    println!(
+                        "  {cat:<8} {:>8}  {:>10}  {:>10}  {:>10}   comp: n={} tp={} fp={} prec={:.4}",
+                        "—",
+                        "—",
+                        "—",
+                        "—",
                         fmt_n(c.n),
                         fmt_n(c.tp),
                         fmt_n(c.fp),
                         c.precision
                     );
                 }
-                println!();
+                (None, _) => {}
             }
         }
         println!();
@@ -1012,8 +1087,13 @@ fn write_html_report(report: &Report, writer: &mut impl std::io::Write) -> Resul
 mod tests {
     use super::*;
 
-    fn key(chrom: &str, pos: u64, ref_base: Base, alt_base: Base) -> FullPositionKey {
-        FullPositionKey { chrom: SmolStr::from(chrom), pos, ref_base, alt_base }
+    fn key(chrom: &str, pos: u64, ref_allele: &str, alt_allele: &str) -> FullPositionKey {
+        FullPositionKey {
+            chrom: SmolStr::from(chrom),
+            pos,
+            ref_allele: SmolStr::from(ref_allele),
+            alt_allele: SmolStr::from(alt_allele),
+        }
     }
 
     fn set_of(keys: impl IntoIterator<Item = FullPositionKey>) -> FxHashSet<FullPositionKey> {
@@ -1022,9 +1102,9 @@ mod tests {
 
     #[test]
     fn full_position_key_equality() {
-        let k1 = key("chr1", 100, Base::C, Base::T);
-        let k2 = key("chr1", 100, Base::C, Base::T);
-        let k3 = key("chr2", 100, Base::C, Base::T);
+        let k1 = key("chr1", 100, "C", "T");
+        let k2 = key("chr1", 100, "C", "T");
+        let k3 = key("chr2", 100, "C", "T");
         assert_eq!(k1, k2);
         assert_ne!(k1, k3);
     }
@@ -1032,19 +1112,19 @@ mod tests {
     #[test]
     fn three_way_venn_counts_are_correct() {
         let truth = set_of([
-            key("chr1", 100, Base::C, Base::T),
-            key("chr1", 200, Base::G, Base::A),
-            key("chr1", 300, Base::A, Base::G),
+            key("chr1", 100, "C", "T"),
+            key("chr1", 200, "G", "A"),
+            key("chr1", 300, "A", "G"),
         ]);
         let predictions = set_of([
-            key("chr1", 100, Base::C, Base::T),
-            key("chr1", 200, Base::G, Base::A),
-            key("chr1", 400, Base::C, Base::T),
+            key("chr1", 100, "C", "T"),
+            key("chr1", 200, "G", "A"),
+            key("chr1", 400, "C", "T"),
         ]);
         let competitor = set_of([
-            key("chr1", 100, Base::C, Base::T),
-            key("chr1", 300, Base::A, Base::G),
-            key("chr1", 500, Base::G, Base::T),
+            key("chr1", 100, "C", "T"),
+            key("chr1", 300, "A", "G"),
+            key("chr1", 500, "G", "T"),
         ]);
 
         let overlap = compute_overlap(&predictions, Some(&truth), Some(&competitor)).unwrap();
@@ -1059,10 +1139,8 @@ mod tests {
 
     #[test]
     fn two_way_venn_truth_only() {
-        let truth =
-            set_of([key("chr1", 100, Base::C, Base::T), key("chr1", 200, Base::G, Base::A)]);
-        let predictions =
-            set_of([key("chr1", 100, Base::C, Base::T), key("chr1", 300, Base::C, Base::T)]);
+        let truth = set_of([key("chr1", 100, "C", "T"), key("chr1", 200, "G", "A")]);
+        let predictions = set_of([key("chr1", 100, "C", "T"), key("chr1", 300, "C", "T")]);
 
         let overlap = compute_overlap(&predictions, Some(&truth), None).unwrap();
         assert_eq!(overlap.truth_and_predictions, 1);
@@ -1073,12 +1151,11 @@ mod tests {
 
     #[test]
     fn metrics_perfect_recall() {
-        let truth =
-            set_of([key("chr1", 100, Base::C, Base::T), key("chr1", 200, Base::G, Base::A)]);
+        let truth = set_of([key("chr1", 100, "C", "T"), key("chr1", 200, "G", "A")]);
         let caller = set_of([
-            key("chr1", 100, Base::C, Base::T),
-            key("chr1", 200, Base::G, Base::A),
-            key("chr1", 300, Base::A, Base::G),
+            key("chr1", 100, "C", "T"),
+            key("chr1", 200, "G", "A"),
+            key("chr1", 300, "A", "G"),
         ]);
         let m = compute_metrics(&caller, &truth);
         assert_eq!(m.recall, 1.0);

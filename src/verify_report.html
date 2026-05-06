@@ -365,7 +365,22 @@
   function miniCatVenn(cat, cm) {
     if (cm.overlap) return catVennCard(cat, cm.overlap, cm.predictions_vs_truth, cm.competitor_vs_truth);
     if (cm.predictions_vs_truth) return catPieCard(cat, cm.predictions_vs_truth);
+    if (cm.competitor_vs_truth) return compOnlyCard(cat, cm.competitor_vs_truth);
     return '';
+  }
+
+  // Card for categories where only the competitor has data.
+  function compOnlyCard(cat, m) {
+    const W = 260, H = 174, r = 68, cx = W / 2, cy = 90;
+    const svgBody = pieSVGBody(m.tp, m.fp, m.n, cx, cy, r) +
+      setLabel(cx, cy - r - 14, 'Competitor', V_COLORS.comp);
+    const ann =
+      `<div style="font-size:0.78rem;font-family:monospace;line-height:1.6;margin-top:6px;color:#555">` +
+      `N = ${fmt(m.n)} &nbsp;&#x2022;&nbsp; ` +
+      `<span style="color:#166534">TP = ${fmt(m.tp)}</span> &nbsp;&#x2022;&nbsp; ` +
+      `<span style="color:#991b1b">FP = ${fmt(m.fp)}</span></div>`;
+    const svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="overflow:visible">${svgBody}</svg>`;
+    return catCard(cat, svg, ann);
   }
 
   // ── variant section ──────────────────────────────────────────────────────
@@ -421,7 +436,7 @@
       html += '</tbody></table>';
 
       // By-category breakdown — mini Venn per category
-      const cats = ['CpG', 'DeNovo', 'Other'].filter(c => v.by_category && v.by_category[c]);
+      const cats = ['CpG', 'DeNovo', 'Other', 'Insertion', 'Deletion'].filter(c => v.by_category && v.by_category[c]);
       if (cats.length > 0) {
         html += '<h3>By category</h3>';
         html += '<p style="font-size:0.82rem;color:#666;margin:-8px 0 16px;font-style:italic">' +
