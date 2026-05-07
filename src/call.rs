@@ -328,6 +328,7 @@ fn process_region_wrapper(
             variant_calling: params.variant_calling.clone(),
             require_tags: params.require_tags.filter(),
             indel_max_mismatches: params.indel.indel_max_mismatches,
+            indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
             ..Default::default()
         };
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
@@ -398,7 +399,8 @@ fn process_region(
 
     if params.indel.experimental_indels {
         for p in &mut pileups {
-            p.indel_calls = variant_calling::indel_calling::call_indels(&p.indels, &params.indel);
+            p.indel_calls =
+                variant_calling::indel_calling::call_indels(&p.indels, &params.indel, ml.enabled());
         }
     }
 

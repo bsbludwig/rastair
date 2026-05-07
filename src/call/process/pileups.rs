@@ -21,7 +21,7 @@ pub struct PileupMappingParams {
     pub variant_calling: VariantCallingParams,
     pub require_tags: TagRequirement,
     /// Ignore indels within this distance from read ends.
-    #[default(20)]
+    #[default(0)]
     pub indel_end_of_read_cutoff: usize,
     /// Homopolymer repeat length cutoff for indel depth filtering.
     #[default(3)]

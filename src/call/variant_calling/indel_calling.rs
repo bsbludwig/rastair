@@ -39,6 +39,11 @@ pub struct IndelParams {
     #[arg(help_heading = crate::utils::cli::sections::FILTER)]
     #[default(5)]
     pub indel_max_mismatches: u32,
+
+    #[arg(long, default_value_t = 0)]
+    #[arg(help_heading = crate::utils::cli::sections::FILTER)]
+    #[default(0)]
+    pub indel_end_of_read_cutoff: usize,
 }
 
 /// Result of indel calling at a single position for one allele.
@@ -56,8 +61,13 @@ pub struct IndelCall {
 }
 
 /// Call indels at a position. Returns empty vec if no indels pass filters.
+///
+/// When `ml_enabled` is true, the binomial genotype test is used only for
+/// informational genotyping — all alleles passing min AO and min depth
+/// are forwarded to the ML model. When ML is off, the binomial test
+/// acts as a hard gate (hom_ref alleles are rejected).
 #[instrument(level = "trace", skip_all)]
-pub fn call_indels(indels: &IndelCounts, params: &IndelParams) -> Vec<IndelCall> {
+pub fn call_indels(indels: &IndelCounts, params: &IndelParams, ml_enabled: bool) -> Vec<IndelCall> {
     let mut calls = Vec::new();
 
     if indels.is_empty() {
@@ -72,17 +82,6 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams) -> Vec<IndelCall>
     }
 
     for allele_counts in &indels.alleles {
-        // maybe too strict?
-        if !allele_counts.on_both_strands() {
-            trace!(
-                allele = ?allele_counts.allele,
-                fwd = allele_counts.fwd,
-                rev = allele_counts.rev,
-                "Indel skipped: not on both strands"
-            );
-            continue;
-        }
-
         let alt_count = allele_counts.total();
         if alt_count < params.min_indel_ao {
             trace!(
@@ -94,26 +93,71 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams) -> Vec<IndelCall>
             continue;
         }
 
-        let Some(genotype) =
-            binomial_genotype(alt_count as usize, filtered_depth as usize, params.indel_error_rate)
-        else {
-            continue;
-        };
+        let genotype =
+            binomial_genotype(alt_count as usize, filtered_depth as usize, params.indel_error_rate);
 
-        if matches!(genotype.tag, GenotypeTag::HomRef) {
+        if !ml_enabled {
+            let Some(g) = genotype else { continue };
+            if matches!(g.tag, GenotypeTag::HomRef) {
+                trace!(
+                    allele = ?allele_counts.allele,
+                    alt_count,
+                    depth = filtered_depth,
+                    "Indel skipped: genotyped as hom ref (ML off)"
+                );
+                continue;
+            }
+            calls.push(IndelCall {
+                allele: allele_counts.allele.clone(),
+                genotype: g.tag,
+                quality: g.quality,
+                ml: None,
+                depth: filtered_depth,
+                alt_count,
+            });
+        } else {
+            let (tag, quality) = genotype
+                .map(|g| (g.tag, g.quality))
+                .unwrap_or((GenotypeTag::hom_ref(), Phred::from_phred(0)));
+            calls.push(IndelCall {
+                allele: allele_counts.allele.clone(),
+                genotype: tag,
+                quality,
+                ml: None,
+                depth: filtered_depth,
+                alt_count,
+            });
+        }
+    }
+
+    let total_reads = indels.ref_count + indels.total_indel_reads();
+    let filtered_depth = total_reads.saturating_sub(indels.depth_offset);
+
+    if filtered_depth < params.min_indel_depth {
+        return calls;
+    }
+
+    for allele_counts in &indels.alleles {
+        let alt_count = allele_counts.total();
+        if alt_count < params.min_indel_ao {
             trace!(
                 allele = ?allele_counts.allele,
                 alt_count,
-                depth = filtered_depth,
-                "Indel skipped: genotyped as hom ref"
+                min = params.min_indel_ao,
+                "Indel skipped: below min AO"
             );
             continue;
         }
 
+        let genotype =
+            binomial_genotype(alt_count as usize, filtered_depth as usize, params.indel_error_rate)
+                .map(|g| g.tag)
+                .unwrap_or(GenotypeTag::hom_ref());
+
         calls.push(IndelCall {
             allele: allele_counts.allele.clone(),
-            genotype: genotype.tag,
-            quality: genotype.quality,
+            genotype,
+            quality: Phred::from_phred(0),
             ml: None,
             depth: filtered_depth,
             alt_count,
