@@ -180,6 +180,7 @@ mod tests {
             indel_observations: Default::default(),
             depth_offset: 0,
             homopolymer_run: 0,
+            dinucleotide_run: 0,
             soft_clip_count: 0,
         };
 

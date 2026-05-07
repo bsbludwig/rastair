@@ -261,6 +261,8 @@ impl Pileup {
                         IndelAllele::Deletion(_) => SmallVec::new(),
                     };
 
+                    let has_repeat = has_repeat_seq(&seq, 1, repeat_limit)
+                        || has_repeat_seq(&seq, 2, repeat_limit);
                     let post_del_base_qual = match &allele {
                         IndelAllele::Deletion(_) => qual.get(qpos + 1).copied().unwrap_or(0),
                         IndelAllele::Insertion(_) => 0,
@@ -278,6 +280,7 @@ impl Pileup {
                         num_indels_in_read: indels_in_read,
                         insertion_base_quals,
                         post_del_base_qual,
+                        has_repeat,
                     });
                 }
             }
@@ -292,6 +295,7 @@ impl Pileup {
             indel_observations,
             depth_offset,
             homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
+            dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
             soft_clip_count,
         })
     }
@@ -504,6 +508,42 @@ fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8
         }
     }
     run
+}
+
+fn dinucleotide_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8 {
+    let seq = &segment.sequence;
+    let idx = pos.saturating_sub(segment_start);
+    let try_phase = |start: usize| -> u8 {
+        if start + 1 >= seq.len() {
+            return 0;
+        }
+        let p0 = seq[start];
+        let p1 = seq[start + 1];
+        if p0 == p1 {
+            return 0;
+        }
+        let mut run = 2u8;
+        let mut i = start;
+        while i >= 2 {
+            if seq.get(i - 2) == Some(&p0) && seq.get(i - 1) == Some(&p1) {
+                run += 2;
+                i -= 2;
+            } else {
+                break;
+            }
+        }
+        i = start + 2;
+        while i + 1 < seq.len() {
+            if seq.get(i) == Some(&p0) && seq.get(i + 1) == Some(&p1) {
+                run += 2;
+                i += 2;
+            } else {
+                break;
+            }
+        }
+        run
+    };
+    try_phase(idx).max(try_phase(idx.saturating_sub(1)))
 }
 
 /// Check if first or last `cutoff` bases of a read form a repeating pattern of length `n`.

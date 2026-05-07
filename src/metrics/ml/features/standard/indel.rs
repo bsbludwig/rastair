@@ -44,9 +44,15 @@ pub struct CommonIndelFeatures {
     /// Length of the longest homopolymer run on the reference spanning this
     /// position.
     homopolymer_run: f64,
+    /// Length of the longest dinucleotide repeat (e.g. ATAT) on the reference
+    /// spanning this position.
+    dinucleotide_run: f64,
     /// Fraction of reads covering this position that have a soft-clip in their
     /// CIGAR.
     soft_clip_rate: f64,
+    /// Fraction of reads supporting this indel allele that have a homopolymer or
+    /// dinucleotide repeat at their read ends (potential alignment artifact).
+    repeat_fraction: f64,
 }
 
 pub struct InsertionFeatures {
@@ -111,6 +117,8 @@ impl CommonIndelFeatures {
         buf[25..29].copy_from_slice(&self.ctx_after_2);
         buf[29] = self.homopolymer_run;
         buf[30] = self.soft_clip_rate;
+        buf[31] = self.dinucleotide_run;
+        buf[32] = self.repeat_fraction;
     }
 
     fn extract(current: &MetricsForIndel) -> CommonIndelFeatures {
@@ -154,6 +162,8 @@ impl CommonIndelFeatures {
             ctx_after_2: [a2a, a2c, a2g, a2t],
             homopolymer_run: pileup.homopolymer_run.f(),
             soft_clip_rate,
+            dinucleotide_run: pileup.dinucleotide_run.f(),
+            repeat_fraction: if agg.total > 0 { agg.repeat_count.f() / agg.total.f() } else { 0.0 },
         }
     }
 }
@@ -191,6 +201,7 @@ struct Aggregates {
     ot_count: u32,
     ob_count: u32,
     total: u32,
+    repeat_count: u32,
 }
 
 fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -> Aggregates {
@@ -201,6 +212,7 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
     let mut ot_count: u32 = 0;
     let mut ob_count: u32 = 0;
     let mut total: u32 = 0;
+    let mut repeat_count: u32 = 0;
 
     for obs in observations {
         if &obs.allele != allele {
@@ -225,13 +237,26 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
             rastair_types::Strand::OB => ob_count += 1,
             rastair_types::Strand::Unknown => {}
         }
+
+        if obs.has_repeat {
+            repeat_count += 1;
+        }
     }
 
     let mapq_rms = if total > 0 { (mapq_sq_sum / total.f()).sqrt() } else { 0.0 };
     let baseq_rms = if total > 0 { (baseq_sq_sum / total.f()).sqrt() } else { 0.0 };
     let edge_dist_rms = if total > 0 { (edge_sq_sum / total.f()).sqrt() } else { 0.0 };
 
-    Aggregates { mapq_rms, mapq0_count, baseq_rms, edge_dist_rms, ot_count, ob_count, total }
+    Aggregates {
+        mapq_rms,
+        mapq0_count,
+        baseq_rms,
+        edge_dist_rms,
+        ot_count,
+        ob_count,
+        total,
+        repeat_count,
+    }
 }
 
 fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f64 {

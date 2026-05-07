@@ -31,6 +31,8 @@ pub struct Pileup {
     #[serde(default)]
     pub homopolymer_run: u8,
     #[serde(default)]
+    pub dinucleotide_run: u8,
+    #[serde(default)]
     pub soft_clip_count: u32,
 }
 
@@ -114,6 +116,7 @@ mod tests {
             indel_observations: default(),
             depth_offset: 0,
             homopolymer_run: 0,
+            dinucleotide_run: 0,
             soft_clip_count: 0,
         };
 

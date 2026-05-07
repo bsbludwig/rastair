@@ -27,6 +27,7 @@ pub struct CommonFeatures {
     pub mapping_quality_metrics: [f64; 6],
     /// Read position and alignment metrics (6 features)
     pub read_metrics: [f64; 6],
+    // FIXME: consider adding `homopolymer_run` and `soft_clip_rate`
 }
 
 impl CommonFeatures {
