@@ -182,7 +182,6 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         })?;
 
     // Load truth VCF and index variants
-    info!("Loading truth VCF from {}", params.truth.display());
     let region = params.reader.region.clone().unwrap_or_else(|| RegionString {
         chromosome: "chr12".into(),
         start: None,
@@ -190,11 +189,6 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     });
     let (snp_variants, indel_variants) = load_truth_vcf(&params.truth, &region, params.threads)
         .wrap_err("Failed to load truth VCF")?;
-    info!(
-        snps = snp_variants.len(),
-        indels = indel_variants.len(),
-        "Loaded true variants from truth VCF"
-    );
 
     // Get segments to process
     let segmentation = SegmentationParams::default();
@@ -235,6 +229,8 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
             regions
                 .par_iter()
                 .map(|chunk_region| {
+                    let _span = tracing::info_span!("collect_segment", region = %chunk_region.region).entered();
+
                     // Use thread-local readers to avoid re-opening files in each thread
                     READERS.with(|local_readers| -> SegmentResult {
                         let mut local_readers = local_readers.borrow_mut();
@@ -322,11 +318,11 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     info!("Training all 5 models in parallel");
     let (cpg_result, denovo_result, others_result, insertion_result, deletion_result) = rayon_all!(
-        train_and_save_model("cpg", cpg_data, params, cpg_seed),
-        train_and_save_model("denovo", denovo_data, params, denovo_seed),
-        train_and_save_model("other", other_data, params, others_seed),
-        train_and_save_model("insertion", insertion_data, params, insertion_seed),
-        train_and_save_model("deletion", deletion_data, params, deletion_seed),
+        train_and_save("cpg", cpg_data, params, cpg_seed),
+        train_and_save("denovo", denovo_data, params, denovo_seed),
+        train_and_save("other", other_data, params, others_seed),
+        train_and_save("insertion", insertion_data, params, insertion_seed),
+        train_and_save("deletion", deletion_data, params, deletion_seed),
     );
 
     let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
@@ -370,6 +366,8 @@ pub fn load_truth_vcf(
     region: &RegionString,
     threads: usize,
 ) -> Result<(HashSet<PositionKey>, HashSet<IndelKey>)> {
+    info!(path=%vcf_path, %region, "Loading truth vcf");
+
     ensure!(vcf_path.exists(), "Predictions VCF file `{vcf_path:?}` not found.");
     let index_path = PathBuf::from(format!("{}.csi", vcf_path.path().display()));
     ensure!(
@@ -409,6 +407,8 @@ pub fn load_truth_vcf(
         snp_variants.extend(snps);
         indel_variants.extend(indels);
     }
+
+    info!(snps = snp_variants.len(), indels = indel_variants.len(), "Loaded true variants");
 
     Ok((snp_variants, indel_variants))
 }
@@ -571,7 +571,7 @@ fn collect_training_data_from_segment(
 
             // -- Indel alleles --
             if !current.indels.is_empty() {
-                let indel_calls = indel_calling::call_indels(&current.indels, indel_params);
+                let indel_calls = indel_calling::call_indels(&current.indels, indel_params, true);
                 for call in &indel_calls {
                     let indel_key = IndelKey { pos, allele: call.allele.clone() };
                     let label = if indel_truth.contains(&indel_key) { 1.0 } else { 0.0 };
@@ -604,7 +604,8 @@ fn collect_training_data_from_segment(
     Ok((cpg_data, denovo_data, other_data, insertion_data, deletion_data))
 }
 
-fn train_and_save_model(
+#[instrument(level = "info", skip_all, fields(model=%model_name))]
+fn train_and_save(
     model_name: &str,
     data: TrainingData,
     params: &TrainModelParams,
@@ -612,7 +613,7 @@ fn train_and_save_model(
 ) -> Result<(RandomForest, PlattScaling)> {
     ensure!(!data.is_empty(), "No training data for {model_name} model, skipping");
 
-    info!(model_name, seed, examples = data.len(), "Training model");
+    info!(seed, examples = data.len(), "Training model");
 
     // Subsample for training, keep held-out data for Platt calibration
     let (train_features, train_labels, holdout_features, holdout_labels) = subsample_training_data(
@@ -623,11 +624,11 @@ fn train_and_save_model(
     )?;
 
     info!(
-        "Subsampled to {} training examples ({} positive, {} negative), {} held-out for Platt calibration",
-        train_labels.len(),
-        train_labels.iter().filter(|&&l| l == 1.0).count(),
-        train_labels.iter().filter(|&&l| l == 0.0).count(),
-        holdout_labels.len(),
+        training = train_labels.len(),
+        positive = train_labels.iter().filter(|&&l| l == 1.0).count(),
+        negative = train_labels.iter().filter(|&&l| l == 0.0).count(),
+        holdout = holdout_labels.len(),
+        "Subsampled"
     );
 
     // Train model
@@ -641,7 +642,7 @@ fn train_and_save_model(
     let mut model = RandomForest::new(rf_params);
     model.fit(&train_features.view(), &train_labels.view());
 
-    info!("Finished training {} model", model_name);
+    info!("Finished training");
 
     // Fit Platt scaling on held-out predictions
     let raw_scores = model.predict(&holdout_features.view());
@@ -649,11 +650,10 @@ fn train_and_save_model(
         raw_scores.as_slice().unwrap_or(&[]),
         holdout_labels.as_slice().unwrap_or(&[]),
     );
-    info!(model_name, a = platt.a, b = platt.b, "Fitted Platt scaling parameters");
+    info!(a = platt.a, b = platt.b, "Fitted Platt scaling parameters");
 
     if platt.a == 1.0 && platt.b == 0.0 {
         error!(
-            model_name,
             "Platt scaling is identity (a=1.0, b=0.0) — model likely failed to learn. \
              Check class balance, feature quality, and consider reducing n-negative."
         );
