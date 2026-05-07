@@ -15,6 +15,10 @@ use std::{
     path::{Path, PathBuf},
     thread::available_parallelism,
 };
+use tabled::{
+    builder::Builder,
+    settings::{Alignment, Modify, Style, object::Columns},
+};
 use tracing::{info, instrument, warn};
 
 // ─── CLI params ────────────────────────────────────────────────────────────
@@ -907,167 +911,173 @@ fn fmt_n(n: usize) -> String {
 }
 
 fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationComparison>) {
-    println!("\n=== Variant Verification ===\n");
+    println!("\n# Variant Verification\n");
 
     if let Some(overlap) = &variant_report.overlap {
-        println!("Overlap:");
-        if overlap.truth_and_predictions > 0
+        let has_truth = overlap.truth_and_predictions > 0
             || overlap.truth_only > 0
             || overlap.truth_and_competitor > 0
-            || overlap.all_three > 0
-        {
-            println!("  Truth only:                 {:>15}", fmt_n(overlap.truth_only));
-            println!("  Predictions only:           {:>15}", fmt_n(overlap.predictions_only));
-            if overlap.competitor_only > 0
-                || overlap.truth_and_competitor > 0
-                || overlap.predictions_and_competitor > 0
-                || overlap.all_three > 0
-            {
-                println!("  Competitor only:            {:>15}", fmt_n(overlap.competitor_only));
-            }
-            println!("  Truth ∩ Predictions:        {:>15}", fmt_n(overlap.truth_and_predictions));
-            if overlap.competitor_only > 0
-                || overlap.truth_and_competitor > 0
-                || overlap.predictions_and_competitor > 0
-                || overlap.all_three > 0
-            {
-                println!(
-                    "  Truth ∩ Competitor:         {:>15}",
-                    fmt_n(overlap.truth_and_competitor)
-                );
-                println!(
-                    "  Predictions ∩ Competitor:   {:>15}",
-                    fmt_n(overlap.predictions_and_competitor)
-                );
-                println!("  All three:                  {:>15}", fmt_n(overlap.all_three));
-            }
-        } else {
-            println!("  Predictions only:           {:>15}", fmt_n(overlap.predictions_only));
-            println!(
-                "  Predictions ∩ Competitor:   {:>15}",
-                fmt_n(overlap.predictions_and_competitor)
-            );
-            println!("  Competitor only:            {:>15}", fmt_n(overlap.competitor_only));
+            || overlap.all_three > 0;
+        let has_comp = variant_report.competitor_vs_truth.is_some();
+
+        let mut builder = Builder::default();
+        builder.push_record(["Overlap", "Count"]);
+
+        if has_truth {
+            builder.push_record(["Truth only", &fmt_n(overlap.truth_only)]);
         }
-        println!();
+        builder.push_record(["Predictions only", &fmt_n(overlap.predictions_only)]);
+        if has_comp {
+            builder.push_record(["Competitor only", &fmt_n(overlap.competitor_only)]);
+        }
+        if has_truth {
+            builder.push_record(["Truth ∩ Predictions", &fmt_n(overlap.truth_and_predictions)]);
+        }
+        if has_comp && has_truth {
+            builder.push_record(["Truth ∩ Competitor", &fmt_n(overlap.truth_and_competitor)]);
+        }
+        if has_comp {
+            builder.push_record([
+                "Predictions ∩ Competitor",
+                &fmt_n(overlap.predictions_and_competitor),
+            ]);
+        }
+        if has_comp && has_truth {
+            builder.push_record(["All three", &fmt_n(overlap.all_three)]);
+        }
+
+        let mut table = builder.build();
+        table.with(Style::markdown());
+        table.with(Modify::new(Columns::new(1..2)).with(Alignment::right()));
+        println!("{table}\n");
     }
 
-    let has_competitor = variant_report.competitor_vs_truth.is_some();
     if variant_report.predictions_vs_truth.is_some() {
-        if has_competitor {
-            println!("{:<30} {:>12}  {:>12}", "Metrics vs truth:", "Predictions", "Competitor");
+        let pred = variant_report.predictions_vs_truth.as_ref().unwrap();
+        let comp = variant_report.competitor_vs_truth.as_ref();
+        let has_comp = comp.is_some();
+
+        let mut builder = Builder::default();
+        if has_comp {
+            builder.push_record(["Metric", "Predictions", "Competitor"]);
         } else {
-            println!("{:<30} {:>12}", "Metrics vs truth:", "Predictions");
+            builder.push_record(["Metric", "Predictions"]);
         }
-        print_metric_row(
-            "Precision",
-            variant_report.predictions_vs_truth.as_ref(),
-            variant_report.competitor_vs_truth.as_ref(),
-            has_competitor,
-            |m| m.precision,
-        );
-        print_metric_row(
-            "Recall",
-            variant_report.predictions_vs_truth.as_ref(),
-            variant_report.competitor_vs_truth.as_ref(),
-            has_competitor,
-            |m| m.recall,
-        );
-        print_metric_row(
-            "F1",
-            variant_report.predictions_vs_truth.as_ref(),
-            variant_report.competitor_vs_truth.as_ref(),
-            has_competitor,
-            |m| m.f1,
-        );
-        print_metric_row(
-            "FN rate",
-            variant_report.predictions_vs_truth.as_ref(),
-            variant_report.competitor_vs_truth.as_ref(),
-            has_competitor,
-            |m| m.fn_rate,
-        );
-        println!();
+
+        let mut add_metric = |label: &str, get: fn(&VariantMetrics) -> f64| {
+            let pv = format!("{:.4}", get(pred));
+            if has_comp {
+                let cv = comp.map(|c| format!("{:.4}", get(c))).unwrap_or_else(|| "—".into());
+                builder.push_record([label.into(), pv, cv]);
+            } else {
+                builder.push_record([label.into(), pv]);
+            }
+        };
+
+        add_metric("Precision", |m| m.precision);
+        add_metric("Recall", |m| m.recall);
+        add_metric("F1", |m| m.f1);
+        add_metric("FN rate", |m| m.fn_rate);
+
+        let mut table = builder.build();
+        table.with(Style::markdown());
+        table.with(Modify::new(Columns::new(1..)).with(Alignment::right()));
+        println!("{table}\n");
     }
 
     if !variant_report.by_category.is_empty() {
-        let has_comp_cat =
-            variant_report.by_category.values().any(|m| m.competitor_vs_truth.is_some());
-        println!("{:<10} {:>8}  {:>10}  {:>10}  {:>10}", "Category", "N", "TP", "FP", "Precision");
-        for cat in [
+        println!("## By Category\n");
+
+        let has_comp = variant_report.by_category.values().any(|m| m.competitor_vs_truth.is_some());
+        let cats = [
             VariantCategory::CpG,
             VariantCategory::DeNovo,
             VariantCategory::Other,
             VariantCategory::Insertion,
             VariantCategory::Deletion,
-        ] {
-            let Some(cat_metrics) = variant_report.by_category.get(&cat.to_string()) else {
+        ];
+
+        let mut builder = Builder::default();
+        builder.push_record(["Category", "Target", "N", "TP", "FP", "Precision"]);
+
+        for cat in cats {
+            let Some(cm) = variant_report.by_category.get(&cat.to_string()) else {
                 continue;
             };
-            match (&cat_metrics.predictions_vs_truth, &cat_metrics.competitor_vs_truth) {
-                (Some(m), comp) => {
-                    print!(
-                        "  {cat:<8} {:>8}  {:>10}  {:>10}  {:>10.4}",
-                        fmt_n(m.n),
-                        fmt_n(m.tp),
-                        fmt_n(m.fp),
-                        m.precision
-                    );
-                    if has_comp_cat && let Some(c) = comp {
-                        print!(
-                            "   comp: n={} tp={} fp={} prec={:.4}",
-                            fmt_n(c.n),
-                            fmt_n(c.tp),
-                            fmt_n(c.fp),
-                            c.precision
-                        );
-                    }
-                    println!();
-                }
-                (None, Some(c)) if has_comp_cat => {
-                    println!(
-                        "  {cat:<8} {:>8}  {:>10}  {:>10}  {:>10}   comp: n={} tp={} fp={} prec={:.4}",
-                        "—",
-                        "—",
-                        "—",
-                        "—",
+            let cat_str = cat.to_string();
+
+            if let Some(m) = &cm.predictions_vs_truth {
+                builder.push_record([
+                    cat_str.clone(),
+                    "Predictions".into(),
+                    fmt_n(m.n),
+                    fmt_n(m.tp),
+                    fmt_n(m.fp),
+                    format!("{:.4}", m.precision),
+                ]);
+            } else {
+                builder.push_record([
+                    cat_str.clone(),
+                    "Predictions".into(),
+                    "—".into(),
+                    "—".into(),
+                    "—".into(),
+                    "—".into(),
+                ]);
+            }
+            if has_comp {
+                if let Some(c) = &cm.competitor_vs_truth {
+                    builder.push_record([
+                        cat_str.clone(),
+                        "Competitor".into(),
                         fmt_n(c.n),
                         fmt_n(c.tp),
                         fmt_n(c.fp),
-                        c.precision
-                    );
+                        format!("{:.4}", c.precision),
+                    ]);
+                } else {
+                    builder.push_record([
+                        cat_str,
+                        "Competitor".into(),
+                        "—".into(),
+                        "—".into(),
+                        "—".into(),
+                        "—".into(),
+                    ]);
                 }
-                (None, _) => {}
             }
         }
-        println!();
+
+        let mut table = builder.build();
+        table.with(Style::markdown());
+        table.with(Modify::new(Columns::new(2..6)).with(Alignment::right()));
+        println!("{table}\n");
     }
 
     if let Some(m) = methyl {
-        println!("=== Methylation Comparison ===\n");
-        println!("Positions compared:    {:>15}", fmt_n(m.n_compared));
-        println!("Predictions only:      {:>15}", fmt_n(m.n_predictions_only));
-        println!("Competitor only:       {:>15}", fmt_n(m.n_competitor_only));
-        println!();
-        println!("Pearson r:             {:>15.4}", m.pearson_r);
-        println!("R²:                    {:>15.4}", m.r_squared);
-        println!("Mean |Δβ|:             {:>15.4}", m.mean_abs_diff);
-    }
-}
+        println!("# Methylation Comparison\n");
 
-fn print_metric_row(
-    label: &str,
-    pred: Option<&VariantMetrics>,
-    comp: Option<&VariantMetrics>,
-    has_competitor: bool,
-    get: impl Fn(&VariantMetrics) -> f64,
-) {
-    let pred_val = pred.map(|m| format!("{:.4}", get(m))).unwrap_or_else(|| "N/A".to_string());
-    if has_competitor {
-        let comp_val = comp.map(|m| format!("{:.4}", get(m))).unwrap_or_else(|| "N/A".to_string());
-        println!("  {label:<28} {pred_val:>12}  {comp_val:>12}");
-    } else {
-        println!("  {label:<28} {pred_val:>12}");
+        let mut builder = Builder::default();
+        builder.push_record(["Statistic", "Value"]);
+        builder.push_record(["Positions compared", &fmt_n(m.n_compared)]);
+        builder.push_record(["Predictions only", &fmt_n(m.n_predictions_only)]);
+        builder.push_record(["Competitor only", &fmt_n(m.n_competitor_only)]);
+
+        let mut table = builder.build();
+        table.with(Style::markdown());
+        table.with(Modify::new(Columns::new(1..2)).with(Alignment::right()));
+        println!("{table}\n");
+
+        let mut builder = Builder::default();
+        builder.push_record(["Metric", "Value"]);
+        builder.push_record(["Pearson r", &format!("{:.4}", m.pearson_r)]);
+        builder.push_record(["R²", &format!("{:.4}", m.r_squared)]);
+        builder.push_record(["Mean |Δβ|", &format!("{:.4}", m.mean_abs_diff)]);
+
+        let mut table = builder.build();
+        table.with(Style::markdown());
+        table.with(Modify::new(Columns::new(1..2)).with(Alignment::right()));
+        println!("{table}");
     }
 }
 
