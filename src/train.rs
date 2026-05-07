@@ -38,7 +38,7 @@ use rastair_types::{Base, Probability, RegionString, SmallVec};
 use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
 use std::{collections::HashSet, num::NonZeroU64, path::PathBuf, thread::available_parallelism};
-use tracing::{info, instrument, trace, warn};
+use tracing::{error, info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
 pub struct TrainModelParams {
@@ -650,6 +650,14 @@ fn train_and_save_model(
         holdout_labels.as_slice().unwrap_or(&[]),
     );
     info!(model_name, a = platt.a, b = platt.b, "Fitted Platt scaling parameters");
+
+    if platt.a == 1.0 && platt.b == 0.0 {
+        error!(
+            model_name,
+            "Platt scaling is identity (a=1.0, b=0.0) — model likely failed to learn. \
+             Check class balance, feature quality, and consider reducing n-negative."
+        );
+    }
 
     Ok((model, platt))
 }
