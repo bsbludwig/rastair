@@ -69,9 +69,10 @@ pub struct DeletionFeatures {
     /// One-hot encoding of the reference base at the pileup position (A, C, G,
     /// T).
     ref_one_hot: [f64; 4],
-    /// RMS base quality of the anchor base and the post-deletion base across
-    /// all reads supporting this deletion allele.
-    flank_baseq_rms: f64,
+    /// RMS base quality of the first base after the deletion across all reads
+    /// supporting this allele. Low quality suggests the deletion boundary is
+    /// uncertain. (The anchor base quality is already in CommonIndelFeatures.)
+    post_del_baseq_rms: f64,
 }
 
 pub fn insertion(
@@ -93,7 +94,7 @@ pub fn deletion(
     let common_len = CommonIndelFeatures::FEATURES;
     features.common.write_to(&mut buf[..common_len]);
     buf[common_len..common_len + 4].copy_from_slice(&features.ref_one_hot);
-    buf[common_len + 4] = features.flank_baseq_rms;
+    buf[common_len + 4] = features.post_del_baseq_rms;
     Ok(())
 }
 
@@ -188,8 +189,8 @@ impl DeletionFeatures {
         let ref_one_hot = one_hot_encode_base(current.metrics.pileup.reference_base).into();
         let observations = &current.metrics.pileup.indel_observations;
         let allele = &current.indel.allele;
-        let flank_baseq_rms = flank_baseq_rms(observations, allele);
-        DeletionFeatures { common, ref_one_hot, flank_baseq_rms }
+        let post_del_baseq_rms = post_del_baseq_rms(observations, allele);
+        DeletionFeatures { common, ref_one_hot, post_del_baseq_rms }
     }
 }
 
@@ -275,19 +276,16 @@ fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) 
     if count > 0 { (sq_sum / count.f()).sqrt() } else { 0.0 }
 }
 
-fn flank_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f64 {
+fn post_del_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f64 {
     let mut sq_sum: f64 = 0.0;
     let mut count: u32 = 0;
     for obs in observations {
         if &obs.allele != allele {
             continue;
         }
-        let anchor = obs.base_qual.f();
-        sq_sum += anchor * anchor;
-        count += 1;
         if obs.post_del_base_qual > 0 {
-            let post = obs.post_del_base_qual.f();
-            sq_sum += post * post;
+            let q = obs.post_del_base_qual.f();
+            sq_sum += q * q;
             count += 1;
         }
     }
