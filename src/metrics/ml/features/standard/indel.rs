@@ -7,32 +7,64 @@ use rastair_types::Base;
 use crate::call::pileup::indels::{IndelAllele, IndelObservation};
 
 pub struct CommonIndelFeatures {
+    /// Length of the indel allele in bases.
     indel_len: f64,
+    /// Shannon entropy of the allele's base composition (A/C/G/T distribution).
     indel_complexity: f64,
+    /// One-hot encoded counts of A, C, G, T in the indel allele sequence.
     indel_base_count: [f64; 4],
+    /// Ratio of this allele's read count to the most frequent allele at this
+    /// position. Near 1.0 when this is the dominant allele; low when many
+    /// alleles compete.
     indel_dominance: f64,
+    /// RMS mapping quality of reads supporting this specific indel allele.
     mapq_rms: f64,
+    /// Fraction of indel-supporting reads with mapping quality zero.
     mapq0_rate: f64,
+    /// RMS base quality at the pileup anchor position for reads supporting this
+    /// allele.
     baseq_rms: f64,
+    /// RMS of `min(pos_in_read, read_length - pos_in_read)` across
+    /// indel-supporting reads. Low values mean the indel is near read
+    /// boundaries (less reliable).
     edge_dist_rms: f64,
+    /// Number of reads supporting this specific indel allele.
     depth: f64,
-    strand_balance: f64,
+    /// Strand bias: (OT - OB) / (OT + OB). -1.0 = all OB, 0.0 = balanced, +1.0
+    /// = all OT.
+    strand_bias: f64,
+    /// One-hot encoding of the reference base 2 bp before the pileup position.
     ctx_before_2: [f64; 4],
+    /// One-hot encoding of the reference base 1 bp before the pileup position.
     ctx_before_1: [f64; 4],
+    /// One-hot encoding of the reference base 1 bp after the pileup position.
     ctx_after_1: [f64; 4],
+    /// One-hot encoding of the reference base 2 bp after the pileup position.
     ctx_after_2: [f64; 4],
+    /// Length of the longest homopolymer run on the reference spanning this
+    /// position.
     homopolymer_run: f64,
+    /// Fraction of reads covering this position that have a soft-clip in their
+    /// CIGAR.
     soft_clip_rate: f64,
 }
 
 pub struct InsertionFeatures {
+    /// Features shared with deletions.
     common: CommonIndelFeatures,
+    /// RMS base quality of the inserted bases across all reads supporting this
+    /// insertion allele.
     insertion_baseq_rms: f64,
 }
 
 pub struct DeletionFeatures {
+    /// Features shared with insertions.
     common: CommonIndelFeatures,
+    /// One-hot encoding of the reference base at the pileup position (A, C, G,
+    /// T).
     ref_one_hot: [f64; 4],
+    /// RMS base quality of the anchor base and the post-deletion base across
+    /// all reads supporting this deletion allele.
     flank_baseq_rms: f64,
 }
 
@@ -72,7 +104,7 @@ impl CommonIndelFeatures {
         buf[9] = self.baseq_rms;
         buf[10] = self.edge_dist_rms;
         buf[11] = self.depth;
-        buf[12] = self.strand_balance;
+        buf[12] = self.strand_bias;
         buf[13..17].copy_from_slice(&self.ctx_before_2);
         buf[17..21].copy_from_slice(&self.ctx_before_1);
         buf[21..25].copy_from_slice(&self.ctx_after_1);
@@ -115,7 +147,7 @@ impl CommonIndelFeatures {
             baseq_rms: agg.baseq_rms,
             edge_dist_rms: agg.edge_dist_rms,
             depth: agg.total.f(),
-            strand_balance: strand_balance(agg.fwd_count, agg.rev_count),
+            strand_bias: strand_bias(agg.ot_count, agg.ob_count),
             ctx_before_2: [b2a, b2c, b2g, b2t],
             ctx_before_1: [b1a, b1c, b1g, b1t],
             ctx_after_1: [a1a, a1c, a1g, a1t],
@@ -156,8 +188,8 @@ struct Aggregates {
     mapq0_count: u32,
     baseq_rms: f64,
     edge_dist_rms: f64,
-    fwd_count: u32,
-    rev_count: u32,
+    ot_count: u32,
+    ob_count: u32,
     total: u32,
 }
 
@@ -166,8 +198,8 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
     let mut mapq0_count: u32 = 0;
     let mut baseq_sq_sum: f64 = 0.0;
     let mut edge_sq_sum: f64 = 0.0;
-    let mut fwd_count: u32 = 0;
-    let mut rev_count: u32 = 0;
+    let mut ot_count: u32 = 0;
+    let mut ob_count: u32 = 0;
     let mut total: u32 = 0;
 
     for obs in observations {
@@ -188,10 +220,10 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
         let edge = (obs.pos_in_read as f64).min((obs.read_length - obs.pos_in_read) as f64);
         edge_sq_sum += edge * edge;
 
-        if obs.reverse {
-            rev_count += 1;
-        } else {
-            fwd_count += 1;
+        match obs.strand {
+            rastair_types::Strand::OT => ot_count += 1,
+            rastair_types::Strand::OB => ob_count += 1,
+            rastair_types::Strand::Unknown => {}
         }
     }
 
@@ -199,7 +231,7 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
     let baseq_rms = if total > 0 { (baseq_sq_sum / total.f()).sqrt() } else { 0.0 };
     let edge_dist_rms = if total > 0 { (edge_sq_sum / total.f()).sqrt() } else { 0.0 };
 
-    Aggregates { mapq_rms, mapq0_count, baseq_rms, edge_dist_rms, fwd_count, rev_count, total }
+    Aggregates { mapq_rms, mapq0_count, baseq_rms, edge_dist_rms, ot_count, ob_count, total }
 }
 
 fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f64 {
@@ -237,13 +269,12 @@ fn flank_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f
     if count > 0 { (sq_sum / count.f()).sqrt() } else { 0.0 }
 }
 
-fn strand_balance(fwd: u32, rev: u32) -> f64 {
-    if fwd == 0 || rev == 0 {
+fn strand_bias(ot: u32, ob: u32) -> f64 {
+    let total = ot + ob;
+    if total == 0 {
         return 0.0;
     }
-    let min = fwd.min(rev).f();
-    let max = fwd.max(rev).f();
-    min / max
+    (ot.f() - ob.f()) / total.f()
 }
 
 fn compute_dominance(
