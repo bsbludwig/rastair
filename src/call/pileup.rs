@@ -28,6 +28,8 @@ pub struct Pileup {
     /// for indel depth adjustment.
     #[serde(default)]
     pub depth_offset: u32,
+    #[serde(default)]
+    pub homopolymer_run: u8,
 }
 
 impl Pileup {
@@ -109,6 +111,7 @@ mod tests {
             reference_base: Base::T, // Assume T is the reference base at this position
             indel_observations: default(),
             depth_offset: 0,
+            homopolymer_run: 0,
         };
 
         let alleles = variant_candidate.alleles();

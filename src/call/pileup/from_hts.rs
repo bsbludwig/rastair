@@ -182,8 +182,9 @@ impl Pileup {
         for a in pile.alignments() {
             let record = a.record_view();
             let flags = record.flags();
-            let (seq, _qual) = record.seq_and_qual();
+            let (seq, qual) = record.seq_and_qual();
             let read_len = seq.len();
+            let (matches, indels_in_read) = calc_cigar_data(record.raw_cigar());
 
             match a.indel() {
                 Indel::None => {
@@ -244,12 +245,29 @@ impl Pileup {
                         Indel::None => unreachable!(),
                     };
 
+                    let base_qual = qual.get(qpos).copied().unwrap_or(0);
+                    let mapq = record.mapq();
+
+                    let insertion_base_quals = match &allele {
+                        IndelAllele::Insertion(bases) => {
+                            let start = qpos + 1;
+                            let end = start + bases.len();
+                            (start..end).filter_map(|i| qual.get(i).copied()).collect()
+                        }
+                        IndelAllele::Deletion(_) => SmallVec::new(),
+                    };
+
                     indel_observations.push(IndelObservation {
                         allele,
                         strand,
                         reverse: flags & 0x10 != 0,
                         pos_in_read: qpos as u32,
                         read_length: read_len as u32,
+                        mapq,
+                        base_qual,
+                        matching_bases: matches,
+                        num_indels_in_read: indels_in_read,
+                        insertion_base_quals,
                     });
                 }
             }
@@ -263,6 +281,7 @@ impl Pileup {
             reference_base,
             indel_observations,
             depth_offset,
+            homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
         })
     }
 }
@@ -448,6 +467,32 @@ fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
 /// Check if a CIGAR array contains a soft-clip operation (op 4).
 fn has_soft_clip(cigar: &[u32]) -> bool {
     cigar.iter().any(|&c| c & 0xF == 4)
+}
+
+fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8 {
+    let seq = &segment.sequence;
+    let idx = pos.saturating_sub(segment_start);
+    let Some(&center) = seq.get(idx) else { return 0 };
+    let mut run = 1u8;
+    let mut i = idx;
+    while i > 0 {
+        i -= 1;
+        if seq.get(i) == Some(&center) {
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    i = idx;
+    while i + 1 < seq.len() {
+        i += 1;
+        if seq.get(i) == Some(&center) {
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    run
 }
 
 /// Check if first or last `cutoff` bases of a read form a repeating pattern of length `n`.

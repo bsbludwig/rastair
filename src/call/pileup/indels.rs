@@ -40,6 +40,11 @@ pub struct IndelObservation {
     pub reverse: bool,
     pub pos_in_read: u32,
     pub read_length: u32,
+    pub mapq: u8,
+    pub base_qual: u8,
+    pub matching_bases: u32,
+    pub num_indels_in_read: u32,
+    pub insertion_base_quals: SmallVec<u8, 4>,
 }
 
 /// Aggregated indel counts at a position, ready for calling.

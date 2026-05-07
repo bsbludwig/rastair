@@ -102,6 +102,7 @@ pub(crate) fn create_pileups(
                 reference_base,
                 indel_observations: Default::default(),
                 depth_offset: 0,
+                homopolymer_run: 0,
             }
         })
         .collect();
