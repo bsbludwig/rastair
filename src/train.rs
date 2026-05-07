@@ -143,6 +143,10 @@ impl TrainingData {
     fn is_empty(&self) -> bool {
         self.labels.is_empty()
     }
+
+    fn positives(&self) -> usize {
+        self.labels.iter().filter(|&&l| l == 1.0).count()
+    }
 }
 
 type SegmentResult = (TrainingData, TrainingData, TrainingData, TrainingData, TrainingData);
@@ -299,10 +303,15 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     info!(
         cpg = cpg_data.len(),
+        cpg_pos = cpg_data.positives(),
         denovo = denovo_data.len(),
+        denovo_pos = denovo_data.positives(),
         other = other_data.len(),
+        other_pos = other_data.positives(),
         insertion = insertion_data.len(),
+        insertion_pos = insertion_data.positives(),
         deletion = deletion_data.len(),
+        deletion_pos = deletion_data.positives(),
         "Collected training examples",
     );
 

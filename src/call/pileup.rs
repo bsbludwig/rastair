@@ -30,6 +30,8 @@ pub struct Pileup {
     pub depth_offset: u32,
     #[serde(default)]
     pub homopolymer_run: u8,
+    #[serde(default)]
+    pub soft_clip_count: u32,
 }
 
 impl Pileup {
@@ -112,6 +114,7 @@ mod tests {
             indel_observations: default(),
             depth_offset: 0,
             homopolymer_run: 0,
+            soft_clip_count: 0,
         };
 
         let alleles = variant_candidate.alleles();

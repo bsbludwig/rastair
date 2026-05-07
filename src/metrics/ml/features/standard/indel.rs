@@ -22,6 +22,7 @@ pub struct CommonIndelFeatures {
     ctx_after_1: [f64; 4],
     ctx_after_2: [f64; 4],
     homopolymer_run: f64,
+    soft_clip_rate: f64,
 }
 
 pub struct InsertionFeatures {
@@ -32,6 +33,7 @@ pub struct InsertionFeatures {
 pub struct DeletionFeatures {
     common: CommonIndelFeatures,
     ref_one_hot: [f64; 4],
+    flank_baseq_rms: f64,
 }
 
 pub fn insertion(
@@ -52,7 +54,8 @@ pub fn deletion(
     let features = DeletionFeatures::extract(current);
     let common_len = CommonIndelFeatures::FEATURES;
     features.common.write_to(&mut buf[..common_len]);
-    buf[common_len..].copy_from_slice(&features.ref_one_hot);
+    buf[common_len..common_len + 4].copy_from_slice(&features.ref_one_hot);
+    buf[common_len + 4] = features.flank_baseq_rms;
     Ok(())
 }
 
@@ -75,6 +78,7 @@ impl CommonIndelFeatures {
         buf[21..25].copy_from_slice(&self.ctx_after_1);
         buf[25..29].copy_from_slice(&self.ctx_after_2);
         buf[29] = self.homopolymer_run;
+        buf[30] = self.soft_clip_rate;
     }
 
     fn extract(current: &MetricsForIndel) -> CommonIndelFeatures {
@@ -92,6 +96,9 @@ impl CommonIndelFeatures {
         let (b1a, b1c, b1g, b1t) = one_hot_encode_base(ctx.before_1);
         let (a1a, a1c, a1g, a1t) = one_hot_encode_base(ctx.after_1);
         let (a2a, a2c, a2g, a2t) = one_hot_encode_base(ctx.after_2);
+
+        let total_reads = pileup.reads.len().max(1) as f64;
+        let soft_clip_rate = pileup.soft_clip_count.f() / total_reads;
 
         CommonIndelFeatures {
             indel_len: allele.len() as f64,
@@ -114,6 +121,7 @@ impl CommonIndelFeatures {
             ctx_after_1: [a1a, a1c, a1g, a1t],
             ctx_after_2: [a2a, a2c, a2g, a2t],
             homopolymer_run: pileup.homopolymer_run.f(),
+            soft_clip_rate,
         }
     }
 }
@@ -136,7 +144,10 @@ impl DeletionFeatures {
     fn extract(current: &MetricsForIndel) -> DeletionFeatures {
         let common = CommonIndelFeatures::extract(current);
         let ref_one_hot = one_hot_encode_base(current.metrics.pileup.reference_base).into();
-        DeletionFeatures { common, ref_one_hot }
+        let observations = &current.metrics.pileup.indel_observations;
+        let allele = &current.indel.allele;
+        let flank_baseq_rms = flank_baseq_rms(observations, allele);
+        DeletionFeatures { common, ref_one_hot, flank_baseq_rms }
     }
 }
 
@@ -201,6 +212,25 @@ fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) 
         for &q in &obs.insertion_base_quals {
             let qf = q.f();
             sq_sum += qf * qf;
+            count += 1;
+        }
+    }
+    if count > 0 { (sq_sum / count.f()).sqrt() } else { 0.0 }
+}
+
+fn flank_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f64 {
+    let mut sq_sum: f64 = 0.0;
+    let mut count: u32 = 0;
+    for obs in observations {
+        if &obs.allele != allele {
+            continue;
+        }
+        let anchor = obs.base_qual.f();
+        sq_sum += anchor * anchor;
+        count += 1;
+        if obs.post_del_base_qual > 0 {
+            let post = obs.post_del_base_qual.f();
+            sq_sum += post * post;
             count += 1;
         }
     }

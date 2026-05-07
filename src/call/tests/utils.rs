@@ -103,6 +103,7 @@ pub(crate) fn create_pileups(
                 indel_observations: Default::default(),
                 depth_offset: 0,
                 homopolymer_run: 0,
+                soft_clip_count: 0,
             }
         })
         .collect();

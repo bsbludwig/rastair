@@ -178,6 +178,7 @@ impl Pileup {
         let repeat_limit = params.indel_repeat_limit;
         let mut indel_observations = SmallVec::new();
         let mut depth_offset: u32 = 0;
+        let mut soft_clip_count: u32 = 0;
 
         for a in pile.alignments() {
             let record = a.record_view();
@@ -186,10 +187,13 @@ impl Pileup {
             let read_len = seq.len();
             let (matches, indels_in_read) = calc_cigar_data(record.raw_cigar());
 
+            if has_soft_clip(record.raw_cigar()) {
+                soft_clip_count += 1;
+            }
+
             match a.indel() {
                 Indel::None => {
-                    if has_soft_clip(record.raw_cigar())
-                        || has_repeat_seq(&seq, 1, repeat_limit)
+                    if has_repeat_seq(&seq, 1, repeat_limit)
                         || has_repeat_seq(&seq, 2, repeat_limit)
                     {
                         depth_offset += 1;
@@ -257,6 +261,11 @@ impl Pileup {
                         IndelAllele::Deletion(_) => SmallVec::new(),
                     };
 
+                    let post_del_base_qual = match &allele {
+                        IndelAllele::Deletion(_) => qual.get(qpos + 1).copied().unwrap_or(0),
+                        IndelAllele::Insertion(_) => 0,
+                    };
+
                     indel_observations.push(IndelObservation {
                         allele,
                         strand,
@@ -268,6 +277,7 @@ impl Pileup {
                         matching_bases: matches,
                         num_indels_in_read: indels_in_read,
                         insertion_base_quals,
+                        post_del_base_qual,
                     });
                 }
             }
@@ -282,6 +292,7 @@ impl Pileup {
             indel_observations,
             depth_offset,
             homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
+            soft_clip_count,
         })
     }
 }
