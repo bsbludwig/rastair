@@ -130,40 +130,6 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams, ml_enabled: bool)
         }
     }
 
-    let total_reads = indels.ref_count + indels.total_indel_reads();
-    let filtered_depth = total_reads.saturating_sub(indels.depth_offset);
-
-    if filtered_depth < params.min_indel_depth {
-        return calls;
-    }
-
-    for allele_counts in &indels.alleles {
-        let alt_count = allele_counts.total();
-        if alt_count < params.min_indel_ao {
-            trace!(
-                allele = ?allele_counts.allele,
-                alt_count,
-                min = params.min_indel_ao,
-                "Indel skipped: below min AO"
-            );
-            continue;
-        }
-
-        let genotype =
-            binomial_genotype(alt_count as usize, filtered_depth as usize, params.indel_error_rate)
-                .map(|g| g.tag)
-                .unwrap_or(GenotypeTag::hom_ref());
-
-        calls.push(IndelCall {
-            allele: allele_counts.allele.clone(),
-            genotype,
-            quality: Phred::from_phred(0),
-            ml: None,
-            depth: filtered_depth,
-            alt_count,
-        });
-    }
-
     calls
 }
 
