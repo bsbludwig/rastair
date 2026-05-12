@@ -34,10 +34,12 @@ use color_eyre::eyre::{Context as _, ContextCompat, Result, bail, ensure};
 use lz4::EncoderBuilder;
 use ndarray::{Array1, Array2, Axis};
 use rand::prelude::*;
-use rastair_types::{Base, Probability, RegionString, SmallVec};
+use rastair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
 use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
-use std::{collections::HashSet, num::NonZeroU64, path::PathBuf, thread::available_parallelism};
+use std::{
+    collections::HashSet, io::Write, num::NonZeroU64, path::PathBuf, thread::available_parallelism,
+};
 use tracing::{error, info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
@@ -53,6 +55,13 @@ pub struct TrainModelParams {
     #[arg(short = 'o', long = "output", default_value = "./models")]
     #[arg(help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::FilePath)]
     output: ClioPath,
+
+    /// Export collected features and labels as TSV files to this directory.
+    /// One file per model type: cpg_features.tsv, denovo_features.tsv,
+    /// other_features.tsv, insertion_features.tsv, deletion_features.tsv.
+    #[arg(long = "export-features")]
+    #[arg(help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::DirPath)]
+    export_features: Option<ClioPath>,
 
     #[command(flatten)]
     model_params: ModelParameters,
@@ -119,21 +128,24 @@ pub struct IndelKey {
 struct TrainingData {
     features: Vec<Array2<f64>>,
     labels: Vec<f64>,
+    positions: Vec<(SmolStr, u64)>,
 }
 
 impl TrainingData {
     fn new() -> Self {
-        Self { features: Vec::new(), labels: Vec::new() }
+        Self { features: Vec::new(), labels: Vec::new(), positions: Vec::new() }
     }
 
-    fn add_example(&mut self, features: Array2<f64>, label: f64) {
+    fn add_example(&mut self, features: Array2<f64>, label: f64, chrom: SmolStr, pos: u64) {
         self.features.push(features);
         self.labels.push(label);
+        self.positions.push((chrom, pos));
     }
 
     fn merge(&mut self, other: TrainingData) {
         self.features.extend(other.features);
         self.labels.extend(other.labels);
+        self.positions.extend(other.positions);
     }
 
     fn len(&self) -> usize {
@@ -316,6 +328,18 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     );
 
     let features = params.ml_features.get_calculator().feature_num();
+
+    if let Some(ref export_dir) = params.export_features {
+        std::fs::create_dir_all(export_dir.path()).wrap_err_with(|| {
+            format!("Failed to create export directory: {}", export_dir.display())
+        })?;
+        info!(dir = %export_dir.display(), "Exporting features as TSV");
+        export_features_tsv(&cpg_data, "cpg", features.cpg, export_dir.path())?;
+        export_features_tsv(&denovo_data, "denovo", features.denovo_cpg, export_dir.path())?;
+        export_features_tsv(&other_data, "other", features.others, export_dir.path())?;
+        export_features_tsv(&insertion_data, "insertion", features.insertion, export_dir.path())?;
+        export_features_tsv(&deletion_data, "deletion", features.deletion, export_dir.path())?;
+    }
 
     // Derive independent seeds for each model from the base seed
     let mut seed_rng = rand::rngs::StdRng::seed_from_u64(seed);
@@ -557,23 +581,24 @@ fn collect_training_data_from_segment(
                 let alt_metrics_for_ml = current.alt_metrics(alt_base);
 
                 if let Some(alt_m) = alt_metrics_for_ml {
+                    let chrom = chunk_region.contig.clone();
                     // Generate features based on position type
                     if alt_m.is_evidence_for_methylation() {
                         if let Ok(features) = calculator.calculate_cpg(&alt_m, before, after)
                             && !features.is_any_nan()
                         {
-                            cpg_data.add_example(features, label);
+                            cpg_data.add_example(features, label, chrom.clone(), pos);
                         }
                     } else if *alt.metrics.denovo {
                         if let Ok(features) = calculator.calculate_denovo_cpg(&alt_m, before, after)
                             && !features.is_any_nan()
                         {
-                            denovo_data.add_example(features, label);
+                            denovo_data.add_example(features, label, chrom.clone(), pos);
                         }
                     } else if let Ok(features) = calculator.calculate_others(&alt_m, before, after)
                         && !features.is_any_nan()
                     {
-                        other_data.add_example(features, label);
+                        other_data.add_example(features, label, chrom.clone(), pos);
                     }
                 }
             }
@@ -592,14 +617,24 @@ fn collect_training_data_from_segment(
                             if let Ok(features) = calculator.calculate_insertion(&indel_m)
                                 && !features.is_any_nan()
                             {
-                                insertion_data.add_example(features, label);
+                                insertion_data.add_example(
+                                    features,
+                                    label,
+                                    chunk_region.contig.clone(),
+                                    pos,
+                                );
                             }
                         }
                         IndelAllele::Deletion(_) => {
                             if let Ok(features) = calculator.calculate_deletion(&indel_m)
                                 && !features.is_any_nan()
                             {
-                                deletion_data.add_example(features, label);
+                                deletion_data.add_example(
+                                    features,
+                                    label,
+                                    chunk_region.contig.clone(),
+                                    pos,
+                                );
                             }
                         }
                     }
@@ -873,5 +908,44 @@ fn serialize_model(model: &RastairFlatModel, path: ClioPath) -> Result<()> {
     let (_output, result) = encoder.finish();
     result.wrap_err("Failed to finalize LZ4 compression")?;
 
+    Ok(())
+}
+
+#[instrument(level = "info", skip_all, fields(model=%model_name))]
+fn export_features_tsv(
+    data: &TrainingData,
+    model_name: &str,
+    num_features: usize,
+    dir: &std::path::Path,
+) -> Result<()> {
+    if data.is_empty() {
+        warn!("No examples to export — skipping TSV");
+        return Ok(());
+    }
+
+    let path = dir.join(format!("{model_name}_features.tsv"));
+    let file = std::fs::File::create(&path)
+        .wrap_err_with(|| format!("Failed to create {}", path.display()))?;
+    let mut writer = std::io::BufWriter::new(file);
+
+    write!(writer, "chrom\tpos\tlabel")?;
+    for i in 0..num_features {
+        write!(writer, "\tfeat_{i}")?;
+    }
+    writeln!(writer)?;
+
+    for ((chrom, pos), (features, &label)) in
+        data.positions.iter().zip(data.features.iter().zip(data.labels.iter()))
+    {
+        write!(writer, "{chrom}\t{pos}\t{label}")?;
+        let row = features.row(0);
+        for &v in row.iter() {
+            write!(writer, "\t{v}")?;
+        }
+        writeln!(writer)?;
+    }
+
+    writer.flush().wrap_err("Failed to flush TSV writer")?;
+    info!(examples = data.len(), path = %path.display(), "Exported features");
     Ok(())
 }
