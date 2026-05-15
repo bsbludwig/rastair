@@ -874,43 +874,88 @@ fn read_group_single_filter_reduces_records() -> Result<()> {
     Ok(())
 }
 
+/// Copy `tests/data/test.bam` into `output`, stamping each read with two extra Z tags:
+/// * `XX:Z:keep` on every read,
+/// * `YY:Z:lane<N>` derived from the suffix of the read's RG (e.g. `..._L001` → `lane1`),
+///   `YY:Z:unknown` when the RG does not match the expected pattern.
+///
+/// Also builds a BAI index next to the output BAM.
+fn write_bam_with_extra_tags(output: &std::path::Path) -> Result<()> {
+    use rust_htslib::bam::{self, Read as _, Record, record::Aux};
+
+    let mut reader = bam::Reader::from_path("tests/data/test.bam")?;
+    let header = bam::Header::from_template(reader.header());
+    let mut writer = bam::Writer::from_path(output, &header, bam::Format::Bam)?;
+
+    let mut record = Record::new();
+    while let Some(result) = reader.read(&mut record) {
+        result?;
+        let lane_value = match record.aux(b"RG") {
+            Ok(Aux::String(rg)) => rg
+                .rsplit_once('_')
+                .and_then(|(_, suffix)| suffix.strip_prefix('L'))
+                .and_then(|n| n.parse::<u32>().ok())
+                .map(|n| format!("lane{n}"))
+                .unwrap_or_else(|| "unknown".into()),
+            _ => "unknown".into(),
+        };
+        record.push_aux(b"XX", Aux::String("keep"))?;
+        record.push_aux(b"YY", Aux::String(&lane_value))?;
+        writer.write(&record)?;
+    }
+    drop(writer);
+
+    bam::index::build(output, None, bam::index::Type::Bai, 1)?;
+    Ok(())
+}
+
 #[test]
-fn read_group_multiple_space_separated_filters_give_intermediate_records() -> Result<()> {
+fn multiple_different_tags_must_all_match() -> Result<()> {
     apply_common_filters!();
 
     const REGION: &str = "--region=chr19:6103000-6110000";
 
     let temp_dir = TempDir::new()?;
-    let one_group = temp_dir.path().join("one_group.vcf");
-    let two_groups = temp_dir.path().join("two_groups.vcf");
-    let unfiltered = temp_dir.path().join("unfiltered.vcf");
+    let tagged_bam = temp_dir.path().join("tagged.bam");
+    write_bam_with_extra_tags(&tagged_bam)?;
 
-    rastair().args(CALL_TEST_BAM).args([REGION, NO_ML, "--vcf"]).arg(&unfiltered).succeeds()?;
+    let run_with = |filters: &[&str]| -> Result<usize> {
+        let vcf = temp_dir.path().join(format!("out_{}.vcf", filters.join("_")));
+        let mut cmd = rastair();
+        cmd.args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+            .arg(&tagged_bam)
+            .args([REGION, NO_ML, "--vcf"])
+            .arg(&vcf);
+        if !filters.is_empty() {
+            cmd.arg("--require-tags");
+            for f in filters {
+                cmd.arg(f);
+            }
+        }
+        cmd.succeeds()?;
+        Ok(vcf_content_lines(&std::fs::read_to_string(&vcf)?).count())
+    };
 
-    rastair()
-        .args(CALL_TEST_BAM)
-        .args([REGION, NO_ML, "--vcf"])
-        .arg(&one_group)
-        .arg("--require-tags=RG=mTet1-PyBr-16h-p1_S1_L001")
-        .succeeds()?;
+    let unfiltered = run_with(&[])?;
+    // Tag every read carries → identical to unfiltered.
+    let always_matches = run_with(&["XX=keep"])?;
+    // RG-derived tag, picks one lane.
+    let lane1_only = run_with(&["YY=lane1"])?;
+    // Two different tags, both satisfied → equivalent to YY=lane1 alone since XX=keep is universal.
+    let xx_and_lane1 = run_with(&["XX=keep", "YY=lane1"])?;
+    // One filter unsatisfiable → entire set rejected even though XX=keep matches everything.
+    let xx_and_missing = run_with(&["XX=keep", "YY=nonexistent"])?;
 
-    // Space-separated: pass both groups as a single --require-tags value list
-    rastair()
-        .args(CALL_TEST_BAM)
-        .args([REGION, NO_ML, "--vcf"])
-        .arg(&two_groups)
-        .arg("--require-tags")
-        .arg("RG=mTet1-PyBr-16h-p1_S1_L001")
-        .arg("RG=mTet1-PyBr-16h-p1_S1_L002")
-        .succeeds()?;
+    assert_eq!(always_matches, unfiltered, "XX=keep should not exclude any reads");
+    assert!(
+        lane1_only < unfiltered,
+        "YY=lane1 should be a strict subset ({lane1_only} vs {unfiltered})"
+    );
+    assert_eq!(xx_and_lane1, lane1_only, "combining with a universal tag must not change result");
+    assert_eq!(xx_and_missing, 0, "one unsatisfiable filter must reject everything");
 
-    let unfiltered_count = vcf_content_lines(&std::fs::read_to_string(&unfiltered)?).count();
-    let one_count = vcf_content_lines(&std::fs::read_to_string(&one_group)?).count();
-    let two_count = vcf_content_lines(&std::fs::read_to_string(&two_groups)?).count();
-
-    assert_snapshot!(unfiltered_count, @"192");
-    assert_snapshot!(one_count, @"180");
-    assert_snapshot!(two_count, @"185");
+    assert_snapshot!(unfiltered, @"192");
+    assert_snapshot!(lane1_only, @"180");
 
     Ok(())
 }

@@ -37,7 +37,8 @@ pub struct RequireTagsParams {
     /// Require reads to have a specific SAM tag value
     ///
     /// Format: TAG=VALUE, e.g. `--require-tags RG=mygroup`. Accepts one or more values
-    /// (space-separated). A read is kept if it matches any of the specified tag=value pairs.
+    /// (space-separated). A read is kept only if it matches all of the specified
+    /// tag=value pairs.
     #[arg(long, num_args(1..))]
     #[arg(help_heading = cli::sections::INPUT)]
     pub require_tags: Vec<TagValue>,
@@ -49,8 +50,8 @@ pub enum TagRequirement {
     /// No filter specified, so all reads pass.
     #[default]
     All,
-    /// Only reads matching at least one of these tag=value pairs pass.
-    AnyOf(Arc<[TagValue]>),
+    /// Only reads matching every one of these tag=value pairs pass.
+    AllOf(Arc<[TagValue]>),
 }
 
 impl RequireTagsParams {
@@ -58,7 +59,7 @@ impl RequireTagsParams {
         if self.require_tags.is_empty() {
             TagRequirement::All
         } else {
-            TagRequirement::AnyOf(self.require_tags.as_slice().into())
+            TagRequirement::AllOf(self.require_tags.as_slice().into())
         }
     }
 }
@@ -68,13 +69,13 @@ impl TagRequirement {
     pub fn allows(&self, record: &bam::RecordView<'_>) -> bool {
         match self {
             TagRequirement::All => true,
-            TagRequirement::AnyOf(filters) => {
+            TagRequirement::AllOf(filters) => {
                 let Some(aux) = record.raw_aux_data() else {
                     return false;
                 };
                 filters
                     .iter()
-                    .any(|f| find_tag(aux, f.tag).is_some_and(|v| v == f.value.as_bytes()))
+                    .all(|f| find_tag(aux, f.tag).is_some_and(|v| v == f.value.as_bytes()))
             }
         }
     }
@@ -148,8 +149,6 @@ mod tests {
 
     const L001: &str = "mTet1-PyBr-16h-p1_S1_L001";
     const L002: &str = "mTet1-PyBr-16h-p1_S1_L002";
-    const L003: &str = "mTet1-PyBr-16h-p1_S1_L003";
-    const L004: &str = "mTet1-PyBr-16h-p1_S1_L004";
 
     fn filter(tag_values: &[&str]) -> TagRequirement {
         RequireTagsParams { require_tags: tag_values.iter().map(|s| s.parse().unwrap()).collect() }
@@ -208,12 +207,31 @@ mod tests {
     }
 
     #[test]
-    fn multiple_tags_allows_all_members() -> Result<()> {
-        let f = filter(&[&format!("RG={L001}"), &format!("RG={L002}"), &format!("RG={L003}")]);
+    fn multiple_tags_require_all_members() -> Result<()> {
         let records = one_record_per_group()?;
-        for (rg, record) in &records {
-            let expected = rg != L004;
-            assert_eq!(f.allows(&view(record)), expected, "unexpected result for {rg}");
+        let (_, base) = records.iter().find(|(rg, _)| rg == L001).expect("L001 record");
+        let mut record = base.clone();
+        record.push_aux(b"XX", bam::record::Aux::String("foo"))?;
+        record.push_aux(b"YY", bam::record::Aux::String("bar"))?;
+
+        assert!(filter(&[&format!("RG={L001}"), "XX=foo", "YY=bar"]).allows(&view(&record)));
+
+        // One of several different tags mismatches → rejected.
+        assert!(!filter(&[&format!("RG={L001}"), "XX=foo", "YY=wrong"]).allows(&view(&record)));
+
+        // A required tag missing from the record → rejected.
+        assert!(!filter(&[&format!("RG={L001}"), "XX=foo", "ZZ=anything"]).allows(&view(&record)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn same_tag_with_multiple_values_is_unsatisfiable() -> Result<()> {
+        // A record's RG can equal only one value, so requiring two different RG
+        // values at once never matches.
+        let f = filter(&[&format!("RG={L001}"), &format!("RG={L002}")]);
+        for (rg, record) in one_record_per_group()? {
+            assert!(!f.allows(&view(&record)), "expected {rg} to be rejected");
         }
         Ok(())
     }
