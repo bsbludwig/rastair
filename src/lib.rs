@@ -51,6 +51,9 @@ pub(crate) mod utils {
     pub use sequence_context::SequenceContext;
 
     mod rayon;
+
+    pub mod regions;
+    pub use regions::CliRegionInput;
 }
 mod progress;
 pub(crate) mod sequence;

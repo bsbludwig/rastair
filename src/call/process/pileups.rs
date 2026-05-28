@@ -125,7 +125,7 @@ mod tests {
     fn test_reading_bounds() -> Result<()> {
         // check that we can read exactly the right positions
         let params = ReaderParams {
-            region: Some("chr19:6105700-6105800".parse().unwrap()),
+            regions: Some("chr19:6105700-6105800".parse().unwrap()),
             ..ReaderParams::test_data()
         };
         let mut readers = params.readers()?;

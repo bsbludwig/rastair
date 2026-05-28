@@ -28,7 +28,7 @@ pub use {
     base::Base,
     phred::Phred,
     probability::Probability,
-    region_string::RegionString,
+    region_string::{RegionString, RegionStringError},
     rms::{RmsAccumulator, RootMeanSquare, RootMeanSquareExt},
     strand::{Strand, StrandFromRecord, strand_from_flags},
 };

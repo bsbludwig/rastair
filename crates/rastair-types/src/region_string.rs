@@ -105,15 +105,20 @@ fn parser(input: &mut &str) -> winnow::Result<RegionString> {
         .parse_next(input)
 }
 
+/// Errors that can occur when parsing a [`RegionString`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RegionStringError {
+    /// The input string was empty.
     #[error("Empty region string")]
     EmptyInput,
+    /// The input contained non-ASCII characters.
     #[error("Invalid ASCII string")]
     InvalidAscii,
+    /// The region string is malformed.
     #[error("Invalid region string:\n{0}")]
     Malformed(String),
+    /// The start position is greater than the end position.
     #[error("Start position cannot be greater than end position")]
     StartGreaterThanEnd,
 }

@@ -19,7 +19,7 @@ fn call_default_bed() -> Result<()> {
         segments: crate::sequence::ReaderParams {
             bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
             fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
-            region: Some("chr19:6103000-6103100".parse()?),
+            regions: Some("chr19:6103000-6103100".parse().unwrap()),
         },
         record_filters: RecordFilters { vcf_all: false, cpgs_only: true },
         segmentation: default(),

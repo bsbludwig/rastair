@@ -9,7 +9,7 @@ use crate::{
         variant_calling::{ReadFlags, VariantCallingParams},
     },
     sequence::{ReaderParams, Readers, Segment},
-    utils::RegionString,
+    utils::{CliRegionInput, RegionString},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -23,7 +23,7 @@ impl ReaderParams {
         Self {
             bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
             fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
-            region: None,
+            regions: None,
         }
     }
 
@@ -33,7 +33,7 @@ impl ReaderParams {
             start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
             end: None,
         };
-        self.region = Some(region);
+        self.regions = Some(CliRegionInput::from_region(region));
         self
     }
 
@@ -41,7 +41,7 @@ impl ReaderParams {
         Self {
             bam_file: ClioPath::new(bam).unwrap(),
             fasta_file: ClioPath::new(fasta).unwrap(),
-            region: None,
+            regions: None,
         }
     }
 
@@ -51,7 +51,7 @@ impl ReaderParams {
             start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
             end: None,
         };
-        let params = Self { region: Some(region), ..self.clone() };
+        let params = Self { regions: Some(CliRegionInput::from_region(region)), ..self.clone() };
         let mut readers = params.readers().wrap_err("failed to fetch segments")?;
         let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
@@ -80,7 +80,7 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
     let p = ReaderParams {
         bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
         fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
-        region: Some(region),
+        regions: Some(CliRegionInput::from_region(region)),
     };
     p.readers().wrap_err("failed to fetch segments")
 }

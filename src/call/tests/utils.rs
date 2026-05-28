@@ -474,7 +474,7 @@ pub(crate) fn test_call(
         segments: crate::sequence::ReaderParams {
             bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
             fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
-            region: Some("chr_test".parse()?),
+            regions: Some("chr_test".parse().unwrap()),
         },
         record_filters: params,
         segmentation: default(),

@@ -3,7 +3,7 @@ use crate::{
         ChunkRegion, Region, SelectedRegion, chunked::ChunkedRegions, segementation::Segment,
     },
     utils::{
-        RegionString, cli,
+        CliRegionInput, RegionString, cli,
         file_helpers::{FastaReader, open_fasta},
     },
 };
@@ -31,12 +31,15 @@ pub struct ReaderParams {
     #[arg(help_heading = cli::sections::INPUT)]
     pub fasta_file: ClioPath,
 
-    /// Restrict to a specific chromosome or region of a chromosome. Format is
-    /// "chr", "chr:start" or "chr:start-end", where start is 1-based and end is
-    /// inclusive.
-    #[arg(short = 'l', long)]
+    /// Restrict processing to specific genomic regions.
+    ///
+    /// Accepts either space-separated region strings or a single BED file:
+    /// - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive)
+    /// - Multiple regions separated by whitespace: `"chr1 chr2:100-200"`
+    /// - BED files with `@` prefix: `@targets.bed`
+    #[arg(short = 'l', long, value_parser = clap::value_parser!(CliRegionInput))]
     #[arg(help_heading = cli::sections::INPUT)]
-    pub region: Option<RegionString>,
+    pub regions: Option<CliRegionInput>,
 }
 
 impl ReaderParams {
@@ -73,11 +76,15 @@ impl Readers {
         segment_max_length: u64,
         segment_overlap: u64,
     ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
-        let full_regions = if let Some(region) = &self.params.region {
-            vec![
-                get_selected_region(region, self.bam.header())
-                    .wrap_err("Failed to get selected region from BAM file")?,
-            ]
+        let full_regions = if let Some(input) = &self.params.regions {
+            input
+                .regions()
+                .iter()
+                .map(|r| {
+                    get_selected_region(r, self.bam.header())
+                        .wrap_err("Failed to get selected region from BAM file")
+                })
+                .collect::<Result<Vec<_>>>()?
         } else {
             debug!("fetching all regions");
             get_full_regions(self.bam.header())
@@ -210,7 +217,7 @@ mod tests {
     #[test]
     fn test_get_selected_region_variations() -> Result<()> {
         let params =
-            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), regions: None };
 
         let readers = params.readers()?;
         let header = readers.bam.header();
@@ -241,7 +248,7 @@ mod tests {
     #[test]
     fn test_get_selected_region_errors() -> Result<()> {
         let params =
-            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), regions: None };
 
         let readers = params.readers()?;
         let header = readers.bam.header();
@@ -273,7 +280,7 @@ mod tests {
     #[test]
     fn test_get_full_regions() -> Result<()> {
         let params =
-            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
+            ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), regions: None };
 
         let readers = params.readers()?;
         let header = readers.bam.header();

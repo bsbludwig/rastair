@@ -14,7 +14,7 @@ mod figure_out_outputs_tests {
             segments: crate::sequence::ReaderParams {
                 bam_file: ClioPath::new("tests/data/test.bam").unwrap(),
                 fasta_file: ClioPath::new("tests/data/test.fasta.gz").unwrap(),
-                region: None,
+                regions: None,
             },
             segmentation: default(),
             require_tags: default(),

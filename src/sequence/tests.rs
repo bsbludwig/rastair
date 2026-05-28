@@ -31,7 +31,7 @@ fn test_segment_reading() -> Result<()> {
     };
 
     let params =
-        ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
+        ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), regions: None };
 
     // Initialize readers
     let mut readers = params.readers()?;
@@ -50,7 +50,7 @@ fn test_calculate_segments() -> Result<()> {
     let params = ReaderParams {
         bam_file: get_test_bam(),
         fasta_file: get_test_fasta(),
-        region: Some("chr19:6105700-6105800".parse().unwrap()),
+        regions: Some("chr19:6105700-6105800".parse().unwrap()),
     };
 
     let readers = params.readers()?;
@@ -76,7 +76,7 @@ fn test_overlapping_segments() -> Result<()> {
     let params = ReaderParams {
         bam_file: get_test_bam(),
         fasta_file: get_test_fasta(),
-        region: Some("chr19:6105700-6105900".parse().unwrap()),
+        regions: Some("chr19:6105700-6105900".parse().unwrap()),
     };
 
     let mut readers = params.readers()?;
@@ -149,7 +149,7 @@ fn test_segment_to_fetch_definition() -> Result<()> {
 #[test]
 fn test_segment_error_handling() -> Result<()> {
     let params =
-        ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), region: None };
+        ReaderParams { bam_file: get_test_bam(), fasta_file: get_test_fasta(), regions: None };
 
     let mut readers = params.readers()?;
 
@@ -172,7 +172,7 @@ fn test_non_overlapping_segments() -> Result<()> {
     let params = ReaderParams {
         bam_file: get_test_bam(),
         fasta_file: get_test_fasta(),
-        region: Some("chr19:6105700-6105900".parse().unwrap()),
+        regions: Some("chr19:6105700-6105900".parse().unwrap()),
     };
 
     let readers = params.readers()?;
@@ -256,7 +256,7 @@ fn test_overlap_values_in_segments() -> Result<()> {
     let params = ReaderParams {
         bam_file: get_test_bam(),
         fasta_file: get_test_fasta(),
-        region: Some("chr19:6105700-6106000".parse().unwrap()),
+        regions: Some("chr19:6105700-6106000".parse().unwrap()),
     };
 
     let readers = params.readers()?;
@@ -297,7 +297,7 @@ fn test_overlap_values_small_region() -> Result<()> {
     let params = ReaderParams {
         bam_file: get_test_bam(),
         fasta_file: get_test_fasta(),
-        region: Some("chr19:6105700-6105850".parse().unwrap()),
+        regions: Some("chr19:6105700-6105850".parse().unwrap()),
     };
 
     let readers = params.readers()?;
@@ -338,7 +338,7 @@ fn test_overlap_at_boundaries() -> Result<()> {
     let params = ReaderParams {
         bam_file: get_test_bam(),
         fasta_file: get_test_fasta(),
-        region: Some("chr19:6105700-6105900".parse().unwrap()),
+        regions: Some("chr19:6105700-6105900".parse().unwrap()),
     };
 
     let readers = params.readers()?;

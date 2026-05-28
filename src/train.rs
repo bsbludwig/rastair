@@ -197,14 +197,21 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
             format!("Failed to create output directory: {}", params.output.display())
         })?;
 
-    // Load truth VCF and index variants
-    let region = params.reader.region.clone().unwrap_or_else(|| RegionString {
-        chromosome: "chr12".into(),
-        start: None,
-        end: None,
-    });
-    let (snp_variants, indel_variants) = load_truth_vcf(&params.truth, &region, params.threads)
-        .wrap_err("Failed to load truth VCF")?;
+    // Load truth VCF and index variants across all requested regions.
+    // If no regions are specified, default to the entire chr12 (common for training).
+    let regions =
+        params.reader.regions.as_ref().map(|input| input.regions().to_vec()).unwrap_or_else(|| {
+            vec![RegionString { chromosome: "chr12".into(), start: None, end: None }]
+        });
+
+    let mut snp_variants = HashSet::new();
+    let mut indel_variants = HashSet::new();
+    for region in &regions {
+        let (snps, indels) = load_truth_vcf(&params.truth, region, params.threads)
+            .wrap_err_with(|| format!("Failed to load truth VCF for region {region}"))?;
+        snp_variants.extend(snps);
+        indel_variants.extend(indels);
+    }
 
     // Get segments to process
     let segmentation = SegmentationParams::default();
