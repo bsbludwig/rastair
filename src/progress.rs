@@ -47,7 +47,7 @@ pub fn register_signal_handler() {
 // Require enough completed segments and elapsed time before the first
 // automatic ETA print, so the estimate is based on meaningful data.
 const MIN_CALIBRATION_SEGMENTS: usize = 50;
-const MIN_CALIBRATION_TIME: Duration = Duration::from_secs(5);
+const MIN_CALIBRATION_TIME: Duration = Duration::from_secs(30);
 
 /// Tracks segment completion in the writer thread and logs ETA estimates.
 pub struct ProgressTracker {
