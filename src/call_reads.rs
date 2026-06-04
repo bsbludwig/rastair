@@ -635,6 +635,83 @@ mod tests {
     }
 
     #[test]
+    fn guess_orientation_unmethylated_read_still_detects_cpgs() {
+        // No mismatches → zero TG/CA evidence → pseudo-random strand.
+        // With ref ACGACG, both OT and OB detect 2 CpGs (different positions),
+        // and with an unmethylated read (no C→T or G→A), all are unmod.
+        let segment = test_segment(b"ACGACG");
+        let record = test_record(b"unmethylated", FLAGS_F1R2_FIRST, 100, b"ACGACG");
+
+        let row =
+            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
+                .unwrap();
+
+        assert_eq!(row.cpg_count, 2);
+        assert_eq!(row.mod_count, 0);
+        assert_eq!(row.unmod_cpgs.len(), 2);
+        assert!(row.mod_cpgs.is_empty());
+        assert!(row.snp_cpgs.is_empty());
+    }
+
+    #[test]
+    fn guess_orientation_partially_methylated_ot_read() {
+        // ref ACGACG → two CpGs at read positions 1 and 4.
+        // Read ATGACG: first CpG C→T (methylated, gives TG evidence → OT),
+        // second CpG C→C (unmethylated).
+        let segment = test_segment(b"ACGACG");
+        let record = test_record(b"partial-ot", FLAGS_F1R2_FIRST, 100, b"ATGACG");
+
+        let row =
+            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
+                .unwrap();
+
+        assert_eq!(row.cpg_count, 2);
+        assert_eq!(row.mod_count, 1);
+        assert_eq!(row.mod_cpgs.as_slice(), &[1]);
+        assert_eq!(row.unmod_cpgs.as_slice(), &[4]);
+        assert!(row.snp_cpgs.is_empty());
+    }
+
+    #[test]
+    fn guess_orientation_partially_methylated_ob_read() {
+        // ref ACGACG → OB CpGs at read positions 2 and 5 (G preceded by C).
+        // Read ACAACG: second CpG G→A (methylated, gives CA evidence → OB),
+        // first CpG G→G (unmethylated).
+        let segment = test_segment(b"ACGACG");
+        let record = test_record(b"partial-ob", FLAGS_R1F2_FIRST, 100, b"ACAACG");
+
+        let row =
+            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
+                .unwrap();
+
+        assert_eq!(row.cpg_count, 2);
+        assert_eq!(row.mod_count, 1);
+        assert_eq!(row.mod_cpgs.as_slice(), &[2]);
+        assert_eq!(row.unmod_cpgs.as_slice(), &[5]);
+        assert!(row.snp_cpgs.is_empty());
+    }
+
+    #[test]
+    fn guess_orientation_multiple_cpgs_mixed_methylation() {
+        // ref ACGACGACG: 3 CpGs at OT read positions 1, 4, 7.
+        // Read ATGATGACG: first 2 CpGs methylated (C→T → TG evidence at pos 1 and 4),
+        // third CpG unmethylated (C→C). tg=2, ca=0 → OT strand.
+        let ref_seq = b"ACGACGACG";
+        let segment = test_segment(ref_seq);
+        let record = test_record(b"multi-cpg", FLAGS_F1R2_FIRST, 100, b"ATGATGACG");
+
+        let row =
+            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
+                .unwrap();
+
+        assert_eq!(row.cpg_count, 3);
+        assert_eq!(row.mod_count, 2);
+        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
+        assert_eq!(row.unmod_cpgs.as_slice(), &[7]);
+        assert!(row.snp_cpgs.is_empty());
+    }
+
+    #[test]
     fn orientation_single_end_uses_alignment_strand() {
         let mut record = Record::new();
 
