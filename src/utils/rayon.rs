@@ -29,6 +29,7 @@ macro_rules! rayon_all {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[allow(unused, reason = "just testing the macro")]
     fn call() {
         fn id(x: i32) -> i32 {
             x
