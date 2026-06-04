@@ -22,8 +22,8 @@ params:
   plot_vbias: TRUE
   plot_gc: TRUE
   is_WGBS: FALSE
+  plot_fp: FALSE
 ---
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -102,14 +102,13 @@ calculate_cutoff <- function(mbias_table) {
   return(data.frame(left=as.double(left_cutoff), right=as.double(right_cutoff)))
 }
 ```
-
 ```{r transform_data, include=FALSE}
 # if no bgz given, but a bam file is provided, generate bed file on the fly
 if ((is.na(params$input_bgz) || is.null(params$input_bgz) || nchar(params$input_bgz)==0 || !file.exists(params$input_bgz)) && !is.na(params$input_bam) && !is.null(params$input_bam) && nchar(params$input_bam)>0 && file.exists(params$input_bam)) {
   if (is.na(params$reference) || is.null(params$reference) || nchar(params$reference)==0 || !file.exists(params$reference)) {
     stop("Cannot run from bam file without a reference")
   }
-  
+
   if (!is.na(params$region) && nchar(params$region) > 0) {
     command=paste(params$rastair, "per-read --bed - -r", params$reference, "-l", params$region, "-f", params$include_flags, "-F", params$exclude_flags, "-@", params$threads, params$input_bam)
   } else {
@@ -120,7 +119,7 @@ if ((is.na(params$input_bgz) || is.null(params$input_bgz) || nchar(params$input_
     command=paste(params$tabix, "-h", params$input_bgz, params$region)
   } else {
     command=paste("zcat", params$input_bgz)
-  } 
+  }
 }  else {
   stop("Neither per-read bgz nor bam file given, cannot proceed")
 }
@@ -164,11 +163,13 @@ mbias_table <- data[, .(
 )]
 
 # Flip the OB reads so that mbias is always reported 5' -> 3'
-mbias_table[strand=="OT" & read_pair == "Second" | strand=="OB" & read_pair == "First", pos := read_len-pos]
+mbias_table[(strand=="OT" & read_pair == "Second") | (strand=="OB" & read_pair == "First"), pos := read_len-pos]
 mbias_table <- mbias_table[, .(beta=mod/(mod+unmod), lower_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[1], 0.0), upper_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[2], 0.0)), by=.(chr, pos, read_pair, strand)]
 mbias_table <- mbias_table[!is.na(beta)]
 setkey(mbias_table, chr, pos)
 ```
+
+
 
 ## M-bias plots
 
@@ -216,12 +217,12 @@ if (params$plot_vbias) {
     library(Biostrings)
     library(ggside)
   })
-  
+
   # List all CpGs in the reference sequence for a particular region
   cpg_table_from_fasta <- function(region,
                                    fasta,
                                    build_index_if_missing = FALSE) {
-    
+
     elements <- unlist(strsplit(region, "[:\\-]"))
     if (length(elements == 1)) {
       chr = elements[1]
@@ -237,11 +238,11 @@ if (params$plot_vbias) {
     # region format: "chr1:2000-10000" (1-based, inclusive)
     if (!is.null(end_pos) && start_pos > end_pos) stop("start must be <= end")
     if (!file.exists(fasta)) stop("FASTA file not found: ", fasta)
-  
+
     fai <- paste0(fasta, ".fai")
     is_bgzip <- grepl("\\.(fa|fasta)\\.(gz|bgz)$", fasta, ignore.case = TRUE)
     gzi <- paste0(fasta, ".gzi")
-  
+
     if (!file.exists(fai) || (is_bgzip && !file.exists(gzi))) {
       if (!build_index_if_missing) {
         stop("Missing FASTA index. Need ", fai,
@@ -250,7 +251,7 @@ if (params$plot_vbias) {
       }
       indexFa(fasta)
     }
-  
+
     # Handle chr naming differences (e.g., chr1 vs 1)
     idx <- scanFaIndex(fasta)
     seq_levels <- as.character(seqnames(idx))
@@ -262,19 +263,19 @@ if (params$plot_vbias) {
         stop("Chromosome '", chr, "' not found in FASTA index.")
       }
     }
-    
+
     if (is.null(end_pos)) {
       end_pos = seqlengths(idx)[chr]
     }
-    
+
     param <- GRanges(chr, IRanges::IRanges(start_pos, end_pos))
     dna <- scanFa(fasta, param = param)[[1]]
-  
+
     cg_rel <- start(matchPattern("CG", dna, fixed = TRUE))
     if (length(cg_rel) == 0L) {
       return(data.table(chr = character(), pos = integer(), base = character(), cpg_id = integer()))
     }
-  
+
     c_pos <- start_pos + cg_rel - 1L
     out <- data.table(
       chr = chr,
@@ -282,12 +283,12 @@ if (params$plot_vbias) {
       base = rep(c("C", "G"), times = length(c_pos)),
       cpg_id = rep(seq_along(c_pos), each = 2L)
     )
-  
+
     out[, chr := as.factor(chr)]
     out[, base := as.factor(base)]
     return(out)
   }
-  
+
   # For a subset of observations of read orientation on one strand,
   # calculate the suggested cutoff points
   calculate_cutoff <- function(mbias_table) {
@@ -303,7 +304,7 @@ if (params$plot_vbias) {
     mean_middle <- mean(mbias_table[lower_lim:upper_lim,]$beta)
     upper_ci_max <- max(mbias_table[lower_lim:upper_lim,]$upper_ci)
     lower_ci_min <- min(mbias_table[lower_lim:upper_lim,]$lower_ci)
-  
+
     # Search from the inside out for the first point left/right that is
     # either outside the 95% CI bounds of the middle, or the mean of the
     # middle is outside the CI of the point, or it's more than 0.05 away
@@ -312,19 +313,19 @@ if (params$plot_vbias) {
       if (is.na(mean_middle) || is.null(mean_middle) || is.na(row$beta) || is.null(row$beta) || is.na(lower_ci_min) || is.null(lower_ci_min) || is.na(upper_ci_max) || is.null(upper_ci_max)) {
         return(FALSE)
       }
-  
+
       if (!row$beta %between% c(lower_ci_min, upper_ci_max)
           && abs(row$beta - mean_middle) > 0.05
           && !mean_middle %between% c(row$lower_ci, row$upper_ci)) {
         return(TRUE)
       }
-  
+
       return(FALSE)
     }
-  
+
     left_cutoff = 0
     right_cutoff = 0
-  
+
     middle = ceiling(n_obs/2)
     for (pos in middle:1) {
       if (check_match(mbias_table[pos,], mean_middle, lower_ci_min, upper_ci_max)) {
@@ -340,46 +341,45 @@ if (params$plot_vbias) {
     }
     return(data.frame(left=as.double(left_cutoff), right=as.double(right_cutoff)))
   }
-  
+
   if (is.na(params$reference) || nchar(params$reference)==0 || !file.exists(params$reference)) {
     stop("V-Bias plot required a reference fasta file")
   }
-  
+
   cpgsInRegion <- lapply(unique(data$chr), function(chrom) {
     res <- cpg_table_from_fasta(region = as.character(chrom), fasta = params$reference)
   })
   cpgsInRegion <- rbindlist(cpgsInRegion)
   cpgsInRegion[, end:=pos]
   setkey(cpgsInRegion, chr, pos, end)
-  
+
   readPositions <- data[, .N, by=.(chr, start, end, orientation)]
   readPositions[, N:=NULL]
   setkey(readPositions, chr, start, end)
   cpgsPerRead <- foverlaps(cpgsInRegion, readPositions, nomatch=NULL)
   cpgsPerRead <- cpgsPerRead[, .N, by=.(chr, start, end, orientation, cpg_id)][, .(ordinal = order(cpg_id), cpg_id), by=.(chr, start, end, orientation)]
-  
+
   rm(readPositions)
-  
+
   # annotate with ordinals for all reads per sample, too
   vdata <- data
   vdata[, ordinal := order(pos_in_read), by=.(read_id, chr, start, end, orientation)]
-  
+
   setkey(vdata, chr, start, end, orientation, ordinal)
   setkey(cpgsPerRead, chr, start, end, orientation, ordinal)
   vdata <- vdata[cpgsPerRead[, .(chr, start, end, orientation, ordinal, cpg_id)], nomatch=NULL]
   rm(cpgsInRegion, cpgsPerRead)
-  
+
   # merge reads into fragments
   vdata <- vdata[, .(start=min(start), end=max(end), pos_in_fragment=min(start+pos_in_read), type=fifelse(any(type=="S"), "S", fifelse(all(type %in% c("U","u")), "U", "M"))), by=.(chr, read_id, cpg_id, insert_size, Orientation=fifelse(bitwAnd(flag, 96)==96 | bitwAnd(flag, 144)==144, "OT", "OB"))]
   vdata[Orientation=="OT", pos_in_fragment := pos_in_fragment - min(start), by=.(chr, read_id)]
   vdata[Orientation=="OB", pos_in_fragment := max(end)-pos_in_fragment, by=.(chr, read_id)]
 }
 ```
-
 ```{r plot_vbias, echo=FALSE, fig.height=4, fig.width=7, warning=FALSE}
 if (params$plot_vbias) {
   for (chrom in unique(vdata$chr)) {
-  
+
     # main aggregated data (your tiles)
     vdata_plot <- vdata[
       chr == chrom & pos_in_fragment < insert_size,
@@ -389,20 +389,20 @@ if (params$plot_vbias) {
              `Insert size` = insert_size,
              Orientation)
     ]
-  
+
     # collapse to counts per Insert size per Orientation (this is what you want plotted)
     side_counts <- vdata_plot[
       , .(obs = sum(observations)),
       by = .(`Insert size`, Orientation)
     ]
     side_counts[, obs_pdf:=obs/sum(obs), by=.(Orientation)]
-    
+
     y_max <- as.numeric(quantile(vdata_plot[["Insert size"]], 0.99,  na.rm = TRUE))
     x_max <- as.numeric(quantile(vdata_plot[["Pos in fragment"]], 0.99, na.rm = TRUE))
-  
+
     p <- ggplot(vdata_plot, aes(x = `Pos in fragment`, y = `Insert size`, fill = beta)) +
       geom_tile() +
-  
+
       # left side panel: counts vs Insert size (one per facet via Orientation)
       geom_ysidebar(
         data = side_counts,
@@ -412,34 +412,35 @@ if (params$plot_vbias) {
         orientation = "y"
       ) +
       ggside(y.pos = "left") +
-      
+
       scale_ysidex_reverse() +
-      
+
       scale_fill_gradient2(low = "black", mid = "orange", high = "purple", midpoint = 0.5) +
       scale_y_continuous(limits = c(0, 600), expand = c(0, 0)) +
       scale_x_continuous(limits = c(0, 600), expand = c(0, 0)) +
-  
+
       ggtitle(chrom) +
       facet_wrap(vars(Orientation)) +
-  
+
       theme_minimal() +
       theme(
         panel.grid = element_blank(),
         #axis.title.y = element_blank(),
-  
+
         # make the side panel look like an annotation
         ggside.panel.grid = element_blank(),
         ggside.axis.title.x = element_blank(),
         ggside.axis.text.x  = element_blank(),  # removes the side-panel x tick labels
         ggside.axis.ticks.x = element_blank()   # (optional) removes the tick marks too
       )
-  
+
     print(p)
   }
   rm(vdata, data)
   invisible({gc()})
 }
 ```
+
 
 ## CpG/GC bias
 
@@ -449,7 +450,7 @@ if (params$plot_gc) {
     library(Rsamtools)
     library(Biostrings)
   })
-  
+
   if ((is.na(params$input_vcf) || is.null(params$input_vcf) || !file.exists(params$input_vcf)) && !is.na(params$input_bam) && !is.null(params$input_bam) && file.exists(params$input_bam)) {
     if (!is.na(params$region) && nchar(params$region) > 0) {
       command <- paste(params$rastair,
@@ -471,55 +472,55 @@ if (params$plot_gc) {
     }
   } else if (!is.na(params$input_vcf) && !is.null(params$input_vcf) && file.exists(params$input_vcf)) {
     if (!is.na(params$region) && nchar(params$region) > 0) {
-      command <- paste(params$bcftools, 
-        "view", params$input_vcf, 
+      command <- paste(params$bcftools,
+        "view", params$input_vcf,
         params$region,
         "|", params$bcftools, "norm -m-any",
   		  "|", params$bcftools, "query -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%CPGnovo[\\t%TGT\\t%DP\\t%M5mC]\\n\"")
     } else {
-      command <- paste(params$bcftools, 
+      command <- paste(params$bcftools,
         "norm -m-any", params$input_vcf,
   		  "|", params$bcftools, "query -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%CPGnovo[\\t%TGT\\t%DP\\t%M5mC]\\n\"")
     }
   } else {
     stop("Need either vcf or bam file to create gc bias plot")
   }
-  
+
 	all_calls <- fread(cmd=command,
 		stringsAsFactors=FALSE,
-		header=FALSE)
+		header=FALSE, dec=".")
 	setnames(all_calls, c("chr", "pos", "ref", "alt", "isDN", "genotype", "depth", "beta"))
 	all_calls[grepl(",", beta, fixed=TRUE), beta := tstrsplit(beta, ",", fixed=TRUE)[[1]]]
 	all_calls[, beta := as.numeric(beta)]
 	all_calls[, `:=`(chr = as.factor(chr), ref=as.factor(ref), alt=as.factor(alt), genotype=as.factor(genotype))]
-	
+
 	if (!is.null(params$is_WGBS) && params$is_WGBS == TRUE) {
     all_calls[, beta := 1-beta]
   }
 	site_windows <- all_calls[, .N, by=.(chr = as.character(chr), pos = as.integer(pos))]
   site_windows <- site_windows[order(chr, pos)]
-  
+
   fa <- FaFile(params$reference)
   open(fa)
   on.exit(close(fa), add = TRUE)
-  
+
   chrom_lengths <- seqlengths(fa)
   missing_chroms <- setdiff(unique(site_windows$chr), names(chrom_lengths))
   if (length(missing_chroms) > 0) {
     stop("Chromosome(s) missing from reference FASTA: ", paste(missing_chroms, collapse = ", "))
   }
-  
+
   site_windows[, window_start := pmax(1L, pos - 50L)]
   site_windows[, window_end := pmin(as.integer(chrom_lengths[chr]), pos + 50L)]
-  
+
   gr <- GenomicRanges::GRanges(
     seqnames = site_windows$chr,
     ranges = IRanges::IRanges(start = site_windows$window_start, end = site_windows$window_end)
   )
-  
+
   seqs <- scanFa(fa, param = gr)
   base_counts <- alphabetFrequency(seqs, baseOnly = TRUE)[, c("A", "C", "G", "T"), drop = FALSE]
-  
+
   site_windows[, gc_count := base_counts[, "G"] + base_counts[, "C"]]
   site_windows[, at_count := base_counts[, "A"] + base_counts[, "T"]]
   site_windows[, cpg_count := as.integer(vcountPattern("CG", seqs, fixed = TRUE))]
@@ -579,5 +580,64 @@ if (params$plot_gc) {
     ylab("Depth") +
     ylim(0, quantile(depth_by_cpg$depth, 0.99)) +
     theme_classic()
+}
+```
+
+`r if (!is.null(params$plot_fp) && params$plot_fp==TRUE) { "## Likely false positive rate\nRastair will call genetic variation, including variants that result in a \"de-novo\" CpG. These explain the vast majority of what is often referred to as CHG or CHH methylation in animal genomes.\n In contrast, C>T variants in genuine non-CpG contexts are likely a mixture of alignment and sequencing errors and off-target effects of the conversion method. To estimate the rate of this, we here plot the allele-frequency and strand bias of C>T (or G>A) variants in non-CpG positions that are _not_ called as variants:\n"}`
+
+
+```{r false_positives, echo=FALSE, warning=FALSE}
+if (!is.null(params$plot_fp) && params$plot_fp==TRUE) {
+  if ((is.na(params$input_vcf) || is.null(params$input_vcf) || !file.exists(params$input_vcf)) && !is.na(params$input_bam) && !is.null(params$input_bam) && file.exists(params$input_bam)) {
+    if (!is.na(params$region) && nchar(params$region) > 0) {
+      command <- paste(params$rastair,
+    		"call -@", params$threads,
+    		"-l", params$region,
+    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all --m-vaf-min 0",
+    		"-r", params$reference,
+    		params$input_bam)
+    } else {
+      command <- paste(params$rastair,
+    		"call -@", params$threads,
+    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all -m-vaf-min 0",
+    		"-r", params$reference,
+    		params$input_bam)
+    }
+  } else if (!is.na(params$input_vcf) && !is.null(params$input_vcf) && file.exists(params$input_vcf)) {
+    if (!is.na(params$region) && nchar(params$region) > 0) {
+      command <- paste(params$bcftools,
+        "view", params$input_vcf,
+        params$region)
+    } else {
+      command <- paste(params$bcftools, "view", params$input_vcf)
+    }
+  } else {
+    stop("Need either vcf or bam file to create gc bias plot")
+  }
+  command <- paste(command, "|", params$bcftools, "norm -m-any",
+    		"|", params$bcftools, "query -i \"FILTER!='PASS' && CPG != 1 && CPGnovo != 1 && (REF=='C' || REF=='G')\" -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%AS_SB_OT\\t%AS_SB_OB\\t%AF\\t%SC5[\\t%TGT\\t%DP]\\n\"")
+
+  all_calls <- fread(cmd=command,
+		stringsAsFactors=FALSE,
+		header=FALSE, dec=".")
+	setnames(all_calls, c("chr", "pos", "ref", "alt", "sb_ot", "sb_ob", "allele_freq", "context", "genotype", "depth"))
+	all_calls[, sb_ot_ref := tstrsplit(sb_ot, ",", fixed=TRUE)[[1]]]
+	all_calls[, sb_ot_alt := tstrsplit(sb_ot, ",", fixed=TRUE)[[2]]]
+	all_calls[, sb_ob_ref := tstrsplit(sb_ob, ",", fixed=TRUE)[[1]]]
+	all_calls[, sb_ob_alt := tstrsplit(sb_ob, ",", fixed=TRUE)[[2]]]
+	all_calls[, sb_ot := NULL]
+	all_calls[, sb_ob := NULL]
+	all_calls[, `:=`(chr = as.factor(chr), ref=as.factor(ref), alt=as.factor(alt), genotype=as.factor(genotype))]
+
+}
+```
+```{r echo=FALSE, fig.height=4, fig.width=8, warning=FALSE}
+if (!is.null(params$plot_fp) && params$plot_fp==TRUE) {
+  ggplot(all_calls[, .(ref, alt, variant=paste0(substr(context, 2,4), ">", alt))], aes(x=variant, fill=ifelse(ref == "C" & alt == "T", "C>T", ifelse(ref=="G" & alt=="A", "G>A", "Other")))) +
+    geom_bar() +
+    scale_fill_brewer(name="", palette = "Set1") +
+    xlab("") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 }
 ```

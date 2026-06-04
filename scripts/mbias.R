@@ -19,68 +19,72 @@ get_script_dir <- function(command_line_args) {
 parser <- arg_parser("Render RMarkdown document with genomic analysis parameters")
 
 # Add optional arguments
-parser <- add_argument(parser, "--bed", 
+parser <- add_argument(parser, "--bed",
                        help = "Input per-read bed.gz file (must be tabix indexed)")
 
-parser <- add_argument(parser, "--vcf", 
+parser <- add_argument(parser, "--vcf",
                        help = "Input vcf file (for cpg/gc bias plots)")
 
-parser <- add_argument(parser, "--bam", 
+parser <- add_argument(parser, "--bam",
                        help = "Input bam file (slower: will run rastair on the bam file to derive other data)")
 
-parser <- add_argument(parser, "--no-vbias", 
+parser <- add_argument(parser, "--no-vbias",
                        help = "Do not generate vbias (faster)",
                        flag=TRUE)
 
-parser <- add_argument(parser, "--no-gc", 
+parser <- add_argument(parser, "--no-gc",
                        help = "Do not generate gc/cpg bias plots",
                        flag=TRUE)
 
-parser <- add_argument(parser, "--reference", 
+parser <- add_argument(parser, "--reference",
                        help = "Reference fasta sequence, fai indexed (required for vbias and gc plots)",
                        default = NULL)
 
-parser <- add_argument(parser, "--region", 
+parser <- add_argument(parser, "--region",
                        help = "Genomic region (optional)",
                        default = NULL)
 
-parser <- add_argument(parser, "--include-flag", 
+parser <- add_argument(parser, "--include-flag",
                        help = "Include bitflag as integer (optional)",
                        type = "integer",
                        default = 3)
 
-parser <- add_argument(parser, "--exclude-flag", 
-                       help = "Exclude bitflag as integer (optional)", 
+parser <- add_argument(parser, "--exclude-flag",
+                       help = "Exclude bitflag as integer (optional)",
                        type = "integer",
                        default = 3852)
 
-parser <- add_argument(parser, "--read-length", 
+parser <- add_argument(parser, "--read-length",
                        help = "Read length as integer (optional)",
-                       type = "integer", 
+                       type = "integer",
                        default = NULL)
 
-parser <- add_argument(parser, "--tabix-path", 
+parser <- add_argument(parser, "--tabix-path",
                        help = "Path to tabix executable (optional)",
                        default = "tabix")
 
-parser <- add_argument(parser, "--bcftools-path", 
+parser <- add_argument(parser, "--bcftools-path",
                        help = "Path to bedtools executable (optional)",
                        default = "bcftools")
 
-parser <- add_argument(parser, "--rastair-path", 
+parser <- add_argument(parser, "--rastair-path",
                        help = "Path to rastair executable (optional)",
                        default = "rastair")
 
-parser <- add_argument(parser, "--output-prefix", 
+parser <- add_argument(parser, "--output-prefix",
                        help = "Output path prefix (optional)",
                        default = ".")
 
-parser <- add_argument(parser, "--threads", 
+parser <- add_argument(parser, "--threads",
                        help = "Number of threads to use (only relevant when using bam input)",
                        default = 1)
 
-parser <- add_argument(parser, "--wgbs", 
+parser <- add_argument(parser, "--wgbs",
                        help = "Treat the input as inverted, ie mod=unmod and unmod=mod",
+                       flag = TRUE)
+
+parser <- add_argument(parser, "--plot-fp",
+                       help = "Plot frequency of potential off-target effects",
                        flag = TRUE)
 
 # Parse arguments
@@ -109,7 +113,8 @@ params_list <- list(
   plot_gc = is.null(args$no_gc)||args$no_gc==FALSE,
   input_bgz = ifelse(is.na(args$bed)||is.null(args$bed), "", normalizePath(args$bed)),
   input_vcf = ifelse(is.na(args$vcf)||is.null(args$vcf), "", normalizePath(args$vcf)),
-  input_bam = ifelse(is.na(args$bam)||is.null(args$bam), "", normalizePath(args$bam))
+  input_bam = ifelse(is.na(args$bam)||is.null(args$bam), "", normalizePath(args$bam)),
+  plot_fp = !is.na(args$plot_fp)
 )
 
 script_dir = get_script_dir(commandArgs())
@@ -138,9 +143,9 @@ tryCatch({
     clean = TRUE,
     quiet = FALSE
   )
-  
+
   cat("Report successfully generated:", output_file, "\n")
-  
+
 }, error = function(e) {
   cat("Error rendering RMarkdown document:\n")
   cat(conditionMessage(e), "\n")
