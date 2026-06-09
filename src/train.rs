@@ -38,7 +38,12 @@ use rastair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
 use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
 use std::{
-    collections::HashSet, io::Write, num::NonZeroU64, path::PathBuf, thread::available_parallelism,
+    collections::HashSet,
+    fs::File,
+    io::{BufWriter, Write},
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+    thread::available_parallelism,
 };
 use tracing::{error, info, instrument, trace, warn};
 
@@ -57,11 +62,14 @@ pub struct TrainModelParams {
     output: ClioPath,
 
     /// Export collected features and labels as TSV files to this directory.
-    /// One file per model type: cpg_features.tsv, denovo_features.tsv,
-    /// other_features.tsv, insertion_features.tsv, deletion_features.tsv.
-    #[arg(long = "export-features")]
-    #[arg(help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::DirPath)]
+    /// One file per model type: `cpg_features.tsv`, `denovo_features.tsv`,
+    /// `other_features.tsv`, `insertion_features.tsv`, `deletion_features.tsv`.
+    #[arg(long, help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::DirPath)]
     export_features: Option<ClioPath>,
+
+    /// Export features importances as TSV files to this directory.
+    #[arg(long, help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::DirPath)]
+    feature_analytics: Option<ClioPath>,
 
     #[command(flatten)]
     model_params: ModelParameters,
@@ -382,15 +390,45 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     );
 
     let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
+    if let Some(path) = params.feature_analytics.as_ref() {
+        export_feature_importances(&cpg, &path.path().join("cpg_feature_importances.csv"))
+            .wrap_err("Failed to export CpG feature importances")?;
+    }
     let cpg = FlatForest::from_forest(&cpg, features.cpg);
+
     let (denovo, denovo_platt) = denovo_result.wrap_err("Failed to train de-novo CpG model")?;
+    if let Some(path) = params.feature_analytics.as_ref() {
+        export_feature_importances(&denovo, &path.path().join("denovo_feature_importances.csv"))
+            .wrap_err("Failed to export de-novo CpG feature importances")?;
+    }
     let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
+
     let (others, others_platt) = others_result.wrap_err("Failed to train other model")?;
+    if let Some(path) = params.feature_analytics.as_ref() {
+        export_feature_importances(&others, &path.path().join("other_feature_importances.csv"))
+            .wrap_err("Failed to export other feature importances")?;
+    }
     let others = FlatForest::from_forest(&others, features.others);
+
     let (insertion, insertion_platt) =
         insertion_result.wrap_err("Failed to train insertion model")?;
+    if let Some(path) = params.feature_analytics.as_ref() {
+        export_feature_importances(
+            &insertion,
+            &path.path().join("insertion_feature_importances.csv"),
+        )
+        .wrap_err("Failed to export insertion feature importances")?;
+    }
     let insertion = FlatForest::from_forest(&insertion, features.insertion);
+
     let (deletion, deletion_platt) = deletion_result.wrap_err("Failed to train deletion model")?;
+    if let Some(path) = params.feature_analytics.as_ref() {
+        export_feature_importances(
+            &deletion,
+            &path.path().join("deletion_feature_importances.csv"),
+        )
+        .wrap_err("Failed to export deletion feature importances")?;
+    }
     let deletion = FlatForest::from_forest(&deletion, features.deletion);
 
     #[derive(Debug, serde::Serialize)]
@@ -961,9 +999,9 @@ fn export_features_tsv(
     }
 
     let path = dir.join(format!("{model_name}_features.tsv"));
-    let file = std::fs::File::create(&path)
-        .wrap_err_with(|| format!("Failed to create {}", path.display()))?;
-    let mut writer = std::io::BufWriter::new(file);
+    let file =
+        File::create(&path).wrap_err_with(|| format!("Failed to create {}", path.display()))?;
+    let mut writer = BufWriter::new(file);
 
     write!(writer, "chrom\tpos\tlabel")?;
     for i in 0..num_features {
@@ -984,5 +1022,22 @@ fn export_features_tsv(
 
     writer.flush().wrap_err("Failed to flush TSV writer")?;
     info!(examples = data.len(), path = %path.display(), "Exported features");
+    Ok(())
+}
+
+fn export_feature_importances(model: &RandomForest, path: &Path) -> Result<()> {
+    let file = File::create(path).wrap_err_with(|| {
+        format!("Failed to create feature importance file: {}", path.display())
+    })?;
+    let mut writer = BufWriter::new(file);
+    writeln!(writer, "feature\timportance")
+        .wrap_err("Failed to write feature importance header")?;
+    for (importance, idx) in model.feature_importances().iter().zip(0..) {
+        writeln!(writer, "{idx}\t{importance}")
+            .wrap_err("Failed to write feature importance row")?;
+    }
+
+    info!(path = %path.display(), "Exported feature importances");
+
     Ok(())
 }

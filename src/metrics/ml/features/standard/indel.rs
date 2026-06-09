@@ -71,7 +71,7 @@ pub struct DeletionFeatures {
     ref_one_hot: [f64; 4],
     /// RMS base quality of the first base after the deletion across all reads
     /// supporting this allele. Low quality suggests the deletion boundary is
-    /// uncertain. (The anchor base quality is already in CommonIndelFeatures.)
+    /// uncertain. (The anchor base quality is already in [`CommonIndelFeatures`].)
     post_del_baseq_rms: f64,
 }
 

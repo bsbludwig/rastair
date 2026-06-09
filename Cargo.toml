@@ -58,7 +58,7 @@ noodles-bgzf = { version = "0.46.0", features = ["libdeflate"] }
 rust-htslib = { workspace = true }
 
 # ml
-biosphere = { git = "https://github.com/Softleif/biosphere", version = "0.5.0", features = [
+biosphere = { git = "https://github.com/Softleif/biosphere", branch = "feature-importances", version = "0.5.0", features = [
     "serde",
     "gpu",
 ] }

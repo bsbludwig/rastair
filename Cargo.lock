@@ -196,7 +196,7 @@ dependencies = [
 [[package]]
 name = "biosphere"
 version = "0.5.0"
-source = "git+https://github.com/Softleif/biosphere#7fcd34bac6a9d066d9b7ab2d858708ea50176236"
+source = "git+https://github.com/Softleif/biosphere?branch=feature-importances#ab6cea3d0a292e18e6a5c2175fd3c4e37bc27bd8"
 dependencies = [
  "bytemuck",
  "ndarray",
