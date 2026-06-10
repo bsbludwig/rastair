@@ -1,4 +1,5 @@
 use super::{
+    INDEL_REF_WINDOW_DOWN, INDEL_REF_WINDOW_LEN, INDEL_REF_WINDOW_UP,
     indels::{IndelAllele, IndelObservation},
     overlapping_reads::{NameCollector, resolve_pair},
 };
@@ -286,6 +287,14 @@ impl Pileup {
             }
         }
 
+        // The reference window is only needed for indel slippage features, so
+        // skip the allocation at the (vast majority of) positions without indels.
+        let (indel_ref_window, indel_ref_anchor) = if indel_observations.is_empty() {
+            (SmallVec::new(), 0)
+        } else {
+            indel_ref_window_at(idx, &segment)
+        };
+
         Ok(Pileup {
             region: segment.range.clone(),
             context,
@@ -297,6 +306,8 @@ impl Pileup {
             homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
             dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
             soft_clip_count,
+            indel_ref_window,
+            indel_ref_anchor,
         })
     }
 }
@@ -482,6 +493,20 @@ fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
 /// Check if a CIGAR array contains a soft-clip operation (op 4).
 fn has_soft_clip(cigar: &[u32]) -> bool {
     cigar.iter().any(|&c| c & 0xF == 4)
+}
+
+/// Reference bases around the anchor at segment index `idx`, plus the anchor's
+/// index within the returned window. Clamped at segment boundaries.
+fn indel_ref_window_at(
+    idx: usize,
+    segment: &Segment,
+) -> (SmallVec<Base, INDEL_REF_WINDOW_LEN>, u8) {
+    let seq = &segment.sequence;
+    let start = idx.saturating_sub(INDEL_REF_WINDOW_UP);
+    let end = (idx + INDEL_REF_WINDOW_DOWN + 1).min(seq.len());
+    let window = seq.get(start..end).unwrap_or(&[]).iter().map(|&b| Base::from(b)).collect();
+    let anchor = u8::try_from(idx - start).unwrap_or(0);
+    (window, anchor)
 }
 
 fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8 {

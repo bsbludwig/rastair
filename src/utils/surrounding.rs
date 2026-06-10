@@ -182,6 +182,8 @@ mod tests {
             homopolymer_run: 0,
             dinucleotide_run: 0,
             soft_clip_count: 0,
+            indel_ref_window: Default::default(),
+            indel_ref_anchor: 0,
         };
 
         PileupMetrics::new(pileup).unwrap()

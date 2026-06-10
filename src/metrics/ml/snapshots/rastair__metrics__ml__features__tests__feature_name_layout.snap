@@ -174,7 +174,7 @@ others (54 features)
   52  num_indels_ref
   53  num_indels_alt
 
-insertion (15 features)
+insertion (17 features)
    0  indel_len
    1  indel_complexity
    2  indel_dominance
@@ -184,14 +184,16 @@ insertion (15 features)
    6  edge_dist_rms
    7  allele_fraction
    8  strand_bias
-   9  homopolymer_run
-  10  soft_clip_rate
-  11  dinucleotide_run
-  12  repeat_fraction
-  13  insertion_baseq_rms
-  14  relative_insertion_baseq
+   9  indel_in_repeat
+  10  repeat_tract_length
+  11  homopolymer_run
+  12  soft_clip_rate
+  13  dinucleotide_run
+  14  repeat_fraction
+  15  insertion_baseq_rms
+  16  relative_insertion_baseq
 
-deletion (15 features)
+deletion (17 features)
    0  indel_len
    1  indel_complexity
    2  indel_dominance
@@ -201,9 +203,11 @@ deletion (15 features)
    6  edge_dist_rms
    7  allele_fraction
    8  strand_bias
-   9  homopolymer_run
-  10  soft_clip_rate
-  11  dinucleotide_run
-  12  repeat_fraction
-  13  post_del_baseq_rms
-  14  relative_post_del_baseq
+   9  indel_in_repeat
+  10  repeat_tract_length
+  11  homopolymer_run
+  12  soft_clip_rate
+  13  dinucleotide_run
+  14  repeat_fraction
+  15  post_del_baseq_rms
+  16  relative_post_del_baseq

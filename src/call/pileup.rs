@@ -7,6 +7,16 @@ pub use read::*;
 pub(crate) mod from_hts;
 pub(crate) mod overlapping_reads;
 
+/// Reference bases kept upstream / downstream of the anchor for indel slippage
+/// detection. Downstream must span the indel plus a few repeat units; a little
+/// upstream covers reads that are not left-aligned.
+pub(crate) const INDEL_REF_WINDOW_UP: usize = 8;
+pub(crate) const INDEL_REF_WINDOW_DOWN: usize = 24;
+/// Maximum window length (upstream + anchor + downstream). The inline capacity
+/// of [`Pileup::indel_ref_window`] is sized to this so a populated window never
+/// spills to the heap.
+pub(crate) const INDEL_REF_WINDOW_LEN: usize = INDEL_REF_WINDOW_UP + 1 + INDEL_REF_WINDOW_DOWN;
+
 /// Rastair's representation of a pileup at a specific position in the genome
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pileup {
@@ -34,6 +44,14 @@ pub struct Pileup {
     pub dinucleotide_run: u8,
     #[serde(default)]
     pub soft_clip_count: u32,
+    /// Reference bases around the anchor (`indel_ref_anchor` is the anchor's
+    /// index), used for tandem-repeat / slippage detection of indel alleles.
+    /// Only populated when indel observations are present.
+    #[serde(default)]
+    pub indel_ref_window: SmallVec<Base, INDEL_REF_WINDOW_LEN>,
+    /// Index of the anchor (pileup `pos`) base within [`Pileup::indel_ref_window`].
+    #[serde(default)]
+    pub indel_ref_anchor: u8,
 }
 
 impl Pileup {
@@ -118,6 +136,8 @@ mod tests {
             homopolymer_run: 0,
             dinucleotide_run: 0,
             soft_clip_count: 0,
+            indel_ref_window: default(),
+            indel_ref_anchor: 0,
         };
 
         let alleles = variant_candidate.alleles();

@@ -35,6 +35,14 @@ define_features! {
         /// Strand bias: (OT - OB) / (OT + OB). -1.0 = all OB, 0.0 = balanced, +1.0
         /// = all OT.
         scalar strand_bias;
+        /// 1.0 if this indel is a tandem-repeat slippage event — its bases are
+        /// whole copies of the repeat unit of the reference tract it sits in
+        /// (homopolymer or short tandem repeat). The dominant indel artifact mode.
+        scalar indel_in_repeat;
+        /// Length in bases of the reference tandem-repeat tract the indel slips
+        /// within (0 when not in a repeat). Allele-aware generalisation of
+        /// `homopolymer_run`: longer tracts slip more often.
+        scalar repeat_tract_length;
         /// Length of the longest homopolymer run on the reference spanning this
         /// position.
         scalar homopolymer_run;
@@ -93,6 +101,12 @@ impl CommonIndelFeatures {
         let pos_depth = current.metrics.pos_metrics.depth;
         let pos_mapq = *current.metrics.pos_metrics.mapq;
 
+        let repeat = RepeatContext::detect(
+            allele,
+            &pileup.indel_ref_window,
+            pileup.indel_ref_anchor as usize,
+        );
+
         CommonIndelFeatures {
             indel_len: allele.len() as f64,
             indel_complexity: allele_entropy(allele.bases()),
@@ -103,6 +117,8 @@ impl CommonIndelFeatures {
             edge_dist_rms: agg.edge_dist_rms,
             allele_fraction: if pos_depth > 0 { agg.total.f() / pos_depth.f() } else { 0.0 },
             strand_bias: strand_bias(agg.ot_count, agg.ob_count),
+            indel_in_repeat: if repeat.in_repeat { 1.0 } else { 0.0 },
+            repeat_tract_length: repeat.tract_length.f(),
             homopolymer_run: pileup.homopolymer_run.f(),
             soft_clip_rate,
             dinucleotide_run: pileup.dinucleotide_run.f(),
@@ -270,4 +286,161 @@ fn allele_entropy(bases: &[Base]) -> f64 {
             -p * p.log2()
         })
         .sum()
+}
+
+/// Tandem-repeat slippage descriptor for an indel allele, derived from the
+/// local reference window.
+struct RepeatContext {
+    /// The indel's bases are whole copies of the repeat unit of the reference
+    /// tract it sits in (homopolymer or short tandem repeat).
+    in_repeat: bool,
+    /// Length in bases of that reference tandem-repeat tract (0 if not in one).
+    tract_length: u32,
+}
+
+impl RepeatContext {
+    fn none() -> Self {
+        Self { in_repeat: false, tract_length: 0 }
+    }
+
+    /// `window[anchor]` is the anchor base; the inserted/deleted bases of
+    /// `allele` follow it (start at `anchor + 1` in reference coordinates).
+    fn detect(allele: &IndelAllele, window: &[Base], anchor: usize) -> Self {
+        let bases = allele.bases();
+        let unit = repeat_unit(bases);
+        if bases.is_empty() || unit.is_empty() || anchor >= window.len() {
+            return Self::none();
+        }
+
+        // Reference immediately downstream of the anchor — where inserted bases
+        // land, and what deleted bases are drawn from.
+        let downstream = window.get(anchor + 1..).unwrap_or(&[]);
+        let mut copies = count_unit_copies(downstream, unit);
+
+        // Homopolymer tracts are phase-free, so extend across the anchor and
+        // upstream to capture the full run length regardless of indel alignment.
+        if unit.len() == 1 {
+            let base = unit.first().copied();
+            let mut i = anchor as isize;
+            while i >= 0 && window.get(i as usize).copied() == base {
+                copies += 1;
+                i -= 1;
+            }
+        }
+
+        let units_in_indel = bases.len() / unit.len();
+        let in_repeat = match allele {
+            // An insertion that duplicates an already-present unit expands the tract.
+            IndelAllele::Insertion(_) => copies >= 1,
+            // Deleted bases are reference; it's slippage when they are part of a
+            // ≥2-copy array (extra units flank, or the deleted span itself repeats).
+            IndelAllele::Deletion(_) => copies > units_in_indel || units_in_indel >= 2,
+        };
+
+        Self { in_repeat, tract_length: u32::try_from(copies * unit.len()).unwrap_or(u32::MAX) }
+    }
+}
+
+/// The minimal repeating unit of `bases` (`AAAA`→`A`, `ATAT`→`AT`, `ACG`→`ACG`).
+/// Returns the whole slice when it has no shorter period.
+fn repeat_unit(bases: &[Base]) -> &[Base] {
+    let n = bases.len();
+    for p in 1..=n {
+        if n.is_multiple_of(p) && (p..n).all(|i| bases.get(i) == bases.get(i - p)) {
+            return bases.get(..p).unwrap_or(bases);
+        }
+    }
+    bases
+}
+
+/// How many consecutive copies of `unit` appear at the start of `seq`.
+fn count_unit_copies(seq: &[Base], unit: &[Base]) -> usize {
+    if unit.is_empty() {
+        return 0;
+    }
+    let mut copies = 0;
+    while seq.get(copies * unit.len()..(copies + 1) * unit.len()) == Some(unit) {
+        copies += 1;
+    }
+    copies
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rastair_types::SmallVec;
+
+    fn bases(s: &str) -> SmallVec<Base, 4> {
+        s.bytes().map(Base::from).collect()
+    }
+    fn window(s: &str) -> Vec<Base> {
+        s.bytes().map(Base::from).collect()
+    }
+
+    #[test]
+    fn repeat_unit_minimal_period() {
+        assert_eq!(repeat_unit(&bases("AAAA")), &bases("A")[..]);
+        assert_eq!(repeat_unit(&bases("ATAT")), &bases("AT")[..]);
+        assert_eq!(repeat_unit(&bases("ACG")), &bases("ACG")[..]);
+        // period 2 does not divide length 5, so there is no shorter period
+        assert_eq!(repeat_unit(&bases("ATATA")), &bases("ATATA")[..]);
+    }
+
+    #[test]
+    fn count_copies_counts_leading_units_only() {
+        assert_eq!(count_unit_copies(&window("AAAAC"), &bases("A")), 4);
+        assert_eq!(count_unit_copies(&window("ATATATG"), &bases("AT")), 3);
+        assert_eq!(count_unit_copies(&window("CAAA"), &bases("A")), 0);
+    }
+
+    #[test]
+    fn homopolymer_insertion_is_slippage() {
+        // C[anchor=0] A A A A A — insert A
+        let win = window("CAAAAA");
+        let r = RepeatContext::detect(&IndelAllele::Insertion(bases("A")), &win, 0);
+        assert!(r.in_repeat);
+        assert_eq!(r.tract_length, 5);
+    }
+
+    #[test]
+    fn homopolymer_deletion_is_slippage() {
+        let win = window("CAAAAA");
+        let r = RepeatContext::detect(&IndelAllele::Deletion(bases("A")), &win, 0);
+        assert!(r.in_repeat);
+        assert_eq!(r.tract_length, 5);
+    }
+
+    #[test]
+    fn dinucleotide_insertion_is_slippage() {
+        // C[anchor=0] A T A T A T — insert AT
+        let win = window("CATATAT");
+        let r = RepeatContext::detect(&IndelAllele::Insertion(bases("AT")), &win, 0);
+        assert!(r.in_repeat);
+        assert_eq!(r.tract_length, 6);
+    }
+
+    #[test]
+    fn non_repeat_insertion_is_not_slippage() {
+        let win = window("CGGGC");
+        let r = RepeatContext::detect(&IndelAllele::Insertion(bases("A")), &win, 0);
+        assert!(!r.in_repeat);
+        assert_eq!(r.tract_length, 0);
+    }
+
+    #[test]
+    fn single_copy_deletion_is_not_slippage() {
+        // delete the lone A in C[anchor]ACGT — one copy, no flanking repeat
+        let win = window("CACGT");
+        let r = RepeatContext::detect(&IndelAllele::Deletion(bases("A")), &win, 0);
+        assert!(!r.in_repeat);
+    }
+
+    #[test]
+    fn homopolymer_run_extends_across_anchor() {
+        // A A [anchor=2]A A A C — insert A; tract spans upstream + downstream
+        let win = window("AAAAAC");
+        let r = RepeatContext::detect(&IndelAllele::Insertion(bases("A")), &win, 2);
+        assert!(r.in_repeat);
+        assert_eq!(r.tract_length, 5);
+    }
 }

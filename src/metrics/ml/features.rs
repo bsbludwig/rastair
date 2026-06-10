@@ -381,9 +381,9 @@ mod tests {
         assert_eq!(CpgFeatures::FEATURES, 55);
         assert_eq!(DenovoCpgFeatures::FEATURES, 56);
         assert_eq!(OthersFeatures::FEATURES, 54);
-        assert_eq!(CommonIndelFeatures::FEATURES, 13);
-        assert_eq!(InsertionFeatures::FEATURES, 15);
-        assert_eq!(DeletionFeatures::FEATURES, 15);
+        assert_eq!(CommonIndelFeatures::FEATURES, 15);
+        assert_eq!(InsertionFeatures::FEATURES, 17);
+        assert_eq!(DeletionFeatures::FEATURES, 17);
     }
 
     /// Snapshot the full name→index layout of every model. This is the
