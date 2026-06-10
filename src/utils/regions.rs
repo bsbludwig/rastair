@@ -278,6 +278,7 @@ mod tests {
     #[test]
     fn test_nonexistent_bed_file_is_error() {
         let err = "@nonexistent_file.bed".parse::<CliRegionInput>().unwrap_err();
-        assert!(err.to_string().contains("does not exist"));
+        let str = format!("{err:#}");
+        assert!(str.contains("does not exist"));
     }
 }

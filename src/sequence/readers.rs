@@ -37,7 +37,7 @@ pub struct ReaderParams {
     /// - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive)
     /// - Multiple regions separated by whitespace: `"chr1 chr2:100-200"`
     /// - BED files with `@` prefix: `@targets.bed`
-    #[arg(short = 'l', long, value_parser = clap::value_parser!(CliRegionInput))]
+    #[arg(short = 'l', long = "region", value_parser = clap::value_parser!(CliRegionInput))]
     #[arg(help_heading = cli::sections::INPUT)]
     pub regions: Option<CliRegionInput>,
 }

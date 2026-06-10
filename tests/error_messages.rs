@@ -57,13 +57,13 @@ fn validates_region_arg() -> Result<()> {
         "tests/data/test.bam",
         "--region=chr19:6105700-xxx",
         "--vcf",
-    ]), @r"
+    ]), @"
     success: false
     exit_code: 2
     ----- stdout -----
 
     ----- stderr -----
-    error: invalid value 'chr19:6105700-xxx' for '--region <REGION>': Invalid region string:
+    error: invalid value 'chr19:6105700-xxx' for '--region <REGIONS>': Invalid region string:
     chr19:6105700-xxx
                  ^
 
@@ -84,7 +84,7 @@ fn different_paths_for_bed_and_vcf() -> Result<()> {
         "--region=chr19:6105700",
         "--vcf=foo",
         "--bed=foo",
-    ]), @r"
+    ]), @"
     success: false
     exit_code: 1
     ----- stdout -----
