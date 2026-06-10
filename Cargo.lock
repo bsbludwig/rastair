@@ -2378,6 +2378,7 @@ dependencies = [
  "bgzf",
  "bio-types",
  "biosphere",
+ "bytemuck",
  "bzip2-sys",
  "clap",
  "clap-markdown",

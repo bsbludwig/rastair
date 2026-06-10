@@ -145,6 +145,37 @@ Current scope: this new evidence-based OT/OB assignment only affects the main pi
 
 For BAM-backed regression tests that compare strand-assignment modes, `tests/call_cli.rs` can write plain BED output with `call --cpgs-only --bed <path>` and compare per-CpG `(start, strand)` records via the BED columns `beta_est`, `unmod`, and `mod`. This is a convenient way to inspect differences before choosing hard thresholds.
 
+## ML feature layout (`src/metrics/ml/features/`)
+
+Each model's feature vector is defined by a `#[repr(C)]` struct of `f64` / `[f64; N]`
+fields built with the `define_features!` macro in `src/metrics/ml/features.rs`.
+**The struct field order IS the feature vector order**, so there are no hand-counted
+`buf[start..end]` index ranges anymore.
+
+* The macro generates, per struct: `FEATURES` (from `size_of`), `names()`/`extend_names()`,
+  and `as_row(&self) -> &[f64]` (zero-copy via `bytemuck::cast_slice`; the struct is `Pod`
+  because all fields are `f64` and there is no padding).
+* Field kinds in the macro: `scalar name;` (one feature, named after the ident),
+  `array name: N = ["..", ..];` (N features with explicit per-slot names), and
+  `flatten name: Type;` (embeds a nested feature struct and delegates its names).
+* `CommonFeatures` (in `shared.rs`) is the shared extractor; its layout is split into
+  `CommonSectionA` (33) + `CommonSectionB` (18) because the alt-based models interleave
+  model-specific scalars (e.g. `alt_score`) *between* the two halves. Build them via
+  `CommonSectionA::from_common(&common)`.
+* Model structs: `CpgFeatures` (55), `DenovoCpgFeatures` (56), `OthersFeatures` (54),
+  `InsertionFeatures` (34), `DeletionFeatures` (38). Each has an `extract()` returning the
+  struct; `FeatureCalculator::calculate_*` wraps `as_row()` into an `Array2`.
+
+**Feature order is frozen by every trained model.** Reordering a field silently corrupts
+predictions. Two tests guard this in `features.rs`: `feature_counts_are_stable` (pins the
+counts) and `feature_name_layout` (an insta snapshot of every `name→index` mapping —
+this replaces the old "never change the order" comments; update it via `cargo xtask insta`
+only after verifying a layout change is intentional).
+
+Feature names flow to training output via `FeatureCalculator::feature_names() -> FeatureNames`.
+`train.rs` uses them for the `--feature-analytics` importance CSVs (`index\tfeature\timportance`)
+and the `--export-features` TSV headers, so both exports agree by construction.
+
 ## Release version bump checklist
 
 When bumping Rastair's release version, update all user-facing version strings together:

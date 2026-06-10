@@ -1,3 +1,4 @@
+use super::define_features;
 use super::utils::one_hot_encode_base;
 use crate::{
     metrics::{AlleleMetrics, MetricsForAlt, PileupMetrics},
@@ -88,6 +89,73 @@ impl CommonFeatures {
                 r.num_indels.f(),
                 alt.num_indels.f(),
             ],
+        }
+    }
+}
+
+define_features! {
+    /// First contiguous block of [`CommonFeatures`] (33 features).
+    ///
+    /// The alt-based models interleave a model-specific scalar (`alt_score`)
+    /// between this section and [`CommonSectionB`], which is why the common
+    /// features are split into two `#[repr(C)]` pieces instead of one.
+    pub struct CommonSectionA {
+        array base_encoding: 8 = [
+            "ref_A", "ref_C", "ref_G", "ref_T", "alt_A", "alt_C", "alt_G", "alt_T",
+        ];
+        array position_metrics: 2 = ["pos_mapq", "pos_mapq0"];
+        array context_encoding: 16 = [
+            "ctx_before_2_A", "ctx_before_2_C", "ctx_before_2_G", "ctx_before_2_T",
+            "ctx_before_1_A", "ctx_before_1_C", "ctx_before_1_G", "ctx_before_1_T",
+            "ctx_after_1_A", "ctx_after_1_C", "ctx_after_1_G", "ctx_after_1_T",
+            "ctx_after_2_A", "ctx_after_2_C", "ctx_after_2_G", "ctx_after_2_T",
+        ];
+        scalar region_entropy;
+        array depth_ratios: 6 = [
+            "depth_ratio_ref", "depth_ratio_alt",
+            "depth_ratio_ref_ot", "depth_ratio_ref_ob",
+            "depth_ratio_alt_ot", "depth_ratio_alt_ob",
+        ];
+    }
+}
+
+define_features! {
+    /// Second contiguous block of [`CommonFeatures`] (18 features).
+    pub struct CommonSectionB {
+        array base_quality_metrics: 6 = [
+            "baseq_ref", "baseq_alt",
+            "baseq_ref_ot", "baseq_ref_ob", "baseq_alt_ot", "baseq_alt_ob",
+        ];
+        array mapping_quality_metrics: 6 = [
+            "mapq_ref_ot", "mapq_ref_ob", "mapq_alt_ot", "mapq_alt_ob",
+            "mapq_ref", "mapq_alt",
+        ];
+        array read_metrics: 6 = [
+            "pos_in_read_ref", "pos_in_read_alt",
+            "num_aligned_ref", "num_aligned_alt",
+            "num_indels_ref", "num_indels_alt",
+        ];
+    }
+}
+
+impl CommonSectionA {
+    pub fn from_common(c: &CommonFeatures) -> Self {
+        Self {
+            base_encoding: c.base_encoding,
+            position_metrics: c.position_metrics,
+            context_encoding: c.context_encoding,
+            region_entropy: c.region_entropy,
+            depth_ratios: c.depth_ratios,
+        }
+    }
+}
+
+impl CommonSectionB {
+    pub fn from_common(c: &CommonFeatures) -> Self {
+        Self {
+            base_quality_metrics: c.base_quality_metrics,
+            mapping_quality_metrics: c.mapping_quality_metrics,
+            read_metrics: c.read_metrics,
         }
     }
 }

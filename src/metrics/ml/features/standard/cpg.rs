@@ -1,5 +1,8 @@
-use super::super::shared::{CommonFeatures, alt_score_methylation_aware};
+use super::super::shared::{
+    CommonFeatures, CommonSectionA, CommonSectionB, alt_score_methylation_aware,
+};
 use super::super::utils::safe_div;
+use crate::metrics::ml::features::define_features;
 use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
@@ -11,48 +14,60 @@ use color_eyre::{
 use rastair_types::Base;
 use tracing::trace;
 
-pub const FEATURES: usize = 55;
+define_features! {
+    /// ML features for a CpG methylation candidate (ref C→T on OT, or ref G→A on OB).
+    pub struct CpgFeatures {
+        /// Adjacent-position alt allele depth fraction.
+        scalar alt_ad_adj;
+        /// Adjacent-position methylation-aware alt score.
+        scalar alt_score_adj;
+        /// First block of [`CommonFeatures`].
+        flatten section_a: CommonSectionA;
+        /// Methylation-aware alt score at this position.
+        scalar alt_score;
+        /// Second block of [`CommonFeatures`].
+        flatten section_b: CommonSectionB;
+        /// Log-ratio of this position's beta to the adjacent CpG partner's beta.
+        scalar beta_ratio;
+    }
+}
 
-/// Generate features for CpG mutation candidates
-///
-/// Call this with `MetricsForAlt` where the alt is a CpG methylation candidate
-pub fn cpg(
-    current: &MetricsForAlt,
-    before: Option<&PileupMetrics>,
-    after: Option<&PileupMetrics>,
-    buf: &mut [f64; FEATURES],
-) -> Result<()> {
-    use Base::*;
+impl CpgFeatures {
+    /// Build features for a CpG mutation candidate.
+    ///
+    /// `current` must be a `MetricsForAlt` whose alt is a CpG methylation candidate.
+    pub fn extract(
+        current: &MetricsForAlt,
+        before: Option<&PileupMetrics>,
+        after: Option<&PileupMetrics>,
+    ) -> Result<CpgFeatures> {
+        use Base::*;
 
-    let alt = current.alt;
-    let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
-    let ref_base = pileup.reference_base;
+        let alt = current.alt;
+        let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
+        let ref_base = pileup.reference_base;
 
-    ensure!(*pos.cpg, "cpg called on non-CpG position");
-    ensure!(
-        (ref_base == C && alt.base == T) || (ref_base == G && alt.base == A),
-        "cpg called on non-methylation candidate"
-    );
+        ensure!(*pos.cpg, "cpg called on non-CpG position");
+        ensure!(
+            (ref_base == C && alt.base == T) || (ref_base == G && alt.base == A),
+            "cpg called on non-methylation candidate"
+        );
 
-    let common = CommonFeatures::extract(current);
-    let alt_score = alt_score_methylation_aware(alt, r, ref_base);
-    let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj } =
-        calculate_adjacent_features(current, before, after)
-            .wrap_err("Failed to calculate adjacent features for CpG")?;
+        let common = CommonFeatures::extract(current);
+        let alt_score = alt_score_methylation_aware(alt, r, ref_base);
+        let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj } =
+            calculate_adjacent_features(current, before, after)
+                .wrap_err("Failed to calculate adjacent features for CpG")?;
 
-    // Never change the order of these writes, as they are used in the model
-    buf[0..2].copy_from_slice(&[alt_ad_adj, alt_score_adj]);
-    buf[2..10].copy_from_slice(&common.base_encoding);
-    buf[10..12].copy_from_slice(&common.position_metrics);
-    buf[12..28].copy_from_slice(&common.context_encoding);
-    buf[28] = common.region_entropy;
-    buf[29..35].copy_from_slice(&common.depth_ratios);
-    buf[35] = alt_score;
-    buf[36..42].copy_from_slice(&common.base_quality_metrics);
-    buf[42..48].copy_from_slice(&common.mapping_quality_metrics);
-    buf[48..54].copy_from_slice(&common.read_metrics);
-    buf[54] = beta_ratio;
-    Ok(())
+        Ok(CpgFeatures {
+            alt_ad_adj,
+            alt_score_adj,
+            section_a: CommonSectionA::from_common(&common),
+            alt_score,
+            section_b: CommonSectionB::from_common(&common),
+            beta_ratio,
+        })
+    }
 }
 
 struct AdjecentFeatures {

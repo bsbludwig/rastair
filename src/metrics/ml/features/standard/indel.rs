@@ -1,127 +1,102 @@
 use crate::metrics::MetricsForIndel;
+use crate::metrics::ml::features::define_features;
 use crate::metrics::ml::features::utils::one_hot_encode_base;
 use crate::utils::IntoF64 as _;
-use color_eyre::Result;
 use rastair_types::Base;
 
 use crate::call::pileup::indels::{IndelAllele, IndelObservation};
 
-pub struct CommonIndelFeatures {
-    /// Length of the indel allele in bases.
-    indel_len: f64,
-    /// Shannon entropy of the allele's base composition (A/C/G/T distribution).
-    indel_complexity: f64,
-    /// One-hot encoded counts of A, C, G, T in the indel allele sequence.
-    indel_base_count: [f64; 4],
-    /// Ratio of this allele's read count to the most frequent allele at this
-    /// position. Near 1.0 when this is the dominant allele; low when many
-    /// alleles compete.
-    indel_dominance: f64,
-    /// RMS mapping quality of reads supporting this specific indel allele.
-    mapq_rms: f64,
-    /// Fraction of indel-supporting reads with mapping quality zero.
-    mapq0_rate: f64,
-    /// RMS base quality at the pileup anchor position for reads supporting this
-    /// allele.
-    baseq_rms: f64,
-    /// RMS of `min(pos_in_read, read_length - pos_in_read)` across
-    /// indel-supporting reads. Low values mean the indel is near read
-    /// boundaries (less reliable).
-    edge_dist_rms: f64,
-    /// Number of reads supporting this specific indel allele.
-    depth: f64,
-    /// Strand bias: (OT - OB) / (OT + OB). -1.0 = all OB, 0.0 = balanced, +1.0
-    /// = all OT.
-    strand_bias: f64,
-    /// One-hot encoding of the reference base 2 bp before the pileup position.
-    ctx_before_2: [f64; 4],
-    /// One-hot encoding of the reference base 1 bp before the pileup position.
-    ctx_before_1: [f64; 4],
-    /// One-hot encoding of the reference base 1 bp after the pileup position.
-    ctx_after_1: [f64; 4],
-    /// One-hot encoding of the reference base 2 bp after the pileup position.
-    ctx_after_2: [f64; 4],
-    /// Length of the longest homopolymer run on the reference spanning this
-    /// position.
-    homopolymer_run: f64,
-    /// Length of the longest dinucleotide repeat (e.g. ATAT) on the reference
-    /// spanning this position.
-    dinucleotide_run: f64,
-    /// Fraction of reads covering this position that have a soft-clip in their
-    /// CIGAR.
-    soft_clip_rate: f64,
-    /// Fraction of reads supporting this indel allele that have a homopolymer or
-    /// dinucleotide repeat at their read ends (potential alignment artifact).
-    repeat_fraction: f64,
+define_features! {
+    /// Features shared between insertions and deletions.
+    pub struct CommonIndelFeatures {
+        /// Length of the indel allele in bases.
+        scalar indel_len;
+        /// Shannon entropy of the allele's base composition (A/C/G/T distribution).
+        scalar indel_complexity;
+        /// Counts of A, C, G, T in the indel allele sequence.
+        array indel_base_count: 4 = [
+            "indel_base_A", "indel_base_C", "indel_base_G", "indel_base_T",
+        ];
+        /// Ratio of this allele's read count to the most frequent allele at this
+        /// position. Near 1.0 when this is the dominant allele; low when many
+        /// alleles compete.
+        scalar indel_dominance;
+        /// RMS mapping quality of reads supporting this specific indel allele.
+        scalar mapq_rms;
+        /// Fraction of indel-supporting reads with mapping quality zero.
+        scalar mapq0_rate;
+        /// RMS base quality at the pileup anchor position for reads supporting this
+        /// allele.
+        scalar baseq_rms;
+        /// RMS of `min(pos_in_read, read_length - pos_in_read)` across
+        /// indel-supporting reads. Low values mean the indel is near read
+        /// boundaries (less reliable).
+        scalar edge_dist_rms;
+        /// Number of reads supporting this specific indel allele.
+        scalar depth;
+        /// Strand bias: (OT - OB) / (OT + OB). -1.0 = all OB, 0.0 = balanced, +1.0
+        /// = all OT.
+        scalar strand_bias;
+        /// One-hot encoding of the reference base 2 bp before the pileup position.
+        array ctx_before_2: 4 = [
+            "indel_ctx_before_2_A", "indel_ctx_before_2_C",
+            "indel_ctx_before_2_G", "indel_ctx_before_2_T",
+        ];
+        /// One-hot encoding of the reference base 1 bp before the pileup position.
+        array ctx_before_1: 4 = [
+            "indel_ctx_before_1_A", "indel_ctx_before_1_C",
+            "indel_ctx_before_1_G", "indel_ctx_before_1_T",
+        ];
+        /// One-hot encoding of the reference base 1 bp after the pileup position.
+        array ctx_after_1: 4 = [
+            "indel_ctx_after_1_A", "indel_ctx_after_1_C",
+            "indel_ctx_after_1_G", "indel_ctx_after_1_T",
+        ];
+        /// One-hot encoding of the reference base 2 bp after the pileup position.
+        array ctx_after_2: 4 = [
+            "indel_ctx_after_2_A", "indel_ctx_after_2_C",
+            "indel_ctx_after_2_G", "indel_ctx_after_2_T",
+        ];
+        /// Length of the longest homopolymer run on the reference spanning this
+        /// position.
+        scalar homopolymer_run;
+        /// Fraction of reads covering this position that have a soft-clip in their
+        /// CIGAR.
+        scalar soft_clip_rate;
+        /// Length of the longest dinucleotide repeat (e.g. ATAT) on the reference
+        /// spanning this position.
+        scalar dinucleotide_run;
+        /// Fraction of reads supporting this indel allele that have a homopolymer or
+        /// dinucleotide repeat at their read ends (potential alignment artifact).
+        scalar repeat_fraction;
+    }
 }
 
-pub struct InsertionFeatures {
-    /// Features shared with deletions.
-    common: CommonIndelFeatures,
-    /// RMS base quality of the inserted bases across all reads supporting this
-    /// insertion allele.
-    insertion_baseq_rms: f64,
+define_features! {
+    pub struct InsertionFeatures {
+        /// Features shared with deletions.
+        flatten common: CommonIndelFeatures;
+        /// RMS base quality of the inserted bases across all reads supporting this
+        /// insertion allele.
+        scalar insertion_baseq_rms;
+    }
 }
 
-pub struct DeletionFeatures {
-    /// Features shared with insertions.
-    common: CommonIndelFeatures,
-    /// One-hot encoding of the reference base at the pileup position (A, C, G,
-    /// T).
-    ref_one_hot: [f64; 4],
-    /// RMS base quality of the first base after the deletion across all reads
-    /// supporting this allele. Low quality suggests the deletion boundary is
-    /// uncertain. (The anchor base quality is already in [`CommonIndelFeatures`].)
-    post_del_baseq_rms: f64,
-}
-
-pub fn insertion(
-    current: &MetricsForIndel,
-    buf: &mut [f64; InsertionFeatures::FEATURES],
-) -> Result<()> {
-    let features = InsertionFeatures::extract(current);
-    let common_len = CommonIndelFeatures::FEATURES;
-    features.common.write_to(&mut buf[..common_len]);
-    buf[common_len] = features.insertion_baseq_rms;
-    Ok(())
-}
-
-pub fn deletion(
-    current: &MetricsForIndel,
-    buf: &mut [f64; DeletionFeatures::FEATURES],
-) -> Result<()> {
-    let features = DeletionFeatures::extract(current);
-    let common_len = CommonIndelFeatures::FEATURES;
-    features.common.write_to(&mut buf[..common_len]);
-    buf[common_len..common_len + 4].copy_from_slice(&features.ref_one_hot);
-    buf[common_len + 4] = features.post_del_baseq_rms;
-    Ok(())
+define_features! {
+    pub struct DeletionFeatures {
+        /// Features shared with insertions.
+        flatten common: CommonIndelFeatures;
+        /// One-hot encoding of the reference base at the pileup position (A, C, G,
+        /// T).
+        array ref_one_hot: 4 = ["del_ref_A", "del_ref_C", "del_ref_G", "del_ref_T"];
+        /// RMS base quality of the first base after the deletion across all reads
+        /// supporting this allele. Low quality suggests the deletion boundary is
+        /// uncertain. (The anchor base quality is already in [`CommonIndelFeatures`].)
+        scalar post_del_baseq_rms;
+    }
 }
 
 impl CommonIndelFeatures {
-    pub const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
-
-    fn write_to(&self, buf: &mut [f64]) {
-        buf[0] = self.indel_len;
-        buf[1] = self.indel_complexity;
-        buf[2..6].copy_from_slice(&self.indel_base_count);
-        buf[6] = self.indel_dominance;
-        buf[7] = self.mapq_rms;
-        buf[8] = self.mapq0_rate;
-        buf[9] = self.baseq_rms;
-        buf[10] = self.edge_dist_rms;
-        buf[11] = self.depth;
-        buf[12] = self.strand_bias;
-        buf[13..17].copy_from_slice(&self.ctx_before_2);
-        buf[17..21].copy_from_slice(&self.ctx_before_1);
-        buf[21..25].copy_from_slice(&self.ctx_after_1);
-        buf[25..29].copy_from_slice(&self.ctx_after_2);
-        buf[29] = self.homopolymer_run;
-        buf[30] = self.soft_clip_rate;
-        buf[31] = self.dinucleotide_run;
-        buf[32] = self.repeat_fraction;
-    }
-
     fn extract(current: &MetricsForIndel) -> CommonIndelFeatures {
         let indel = &current.indel;
         let pileup = &current.metrics.pileup;
@@ -170,9 +145,7 @@ impl CommonIndelFeatures {
 }
 
 impl InsertionFeatures {
-    pub const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
-
-    fn extract(current: &MetricsForIndel) -> InsertionFeatures {
+    pub fn extract(current: &MetricsForIndel) -> InsertionFeatures {
         let common = CommonIndelFeatures::extract(current);
         let observations = &current.metrics.pileup.indel_observations;
         let allele = &current.indel.allele;
@@ -182,9 +155,7 @@ impl InsertionFeatures {
 }
 
 impl DeletionFeatures {
-    pub const FEATURES: usize = size_of::<Self>() / size_of::<f64>();
-
-    fn extract(current: &MetricsForIndel) -> DeletionFeatures {
+    pub fn extract(current: &MetricsForIndel) -> DeletionFeatures {
         let common = CommonIndelFeatures::extract(current);
         let ref_one_hot = one_hot_encode_base(current.metrics.pileup.reference_base).into();
         let observations = &current.metrics.pileup.indel_observations;

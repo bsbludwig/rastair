@@ -1,5 +1,8 @@
-use super::super::shared::{CommonFeatures, alt_score_methylation_aware};
+use super::super::shared::{
+    CommonFeatures, CommonSectionA, CommonSectionB, alt_score_methylation_aware,
+};
 use super::super::utils::safe_div;
+use crate::metrics::ml::features::define_features;
 use crate::{
     metrics::{FormsDenovo, MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
@@ -11,45 +14,60 @@ use color_eyre::{
 use rastair_types::Base::*;
 use tracing::trace;
 
-pub const FEATURES: usize = 56;
-
-/// Generate features for denovo CpG mutation candidates
-///
-/// Call this with `MetricsForAlt` where the alt is a denovo CpG candidate
-pub fn denovo_cpg(
-    current: &MetricsForAlt,
-    before: Option<&PileupMetrics>,
-    after: Option<&PileupMetrics>,
-    buf: &mut [f64; FEATURES],
-) -> Result<()> {
-    let alt = current.alt;
-    ensure!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
-
-    let PileupMetrics { ref_metrics: r, .. } = &current.metrics;
-
-    if alt.base != C && alt.base != G {
-        bail!("denovo CpG alt base must be C or G")
+define_features! {
+    /// ML features for a de-novo CpG candidate (an X→C or X→G SNV that creates a CpG).
+    pub struct DenovoCpgFeatures {
+        /// Adjacent-position alt allele depth fraction.
+        scalar alt_ad_adj;
+        /// Adjacent-position methylation-aware alt score.
+        scalar alt_score_adj;
+        /// Adjacent-position strand bias.
+        scalar sb_adj;
+        /// First block of [`CommonFeatures`].
+        flatten section_a: CommonSectionA;
+        /// Methylation-aware alt score at this position.
+        scalar alt_score;
+        /// Second block of [`CommonFeatures`].
+        flatten section_b: CommonSectionB;
+        /// Log-ratio of this position's beta to the adjacent CpG partner's beta.
+        scalar beta_ratio;
     }
+}
 
-    let common = CommonFeatures::extract(current);
-    let alt_score = alt_score_methylation_aware(alt, r, alt.base);
-    let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj } =
-        calculate_adjacent_features(current, before, after)
-            .wrap_err("Failed to calculate adjacent features for de-novo CpG")?;
+impl DenovoCpgFeatures {
+    /// Build features for a de-novo CpG mutation candidate.
+    ///
+    /// `current` must be a `MetricsForAlt` whose alt is a de-novo CpG candidate.
+    pub fn extract(
+        current: &MetricsForAlt,
+        before: Option<&PileupMetrics>,
+        after: Option<&PileupMetrics>,
+    ) -> Result<DenovoCpgFeatures> {
+        let alt = current.alt;
+        ensure!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
 
-    // Never change the order of these writes, as they are used in the model
-    buf[0..3].copy_from_slice(&[alt_ad_adj, alt_score_adj, sb_adj]);
-    buf[3..11].copy_from_slice(&common.base_encoding);
-    buf[11..13].copy_from_slice(&common.position_metrics);
-    buf[13..29].copy_from_slice(&common.context_encoding);
-    buf[29] = common.region_entropy;
-    buf[30..36].copy_from_slice(&common.depth_ratios);
-    buf[36] = alt_score;
-    buf[37..43].copy_from_slice(&common.base_quality_metrics);
-    buf[43..49].copy_from_slice(&common.mapping_quality_metrics);
-    buf[49..55].copy_from_slice(&common.read_metrics);
-    buf[55] = beta_ratio;
-    Ok(())
+        let PileupMetrics { ref_metrics: r, .. } = &current.metrics;
+
+        if alt.base != C && alt.base != G {
+            bail!("denovo CpG alt base must be C or G")
+        }
+
+        let common = CommonFeatures::extract(current);
+        let alt_score = alt_score_methylation_aware(alt, r, alt.base);
+        let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj } =
+            calculate_adjacent_features(current, before, after)
+                .wrap_err("Failed to calculate adjacent features for de-novo CpG")?;
+
+        Ok(DenovoCpgFeatures {
+            alt_ad_adj,
+            alt_score_adj,
+            sb_adj,
+            section_a: CommonSectionA::from_common(&common),
+            alt_score,
+            section_b: CommonSectionB::from_common(&common),
+            beta_ratio,
+        })
+    }
 }
 
 struct AdjecentFeatures {

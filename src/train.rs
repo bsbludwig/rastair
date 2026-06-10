@@ -359,17 +359,28 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     );
 
     let features = params.ml_features.get_calculator().feature_num();
+    let feature_names = params.ml_features.get_calculator().feature_names();
 
     if let Some(ref export_dir) = params.export_features {
         std::fs::create_dir_all(export_dir.path()).wrap_err_with(|| {
             format!("Failed to create export directory: {}", export_dir.display())
         })?;
         info!(dir = %export_dir.display(), "Exporting features as TSV");
-        export_features_tsv(&cpg_data, "cpg", features.cpg, export_dir.path())?;
-        export_features_tsv(&denovo_data, "denovo", features.denovo_cpg, export_dir.path())?;
-        export_features_tsv(&other_data, "other", features.others, export_dir.path())?;
-        export_features_tsv(&insertion_data, "insertion", features.insertion, export_dir.path())?;
-        export_features_tsv(&deletion_data, "deletion", features.deletion, export_dir.path())?;
+        export_features_tsv(&cpg_data, "cpg", &feature_names.cpg, export_dir.path())?;
+        export_features_tsv(&denovo_data, "denovo", &feature_names.denovo_cpg, export_dir.path())?;
+        export_features_tsv(&other_data, "other", &feature_names.others, export_dir.path())?;
+        export_features_tsv(
+            &insertion_data,
+            "insertion",
+            &feature_names.insertion,
+            export_dir.path(),
+        )?;
+        export_features_tsv(
+            &deletion_data,
+            "deletion",
+            &feature_names.deletion,
+            export_dir.path(),
+        )?;
     }
 
     // Derive independent seeds for each model from the base seed
@@ -391,22 +402,34 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
     if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(&cpg, &path.path().join("cpg_feature_importances.csv"))
-            .wrap_err("Failed to export CpG feature importances")?;
+        export_feature_importances(
+            &cpg,
+            &feature_names.cpg,
+            &path.path().join("cpg_feature_importances.csv"),
+        )
+        .wrap_err("Failed to export CpG feature importances")?;
     }
     let cpg = FlatForest::from_forest(&cpg, features.cpg);
 
     let (denovo, denovo_platt) = denovo_result.wrap_err("Failed to train de-novo CpG model")?;
     if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(&denovo, &path.path().join("denovo_feature_importances.csv"))
-            .wrap_err("Failed to export de-novo CpG feature importances")?;
+        export_feature_importances(
+            &denovo,
+            &feature_names.denovo_cpg,
+            &path.path().join("denovo_feature_importances.csv"),
+        )
+        .wrap_err("Failed to export de-novo CpG feature importances")?;
     }
     let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
 
     let (others, others_platt) = others_result.wrap_err("Failed to train other model")?;
     if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(&others, &path.path().join("other_feature_importances.csv"))
-            .wrap_err("Failed to export other feature importances")?;
+        export_feature_importances(
+            &others,
+            &feature_names.others,
+            &path.path().join("other_feature_importances.csv"),
+        )
+        .wrap_err("Failed to export other feature importances")?;
     }
     let others = FlatForest::from_forest(&others, features.others);
 
@@ -415,6 +438,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     if let Some(path) = params.feature_analytics.as_ref() {
         export_feature_importances(
             &insertion,
+            &feature_names.insertion,
             &path.path().join("insertion_feature_importances.csv"),
         )
         .wrap_err("Failed to export insertion feature importances")?;
@@ -425,6 +449,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     if let Some(path) = params.feature_analytics.as_ref() {
         export_feature_importances(
             &deletion,
+            &feature_names.deletion,
             &path.path().join("deletion_feature_importances.csv"),
         )
         .wrap_err("Failed to export deletion feature importances")?;
@@ -990,7 +1015,7 @@ fn serialize_model(model: &RastairFlatModel, path: ClioPath) -> Result<()> {
 fn export_features_tsv(
     data: &TrainingData,
     model_name: &str,
-    num_features: usize,
+    feature_names: &[&str],
     dir: &std::path::Path,
 ) -> Result<()> {
     if data.is_empty() {
@@ -1004,8 +1029,8 @@ fn export_features_tsv(
     let mut writer = BufWriter::new(file);
 
     write!(writer, "chrom\tpos\tlabel")?;
-    for i in 0..num_features {
-        write!(writer, "\tfeat_{i}")?;
+    for name in feature_names {
+        write!(writer, "\t{name}")?;
     }
     writeln!(writer)?;
 
@@ -1025,15 +1050,18 @@ fn export_features_tsv(
     Ok(())
 }
 
-fn export_feature_importances(model: &RandomForest, path: &Path) -> Result<()> {
+fn export_feature_importances(model: &RandomForest, names: &[&str], path: &Path) -> Result<()> {
     let file = File::create(path).wrap_err_with(|| {
         format!("Failed to create feature importance file: {}", path.display())
     })?;
     let mut writer = BufWriter::new(file);
-    writeln!(writer, "feature\timportance")
+    writeln!(writer, "index\tfeature\timportance")
         .wrap_err("Failed to write feature importance header")?;
-    for (importance, idx) in model.feature_importances().iter().zip(0..) {
-        writeln!(writer, "{idx}\t{importance}")
+    for (idx, importance) in model.feature_importances().iter().enumerate() {
+        // Fall back to the index if a name is missing, so a names/model length
+        // mismatch is visible rather than silently truncating the output.
+        let name = names.get(idx).copied().unwrap_or("<unknown>");
+        writeln!(writer, "{idx}\t{name}\t{importance}")
             .wrap_err("Failed to write feature importance row")?;
     }
 
