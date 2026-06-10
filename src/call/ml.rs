@@ -82,7 +82,7 @@ impl MachineLearningParams {
 
         let model = load_combined_model(
             self.model.as_ref().map(|x| x.path()),
-            &include_bytes!("../../models/rastair_default.rff.mpk.lz4")[..],
+            &include_bytes!("../../models/rastair_with_indels.rff.mpk.lz4")[..],
         )
         .wrap_err("Failed to load combined RF model")?;
 
