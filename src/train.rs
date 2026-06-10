@@ -92,6 +92,22 @@ struct ModelParameters {
     #[arg(help_heading = cli::sections::TRAINING)]
     pub max_features: usize,
 
+    /// Maximum tree depth. `0` grows trees until pure (unbounded), which can
+    /// produce very large models on noisy/poorly-separable data such as indels.
+    /// A cap of ~20 typically removes the noise-memorising depth at negligible
+    /// accuracy cost. See <https://scikit-learn.org/stable/modules/tree.html>.
+    #[arg(long = "max-depth", default_value_t = 20)]
+    #[arg(help_heading = cli::sections::TRAINING)]
+    pub max_depth: usize,
+
+    /// Minimum number of samples required at each leaf. Larger values prevent
+    /// the forest from memorising individual samples, regularising noisy data
+    /// and shrinking the model. scikit-learn suggests 5 as a starting value;
+    /// use 1 for fully-grown leaves (best for clean, well-separated classes).
+    #[arg(long = "min-samples-leaf", default_value_t = 5)]
+    #[arg(help_heading = cli::sections::TRAINING)]
+    pub min_samples_leaf: usize,
+
     /// Number of positive examples (SNPs) to sample for training
     #[arg(long = "n-positive", default_value_t = 8_000)]
     #[arg(help_heading = cli::sections::TRAINING)]
@@ -376,6 +392,21 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let insertion = FlatForest::from_forest(&insertion, features.insertion);
     let (deletion, deletion_platt) = deletion_result.wrap_err("Failed to train deletion model")?;
     let deletion = FlatForest::from_forest(&deletion, features.deletion);
+
+    #[derive(Debug, serde::Serialize)]
+    struct ModelReport<'a> {
+        forest: &'a biosphere::ForestMeta,
+        scaling: PlattScaling,
+    }
+
+    let report = std::collections::BTreeMap::from([
+        ("cpg", ModelReport { forest: &cpg.meta, scaling: cpg_platt }),
+        ("denovo", ModelReport { forest: &denovo.meta, scaling: denovo_platt }),
+        ("others", ModelReport { forest: &others.meta, scaling: others_platt }),
+        ("insertion", ModelReport { forest: &insertion.meta, scaling: insertion_platt }),
+        ("deletion", ModelReport { forest: &deletion.meta, scaling: deletion_platt }),
+    ]);
+    info!(report = ?report, "Trained models");
 
     let model = RastairFlatModel {
         feature_set: params.ml_features,
@@ -682,18 +713,18 @@ fn train_and_save(
         "Subsampled"
     );
 
-    // Train model
+    // Train model. `max_depth == 0` means unbounded (grow until pure).
+    let max_depth = (params.model_params.max_depth != 0).then_some(params.model_params.max_depth);
     let rf_params = RandomForestParameters::default()
         .with_max_features(MaxFeatures::Value(params.model_params.max_features))
         .with_n_estimators(params.model_params.n_trees)
-        .with_max_depth(None)
+        .with_max_depth(max_depth)
+        .with_min_samples_leaf(params.model_params.min_samples_leaf)
         .with_n_jobs(i32::try_from(params.threads).ok())
         .with_seed(seed);
 
     let mut model = RandomForest::new(rf_params);
     model.fit(&train_features.view(), &train_labels.view());
-
-    info!("Finished training");
 
     // Fit Platt scaling on held-out predictions
     let raw_scores = model.predict(&holdout_features.view());
@@ -701,7 +732,6 @@ fn train_and_save(
         raw_scores.as_slice().unwrap_or(&[]),
         holdout_labels.as_slice().unwrap_or(&[]),
     );
-    info!(a = platt.a, b = platt.b, "Fitted Platt scaling parameters");
 
     if platt.a == 1.0 && platt.b == 0.0 {
         error!(
