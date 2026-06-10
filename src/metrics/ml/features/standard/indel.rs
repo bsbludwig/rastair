@@ -37,26 +37,26 @@ define_features! {
         /// Strand bias: (OT - OB) / (OT + OB). -1.0 = all OB, 0.0 = balanced, +1.0
         /// = all OT.
         scalar strand_bias;
-        /// One-hot encoding of the reference base 2 bp before the pileup position.
-        array ctx_before_2: 4 = [
-            "indel_ctx_before_2_A", "indel_ctx_before_2_C",
-            "indel_ctx_before_2_G", "indel_ctx_before_2_T",
-        ];
-        /// One-hot encoding of the reference base 1 bp before the pileup position.
-        array ctx_before_1: 4 = [
-            "indel_ctx_before_1_A", "indel_ctx_before_1_C",
-            "indel_ctx_before_1_G", "indel_ctx_before_1_T",
-        ];
-        /// One-hot encoding of the reference base 1 bp after the pileup position.
-        array ctx_after_1: 4 = [
-            "indel_ctx_after_1_A", "indel_ctx_after_1_C",
-            "indel_ctx_after_1_G", "indel_ctx_after_1_T",
-        ];
-        /// One-hot encoding of the reference base 2 bp after the pileup position.
-        array ctx_after_2: 4 = [
-            "indel_ctx_after_2_A", "indel_ctx_after_2_C",
-            "indel_ctx_after_2_G", "indel_ctx_after_2_T",
-        ];
+        // /// One-hot encoding of the reference base 2 bp before the pileup position.
+        // array ctx_before_2: 4 = [
+        //     "indel_ctx_before_2_A", "indel_ctx_before_2_C",
+        //     "indel_ctx_before_2_G", "indel_ctx_before_2_T",
+        // ];
+        // /// One-hot encoding of the reference base 1 bp before the pileup position.
+        // array ctx_before_1: 4 = [
+        //     "indel_ctx_before_1_A", "indel_ctx_before_1_C",
+        //     "indel_ctx_before_1_G", "indel_ctx_before_1_T",
+        // ];
+        // /// One-hot encoding of the reference base 1 bp after the pileup position.
+        // array ctx_after_1: 4 = [
+        //     "indel_ctx_after_1_A", "indel_ctx_after_1_C",
+        //     "indel_ctx_after_1_G", "indel_ctx_after_1_T",
+        // ];
+        // /// One-hot encoding of the reference base 2 bp after the pileup position.
+        // array ctx_after_2: 4 = [
+        //     "indel_ctx_after_2_A", "indel_ctx_after_2_C",
+        //     "indel_ctx_after_2_G", "indel_ctx_after_2_T",
+        // ];
         /// Length of the longest homopolymer run on the reference spanning this
         /// position.
         scalar homopolymer_run;
@@ -79,6 +79,8 @@ define_features! {
         /// RMS base quality of the inserted bases across all reads supporting this
         /// insertion allele.
         scalar insertion_baseq_rms;
+        /// Relative baseq vs. entire pileup
+        scalar relative_insertion_baseq;
     }
 }
 
@@ -107,11 +109,11 @@ impl CommonIndelFeatures {
         let count_and_entropy = CountAndEntropy::from_bases(allele.bases());
         let dominance = compute_dominance(&current.metrics.indels.alleles, allele);
 
-        let ctx = &pileup.context;
-        let (b2a, b2c, b2g, b2t) = one_hot_encode_base(ctx.before_2);
-        let (b1a, b1c, b1g, b1t) = one_hot_encode_base(ctx.before_1);
-        let (a1a, a1c, a1g, a1t) = one_hot_encode_base(ctx.after_1);
-        let (a2a, a2c, a2g, a2t) = one_hot_encode_base(ctx.after_2);
+        // let ctx = &pileup.context;
+        // let (b2a, b2c, b2g, b2t) = one_hot_encode_base(ctx.before_2);
+        // let (b1a, b1c, b1g, b1t) = one_hot_encode_base(ctx.before_1);
+        // let (a1a, a1c, a1g, a1t) = one_hot_encode_base(ctx.after_1);
+        // let (a2a, a2c, a2g, a2t) = one_hot_encode_base(ctx.after_2);
 
         let total_reads = pileup.reads.len().max(1) as f64;
         let soft_clip_rate = pileup.soft_clip_count.f() / total_reads;
@@ -130,12 +132,16 @@ impl CommonIndelFeatures {
             mapq0_rate: if agg.total > 0 { agg.mapq0_count.f() / agg.total.f() } else { 0.0 },
             baseq_rms: agg.baseq_rms,
             edge_dist_rms: agg.edge_dist_rms,
-            depth: agg.total.f(),
+            depth: if current.metrics.pos_metrics.depth > 0 {
+                agg.total.f() / current.metrics.pos_metrics.depth.f()
+            } else {
+                0.0
+            },
             strand_bias: strand_bias(agg.ot_count, agg.ob_count),
-            ctx_before_2: [b2a, b2c, b2g, b2t],
-            ctx_before_1: [b1a, b1c, b1g, b1t],
-            ctx_after_1: [a1a, a1c, a1g, a1t],
-            ctx_after_2: [a2a, a2c, a2g, a2t],
+            // ctx_before_2: [b2a, b2c, b2g, b2t],
+            // ctx_before_1: [b1a, b1c, b1g, b1t],
+            // ctx_after_1: [a1a, a1c, a1g, a1t],
+            // ctx_after_2: [a2a, a2c, a2g, a2t],
             homopolymer_run: pileup.homopolymer_run.f(),
             soft_clip_rate,
             dinucleotide_run: pileup.dinucleotide_run.f(),
@@ -150,7 +156,12 @@ impl InsertionFeatures {
         let observations = &current.metrics.pileup.indel_observations;
         let allele = &current.indel.allele;
         let insertion_baseq_rms = insertion_baseq_rms(observations, allele);
-        InsertionFeatures { common, insertion_baseq_rms }
+        let relative_insertion_baseq = if *current.metrics.pos_metrics.baseq > 0.0 {
+            insertion_baseq_rms / *current.metrics.pos_metrics.baseq
+        } else {
+            0.0
+        };
+        InsertionFeatures { common, insertion_baseq_rms, relative_insertion_baseq }
     }
 }
 
