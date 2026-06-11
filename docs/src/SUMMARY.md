@@ -24,4 +24,5 @@
 - [Format converter](convert.md)
 
 # Appendix
+- [Changelog](CHANGELOG.md)
 - [Architecture](architecture.md)
