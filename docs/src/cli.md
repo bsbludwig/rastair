@@ -61,7 +61,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM file
+* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
 
 ###### **Filter Options:**
 
@@ -107,6 +107,20 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `-F`, `--exclude-flags <EXCLUDE_FLAGS>` — Exclude reads that match any of these bit-flags
 
   Default value: `3852`
+* `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations to call an indel
+
+  Default value: `2`
+* `--min-indel-depth <MIN_INDEL_DEPTH>` — Minimum depth to call an indel
+
+  Default value: `2`
+* `--indel-max-mismatches <INDEL_MAX_MISMATCHES>` — Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
+
+   C->T mismatches on OT reads and G->A mismatches on OB reads are excluded from the count as they are expected TAPS methylation signal.
+
+  Default value: `5`
+* `--indel-end-of-read-cutoff <INDEL_END_OF_READ_CUTOFF>`
+
+  Default value: `0`
 * `--cpg-novo-min-depth <CPG_NOVO_MIN_DEPTH>` — Minimum reads needed in support of de-novo CpG
 
   Default value: `2`
@@ -164,10 +178,18 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 ###### **Input Options:**
 
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `-l`, `--region <REGIONS>` — Restrict processing to specific genomic regions.
+
+   Accepts either space-separated region strings or a single BED file: - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive) - Multiple regions separated by whitespace: `"chr1 chr2:100-200"` - BED files with `@` prefix: `@targets.bed`
 * `--require-tags <REQUIRE_TAGS>` — Require reads to have a specific SAM tag value
 
    Format: TAG=VALUE, e.g. `--require-tags RG=mygroup`. Accepts one or more values (space-separated). A read is kept only if it matches all of the specified tag=value pairs.
+
+###### **Options:**
+
+* `--experimental-indels` — Enable experimental indel calling
+
+  Default value: `false`
 
 ###### **Output Options:**
 
@@ -248,6 +270,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an `FxHashMap`. Set to 0 to always use the hashmap.
 
   Default value: `30`
+* `--indel-error-rate <INDEL_ERROR_RATE>` — Error rate for indel genotyping (higher than SNV due to alignment uncertainty)
+
+  Default value: `0.05`
 * `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead.
 
    Requires a Metal/Vulkan/DX12-capable GPU.
@@ -275,7 +300,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM file
+* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
 
 ###### **Filter Options:**
 
@@ -306,7 +331,9 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 ###### **Input Options:**
 
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `-l`, `--region <REGIONS>` — Restrict processing to specific genomic regions.
+
+   Accepts either space-separated region strings or a single BED file: - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive) - Multiple regions separated by whitespace: `"chr1 chr2:100-200"` - BED files with `@` prefix: `@targets.bed`
 * `--calls <CALLS>` — BED file Rastair wrote with methylation calls per position
 
 ###### **Output Options:**
@@ -374,13 +401,15 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM file
+* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
 * `<CALLS_FILE>` — Rastair's calls to determine methylation
 
 ###### **Input Options:**
 
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `-l`, `--region <REGIONS>` — Restrict processing to specific genomic regions.
+
+   Accepts either space-separated region strings or a single BED file: - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive) - Multiple regions separated by whitespace: `"chr1 chr2:100-200"` - BED files with `@` prefix: `@targets.bed`
 
 ###### **Output Options:**
 
@@ -409,13 +438,15 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM file
+* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
 * `<CALLS_FILE>` — Rastair's calls to determine methylation
 
 ###### **Input Options:**
 
 * `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGION>` — Restrict to a specific chromosome or region of a chromosome. Format is "chr", "chr:start" or "chr:start-end", where start is 1-based and end is inclusive
+* `-l`, `--region <REGIONS>` — Restrict processing to specific genomic regions.
+
+   Accepts either space-separated region strings or a single BED file: - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive) - Multiple regions separated by whitespace: `"chr1 chr2:100-200"` - BED files with `@` prefix: `@targets.bed`
 
 ###### **Output Options:**
 
