@@ -12,16 +12,16 @@ use crate::{
 };
 use color_eyre::eyre::ensure;
 use color_eyre::{Result, eyre::Context as _};
-use rastair_types::{
-    Phred, Probability,
-    smallvec::{SmallVec, smallvec, smallvec_inline},
-};
 use rastair_vcf::{
     VcfFilter as _, VcfFixedFields,
     standard_fields::{
         AlleleFrequency, AlleleReadDepth, BaseQuality, Genotype, GenotypeAllele, MappingQuality,
         MappingQuality0, PASS, ReadDepth, SampleReadDepth, SamplesWithData,
     },
+};
+use seqair_types::{
+    Phred, Probability,
+    smallvec::{SmallVec, smallvec, smallvec_inline},
 };
 use std::num::NonZeroU8;
 
@@ -102,13 +102,13 @@ impl PileupMetrics {
         // Build alt alleles for main record:
         // - If we have real variants: use ONLY real variants (no '.' mixing)
         // - If no real variants: use '.' for reference-only records (needed for valid VCF)
-        let alt_alleles: rastair_types::SmallVec<rastair_types::SmolStr, 2> =
+        let alt_alleles: seqair_types::SmallVec<seqair_types::SmolStr, 2> =
             if !real_variants.is_empty() {
                 // Case 1: Real variants exist - use only real variants (fixes the C .,G issue)
                 real_variants.iter().map(|alt| alt.base.into()).collect()
             } else {
                 // Case 2: No real variants - use '.' for valid VCF reference records
-                rastair_types::SmallVec::from([".".into()])
+                seqair_types::SmallVec::from([".".into()])
             };
 
         // For info and format fields, use real_variants when they exist
@@ -125,7 +125,7 @@ impl PileupMetrics {
                 let ml_qual = if real_variants.is_empty() {
                     // No real variants, VCF spec says: QUAL = -10log10(P(variant))
                     // As there is _no_ evidence for a variant, the Phred should be MAX
-                    Some(Phred::from_phred(99).as_int())
+                    Some(Phred::from_phred(99_u8).as_int())
                 } else {
                     // There are variants, VCF spec says: QUAL = -10log10(P(no variant))
                     // Use the *inverted* maximum ML score from all real variants
@@ -443,7 +443,7 @@ fn build_indel_records(
         .indel_calls
         .iter()
         .map(|call| {
-            let anchor: rastair_types::SmolStr = metrics.pileup.reference_base.into();
+            let anchor: seqair_types::SmolStr = metrics.pileup.reference_base.into();
 
             let (ref_allele, alt_allele) = match &call.allele {
                 IndelAllele::Insertion(bases) => {

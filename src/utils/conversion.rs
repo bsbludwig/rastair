@@ -1,4 +1,4 @@
-use rastair_types::{Probability, RootMeanSquare};
+use seqair_types::{Probability, RootMeanSquare};
 
 /// Shortcut to get the default value of a type.
 pub fn default<T: Default>() -> T {

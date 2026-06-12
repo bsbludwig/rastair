@@ -2,7 +2,7 @@
 
 use crate::{FormatFieldNumber, InfoFieldNumber};
 use color_eyre::Result;
-use rastair_types::SmolStr;
+use seqair_types::SmolStr;
 use std::io::Write;
 
 /// Informational structure for VCF records

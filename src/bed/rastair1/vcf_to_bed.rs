@@ -9,14 +9,14 @@ use color_eyre::{
     Result, Section as _, SectionExt as _,
     eyre::{Context as _, ContextCompat as _, ensure, eyre},
 };
-use rastair_types::SmolStr;
-use rastair_types::{Base, SmallVec};
-use rastair_types::{Phred, Probability};
 use rastair_vcf::{
     VcfField as _,
     standard_fields::{PASS, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
+use seqair_types::SmolStr;
+use seqair_types::{Base, SmallVec};
+use seqair_types::{Phred, Probability};
 use tracing::{instrument, trace};
 
 impl Rastair1BedFormat {
@@ -99,20 +99,20 @@ impl Rastair1BedFormat {
             && let Some(first) = buffer.first()
             && let Some(val) = first.first()
         {
-            Phred::from_phred(*val as i32)
+            Phred::from_phred((*val).clamp(0.0, 255.0) as u8)
         } else {
             trace!(?genotype, "No genotype likelihood field found");
-            Phred::from_phred(0)
+            Phred::from_phred(0_u8)
         };
         let genotype_confidence = if let Ok(buffer) =
             r.format(GenotypeConfidence::ID.as_bytes()).float()
             && let Some(first) = buffer.first()
             && let Some(val) = first.first()
         {
-            Phred::from_phred(*val as i32)
+            Phred::from_phred((*val).clamp(0.0, 255.0) as u8)
         } else {
             trace!(?genotype, "No genotype confidence field found");
-            Phred::from_phred(0)
+            Phred::from_phred(0_u8)
         };
 
         // If this is a CpG position with a called CpG-relevant variant, set beta to 0.
@@ -139,7 +139,7 @@ impl Rastair1BedFormat {
         };
 
         let strand = if in_cpg {
-            if r#ref == "C" { rastair_types::Strand::OT } else { rastair_types::Strand::OB }
+            if r#ref == "C" { seqair_types::Strand::OT } else { seqair_types::Strand::OB }
         } else if de_novo {
             // Infer strand from de-novo CpG information:
             // De-novo CpGs are created when:
@@ -156,21 +156,21 @@ impl Rastair1BedFormat {
 
             if has_alt_c {
                 // This position has a variant creating a C
-                rastair_types::Strand::OT
+                seqair_types::Strand::OT
             } else if has_alt_g {
                 // This position has a variant creating a G
-                rastair_types::Strand::OB
+                seqair_types::Strand::OB
             } else if r#ref == "G" {
                 // Adjacent G position (partner to a C variant)
-                rastair_types::Strand::OB
+                seqair_types::Strand::OB
             } else if r#ref == "C" {
                 // Adjacent C position (partner to a G variant)
-                rastair_types::Strand::OT
+                seqair_types::Strand::OT
             } else {
-                rastair_types::Strand::Unknown
+                seqair_types::Strand::Unknown
             }
         } else {
-            rastair_types::Strand::Unknown
+            seqair_types::Strand::Unknown
         };
 
         let bed = Rastair1BedFormat {

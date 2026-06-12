@@ -8,7 +8,7 @@ use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat as _},
 };
-use rastair_types::Probability;
+use seqair_types::Probability;
 
 #[test]
 fn test_cpg_detection() -> Result<()> {

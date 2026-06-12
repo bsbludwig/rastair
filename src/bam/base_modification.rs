@@ -1,8 +1,8 @@
 use color_eyre::eyre::{Context, Result};
-use rastair_types::SmallVec;
-use rastair_types::{Base, Strand};
 use rust_htslib::bam::{Record, record::Aux};
 use rustc_hash::FxHashMap;
+use seqair_types::SmallVec;
+use seqair_types::{Base, Strand};
 use std::fmt::Write;
 use tracing::{debug, warn};
 

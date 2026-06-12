@@ -16,7 +16,8 @@ use color_eyre::{
     Section,
     eyre::{ContextCompat as _, Result, WrapErr, eyre},
 };
-use std::{num::NonZeroU32, rc::Rc};
+use seqair_types::Pos1;
+use std::rc::Rc;
 
 impl ReaderParams {
     pub fn test_data() -> Self {
@@ -30,7 +31,7 @@ impl ReaderParams {
     pub fn around(&mut self, chr: &str, pos: u32) -> &mut Self {
         let region = RegionString {
             chromosome: chr.into(),
-            start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
+            start: Some(Pos1::new(pos.saturating_sub(60).max(1)).unwrap()),
             end: None,
         };
         self.regions = Some(CliRegionInput::from_region(region));
@@ -48,7 +49,7 @@ impl ReaderParams {
     pub fn pileup(&self, chr: &str, pos: u32) -> Result<(Rc<Segment>, Pileup)> {
         let region = RegionString {
             chromosome: chr.into(),
-            start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
+            start: Some(Pos1::new(pos.saturating_sub(60).max(1)).unwrap()),
             end: None,
         };
         let params = Self { regions: Some(CliRegionInput::from_region(region)), ..self.clone() };
@@ -74,7 +75,7 @@ pub(crate) fn test_readers(chr: &str, pos: u32) -> Result<Readers> {
     let region = RegionString {
         chromosome: chr.into(),
         // Make sure to fetch some context around the position for metrics
-        start: Some(NonZeroU32::new(pos.saturating_sub(60).max(1)).unwrap()),
+        start: Some(Pos1::new(pos.saturating_sub(60).max(1)).unwrap()),
         end: None,
     };
     let p = ReaderParams {

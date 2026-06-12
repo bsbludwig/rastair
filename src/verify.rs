@@ -6,12 +6,11 @@ use crate::{
 };
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr, ensure, eyre};
-use rastair_types::{RegionString, SmolStr};
 use rastair_vcf::VcfField as _;
 use rust_htslib::bcf::{self, Read as _, header::HeaderView};
 use rustc_hash::{FxHashMap, FxHashSet};
+use seqair_types::{RegionString, SmolStr};
 use std::{
-    num::NonZeroU64,
     path::{Path, PathBuf},
     thread::available_parallelism,
 };
@@ -369,8 +368,8 @@ fn load_variants(
             reader
                 .fetch(
                     rid,
-                    region.start.map(NonZeroU64::from).map(|x| x.get()).unwrap_or(0),
-                    region.end.map(NonZeroU64::from).map(|x| x.get()),
+                    region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
+                    region.end.map(|x: seqair_types::Pos1| x.as_u64()),
                 )
                 .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
             for rec in reader.records() {
@@ -511,8 +510,8 @@ fn load_betas(path: &Path, regions: &[RegionString], threads: usize) -> Result<V
             reader
                 .fetch(
                     rid,
-                    region.start.map(NonZeroU64::from).map(|x| x.get()).unwrap_or(0),
-                    region.end.map(NonZeroU64::from).map(|x| x.get()),
+                    region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
+                    region.end.map(|x: seqair_types::Pos1| x.as_u64()),
                 )
                 .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
             for rec in reader.records() {

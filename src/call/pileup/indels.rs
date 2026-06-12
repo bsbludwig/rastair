@@ -1,5 +1,5 @@
 use crate::utils::{Base, Strand};
-use rastair_types::SmallVec;
+use seqair_types::SmallVec;
 
 /// A specific indel allele observed in reads.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

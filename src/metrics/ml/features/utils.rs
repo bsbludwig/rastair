@@ -1,4 +1,4 @@
-use rastair_types::Base;
+use seqair_types::Base;
 
 pub fn one_hot_encode_base(base: impl Into<Base>) -> (f64, f64, f64, f64) {
     match base.into() {

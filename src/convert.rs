@@ -17,8 +17,8 @@ use color_eyre::{
     Section as _,
     eyre::{ContextCompat, Result, WrapErr, bail, eyre},
 };
-use rastair_types::Probability;
 use rust_htslib::bcf::{self, Read as _};
+use seqair_types::Probability;
 use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};
 

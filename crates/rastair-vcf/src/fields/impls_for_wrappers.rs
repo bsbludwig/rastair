@@ -1,9 +1,9 @@
 use crate::{FormatFieldValue, InfoFieldValue};
 use color_eyre::eyre::{Context as _, Result};
-use rastair_types::SmallVec;
 use rust_htslib::bcf::Record;
+use seqair_types::SmallVec;
 
-impl InfoFieldValue for rastair_types::RootMeanSquare {
+impl InfoFieldValue for seqair_types::RootMeanSquare {
     const TYPE_NAME: &'static str = "Float";
 
     #[allow(clippy::cast_possible_truncation)] // Allow casting f64 to f32, which is common in VCF
@@ -14,7 +14,7 @@ impl InfoFieldValue for rastair_types::RootMeanSquare {
     }
 }
 
-impl FormatFieldValue for rastair_types::RootMeanSquare {
+impl FormatFieldValue for seqair_types::RootMeanSquare {
     const TYPE_NAME: &'static str = "Float";
 
     #[allow(clippy::cast_possible_truncation)] // Allow casting f64 to f32, which is common in VCF
@@ -28,7 +28,7 @@ impl FormatFieldValue for rastair_types::RootMeanSquare {
     }
 }
 
-impl InfoFieldValue for rastair_types::Phred {
+impl InfoFieldValue for seqair_types::Phred {
     const TYPE_NAME: &'static str = "Float";
 
     fn write(record: &mut Record, tag: &cstr8::CStr8, values: &[Self]) -> Result<()> {
@@ -41,7 +41,7 @@ impl InfoFieldValue for rastair_types::Phred {
     }
 }
 
-impl FormatFieldValue for rastair_types::Phred {
+impl FormatFieldValue for seqair_types::Phred {
     const TYPE_NAME: &'static str = "Float";
 
     fn write(record: &mut Record, tag: &cstr8::CStr8, values: &[Self]) -> Result<()> {

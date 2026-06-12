@@ -63,10 +63,7 @@ fn validates_region_arg() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    error: invalid value 'chr19:6105700-xxx' for '--region <REGIONS>': Invalid region string:
-    chr19:6105700-xxx
-                 ^
-
+    error: invalid value 'chr19:6105700-xxx' for '--region <REGIONS>': Malformed region string
 
     For more information, try '--help'.
     ");

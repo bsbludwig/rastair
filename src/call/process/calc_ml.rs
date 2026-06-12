@@ -9,7 +9,7 @@ use crate::{
 };
 use color_eyre::eyre::{ContextCompat as _, Result};
 use ndarray::{Array2, s};
-use rastair_types::{Base, Probability};
+use seqair_types::{Base, Probability};
 use tracing::{debug, instrument};
 
 /// Size buffer for reasonably full chunk (10k positions × 4 alts max) per thread.

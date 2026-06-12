@@ -14,11 +14,11 @@ use color_eyre::{
     Result, Section,
     eyre::{Context as _, ContextCompat, eyre},
 };
-use rastair_types::Strand;
-use rastair_types::{Base, SmallVec};
 use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use rustc_hash::FxHashMap;
+use seqair_types::Strand;
+use seqair_types::{Base, SmallVec};
 use std::thread::{self, available_parallelism};
 use tracing::{debug, error, instrument, trace, warn};
 

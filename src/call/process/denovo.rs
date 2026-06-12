@@ -1,6 +1,6 @@
 use crate::metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics};
 use color_eyre::eyre::Result;
-use rastair_types::{Base::*, Probability};
+use seqair_types::{Base::*, Probability};
 use tracing::instrument;
 
 /// Set the `denovo_adj` field based on neighboring pileup metrics

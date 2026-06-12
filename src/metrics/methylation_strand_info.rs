@@ -2,9 +2,9 @@ use crate::metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics};
 use crate::vcf::Methylated;
 use color_eyre::eyre::{Context, Result};
 use cstr8::{CStr8, cstr8};
-use rastair_types::Base::*;
 use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
 use rust_htslib::bcf;
+use seqair_types::Base::*;
 
 #[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct MethylationEvidenceStrandInfo {

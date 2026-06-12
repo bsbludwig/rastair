@@ -1,4 +1,4 @@
-use rastair_types::Probability;
+use seqair_types::Probability;
 use std::fmt;
 use std::str::FromStr;
 

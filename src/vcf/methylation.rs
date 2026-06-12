@@ -1,9 +1,9 @@
 use std::fmt;
 
 use color_eyre::{Result, eyre::WrapErr};
-use rastair_types::Probability;
 use rastair_vcf::{FormatFieldNumber, FormatFieldValue, VcfField as _};
 use rust_htslib::bcf::Record;
+use seqair_types::Probability;
 
 use crate::utils::IntoF64;
 

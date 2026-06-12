@@ -34,14 +34,13 @@ use color_eyre::eyre::{Context as _, ContextCompat, Result, bail, ensure};
 use lz4::EncoderBuilder;
 use ndarray::{Array1, Array2, Axis};
 use rand::prelude::*;
-use rastair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
 use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
+use seqair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
 use std::{
     collections::HashSet,
     fs::File,
     io::{BufWriter, Write},
-    num::NonZeroU64,
     path::{Path, PathBuf},
     thread::available_parallelism,
 };
@@ -522,8 +521,8 @@ pub fn load_truth_vcf(
             header.name2rid(region.chromosome.as_bytes()).wrap_err_with(|| {
                 format!("Failed to get rid for chromosome {} in truth VCF", region.chromosome)
             })?,
-            region.start.map(|x| NonZeroU64::from(x).get()).unwrap_or_default(),
-            region.end.map(|x| NonZeroU64::from(x).get()),
+            region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or_default(),
+            region.end.map(|x: seqair_types::Pos1| x.as_u64()),
         )
         .wrap_err("Failed to fetch region from truth VCF")?;
 

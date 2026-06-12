@@ -5,7 +5,7 @@ use color_eyre::{
     Result, Section as _,
     eyre::{Context, ContextCompat, ensure, eyre},
 };
-use rastair_types::RegionString;
+use seqair_types::RegionString;
 use std::{env, path::PathBuf, process::Command};
 use tracing::{debug, info, warn};
 

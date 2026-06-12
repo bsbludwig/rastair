@@ -10,14 +10,14 @@ use crate::{
 use clap::{Parser, value_parser};
 use clio::ClioPath;
 use color_eyre::eyre::{Context, ContextCompat, Result, eyre};
-use rastair_types::SmallVec;
-use rastair_types::{Base, Strand, StrandFromRecord};
 use rayon::prelude::*;
 use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
 };
 use rustc_hash::FxHashMap;
+use seqair_types::SmallVec;
+use seqair_types::{Base, Strand, StrandFromRecord};
 use std::thread::available_parallelism;
 
 mod base_modification;

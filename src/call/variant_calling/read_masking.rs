@@ -8,7 +8,7 @@ use crate::{
     call::pileup::SimpleRead,
     utils::{Strand, cli},
 };
-use rastair_types::SmallVec;
+use seqair_types::SmallVec;
 use std::{num::ParseIntError, str::FromStr};
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]

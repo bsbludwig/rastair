@@ -112,8 +112,8 @@ impl RecordFilters {
 //         utils::default,
 //         vcf::{InCpG, lowDp},
 //     };
-//     use rastair_types::Base::*;
-//     use rastair_types::SmallVec;
+//     use seqair_types::Base::*;
+//     use seqair_types::SmallVec;
 //     use rastair_vcf::standard_fields::PASS;
 
 //     const ML_THRESHOLD: Option<Probability> = Some(Probability::new_panicky(0.9));

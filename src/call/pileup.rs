@@ -1,5 +1,5 @@
 use crate::{sequence::ChunkRegion, utils::Base, vcf::SequenceContext};
-use rastair_types::{SmallVec, SmolStr};
+use seqair_types::{SmallVec, SmolStr};
 
 pub mod indels;
 mod read;
@@ -95,7 +95,7 @@ mod tests {
         utils::default,
     };
     use insta::assert_debug_snapshot;
-    use rastair_types::Strand;
+    use seqair_types::Strand;
 
     #[test]
     fn test_alleles_in_order() {

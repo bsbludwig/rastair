@@ -1,6 +1,6 @@
 use crate::{bed::BedRecord, sequence::Region};
 use color_eyre::eyre::Result;
-use rastair_types::SmallVec;
+use seqair_types::SmallVec;
 use std::io::Write;
 
 /// Store methylation information for a single read

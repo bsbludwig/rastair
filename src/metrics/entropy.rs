@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use crate::sequence::{ChunkRegion, Region, Segment};
     use proptest::{prop_assert, proptest};
-    use rastair_types::SmolStr;
+    use seqair_types::SmolStr;
     use std::iter::repeat_n;
 
     fn test_segment(sequence: Vec<u8>) -> Segment {

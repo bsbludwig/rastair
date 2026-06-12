@@ -11,7 +11,7 @@ use color_eyre::{
     Result,
     eyre::{Context as _, ensure},
 };
-use rastair_types::Base;
+use seqair_types::Base;
 use tracing::trace;
 
 define_features! {

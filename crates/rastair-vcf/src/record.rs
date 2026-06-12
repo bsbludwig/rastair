@@ -162,15 +162,15 @@ macro_rules! vcf_record {
     ) => {pastey::paste!{
         /// Filters that can be applied to a VCF record
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-        pub struct Filters(rastair_types::SmallVec<rastair_types::SmolStr, 8>);
+        pub struct Filters(seqair_types::SmallVec<seqair_types::SmolStr, 8>);
 
         #[allow(unused)]
         impl Filters {
             pub fn new() -> Self {
-                Self(rastair_types::SmallVec::new())
+                Self(seqair_types::SmallVec::new())
             }
 
-            pub fn add(&mut self, filter: rastair_types::SmolStr) {
+            pub fn add(&mut self, filter: seqair_types::SmolStr) {
                 self.0.push(filter);
             }
 
@@ -413,7 +413,7 @@ macro_rules! vcf_record {
             /// Metrics and data about the variant
             pub info: Info,
             /// Sample-specific data for the VCF record
-            pub samples: rastair_types::SmallVec<Format, $min_samples>,
+            pub samples: seqair_types::SmallVec<Format, $min_samples>,
         }
 
         impl $crate::WriteToVcf for Record {

@@ -2,7 +2,7 @@ use crate::{sequence::ChunkRegion, utils::cli};
 use better_default::Default;
 use color_eyre::eyre::ContextCompat as _;
 use color_eyre::eyre::Result;
-use rastair_types::{Base, SmallVec};
+use seqair_types::{Base, SmallVec};
 use std::ops::{Deref, Range};
 use tracing::warn;
 

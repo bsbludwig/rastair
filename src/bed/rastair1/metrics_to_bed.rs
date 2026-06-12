@@ -6,7 +6,7 @@ use crate::{
     vcf::{InCpG, Methylated},
 };
 use color_eyre::{Result, Section as _, SectionExt as _, eyre::eyre};
-use rastair_types::{Phred, Probability, Strand};
+use seqair_types::{Phred, Probability, Strand};
 use tracing::{debug, instrument, trace, warn};
 
 impl Rastair1BedFormat {

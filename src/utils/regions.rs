@@ -1,10 +1,10 @@
-use std::{num::NonZeroU32, path::Path, str::FromStr};
+use std::{path::Path, str::FromStr};
 
 use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat as _, ensure},
 };
-use rastair_types::{RegionString, SmolStr};
+use seqair_types::{Pos1, RegionString, SmolStr};
 
 /// A parsed CLI region input, resolved at argument parse time.
 ///
@@ -128,15 +128,17 @@ fn read_bed_file(path: &str) -> Result<Vec<RegionString>> {
             continue;
         }
 
-        let start_nz = NonZeroU32::new(u32::try_from(start_1based).wrap_err_with(|| {
+        let start_nz = Pos1::new(u32::try_from(start_1based).wrap_err_with(|| {
             format!("BED start position {start_1based} out of u32 range on line {line_num}")
         })?)
-        .wrap_err_with(|| format!("BED start position converts to zero on line {line_num}"))?;
+        .wrap_err_with(|| {
+            format!("BED start position is zero or out of range on line {line_num}")
+        })?;
 
-        let end_nz = NonZeroU32::new(u32::try_from(end_1based).wrap_err_with(|| {
+        let end_nz = Pos1::new(u32::try_from(end_1based).wrap_err_with(|| {
             format!("BED end position {end_1based} out of u32 range on line {line_num}")
         })?)
-        .wrap_err_with(|| format!("BED end position converts to zero on line {line_num}"))?;
+        .wrap_err_with(|| format!("BED end position is zero or out of range on line {line_num}"))?;
 
         regions.push(RegionString {
             chromosome: SmolStr::from(chrom),
@@ -230,7 +232,7 @@ mod tests {
     #[test]
     fn invalid_region_is_error() {
         let err = ":100".parse::<CliRegionInput>().unwrap_err();
-        assert!(err.to_string().contains("Invalid region string"));
+        assert!(err.to_string().contains("Malformed region string"));
     }
 
     #[test]
@@ -247,18 +249,18 @@ mod tests {
 
         // chr1:99-199 (0-based half-open) → 1-based inclusive chr1:100-199
         assert_eq!(regions[0].chromosome.as_str(), "chr1");
-        assert_eq!(regions[0].start, NonZeroU32::new(100));
-        assert_eq!(regions[0].end, Some(NonZeroU32::new(199).unwrap()));
+        assert_eq!(regions[0].start, Pos1::new(100));
+        assert_eq!(regions[0].end, Pos1::new(199));
 
         // chr2:0-500 (0-based half-open) → 1-based inclusive chr2:1-500
         assert_eq!(regions[1].chromosome.as_str(), "chr2");
-        assert_eq!(regions[1].start, NonZeroU32::new(1));
-        assert_eq!(regions[1].end, Some(NonZeroU32::new(500).unwrap()));
+        assert_eq!(regions[1].start, Pos1::new(1));
+        assert_eq!(regions[1].end, Pos1::new(500));
 
         // chr3:1000-2000 (0-based half-open) → 1-based inclusive chr3:1001-2000
         assert_eq!(regions[2].chromosome.as_str(), "chr3");
-        assert_eq!(regions[2].start, NonZeroU32::new(1001));
-        assert_eq!(regions[2].end, Some(NonZeroU32::new(2000).unwrap()));
+        assert_eq!(regions[2].start, Pos1::new(1001));
+        assert_eq!(regions[2].end, Pos1::new(2000));
 
         Ok(())
     }

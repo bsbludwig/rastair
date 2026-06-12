@@ -1,7 +1,7 @@
 use color_eyre::{Result, Section as _, eyre::WrapErr as _};
-use rastair_types::SmallVec;
-use rastair_types::SmolStr;
 use rust_htslib::bcf::Record;
+use seqair_types::SmallVec;
+use seqair_types::SmolStr;
 use std::{collections::BTreeSet, fmt};
 
 /// Fixed fields in a VCF record

@@ -2,7 +2,7 @@ use super::GenotypeTag;
 use crate::call::pileup::indels::{IndelAllele, IndelCounts};
 use better_default::Default;
 use probability::prelude::{Binomial, Discrete as _};
-use rastair_types::{Phred, Probability};
+use seqair_types::{Phred, Probability};
 use std::num::NonZeroU8;
 use tracing::{instrument, trace};
 
@@ -118,7 +118,7 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams, ml_enabled: bool)
         } else {
             let (tag, quality) = genotype
                 .map(|g| (g.tag, g.quality))
-                .unwrap_or((GenotypeTag::hom_ref(), Phred::from_phred(0)));
+                .unwrap_or((GenotypeTag::hom_ref(), Phred::from_phred(0_u8)));
             calls.push(IndelCall {
                 allele: allele_counts.allele.clone(),
                 genotype: tag,
@@ -172,5 +172,8 @@ fn binomial_genotype(
     let p_best = best_p / total;
     let phred = (-10.0 * (1.0 - p_best).max(1e-300).log10()).min(999.0);
 
-    Some(BinomialGenotype { tag, quality: Phred::from_phred(phred.round() as i32) })
+    Some(BinomialGenotype {
+        tag,
+        quality: Phred::from_phred(phred.round().clamp(0.0, 255.0) as u8),
+    })
 }

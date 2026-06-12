@@ -11,8 +11,8 @@ use better_default::Default;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
-use rastair_types::SmolStr;
 use rastair_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
+use seqair_types::SmolStr;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,

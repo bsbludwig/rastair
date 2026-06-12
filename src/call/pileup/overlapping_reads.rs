@@ -1,6 +1,6 @@
 use crate::call::{pileup::SimpleRead, process::PileupMappingParams};
-use rastair_types::SmallVec;
 use rustc_hash::FxHashMap;
+use seqair_types::SmallVec;
 use std::{
     collections::hash_map::Entry,
     hash::{Hash, Hasher},

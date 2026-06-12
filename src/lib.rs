@@ -30,7 +30,7 @@ pub(crate) mod io {
 }
 pub(crate) mod vcf;
 pub(crate) mod utils {
-    pub use rastair_types::*;
+    pub use seqair_types::*;
 
     pub mod file_helpers;
 

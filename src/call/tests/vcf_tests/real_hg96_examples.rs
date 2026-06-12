@@ -1,5 +1,5 @@
 use crate::{call::tests::utils::*, pileups, vcf_assert};
-use rastair_types::Base::*;
+use seqair_types::Base::*;
 
 #[test]
 fn test_denovo_cpg_that_is_variant_hg96_chr20_75254() -> Result<()> {

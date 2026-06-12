@@ -1,7 +1,7 @@
 use crate::bed::BedRecord;
 use crate::call::variant_calling::GenotypeTag;
 use color_eyre::Result;
-use rastair_types::{Base, Phred, Probability, SmolStr, Strand, smol_str::format_smolstr};
+use seqair_types::{Base, Phred, Probability, SmolStr, Strand, smol_str::format_smolstr};
 use std::io::Write;
 use tracing::debug;
 

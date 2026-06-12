@@ -9,7 +9,7 @@
 //! > not been applied, then this field must be set to the MISSING value. (String, no whitespace or semicolons
 //! > permitted, duplicate values not allowed.)
 
-use rastair_types::SmolStr;
+use seqair_types::SmolStr;
 
 /// A filter that can be applied to VCF records
 pub trait VcfFilter: Default {

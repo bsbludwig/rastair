@@ -28,6 +28,7 @@ members = ["crates/*", "tools/*"]
 color-eyre = "0.6.5"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 cstr8 = "0.1.4"
+seqair-types = { version = "0.1.0", features = ["hts-compat"] }
 rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git", default-features = false, features = [
     "libdeflate",
     "bzip2",
@@ -49,7 +50,7 @@ cstr8 = { workspace = true }
 tracing = { workspace = true }
 
 rastair-vcf = { version = "0.2.0", path = "crates/rastair-vcf" }
-rastair-types = { version = "0.2.0", path = "crates/rastair-types" }
+seqair-types = { workspace = true }
 
 # bio tools
 bio-types = "1"
@@ -178,6 +179,9 @@ biosphere.opt-level = 3
 ndarray.opt-level = 3
 lz4.opt-level = 3
 rust-htslib.opt-level = 3
+
+[patch.crates-io]
+rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git", default-features = false }
 
 [profile.profiling]
 inherits = "release"

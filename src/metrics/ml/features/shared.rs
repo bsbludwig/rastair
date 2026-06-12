@@ -4,7 +4,7 @@ use crate::{
     metrics::{AlleleMetrics, MetricsForAlt, PileupMetrics},
     utils::IntoF64 as _,
 };
-use rastair_types::Base;
+use seqair_types::Base;
 
 /// Common features shared across all ML models.
 ///

@@ -30,7 +30,7 @@ use color_eyre::{
     Result, Section,
     eyre::{Context, ensure},
 };
-use rastair_types::Probability;
+use seqair_types::Probability;
 use std::{fs, io::Read, path::Path};
 use tracing::{debug, instrument};
 

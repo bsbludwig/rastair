@@ -1,6 +1,6 @@
 //! Tests for genotyping with ML scores
 use crate::{call::tests::utils::*, pileups, vcf_assert};
-use rastair_types::{Base::*, Probability};
+use seqair_types::{Base::*, Probability};
 
 #[test]
 fn test_a_to_t_high_ml_score() -> Result<()> {

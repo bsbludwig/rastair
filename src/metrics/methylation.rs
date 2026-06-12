@@ -8,7 +8,7 @@ use color_eyre::{
     Result,
     eyre::{Context, ContextCompat},
 };
-use rastair_types::{Base, Probability};
+use seqair_types::{Base, Probability};
 use tracing::{Level, debug, instrument, trace, warn};
 
 #[instrument(
@@ -343,7 +343,7 @@ mod tests {
         pileups,
         sequence::Segment,
     };
-    use rastair_types::Probability;
+    use seqair_types::Probability;
 
     fn to_metrics(
         pileup: &Pileup,

@@ -13,9 +13,8 @@ use color_eyre::{
     Result, Section,
     eyre::{Context, ContextCompat, ensure},
 };
-use rastair_types::SmolStr;
 use rust_htslib::bam::{self, HeaderView, Read as _};
-use std::num::NonZeroU32;
+use seqair_types::SmolStr;
 use tracing::{debug, instrument, trace};
 
 #[derive(Debug, clap::Args, Clone)]
@@ -166,8 +165,8 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
     })
 }
 
-fn to_u64(value: NonZeroU32) -> u64 {
-    value.get().into()
+fn to_u64(value: seqair_types::Pos1) -> u64 {
+    value.as_u64()
 }
 
 #[instrument(level = "debug", skip(header))]

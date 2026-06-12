@@ -15,10 +15,10 @@ use color_eyre::{
     Result,
     eyre::{Context, bail},
 };
-use rastair_types::SmallVec;
-use rastair_types::SmolStr;
-use rastair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
 use rastair_vcf::VcfFilter;
+use seqair_types::SmallVec;
+use seqair_types::SmolStr;
+use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
 use std::ops::Deref;
 use tracing::trace;
 
@@ -173,7 +173,7 @@ impl PileupMetrics {
 
     pub fn contig_pos(&self) -> SmolStr {
         use std::fmt::Write as _;
-        let mut res = rastair_types::smol_str::SmolStrBuilder::new();
+        let mut res = seqair_types::smol_str::SmolStrBuilder::new();
 
         write!(&mut res, "{}:{}", self.contig(), self.pos()).expect("works");
 

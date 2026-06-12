@@ -1,7 +1,7 @@
 use crate::metrics::MetricsForIndel;
 use crate::metrics::ml::features::define_features;
 use crate::utils::IntoF64 as _;
-use rastair_types::Base;
+use seqair_types::Base;
 
 use crate::call::pileup::indels::{IndelAllele, IndelObservation};
 
@@ -192,9 +192,9 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
         edge_sq_sum += edge * edge;
 
         match obs.strand {
-            rastair_types::Strand::OT => ot_count += 1,
-            rastair_types::Strand::OB => ob_count += 1,
-            rastair_types::Strand::Unknown => {}
+            seqair_types::Strand::OT => ot_count += 1,
+            seqair_types::Strand::OB => ob_count += 1,
+            seqair_types::Strand::Unknown => {}
         }
 
         if obs.has_repeat {
@@ -368,7 +368,7 @@ fn count_unit_copies(seq: &[Base], unit: &[Base]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rastair_types::SmallVec;
+    use seqair_types::SmallVec;
 
     fn bases(s: &str) -> SmallVec<Base, 4> {
         s.bytes().map(Base::from).collect()

@@ -1,6 +1,6 @@
 use crate::metrics::{AltCall, PileupMetrics};
 use color_eyre::eyre::Result;
-use rastair_types::{
+use seqair_types::{
     Base::{self, *},
     Probability, SmallVec,
 };

@@ -6,7 +6,7 @@ use crate::{
 use better_default::Default;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
-use rastair_types::Probability;
+use seqair_types::Probability;
 use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, clap::Args, Default)]

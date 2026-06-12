@@ -1,6 +1,6 @@
 use crate::utils::cli;
-use rastair_types::SmolStr;
 use rust_htslib::bam;
+use seqair_types::SmolStr;
 use std::{str::FromStr, sync::Arc};
 
 /// A parsed `TAG=VALUE` filter argument.

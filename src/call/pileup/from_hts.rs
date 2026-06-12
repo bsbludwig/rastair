@@ -12,13 +12,13 @@ use crate::{
     utils::SequenceContext,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
-use rastair_types::{Base, SmallVec, Strand, strand_from_flags};
 use rust_htslib::bam::{
     Record,
     ext::BamRecordExtensions as _,
     pileup::{Alignment, Indel, Pileup as HtsPileup},
 };
 use rustc_hash::{FxHashMap, FxHasher};
+use seqair_types::{Base, SmallVec, Strand, strand_from_flags};
 use std::{
     hash::{Hash, Hasher},
     rc::Rc,
@@ -39,7 +39,7 @@ impl ReadOrientationCache {
     ) -> Option<Strand> {
         let record = alignment.record_view();
         if !params.guess_read_orientation {
-            return strand_from_flags(record.flags()).ok();
+            return strand_from_flags(record.flags().into()).ok();
         }
 
         let key = ReadOrientationCacheKey::from_alignment(alignment);

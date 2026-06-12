@@ -7,8 +7,8 @@ use crate::{
 };
 use color_eyre::eyre::{ContextCompat, Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
-use rastair_types::{Probability, SmallVec};
 use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
+use seqair_types::{Probability, SmallVec};
 use std::num::{NonZeroI32, NonZeroU8};
 use tracing::{instrument, trace};
 

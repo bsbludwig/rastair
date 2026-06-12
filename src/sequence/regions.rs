@@ -3,8 +3,8 @@ use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat},
 };
-use rastair_types::SmolStr;
 use rust_htslib::bam::FetchDefinition;
+use seqair_types::SmolStr;
 use std::fmt;
 
 /// A genomic region with chromosome and coordinates

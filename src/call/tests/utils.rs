@@ -18,7 +18,7 @@ pub use crate::{call::record_filters::RecordFilters, utils::default};
 use clio::ClioPath;
 use color_eyre::eyre::ContextCompat as _;
 pub(crate) use color_eyre::{Result, eyre::bail};
-use rastair_types::{Base, Probability, Strand};
+use seqair_types::{Base, Probability, Strand};
 use std::{rc::Rc, str::FromStr, sync::OnceLock};
 
 pub const ML_THRESHOLD: Probability = Probability::new_panicky(0.5);
@@ -30,10 +30,10 @@ macro_rules! pileups {
         $([ $($base:ident)+ ] $strand:ident ),+ $(,)?
     ) => {{
         $crate::call::tests::utils::create_pileups(
-            vec![$( rastair_types::Base::$ref_base ),+],
+            vec![$( seqair_types::Base::$ref_base ),+],
             vec![$(
                 $crate::call::tests::utils::ReadLine {
-                    bases: vec![$( rastair_types::Base::$base ),+],
+                    bases: vec![$( seqair_types::Base::$base ),+],
                     strand: $crate::call::tests::utils::parse_strand(stringify!($strand))
                 }
             ),+]
@@ -134,7 +134,7 @@ macro_rules! vcf_assert {
         $crate::call::tests::utils::VcfMatcher {
             expected: vec![$(
                 $crate::call::tests::utils::ExpectedVcfRecord {
-                    ref_base: rastair_types::Base::$ref,
+                    ref_base: seqair_types::Base::$ref,
                     alt_bases: vec![$( $crate::call::tests::utils::parse_alt_token(stringify!($alt)) ),+],
                     pass_status: Some($crate::call::tests::utils::parse_pass_status(stringify!($pass_status))),
                     fields: vec![$( (stringify!($field), $value.to_field_value()) ),*],
@@ -149,7 +149,7 @@ macro_rules! vcf_assert {
         $crate::call::tests::utils::VcfMatcher {
             expected: vec![$(
                 $crate::call::tests::utils::ExpectedVcfRecord {
-                    ref_base: rastair_types::Base::$ref,
+                    ref_base: seqair_types::Base::$ref,
                     alt_bases: vec![$( $crate::call::tests::utils::parse_alt_token(stringify!($alt)) ),+],
                     pass_status: None,
                     fields: vec![],
@@ -160,7 +160,7 @@ macro_rules! vcf_assert {
 }
 
 pub(crate) fn parse_alt_token(s: &str) -> Option<Base> {
-    if s == "." { None } else { rastair_types::Base::from_str(s).ok() }
+    if s == "." { None } else { seqair_types::Base::from_str(s).ok() }
 }
 
 pub(crate) fn parse_pass_status(s: &str) -> bool {

@@ -8,8 +8,8 @@
 //! <https://github.com/samtools/hts-specs/blob/0d7f8774658f7cee0a4540b0682174e460726432/VCFv4.5.tex>
 //! for the VCF spec.
 
-use rastair_types::Phred;
 use rastair_vcf::{standard_fields::*, *};
+use seqair_types::Phred;
 
 mod as_strand_bias;
 pub use as_strand_bias::AlleleSpecificStrandBias;
@@ -192,8 +192,8 @@ mod tests {
         let writer = VcfBuilder::new(&temp_file, VcfFormat::Vcf, Compression::Off, 1)
             .expect("create builder");
 
-        let contigs = [Contig { name: rastair_types::SmolStr::new("chr1"), length: 1000 }];
-        let samples = [rastair_types::SmolStr::new("sample1")];
+        let contigs = [Contig { name: seqair_types::SmolStr::new("chr1"), length: 1000 }];
+        let samples = [seqair_types::SmolStr::new("sample1")];
 
         let mut vcf = writer.build::<Record>(&contigs, &samples).expect("build vcf");
 

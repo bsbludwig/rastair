@@ -148,7 +148,7 @@ mod tests {
         sequence::{ChunkRegion, Region, Segment},
         vcf::SequenceContext,
     };
-    use rastair_types::Base;
+    use seqair_types::Base;
     use std::rc::Rc;
 
     /// Helper to create a minimal `PileupMetrics` for testing
