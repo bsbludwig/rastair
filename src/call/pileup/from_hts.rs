@@ -1,37 +1,48 @@
+#[cfg(not(feature = "experimental-seqair"))]
 use super::{
-    INDEL_REF_WINDOW_DOWN, INDEL_REF_WINDOW_LEN, INDEL_REF_WINDOW_UP,
     indels::{IndelAllele, IndelObservation},
     overlapping_reads::{NameCollector, resolve_pair},
+    ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
 };
+use crate::sequence::Segment;
+#[cfg(not(feature = "experimental-seqair"))]
 use crate::{
     call::{
         pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
         process::PileupMappingParams,
     },
-    sequence::Segment,
     utils::SequenceContext,
 };
+#[cfg(not(feature = "experimental-seqair"))]
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
+#[cfg(not(feature = "experimental-seqair"))]
 use rust_htslib::bam::{
-    Record,
-    ext::BamRecordExtensions as _,
     pileup::{Alignment, Indel, Pileup as HtsPileup},
     record::RecordView,
 };
-use rustc_hash::{FxHashMap, FxHasher};
-use seqair_types::{Base, SmallVec, Strand, strand_from_flags};
-use std::{
-    hash::{Hash, Hasher},
-    mem,
-    rc::Rc,
-};
-use tracing::{debug, instrument, trace};
+use rust_htslib::bam::{Record, ext::BamRecordExtensions as _};
+#[cfg(not(feature = "experimental-seqair"))]
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
+#[cfg(not(feature = "experimental-seqair"))]
+use seqair_types::SmallVec;
+#[cfg(not(feature = "experimental-seqair"))]
+use seqair_types::strand_from_flags;
+use seqair_types::{Base, Strand};
+use std::hash::{Hash, Hasher};
+#[cfg(not(feature = "experimental-seqair"))]
+use std::{mem, rc::Rc};
+use tracing::trace;
+#[cfg(not(feature = "experimental-seqair"))]
+use tracing::{debug, instrument};
 
+#[cfg(not(feature = "experimental-seqair"))]
 #[derive(Default)]
 pub(crate) struct ReadOrientationCache {
     strands: FxHashMap<ReadOrientationCacheKey, Strand>,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 impl ReadOrientationCache {
     fn strand_for_alignment(
         &mut self,
@@ -55,11 +66,13 @@ impl ReadOrientationCache {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 #[derive(Default)]
 pub(crate) struct ReadMismatchCache {
     counts: FxHashMap<ReadOrientationCacheKey, u32>,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 impl ReadMismatchCache {
     fn mismatch_count_for_alignment(
         &mut self,
@@ -77,6 +90,7 @@ impl ReadMismatchCache {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ReadOrientationCacheKey {
     name_hash: u64,
@@ -84,6 +98,7 @@ struct ReadOrientationCacheKey {
     flags: u16,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 impl ReadOrientationCacheKey {
     fn from_alignment(alignment: &Alignment<'_>) -> Self {
         let record = alignment.record_view();
@@ -108,6 +123,7 @@ impl ReadOrientationEvidence {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 /// Buffers and caches reused across every pileup column in a segment.
 ///
 /// A whole-genome run calls [`Pileup::from_hts`] once per reference base, so
@@ -120,6 +136,7 @@ pub(crate) struct PileupScratch {
     fragments: FragmentVotes,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 impl PileupScratch {
     pub(crate) fn new(params: &PileupMappingParams) -> Self {
         Self {
@@ -131,6 +148,7 @@ impl PileupScratch {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 /// What each fragment contributes to one pileup column.
 ///
 /// Entries are indexed by the slot of whichever mate the pileup reported first,
@@ -146,6 +164,7 @@ struct FragmentVotes {
     votes: Vec<FragmentVote>,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 #[derive(Clone, Copy, Default)]
 struct FragmentVote {
     /// Some mate of this fragment carries an indel here.
@@ -155,12 +174,14 @@ struct FragmentVote {
     soft_clipped: bool,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 #[derive(Default)]
 struct FragmentTotals {
     noisy_ref_count: u32,
     soft_clip_count: u32,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 impl FragmentVotes {
     fn prepare(&mut self, capacity: usize) {
         self.votes.clear();
@@ -212,6 +233,7 @@ impl FragmentVotes {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 /// The alignment shapes that make an indel call at this column unreliable.
 #[derive(Clone, Copy)]
 struct AlignmentShape {
@@ -219,6 +241,7 @@ struct AlignmentShape {
     soft_clipped: bool,
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 impl AlignmentShape {
     fn of(record: &RecordView<'_>) -> Self {
         let (seq, _) = record.seq_and_qual();
@@ -234,6 +257,7 @@ impl AlignmentShape {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 impl Pileup {
     /// Convert a pileup from htslib into our internal Pileup representation.
     #[instrument(level = "trace", skip_all)]
@@ -373,6 +397,7 @@ impl Pileup {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 /// The indel this alignment shows at `pos`, if it survives the indel-specific
 /// filters.
 ///
@@ -460,6 +485,7 @@ fn indel_observation(
     })
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 fn alignment_to_read<'a>(
     a: &Alignment<'a>,
     segment: &Segment,
@@ -573,6 +599,7 @@ fn count_motif(motif: [Base; 2], evidence: &mut ReadOrientationEvidence) {
     }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 fn count_taps_aware_mismatches(record: &Record, segment: &Segment, strand: Strand) -> u32 {
     let seq = record.seq().as_bytes();
     let mut count = 0u32;
@@ -623,12 +650,14 @@ fn pseudo_random_strand(record: &Record) -> Strand {
     if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = FxHasher::default();
     bytes.hash(&mut hasher);
     hasher.finish()
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 /// Calculate matches and indels from a packed CIGAR array.
 ///
 /// Lower 4 bits encode the operation; upper 28 bits encode the length.
@@ -646,87 +675,13 @@ fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
     (matches, indels)
 }
 
+#[cfg(not(feature = "experimental-seqair"))]
 /// Check if a CIGAR array contains a soft-clip operation (op 4).
 fn has_soft_clip(cigar: &[u32]) -> bool {
     cigar.iter().any(|&c| c & 0xF == 4)
 }
 
-/// Reference bases around the anchor at segment index `idx`, plus the anchor's
-/// index within the returned window. Clamped at segment boundaries.
-fn indel_ref_window_at(
-    idx: usize,
-    segment: &Segment,
-) -> (SmallVec<Base, INDEL_REF_WINDOW_LEN>, u8) {
-    let seq = &segment.sequence;
-    let start = idx.saturating_sub(INDEL_REF_WINDOW_UP);
-    let end = (idx + INDEL_REF_WINDOW_DOWN + 1).min(seq.len());
-    let window = seq.get(start..end).unwrap_or(&[]).iter().map(|&b| Base::from(b)).collect();
-    let anchor = u8::try_from(idx - start).unwrap_or(0);
-    (window, anchor)
-}
-
-fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8 {
-    let seq = &segment.sequence;
-    let idx = pos.saturating_sub(segment_start);
-    let Some(&center) = seq.get(idx) else { return 0 };
-    let mut run = 1u8;
-    let mut i = idx;
-    while i > 0 {
-        i -= 1;
-        if seq.get(i) == Some(&center) {
-            run = run.saturating_add(1);
-        } else {
-            break;
-        }
-    }
-    i = idx;
-    while i + 1 < seq.len() {
-        i += 1;
-        if seq.get(i) == Some(&center) {
-            run = run.saturating_add(1);
-        } else {
-            break;
-        }
-    }
-    run
-}
-
-fn dinucleotide_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8 {
-    let seq = &segment.sequence;
-    let idx = pos.saturating_sub(segment_start);
-    let try_phase = |start: usize| -> u8 {
-        if start + 1 >= seq.len() {
-            return 0;
-        }
-        let p0 = seq[start];
-        let p1 = seq[start + 1];
-        if p0 == p1 {
-            return 0;
-        }
-        let mut run = 2u8;
-        let mut i = start;
-        while i >= 2 {
-            if seq.get(i - 2) == Some(&p0) && seq.get(i - 1) == Some(&p1) {
-                run = run.saturating_add(2);
-                i -= 2;
-            } else {
-                break;
-            }
-        }
-        i = start + 2;
-        while i + 1 < seq.len() {
-            if seq.get(i) == Some(&p0) && seq.get(i + 1) == Some(&p1) {
-                run = run.saturating_add(2);
-                i += 2;
-            } else {
-                break;
-            }
-        }
-        run
-    };
-    try_phase(idx).max(try_phase(idx.saturating_sub(1)))
-}
-
+#[cfg(not(feature = "experimental-seqair"))]
 /// Check if first or last `cutoff` bases of a read form a repeating pattern of length `n`.
 /// Whether either read terminus is a tandem repeat of period `n`, measured in whole
 /// repeat units.
@@ -762,11 +717,11 @@ fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, units: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        call::{process::PileupMappingParams, variant_calling::VariantCallingParams},
-        sequence::{ChunkRegion, Region, Segment},
-        utils::default,
-    };
+    #[cfg(not(feature = "experimental-seqair"))]
+    use crate::call::{process::PileupMappingParams, variant_calling::VariantCallingParams};
+    use crate::sequence::{ChunkRegion, Region, Segment};
+    #[cfg(not(feature = "experimental-seqair"))]
+    use crate::utils::default;
     use rust_htslib::bam::record::{Cigar, CigarString};
 
     /// A run counter is a `u8` but a reference tract can be longer than 255. The
@@ -810,6 +765,7 @@ mod tests {
         record
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn name_collector_skip_when_keep_overlapping() {
         let params = PileupMappingParams {
@@ -819,6 +775,7 @@ mod tests {
         assert!(matches!(NameCollector::new(&params), NameCollector::Skip));
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn name_collector_collect_by_default() {
         let params = PileupMappingParams::default();
@@ -885,6 +842,7 @@ mod tests {
         assert!(matches!(first, Strand::OT | Strand::OB));
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_ot_ct_not_counted() {
         // C→T on OT is TAPS methylation signal — must not count
@@ -893,6 +851,7 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 0);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_ob_ga_not_counted() {
         // G→A on OB is TAPS methylation signal — must not count
@@ -901,6 +860,7 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OB), 0);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_ot_other_mismatch_counted() {
         // A→G on OT is a real sequencing error — must count
@@ -909,6 +869,7 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 1);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_ob_ct_counted() {
         // C→T on OB is not a TAPS signal (wrong strand) — must count
@@ -917,6 +878,7 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OB), 1);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_unknown_strand_excludes_both_patterns() {
         // Unknown strand: conservatively skip both C→T and G→A to avoid
@@ -926,6 +888,7 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::Unknown), 0);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_no_mismatches_returns_zero() {
         let segment = test_segment(b"ACGT");
@@ -933,6 +896,7 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 0);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_mixed_counts_only_non_taps() {
         // A→G (real error, counted) + C→T (TAPS on OT, excluded) = 1
@@ -941,6 +905,7 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 1);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn taps_aware_multiple_real_mismatches_all_counted() {
         // Two non-TAPS mismatches on OT — both must count

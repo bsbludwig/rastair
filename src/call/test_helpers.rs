@@ -8,7 +8,7 @@ use crate::{
         process::{PileupMappingParams, get_pileups},
         variant_calling::{ReadFlags, VariantCallingParams},
     },
-    sequence::{ReaderParams, Readers, Segment},
+    sequence::{PileupReaders, ReaderParams, Readers, Segment},
     utils::{CliRegionInput, RegionString},
 };
 use clio::ClioPath;
@@ -53,7 +53,7 @@ impl ReaderParams {
             end: None,
         };
         let params = Self { regions: Some(CliRegionInput::from_region(region)), ..self.clone() };
-        let mut readers = params.readers().wrap_err("failed to fetch segments")?;
+        let mut readers = params.pileup_readers().wrap_err("failed to fetch segments")?;
         let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
         let pileup_mapping_params = PileupMappingParams::default();
