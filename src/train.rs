@@ -26,7 +26,7 @@ use crate::{
     },
     rayon_all,
     regions::ConfidentRegions,
-    sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
+    sequence::{ChunkRegion, PileupReaders, ReaderParams, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli},
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
@@ -258,7 +258,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let segmentation = SegmentationParams::default();
     let regions: Vec<ChunkRegion> = params
         .reader
-        .readers()
+        .pileup_readers()
         .wrap_err("Failed to read BAM/FASTA files")?
         .segments(segmentation.segment_max_length, segmentation.segment_overlap)
         .wrap_err("Could not fetch segments from BAM file")?
@@ -301,7 +301,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
             thread_local! {
                 /// Readers for the BAM and FASTA files, initialized per thread to avoid
                 /// re-opening files or having a lock
-                static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+                static READERS: std::cell::RefCell<Option<PileupReaders>> = const { std::cell::RefCell::new(None) };
             }
 
             regions
@@ -315,7 +315,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
                         let readers = {
                             // Initialize thread-local readers first time the thread accesses them
                             if local_readers.is_none() {
-                                match params.reader.readers() {
+                                match params.reader.pileup_readers() {
                                     Ok(readers) => {
                                         *local_readers = Some(readers);
                                     }
@@ -664,7 +664,7 @@ fn process_truth_record(record: &bcf::Record) -> (SmallVec<PositionKey, 2>, Smal
 /// Collect training data from a single segment
 fn collect_training_data_from_segment(
     chunk_region: &ChunkRegion,
-    readers: &mut Readers,
+    readers: &mut PileupReaders,
     snp_truth: &HashSet<PositionKey>,
     indel_truth: &HashSet<IndelKey>,
     indel_params: &IndelParams,

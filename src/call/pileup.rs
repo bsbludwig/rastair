@@ -5,7 +5,10 @@ pub mod indels;
 mod read;
 pub use read::*;
 pub(crate) mod from_hts;
+#[cfg(feature = "experimental-seqair")]
+pub(crate) mod from_seqair;
 pub(crate) mod overlapping_reads;
+pub(crate) mod ref_features;
 
 /// Reference bases kept upstream / downstream of the anchor for indel slippage
 /// detection. Downstream must span the indel plus a few repeat units; a little

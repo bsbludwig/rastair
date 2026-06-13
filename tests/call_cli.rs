@@ -268,6 +268,16 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
     //     summary.unmod_diff_positions,
     //     summary.shared_calls,
     // );
+    // The `--guess-read-orientation` motif heuristic is mildly engine-sensitive
+    // (seqair walks aligned pairs via `matches_only()`, htslib via
+    // `aligned_pairs_full()`), so a handful of low-coverage unmod counts differ.
+    // Both stay within the closeness assertions above; snapshot each engine
+    // separately so both builds pass.
+    #[cfg(feature = "experimental-seqair")]
+    insta::with_settings!({snapshot_suffix => "seqair"}, {
+        assert_compact_debug_snapshot!(summary);
+    });
+    #[cfg(not(feature = "experimental-seqair"))]
     assert_compact_debug_snapshot!(summary);
 
     Ok(())

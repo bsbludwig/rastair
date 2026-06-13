@@ -29,7 +29,7 @@ use crate::{
         self, MethylationEvidenceStrandInfo, PileupMetrics,
         ml::types::{GpuRastairModel, MachineLearning},
     },
-    sequence::{ChunkRegion, ReaderParams, Readers, Segment, SegmentationParams},
+    sequence::{ChunkRegion, PileupReaders, ReaderParams, Segment, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
 };
 use clio::ClioPath;
@@ -46,7 +46,7 @@ pub mod methylation;
 pub mod ml;
 pub mod pileup;
 mod record_filters;
-mod require_tags;
+pub(crate) mod require_tags;
 pub mod variant_calling;
 mod writer;
 
@@ -162,7 +162,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
-    let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
+    let readers = params.segments.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
 
     // Get segments that are small enough to process in RAM
     let regions: Vec<ChunkRegion> = readers
@@ -289,7 +289,7 @@ fn process_region_wrapper(
     thread_local! {
         /// Readers for the BAM and FASTA files, initialized per thread to avoid
         /// re-opening files or having a lock
-        static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+        static READERS: std::cell::RefCell<Option<PileupReaders>> = const { std::cell::RefCell::new(None) };
     }
 
     // Lazily fork the GPU forests for this thread on its first chunk.
@@ -311,7 +311,7 @@ fn process_region_wrapper(
             if local_readers.is_none() {
                 let readers = params
                     .segments
-                    .readers()
+                    .pileup_readers()
                     .wrap_err("Failed to open readers in worker thread")?;
                 *local_readers = Some(readers);
             }
