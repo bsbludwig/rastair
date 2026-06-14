@@ -7,7 +7,7 @@ use crate::{
 };
 use color_eyre::eyre::{ContextCompat, Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
-use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
+use rust_htslib::bcf::record::GenotypeAllele as HtslibGenotypeAllele;
 use seqair_types::{Probability, SmallVec};
 use std::num::{NonZeroI32, NonZeroU8};
 use tracing::{instrument, trace};
@@ -329,6 +329,32 @@ impl GenotypeTag {
     pub const TT: Self = Self::HomAlt(NonZeroU8::new(1).unwrap());
 }
 
+/// A single genotype allele, mirroring [`rust_htslib::bcf::record::GenotypeAllele`]
+/// with serde support. Used when reading genotypes back from a VCF (e.g. BED
+/// conversion); writing goes through seqair's [`Genotype`](seqair::vcf::Genotype).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GenotypeAllele {
+    /// Unphased allele with index `i`.
+    Unphased(i32),
+    /// Phased allele with index `i`.
+    Phased(i32),
+    /// Unphased missing allele.
+    UnphasedMissing,
+    /// Phased missing allele.
+    PhasedMissing,
+}
+
+impl From<HtslibGenotypeAllele> for GenotypeAllele {
+    fn from(allele: HtslibGenotypeAllele) -> Self {
+        match allele {
+            HtslibGenotypeAllele::Unphased(i) => GenotypeAllele::Unphased(i),
+            HtslibGenotypeAllele::Phased(i) => GenotypeAllele::Phased(i),
+            HtslibGenotypeAllele::UnphasedMissing => GenotypeAllele::UnphasedMissing,
+            HtslibGenotypeAllele::PhasedMissing => GenotypeAllele::PhasedMissing,
+        }
+    }
+}
+
 impl From<GenotypeTag> for [GenotypeAllele; 2] {
     fn from(value: GenotypeTag) -> Self {
         match value {
@@ -345,13 +371,6 @@ impl From<GenotypeTag> for [GenotypeAllele; 2] {
                 GenotypeAllele::Unphased(NonZeroI32::from(n).get()),
             ],
         }
-    }
-}
-
-impl From<GenotypeTag> for Genotype {
-    fn from(value: GenotypeTag) -> Self {
-        let genotype: [GenotypeAllele; 2] = value.into();
-        Genotype(genotype.into())
     }
 }
 

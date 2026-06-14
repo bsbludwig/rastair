@@ -14,7 +14,6 @@ pub use mbias::{MBiasParams, mbias};
 
 // utils
 pub use utils::logging::setup_logging;
-pub use vcf::Record as VcfRecord;
 
 pub(crate) mod bam;
 pub(crate) mod bed;
@@ -29,7 +28,7 @@ pub(crate) mod io {
     pub mod mpk;
     pub mod vcf_writer;
 }
-pub(crate) mod vcf;
+pub mod vcf;
 pub(crate) mod utils {
     pub use seqair_types::*;
 

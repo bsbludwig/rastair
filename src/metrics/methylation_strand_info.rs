@@ -1,8 +1,4 @@
 use crate::metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics};
-use color_eyre::eyre::{Context, Result};
-use cstr8::{CStr8, cstr8};
-use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
-use rust_htslib::bcf;
 use seqair_types::Base::*;
 
 #[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -101,34 +97,12 @@ impl MethylationEvidenceStrandInfo {
     }
 }
 
-impl VcfField for MethylationEvidenceStrandInfo {
-    const ID: &'static CStr8 = cstr8!("M5mC_Strands");
-}
-
-impl HeaderField for MethylationEvidenceStrandInfo {
-    const DESCRIPTION: &'static str = "Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset.";
-}
-
-impl InfoField for MethylationEvidenceStrandInfo {
-    type Type = u32;
-    const NUMBER: InfoFieldNumber = InfoFieldNumber::Num(4);
-
-    #[expect(clippy::cast_possible_wrap, reason = "vcf integer fields with number below i32::MAX")]
-    fn write(&self, record: &mut bcf::Record) -> Result<()> {
-        record
-            .push_info_integer(
-                Self::ID,
-                &[self.unmod as i32, self.modified as i32, self.no_snp as i32, self.snp as i32],
-            )
-            .wrap_err("Failed to set M5mC_Strands field")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::metrics;
     use crate::pileups;
+    use color_eyre::Result;
 
     #[test]
     fn denovo_inside_ref_cpg_uses_denovo_context() -> Result<()> {

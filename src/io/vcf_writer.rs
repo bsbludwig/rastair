@@ -1,21 +1,24 @@
 use crate::{
+    call::{RecordFilters, variant_calling::ErrorModel},
     io::{
         formats::FromFileExtension,
         mpk::{MessagePackWriter, format::MpkVcfHeader},
     },
+    metrics::PileupMetrics,
     sequence::ChunkRegion,
     utils::{cli, logging::ThisIsABug as _},
-    vcf::Record,
+    vcf::{Contig, FieldConfig, Schema, emit_pileup, register},
 };
 use better_default::Default;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
-use rastair_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
-use seqair_types::SmolStr;
+use seqair::vcf::{OutputFormat, Ready, Writer as SeqWriter};
+use seqair_types::{Probability, SmolStr};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
+    io::Write,
     num::NonZeroUsize,
 };
 use tracing::{debug, warn};
@@ -109,12 +112,12 @@ pub enum VcfFormat {
     Bcf,
 }
 
-impl From<VcfFormat> for (HtsVcfFormat, Compression) {
+impl From<VcfFormat> for OutputFormat {
     fn from(format: VcfFormat) -> Self {
         match format {
-            VcfFormat::Vcf => (HtsVcfFormat::Vcf, Compression::Off),
-            VcfFormat::VcfCompressed => (HtsVcfFormat::Vcf, Compression::On),
-            VcfFormat::Bcf => (HtsVcfFormat::Bcf, Compression::On),
+            VcfFormat::Vcf => OutputFormat::Vcf,
+            VcfFormat::VcfCompressed => OutputFormat::VcfGz,
+            VcfFormat::Bcf => OutputFormat::Bcf,
         }
     }
 }
@@ -150,6 +153,16 @@ impl VcfParams {
         format
     }
 
+    /// Build the field configuration from the CLI flags.
+    pub fn field_config(&self) -> FieldConfig {
+        let config = FieldConfig::default();
+        if self.vcf_all_fields {
+            config.with_all_fields()
+        } else {
+            config.with_field_ids(&self.vcf_info_fields, &self.vcf_format_fields)
+        }
+    }
+
     pub fn writer(&self, regions: &[ChunkRegion], metadata: &[String]) -> Result<Option<Writer>> {
         let Some(_) = &self.vcf else {
             return Ok(None);
@@ -165,7 +178,7 @@ impl VcfParams {
         let contigs: Vec<Contig> = contigs.into_iter().collect();
         let samples = vec![SmolStr::new("sample")]; // Note: we only deal with one sample for now
 
-        let (format, compression) = match self.guess_format() {
+        let format = match self.guess_format() {
             Format::MessagePack => {
                 let writer = self
                     .create_mpk_writer(contigs, samples, metadata)
@@ -177,49 +190,43 @@ impl VcfParams {
             Format::Vcf(f) => f.into(),
         };
 
-        // Build field configuration from CLI flags
-        let field_config = {
-            let config = crate::vcf::FieldConfig::default();
-            if self.vcf_all_fields {
-                config.with_all_fields()
-            } else {
-                config.with_field_ids(&self.vcf_info_fields, &self.vcf_format_fields)
-            }
-        };
-
         Ok(Some(Writer::Vcf(
-            self.vcf_writer(&contigs, &samples, metadata, format, compression)
+            self.seqair_writer(&contigs, &samples, metadata, format)
                 .wrap_err("Failed to create VCF writer")?
                 .wrap_err("No VCF output path present")
-                .this_is_a_bug()?
-                .with_config(field_config),
+                .this_is_a_bug()?,
         )))
     }
 
-    pub fn vcf_writer(
+    /// Build a seqair-backed VCF/BCF writer for the configured output path.
+    pub fn seqair_writer(
         &self,
         contigs: &[Contig],
         samples: &[SmolStr],
         metadata: &[String],
-        format: HtsVcfFormat,
-        compression: Compression,
-    ) -> Result<Option<VcfFile<Record>>> {
+        format: OutputFormat,
+    ) -> Result<Option<SeqairVcfWriter>> {
         let Some(vcf_output) = &self.vcf else {
             return Ok(None);
         };
 
-        debug!(
-            target=?vcf_output.display(), ?format, ?compression,
-            "Creating VCF writer",
+        debug!(target=?vcf_output.display(), ?format, "Creating VCF writer");
+
+        let (header, schema) =
+            register(contigs, samples, metadata).wrap_err("Failed to build VCF header")?;
+
+        let inner: Box<dyn Write + Send> = Box::new(
+            vcf_output
+                .clone()
+                .create()
+                .wrap_err_with(|| format!("Failed to create output {vcf_output}"))?,
         );
-        let mut writer = VcfBuilder::new(vcf_output, format, compression, self.vcf_threads.get())
-            .wrap_err("Failed to create VCF writer")?;
 
-        for line in metadata {
-            writer.add_header_line(format!("##{line}"));
-        }
+        let writer = SeqWriter::new(inner, format)
+            .write_header(&header)
+            .wrap_err("Failed to write VCF header")?;
 
-        Some(writer.build(contigs, samples).wrap_err("Failed to build VCF writer")).transpose()
+        Ok(Some(SeqairVcfWriter { writer: Some(writer), schema, config: self.field_config() }))
     }
 
     pub fn create_mpk_writer(
@@ -244,7 +251,45 @@ impl VcfParams {
     }
 }
 
+/// A seqair-backed VCF/BCF writer plus the resolved schema and field selection.
+pub struct SeqairVcfWriter {
+    writer: Option<SeqWriter<Box<dyn Write + Send>, Ready>>,
+    schema: Schema,
+    config: FieldConfig,
+}
+
+impl SeqairVcfWriter {
+    /// Encode every VCF record this pileup produces.
+    pub fn emit(
+        &mut self,
+        pileup: &PileupMetrics,
+        ml_threshold: Option<Probability>,
+        error_model: &ErrorModel,
+        record_filter: &RecordFilters,
+    ) -> Result<()> {
+        let writer =
+            self.writer.as_mut().wrap_err("VCF writer already finished").this_is_a_bug()?;
+        emit_pileup(
+            pileup,
+            &self.schema,
+            &self.config,
+            ml_threshold,
+            error_model,
+            record_filter,
+            writer,
+        )
+    }
+
+    /// Flush the BGZF EOF block / finalize the stream. Must be called once.
+    pub fn finish(&mut self) -> Result<()> {
+        if let Some(writer) = self.writer.take() {
+            writer.finish().wrap_err("Failed to finish VCF output")?;
+        }
+        Ok(())
+    }
+}
+
 pub enum Writer {
-    Vcf(VcfFile<Record>),
+    Vcf(SeqairVcfWriter),
     MessagePack(MessagePackWriter),
 }

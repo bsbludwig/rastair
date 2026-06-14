@@ -2,7 +2,7 @@
 source: tests/call_cli.rs
 expression: stdout
 ---
-##fileformat=VCFv4.2
+##fileformat=VCFv4.3
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##rastairVersion=2.2.0
 ##rastairCommand=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105800 --no-ml

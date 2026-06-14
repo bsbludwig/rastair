@@ -3,9 +3,7 @@ use crate::{
     utils::{Base, logging::ThisIsABug as _},
 };
 use better_default::Default;
-use color_eyre::eyre::{Context as _, ContextCompat as _, Result};
-use rastair_vcf::{HeaderField, InfoField, InfoFieldNumber, VcfField};
-use rust_htslib::bcf::Record;
+use color_eyre::eyre::{ContextCompat as _, Result};
 use seqair_types::smol_str::{SmolStr, SmolStrBuilder};
 
 /// 5-base sequence context centered on the variant position
@@ -41,7 +39,8 @@ impl SequenceContext {
         Ok(SequenceContext { before_2, before_1, me, after_1, after_2 })
     }
 
-    fn to_smol_str(&self) -> SmolStr {
+    /// The context as the VCF `SC5` string (1–5 bases, missing flanks omitted).
+    pub fn as_vcf_str(&self) -> SmolStr {
         let mut res = SmolStrBuilder::new();
         if let Some(base) = self.before_2 {
             res.push_str(base.into());
@@ -57,25 +56,6 @@ impl SequenceContext {
             res.push_str(base.into());
         };
         res.finish()
-    }
-}
-
-impl VcfField for SequenceContext {
-    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("SC5");
-}
-
-impl HeaderField for SequenceContext {
-    const DESCRIPTION: &'static str = "5-base sequence context centered on the variant position";
-}
-
-impl InfoField for SequenceContext {
-    const NUMBER: InfoFieldNumber = InfoFieldNumber::Num(1);
-    type Type = SmolStr;
-
-    fn write(&self, record: &mut Record) -> Result<()> {
-        record
-            .push_info_string(Self::ID, &[self.to_smol_str().as_bytes()])
-            .wrap_err("Failed to set field")
     }
 }
 
@@ -227,7 +207,7 @@ mod tests {
             after_1: Some(Base::C),
             after_2: Some(Base::T),
         };
-        assert_eq!(context.to_smol_str(), "ATGCT");
+        assert_eq!(context.as_vcf_str(), "ATGCT");
     }
 
     #[test]
@@ -239,7 +219,7 @@ mod tests {
             after_1: Some(Base::G),
             after_2: None,
         };
-        assert_eq!(context.to_smol_str(), "CCAG");
+        assert_eq!(context.as_vcf_str(), "CCAG");
     }
 
     #[test]
@@ -251,6 +231,6 @@ mod tests {
             after_1: None,
             after_2: None,
         };
-        assert_eq!(context.to_smol_str(), "T");
+        assert_eq!(context.as_vcf_str(), "T");
     }
 }

@@ -1,3 +1,4 @@
+use crate::vcf::RastairFilter;
 use crate::{
     call::{
         pileup::{
@@ -15,8 +16,9 @@ use color_eyre::{
     Result,
     eyre::{Context, bail},
 };
-use rastair_vcf::VcfFilter;
-use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, SmallVec, SmolStr, Strand};
+use seqair_types::SmallVec;
+use seqair_types::SmolStr;
+use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
 use std::ops::Deref;
 use tracing::{trace, warn};
 
@@ -418,13 +420,13 @@ impl AltFilters {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Filters {
     pub other_pos_in_denovo_passes: bool,
-    filters: SmallVec<SmolStr, 6>,
+    filters: SmallVec<RastairFilter, 6>,
 }
 
 impl Filters {
-    pub fn add(&mut self, filter: impl VcfFilter, condition: impl FnOnce() -> bool) {
-        if condition() {
-            self.filters.push(filter.filter());
+    pub fn add(&mut self, filter: RastairFilter, condition: impl FnOnce() -> bool) {
+        if condition() && !self.filters.contains(&filter) {
+            self.filters.push(filter);
         }
     }
 
@@ -442,7 +444,7 @@ impl Filters {
 }
 
 impl Deref for Filters {
-    type Target = SmallVec<SmolStr, 6>;
+    type Target = SmallVec<RastairFilter, 6>;
 
     fn deref(&self) -> &Self::Target {
         &self.filters

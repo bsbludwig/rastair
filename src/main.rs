@@ -213,8 +213,7 @@ fn main() -> Result<()> {
             }
             Generate::VcfDocs { output } => {
                 let mut file = output.clone().create().wrap_err("Failed to create output")?;
-                rastair::VcfRecord::description()
-                    .to_markdown(&mut file)
+                rastair::vcf::schema::write_vcf_docs(&mut file)
                     .wrap_err("Failed to generate VCF docs")?;
             }
         },
