@@ -2433,7 +2433,6 @@ dependencies = [
  "probability",
  "proptest",
  "rand",
- "rastair-vcf",
  "rayon",
  "readable",
  "rmp-serde",
@@ -2450,22 +2449,6 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "winnow 1.0.3",
-]
-
-[[package]]
-name = "rastair-vcf"
-version = "0.2.0"
-dependencies = [
- "color-eyre",
- "cstr8",
- "insta",
- "insta-cmd",
- "pastey",
- "proptest",
- "rust-htslib",
- "seqair-types",
- "serde",
- "tempfile",
 ]
 
 [[package]]

@@ -513,19 +513,13 @@ fn vcf_with_nOT_nOB() -> Result<()> {
     assert_compact_debug_snapshot!(get_depths(&b), @"Ok([11, 13, 13])");
 
     fn get_depths(path: &std::path::Path) -> Result<Vec<i32>> {
-        use rastair_vcf::VcfField as _;
         use rust_htslib::bcf::Read;
 
         let mut bcf = read_bcf(path).wrap_err("invalid bcf file")?;
         let depths = bcf
             .records()
             .map(|r| {
-                let field = r
-                    .unwrap()
-                    .info(rastair_vcf::standard_fields::ReadDepth::ID.as_bytes())
-                    .integer()
-                    .unwrap()
-                    .unwrap();
+                let field = r.unwrap().info(b"DP").integer().unwrap().unwrap();
                 *field.first().unwrap()
             })
             .collect::<Vec<_>>();

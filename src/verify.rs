@@ -1,12 +1,8 @@
 #![allow(clippy::print_stdout, reason = "verify prints its results to stdout")]
 
-use crate::{
-    utils::cli,
-    vcf::{DeNovoCpGCandidate, InCpG, Methylated},
-};
+use crate::utils::cli;
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr, ensure, eyre};
-use rastair_vcf::VcfField as _;
 use rust_htslib::bcf::{self, Read as _, header::HeaderView};
 use rustc_hash::{FxHashMap, FxHashSet};
 use seqair_types::{RegionString, SmolStr};
@@ -419,8 +415,8 @@ fn extract_variants(
     };
 
     let pos = record.pos() as u64;
-    let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
-    let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
+    let is_cpg = record.info(b"CPG").flag().unwrap_or(false);
+    let is_denovo = record.info(b"CPGnovo").flag().unwrap_or(false);
 
     let snv_category = if is_denovo {
         VariantCategory::DeNovo
@@ -527,7 +523,7 @@ fn load_betas(path: &Path, regions: &[RegionString], threads: usize) -> Result<V
 }
 
 fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<BetaRecord>) {
-    let beta = match record.format(Methylated::ID.as_bytes()).float() {
+    let beta = match record.format(b"M5mC").float() {
         Ok(v) => match v.first().and_then(|s| s.first().copied()) {
             Some(b) if !b.is_nan() => f64::from(b),
             _ => return,
@@ -541,8 +537,8 @@ fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<Beta
     };
 
     let pos = record.pos() as u64;
-    let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
-    let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
+    let is_cpg = record.info(b"CPG").flag().unwrap_or(false);
+    let is_denovo = record.info(b"CPGnovo").flag().unwrap_or(false);
     let has_variant =
         record.has_filter("PASS".as_bytes()) && record.alleles().iter().skip(1).any(|a| *a != b".");
     result.push(BetaRecord {

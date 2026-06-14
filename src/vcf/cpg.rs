@@ -2,10 +2,6 @@ use crate::{
     call::pileup::Pileup,
     utils::{Base, Base::*},
 };
-use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
-use rastair_vcf::VcfField as _;
-use rust_htslib::bcf::Record;
 use std::fmt;
 use std::ops::Deref;
 
@@ -58,24 +54,6 @@ impl Deref for InCpG {
 impl From<&Pileup> for InCpG {
     fn from(pileup: &Pileup) -> Self {
         InCpG::new(pileup.reference_base, pileup.ref_before(), pileup.ref_after())
-    }
-}
-
-impl rastair_vcf::VcfField for InCpG {
-    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("CPG");
-}
-
-impl rastair_vcf::HeaderField for InCpG {
-    const DESCRIPTION: &'static str = "Is this a CpG site?";
-}
-
-impl rastair_vcf::InfoField for InCpG {
-    type Type = bool;
-    const NUMBER: rastair_vcf::InfoFieldNumber = rastair_vcf::InfoFieldNumber::Flag;
-
-    fn write(&self, record: &mut Record) -> Result<()> {
-        <bool as rastair_vcf::InfoFieldValue>::write(record, Self::ID, &[*self != InCpG::No])
-            .wrap_err("Failed to write info flag CPG")
     }
 }
 

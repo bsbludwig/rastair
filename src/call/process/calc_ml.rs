@@ -5,7 +5,7 @@ use crate::{
         ml::types::{GpuRastairModel, MachineLearning, MlModel, PlattScaling},
     },
     utils::logging::ThisIsABug,
-    vcf::{low_ml_score, pre_ml},
+    vcf::RastairFilter,
 };
 use color_eyre::eyre::{ContextCompat as _, Result};
 use ndarray::{Array2, s};
@@ -41,7 +41,7 @@ pub fn add_ml_metrics(
                 .alt_filters_mut(alt_base)
                 .wrap_err("Failed to get mutable alt metrics")
                 .this_is_a_bug()?;
-            filters.filters.add(pre_ml, || true);
+            filters.filters.add(RastairFilter::PreMl, || true);
 
             // Skip expensive ML prediction for this low-quality alt
             continue 'alts;
@@ -53,7 +53,7 @@ pub fn add_ml_metrics(
                 .wrap_err("Failed to get mutable alt metrics")
                 .this_is_a_bug()?;
             filters.ml.replace(prediction.prediction);
-            filters.filters.add(low_ml_score, || !prediction.pass());
+            filters.filters.add(RastairFilter::LowMlScore, || !prediction.pass());
         } else {
             debug!(
                 pos=%current.pos(),
@@ -272,7 +272,7 @@ pub fn batch_add_ml_metrics(
     // Phase 2a: apply pre_ml filter tags
     for (i, alt_base) in pre_ml_rejected {
         if let Some(filters) = pileups[i].alt_filters_mut(alt_base) {
-            filters.filters.add(pre_ml, || true);
+            filters.filters.add(RastairFilter::PreMl, || true);
         }
     }
 
@@ -374,7 +374,7 @@ pub fn batch_add_ml_metrics(
                 }
             } else if let Some(filters) = pileups[p.pileup_idx].alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);
-                filters.filters.add(low_ml_score, move || calibrated < threshold);
+                filters.filters.add(RastairFilter::LowMlScore, move || calibrated < threshold);
             }
         }
     }

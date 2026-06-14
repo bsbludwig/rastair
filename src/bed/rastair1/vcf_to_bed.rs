@@ -3,15 +3,10 @@ use crate::{
     call::variant_calling::GenotypeTag,
     metrics::MethylationEvidenceStrandInfo,
     utils::logging::ThisIsABug,
-    vcf::{DeNovoCpGCandidate, GenotypeConfidence, GenotypeLikelihood, InCpG, Methylated},
 };
 use color_eyre::{
     Result, Section as _, SectionExt as _,
     eyre::{Context as _, ContextCompat as _, ensure, eyre},
-};
-use rastair_vcf::{
-    VcfField as _,
-    standard_fields::{PASS, ReadDepth},
 };
 use rust_htslib::bcf::Record as HtslibRecord;
 use seqair_types::SmolStr;
@@ -23,9 +18,9 @@ impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation, reason = "htslib likes i64")]
     #[instrument(level = "trace", skip_all, fields(pos=%r.pos()))]
     pub fn from_vcf(r: &HtslibRecord, params: &BedRecordsConvertParams) -> Result<Option<Self>> {
-        let in_cpg = r.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
-        let de_novo = r.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
-        let is_pass = r.has_filter(&PASS);
+        let in_cpg = r.info(b"CPG").flag().unwrap_or(false);
+        let de_novo = r.info(b"CPGnovo").flag().unwrap_or(false);
+        let is_pass = r.has_filter("PASS".as_bytes());
 
         let relevant = in_cpg || (de_novo && is_pass);
         if !relevant {
@@ -52,7 +47,7 @@ impl Rastair1BedFormat {
             .wrap_err("Failed to parse alleles")?;
         let r#ref = alleles.first().wrap_err("Record has no reference allele")?.clone();
 
-        let beta = if let Ok(buffer) = r.format(Methylated::ID.as_bytes()).float()
+        let beta = if let Ok(buffer) = r.format(b"M5mC").float()
             && let Some(betas) = buffer.first()
             && let Some(beta) = betas.first()
         {
@@ -61,10 +56,8 @@ impl Rastair1BedFormat {
             None
         };
 
-        let read_depth = if let Some(buffer) = r
-            .info(ReadDepth::ID.as_bytes())
-            .integer()
-            .wrap_err("Could not fetch read depth from record")?
+        let read_depth = if let Some(buffer) =
+            r.info(b"DP").integer().wrap_err("Could not fetch read depth from record")?
             && let Some(depth) = buffer.first()
         {
             *depth
@@ -94,8 +87,7 @@ impl Rastair1BedFormat {
             // Fallback for invalid genotype
             GenotypeString(Base::from(&r#ref), Base::from(&r#ref))
         };
-        let genotype_likelihood = if let Ok(buffer) =
-            r.format(GenotypeLikelihood::ID.as_bytes()).float()
+        let genotype_likelihood = if let Ok(buffer) = r.format(b"GL").float()
             && let Some(first) = buffer.first()
             && let Some(val) = first.first()
         {
@@ -104,8 +96,7 @@ impl Rastair1BedFormat {
             trace!(?genotype, "No genotype likelihood field found");
             Phred::from_phred(0_u8)
         };
-        let genotype_confidence = if let Ok(buffer) =
-            r.format(GenotypeConfidence::ID.as_bytes()).float()
+        let genotype_confidence = if let Ok(buffer) = r.format(b"GC").float()
             && let Some(first) = buffer.first()
             && let Some(val) = first.first()
         {
@@ -208,7 +199,7 @@ impl MethylationEvidenceStrandInfo {
     #[instrument(level = "trace", skip_all)]
     fn from_vcf(r: &HtslibRecord) -> Result<Self> {
         let nums = r
-            .info(MethylationEvidenceStrandInfo::ID.as_bytes())
+            .info(b"M5mC_Strands")
             .integer()
             .wrap_err("Failed to fetch field")?
             .wrap_err("field not set")?;
