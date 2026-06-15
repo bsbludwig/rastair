@@ -195,6 +195,10 @@ impl PileupMetrics {
         self.pileup.region.contig.clone()
     }
 
+    pub fn contig_name(&self) -> &str {
+        &self.pileup.region.contig
+    }
+
     pub fn pos(&self) -> u32 {
         self.pileup.pos
     }

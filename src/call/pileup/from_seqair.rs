@@ -40,7 +40,7 @@ impl Pileup {
 
         let mut raw_reads: Vec<SimpleRead> = Vec::with_capacity(max_reads);
 
-        let alignments_with_names: Vec<(&[u8], SimpleRead)> = column
+        let alignments_with_names = column
             .alignments()
             .filter_map(|view| {
                 let aln = view.alignment();
@@ -70,8 +70,7 @@ impl Pileup {
             })
             .filter(|(_, read)| params.read_masking.filter(read))
             .filter(|(_, read)| params.quality.filter(read))
-            .take(max_reads)
-            .collect();
+            .take(max_reads);
 
         let reads = match collector {
             NameCollector::Skip => {

@@ -57,13 +57,14 @@ mod seqair_readers {
 
     impl ReferenceWindow {
         pub fn base_at(&self, pos: u32) -> Option<Base> {
-            let offset = (pos as u64).checked_sub(self.start.as_u64())? as usize;
+            let offset = usize::try_from(u64::from(pos).checked_sub(self.start.as_u64())?).ok()?;
             self.bases.get(offset).copied()
         }
 
         pub fn range(&self, pos: u32, len: u32) -> Option<&[Base]> {
-            let offset = (pos as u64).checked_sub(self.start.as_u64())? as usize;
-            self.bases.get(offset..offset + len as usize)
+            let offset = usize::try_from(u64::from(pos).checked_sub(self.start.as_u64())?).ok()?;
+            let end = offset.checked_add(usize::try_from(len).ok()?)?;
+            self.bases.get(offset..end)
         }
     }
 
@@ -102,10 +103,12 @@ mod seqair_readers {
             match &self.tag_requirement {
                 TagRequirement::All => true,
                 TagRequirement::AllOf(filters) => {
-                    let Ok(aux) = rec.aux(store) else { return true };
-                    filters.iter().all(|f| {
-                        aux.get::<&[u8]>(f.tag()).ok().map_or(false, |v| v == f.value_bytes())
-                    })
+                    // Parity with the htslib path: a record whose aux block can't
+                    // be read fails a tag *requirement* (fail closed, not open).
+                    let Ok(aux) = rec.aux(store) else { return false };
+                    filters
+                        .iter()
+                        .all(|f| aux.get::<&[u8]>(f.tag()).is_ok_and(|v| v == f.value_bytes()))
                 }
             }
         }
@@ -520,9 +523,7 @@ impl Readers {
             get_full_regions(self.bam.header())
                 .wrap_err("Failed to get all regions from BAM file")?
         };
-        ensure!(!full_regions.is_empty(), "No regions found");
-
-        let initial_start = full_regions[0].start;
+        let initial_start = full_regions.first().wrap_err("No regions found")?.start;
         let chunked = ChunkedRegions {
             full_regions,
             current_region_idx: 0,

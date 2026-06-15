@@ -610,9 +610,13 @@ pub(crate) fn metrics_to_vcf(
     {
         let mut writer = SeqWriter::new(&mut buf, OutputFormat::Vcf).write_header(&header)?;
         for metric in metrics {
+            let contig = schema
+                .contig(metric.contig_name())
+                .wrap_err_with(|| format!("Contig {} not in header", metric.contig_name()))?;
             emit_pileup(
                 metric,
                 &schema,
+                contig,
                 &config,
                 Some(ML_THRESHOLD),
                 &error_model,

@@ -8,7 +8,7 @@
 use std::io::Write;
 
 use color_eyre::{Result, eyre::Context as _, eyre::ContextCompat as _, eyre::ensure};
-use seqair::vcf::{Alleles, Genotype as SeqGenotype, Ready, Writer};
+use seqair::vcf::{Alleles, ContigId, Genotype as SeqGenotype, Ready, Writer};
 use seqair_types::{Base, Phred, Pos1, Probability, SmallVec};
 
 use crate::{
@@ -32,9 +32,11 @@ use crate::{
 /// a main record (real variants, or reference-only for CpG tracking), optional
 /// rejected records (methylation evidence / read errors, only with `--vcf-all`),
 /// and any indel records.
+#[expect(clippy::too_many_arguments, reason = "self-contained per-pileup encode entry point")]
 pub fn emit_pileup<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
+    contig: &ContigId,
     config: &FieldConfig,
     ml_threshold: Option<Probability>,
     error_model: &ErrorModel,
@@ -73,19 +75,28 @@ pub fn emit_pileup<W: Write>(
     };
 
     if emit_main {
-        emit_main_record(pileup, schema, config, &real_variants, ml_threshold, error_model, writer)
-            .wrap_err("Failed to emit main VCF record")?;
+        emit_main_record(
+            pileup,
+            schema,
+            contig,
+            config,
+            &real_variants,
+            ml_threshold,
+            error_model,
+            writer,
+        )
+        .wrap_err("Failed to emit main VCF record")?;
     }
 
     if emit_rejected {
         for alt in methylation_evidence.iter().chain(read_errors.iter()) {
-            emit_rejected_record(pileup, schema, config, alt, ml_threshold, writer)
+            emit_rejected_record(pileup, schema, contig, config, alt, ml_threshold, writer)
                 .wrap_err("Failed to emit rejected VCF record")?;
         }
     }
 
     for call in &pileup.indel_calls {
-        emit_indel_record(pileup, schema, config, call, ml_threshold, writer)
+        emit_indel_record(pileup, schema, contig, config, call, ml_threshold, writer)
             .wrap_err("Failed to emit indel VCF record")?;
     }
 
@@ -111,6 +122,7 @@ fn to_seqair_gt(tag: GenotypeTag) -> SeqGenotype {
 fn emit_main_record<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
+    contig: &ContigId,
     config: &FieldConfig,
     real_variants: &[&Alt],
     ml_threshold: Option<Probability>,
@@ -146,9 +158,6 @@ fn emit_main_record<W: Write>(
 
     let main_alts: &[&Alt] = if real_variants.is_empty() { &[] } else { real_variants };
 
-    let contig = schema
-        .contig(&pileup.pileup.contig())
-        .wrap_err_with(|| format!("Contig {} not in header", pileup.pileup.contig()))?;
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, Some(qual as f32))?;
     let mut enc = enc.filter_pass();
     encode_info(&mut enc, schema, config, pileup, main_alts)?;
@@ -161,6 +170,7 @@ fn emit_main_record<W: Write>(
 fn emit_rejected_record<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
+    contig: &ContigId,
     config: &FieldConfig,
     alt: &Alt,
     ml_threshold: Option<Probability>,
@@ -178,9 +188,6 @@ fn emit_rejected_record<W: Write>(
     filters.extend(pileup.pos_filters.iter().copied());
     filters.extend(alt.filters.filters.iter().copied());
 
-    let contig = schema
-        .contig(&pileup.pileup.contig())
-        .wrap_err_with(|| format!("Contig {} not in header", pileup.pileup.contig()))?;
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, qual)?;
     let mut enc = encode_filters(enc, schema, &filters)?;
     let alts = [alt];
@@ -195,6 +202,7 @@ fn emit_rejected_record<W: Write>(
 fn emit_indel_record<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
+    contig: &ContigId,
     config: &FieldConfig,
     call: &crate::call::variant_calling::indel_calling::IndelCall,
     ml_threshold: Option<Probability>,
@@ -214,9 +222,6 @@ fn emit_indel_record<W: Write>(
 
     let ml_below = call.ml.zip(ml_threshold).is_some_and(|(ml, threshold)| ml < threshold);
 
-    let contig = schema
-        .contig(&pileup.pileup.contig())
-        .wrap_err_with(|| format!("Contig {} not in header", pileup.pileup.contig()))?;
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, Some(qual))?;
     let mut enc = if ml_below {
         encode_filters(enc, schema, &[RastairFilter::LowMlScore])?
@@ -262,9 +267,7 @@ fn encode_filters<'a>(
     if filters.is_empty() {
         return Ok(enc.filter_pass());
     }
-    let ids: SmallVec<&seqair::vcf::FilterId, 8> =
-        filters.iter().filter_map(|f| schema.filter(f.name())).collect();
-    if ids.is_empty() { Ok(enc.filter_pass()) } else { Ok(enc.filter_fail(ids.iter().copied())) }
+    Ok(enc.filter_fail(filters.iter().map(|f| schema.filter(*f))))
 }
 
 /// Per-allele metric refs: reference allele first, then the given alts.
@@ -411,21 +414,23 @@ fn encode_format(
     if c.dp {
         f.dp.encode(enc, &[i32::try_from(pileup.pileup.reads.len()).unwrap_or(i32::MAX)])?;
     }
-    if let Some(methylated) = effective_methylation(pileup) {
-        if c.m5mc {
-            #[expect(clippy::cast_possible_truncation, reason = "VCF float fields are f32")]
-            let values: SmallVec<f32, 2> =
-                methylated.ordered_values(|b| b.beta.f() as f32).into_iter().flatten().collect();
-            f.m5mc.encode(enc, &[values.as_slice()])?;
-        }
-        if c.dpm5mc {
-            let values = counts(&MethylationDepth::from(&methylated).0);
-            f.dpm5mc.encode(enc, &[values.as_slice()])?;
-        }
-        if c.adm5mc {
-            let values = counts(&MethylationAltDepth::from(&methylated).0);
-            f.adm5mc.encode(enc, &[values.as_slice()])?;
-        }
+    // Always emit M5mC/DPM5mC/ADM5mC so every record has a uniform FORMAT layout; a
+    // position with no methylation context renders as the missing value `.`
+    // (parity with the old htslib path, which wrote a single `None`).
+    let methylated = effective_methylation(pileup);
+    if c.m5mc {
+        #[expect(clippy::cast_possible_truncation, reason = "VCF float fields are f32")]
+        let values: SmallVec<f32, 2> =
+            methylated.ordered_values(|b| b.beta.f() as f32).into_iter().flatten().collect();
+        f.m5mc.encode(enc, &[values.as_slice()])?;
+    }
+    if c.dpm5mc {
+        let values = counts(&MethylationDepth::from(&methylated).0);
+        f.dpm5mc.encode(enc, &[values.as_slice()])?;
+    }
+    if c.adm5mc {
+        let values = counts(&MethylationAltDepth::from(&methylated).0);
+        f.adm5mc.encode(enc, &[values.as_slice()])?;
     }
     if c.ml {
         let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
@@ -504,12 +509,12 @@ fn counts(values: &SmallVec<Option<u32>, 2>) -> SmallVec<i32, 2> {
 
 /// The methylation values to write for this position: real measurements when
 /// present, or zero-filled entries when the position sits in a CpG context that
-/// produced no evidence. `None` means there is no CpG context at all and the
-/// M5mC/DPM5mC/ADM5mC fields are omitted.
-fn effective_methylation(pileup: &PileupMetrics) -> Option<Methylated> {
+/// produced no evidence. Empty means there is no CpG context at all, and the
+/// M5mC/DPM5mC/ADM5mC fields render as the missing value `.`.
+fn effective_methylation(pileup: &PileupMetrics) -> Methylated {
     let observed = &pileup.pos_metrics.methylated;
     if !observed.is_empty() {
-        return Some(observed.clone());
+        return observed.clone();
     }
 
     // Original CpG context: the position is a reference CpG, or it is the
@@ -534,5 +539,5 @@ fn effective_methylation(pileup: &PileupMetrics) -> Option<Methylated> {
     if is_denovo_cpg {
         betas.push(CpgBeta { origin: CpgOrigin::DeNovo, ..zero });
     }
-    (!betas.is_empty()).then(|| Methylated(betas))
+    Methylated(betas)
 }

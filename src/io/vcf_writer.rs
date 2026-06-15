@@ -226,7 +226,12 @@ impl VcfParams {
             .write_header(&header)
             .wrap_err("Failed to write VCF header")?;
 
-        Ok(Some(SeqairVcfWriter { writer: Some(writer), schema, config: self.field_config() }))
+        Ok(Some(SeqairVcfWriter {
+            writer: Some(writer),
+            schema,
+            config: self.field_config(),
+            last_contig: None,
+        }))
     }
 
     pub fn create_mpk_writer(
@@ -256,6 +261,7 @@ pub struct SeqairVcfWriter {
     writer: Option<SeqWriter<Box<dyn Write + Send>, Ready>>,
     schema: Schema,
     config: FieldConfig,
+    last_contig: Option<seqair::vcf::ContigId>,
 }
 
 impl SeqairVcfWriter {
@@ -267,11 +273,23 @@ impl SeqairVcfWriter {
         error_model: &ErrorModel,
         record_filter: &RecordFilters,
     ) -> Result<()> {
+        let name = pileup.contig_name();
+        if self.last_contig.as_ref().is_none_or(|c| c.name() != name) {
+            self.last_contig = Some(
+                self.schema
+                    .contig(name)
+                    .wrap_err_with(|| format!("Contig {name} not in header"))?
+                    .clone(),
+            );
+        }
+        let contig = self.last_contig.as_ref().wrap_err("contig cache unset").this_is_a_bug()?;
+
         let writer =
             self.writer.as_mut().wrap_err("VCF writer already finished").this_is_a_bug()?;
         emit_pileup(
             pileup,
             &self.schema,
+            contig,
             &self.config,
             ml_threshold,
             error_model,

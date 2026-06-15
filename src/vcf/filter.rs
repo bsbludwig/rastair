@@ -1,11 +1,11 @@
 //! The closed set of VCF FILTER codes rastair can emit.
 //!
-//! A BCF FILTER is just a dictionary index, so filters are modelled as a
-//! `#[repr(u8)]` enum rather than carried around as strings: storage on
-//! [`PileupMetrics`](crate::metrics::PileupMetrics) is a single byte per
-//! filter, and resolving a filter to its [`FilterId`](seqair::vcf::FilterId) at
-//! write time is an array index (see [`crate::vcf::schema`]) instead of a hash
-//! lookup. The discriminant order is the registration/header order.
+//! Filters are modelled as a `#[repr(u8)]` enum rather than carried around as
+//! strings, so storage on [`PileupMetrics`](crate::metrics::PileupMetrics) is a
+//! single byte per filter. This enum is the single source of truth: the VCF
+//! header is registered from [`RastairFilter::ALL`] (in declaration order) and
+//! each filter resolves to its [`FilterId`](seqair::vcf::FilterId) by name at
+//! write time (see [`crate::vcf::schema`]).
 
 /// A VCF FILTER code. `PASS` is implicit (an empty filter set), so it is not a
 /// variant here.
@@ -39,6 +39,10 @@ pub enum RastairFilter {
 }
 
 impl RastairFilter {
+    /// Number of filter variants. The discriminants are `0..COUNT`, so a
+    /// `RastairFilter` doubles as an index into a `[T; COUNT]` lookup table.
+    pub const COUNT: usize = Self::ALL.len();
+
     /// Every filter, in registration (header / dictionary) order.
     pub const ALL: [RastairFilter; 12] = [
         Self::LowDp,
@@ -91,11 +95,5 @@ impl RastairFilter {
             Self::PreMl => "Low amount of usable evidence, skipping ML",
             Self::LowMlScore => "Machine Learning module prediction below threshold",
         }
-    }
-
-    /// Index into the registration-order array of resolved
-    /// [`FilterId`](seqair::vcf::FilterId)s.
-    pub const fn index(self) -> usize {
-        self as usize
     }
 }
