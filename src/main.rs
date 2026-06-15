@@ -133,6 +133,11 @@ fn main() -> Result<()> {
     let args = Cli::parse();
     setup_logging(args.verbose);
 
+    #[cfg(feature = "experimental-seqair")]
+    {
+        info!("Using experimental seqair backend.");
+    }
+
     #[cfg(unix)]
     // make sure we quit when the pipe closes
     // SAFETY: Calls libc, but at the start of the program
