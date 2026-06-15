@@ -329,6 +329,7 @@ fn process_region_wrapper(
             require_tags: params.require_tags.filter(),
             indel_max_mismatches: params.indel.indel_max_mismatches,
             indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
+            segment_max_bytes: params.segmentation.segment_max_bytes,
             ..Default::default()
         };
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
