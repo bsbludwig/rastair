@@ -24,6 +24,17 @@ pub struct SegmentationParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[default(200)]
     pub segment_overlap: u64,
+
+    /// Maximum estimated compressed bytes to load per segment (memory budget)
+    ///
+    /// seqair backend only. A segment whose index-estimated compressed size
+    /// exceeds this is subdivided into smaller sub-segments, so peak memory
+    /// per worker stays bounded regardless of local coverage. The decoded
+    /// in-memory size is a few times larger than this compressed budget.
+    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    #[default(256 * 1024 * 1024)]
+    pub segment_max_bytes: u64,
 }
 
 impl SegmentationParams {
@@ -75,6 +86,16 @@ impl SegmentationParams {
                 overlap = self.segment_overlap,
                 max_length = self.segment_max_length,
                 "Segment overlap is more than half of segment max length. This may lead to inefficient processing."
+            );
+        };
+
+        // `0` intentionally disables the budget; only warn for a tiny non-zero
+        // value, which would subdivide regions far more than necessary.
+        let low_max_bytes = 1024 * 1024;
+        if self.segment_max_bytes != 0 && self.segment_max_bytes < low_max_bytes {
+            warn!(
+                max_bytes = self.segment_max_bytes,
+                "Segment max bytes is set very low (<1 MiB); this may subdivide regions excessively."
             );
         };
     }

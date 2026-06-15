@@ -255,6 +255,11 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Helpful to avoid missing variants at the edges of segments.
 
   Default value: `200`
+* `--segment-max-bytes <SEGMENT_MAX_BYTES>` — Maximum estimated compressed bytes to load per segment (memory budget)
+
+   seqair backend only. A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
+
+  Default value: `268435456`
 * `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
 
    Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the htslib/reference-oriented read sequence. `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
