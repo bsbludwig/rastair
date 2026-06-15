@@ -251,7 +251,7 @@ fn emit_indel_record<W: Write>(
     if config.format.ml
         && let Some(ml) = call.ml
     {
-        schema.format.ml.encode(&mut enc, &[&[*ml as f32]])?;
+        schema.format.ml.encode_single_sample(&mut enc, &[*ml as f32])?;
     }
     enc.emit()?;
     Ok(())
@@ -422,15 +422,15 @@ fn encode_format(
         #[expect(clippy::cast_possible_truncation, reason = "VCF float fields are f32")]
         let values: SmallVec<f32, 2> =
             methylated.ordered_values(|b| b.beta.f() as f32).into_iter().flatten().collect();
-        f.m5mc.encode(enc, &[values.as_slice()])?;
+        f.m5mc.encode_single_sample(enc, &values)?;
     }
     if c.dpm5mc {
         let values = counts(&MethylationDepth::from(&methylated).0);
-        f.dpm5mc.encode(enc, &[values.as_slice()])?;
+        f.dpm5mc.encode_single_sample(enc, &values)?;
     }
     if c.adm5mc {
         let values = counts(&MethylationAltDepth::from(&methylated).0);
-        f.adm5mc.encode(enc, &[values.as_slice()])?;
+        f.adm5mc.encode_single_sample(enc, &values)?;
     }
     if c.ml {
         let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
@@ -439,7 +439,7 @@ fn encode_format(
             let values: SmallVec<f32, 2> =
                 main_alts.iter().map(|alt| *alt.filters.ml.unwrap_or_default() as f32).collect();
             if !values.is_empty() {
-                f.ml.encode(enc, &[values.as_slice()])?;
+                f.ml.encode_single_sample(enc, &values)?;
             }
         }
     }
