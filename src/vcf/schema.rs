@@ -21,7 +21,7 @@ use seqair::vcf::{
 };
 use seqair_types::SmolStr;
 
-use crate::vcf::Contig;
+use crate::vcf::{Contig, RastairFilter};
 
 // ── INFO field definitions ──────────────────────────────────────────────
 // Field order here is the VCF header order; it is cosmetic (seqair resolves
@@ -186,26 +186,10 @@ const ML_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(
 );
 
 // ── FILTER definitions ──────────────────────────────────────────────────
-// Names must match the strings stored on `PileupMetrics` (via the `filter!`
-// declarations in `crate::vcf`). PASS is registered automatically by seqair.
-
-const FILTER_DEFS: &[FilterFieldDef] = &[
-    FilterFieldDef::new("lowDp", "Low read depth"),
-    FilterFieldDef::new("dnCpG_lowDp", "Low read depth for de-novo CpG candidate"),
-    FilterFieldDef::new("dnCpG_bq", "Low base quality for de-novo CpG candidate"),
-    FilterFieldDef::new("dnCpG_mapq", "Low mapping quality for de-novo CpG candidate"),
-    FilterFieldDef::new("dnCpG_vaf", "Low variant allele frequency for de-novo CpG candidate"),
-    FilterFieldDef::new(
-        "dnCpG_adj",
-        "Included as adjacent position for de-novo CpG candidate, but other position did not pass filters",
-    ),
-    FilterFieldDef::new("m_vaf", "Low variant allele frequency for methylation candidate"),
-    FilterFieldDef::new("m_bq_ratio", "Low quality ratio for methylation candidate"),
-    FilterFieldDef::new("m_pos", "Alt allele evidence from read edges for methylation candidate"),
-    FilterFieldDef::new("m_highDp", "Excessive coverage for methylation candidate"),
-    FilterFieldDef::new("pre_ml", "Low amount of usable evidence, skipping ML"),
-    FilterFieldDef::new("low_ml_score", "Machine Learning module prediction below threshold"),
-];
+// The FILTER set is owned by `RastairFilter` (the type stored on
+// `PileupMetrics`); the header is registered from `RastairFilter::ALL` so the
+// names/descriptions can never drift from the enum. PASS is registered
+// automatically by seqair.
 
 /// Every INFO field definition, in header order (both columns of dual-column
 /// fields appear separately). Drives doc generation.
@@ -247,8 +231,8 @@ pub fn write_vcf_docs<W: Write>(w: &mut W) -> std::io::Result<()> {
     writeln!(w, "| ID | Description |")?;
     writeln!(w, "|----|-------------|")?;
     writeln!(w, "| PASS | All filters passed |")?;
-    for d in FILTER_DEFS {
-        writeln!(w, "| {} | {} |", d.name, d.description)?;
+    for f in RastairFilter::ALL {
+        writeln!(w, "| {} | {} |", f.name(), f.description())?;
     }
 
     let table = |w: &mut W, title: &str, defs: &[&dyn FieldDescription]| -> std::io::Result<()> {
@@ -346,7 +330,10 @@ pub struct Schema {
     pub(crate) info: InfoKeys,
     pub(crate) format: FormatKeys,
     contigs: FxHashMap<SmolStr, ContigId>,
-    filters: FxHashMap<SmolStr, FilterId>,
+    /// Pre-resolved `FilterId`s indexed by `RastairFilter as usize`, so a
+    /// filter resolves to its handle by a single array index instead of a
+    /// per-record string hash.
+    filters: [FilterId; RastairFilter::COUNT],
 }
 
 impl Schema {
@@ -355,9 +342,13 @@ impl Schema {
         self.contigs.get(name)
     }
 
-    /// Resolve a FILTER name to its pre-indexed handle.
-    pub(crate) fn filter(&self, name: &str) -> Option<&FilterId> {
-        self.filters.get(name)
+    /// Resolve a [`RastairFilter`] to its pre-indexed BCF handle.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RastairFilter discriminants are 0..COUNT, matching the array length"
+    )]
+    pub(crate) fn filter(&self, filter: RastairFilter) -> &FilterId {
+        &self.filters[filter as usize]
     }
 }
 
@@ -387,11 +378,15 @@ pub fn register(
     }
 
     let mut builder = builder.filters();
-    let mut filters = FxHashMap::default();
-    for def in FILTER_DEFS {
-        let id = builder.register_filter(def).wrap_err("Failed to register filter")?;
-        filters.insert(SmolStr::from(def.name), id);
+    // Registered in `RastairFilter::ALL` order, which is discriminant order, so
+    // the resulting Vec indexes line up with `RastairFilter as usize`.
+    let mut filter_ids: Vec<FilterId> = Vec::with_capacity(RastairFilter::COUNT);
+    for filter in RastairFilter::ALL {
+        let def = FilterFieldDef::new(filter.name(), filter.description());
+        filter_ids.push(builder.register_filter(&def).wrap_err("Failed to register filter")?);
     }
+    let filters: [FilterId; RastairFilter::COUNT] =
+        filter_ids.try_into().map_err(|_| color_eyre::eyre::eyre!("filter count mismatch"))?;
 
     let mut builder = builder.infos();
     let info = InfoKeys {
