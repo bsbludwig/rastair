@@ -324,7 +324,7 @@ mod seqair_readers {
             segment_overlap: u64,
         ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
             let header = self.inner.header();
-            let full_regions = if let Some(input) = &self.regions {
+            let mut full_regions = if let Some(input) = &self.regions {
                 input
                     .regions()
                     .iter()
@@ -335,6 +335,12 @@ mod seqair_readers {
                 get_full_regions(header)?
             };
             ensure!(!full_regions.is_empty(), "No regions found");
+
+            // Emit records in coordinate order regardless of the order regions were
+            // given on the CLI: the VCF index builder requires tids (and positions
+            // within a tid) to be monotonically non-decreasing. `--region chr7 chr1`
+            // is reordered to chr1, chr7 here so the output stays sorted and indexable.
+            full_regions.sort_by_key(|region| (header.tid(&region.contig), region.start));
 
             let initial_start =
                 full_regions.first().wrap_err("No regions found").map(|r| r.start)?;
@@ -509,7 +515,7 @@ impl Readers {
         segment_max_length: u64,
         segment_overlap: u64,
     ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
-        let full_regions = if let Some(input) = &self.params.regions {
+        let mut full_regions = if let Some(input) = &self.params.regions {
             input
                 .regions()
                 .iter()
@@ -523,6 +529,13 @@ impl Readers {
             get_full_regions(self.bam.header())
                 .wrap_err("Failed to get all regions from BAM file")?
         };
+
+        // Emit records in coordinate order regardless of CLI region order: the VCF
+        // index builder requires tids (and positions within a tid) to be monotonically
+        // non-decreasing, so `--region chr7 chr1` is reordered to chr1, chr7 here.
+        let header = self.bam.header();
+        full_regions.sort_by_key(|region| (header.tid(region.contig.as_bytes()), region.start));
+
         let initial_start = full_regions.first().wrap_err("No regions found")?.start;
         let chunked = ChunkedRegions {
             full_regions,
@@ -704,6 +717,35 @@ mod tests {
         let region_invalid_end: RegionString = format!("chr19:100-{invalid_end}").parse().unwrap();
         let result = get_selected_region(&region_invalid_end, header);
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn segments_sort_regions_into_tid_order() -> Result<()> {
+        use crate::utils::regions::CliRegionInput;
+
+        // Given out of tid order on the CLI: `bacteriophage_lambda_CpG` is tid 2,
+        // `chr19` is tid 0. The emitted chunks must come out in tid order so the
+        // VCF index builder accepts the (monotonically non-decreasing tid) stream.
+        let regions: CliRegionInput = "bacteriophage_lambda_CpG chr19".parse()?;
+        let params = ReaderParams {
+            bam_file: get_test_bam(),
+            fasta_file: get_test_fasta(),
+            regions: Some(regions),
+        };
+
+        let readers = params.readers()?;
+        let chunks: Vec<ChunkRegion> = readers.segments(u64::MAX, 0)?.collect();
+
+        let mut contig_order: Vec<&str> = Vec::new();
+        for chunk in &chunks {
+            if contig_order.last() != Some(&chunk.contig.as_str()) {
+                contig_order.push(chunk.contig.as_str());
+            }
+        }
+
+        assert_eq!(contig_order, ["chr19", "bacteriophage_lambda_CpG"]);
 
         Ok(())
     }
