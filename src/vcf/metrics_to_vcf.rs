@@ -363,7 +363,7 @@ impl PileupMetrics {
                 mod_count: 0,
                 total_count: 0,
             };
-            let mut betas = rastair_types::SmallVec::new();
+            let mut betas = SmallVec::new();
             if is_orig_cpg {
                 betas.push(zero);
             }
