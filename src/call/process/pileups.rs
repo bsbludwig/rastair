@@ -26,7 +26,7 @@ use crate::{
 #[cfg(feature = "experimental-seqair")]
 use color_eyre::eyre::WrapErr as _;
 #[cfg(feature = "experimental-seqair")]
-use seqair::reader::SegmentOptions;
+use seqair::reader::{DepthLimit, SegmentOptions};
 #[cfg(feature = "experimental-seqair")]
 use seqair_types::{Base, Pos0};
 #[cfg(feature = "experimental-seqair")]
@@ -49,7 +49,7 @@ pub struct PileupMappingParams {
     pub indel_max_mismatches: u32,
     /// Per-segment compressed-byte budget for the seqair backend; segments
     /// estimated above this are subdivided. `0` disables the budget.
-    #[default(256 * 1024 * 1024)]
+    #[default(32 * 1024 * 1024)]
     pub segment_max_bytes: u64,
 }
 
@@ -155,6 +155,11 @@ pub fn get_pileups(
     readers.inner_mut().customize_mut().repeat_limit = params.indel_repeat_limit;
     readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
 
+    let depth_limit = match NonZeroU32::new(params.max_coverage) {
+        Some(cap) => DepthLimit::PerColumn(cap),
+        None => DepthLimit::Unlimited,
+    };
+
     // Build the seqair Segment covering [region.start .. region.end + overfetch].
     // seqair's segment `end` is an *inclusive* 0-based position and must be
     // `<= contig_last_pos` (= contig length − 1). `region.last_position` is the
@@ -194,8 +199,10 @@ pub fn get_pileups(
         // Fetch BAM records + FASTA into PileupEngine (compute() runs here).
         // The store is reused (cleared) per sub-segment, so peak memory is one
         // sub-segment's worth, not the whole region's.
-        let mut guard =
-            readers.inner_mut().pileup(seqair_seg).wrap_err("Failed to start seqair pileup")?;
+        let mut guard = readers
+            .inner_mut()
+            .pileup(seqair_seg, depth_limit)
+            .wrap_err("Failed to start seqair pileup")?;
         guard.set_max_depth(params.max_coverage);
 
         while let Some(col) = guard.pileups() {
