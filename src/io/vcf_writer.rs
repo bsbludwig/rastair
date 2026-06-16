@@ -13,14 +13,10 @@ use better_default::Default;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
+use rustc_hash::FxHashSet;
 use seqair::vcf::{OutputFormat, Ready, Writer as SeqWriter};
 use seqair_types::{Probability, SmolStr};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
-    io::Write,
-    num::NonZeroUsize,
-};
+use std::{ffi::OsStr, io::Write, num::NonZeroUsize};
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Default, clap::Parser)]
@@ -168,14 +164,7 @@ impl VcfParams {
             return Ok(None);
         };
 
-        let contigs: BTreeSet<Contig> = {
-            let mut contig_lengths: BTreeMap<SmolStr, u64> = BTreeMap::new();
-            for region in regions {
-                *contig_lengths.entry(region.contig.clone()).or_insert(0) += region.len();
-            }
-            contig_lengths.into_iter().map(|(name, length)| Contig { name, length }).collect()
-        };
-        let contigs: Vec<Contig> = contigs.into_iter().collect();
+        let contigs = header_contigs(regions);
         let samples = vec![SmolStr::new("sample")]; // Note: we only deal with one sample for now
 
         let format = match self.guess_format() {
@@ -310,4 +299,84 @@ impl SeqairVcfWriter {
 pub enum Writer {
     Vcf(SeqairVcfWriter),
     MessagePack(MessagePackWriter),
+}
+
+/// Build the VCF header contig list: one entry per distinct contig touched by
+/// `regions`, carrying the *true* contig length, in first-appearance order.
+///
+/// Only the processed contigs are emitted (a `--region chr7` run lists just the
+/// contigs it covers), so for a whole-file run this is the full reference
+/// dictionary and for a subset run it is the subset's contigs.
+///
+/// Two invariants the callers uphold for this to be correct:
+/// * `regions` arrive in coordinate (tid) order — segmentation sorts them — so
+///   first-appearance order equals tid order. The header tid assignment must
+///   match the order records are emitted, or seqair's single-pass index builder
+///   rejects the stream as unsorted. (Lexical order, e.g. via `BTreeSet`, would
+///   put `chr10` before `chr2` and break this on GRCh38-style references.)
+/// * Every `ChunkRegion` carries the true contig length in `last_position`
+///   (the contig end for a whole contig, the BAM header length for a
+///   user-defined subset), so we take it directly rather than summing chunk
+///   lengths — chunks overlap, and a subset chunk is shorter than its contig.
+fn header_contigs(regions: &[ChunkRegion]) -> Vec<Contig> {
+    let mut contigs: Vec<Contig> = Vec::new();
+    let mut seen: FxHashSet<SmolStr> = FxHashSet::default();
+    for region in regions {
+        if seen.insert(region.contig.clone()) {
+            contigs.push(Contig { name: region.contig.clone(), length: region.last_position });
+        }
+    }
+    contigs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sequence::{ChunkRegion, Region};
+
+    /// `contig_len` is the true contig length carried by every chunk in its
+    /// `last_position`; `start`/`end` are the (possibly partial) chunk bounds.
+    fn chunk(contig: &str, start: u64, end: u64, contig_len: u64) -> ChunkRegion {
+        ChunkRegion {
+            region: Region { contig: SmolStr::from(contig), start, end },
+            last_position: contig_len,
+            overlap_start: 0,
+            overlap_end: 0,
+        }
+    }
+
+    /// The header keeps the order contigs appear in `regions` (which segmentation
+    /// has sorted into tid order) rather than lexical order: `chr10` appears
+    /// before `chr2`, and emitting against a lexically-sorted header is exactly
+    /// what tripped seqair's "input not sorted" index check.
+    #[test]
+    fn header_contigs_preserve_reference_order_not_lexical() {
+        let regions = [
+            chunk("chr1", 1, 100, 100),
+            chunk("chr2", 1, 100, 100),
+            chunk("chr10", 1, 100, 100),
+            chunk("chrUn_decoy", 1, 100, 100),
+        ];
+
+        let contigs = header_contigs(&regions);
+        let names: Vec<&str> = contigs.iter().map(|c| c.name.as_str()).collect();
+
+        assert_eq!(names, ["chr1", "chr2", "chr10", "chrUn_decoy"]);
+    }
+
+    /// Multiple (overlapping) chunks of one contig collapse to a single header
+    /// entry whose length is the true contig length from `last_position`, not the
+    /// sum of chunk lengths — summing would overcount because chunks overlap and a
+    /// subset chunk is shorter than its contig.
+    #[test]
+    fn header_contigs_use_true_contig_length_not_chunk_sum() {
+        let regions =
+            [chunk("chr1", 1, 100, 250), chunk("chr1", 90, 250, 250), chunk("chr2", 1, 50, 50)];
+
+        let contigs = header_contigs(&regions);
+
+        assert_eq!(contigs.len(), 2);
+        assert_eq!(contigs[0], Contig { name: SmolStr::from("chr1"), length: 250 });
+        assert_eq!(contigs[1], Contig { name: SmolStr::from("chr2"), length: 50 });
+    }
 }
