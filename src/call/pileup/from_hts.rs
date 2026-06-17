@@ -1,7 +1,7 @@
 #[cfg(not(feature = "experimental-seqair"))]
 use super::{
     indels::{IndelAllele, IndelObservation},
-    overlapping_reads::{NameCollector, resolve_pair},
+    overlapping_reads::{DedupInfo, NameCollector, resolve_pair},
     ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
 };
 use crate::sequence::Segment;
@@ -281,9 +281,7 @@ impl Pileup {
         let mut indel_observations = SmallVec::new();
 
         scratch.fragments.prepare(max_reads);
-        if let NameCollector::Collect(buf) = &mut scratch.names {
-            buf.prepare(max_reads);
-        }
+        scratch.names.prepare(max_reads);
 
         // Both sides of `VAF = alt / depth` have to be drawn from the same reads,
         // so indel observations are collected in the same pass, behind the same
@@ -314,11 +312,9 @@ impl Pileup {
             // `--keep-overlapping-reads` nothing is deduplicated and both sides
             // stay at the alignment level, which is equally consistent.
             let slot = raw_reads.len();
-            let duplicate = match &mut scratch.names {
-                NameCollector::Skip => None,
-                NameCollector::Collect(buf) => buf.see(name, slot),
-            };
-            let fragment = duplicate.unwrap_or(slot);
+            let info = DedupInfo { idx: slot, base: read.base, second: read.second };
+            let duplicate = scratch.names.see(name, info);
+            let fragment = duplicate.map_or(slot, |other| other.idx);
 
             let shape = AlignmentShape::of(&a.record_view());
             if shape.soft_clipped {
@@ -345,8 +341,8 @@ impl Pileup {
             }
 
             raw_reads.push(read);
-            if let Some(first) = duplicate {
-                resolve_pair(&raw_reads, slot, first, &mut to_remove);
+            if let Some(other) = duplicate {
+                resolve_pair(&info, info.idx, &other, other.idx, &mut to_remove);
             }
         }
 
