@@ -327,6 +327,7 @@ fn process_region_wrapper(
         let pileup_mapping_params = process::PileupMappingParams {
             variant_calling: params.variant_calling.clone(),
             require_tags: params.require_tags.filter(),
+            call_indels: params.indel.enabled(),
             indel_max_mismatches: params.indel.indel_max_mismatches,
             indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
             segment_max_bytes: params.segmentation.segment_max_bytes,

@@ -24,6 +24,7 @@ macro_rules! apply_common_filters {
     {} => {
         let mut settings = insta::Settings::clone_current();
         settings.add_filter(r"\w{4}-[0-9T\-:.]+Z\s", "[TIME]");
+        settings.add_filter(r"\[TIME\] INFO rastair: Using experimental seqair backend\.\n", "");
         settings.add_filter(r"duration=[\w.]+", "[DURATION]");
         settings.add_filter(r": close time.*", " [CLOSE]");
         settings.add_filter(r#"file="/.*/*.vcf"#, "file=[PATH]");

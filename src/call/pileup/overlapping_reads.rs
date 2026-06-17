@@ -6,6 +6,41 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+/// Minimal read data needed to resolve an overlapping pair.
+pub(crate) trait OverlapRead {
+    fn overlap_base(&self) -> crate::utils::Base;
+    fn is_second(&self) -> bool;
+}
+
+impl OverlapRead for SimpleRead {
+    fn overlap_base(&self) -> crate::utils::Base {
+        self.base
+    }
+
+    fn is_second(&self) -> bool {
+        self.second
+    }
+}
+
+/// Per-read metadata stored by [`NameBuffer`] to detect duplicates and resolve
+/// overlapping pairs without requiring the full [`SimpleRead`] to be kept.
+#[derive(Clone, Copy)]
+pub(crate) struct DedupInfo {
+    pub idx: usize,
+    pub base: crate::utils::Base,
+    pub second: bool,
+}
+
+impl OverlapRead for DedupInfo {
+    fn overlap_base(&self) -> crate::utils::Base {
+        self.base
+    }
+
+    fn is_second(&self) -> bool {
+        self.second
+    }
+}
+
 pub(crate) enum NameCollector {
     Skip,
     Collect(NameBuffer),
@@ -17,6 +52,19 @@ impl NameCollector {
             Self::Skip
         } else {
             Self::Collect(NameBuffer::new(params.linear_dedup_threshold))
+        }
+    }
+
+    pub(crate) fn prepare(&mut self, max_reads: usize) {
+        if let Self::Collect(buf) = self {
+            buf.prepare(max_reads);
+        }
+    }
+
+    pub(crate) fn see(&mut self, name: &[u8], info: DedupInfo) -> Option<DedupInfo> {
+        match self {
+            Self::Skip => None,
+            Self::Collect(buf) => buf.see(name, info),
         }
     }
 }
@@ -63,10 +111,10 @@ impl NameBuffer {
         }
     }
 
-    pub(super) fn see(&mut self, name: &[u8], this_idx: usize) -> Option<usize> {
+    pub(super) fn see(&mut self, name: &[u8], info: DedupInfo) -> Option<DedupInfo> {
         match self.active {
-            DedupeMode::Hash => self.hash.see(name, this_idx),
-            DedupeMode::Linear => self.linear.see(name),
+            DedupeMode::Hash => self.hash.see(name, info),
+            DedupeMode::Linear => self.linear.see(name, info),
         }
     }
 }
@@ -95,7 +143,7 @@ impl NameBuffer {
 // mixes all input bits into the high 32 bits, then takes those high bits for
 // the slot index. One u64 multiply + one shift — same instruction count as
 // FxHash, much better avalanche from structured inputs."
-struct HashInner(FxHashMap<NameKey, usize>);
+struct HashInner(FxHashMap<NameKey, DedupInfo>);
 
 impl HashInner {
     fn prepare(&mut self, max_reads: usize) {
@@ -103,11 +151,11 @@ impl HashInner {
         self.0.reserve(max_reads);
     }
 
-    fn see(&mut self, name: &[u8], this_idx: usize) -> Option<usize> {
+    fn see(&mut self, name: &[u8], info: DedupInfo) -> Option<DedupInfo> {
         let key = NameKey { ptr: name.as_ptr(), len: name.len() };
         match self.0.entry(key) {
             Entry::Vacant(e) => {
-                e.insert(this_idx);
+                e.insert(info);
                 None
             }
             Entry::Occupied(e) => Some(*e.get()),
@@ -131,11 +179,12 @@ impl HashInner {
 struct LinearInner {
     suffixes: Vec<u32>,
     keys: Vec<NameKey>,
+    infos: Vec<DedupInfo>,
 }
 
 impl LinearInner {
     fn new() -> Self {
-        Self { suffixes: Vec::new(), keys: Vec::new() }
+        Self { suffixes: Vec::new(), keys: Vec::new(), infos: Vec::new() }
     }
 
     fn prepare(&mut self, capacity: usize) {
@@ -143,13 +192,15 @@ impl LinearInner {
         self.suffixes.reserve(capacity);
         self.keys.clear();
         self.keys.reserve(capacity);
+        self.infos.clear();
+        self.infos.reserve(capacity);
     }
 
-    /// Record a read name and return the first-seen index if this is a duplicate.
+    /// Record a read name and return the first-seen metadata if this is a duplicate.
     ///
-    /// Always appends to both inner vecs so that the vec index stays in sync
-    /// with the caller's `raw_reads` index.
-    fn see(&mut self, name: &[u8]) -> Option<usize> {
+    /// Always appends to the inner vecs; the returned [`DedupInfo::idx`] tells the
+    /// caller which earlier alignment matched.
+    fn see(&mut self, name: &[u8], info: DedupInfo) -> Option<DedupInfo> {
         let suffix = name_suffix_u32(name);
         let key = NameKey { ptr: name.as_ptr(), len: name.len() };
 
@@ -161,10 +212,13 @@ impl LinearInner {
             .zip(self.keys.iter())
             .position(|(&s, k)| s == suffix && k.as_bytes() == name);
 
+        let existing = duplicate.map(|idx| self.infos[idx]);
+
         self.suffixes.push(suffix);
         self.keys.push(key);
+        self.infos.push(info);
 
-        duplicate
+        existing
     }
 }
 
@@ -236,14 +290,13 @@ impl Eq for NameKey {}
 
 /// Decide which of a duplicate pair to remove.
 pub(super) fn resolve_pair(
-    reads: &[SimpleRead],
+    this: &impl OverlapRead,
     this_idx: usize,
+    other: &impl OverlapRead,
     other_idx: usize,
     to_remove: &mut SmallVec<usize, 16>,
 ) {
-    let this_read = &reads[this_idx];
-    let other_read = &reads[other_idx];
-    if this_read.base == other_read.base || this_read.second {
+    if this.overlap_base() == other.overlap_base() || this.is_second() {
         to_remove.push(this_idx);
     } else {
         to_remove.push(other_idx);
@@ -260,7 +313,7 @@ mod tests {
         SimpleRead { base, second, ..default() }
     }
 
-    /// Simulate the inline dedup that `from_hts` performs during alignment collection.
+    /// Simulate the inline dedup that callers perform during alignment collection.
     fn run_dedup_with(reads: Vec<(&[u8], SimpleRead)>, threshold: usize) -> Vec<SimpleRead> {
         let mut buf = NameBuffer::new(threshold);
         buf.prepare(reads.len());
@@ -268,9 +321,10 @@ mod tests {
         let mut to_remove: SmallVec<usize, 16> = SmallVec::new();
         for (name, read) in reads {
             let this_idx = raw_reads.len();
+            let info = DedupInfo { idx: this_idx, base: read.base, second: read.second };
             raw_reads.push(read);
-            if let Some(other_idx) = buf.see(name, this_idx) {
-                resolve_pair(&raw_reads, this_idx, other_idx, &mut to_remove);
+            if let Some(other) = buf.see(name, info) {
+                resolve_pair(&info, info.idx, &other, other.idx, &mut to_remove);
             }
         }
         to_remove.sort_unstable();

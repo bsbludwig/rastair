@@ -41,6 +41,7 @@ use tracing::{debug, instrument, warn};
 pub struct PileupMappingParams {
     pub variant_calling: VariantCallingParams,
     pub require_tags: TagRequirement,
+    pub call_indels: bool,
     /// Ignore indels within this distance from read ends.
     #[default(0)]
     pub indel_end_of_read_cutoff: usize,
