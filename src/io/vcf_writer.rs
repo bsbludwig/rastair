@@ -14,7 +14,7 @@ use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use rustc_hash::FxHashSet;
-use seqair::vcf::{OutputFormat, Ready, Writer as SeqWriter};
+use seqair::vcf::{CoordinateIndex, OutputFormat, Ready, Writer as SeqWriter};
 use seqair_types::{Probability, SmolStr};
 use std::{ffi::OsStr, io::Write, num::NonZeroUsize};
 use tracing::{debug, warn};
@@ -215,11 +215,23 @@ impl VcfParams {
             .write_header(&header)
             .wrap_err("Failed to write VCF header")?;
 
+        // Where to write the coordinate index, if `finish()` produces one. Only
+        // compressed formats are indexed (plain VCF yields `None` from finish),
+        // and stdout/pipes have nowhere to put a sidecar file.
+        let index_path = (!vcf_output.is_std()).then(|| {
+            std::path::PathBuf::from(format!(
+                "{}.{}",
+                vcf_output.path().display(),
+                CoordinateIndex::SUFFIX
+            ))
+        });
+
         Ok(Some(SeqairVcfWriter {
             writer: Some(writer),
             schema,
             config: self.field_config(),
             last_contig: None,
+            index_path,
         }))
     }
 
@@ -251,6 +263,8 @@ pub struct SeqairVcfWriter {
     schema: Schema,
     config: FieldConfig,
     last_contig: Option<seqair::vcf::ContigId>,
+    /// Sidecar `.csi` path for compressed file output; `None` for stdout/pipes.
+    index_path: Option<std::path::PathBuf>,
 }
 
 impl SeqairVcfWriter {
@@ -287,10 +301,15 @@ impl SeqairVcfWriter {
         )
     }
 
-    /// Flush the BGZF EOF block / finalize the stream. Must be called once.
+    /// Flush the BGZF EOF block / finalize the stream, then write the `.csi`
+    /// coordinate index for compressed file output. Must be called once.
     pub fn finish(&mut self) -> Result<()> {
         if let Some(writer) = self.writer.take() {
-            writer.finish().wrap_err("Failed to finish VCF output")?;
+            let (_, index) = writer.finish().wrap_err("Failed to finish VCF output")?;
+            if let (Some(index), Some(path)) = (index, &self.index_path) {
+                index.write_to_path(path).wrap_err("Failed to write coordinate index")?;
+                debug!(path = %path.display(), "Wrote coordinate index");
+            }
         }
         Ok(())
     }
