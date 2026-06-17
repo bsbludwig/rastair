@@ -400,6 +400,56 @@ fn write_bcf_to_file_and_bed_to_stdout() -> Result<()> {
     Ok(())
 }
 
+/// Compressed file output is coordinate-indexed automatically: a `.csi` is
+/// written next to the `.bcf`, and it can be used for region queries. Regions
+/// given out of tid order on the CLI must still produce a valid sorted index.
+#[test]
+fn compressed_output_gets_a_csi_index() -> Result<()> {
+    use rust_htslib::bcf::{IndexedReader, Read};
+
+    let temp_dir = TempDir::new()?;
+    let bcf = temp_dir.path().join("out.bcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        // Out of tid order: bacteriophage is tid 2, chr19 is tid 0.
+        .args(["--region", "bacteriophage_lambda_CpG chr19", NO_ML, "--vcf"])
+        .arg(&bcf)
+        .output()?
+        .succeeds()?;
+
+    let csi = temp_dir.path().join("out.bcf.csi");
+    assert!(csi.exists(), "expected a .csi index next to the .bcf");
+
+    // Opening via IndexedReader + fetch only works with a valid index.
+    let mut reader = IndexedReader::from_path(&bcf).wrap_err("open indexed bcf")?;
+    let rid = reader.header().name2rid(b"chr19").wrap_err("chr19 in header")?;
+    reader.fetch(rid, 0, None).wrap_err("fetch chr19 via index")?;
+    let chr19_records = reader.records().count();
+    assert!(chr19_records > 0, "index region query for chr19 returned no records");
+
+    Ok(())
+}
+
+/// Plain (uncompressed) VCF has no coordinate index, so no `.csi` is written.
+#[test]
+fn plain_vcf_output_has_no_index() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("out.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&vcf)
+        .output()?
+        .succeeds()?;
+
+    assert!(vcf.exists());
+    assert!(!temp_dir.path().join("out.vcf.csi").exists(), "plain VCF must not be indexed");
+
+    Ok(())
+}
+
 #[test]
 fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
     apply_common_filters!();

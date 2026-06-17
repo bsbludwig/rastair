@@ -332,7 +332,7 @@ mod seqair_readers {
                     .collect::<Result<Vec<_>>>()?
             } else {
                 debug!("fetching all regions");
-                get_full_regions(header)?
+                get_full_regions(header)
             };
             ensure!(!full_regions.is_empty(), "No regions found");
 
@@ -419,15 +419,15 @@ mod seqair_readers {
         })
     }
 
-    fn get_full_regions(header: &seqair::bam::BamHeader) -> Result<Vec<SelectedRegion>> {
-        use seqair_types::SmolStr;
-        (0..header.target_count())
-            .map(|tid| -> Result<SelectedRegion> {
-                let tid = u32::try_from(tid).wrap_err("Target ID overflow")?;
-                let chr =
-                    SmolStr::new(header.target_name(tid).wrap_err("Failed to get target name")?);
-                let length = header.target_len(tid).wrap_err("Failed to get target length")?;
-                Ok(SelectedRegion::EntireContig(Region { contig: chr, start: 1, end: length }))
+    fn get_full_regions(header: &seqair::bam::BamHeader) -> Vec<SelectedRegion> {
+        header
+            .targets()
+            .map(|target| {
+                SelectedRegion::EntireContig(Region {
+                    contig: target.name,
+                    start: 1,
+                    end: target.length,
+                })
             })
             .collect()
     }
