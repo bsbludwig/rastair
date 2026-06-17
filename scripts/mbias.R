@@ -114,7 +114,7 @@ params_list <- list(
   input_bgz = ifelse(is.na(args$bed)||is.null(args$bed), "", normalizePath(args$bed)),
   input_vcf = ifelse(is.na(args$vcf)||is.null(args$vcf), "", normalizePath(args$vcf)),
   input_bam = ifelse(is.na(args$bam)||is.null(args$bam), "", normalizePath(args$bam)),
-  plot_fp = !is.na(args$plot_fp)
+  plot_fp = isTRUE(args$plot_fp)
 )
 
 script_dir = get_script_dir(commandArgs())

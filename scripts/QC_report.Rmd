@@ -57,7 +57,10 @@ calculate_cutoff <- function(mbias_table) {
   # get the mean beta of the middle 60% of the data
   n_obs <- nrow(mbias_table)
   if (n_obs < 3) {
-    stop("Not enough data points to calculate cutoffs")
+    # Too few points for a meaningful cutoff; report no trimming rather than
+    # aborting the whole render. Callers skip sparse contigs before reaching
+    # here, so this is a defensive fallback.
+    return(data.frame(left=as.double(0), right=as.double(0)))
   }
   upper_lim <- min(ceiling(n_obs * 0.8), n_obs-1)
   lower_lim <- max(floor(n_obs * 0.2), 2)
@@ -174,7 +177,25 @@ setkey(mbias_table, chr, pos)
 ## M-bias plots
 
 ```{r plot_mbias, echo=FALSE, fig.height=5, fig.width=7}
+# A cutoff needs at least this many covered read positions in a
+# read_pair/strand group to be meaningful. Tiny alt/decoy contigs in
+# full-genome BAMs often fall short in at least one group.
+MIN_MBIAS_OBS <- 3
+# When the run is explicitly scoped to a region/chromosome, a sparse contig is
+# an error: the user asked for exactly this data and we can't honour it. For a
+# genome-wide run we skip sparse contigs (e.g. tiny alt/decoy contigs) and warn,
+# so they don't abort the whole report.
+region_given <- !is.na(params$region) && nchar(params$region) > 0
+skipped_contigs <- character(0)
 for (chrom in unique(mbias_table$chr)) {
+  group_sizes <- mbias_table[chr==chrom, .N, by=.(read_pair, strand)]
+  if (any(group_sizes$N < MIN_MBIAS_OBS)) {
+    if (region_given) {
+      stop(sprintf("Not enough data points to calculate cutoffs for %s: a read_pair/strand group has <%d covered read positions", chrom, MIN_MBIAS_OBS))
+    }
+    skipped_contigs <- c(skipped_contigs, as.character(chrom))
+    next
+  }
   cutoffs <- mbias_table[chr==chrom, calculate_cutoff(as.data.frame(.SD)), by=.(chr, read_pair, strand)]
   print(cutoffs)
   #write cutoffs to file if requested
@@ -204,6 +225,11 @@ for (chrom in unique(mbias_table$chr)) {
   g = g + ggtitle(chrom)
 
   print(g)
+}
+if (length(skipped_contigs) > 0) {
+  warning(sprintf(
+    "Skipped M-bias plots/cutoffs for %d contig(s) with <%d covered read positions in a read_pair/strand group: %s",
+    length(skipped_contigs), MIN_MBIAS_OBS, paste(skipped_contigs, collapse=", ")))
 }
 ```
 
@@ -287,59 +313,6 @@ if (params$plot_vbias) {
     out[, chr := as.factor(chr)]
     out[, base := as.factor(base)]
     return(out)
-  }
-
-  # For a subset of observations of read orientation on one strand,
-  # calculate the suggested cutoff points
-  calculate_cutoff <- function(mbias_table) {
-    # Ensure we process things in orders
-    mbias_table <- mbias_table[order(mbias_table$pos),]
-    # get the mean beta of the middle 60% of the data
-    n_obs <- nrow(mbias_table)
-    if (n_obs < 3) {
-      stop("Not enough data points to calculate cutoffs")
-    }
-    upper_lim <- min(ceiling(n_obs * 0.8), n_obs-1)
-    lower_lim <- max(floor(n_obs * 0.2), 2)
-    mean_middle <- mean(mbias_table[lower_lim:upper_lim,]$beta)
-    upper_ci_max <- max(mbias_table[lower_lim:upper_lim,]$upper_ci)
-    lower_ci_min <- min(mbias_table[lower_lim:upper_lim,]$lower_ci)
-
-    # Search from the inside out for the first point left/right that is
-    # either outside the 95% CI bounds of the middle, or the mean of the
-    # middle is outside the CI of the point, or it's more than 0.05 away
-    # from the mean of the middle
-    check_match <- function(row, mean_middle, lower_ci_min, upper_ci_max) {
-      if (is.na(mean_middle) || is.null(mean_middle) || is.na(row$beta) || is.null(row$beta) || is.na(lower_ci_min) || is.null(lower_ci_min) || is.na(upper_ci_max) || is.null(upper_ci_max)) {
-        return(FALSE)
-      }
-
-      if (!row$beta %between% c(lower_ci_min, upper_ci_max)
-          && abs(row$beta - mean_middle) > 0.05
-          && !mean_middle %between% c(row$lower_ci, row$upper_ci)) {
-        return(TRUE)
-      }
-
-      return(FALSE)
-    }
-
-    left_cutoff = 0
-    right_cutoff = 0
-
-    middle = ceiling(n_obs/2)
-    for (pos in middle:1) {
-      if (check_match(mbias_table[pos,], mean_middle, lower_ci_min, upper_ci_max)) {
-        left_cutoff = pos
-        break
-      }
-    }
-    for (pos in 1:(n_obs-middle)) {
-      if (check_match(mbias_table[middle+pos,], mean_middle, lower_ci_min, upper_ci_max)) {
-        right_cutoff = n_obs - (middle+pos) + 1
-        break
-      }
-    }
-    return(data.frame(left=as.double(left_cutoff), right=as.double(right_cutoff)))
   }
 
   if (is.na(params$reference) || nchar(params$reference)==0 || !file.exists(params$reference)) {
