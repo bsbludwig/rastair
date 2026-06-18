@@ -98,7 +98,6 @@ impl PileupMetrics {
             .filter(|(idx, _)| to_remove.binary_search(idx).is_err())
             .take(max_reads)
         {
-            total_depth += 1;
             let Some(baseq) = view.qual().and_then(|q| q.get()) else {
                 continue;
             };
@@ -108,6 +107,14 @@ impl PileupMetrics {
             let Some(pos) = view.qpos() else {
                 continue;
             };
+            let strand = view.extra().strand;
+            let reverse = view.flags.is_reverse();
+            if !params.quality.filter_fields(view.mapq, baseq)
+                || !params.read_masking.filter_fields(strand, reverse, pos as u32, view.seq_len)
+            {
+                continue;
+            }
+            total_depth += 1;
 
             let qual_sq = f64::from(baseq).powi(2);
             let mapq_sq = f64::from(view.mapq).powi(2);
@@ -115,7 +122,7 @@ impl PileupMetrics {
                 base,
                 qual_sq,
                 mapq_sq,
-                view.extra().strand,
+                strand,
                 view.matching_bases,
                 view.indel_bases,
                 pos as u32,
