@@ -47,7 +47,7 @@ impl RecordFilters {
     pub fn pre_filter(&self, pileup: &PileupMetrics) -> bool {
         let has_alts = !pileup.alts.is_empty();
         let cpg = *pileup.pos_metrics.cpg || pileup.forms_denovo();
-        let has_indels = !pileup.indels.is_empty();
+        let has_indels = pileup.indel_data.is_some();
 
         if self.cpgs_only {
             // Filter out pileups that are not CpG if requested

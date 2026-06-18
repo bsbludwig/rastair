@@ -754,11 +754,10 @@ fn collect_training_data_from_segment(
             }
 
             // -- Indel alleles --
-            if !current.indels.is_empty() {
-                let tract =
-                    u32::from(current.homopolymer_run.max(current.dinucleotide_run));
+            if let Some(ref d) = current.indel_data {
+                let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
                 let indel_calls =
-                    indel_calling::call_indels(&current.indels, indel_params, true, tract, false);
+                    indel_calling::call_indels(&d.counts, indel_params, true, tract, false);
                 for call in &indel_calls {
                     let indel_key = IndelKey { pos, allele: call.allele.clone() };
                     let label = if indel_truth.contains(&indel_key) { 1.0 } else { 0.0 };
