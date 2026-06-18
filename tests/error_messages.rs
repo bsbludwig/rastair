@@ -103,11 +103,13 @@ fn invalid_bam_file() -> Result<()> {
     let fake_bam = temp_dir.path().join("test.bam");
     std::fs::write(&fake_bam, b"This is not a BAM file")?;
 
-    assert_cmd_snapshot!(rastair().args([
-        "call",
-        "--region=chr19:6105700-6105800",
-        "--fasta-file=tests/data/test.fasta.gz",
-    ]).arg(&fake_bam), @r#"
+    let mut cmd = rastair();
+    let mut cmd = cmd
+        .args(["call", "--region=chr19:6105700-6105800", "--fasta-file=tests/data/test.fasta.gz"])
+        .arg(&fake_bam);
+
+    #[cfg(not(feature = "experimental-seqair"))]
+    assert_cmd_snapshot!(cmd, @r#"
     success: false
     exit_code: 1
     ----- stdout -----
@@ -120,6 +122,19 @@ fn invalid_bam_file() -> Result<()> {
     Suggestion: Ensure the BAM/CRAM file is sorted and indexed with `samtools sort "[PATH]"`, respectively.
     Note: If you have a .bai/.crai file, ensure it is in the same directory as the BAM/CRAM file.
     "#);
+
+    #[cfg(feature = "experimental-seqair")]
+    assert_cmd_snapshot!(cmd, @"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Error: 
+       0: Failed to read BAM/FASTA files
+       1: Failed to open alignment file [PATH]
+       2: unrecognized file format for [PATH]), bgzf-compressed SAM (.sam.gz), CRAM (.cram).
+    ");
 
     Ok(())
 }
