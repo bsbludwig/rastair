@@ -7,28 +7,31 @@ use super::{
 };
 use crate::{
     call::{
-        pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
+        pileup::{PositionInRead, SimpleRead},
         process::PileupMappingParams,
+    },
+    metrics::{
+        Alt, AltFilters, Filters, PerBaseAccumulators, PileupMetrics, RecordTags, aggregate_indels,
     },
     sequence::Segment,
     utils::SequenceContext,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use seqair::bam::pileup::{AlignmentView, Indel, PileupColumn};
-use seqair_types::{Base, SmallVec};
+use seqair_types::{Base, RmsAccumulator, SmallVec};
 use std::rc::Rc;
 use tracing::{debug, instrument, trace};
 
 use crate::sequence::RastairReadExtras;
 
-impl Pileup {
+impl PileupMetrics {
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn from_seqair(
         column: &PileupColumn<'_, RastairReadExtras>,
         segment: Rc<Segment>,
         params: &PileupMappingParams,
         collector: &mut NameCollector,
-    ) -> Result<Pileup> {
+    ) -> Result<PileupMetrics> {
         let pos = column.pos().as_u64();
         let pos_u32 = u32::try_from(pos).wrap_err("pileup position exceeds u32")?;
         let idx = segment.pos_to_idx(pos_u32)?;
@@ -39,9 +42,6 @@ impl Pileup {
         }
 
         // First pass: determine which overlapping-pair indices to remove.
-        // The alignments slice is already materialized by seqair, so walking
-        // it twice is cheap and lets the second pass aggregate indel stats
-        // directly without a per-read buffer.
         let mut to_remove = SmallVec::<usize, 16>::new();
         collector.prepare(max_reads);
         if matches!(collector, NameCollector::Collect(..)) {
@@ -63,7 +63,18 @@ impl Pileup {
             to_remove.sort_unstable();
         }
 
-        let mut raw_reads: Vec<SimpleRead> = Vec::with_capacity(max_reads);
+        let reference_base: Base =
+            segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
+
+        let context =
+            SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
+
+        let mut accumulators = PerBaseAccumulators::default();
+        let mut pos_baseq = RmsAccumulator::new();
+        let mut pos_mapq = RmsAccumulator::new();
+        let mut mapq0: u32 = 0;
+        let mut total_depth: usize = 0;
+        let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
         let mut indel_observations = SmallVec::new();
         let mut depth_offset: u32 = 0;
         let mut soft_clip_count: u32 = 0;
@@ -79,7 +90,21 @@ impl Pileup {
             .take(max_reads);
 
         for (read, view) in iter {
-            raw_reads.push(read);
+            total_depth += 1;
+            let qual_sq = f64::from(read.qual).powi(2);
+            let mapq_sq = f64::from(read.mapq).powi(2);
+            accumulators.accumulate(&read, qual_sq, mapq_sq);
+            pos_baseq.add_squared(qual_sq);
+            pos_mapq.add_squared(mapq_sq);
+            if read.mapq == 0 {
+                mapq0 += 1;
+            }
+            if read.base.known_index().is_some()
+                && read.base != reference_base
+                && !alt_bases.contains(&read.base)
+            {
+                alt_bases.push(read.base);
+            }
 
             if params.call_indels {
                 let aln = view.alignment();
@@ -98,13 +123,34 @@ impl Pileup {
             }
         }
 
-        let reads = SimpleReads(raw_reads.into());
+        let pos_metrics = crate::metrics::PositionMetrics::new(
+            total_depth,
+            reference_base,
+            context.before_1,
+            context.after_1,
+            pos_baseq.finish(),
+            pos_mapq.finish(),
+            mapq0,
+        );
 
-        let reference_base: Base =
-            segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
+        let ref_metrics = if let Some(acc) = accumulators.take(reference_base) {
+            acc.finish(reference_base, total_depth, pos_u32, reference_base, &context)?
+        } else {
+            crate::metrics::AlleleMetrics { base: reference_base, ..Default::default() }
+        };
 
-        let context =
-            SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
+        let alts = alt_bases
+            .iter()
+            .map(|&base| {
+                let acc = accumulators
+                    .take(base)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("unknown base {base} in alt_bases"))?;
+                let metrics = acc.finish(base, total_depth, pos_u32, reference_base, &context)?;
+                Ok(Alt { base, metrics, filters: AltFilters::default(), call: Default::default() })
+            })
+            .collect::<Result<_>>()?;
+
+        let indels = aggregate_indels(&indel_observations, total_depth, depth_offset, pos_u32);
 
         let (indel_ref_window, indel_ref_anchor) = if indel_observations.is_empty() {
             (SmallVec::new(), 0)
@@ -114,19 +160,24 @@ impl Pileup {
 
         let segment_start = segment.range.region.start as usize;
 
-        Ok(Pileup {
+        Ok(PileupMetrics {
             region: segment.range.clone(),
-            context,
             pos: pos_u32,
-            reads,
             reference_base,
+            context,
             indel_observations,
-            depth_offset,
             homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
             dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
             soft_clip_count,
             indel_ref_window,
             indel_ref_anchor,
+            pos_metrics,
+            pos_filters: Filters::default(),
+            ref_metrics,
+            alts,
+            tags: RecordTags::default(),
+            indels,
+            indel_calls: Vec::new(),
         })
     }
 }

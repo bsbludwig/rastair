@@ -1,7 +1,7 @@
 use crate::{
     call::{ml::MachineLearningParams, process},
     metrics::PileupMetrics,
-    sequence::ReaderParams,
+    sequence::{ReaderParams, Segment},
     utils::{PileupMetricsIteratorExt, default},
 };
 use color_eyre::{
@@ -9,6 +9,35 @@ use color_eyre::{
     eyre::{Context as _, ContextCompat as _},
 };
 use seqair_types::Probability;
+
+#[cfg(not(feature = "experimental-seqair"))]
+fn build_test_pileups(
+    pileups: impl Iterator<Item = crate::call::pileup::Pileup>,
+    segment: &Segment,
+    threshold_filters: &process::ThresholdFilterParams,
+) -> Vec<PileupMetrics> {
+    process::calculate_pileup_metrics(pileups, segment)
+        .map(|x| {
+            let mut x = x.unwrap();
+            process::apply_threshold_filters(&mut x, threshold_filters).unwrap();
+            x
+        })
+        .collect()
+}
+
+#[cfg(feature = "experimental-seqair")]
+fn build_test_pileups(
+    pileups: impl Iterator<Item = PileupMetrics>,
+    _segment: &Segment,
+    threshold_filters: &process::ThresholdFilterParams,
+) -> Vec<PileupMetrics> {
+    pileups
+        .map(|mut x| {
+            process::apply_threshold_filters(&mut x, threshold_filters).unwrap();
+            x
+        })
+        .collect()
+}
 
 #[test]
 fn test_cpg_detection() -> Result<()> {
@@ -26,22 +55,14 @@ fn test_cpg_detection() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let pileups = process::calculate_pileup_metrics(pileups, &segment)
-        .map(|x: Result<PileupMetrics>| -> PileupMetrics {
-            let mut x = x.unwrap();
-            process::apply_threshold_filters(&mut x, &threshold_filters)
-                .wrap_err("Failed to apply threshold filters")
-                .unwrap();
-            x
-        })
+    let pileups = build_test_pileups(pileups, &segment, &threshold_filters)
+        .into_iter()
         .map_surrounding(|b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold))
         .collect::<Result<Vec<_>>>()?;
 
     // get pileups for a CpG site
-    let ref_c =
-        pileups.iter().find(|p| p.pileup.pos == 6105711).wrap_err("Could not find C pileup")?;
-    let ref_g =
-        pileups.iter().find(|p| p.pileup.pos == 6105712).wrap_err("Could not find G pileup")?;
+    let ref_c = pileups.iter().find(|p| p.pos == 6105711).wrap_err("Could not find C pileup")?;
+    let ref_g = pileups.iter().find(|p| p.pos == 6105712).wrap_err("Could not find G pileup")?;
 
     assert!(*ref_c.pos_metrics.cpg);
     assert!(*ref_g.pos_metrics.cpg);
@@ -67,14 +88,8 @@ fn set_filters() -> Result<()> {
 
     let ml = MachineLearningParams::default().init()?;
 
-    let pileups = process::calculate_pileup_metrics(pileups, &segment)
-        .map(|x: Result<PileupMetrics>| -> PileupMetrics {
-            let mut x = x.unwrap();
-            process::apply_threshold_filters(&mut x, &threshold_filters)
-                .wrap_err("Failed to apply threshold filters")
-                .unwrap();
-            x
-        })
+    let pileups = build_test_pileups(pileups, &segment, &threshold_filters)
+        .into_iter()
         .map_surrounding(|b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold))
         .collect::<Result<Vec<_>>>()?;
 
@@ -85,7 +100,7 @@ fn set_filters() -> Result<()> {
 
     // get pileups for a CpG site
     let low_dp_on_a =
-        pileups.iter().find(|p| p.pileup.pos == 6105742).wrap_err("Could not find C pileup")?;
+        pileups.iter().find(|p| p.pos == 6105742).wrap_err("Could not find C pileup")?;
 
     // dbg!(&low_dp_on_a.pos_filters);
     // dbg!(low_dp_on_a.alts.iter().map(|alt| &alt.filters.filters).collect::<Vec<_>>());

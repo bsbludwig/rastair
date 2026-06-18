@@ -1,12 +1,12 @@
 //! Test utilities for writing concise and readable tests for rastair call
 #![allow(clippy::cast_possible_truncation, reason = "Test code")]
-
+use crate::call::process_region;
 use crate::call::variant_calling::ErrorModel;
 use crate::{
     CallParams,
     call::{
         pileup::{Pileup, SimpleRead, SimpleReads},
-        process, process_region,
+        process,
     },
     metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, Region, Segment},

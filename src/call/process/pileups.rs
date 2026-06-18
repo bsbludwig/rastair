@@ -20,7 +20,8 @@ use tracing::{Level, debug, instrument, trace, warn};
 
 #[cfg(feature = "experimental-seqair")]
 use crate::{
-    call::pileup::{Pileup, overlapping_reads::NameCollector},
+    call::pileup::overlapping_reads::NameCollector,
+    metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{PileupReaders, ReferenceWindow},
 };
 #[cfg(feature = "experimental-seqair")]
@@ -136,7 +137,7 @@ pub fn get_pileups(
     readers: &mut PileupReaders,
     region: &ChunkRegion,
     params: &PileupMappingParams,
-) -> Result<(Rc<Segment>, impl Iterator<Item = Pileup>)> {
+) -> Result<(Rc<Segment>, impl Iterator<Item = PileupMetrics>)> {
     // Build the rastair Segment (FASTA fetch only) and extract ref window.
     let segment = readers.segment(region, 2).wrap_err("Failed to fetch segment")?;
     debug!(len = segment.sequence.len(), "Processing region (seqair)");
@@ -194,7 +195,7 @@ pub fn get_pileups(
 
     let segment = Rc::new(segment);
     let mut collector = NameCollector::new(params);
-    let mut pileups: Vec<Pileup> = Vec::new();
+    let mut pileup_metrics: Vec<PileupMetrics> = Vec::new();
 
     for seqair_seg in &seqair_segments {
         // Fetch BAM records + FASTA into PileupEngine (compute() runs here).
@@ -211,8 +212,8 @@ pub fn get_pileups(
             if !region.contains(pos) {
                 continue;
             }
-            match Pileup::from_seqair(&col, segment.clone(), params, &mut collector) {
-                Ok(p) => pileups.push(p),
+            match PileupMetrics::from_seqair(&col, segment.clone(), params, &mut collector) {
+                Ok(p) => pileup_metrics.push(p),
                 Err(error) => {
                     warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");
                 }
@@ -220,7 +221,12 @@ pub fn get_pileups(
         }
     }
 
-    Ok((segment, pileups.into_iter()))
+    let mut sliding_entropy = SlidingEntropy::new(&segment);
+    for pm in &mut pileup_metrics {
+        pm.pos_metrics.extended.region_entropy = sliding_entropy.entropy_at(pm.idx());
+    }
+
+    Ok((segment, pileup_metrics.into_iter()))
 }
 
 #[cfg(test)]
@@ -256,6 +262,7 @@ mod tests {
     /// same pileups as an effectively-unlimited budget. Only meaningful on the
     /// seqair backend; on htslib the budget is ignored and both runs are
     /// trivially identical.
+    #[cfg(feature = "experimental-seqair")]
     #[test]
     fn byte_budget_subdivision_is_transparent() -> Result<()> {
         let params = ReaderParams {
@@ -270,12 +277,14 @@ mod tests {
         // both the htslib and seqair backends.
         let huge = PileupMappingParams { segment_max_bytes: u64::MAX, ..Default::default() };
         let (_s1, p1) = get_pileups(&mut readers, &segments[0], &huge)?;
-        let baseline: Vec<_> = p1.map(|p| (p.pos, p.reference_base, p.reads.0.len())).collect();
+        let baseline: Vec<_> =
+            p1.map(|p| (p.pos, p.reference_base, p.pos_metrics.depth as usize)).collect();
 
         // A 1-byte budget forces the region to split into many sub-segments.
         let tiny = PileupMappingParams { segment_max_bytes: 1, ..Default::default() };
         let (_s2, p2) = get_pileups(&mut readers, &segments[0], &tiny)?;
-        let subdivided: Vec<_> = p2.map(|p| (p.pos, p.reference_base, p.reads.0.len())).collect();
+        let subdivided: Vec<_> =
+            p2.map(|p| (p.pos, p.reference_base, p.pos_metrics.depth as usize)).collect();
 
         assert!(!baseline.is_empty());
         assert_eq!(baseline, subdivided, "subdivision changed the pileups");

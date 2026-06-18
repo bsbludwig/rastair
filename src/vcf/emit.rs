@@ -48,7 +48,7 @@ pub fn emit_pileup<W: Write>(
             !matches!(alt.call, AltCall::Uncalled),
             "Alt {} at position {} is Uncalled - this should not happen",
             alt.base,
-            pileup.pileup.pos
+            pileup.pos
         );
     }
 
@@ -104,8 +104,8 @@ pub fn emit_pileup<W: Write>(
 }
 
 fn pos1(pileup: &PileupMetrics) -> Result<Pos1> {
-    Pos1::new(pileup.pileup.pos.saturating_add(1))
-        .wrap_err_with(|| format!("Invalid 1-based position from {}", pileup.pileup.pos))
+    Pos1::new(pileup.pos.saturating_add(1))
+        .wrap_err_with(|| format!("Invalid 1-based position from {}", pileup.pos))
 }
 
 fn to_seqair_gt(tag: GenotypeTag) -> SeqGenotype {
@@ -129,7 +129,7 @@ fn emit_main_record<W: Write>(
     error_model: &ErrorModel,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
-    let ref_base = pileup.pileup.reference_base;
+    let ref_base = pileup.reference_base;
     let alleles = if real_variants.is_empty() {
         Alleles::reference(ref_base)
     } else {
@@ -176,7 +176,7 @@ fn emit_rejected_record<W: Write>(
     ml_threshold: Option<Probability>,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
-    let alleles = Alleles::snv(pileup.pileup.reference_base, alt.base)
+    let alleles = Alleles::snv(pileup.reference_base, alt.base)
         .wrap_err("Failed to build rejected SNV alleles")?;
     let qual = alt.filters.ml.map(|ml| Phred::from(ml.inverted()).as_int() as f32);
 
@@ -208,7 +208,7 @@ fn emit_indel_record<W: Write>(
     ml_threshold: Option<Probability>,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
-    let anchor = pileup.pileup.reference_base;
+    let anchor = pileup.reference_base;
     let alleles = match &call.allele {
         IndelAllele::Insertion(bases) => Alleles::insertion(anchor, bases),
         IndelAllele::Deletion(bases) => Alleles::deletion(anchor, bases),
@@ -323,7 +323,7 @@ fn encode_info(
         i.as_sb_ob.encode(enc, &ob);
     }
     if c.sc5 {
-        i.sc5.encode(enc, pileup.pileup.context.as_vcf_str().as_str());
+        i.sc5.encode(enc, pileup.context.as_vcf_str().as_str());
     }
     if c.af {
         let v: SmallVec<f32, 2> = only_alts.iter().map(|m| m.allele_frequency.f() as f32).collect();
@@ -412,7 +412,7 @@ fn encode_format(
         f.gc.encode(enc, &[gc])?;
     }
     if c.dp {
-        f.dp.encode(enc, &[i32::try_from(pileup.pileup.reads.len()).unwrap_or(i32::MAX)])?;
+        f.dp.encode(enc, &[i32::try_from(pileup.pos_metrics.depth).unwrap_or(i32::MAX)])?;
     }
     // Always emit M5mC/DPM5mC/ADM5mC so every record has a uniform FORMAT layout; a
     // position with no methylation context renders as the missing value `.`
