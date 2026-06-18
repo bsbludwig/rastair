@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "experimental-seqair", allow(unused, reason = "seqair integration WIP"))]
+
 use crate::{call::process::PileupMappingParams, sequence::Segment};
 use rust_htslib::bam::{Record, ext::BamRecordExtensions as _, pileup::Alignment};
 use rustc_hash::{FxHashMap, FxHasher};
