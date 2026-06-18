@@ -7,6 +7,7 @@ pub use read::*;
 pub(crate) mod from_hts;
 #[cfg(feature = "experimental-seqair")]
 pub(crate) mod from_seqair;
+pub(crate) mod hts_utils;
 pub(crate) mod overlapping_reads;
 pub(crate) mod ref_features;
 
