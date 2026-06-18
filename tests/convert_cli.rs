@@ -211,11 +211,13 @@ fn can_pipe_through() -> Result<()> {
 
     let call_args =
         CALL_TEST_BAM.iter().chain(&[CHR19_SMALL, NO_ML]).copied().collect::<Vec<&str>>().join(" ");
+    let maybe_seqair =
+        if cfg!(feature = "experimental-seqair") { " --features experimental-seqair " } else { "" };
 
     let mut cmd = Command::new(insta_cmd::get_cargo_bin("/bin/bash"));
     cmd.arg("-c");
     cmd.env("NO_COLOR", "1");
-    cmd.arg(format!("cargo run -q -- {call_args} --vcf | head -n1000 | cargo run -q -- convert -f bcf -F bed | head -n5"));
+    cmd.arg(format!("cargo run -q {maybe_seqair} -- {call_args} --vcf | head -n1000 | cargo run -q {maybe_seqair} -- convert -f bcf -F bed | head -n5"));
 
     assert_cmd_snapshot!(cmd);
 

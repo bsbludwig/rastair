@@ -599,6 +599,7 @@ impl PerBaseAccumulators {
         self.0[idx].add(read, qual_sq, mapq_sq);
     }
 
+    #[cfg(feature = "experimental-seqair")]
     pub(crate) fn accumulate_fields(
         &mut self,
         base: Base,
