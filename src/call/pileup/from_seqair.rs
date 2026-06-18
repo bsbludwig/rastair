@@ -6,10 +6,7 @@ use super::{
     ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
 };
 use crate::{
-    call::{
-        pileup::{PositionInRead, SimpleRead},
-        process::PileupMappingParams,
-    },
+    call::process::PileupMappingParams,
     metrics::{
         Alt, AltFilters, Filters, PerBaseAccumulators, PileupMetrics, RecordTags, aggregate_indels,
     },
@@ -49,13 +46,29 @@ impl PileupMetrics {
                 .alignments()
                 .enumerate()
                 .filter_map(|(idx, view)| {
-                    let read = extract_read(&view, params)?;
-                    Some((idx, view.qname(), read))
+                    let strand = view.extra().strand;
+                    let reverse = view.flags.is_reverse();
+                    let pos = view.qpos()?;
+                    let len = view.seq_len;
+                    let mapq = view.mapq;
+                    let baseq = view.qual()?;
+
+                    if !params.read_masking.filter_fields(strand, reverse, pos as u32, len)
+                        || !params.quality.filter_fields(mapq, baseq.get()?)
+                    {
+                        return None;
+                    }
+
+                    let info = DedupInfo {
+                        idx,
+                        base: view.base()?,
+                        second: view.flags.is_second_in_template(),
+                    };
+                    Some((view.qname(), info))
                 })
                 .take(max_reads);
 
-            for (idx, name, read) in filtered {
-                let info = DedupInfo { idx, base: read.base, second: read.second };
+            for (name, info) in filtered {
                 if let Some(other) = collector.see(name, info) {
                     resolve_pair(&info, info.idx, &other, other.idx, &mut to_remove);
                 }
@@ -79,31 +92,43 @@ impl PileupMetrics {
         let mut depth_offset: u32 = 0;
         let mut soft_clip_count: u32 = 0;
 
-        let iter = column
+        for (_idx, view) in column
             .alignments()
             .enumerate()
             .filter(|(idx, _)| to_remove.binary_search(idx).is_err())
-            .filter_map(|(_, view)| {
-                let read = extract_read(&view, params)?;
-                Some((read, view))
-            })
-            .take(max_reads);
-
-        for (read, view) in iter {
+            .take(max_reads)
+        {
             total_depth += 1;
-            let qual_sq = f64::from(read.qual).powi(2);
-            let mapq_sq = f64::from(read.mapq).powi(2);
-            accumulators.accumulate(&read, qual_sq, mapq_sq);
+            let Some(baseq) = view.qual().and_then(|q| q.get()) else {
+                continue;
+            };
+            let Some(base) = view.base() else {
+                continue;
+            };
+            let Some(pos) = view.qpos() else {
+                continue;
+            };
+
+            let qual_sq = f64::from(baseq).powi(2);
+            let mapq_sq = f64::from(view.mapq).powi(2);
+            accumulators.accumulate_fields(
+                base,
+                qual_sq,
+                mapq_sq,
+                view.extra().strand,
+                view.matching_bases,
+                view.indel_bases,
+                pos as u32,
+                view.seq_len,
+            );
             pos_baseq.add_squared(qual_sq);
             pos_mapq.add_squared(mapq_sq);
-            if read.mapq == 0 {
+            if view.mapq == 0 {
                 mapq0 += 1;
             }
-            if read.base.known_index().is_some()
-                && read.base != reference_base
-                && !alt_bases.contains(&read.base)
+            if base.known_index().is_some() && base != reference_base && !alt_bases.contains(&base)
             {
-                alt_bases.push(read.base);
+                alt_bases.push(base);
             }
 
             if params.call_indels {
@@ -117,7 +142,9 @@ impl PileupMetrics {
                     depth_offset += 1;
                 }
 
-                if let Some(obs) = build_indel_observation(&view, pos, segment.as_ref(), params) {
+                if let Some(obs) =
+                    build_indel_observation(&view, pos as u64, segment.as_ref(), params)
+                {
                     indel_observations.push(obs);
                 }
             }
@@ -180,37 +207,6 @@ impl PileupMetrics {
             indel_calls: Vec::new(),
         })
     }
-}
-
-fn extract_read(
-    view: &AlignmentView<'_, '_, RastairReadExtras>,
-    params: &PileupMappingParams,
-) -> Option<SimpleRead> {
-    let aln = view.alignment();
-    let extras = view.extra();
-
-    let qpos = aln.qpos()?;
-    let base = aln.base()?;
-    let qual_bq = aln.qual()?;
-    let qual = qual_bq.get().unwrap_or(0);
-
-    let read = SimpleRead {
-        base,
-        qual,
-        mapq: aln.mapq,
-        strand: extras.strand,
-        reverse: aln.flags.is_reverse(),
-        second: aln.flags.is_second_in_template(),
-        position: PositionInRead { pos: u32::try_from(qpos).ok()?, read_length: aln.seq_len },
-        matching_bases: aln.matching_bases,
-        indels: aln.indel_bases,
-    };
-
-    if !params.read_masking.filter(&read) || !params.quality.filter(&read) {
-        return None;
-    }
-
-    Some(read)
 }
 
 fn build_indel_observation(

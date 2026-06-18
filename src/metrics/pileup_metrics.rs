@@ -499,10 +499,31 @@ pub(crate) struct AlleleAccumulator {
 
 impl AlleleAccumulator {
     pub(crate) fn add(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
+        self.add_fields(
+            qual_sq,
+            mapq_sq,
+            read.strand,
+            read.matching_bases,
+            read.indels,
+            read.position.pos,
+            read.position.read_length,
+        );
+    }
+
+    pub(crate) fn add_fields(
+        &mut self,
+        qual_sq: f64,
+        mapq_sq: f64,
+        strand: Strand,
+        matching_bases: u32,
+        indels: u32,
+        pos_in_read: u32,
+        read_length: u32,
+    ) {
         self.depth += 1;
         self.baseq.add_squared(qual_sq);
         self.mapq.add_squared(mapq_sq);
-        match read.strand {
+        match strand {
             Strand::OT => {
                 self.ot_count += 1;
                 self.baseq_ot.add_squared(qual_sq);
@@ -515,9 +536,9 @@ impl AlleleAccumulator {
             }
             Strand::Unknown => {}
         }
-        self.aligned.add(f64::from(read.matching_bases));
-        self.indels.add(f64::from(read.indels));
-        self.pos_in_read.add(f64::from(read.position.pos) / f64::from(read.position.read_length));
+        self.aligned.add(f64::from(matching_bases));
+        self.indels.add(f64::from(indels));
+        self.pos_in_read.add(f64::from(pos_in_read) / f64::from(read_length));
     }
 
     pub(crate) fn finish(
@@ -576,6 +597,29 @@ impl PerBaseAccumulators {
     pub(crate) fn accumulate(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
         let Some(idx) = read.base.known_index() else { return };
         self.0[idx].add(read, qual_sq, mapq_sq);
+    }
+
+    pub(crate) fn accumulate_fields(
+        &mut self,
+        base: Base,
+        qual_sq: f64,
+        mapq_sq: f64,
+        strand: Strand,
+        matching_bases: u32,
+        indels: u32,
+        pos_in_read: u32,
+        read_length: u32,
+    ) {
+        let Some(idx) = base.known_index() else { return };
+        self.0[idx].add_fields(
+            qual_sq,
+            mapq_sq,
+            strand,
+            matching_bases,
+            indels,
+            pos_in_read,
+            read_length,
+        );
     }
 
     pub(crate) fn take(&mut self, base: Base) -> Option<AlleleAccumulator> {
