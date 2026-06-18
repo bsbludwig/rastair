@@ -3,7 +3,7 @@ use crate::{
         per_read::{BedReadsParams, PerRead},
         reader::{RastairBedReader, RastairCall},
     },
-    call::{pileup::from_hts::infer_strand_from_mismatch_motifs, variant_calling::ReadFlags},
+    call::{pileup::hts_utils::infer_strand_from_mismatch_motifs, variant_calling::ReadFlags},
     progress::ProgressTracker,
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
     utils::{cli, logging::ThisIsABug},
