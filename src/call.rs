@@ -441,14 +441,16 @@ fn process_collected_pileups(
 
     if params.indel.enabled() {
         for p in &mut pileups {
-            let tract = u32::from(p.homopolymer_run.max(p.dinucleotide_run));
-            p.indel_calls = variant_calling::indel_calling::call_indels(
-                &p.indels,
-                &params.indel,
-                params.indel.use_ml(ml.enabled()),
-                tract,
-                params.indel.rescues_hom_ref(),
-            );
+            if let Some(ref mut d) = p.indel_data {
+                let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
+                d.calls = variant_calling::indel_calling::call_indels(
+                    &d.counts,
+                    &params.indel,
+                    params.indel.use_ml(ml.enabled()),
+                    tract,
+                    params.indel.rescues_hom_ref(),
+                );
+            }
         }
     }
 
@@ -475,10 +477,9 @@ fn process_collected_pileups(
 
     if params.indel.rescues_hom_ref() {
         for p in &mut pileups {
-            variant_calling::indel_calling::rescue_hom_ref(
-                &mut p.indel_calls,
-                params.ml.threshold(),
-            );
+            if let Some(ref mut d) = p.indel_data {
+                variant_calling::indel_calling::rescue_hom_ref(&mut d.calls, params.ml.threshold());
+            }
         }
     }
 

@@ -184,34 +184,36 @@ impl PileupMetrics {
             })
             .collect::<Result<_>>()?;
 
-        let indels = aggregate_indels(&indel_observations, total_depth, depth_offset, pos_u32);
-
-        let (indel_ref_window, indel_ref_anchor) = if indel_observations.is_empty() {
-            (SmallVec::new(), 0)
+        let indel_data = if indel_observations.is_empty() {
+            None
         } else {
-            indel_ref_window_at(idx, &segment)
+            let counts =
+                aggregate_indels(&indel_observations, total_depth, depth_offset, pos_u32);
+            let (indel_ref_window, indel_ref_anchor) = indel_ref_window_at(idx, &segment);
+            let segment_start = segment.range.region.start as usize;
+            Some(Box::new(crate::call::pileup::indels::IndelData {
+                observations: indel_observations,
+                ref_window: indel_ref_window,
+                ref_anchor: indel_ref_anchor,
+                homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
+                dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
+                soft_clip_count,
+                counts,
+                calls: Vec::new(),
+            }))
         };
-
-        let segment_start = segment.range.region.start as usize;
 
         Ok(PileupMetrics {
             region: segment.range.clone(),
             pos: pos_u32,
             reference_base,
             context,
-            indel_observations,
-            homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
-            dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
-            soft_clip_count,
-            indel_ref_window,
-            indel_ref_anchor,
             pos_metrics,
             pos_filters: Filters::default(),
             ref_metrics,
             alts,
             tags: RecordTags::default(),
-            indels,
-            indel_calls: Vec::new(),
+            indel_data,
         })
     }
 }

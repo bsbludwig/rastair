@@ -1,4 +1,4 @@
-use crate::utils::{Base, Strand};
+use crate::{call::variant_calling::indel_calling::IndelCall, utils::Base, utils::Strand};
 use seqair_types::SmallVec;
 
 /// A specific indel allele observed in reads.
@@ -117,4 +117,16 @@ impl IndelAlleleCounts {
     pub fn on_both_strands(&self) -> bool {
         self.ot > 0 && self.ob > 0
     }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct IndelData {
+    pub observations: SmallVec<IndelObservation, 0>,
+    pub ref_window: SmallVec<Base, { super::INDEL_REF_WINDOW_LEN }>,
+    pub ref_anchor: u8,
+    pub homopolymer_run: u8,
+    pub dinucleotide_run: u8,
+    pub soft_clip_count: u32,
+    pub counts: IndelCounts,
+    pub calls: Vec<IndelCall>,
 }

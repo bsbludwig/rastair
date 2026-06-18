@@ -1,10 +1,7 @@
 use crate::{
     call::{
-        pileup::{
-            INDEL_REF_WINDOW_LEN, Pileup, SimpleRead,
-            indels::{self, IndelAlleleCounts, IndelCounts},
-        },
-        variant_calling::{EstimatedGenotype, indel_calling::IndelCall},
+        pileup::{Pileup, SimpleRead, indels},
+        variant_calling::EstimatedGenotype,
     },
     metrics::{MethylationEvidenceStrandInfo, PairedCounts, ReadKey},
     sequence::ChunkRegion,
@@ -28,12 +25,6 @@ pub struct PileupMetrics {
     pub pos: u32,
     pub reference_base: Base,
     pub context: SequenceContext,
-    pub indel_observations: SmallVec<indels::IndelObservation, 0>,
-    pub homopolymer_run: u8,
-    pub dinucleotide_run: u8,
-    pub soft_clip_count: u32,
-    pub indel_ref_window: SmallVec<Base, INDEL_REF_WINDOW_LEN>,
-    pub indel_ref_anchor: u8,
     pub pos_metrics: PositionMetrics,
     pub pos_filters: Filters,
     pub ref_metrics: AlleleMetrics,
@@ -45,10 +36,7 @@ pub struct PileupMetrics {
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
     #[serde(default)]
-    pub indels: IndelCounts,
-    /// Called indel variants at this position (populated during `process_region`).
-    #[serde(default)]
-    pub indel_calls: Vec<IndelCall>,
+    pub indel_data: Option<Box<indels::IndelData>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -162,7 +150,22 @@ impl PileupMetrics {
             })
             .collect::<Result<_>>()?;
 
-        let indels = aggregate_indels(&indel_observations, total_reads, noisy_ref_count, pos);
+        let indel_data = if indel_observations.is_empty() {
+            None
+        } else {
+            let counts =
+                aggregate_indels(&indel_observations, total_reads, noisy_ref_count, pos);
+            Some(Box::new(indels::IndelData {
+                observations: indel_observations,
+                ref_window: indel_ref_window,
+                ref_anchor: indel_ref_anchor,
+                homopolymer_run,
+                dinucleotide_run,
+                soft_clip_count,
+                counts,
+                calls: Vec::new(),
+            }))
+        };
 
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
@@ -191,12 +194,6 @@ impl PileupMetrics {
             pos,
             reference_base,
             context,
-            indel_observations,
-            homopolymer_run,
-            dinucleotide_run,
-            soft_clip_count,
-            indel_ref_window,
-            indel_ref_anchor,
             pos_metrics,
             pos_filters: Filters::default(),
             ref_metrics,
@@ -204,8 +201,7 @@ impl PileupMetrics {
             before_counts,
             after_counts,
             tags: RecordTags::default(),
-            indels,
-            indel_calls: Vec::new(),
+            indel_data,
         })
     }
 
@@ -643,7 +639,7 @@ impl MetricsForAlt<'_> {
 
 pub struct MetricsForIndel<'p> {
     pub metrics: &'p PileupMetrics,
-    pub indel: &'p IndelCall,
+    pub indel: &'p crate::call::variant_calling::indel_calling::IndelCall,
 }
 
 pub(crate) fn aggregate_indels(
@@ -651,22 +647,22 @@ pub(crate) fn aggregate_indels(
     total_reads: usize,
     noisy_ref_count: u32,
     pos: u32,
-) -> IndelCounts {
+) -> indels::IndelCounts {
     if indel_observations.is_empty() {
-        return IndelCounts {
+        return indels::IndelCounts {
             ref_count: total_reads as u32,
             noisy_ref_count,
             ..Default::default()
         };
     }
 
-    let mut alleles: SmallVec<IndelAlleleCounts, 2> = SmallVec::new();
+    let mut alleles: SmallVec<indels::IndelAlleleCounts, 2> = SmallVec::new();
 
     for obs in indel_observations {
         let entry = match alleles.iter_mut().find(|e| e.allele == obs.allele) {
             Some(entry) => entry,
             None => {
-                alleles.push(IndelAlleleCounts {
+                alleles.push(indels::IndelAlleleCounts {
                     allele: obs.allele.clone(),
                     ot: 0,
                     ob: 0,
@@ -702,5 +698,18 @@ pub(crate) fn aggregate_indels(
     }
     let ref_count = depth.saturating_sub(total_indel_reads);
 
-    IndelCounts { alleles, ref_count, noisy_ref_count }
+    indels::IndelCounts { alleles, ref_count, noisy_ref_count }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    // The budget covers the two inline `PairedCounts` tables (128 bytes each);
+    // without them the struct fits in the original 800.
+    #[test]
+    fn pileup_metrics_size() {
+        let size = std::mem::size_of::<PileupMetrics>();
+        assert!(size < 1024, "PileupMetrics grew to {size} bytes");
+    }
 }

@@ -68,15 +68,19 @@ pub fn add_ml_metrics(
     // model, and a score would make `low_ml_score` reachable for calls the model
     // never judged.
     let mut indel_scores: Vec<(usize, Probability)> = Vec::new();
-    for (i, call) in current.indel_calls.iter().enumerate().filter(|_| score_indels) {
-        let m = MetricsForIndel { metrics: current, indel: call };
-        if let Some(pred) = ml.predict_indels(&m) {
-            indel_scores.push((i, pred.prediction));
+    if let Some(ref d) = current.indel_data {
+        for (i, call) in d.calls.iter().enumerate().filter(|_| score_indels) {
+            let m = MetricsForIndel { metrics: current, indel: call };
+            if let Some(pred) = ml.predict_indels(&m) {
+                indel_scores.push((i, pred.prediction));
+            }
         }
     }
     for (i, score) in indel_scores {
-        if let Some(call) = current.indel_calls.get_mut(i) {
-            call.ml = Some(score);
+        if let Some(ref mut d) = current.indel_data {
+            if let Some(call) = d.calls.get_mut(i) {
+                call.ml = Some(score);
+            }
         }
     }
 
@@ -217,53 +221,53 @@ pub fn batch_add_ml_metrics(
                 }
             }
 
-            for (indel_idx, call) in
-                pileups_ref[i].indel_calls.iter().enumerate().filter(|_| score_indels)
-            {
-                let indel_m = MetricsForIndel { metrics: &pileups_ref[i], indel: call };
+            if let Some(ref d) = pileups_ref[i].indel_data {
+                for (indel_idx, call) in d.calls.iter().enumerate().filter(|_| score_indels) {
+                    let indel_m = MetricsForIndel { metrics: &pileups_ref[i], indel: call };
 
-                let (model_type, platt, features_result) = match &call.allele {
-                    IndelAllele::Insertion(_) => (
-                        MlModel::Insertion,
-                        rastair_model.insertion_platt,
-                        calc.calculate_insertion(&indel_m),
-                    ),
-                    IndelAllele::Deletion(_) => (
-                        MlModel::Deletion,
-                        rastair_model.deletion_platt,
-                        calc.calculate_deletion(&indel_m),
-                    ),
-                };
+                    let (model_type, platt, features_result) = match &call.allele {
+                        IndelAllele::Insertion(_) => (
+                            MlModel::Insertion,
+                            rastair_model.insertion_platt,
+                            calc.calculate_insertion(&indel_m),
+                        ),
+                        IndelAllele::Deletion(_) => (
+                            MlModel::Deletion,
+                            rastair_model.deletion_platt,
+                            calc.calculate_deletion(&indel_m),
+                        ),
+                    };
 
-                let f = match features_result {
-                    Err(error) => {
-                        debug!(%error, "Failed to calculate indel features for ML prediction");
-                        continue;
+                    let f = match features_result {
+                        Err(error) => {
+                            debug!(%error, "Failed to calculate indel features for ML prediction");
+                            continue;
+                        }
+                        Ok(f) if f.is_any_nan() => continue,
+                        Ok(f) => f,
+                    };
+
+                    let pending_item = Pending::indel(i, indel_idx, platt);
+
+                    match model_type {
+                        MlModel::Insertion => {
+                            pending
+                                .insertion_features
+                                .row_mut(pending.insertion_count)
+                                .zip_mut_with(&f.row(0), |d, &s| *d = s);
+                            pending.insertion.push(pending_item);
+                            pending.insertion_count += 1;
+                        }
+                        MlModel::Deletion => {
+                            pending
+                                .deletion_features
+                                .row_mut(pending.deletion_count)
+                                .zip_mut_with(&f.row(0), |d, &s| *d = s);
+                            pending.deletion.push(pending_item);
+                            pending.deletion_count += 1;
+                        }
+                        _ => unreachable!("indel alleles always map to Insertion or Deletion"),
                     }
-                    Ok(f) if f.is_any_nan() => continue,
-                    Ok(f) => f,
-                };
-
-                let pending_item = Pending::indel(i, indel_idx, platt);
-
-                match model_type {
-                    MlModel::Insertion => {
-                        pending
-                            .insertion_features
-                            .row_mut(pending.insertion_count)
-                            .zip_mut_with(&f.row(0), |d, &s| *d = s);
-                        pending.insertion.push(pending_item);
-                        pending.insertion_count += 1;
-                    }
-                    MlModel::Deletion => {
-                        pending
-                            .deletion_features
-                            .row_mut(pending.deletion_count)
-                            .zip_mut_with(&f.row(0), |d, &s| *d = s);
-                        pending.deletion.push(pending_item);
-                        pending.deletion_count += 1;
-                    }
-                    _ => unreachable!("indel alleles always map to Insertion or Deletion"),
                 }
             }
         }
@@ -369,8 +373,10 @@ pub fn batch_add_ml_metrics(
             let calibrated: Probability = p.platt.calibrate_score(f64::from(raw_pred));
             let threshold = ml.threshold;
             if let Some(indel_idx) = p.indel_idx {
-                if let Some(call) = pileups[p.pileup_idx].indel_calls.get_mut(indel_idx) {
-                    call.ml = Some(calibrated);
+                if let Some(ref mut d) = pileups[p.pileup_idx].indel_data {
+                    if let Some(call) = d.calls.get_mut(indel_idx) {
+                        call.ml = Some(calibrated);
+                    }
                 }
             } else if let Some(filters) = pileups[p.pileup_idx].alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);

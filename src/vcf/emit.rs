@@ -95,7 +95,7 @@ pub fn emit_pileup<W: Write>(
         }
     }
 
-    for call in &pileup.indel_calls {
+    for call in pileup.indel_data.as_ref().map_or(&[][..], |d| d.calls.as_slice()) {
         emit_indel_record(pileup, schema, contig, config, call, ml_threshold, writer)
             .wrap_err("Failed to emit indel VCF record")?;
     }
