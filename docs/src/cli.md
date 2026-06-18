@@ -249,7 +249,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Used for splitting work between threads. Tweak this to adjust memory usage.
 
-  Default value: `100000`
+  Default value: `10000`
 * `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
 
    Helpful to avoid missing variants at the edges of segments.
@@ -449,7 +449,7 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 
    Used for splitting work between threads. Tweak this to adjust memory usage.
 
-  Default value: `100000`
+  Default value: `10000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
   Default value: `10`
@@ -486,7 +486,7 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 
    Used for splitting work between threads. Tweak this to adjust memory usage.
 
-  Default value: `100000`
+  Default value: `10000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
   Default value: `10`

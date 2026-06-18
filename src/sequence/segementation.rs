@@ -12,9 +12,9 @@ pub struct SegmentationParams {
     ///
     /// Used for splitting work between threads. Tweak this to adjust memory
     /// usage.
-    #[arg(long, default_value_t = 100_000)]
+    #[arg(long, default_value_t = 10_000)]
     #[arg(help_heading = cli::sections::PROCESSING)]
-    #[default(100_000)]
+    #[default(10_000)]
     pub segment_max_length: u64,
 
     /// Number of bases to overlap between segments
