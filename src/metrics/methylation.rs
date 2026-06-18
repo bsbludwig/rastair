@@ -136,8 +136,8 @@ fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
         record.alts.iter().any(|a| a.base == cpg_base && a.call == AltCall::RealVariant);
 
     let adjacent_present = match side {
-        CpgSide::C => record.pileup.context.after_1 == Some(G),
-        CpgSide::G => record.pileup.context.before_1 == Some(C),
+        CpgSide::C => record.context.after_1 == Some(G),
+        CpgSide::G => record.context.before_1 == Some(C),
     };
 
     if has_denovo_alt && adjacent_present {

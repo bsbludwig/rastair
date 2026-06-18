@@ -44,8 +44,9 @@ impl CpgFeatures {
         use Base::*;
 
         let alt = current.alt;
-        let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
-        let ref_base = pileup.reference_base;
+        let PileupMetrics { reference_base, pos_metrics: pos, ref_metrics: r, .. } =
+            &current.metrics;
+        let ref_base = *reference_base;
 
         ensure!(*pos.cpg, "cpg called on non-CpG position");
         ensure!(

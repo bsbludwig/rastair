@@ -64,7 +64,7 @@ impl Rastair1BedFormat {
             no_snp: counts.no_snp,
             snp: counts.snp,
             // Coverage is total read depth at this position, including all bases/alts
-            coverage: pileup.pileup.reads.len(),
+            coverage: pileup.pos_metrics.depth as usize,
             genotype: GenotypeString::from_genotype_tag(gt.genotype, ref_base, &alt_bases),
             genotype_likelihood: Phred::from(gt.likelihood),
             genotype_confidence: Phred::from(gt.confidence),

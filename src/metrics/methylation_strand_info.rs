@@ -80,7 +80,7 @@ impl MethylationEvidenceStrandInfo {
     }
 
     fn from_denovo_context(pileup: &PileupMetrics) -> Option<Self> {
-        let context = &pileup.pileup.context;
+        let context = &pileup.context;
         let has_denovo_c =
             pileup.alts.iter().any(|alt| alt.base == C && alt.call == AltCall::RealVariant);
         if has_denovo_c && context.after_1 == Some(G) {

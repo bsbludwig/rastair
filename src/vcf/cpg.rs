@@ -60,7 +60,9 @@ impl From<&Pileup> for InCpG {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "experimental-seqair"))]
     use crate::call::test_helpers::variant_pileup;
+    #[cfg(not(feature = "experimental-seqair"))]
     use color_eyre::Result;
 
     #[test]
@@ -77,6 +79,7 @@ mod tests {
         assert_eq!(InCpG::new(C, Some(T), Some(A)), InCpG::No);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn test_cpg_detection() -> Result<()> {
         let (_, pileup) = variant_pileup("chr19", 6105711)?;

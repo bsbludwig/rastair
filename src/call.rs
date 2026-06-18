@@ -15,12 +15,16 @@
 //!   3. Convert to the output format
 //!   4. Write to file in order
 
+#[cfg(any(not(feature = "experimental-seqair"), test))]
+use crate::call::pileup::Pileup;
+#[cfg(any(not(feature = "experimental-seqair"), test))]
+use crate::call::process::calculate_pileup_metrics;
 use crate::{
     bed::rastair1::BedParams,
     call::{
         methylation::params::MethylationCallingParams,
-        pileup::{Pileup, SimpleRead},
-        process::{GPU_BATCH_BUFFER_SIZE, calculate_pileup_metrics, get_pileups},
+        pileup::SimpleRead,
+        process::{GPU_BATCH_BUFFER_SIZE, get_pileups},
         require_tags::RequireTagsParams,
         variant_calling::VariantCallingParams,
     },
@@ -333,9 +337,17 @@ fn process_region_wrapper(
             segment_max_bytes: params.segmentation.segment_max_bytes,
             ..Default::default()
         };
-        let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
 
-        let res = process_region(segment, pileups, params, ml);
+        #[cfg(not(feature = "experimental-seqair"))]
+        let res = {
+            let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
+            process_region(segment, pileups, params, ml)
+        };
+        #[cfg(feature = "experimental-seqair")]
+        let res = {
+            let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
+            process_pre_built_metrics(segment, metrics, params, ml)
+        };
 
         // Handle processing errors gracefully to not crash the whole processing
         match res {
@@ -360,6 +372,19 @@ fn process_region_wrapper(
     Ok(())
 }
 
+macro_rules! log_failed_and_skip {
+    ($msg:expr) => {
+        |x: Result<PileupMetrics>| match x {
+            Err(e) => {
+                warn!(error = format!("{e:#}"), $msg);
+                None
+            }
+            Ok(x) => Some(x),
+        }
+    };
+}
+
+#[cfg(any(not(feature = "experimental-seqair"), test))]
 /// Analyse pileups in a region
 fn process_region(
     segment: Rc<Segment>,
@@ -367,27 +392,7 @@ fn process_region(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    // Calculate metrics for each pileup.
-    let threshold_filters = process::ThresholdFilterParams {
-        variant_calling: params.variant_calling.clone(),
-        methylation: params.methylation.thresholds.clone(),
-        denovo_cpg: params.denovo_cpg.clone(),
-    };
-
-    macro_rules! log_failed_and_skip {
-        ($msg:expr) => {
-            |x: Result<PileupMetrics>| match x {
-                Err(e) => {
-                    warn!(error = format!("{e:#}"), $msg);
-                    None
-                }
-                Ok(x) => Some(x),
-            }
-        };
-    }
-
-    // Pass 1: collect all pre-ML pileups for the chunk.
-    let mut pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
+    let pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
         .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
         .map_surrounding(process::set_denovo_adj)
         .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
@@ -399,9 +404,44 @@ fn process_region(
         .filter(|p| params.record_filters.pre_filter(p))
         .collect();
 
+    process_collected_pileups(segment, pileups, params, ml)
+}
+
+#[cfg(feature = "experimental-seqair")]
+fn process_pre_built_metrics(
+    segment: Rc<Segment>,
+    pileups: impl Iterator<Item = PileupMetrics>,
+    params: &CallParams,
+    ml: &MachineLearning,
+) -> Result<Vec<PileupMetrics>> {
+    let pileups: Vec<PileupMetrics> = pileups
+        .map_surrounding(process::set_denovo_adj)
+        .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
+        .map(|mut current| {
+            current.pos_metrics.extended.methylation_strand_info =
+                MethylationEvidenceStrandInfo::from_pileup(&current);
+            current
+        })
+        .filter(|p| params.record_filters.pre_filter(p))
+        .collect();
+    process_collected_pileups(segment, pileups, params, ml)
+}
+
+fn process_collected_pileups(
+    segment: Rc<Segment>,
+    mut pileups: Vec<PileupMetrics>,
+    params: &CallParams,
+    ml: &MachineLearning,
+) -> Result<Vec<PileupMetrics>> {
+    let threshold_filters = process::ThresholdFilterParams {
+        variant_calling: params.variant_calling.clone(),
+        methylation: params.methylation.thresholds.clone(),
+        denovo_cpg: params.denovo_cpg.clone(),
+    };
+
     if params.indel.enabled() {
         for p in &mut pileups {
-            let tract = u32::from(p.pileup.homopolymer_run.max(p.pileup.dinucleotide_run));
+            let tract = u32::from(p.homopolymer_run.max(p.dinucleotide_run));
             p.indel_calls = variant_calling::indel_calling::call_indels(
                 &p.indels,
                 &params.indel,
@@ -445,7 +485,6 @@ fn process_region(
     let pileups: Vec<PileupMetrics> = pileups
         .into_iter()
         .map(|mut pileup| {
-            // Add 'simple' filters based on the collected metrics
             process::apply_threshold_filters(&mut pileup, &threshold_filters)
                 .wrap_err("Failed to apply threshold filters")?;
             Ok(pileup)
@@ -490,7 +529,7 @@ fn process_region(
         } else {
             let count_piles = readable::num::Unsigned::from(pileups.len());
             let pile_size = pileups.len() * std::mem::size_of::<PileupMetrics>();
-            let read_size = pileups.iter().map(|p| p.pileup.reads.len()).sum::<usize>()
+            let read_size = pileups.iter().map(|p| p.pos_metrics.depth as usize).sum::<usize>()
                 * std::mem::size_of::<SimpleRead>();
             let bytes = readable::byte::Byte::from(pile_size + read_size);
             debug!(%count_piles, %bytes, "Collected pileup metrics");
