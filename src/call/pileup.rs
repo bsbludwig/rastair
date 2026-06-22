@@ -37,7 +37,7 @@ pub struct Pileup {
     /// Indel observations collected from reads at this position.
     /// Empty at most positions — `SmallVec<_, 0>` avoids heap allocation when empty.
     #[serde(default)]
-    pub indel_observations: SmallVec<indels::IndelObservation, 0>,
+    pub indel_observations: SmallVec<indels::IndelObservation, 3>,
     /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
     /// for indel depth adjustment.
     #[serde(default)]

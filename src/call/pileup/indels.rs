@@ -121,7 +121,7 @@ impl IndelAlleleCounts {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct IndelData {
-    pub observations: SmallVec<IndelObservation, 0>,
+    pub observations: SmallVec<IndelObservation, 3>,
     pub ref_window: SmallVec<Base, { super::INDEL_REF_WINDOW_LEN }>,
     pub ref_anchor: u8,
     pub homopolymer_run: u8,
