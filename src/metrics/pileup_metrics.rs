@@ -643,7 +643,7 @@ pub struct MetricsForIndel<'p> {
 }
 
 pub(crate) fn aggregate_indels(
-    indel_observations: &SmallVec<indels::IndelObservation, 0>,
+    indel_observations: &[indels::IndelObservation],
     total_reads: usize,
     noisy_ref_count: u32,
     pos: u32,
