@@ -10,16 +10,24 @@ use tracing::{instrument, trace};
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, Default)]
 pub struct IndelParams {
     /// Enable experimental indel calling
+    ///
+    /// When disabled, Rastair calls SNPs and methylation only.
     #[arg(long, default_value_t = false)]
     pub experimental_indels: bool,
 
     /// Minimum alternate observations to call an indel
+    ///
+    /// This threshold is evaluated per indel allele after read-level indel
+    /// filters are applied.
     #[arg(long, default_value_t = 2)]
     #[arg(help_heading = crate::utils::cli::sections::FILTER)]
     #[default(2)]
     pub min_indel_ao: u32,
 
     /// Minimum depth to call an indel
+    ///
+    /// Depth is computed at the locus after applying indel-specific read
+    /// filters and depth adjustments.
     #[arg(long, default_value_t = 2)]
     #[arg(help_heading = crate::utils::cli::sections::FILTER)]
     #[default(2)]
@@ -40,6 +48,10 @@ pub struct IndelParams {
     #[default(5)]
     pub indel_max_mismatches: u32,
 
+    /// Ignore indels within this many bases of either read end.
+    ///
+    /// This stricter end-of-read filter helps suppress alignment artifacts at
+    /// read starts and ends.
     #[arg(long, default_value_t = 0)]
     #[arg(help_heading = crate::utils::cli::sections::FILTER)]
     #[default(0)]

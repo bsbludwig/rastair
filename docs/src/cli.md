@@ -109,8 +109,12 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   Default value: `3852`
 * `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations to call an indel
 
+   This threshold is evaluated per indel allele after read-level indel filters are applied.
+
   Default value: `2`
 * `--min-indel-depth <MIN_INDEL_DEPTH>` — Minimum depth to call an indel
+
+   Depth is computed at the locus after applying indel-specific read filters and depth adjustments.
 
   Default value: `2`
 * `--indel-max-mismatches <INDEL_MAX_MISMATCHES>` — Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
@@ -118,7 +122,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    C->T mismatches on OT reads and G->A mismatches on OB reads are excluded from the count as they are expected TAPS methylation signal.
 
   Default value: `5`
-* `--indel-end-of-read-cutoff <INDEL_END_OF_READ_CUTOFF>`
+* `--indel-end-of-read-cutoff <INDEL_END_OF_READ_CUTOFF>` — Ignore indels within this many bases of either read end.
+
+   This stricter end-of-read filter helps suppress alignment artifacts at read starts and ends.
 
   Default value: `0`
 * `--cpg-novo-min-depth <CPG_NOVO_MIN_DEPTH>` — Minimum reads needed in support of de-novo CpG
@@ -189,6 +195,8 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--experimental-indels` — Enable experimental indel calling
 
+   When disabled, Rastair calls SNPs and methylation only.
+
   Default value: `false`
 
 ###### **Output Options:**
@@ -241,6 +249,10 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
 
    Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the htslib/reference-oriented read sequence. `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
+
+   Useful for non-directional libraries, commonly from tagmentation prep.
+
+   This option currently affects only the pileup-based `call` workflow.
 
   Default value: `false`
 * `--error-model <ERROR_MODEL>` — The error model to use

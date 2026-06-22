@@ -185,6 +185,14 @@ When bumping Rastair's release version, update all user-facing version strings t
 * README example tag references in `README.md` (e.g. `version-X.Y.Z`)
 * Snapshot VCF header lines in `tests/snapshots/` containing `##rastairVersion=...`
 
+## CLI docs generation
+
+The command-line reference at `docs/src/cli.md` is generated from clap doc comments.
+Use the hidden command:
+* `cargo run -- internal cli-docs docs/src/cli.md`
+
+Toolchain note: this repository currently requires Rust `1.92.0` (see the root crate `rust-version` constraint), so docs generation via `cargo run` will fail on older compilers.
+
 ## QC report M-bias orientation
 
 In `scripts/QC_report.Rmd`, OT/OB assignment for the M-bias table must use the same pair-orientation logic as Rust:

@@ -24,6 +24,10 @@ pub struct VariantCallingParams {
     /// previous+current), using the htslib/reference-oriented read sequence.
     /// `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads
     /// are split pseudo-randomly but reproducibly per read.
+    ///
+    /// Useful for non-directional libraries, commonly from tagmentation prep.
+    ///
+    /// This option currently affects only the pileup-based `call` workflow.
     #[arg(long, default_value_t = false)]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub guess_read_orientation: bool,
