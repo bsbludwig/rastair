@@ -2,7 +2,7 @@ use super::define_features;
 use super::utils::one_hot_encode_base;
 use crate::{
     metrics::{AlleleMetrics, MetricsForAlt, PileupMetrics},
-    utils::IntoF64 as _,
+    utils::IntoF32 as _,
 };
 use seqair_types::Base;
 
@@ -13,21 +13,21 @@ use seqair_types::Base;
 /// - Section B (18): `base_quality_metrics` + `mapping_quality_metrics` + `read_metrics`
 pub struct CommonFeatures {
     /// One-hot encoding of reference and alt bases (8 features)
-    pub base_encoding: [f64; 8],
+    pub base_encoding: [f32; 8],
     /// Position-level mapping quality metrics (2 features)
-    pub position_metrics: [f64; 2],
+    pub position_metrics: [f32; 2],
     /// One-hot encoding of sequence context (16 features)
-    pub context_encoding: [f64; 16],
+    pub context_encoding: [f32; 16],
     /// Regional entropy (1 feature)
-    pub region_entropy: f64,
+    pub region_entropy: f32,
     /// Depth ratios for ref and alt on both strands (6 features)
-    pub depth_ratios: [f64; 6],
+    pub depth_ratios: [f32; 6],
     /// Base quality metrics for ref and alt (6 features)
-    pub base_quality_metrics: [f64; 6],
+    pub base_quality_metrics: [f32; 6],
     /// Mapping quality metrics for ref and alt (6 features)
-    pub mapping_quality_metrics: [f64; 6],
+    pub mapping_quality_metrics: [f32; 6],
     /// Read position and alignment metrics (6 features)
-    pub read_metrics: [f64; 6],
+    pub read_metrics: [f32; 6],
     // FIXME: consider adding `homopolymer_run` and `soft_clip_rate`
 }
 
@@ -56,7 +56,7 @@ impl CommonFeatures {
             context_encoding: [
                 p1a, p1c, p1g, p1t, p2a, p2c, p2g, p2t, p4a, p4c, p4g, p4t, p5a, p5c, p5g, p5t,
             ],
-            region_entropy: pos.region_entropy,
+            region_entropy: pos.region_entropy.f(),
             depth_ratios: [
                 r.depth.f() / depth,
                 alt.depth.f() / depth,
@@ -169,22 +169,22 @@ pub fn alt_score_methylation_aware(
     alt: &AlleleMetrics,
     r: &AlleleMetrics,
     check_base: Base,
-) -> f64 {
+) -> f32 {
     use Base::*;
 
     if check_base == C {
-        (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.0).log2()
-            - (r.strand_count.ob.f() * r.baseq_s.ob + 1.0).log2()
+        (alt.strand_count.ob.f() * alt.baseq_s.ob.f() + 1.0).log2()
+            - (r.strand_count.ob.f() * r.baseq_s.ob.f() + 1.0).log2()
     } else {
         // For G or any other base, use OT strand
-        (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.0).log2()
-            - (r.strand_count.ot.f() * r.baseq_s.ot + 1.0).log2()
+        (alt.strand_count.ot.f() * alt.baseq_s.ot.f() + 1.0).log2()
+            - (r.strand_count.ot.f() * r.baseq_s.ot.f() + 1.0).log2()
     }
 }
 
 /// Calculate `alt_score` for non-methylation contexts
 ///
 /// This uses combined strand data (total depth * average base quality)
-pub fn alt_score_generic(alt: &AlleleMetrics, r: &AlleleMetrics) -> f64 {
-    (alt.depth.f() * alt.baseq + 1.0).log2() - (r.depth.f() * r.baseq + 1.0).log2()
+pub fn alt_score_generic(alt: &AlleleMetrics, r: &AlleleMetrics) -> f32 {
+    (alt.depth.f() * alt.baseq.f() + 1.0).log2() - (r.depth.f() * r.baseq.f() + 1.0).log2()
 }

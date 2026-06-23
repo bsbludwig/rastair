@@ -188,26 +188,17 @@ pub fn batch_add_ml_metrics(
 
                 match model_type {
                     MlModel::Cpg => {
-                        pending
-                            .cpg_features
-                            .row_mut(pending.cpg_count)
-                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending.cpg_features.row_mut(pending.cpg_count).assign(&f.row(0));
                         pending.cpg.push(pending_item);
                         pending.cpg_count += 1;
                     }
                     MlModel::DenovoCpg => {
-                        pending
-                            .denovo_features
-                            .row_mut(pending.denovo_count)
-                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending.denovo_features.row_mut(pending.denovo_count).assign(&f.row(0));
                         pending.denovo.push(pending_item);
                         pending.denovo_count += 1;
                     }
                     MlModel::Others => {
-                        pending
-                            .others_features
-                            .row_mut(pending.others_count)
-                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                        pending.others_features.row_mut(pending.others_count).assign(&f.row(0));
                         pending.others.push(pending_item);
                         pending.others_count += 1;
                     }
@@ -249,7 +240,7 @@ pub fn batch_add_ml_metrics(
                         pending
                             .insertion_features
                             .row_mut(pending.insertion_count)
-                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                            .zip_mut_with(&f.row(0), |d, &s| *d = s);
                         pending.insertion.push(pending_item);
                         pending.insertion_count += 1;
                     }
@@ -257,7 +248,7 @@ pub fn batch_add_ml_metrics(
                         pending
                             .deletion_features
                             .row_mut(pending.deletion_count)
-                            .zip_mut_with(&f.row(0), |d, &s| *d = s as f32);
+                            .zip_mut_with(&f.row(0), |d, &s| *d = s);
                         pending.deletion.push(pending_item);
                         pending.deletion_count += 1;
                     }

@@ -42,7 +42,7 @@ pub(crate) mod utils {
     pub mod cli;
 
     mod conversion;
-    pub use conversion::{IntoF64, default};
+    pub use conversion::{IntoF32, IntoF64, default};
 
     mod grouping;
     pub use grouping::ByStrand;

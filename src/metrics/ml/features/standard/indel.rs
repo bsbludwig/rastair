@@ -1,6 +1,6 @@
 use crate::metrics::MetricsForIndel;
 use crate::metrics::ml::features::define_features;
-use crate::utils::IntoF64 as _;
+use crate::utils::IntoF32 as _;
 use seqair_types::Base;
 
 use crate::call::pileup::indels::{IndelAllele, IndelObservation};
@@ -95,11 +95,11 @@ impl CommonIndelFeatures {
         let agg = compute_aggregates(observations, allele);
         let dominance = compute_dominance(&current.metrics.indels.alleles, allele);
 
-        let total_reads = pileup.reads.len().max(1) as f64;
+        let total_reads = pileup.reads.len().max(1).f();
         let soft_clip_rate = pileup.soft_clip_count.f() / total_reads;
 
         let pos_depth = current.metrics.pos_metrics.depth;
-        let pos_mapq = *current.metrics.pos_metrics.mapq;
+        let pos_mapq = current.metrics.pos_metrics.mapq.f();
 
         let repeat = RepeatContext::detect(
             allele,
@@ -108,7 +108,7 @@ impl CommonIndelFeatures {
         );
 
         CommonIndelFeatures {
-            indel_len: allele.len() as f64,
+            indel_len: allele.len().f(),
             indel_complexity: allele_entropy(allele.bases()),
             indel_dominance: dominance,
             mapq_rms: agg.mapq_rms,
@@ -133,11 +133,9 @@ impl InsertionFeatures {
         let observations = &current.metrics.pileup.indel_observations;
         let allele = &current.indel.allele;
         let insertion_baseq_rms = insertion_baseq_rms(observations, allele);
-        let relative_insertion_baseq = if *current.metrics.pos_metrics.baseq > 0.0 {
-            insertion_baseq_rms / *current.metrics.pos_metrics.baseq
-        } else {
-            0.0
-        };
+        let pos_baseq = current.metrics.pos_metrics.baseq.f();
+        let relative_insertion_baseq =
+            if pos_baseq > 0.0 { insertion_baseq_rms / pos_baseq } else { 0.0 };
         InsertionFeatures { common, insertion_baseq_rms, relative_insertion_baseq }
     }
 }
@@ -148,19 +146,17 @@ impl DeletionFeatures {
         let observations = &current.metrics.pileup.indel_observations;
         let allele = &current.indel.allele;
         let post_del_baseq_rms = post_del_baseq_rms(observations, allele);
-        let relative_post_del_baseq = if *current.metrics.pos_metrics.baseq > 0.0 {
-            post_del_baseq_rms / *current.metrics.pos_metrics.baseq
-        } else {
-            0.0
-        };
+        let pos_baseq = current.metrics.pos_metrics.baseq.f();
+        let relative_post_del_baseq =
+            if pos_baseq > 0.0 { post_del_baseq_rms / pos_baseq } else { 0.0 };
         DeletionFeatures { common, post_del_baseq_rms, relative_post_del_baseq }
     }
 }
 
 struct Aggregates {
-    mapq_rms: f64,
-    baseq_rms: f64,
-    edge_dist_rms: f64,
+    mapq_rms: f32,
+    baseq_rms: f32,
+    edge_dist_rms: f32,
     ot_count: u32,
     ob_count: u32,
     total: u32,
@@ -168,9 +164,9 @@ struct Aggregates {
 }
 
 fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -> Aggregates {
-    let mut mapq_sq_sum: f64 = 0.0;
-    let mut baseq_sq_sum: f64 = 0.0;
-    let mut edge_sq_sum: f64 = 0.0;
+    let mut mapq_sq_sum: f32 = 0.0;
+    let mut baseq_sq_sum: f32 = 0.0;
+    let mut edge_sq_sum: f32 = 0.0;
     let mut ot_count: u32 = 0;
     let mut ob_count: u32 = 0;
     let mut total: u32 = 0;
@@ -188,7 +184,7 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
         let bq = obs.base_qual.f();
         baseq_sq_sum += bq * bq;
 
-        let edge = (obs.pos_in_read as f64).min((obs.read_length - obs.pos_in_read) as f64);
+        let edge = (obs.pos_in_read.f()).min((obs.read_length - obs.pos_in_read).f());
         edge_sq_sum += edge * edge;
 
         match obs.strand {
@@ -209,8 +205,8 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
     Aggregates { mapq_rms, baseq_rms, edge_dist_rms, ot_count, ob_count, total, repeat_count }
 }
 
-fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f64 {
-    let mut sq_sum: f64 = 0.0;
+fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f32 {
+    let mut sq_sum: f32 = 0.0;
     let mut count: u32 = 0;
     for obs in observations {
         if &obs.allele != allele {
@@ -225,8 +221,8 @@ fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) 
     if count > 0 { (sq_sum / count.f()).sqrt() } else { 0.0 }
 }
 
-fn post_del_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f64 {
-    let mut sq_sum: f64 = 0.0;
+fn post_del_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f32 {
+    let mut sq_sum: f32 = 0.0;
     let mut count: u32 = 0;
     for obs in observations {
         if &obs.allele != allele {
@@ -241,7 +237,7 @@ fn post_del_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -
     if count > 0 { (sq_sum / count.f()).sqrt() } else { 0.0 }
 }
 
-fn strand_bias(ot: u32, ob: u32) -> f64 {
+fn strand_bias(ot: u32, ob: u32) -> f32 {
     let total = ot + ob;
     if total == 0 {
         return 0.0;
@@ -252,7 +248,7 @@ fn strand_bias(ot: u32, ob: u32) -> f64 {
 fn compute_dominance(
     alleles: &[crate::call::pileup::indels::IndelAlleleCounts],
     target: &IndelAllele,
-) -> f64 {
+) -> f32 {
     let total: u32 = alleles.iter().map(|a| a.total()).sum();
     if total == 0 {
         return 0.0;
@@ -263,7 +259,7 @@ fn compute_dominance(
 }
 
 /// Shannon entropy (bits) of the A/C/G/T composition of the allele's bases.
-fn allele_entropy(bases: &[Base]) -> f64 {
+fn allele_entropy(bases: &[Base]) -> f32 {
     let mut counts = [0u32; 4];
     for &b in bases {
         match b {

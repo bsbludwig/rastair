@@ -2,7 +2,7 @@ use super::super::shared::{CommonFeatures, CommonSectionA, CommonSectionB, alt_s
 use crate::metrics::ml::features::define_features;
 use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
-    utils::IntoF64 as _,
+    utils::IntoF32 as _,
 };
 use color_eyre::Result;
 

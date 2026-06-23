@@ -40,3 +40,41 @@ impl IntoF64 for Probability {
         *self
     }
 }
+
+pub trait IntoF32 {
+    /// Dangerously convert this into f32!
+    #[track_caller]
+    fn f(self) -> f32;
+}
+
+macro_rules! impl_into_f32 {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl IntoF32 for $t {
+                #[track_caller]
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_lossless, reason = "macro code")]
+                fn f(self) -> f32 {
+                    self as f32
+                }
+            }
+        )*
+    };
+}
+
+impl_into_f32!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f64);
+
+impl IntoF32 for RootMeanSquare {
+    #[track_caller]
+    #[allow(clippy::cast_possible_truncation, reason = "feature values are f32")]
+    fn f(self) -> f32 {
+        *self as f32
+    }
+}
+
+impl IntoF32 for Probability {
+    #[track_caller]
+    #[allow(clippy::cast_possible_truncation, reason = "feature values are f32")]
+    fn f(self) -> f32 {
+        *self as f32
+    }
+}

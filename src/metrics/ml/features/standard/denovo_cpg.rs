@@ -5,7 +5,7 @@ use super::super::utils::safe_div;
 use crate::metrics::ml::features::define_features;
 use crate::{
     metrics::{FormsDenovo, MetricsForAlt, PileupMetrics},
-    utils::IntoF64 as _,
+    utils::IntoF32 as _,
 };
 use color_eyre::{
     Result,
@@ -71,10 +71,10 @@ impl DenovoCpgFeatures {
 }
 
 struct AdjecentFeatures {
-    beta_ratio: f64,
-    alt_ad_adj: f64,
-    alt_score_adj: f64,
-    sb_adj: f64,
+    beta_ratio: f32,
+    alt_ad_adj: f32,
+    alt_score_adj: f32,
+    sb_adj: f32,
 }
 
 fn calculate_adjacent_features(
@@ -109,8 +109,8 @@ fn calculate_adjacent_features(
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_after + 1.0).log2();
 
                 let alt_ad_adj = safe_div(alt.depth.f(), after.pos_metrics.depth.f());
-                let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.).log2()
-                    - (r.strand_count.ot.f() * r.baseq_s.ot + 1.).log2();
+                let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot.f() + 1.).log2()
+                    - (r.strand_count.ot.f() * r.baseq_s.ot.f() + 1.).log2();
                 let sb_adj = (alt.strand_count.ob + 1).f() / (alt.strand_count.ot + 1).f();
 
                 AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj }
@@ -140,8 +140,8 @@ fn calculate_adjacent_features(
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_before + 1.0).log2();
 
                 let alt_ad_adj = safe_div(alt.depth.f(), before.pos_metrics.depth.f());
-                let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.).log2()
-                    - (r.strand_count.ob.f() * r.baseq_s.ob + 1.).log2();
+                let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob.f() + 1.).log2()
+                    - (r.strand_count.ob.f() * r.baseq_s.ob.f() + 1.).log2();
                 let sb_adj = (alt.strand_count.ot + 1).f() / (alt.strand_count.ob + 1).f();
 
                 AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj }

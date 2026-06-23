@@ -159,8 +159,10 @@ impl TrainingData {
         Self { features: Vec::new(), labels: Vec::new(), positions: Vec::new() }
     }
 
-    fn add_example(&mut self, features: Array2<f64>, label: f64, chrom: SmolStr, pos: u64) {
-        self.features.push(features);
+    fn add_example(&mut self, features: Array2<f32>, label: f64, chrom: SmolStr, pos: u64) {
+        // Features are computed in f32 (matching the f32 inference forests);
+        // biosphere's RandomForest fits on f64, so widen at this boundary only.
+        self.features.push(features.mapv(f64::from));
         self.labels.push(label);
         self.positions.push((chrom, pos));
     }

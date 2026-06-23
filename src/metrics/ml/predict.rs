@@ -44,22 +44,21 @@ impl MachineLearning {
             ensure!(!x.is_any_nan(), "Failed to calculate features (one metric was NaN)");
             Ok(x)
         });
-        let features_f64 = match features {
+        let features = match features {
             Err(error) => {
                 debug!(%error, "Failed to generate features for ML prediction");
                 return None;
             }
             Ok(x) => x,
         };
-        let features_f32 = features_f64.mapv(|x| x as f32);
-        let prediction = flat_forest.predict(&features_f32.view());
+        let prediction = flat_forest.predict(&features.view());
 
         match prediction.get(0).copied() {
             Some(p) => Some(Prediction {
                 prediction: platt.calibrate_score(p),
                 threshold: self.threshold,
                 allele: current.alt.base.into(),
-                features: features_f32.row(0).to_owned(),
+                features: features.row(0).to_owned(),
                 model: name,
             }),
             None => {
@@ -103,22 +102,21 @@ impl MachineLearning {
             ensure!(!x.is_any_nan(), "Failed to calculate features (one metric was NaN)");
             Ok(x)
         });
-        let features_f64 = match features {
+        let features = match features {
             Err(error) => {
                 debug!(%error, "Failed to generate features for ML prediction");
                 return None;
             }
             Ok(x) => x,
         };
-        let features_f32 = features_f64.mapv(|x| x as f32);
-        let prediction = flat_forest.predict(&features_f32.view());
+        let prediction = flat_forest.predict(&features.view());
 
         match prediction.get(0).copied() {
             Some(p) => Some(Prediction {
                 prediction: platt.calibrate_score(p),
                 threshold: self.threshold,
                 allele: current.indel.allele.bases().iter().map(|b| b.as_str()).collect(),
-                features: features_f32.row(0).to_owned(),
+                features: features.row(0).to_owned(),
                 model: name,
             }),
             None => {

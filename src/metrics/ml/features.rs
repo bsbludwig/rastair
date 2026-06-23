@@ -16,10 +16,11 @@ pub mod utils;
 
 /// Define a feature struct whose memory layout *is* its ML feature vector.
 ///
-/// Every field is `f64` or `[f64; N]`, so a `#[repr(C)]` struct has no padding
+/// Every field is `f32` or `[f32; N]`, so a `#[repr(C)]` struct has no padding
 /// and is [`bytemuck::Pod`]. The field declaration order is the feature order,
 /// which removes the hand-counted `buf[start..end]` index arithmetic the old
-/// code relied on. `as_row()` reinterprets the struct as `&[f64]` with no copy.
+/// code relied on. `as_row()` reinterprets the struct as `&[f32]` with no copy,
+/// feeding the f32 inference forests directly.
 ///
 /// Names are derived from the same declaration, so they cannot drift from the
 /// values: a `scalar` field yields one name (its identifier), an `array` field
@@ -48,19 +49,19 @@ macro_rules! define_features {
         );
     };
 
-    // scalar f64 field
+    // scalar f32 field
     (@munch meta {$($m:tt)*} vis {$v:vis} name {$n:ident}
         fields { $($f:tt)* } names { $($nm:tt)* }
         rest { $(#[$attr:meta])* scalar $field:ident ; $($rest:tt)* }
     ) => {
         define_features!(@munch meta {$($m)*} vis {$v} name {$n}
-            fields { $($f)* $(#[$attr])* pub $field: f64, }
+            fields { $($f)* $(#[$attr])* pub $field: f32, }
             names { $($nm)* (strs stringify!($field)) }
             rest { $($rest)* }
         );
     };
 
-    // [f64; N] field with one explicit name per slot
+    // [f32; N] field with one explicit name per slot
     (@munch meta {$($m:tt)*} vis {$v:vis} name {$n:ident}
         fields { $($f:tt)* } names { $($nm:tt)* }
         rest {
@@ -69,7 +70,7 @@ macro_rules! define_features {
         }
     ) => {
         define_features!(@munch meta {$($m)*} vis {$v} name {$n}
-            fields { $($f)* $(#[$attr])* pub $field: [f64; $len], }
+            fields { $($f)* $(#[$attr])* pub $field: [f32; $len], }
             names { $($nm)* (strs $($label),+) }
             rest { $($rest)* }
         );
@@ -102,16 +103,16 @@ macro_rules! define_features {
         $v struct $n { $($f)* }
 
         impl $n {
-            /// Number of `f64` features in this struct's flat layout.
+            /// Number of `f32` features in this struct's flat layout.
             pub const FEATURES: usize =
-                ::core::mem::size_of::<Self>() / ::core::mem::size_of::<f64>();
+                ::core::mem::size_of::<Self>() / ::core::mem::size_of::<f32>();
 
             /// Append this struct's feature names, in layout order, to `out`.
             pub fn extend_names(out: &mut ::std::vec::Vec<&'static str>) {
                 $( define_features!(@emit out $grp); )*
             }
 
-            /// Feature names in layout order; one entry per `f64` slot.
+            /// Feature names in layout order; one entry per `f32` slot.
             pub fn names() -> ::std::vec::Vec<&'static str> {
                 let mut out = ::std::vec::Vec::with_capacity(Self::FEATURES);
                 Self::extend_names(&mut out);
@@ -120,7 +121,7 @@ macro_rules! define_features {
 
             /// Reinterpret the struct as its flat feature row, with no copy.
             #[inline]
-            pub fn as_row(&self) -> &[f64] {
+            pub fn as_row(&self) -> &[f32] {
                 bytemuck::cast_slice(::core::slice::from_ref(self))
             }
         }
@@ -163,7 +164,7 @@ pub trait FeatureCalculator: fmt::Debug + Send + Sync {
         current: &MetricsForAlt,
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>>;
+    ) -> Result<Array2<f32>>;
 
     /// Calculate features for a denovo CpG candidate
     fn calculate_denovo_cpg(
@@ -171,7 +172,7 @@ pub trait FeatureCalculator: fmt::Debug + Send + Sync {
         current: &MetricsForAlt,
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>>;
+    ) -> Result<Array2<f32>>;
 
     /// Calculate features for other variants
     fn calculate_others(
@@ -179,13 +180,13 @@ pub trait FeatureCalculator: fmt::Debug + Send + Sync {
         current: &MetricsForAlt,
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>>;
+    ) -> Result<Array2<f32>>;
 
     /// Calculate features for insertion
-    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f64>>;
+    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f32>>;
 
     /// Calculate features for deletion
-    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f64>>;
+    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f32>>;
 }
 
 impl MlFeatureSet {
@@ -202,7 +203,7 @@ impl MlFeatureSet {
 pub struct StandardFeatures;
 
 /// Wrap a flat feature row into a `(1, N)` `Array2` for the forest predictor.
-fn row_to_array(row: &[f64]) -> Result<Array2<f64>> {
+fn row_to_array(row: &[f32]) -> Result<Array2<f32>> {
     Array2::from_shape_vec((1, row.len()), row.to_vec())
         .wrap_err("Failed to build feature array from row")
 }
@@ -233,7 +234,7 @@ impl FeatureCalculator for StandardFeatures {
         current: &MetricsForAlt,
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>> {
+    ) -> Result<Array2<f32>> {
         row_to_array(standard::CpgFeatures::extract(current, before, after)?.as_row())
     }
 
@@ -242,7 +243,7 @@ impl FeatureCalculator for StandardFeatures {
         current: &MetricsForAlt,
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>> {
+    ) -> Result<Array2<f32>> {
         row_to_array(standard::DenovoCpgFeatures::extract(current, before, after)?.as_row())
     }
 
@@ -251,15 +252,15 @@ impl FeatureCalculator for StandardFeatures {
         current: &MetricsForAlt,
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>> {
+    ) -> Result<Array2<f32>> {
         row_to_array(standard::OthersFeatures::extract(current, before, after)?.as_row())
     }
 
-    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f32>> {
         row_to_array(standard::InsertionFeatures::extract(current).as_row())
     }
 
-    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f64>> {
+    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f32>> {
         row_to_array(standard::DeletionFeatures::extract(current).as_row())
     }
 }
@@ -272,7 +273,7 @@ impl SimpleFeatures {
     /// `SimpleFeatures` uses all of [`CommonFeatures`] except `region_entropy`.
     const FEATURES: usize = shared::CommonSectionA::FEATURES - 1 + shared::CommonSectionB::FEATURES;
 
-    fn calculate_basic(&self, current: &MetricsForAlt) -> Result<Array2<f64>> {
+    fn calculate_basic(&self, current: &MetricsForAlt) -> Result<Array2<f32>> {
         let common = shared::CommonFeatures::extract(current);
         let mut features = Vec::with_capacity(Self::FEATURES);
         features.extend_from_slice(&common.base_encoding);
@@ -318,7 +319,7 @@ impl FeatureCalculator for SimpleFeatures {
         current: &MetricsForAlt,
         _before: Option<&PileupMetrics>,
         _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>> {
+    ) -> Result<Array2<f32>> {
         self.calculate_basic(current)
     }
 
@@ -327,7 +328,7 @@ impl FeatureCalculator for SimpleFeatures {
         current: &MetricsForAlt,
         _before: Option<&PileupMetrics>,
         _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>> {
+    ) -> Result<Array2<f32>> {
         self.calculate_basic(current)
     }
 
@@ -336,15 +337,15 @@ impl FeatureCalculator for SimpleFeatures {
         current: &MetricsForAlt,
         _before: Option<&PileupMetrics>,
         _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f64>> {
+    ) -> Result<Array2<f32>> {
         self.calculate_basic(current)
     }
 
-    fn calculate_insertion(&self, _current: &MetricsForIndel) -> Result<Array2<f64>> {
+    fn calculate_insertion(&self, _current: &MetricsForIndel) -> Result<Array2<f32>> {
         todo!()
     }
 
-    fn calculate_deletion(&self, _current: &MetricsForIndel) -> Result<Array2<f64>> {
+    fn calculate_deletion(&self, _current: &MetricsForIndel) -> Result<Array2<f32>> {
         todo!()
     }
 }

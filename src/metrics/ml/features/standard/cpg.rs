@@ -5,7 +5,7 @@ use super::super::utils::safe_div;
 use crate::metrics::ml::features::define_features;
 use crate::{
     metrics::{MetricsForAlt, PileupMetrics},
-    utils::IntoF64 as _,
+    utils::IntoF32 as _,
 };
 use color_eyre::{
     Result,
@@ -71,9 +71,9 @@ impl CpgFeatures {
 }
 
 struct AdjecentFeatures {
-    beta_ratio: f64,
-    alt_ad_adj: f64,
-    alt_score_adj: f64,
+    beta_ratio: f32,
+    alt_ad_adj: f32,
+    alt_score_adj: f32,
 }
 
 fn calculate_adjacent_features(
@@ -107,8 +107,8 @@ fn calculate_adjacent_features(
             let alt_ad_adj = safe_div(alt_ad, depth);
 
             // Calculate alt_score for G→A
-            let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot + 1.0).log2()
-                - (r.strand_count.ot.f() * c_r.baseq_s.ot + 1.0).log2();
+            let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot.f() + 1.0).log2()
+                - (r.strand_count.ot.f() * c_r.baseq_s.ot.f() + 1.0).log2();
 
             let beta_after =
                 safe_div(alt.strand_count.ob.f(), (alt.strand_count.ob + r.strand_count.ob).f());
@@ -141,8 +141,8 @@ fn calculate_adjacent_features(
             let alt_ad_adj = safe_div(alt_ad, depth);
 
             // Calculate alt_score for C→T
-            let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob + 1.0).log2()
-                - (r.strand_count.ob.f() * c_r.baseq_s.ob + 1.0).log2();
+            let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob.f() + 1.0).log2()
+                - (r.strand_count.ob.f() * c_r.baseq_s.ob.f() + 1.0).log2();
 
             let beta_before =
                 safe_div(alt.strand_count.ot.f(), (alt.strand_count.ot + r.strand_count.ot).f());

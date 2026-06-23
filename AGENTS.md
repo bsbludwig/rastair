@@ -147,14 +147,14 @@ For BAM-backed regression tests that compare strand-assignment modes, `tests/cal
 
 ## ML feature layout (`src/metrics/ml/features/`)
 
-Each model's feature vector is defined by a `#[repr(C)]` struct of `f64` / `[f64; N]`
+Each model's feature vector is defined by a `#[repr(C)]` struct of `f32` / `[f32; N]`
 fields built with the `define_features!` macro in `src/metrics/ml/features.rs`.
 **The struct field order IS the feature vector order**, so there are no hand-counted
 `buf[start..end]` index ranges anymore.
 
 * The macro generates, per struct: `FEATURES` (from `size_of`), `names()`/`extend_names()`,
-  and `as_row(&self) -> &[f64]` (zero-copy via `bytemuck::cast_slice`; the struct is `Pod`
-  because all fields are `f64` and there is no padding).
+  and `as_row(&self) -> &[f32]` (zero-copy via `bytemuck::cast_slice`; the struct is `Pod`
+  because all fields are `f32` and there is no padding).
 * Field kinds in the macro: `scalar name;` (one feature, named after the ident),
   `array name: N = ["..", ..];` (N features with explicit per-slot names), and
   `flatten name: Type;` (embeds a nested feature struct and delegates its names).
