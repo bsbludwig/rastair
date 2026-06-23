@@ -6,21 +6,19 @@ use super::{
     ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
 };
 use crate::{
-    call::process::PileupMappingParams,
+    call::{process::PileupMappingParams, variant_calling::ReadMaskParams},
     metrics::{
         Alt, AltFilters, Filters, PairedCounts, PerBaseAccumulators, PileupMetrics, ReadKey,
         RecordTags, aggregate_indels,
     },
-    sequence::Segment,
+    sequence::{RastairReadExtras, Segment},
     utils::SequenceContext,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use seqair::bam::pileup::{AlignmentView, Indel, PileupColumn};
-use seqair_types::{Base, RmsAccumulator, SmallVec};
+use seqair_types::{Base, RmsAccumulator, SmallVec, Strand};
 use std::rc::Rc;
 use tracing::{debug, instrument, trace};
-
-use crate::sequence::RastairReadExtras;
 
 impl PileupMetrics {
     #[instrument(level = "trace", skip_all)]
@@ -39,6 +37,12 @@ impl PileupMetrics {
             debug!(pos, depth, "Capping number of reads in pileup to {max_reads}");
         }
 
+        let reference_base: Base =
+            segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
+
+        let context =
+            SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
+
         // First pass: determine which overlapping-pair indices to remove.
         let mut to_remove = SmallVec::<usize, 16>::new();
         collector.prepare(max_reads);
@@ -47,16 +51,13 @@ impl PileupMetrics {
                 .alignments()
                 .enumerate()
                 .filter_map(|(idx, view)| {
-                    let strand = view.extra().strand;
-                    let reverse = view.flags.is_reverse();
-                    let pos = view.qpos()?;
-                    let len = view.seq_len;
                     let mapq = view.mapq;
                     let baseq = view.qual()?;
 
-                    if !params.read_masking.filter_fields(strand, reverse, pos as u32, len)
-                        || !params.quality.filter_fields(mapq, baseq.get()?)
-                    {
+                    if !passes_read_masking(&view, reference_base, &context, &params.read_masking) {
+                        return None;
+                    }
+                    if !params.quality.filter_fields(mapq, baseq.get()?) {
                         return None;
                     }
 
@@ -76,12 +77,6 @@ impl PileupMetrics {
             }
             to_remove.sort_unstable();
         }
-
-        let reference_base: Base =
-            segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
-
-        let context =
-            SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
 
         let mut accumulators = PerBaseAccumulators::default();
         let mut pos_baseq = RmsAccumulator::new();
@@ -111,10 +106,10 @@ impl PileupMetrics {
                 continue;
             };
             let strand = view.extra().strand;
-            let reverse = view.flags.is_reverse();
-            if !params.quality.filter_fields(view.mapq, baseq)
-                || !params.read_masking.filter_fields(strand, reverse, pos as u32, view.seq_len)
-            {
+            if !params.quality.filter_fields(view.mapq, baseq) {
+                continue;
+            }
+            if !passes_read_masking(&view, reference_base, &context, &params.read_masking) {
                 continue;
             }
             total_depth += 1;
@@ -236,6 +231,40 @@ impl PileupMetrics {
     }
 }
 
+fn passes_read_masking(
+    view: &AlignmentView<'_, '_, RastairReadExtras>,
+    reference_base: Base,
+    context: &SequenceContext,
+    read_masking: &ReadMaskParams,
+) -> bool {
+    let strand = view.extra().strand;
+    if view.is_soft_clip() {
+        let Some(observed) = view.base() else { return false };
+        soft_clip_cpg_partner(reference_base, observed, context, strand)
+    } else {
+        let Some(pos) = view.qpos() else { return false };
+        read_masking.filter_fields(strand, view.flags.is_reverse(), pos as u32, view.seq_len)
+    }
+}
+
+/// Is the observed soft clipped base a CpG position?
+fn soft_clip_cpg_partner(
+    reference_base: Base,
+    observed: Base,
+    context: &SequenceContext,
+    strand: Strand,
+) -> bool {
+    match (reference_base, strand) {
+        (Base::C, Strand::OT) => {
+            context.after_1 == Some(Base::G) && matches!(observed, Base::C | Base::T)
+        }
+        (Base::G, Strand::OB) => {
+            context.before_1 == Some(Base::C) && matches!(observed, Base::G | Base::A)
+        }
+        _ => false,
+    }
+}
+
 fn build_indel_observation(
     view: &AlignmentView<'_, '_, RastairReadExtras>,
     pos: u64,
@@ -312,4 +341,473 @@ fn build_indel_observation(
         has_repeat: extras.has_repeat,
         noisy: extras.has_repeat || extras.has_soft_clip,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call::process::PileupMappingParams;
+    use crate::call::variant_calling::{ReadMaskParams, ReadMaskSetting};
+    use crate::sequence::{ChunkRegion, Region, Segment};
+    use seqair::bam::cigar::{CigarOp, CigarOpType};
+    use seqair::bam::pileup::PileupEngine;
+    use seqair::bam::record_store::{CustomizeRecordStore, RecordStore, SlimRecord};
+    use seqair_types::{BamFlags, Pos0, Strand};
+
+    #[derive(Default, Clone)]
+    struct TestExtras;
+
+    impl CustomizeRecordStore for TestExtras {
+        type Extra = RastairReadExtras;
+
+        fn compute(
+            &mut self,
+            rec: &SlimRecord,
+            store: &RecordStore<RastairReadExtras>,
+        ) -> RastairReadExtras {
+            let has_soft_clip = rec
+                .cigar(store)
+                .map(|ops| ops.iter().any(|op| op.op_type() == CigarOpType::SoftClip))
+                .unwrap_or(false);
+            RastairReadExtras {
+                strand: Strand::from(rec.flags),
+                has_soft_clip,
+                has_repeat: false,
+                taps_aware_mismatches: 0,
+            }
+        }
+    }
+
+    fn segment(seq: &[u8]) -> Rc<Segment> {
+        let end = seq.len().saturating_sub(1) as u64;
+        Rc::new(Segment {
+            range: ChunkRegion {
+                region: Region { contig: "chr1".into(), start: 0, end },
+                last_position: seq.len() as u64,
+                overlap_start: 0,
+                overlap_end: 0,
+            },
+            sequence: seq.to_vec(),
+            overlap_start: 0,
+            overlap_end: 0,
+        })
+    }
+
+    /// A read aligned to the G of a CpG with its leading base (a methylated T
+    /// over the C) soft-clipped is rescued into the pileup at the C: with the
+    /// engine overhang on, the T appears as an OT alt at the CpG-C; with it off,
+    /// the C position has no column at all.
+    #[test]
+    fn rescues_soft_clipped_cpg_partner() {
+        // Reference: T T C G T T — CpG is C@2 / G@3.
+        let seg = segment(b"TTCGTT");
+        let params = PileupMappingParams::default();
+
+        let build_store = || {
+            let mut store = RecordStore::<RastairReadExtras>::new();
+            // 1S 3M at pos 3: clip base T over ref C@2, aligned G,T,T over 3,4,5.
+            // flags 99 = paired/proper/mate-reverse/first → OT.
+            store
+                .push_fields(
+                    Pos0::new(3).unwrap(),
+                    Pos0::new(5).unwrap(),
+                    BamFlags::from(99u16),
+                    60,
+                    3,
+                    0,
+                    b"clipped",
+                    &[CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 3)],
+                    &[Base::T, Base::G, Base::T, Base::T],
+                    &[40u8; 4],
+                    &[],
+                    0,
+                    -1,
+                    0,
+                    0,
+                    &mut TestExtras,
+                )
+                .unwrap();
+            store
+        };
+
+        let metrics_at = |overhang: u32| -> Option<PileupMetrics> {
+            let mut engine =
+                PileupEngine::new(build_store(), Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+            engine.set_soft_clip_overhang(overhang);
+            let mut collector = NameCollector::new(&params);
+            let mut out = None;
+            while let Some(col) = engine.pileups() {
+                if col.pos() == Pos0::new(2).unwrap() {
+                    out = Some(
+                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector)
+                            .unwrap(),
+                    );
+                }
+            }
+            out
+        };
+
+        // Overhang off: nothing covers position 2, so no column is produced.
+        assert!(metrics_at(0).is_none(), "no rescue without overhang");
+
+        // Overhang on: the clipped T is rescued as an OT alt at the CpG-C.
+        let pm = metrics_at(1).expect("CpG-C column emitted via soft-clip rescue");
+        assert_eq!(pm.reference_base, Base::C);
+        let t = pm.alt(Base::T).expect("rescued T alt present at CpG-C");
+        assert_eq!(t.strand_count.ot, 1, "rescued methylation read counted on OT");
+        assert_eq!(t.strand_count.ob, 0);
+    }
+
+    #[test]
+    fn rescues_ob_strand_cpg_partner() {
+        // Reference: T T C G T T — CpG is C@2 / G@3.
+        let seg = segment(b"TTCGTT");
+        let params = PileupMappingParams::default();
+
+        let build_store = || {
+            let mut store = RecordStore::<RastairReadExtras>::new();
+            // 3M 1S at pos 0: aligned T,T,C over ref 0,1,2; clip base A over ref
+            // G@3. flag 83 = paired/proper/reverse/first → OB.
+            store
+                .push_fields(
+                    Pos0::new(0).unwrap(),
+                    Pos0::new(2).unwrap(),
+                    BamFlags::from(83u16),
+                    60,
+                    3,
+                    0,
+                    b"clipped",
+                    &[CigarOp::new(CigarOpType::Match, 3), CigarOp::new(CigarOpType::SoftClip, 1)],
+                    &[Base::T, Base::T, Base::C, Base::A],
+                    &[40u8; 4],
+                    &[],
+                    0,
+                    -1,
+                    0,
+                    0,
+                    &mut TestExtras,
+                )
+                .unwrap();
+            store
+        };
+
+        let metrics_at = |overhang: u32| -> Option<PileupMetrics> {
+            let mut engine =
+                PileupEngine::new(build_store(), Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+            engine.set_soft_clip_overhang(overhang);
+            let mut collector = NameCollector::new(&params);
+            let mut out = None;
+            while let Some(col) = engine.pileups() {
+                if col.pos() == Pos0::new(3).unwrap() {
+                    out = Some(
+                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector)
+                            .unwrap(),
+                    );
+                }
+            }
+            out
+        };
+
+        assert!(metrics_at(0).is_none(), "no rescue without overhang");
+
+        let pm = metrics_at(1).expect("CpG-G column emitted via soft-clip rescue");
+        assert_eq!(pm.reference_base, Base::G);
+        let a = pm.alt(Base::A).expect("rescued A alt present at CpG-G");
+        assert_eq!(a.strand_count.ob, 1, "rescued methylation read counted on OB");
+        assert_eq!(a.strand_count.ot, 0);
+    }
+
+    /// Strand half of the gate: an OT read whose trailing clip lands on the G of
+    /// a CpG must *not* be rescued — OB methylation evidence (G→A) cannot come
+    /// from an OT read, so this is a plain end-of-read mismatch.
+    #[test]
+    fn does_not_rescue_ot_clip_over_ref_g() {
+        // Reference: T T C G T T — G@3 is the CpG-G, before_1 = C@2.
+        let seg = segment(b"TTCGTT");
+        let params = PileupMappingParams::default();
+
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        // 3M 1S at pos 0, flag 99 → OT. Trailing clip A projects onto ref G@3.
+        store
+            .push_fields(
+                Pos0::new(0).unwrap(),
+                Pos0::new(2).unwrap(),
+                BamFlags::from(99u16),
+                60,
+                3,
+                0,
+                b"clipped",
+                &[CigarOp::new(CigarOpType::Match, 3), CigarOp::new(CigarOpType::SoftClip, 1)],
+                &[Base::T, Base::T, Base::C, Base::A],
+                &[40u8; 4],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut TestExtras,
+            )
+            .unwrap();
+
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        engine.set_soft_clip_overhang(1);
+        let mut collector = NameCollector::new(&params);
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(3).unwrap() {
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                assert!(pm.alt(Base::A).is_none(), "OT clip over ref G must not be rescued");
+                assert_eq!(pm.pos_metrics.depth, 0);
+            }
+        }
+    }
+
+    /// The same clipped base over a non-CpG C (no following G) is *not* rescued:
+    /// it is a plain end-of-read mismatch, not a methylation partner.
+    #[test]
+    fn does_not_rescue_outside_cpg_context() {
+        // Reference: T T C A T T — C@2 is followed by A, so not a CpG.
+        let seg = segment(b"TTCATT");
+        let params = PileupMappingParams::default();
+
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        store
+            .push_fields(
+                Pos0::new(3).unwrap(),
+                Pos0::new(5).unwrap(),
+                BamFlags::from(99u16),
+                60,
+                3,
+                0,
+                b"clipped",
+                &[CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 3)],
+                &[Base::T, Base::A, Base::T, Base::T],
+                &[40u8; 4],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut TestExtras,
+            )
+            .unwrap();
+
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        engine.set_soft_clip_overhang(1);
+        let mut collector = NameCollector::new(&params);
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(2).unwrap() {
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                // The soft-clip view exists but is gated out: no T alt, no depth.
+                assert!(pm.alt(Base::T).is_none(), "non-CpG clip must not be rescued");
+                assert_eq!(pm.pos_metrics.depth, 0);
+            }
+        }
+    }
+
+    /// A clipped base sitting on the right strand at a CpG partner but whose
+    /// *observed* base is not bisulfite-relevant (here a C→G mismatch over the
+    /// CpG-C on OT) must not be rescued: it is a fringe SNP/error, not
+    /// methylation evidence, and rescuing it would feed noise into variant
+    /// calling.
+    #[test]
+    fn does_not_rescue_non_bisulfite_clip_base() {
+        // Reference: T T C G T T — CpG is C@2 / G@3.
+        let seg = segment(b"TTCGTT");
+        let params = PileupMappingParams::default();
+
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        // 1S 3M at pos 3, flag 99 → OT. Clip base G (not T/C) projects onto C@2.
+        store
+            .push_fields(
+                Pos0::new(3).unwrap(),
+                Pos0::new(5).unwrap(),
+                BamFlags::from(99u16),
+                60,
+                3,
+                0,
+                b"clipped",
+                &[CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 3)],
+                &[Base::G, Base::G, Base::T, Base::T],
+                &[40u8; 4],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut TestExtras,
+            )
+            .unwrap();
+
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        engine.set_soft_clip_overhang(1);
+        let mut collector = NameCollector::new(&params);
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(2).unwrap() {
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                assert!(pm.alt(Base::G).is_none(), "non-bisulfite fringe clip must not be rescued");
+                assert_eq!(pm.pos_metrics.depth, 0);
+            }
+        }
+    }
+
+    /// A paired read whose two mates both land on the same CpG-C — one via an
+    /// aligned base, the other via a rescued soft-clip partner — must be counted
+    /// once. The engine presents both (depth 2); `from_seqair`'s overlapping-pair
+    /// dedup collapses them to a single observation, so the rescued fringe base
+    /// does not double-count the molecule.
+    #[test]
+    fn rescued_partner_is_deduped_against_mate() {
+        // Reference: T T C G T T — CpG is C@2 / G@3.
+        let seg = segment(b"TTCGTT");
+        let params = PileupMappingParams::default();
+
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        // Mate A: first in template, forward (flag 99 → OT). 3M at pos 2 covers
+        // the CpG-C with an aligned C.
+        store
+            .push_fields(
+                Pos0::new(2).unwrap(),
+                Pos0::new(4).unwrap(),
+                BamFlags::from(99u16),
+                60,
+                3,
+                0,
+                b"pair",
+                &[CigarOp::new(CigarOpType::Match, 3)],
+                &[Base::C, Base::G, Base::T],
+                &[40u8; 3],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut TestExtras,
+            )
+            .unwrap();
+        // Mate B: second in template, reverse (flag 147 → OT). 1S 3M at pos 3,
+        // its clipped T projecting back onto the same CpG-C.
+        store
+            .push_fields(
+                Pos0::new(3).unwrap(),
+                Pos0::new(5).unwrap(),
+                BamFlags::from(147u16),
+                60,
+                3,
+                0,
+                b"pair",
+                &[CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 3)],
+                &[Base::T, Base::G, Base::T, Base::T],
+                &[40u8; 4],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut TestExtras,
+            )
+            .unwrap();
+
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        engine.set_soft_clip_overhang(1);
+        let mut collector = NameCollector::new(&params);
+
+        let mut checked = false;
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(2).unwrap() {
+                // The engine presents both the aligned mate and the rescued clip.
+                assert_eq!(col.depth(), 2, "both mates present at the CpG-C before dedup");
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                assert_eq!(pm.pos_metrics.depth, 1, "rescued partner deduped against its mate");
+                checked = true;
+            }
+        }
+        assert!(checked, "CpG-C column must be produced");
+    }
+
+    /// Read-end masking must be applied consistently across both `from_seqair`
+    /// passes. A rescued soft-clip CpG partner bypasses masking during counting
+    /// (it is a fringe base by construction); if the *dedup* pass still applies
+    /// masking to it, the rescued view is dropped from the overlapping-pair
+    /// collector while its aligned mate is not — so the pair is never detected
+    /// and the molecule is counted twice. With masking that targets only the
+    /// clipped mate, the deduped depth must still be 1, not 2.
+    #[test]
+    fn rescued_partner_masking_is_consistent_across_passes() {
+        // Reference: T T C G T T — CpG is C@2 / G@3.
+        let seg = segment(b"TTCGTT");
+        // Mask one base from the 3' end of OT reverse reads (the clipped mate B);
+        // OT forward (mate A) is left untouched.
+        let mut params = PileupMappingParams::default();
+        params.variant_calling.read_masking =
+            ReadMaskParams::new("0,0,0,1".parse().unwrap(), ReadMaskSetting::default());
+
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        // Mate A: first in template, forward (flag 99 → OT). 3M at pos 2 covers
+        // the CpG-C with an aligned C; OT-forward masking is zero so it survives.
+        store
+            .push_fields(
+                Pos0::new(2).unwrap(),
+                Pos0::new(4).unwrap(),
+                BamFlags::from(99u16),
+                60,
+                3,
+                0,
+                b"pair",
+                &[CigarOp::new(CigarOpType::Match, 3)],
+                &[Base::C, Base::G, Base::T],
+                &[40u8; 3],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut TestExtras,
+            )
+            .unwrap();
+        // Mate B: second in template, reverse (flag 147 → OT). 1S 3M at pos 3,
+        // its clipped T (read pos 0) projecting onto the same CpG-C. The OT
+        // reverse mask rejects read position 0.
+        store
+            .push_fields(
+                Pos0::new(3).unwrap(),
+                Pos0::new(5).unwrap(),
+                BamFlags::from(147u16),
+                60,
+                3,
+                0,
+                b"pair",
+                &[CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 3)],
+                &[Base::T, Base::G, Base::T, Base::T],
+                &[40u8; 4],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut TestExtras,
+            )
+            .unwrap();
+
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        engine.set_soft_clip_overhang(1);
+        let mut collector = NameCollector::new(&params);
+
+        let mut checked = false;
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(2).unwrap() {
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                assert_eq!(
+                    pm.pos_metrics.depth, 1,
+                    "rescued partner deduped against its mate even with read-end masking active"
+                );
+                checked = true;
+            }
+        }
+        assert!(checked, "CpG-C column must be produced");
+    }
 }

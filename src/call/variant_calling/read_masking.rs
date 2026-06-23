@@ -39,6 +39,10 @@ pub struct ReadMaskParams {
 }
 
 impl ReadMaskParams {
+    pub fn new(n_ot: ReadMaskSetting, n_ob: ReadMaskSetting) -> Self {
+        Self { n_ot, n_ob }
+    }
+
     pub fn filter(&self, read: &SimpleRead) -> bool {
         self.filter_fields(read.strand, read.reverse, read.position.pos, read.position.read_length)
     }

@@ -5,6 +5,25 @@ use better_default::Default;
 pub struct MethylationCallingParams {
     #[command(flatten)]
     pub thresholds: ThresholdParams,
+
+    /// Rescue soft-clipped CpG-partner bases
+    ///
+    /// Aligners often soft-clip a read's fringe base(s) when that mismatches
+    /// the reference. But in TAPS, a methylated C reads as T, so a leading C→T
+    /// mismatch might get soft-clipped, discarding real methylation evidence
+    /// (and same for a trailing G->A). With this flag, a single soft-clipped
+    /// base immediately next to an aligned base is "rescued" when it is the
+    /// missing partner of a reference CpG (ref C on OT, ref G on OB) and
+    /// counted as a normal observation.
+    ///
+    /// Recovered bases bypass read-end masking (`--nOT`/`--nOB`) since they are
+    /// fringe bases by definition, but still go through base-quality,
+    /// mapping-quality and methylation read-position filters.
+    ///
+    /// (Only takes effect on the seqair backend.)
+    #[arg(long)]
+    #[arg(help_heading = cli::sections::FILTER)]
+    pub rescue_soft_clip_cpg: bool,
 }
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]

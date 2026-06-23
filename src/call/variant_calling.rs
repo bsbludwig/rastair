@@ -11,3 +11,4 @@ pub use read_flags::ReadFlags;
 mod quality_filters;
 mod read_masking;
 pub use quality_filters::QualityFilterParams;
+pub use read_masking::{ReadMaskParams, ReadMaskSetting};

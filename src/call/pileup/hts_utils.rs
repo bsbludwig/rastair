@@ -3,7 +3,7 @@
 use crate::{call::process::PileupMappingParams, sequence::Segment};
 use rust_htslib::bam::{Record, ext::BamRecordExtensions as _, pileup::Alignment};
 use rustc_hash::{FxHashMap, FxHasher};
-use seqair_types::{Base, Strand, strand_from_flags};
+use seqair_types::{BamFlags, Base, Strand};
 use std::hash::{Hash as _, Hasher as _};
 use tracing::trace;
 
@@ -161,7 +161,8 @@ impl ReadOrientationCache {
     ) -> Option<Strand> {
         let record = alignment.record_view();
         if !params.guess_read_orientation {
-            return strand_from_flags(record.flags().into()).ok();
+            let flags = BamFlags::from(record.flags());
+            return Strand::from(flags).ok();
         }
 
         let key = ReadOrientationCacheKey::from_alignment(alignment);
