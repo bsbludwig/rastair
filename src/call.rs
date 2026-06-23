@@ -163,6 +163,15 @@ impl CallParams {
 pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     params.segmentation.sanitize();
+
+    #[cfg(not(feature = "experimental-seqair"))]
+    if params.methylation.rescue_soft_clip_cpg {
+        warn!(
+            "--rescue-soft-clip-cpg has no effect on the default (htslib) backend; \
+             build with the `experimental-seqair` feature to use it"
+        );
+    }
+
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
@@ -335,6 +344,7 @@ fn process_region_wrapper(
             indel_max_mismatches: params.indel.indel_max_mismatches,
             indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
             segment_max_bytes: params.segmentation.segment_max_bytes,
+            rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
             ..Default::default()
         };
 

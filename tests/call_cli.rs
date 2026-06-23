@@ -284,6 +284,55 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
 }
 
 #[test]
+#[cfg(feature = "experimental-seqair")]
+fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
+    // A region wide enough to contain soft-clips that land on CpG partners.
+    const REGION: &str = "--region=chr19:6100000-6120000";
+
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let off_bed = temp_dir.path().join("rescue-off.bed");
+    let on_bed = temp_dir.path().join("rescue-on.bed");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--bed"])
+        .arg(&off_bed)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--rescue-soft-clip-cpg", "--bed"])
+        .arg(&on_bed)
+        .succeeds()?;
+
+    let off = parse_cpg_bed(&off_bed)?;
+    let on = parse_cpg_bed(&on_bed)?;
+
+    // Rescue only adds evidence, so every position called without it is still
+    // called with it (it may add new ones, never drop them).
+    let off_keys: BTreeSet<_> = off.keys().copied().collect();
+    let on_keys: BTreeSet<_> = on.keys().copied().collect();
+    assert!(off_keys.is_subset(&on_keys), "rescue dropped a CpG call");
+
+    let evidence = |calls: &BTreeMap<(u32, char), CpgBedCall>| -> u64 {
+        calls.values().map(|c| u64::from(c.mod_count) + u64::from(c.unmod_count)).sum()
+    };
+    let changed = off.iter().filter(|(key, off_call)| on.get(key) != Some(off_call)).count();
+
+    assert!(changed > 0, "rescue should change at least one CpG on the seqair backend");
+    assert!(
+        evidence(&on) > evidence(&off),
+        "rescue should add net methylation observations ({} -> {})",
+        evidence(&off),
+        evidence(&on),
+    );
+
+    Ok(())
+}
+
+#[test]
 fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
     apply_common_filters!();
 
