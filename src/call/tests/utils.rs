@@ -631,6 +631,41 @@ pub(crate) fn metrics_to_vcf(
     Ok(parse_vcf(&text))
 }
 
+/// Emit the given metrics as binary BCF bytes. Unlike [`metrics_to_vcf`], this
+/// exercises the BCF encoding path, where the distinction between a present
+/// FORMAT field with zero values per sample and a proper missing value matters
+/// (the former makes htslib-based float readers panic on `chunks(0)`).
+pub(crate) fn metrics_to_bcf(metrics: &[PileupMetrics], filters: RecordFilters) -> Result<Vec<u8>> {
+    let contigs = [Contig { name: "chr_test".into(), length: 100_000 }];
+    let samples = [seqair_types::SmolStr::new("sample")];
+    let (header, schema) = register(&contigs, &samples, &[])?;
+    let config = FieldConfig::default().with_all_fields();
+    let error_model = ErrorModel::default();
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = SeqWriter::new(&mut buf, OutputFormat::Bcf).write_header(&header)?;
+        for metric in metrics {
+            let contig = schema
+                .contig(metric.contig_name())
+                .wrap_err_with(|| format!("Contig {} not in header", metric.contig_name()))?;
+            emit_pileup(
+                metric,
+                &schema,
+                contig,
+                &config,
+                Some(ML_THRESHOLD),
+                &error_model,
+                &filters,
+                &mut writer,
+            )?;
+        }
+        writer.finish()?;
+    }
+
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -414,23 +414,28 @@ fn encode_format(
     if c.dp {
         f.dp.encode(enc, &[i32::try_from(pileup.pos_metrics.depth).unwrap_or(i32::MAX)])?;
     }
-    // Always emit M5mC/DPM5mC/ADM5mC so every record has a uniform FORMAT layout; a
-    // position with no methylation context renders as the missing value `.`
-    // (parity with the old htslib path, which wrote a single `None`).
+    // Only emit the methylation fields when the position actually has a CpG
+    // context: htslib complains when it reads a zero-length FORMAT field.
     let methylated = effective_methylation(pileup);
     if c.m5mc {
         #[expect(clippy::cast_possible_truncation, reason = "VCF float fields are f32")]
         let values: SmallVec<f32, 2> =
             methylated.ordered_values(|b| b.beta.f() as f32).into_iter().flatten().collect();
-        f.m5mc.encode_single_sample(enc, &values)?;
+        if !values.is_empty() {
+            f.m5mc.encode_single_sample(enc, &values)?;
+        }
     }
     if c.dpm5mc {
         let values = counts(&MethylationDepth::from(&methylated).0);
-        f.dpm5mc.encode_single_sample(enc, &values)?;
+        if !values.is_empty() {
+            f.dpm5mc.encode_single_sample(enc, &values)?;
+        }
     }
     if c.adm5mc {
         let values = counts(&MethylationAltDepth::from(&methylated).0);
-        f.adm5mc.encode_single_sample(enc, &values)?;
+        if !values.is_empty() {
+            f.adm5mc.encode_single_sample(enc, &values)?;
+        }
     }
     if c.ml {
         let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
