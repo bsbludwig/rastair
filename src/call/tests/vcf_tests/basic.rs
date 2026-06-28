@@ -1,6 +1,53 @@
 use crate::{call::tests::utils::*, pileups, vcf_assert};
 use seqair_types::Base::*;
 
+/// A non-CpG variant emits a record with no methylation context. The M5mC
+/// FORMAT field for such a record must round-trip through BCF without making
+/// htslib-based float readers panic: previously it was encoded as a zero-length
+/// value (`n == 0`), which makes `rust_htslib`'s `Format::float()` panic on
+/// `chunks(0)`. The field must be either absent or carry at least one value.
+#[test]
+fn non_methylation_record_m5mc_is_readable_in_bcf() -> Result<()> {
+    use rust_htslib::bcf::{self, Read as _};
+    use std::io::Write as _;
+
+    // pos1 is a non-CpG A->G variant; it has no methylation context.
+    let (segment, pileups) = pileups!(
+        [ A A ] Ref,
+        [ A G ] OT,
+        [ A G ] OT,
+        [ A G ] OB,
+        [ A G ] OB,
+    );
+
+    let records = test_call(segment, pileups, RecordFilters::all())?;
+    let bcf_bytes = metrics_to_bcf(&records, RecordFilters::all())?;
+
+    let mut tmp = tempfile::NamedTempFile::new()?;
+    tmp.write_all(&bcf_bytes)?;
+    tmp.flush()?;
+
+    let mut reader = bcf::Reader::from_path(tmp.path())?;
+    let mut saw_record = false;
+    for rec in reader.records() {
+        let rec = rec?;
+        saw_record = true;
+        // Must not panic. A present M5mC field must have >= 1 value per sample.
+        if let Ok(values) = rec.format(b"M5mC").float() {
+            for sample in values.iter() {
+                assert!(
+                    !sample.is_empty(),
+                    "M5mC must not be a zero-length FORMAT value at pos {}",
+                    rec.pos() + 1
+                );
+            }
+        }
+    }
+    assert!(saw_record, "expected at least one emitted record");
+
+    Ok(())
+}
+
 #[test]
 fn test_simple_variant() -> Result<()> {
     let (segment, pileups) = pileups!(
