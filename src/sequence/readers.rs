@@ -324,7 +324,7 @@ mod seqair_readers {
             segment_overlap: u64,
         ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
             let header = self.inner.header();
-            let mut full_regions = if let Some(input) = &self.regions {
+            let full_regions = if let Some(input) = &self.regions {
                 input
                     .regions()
                     .iter()
@@ -335,6 +335,16 @@ mod seqair_readers {
                 get_full_regions(header)
             };
             ensure!(!full_regions.is_empty(), "No regions found");
+
+            // Drop BAM contigs the FASTA reference lacks (e.g. decoy/alt contigs);
+            // explicitly requested regions instead stay a hard error.
+            let fasta_contigs: std::collections::HashSet<seqair_types::SmolStr> =
+                self.inner.fasta().index().sequence_names().into_iter().collect();
+            let mut full_regions = crate::sequence::regions::retain_fasta_regions(
+                full_regions,
+                |contig| fasta_contigs.contains(contig),
+                self.regions.is_some(),
+            )?;
 
             // Emit records in coordinate order regardless of the order regions were
             // given on the CLI: the VCF index builder requires tids (and positions
@@ -515,7 +525,7 @@ impl Readers {
         segment_max_length: u64,
         segment_overlap: u64,
     ) -> Result<impl Iterator<Item = ChunkRegion> + use<>> {
-        let mut full_regions = if let Some(input) = &self.params.regions {
+        let full_regions = if let Some(input) = &self.params.regions {
             input
                 .regions()
                 .iter()
@@ -529,6 +539,15 @@ impl Readers {
             get_full_regions(self.bam.header())
                 .wrap_err("Failed to get all regions from BAM file")?
         };
+
+        // Drop BAM contigs the FASTA reference lacks (e.g. decoy/alt contigs);
+        // explicitly requested regions instead stay a hard error.
+        let fasta_contigs = self.fasta.sequence_names()?;
+        let mut full_regions = crate::sequence::regions::retain_fasta_regions(
+            full_regions,
+            |contig| fasta_contigs.contains(contig),
+            self.params.regions.is_some(),
+        )?;
 
         // Emit records in coordinate order regardless of CLI region order: the VCF
         // index builder requires tids (and positions within a tid) to be monotonically
@@ -658,6 +677,78 @@ mod tests {
             .expect("test fasta path should be valid")
     }
 
+    /// Writes a plain FASTA holding only `contigs` (dummy sequence) with a `.fai`
+    /// index, returning the temp dir (kept alive by the caller) and a `ClioPath`
+    /// to the FASTA. Used to build BAM/FASTA reference mismatches on the fly.
+    fn fasta_with_contigs(contigs: &[&str]) -> (tempfile::TempDir, ClioPath) {
+        use std::io::Write as _;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("ref.fa");
+        let mut file = std::fs::File::create(&path).expect("create fasta");
+        for contig in contigs {
+            writeln!(file, ">{contig}\nACGTACGTAC").expect("write fasta");
+        }
+        drop(file);
+        rust_htslib::faidx::build(&path).expect("build fai");
+        let clio = ClioPath::new(path).expect("clio path");
+        (dir, clio)
+    }
+
+    mod htslib_fasta_filtering {
+        use super::*;
+
+        #[test]
+        fn segments_skip_bam_contig_absent_from_fasta() -> Result<()> {
+            // FASTA omits `bacteriophage_lambda_CpG`, which the BAM header carries.
+            let (_dir, fasta) = fasta_with_contigs(&["chr19", "2kb_3_Unmodified"]);
+            let params =
+                ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
+
+            let readers = params.readers()?;
+            let chunks: Vec<ChunkRegion> = readers.segments(u64::MAX, 0)?.collect();
+
+            let contigs: std::collections::HashSet<&str> =
+                chunks.iter().map(|c| c.contig.as_str()).collect();
+            assert!(contigs.contains("chr19"));
+            assert!(contigs.contains("2kb_3_Unmodified"));
+            assert!(
+                !contigs.contains("bacteriophage_lambda_CpG"),
+                "contig absent from the FASTA must be skipped, got {contigs:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn segments_bail_when_no_bam_contig_in_fasta() -> Result<()> {
+            let (_dir, fasta) = fasta_with_contigs(&["unrelated_contig"]);
+            let params =
+                ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
+
+            let readers = params.readers()?;
+            let result = readers.segments(u64::MAX, 0).map(Iterator::count);
+            assert!(result.is_err(), "expected an error when no BAM contig is in the FASTA");
+            Ok(())
+        }
+
+        #[test]
+        fn segments_explicit_region_absent_from_fasta_errors() -> Result<()> {
+            use crate::utils::regions::CliRegionInput;
+
+            let (_dir, fasta) = fasta_with_contigs(&["chr19"]);
+            let regions: CliRegionInput = "bacteriophage_lambda_CpG".parse()?;
+            let params = ReaderParams {
+                bam_file: get_test_bam(),
+                fasta_file: fasta,
+                regions: Some(regions),
+            };
+
+            let readers = params.readers()?;
+            let result = readers.segments(u64::MAX, 0).map(Iterator::count);
+            assert!(result.is_err(), "explicit region absent from FASTA must be a hard error");
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_get_selected_region_variations() -> Result<()> {
         let params =
@@ -778,5 +869,64 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "experimental-seqair")]
+    mod seqair_fasta_filtering {
+        use super::*;
+
+        #[test]
+        fn segments_skip_bam_contig_absent_from_fasta() -> Result<()> {
+            // FASTA omits `bacteriophage_lambda_CpG`, which the BAM header carries.
+            let (_dir, fasta) = fasta_with_contigs(&["chr19", "2kb_3_Unmodified"]);
+            let params =
+                ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
+
+            let readers = params.open_seqair()?;
+            let chunks: Vec<ChunkRegion> = readers.segments(u64::MAX, 0)?.collect();
+
+            let contigs: std::collections::HashSet<&str> =
+                chunks.iter().map(|c| c.contig.as_str()).collect();
+            assert!(contigs.contains("chr19"));
+            assert!(contigs.contains("2kb_3_Unmodified"));
+            assert!(
+                !contigs.contains("bacteriophage_lambda_CpG"),
+                "contig absent from the FASTA must be skipped, got {contigs:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn segments_bail_when_no_bam_contig_in_fasta() -> Result<()> {
+            // FASTA shares no contig names with the BAM header (wholesale mismatch).
+            let (_dir, fasta) = fasta_with_contigs(&["unrelated_contig"]);
+            let params =
+                ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
+
+            let readers = params.open_seqair()?;
+            let result = readers.segments(u64::MAX, 0).map(Iterator::count);
+            assert!(result.is_err(), "expected an error when no BAM contig is in the FASTA");
+            Ok(())
+        }
+
+        #[test]
+        fn segments_explicit_region_absent_from_fasta_errors() -> Result<()> {
+            use crate::utils::regions::CliRegionInput;
+
+            let (_dir, fasta) = fasta_with_contigs(&["chr19"]);
+            // The contig exists in the BAM header but not in this FASTA: an
+            // explicitly requested region must stay a hard error.
+            let regions: CliRegionInput = "bacteriophage_lambda_CpG".parse()?;
+            let params = ReaderParams {
+                bam_file: get_test_bam(),
+                fasta_file: fasta,
+                regions: Some(regions),
+            };
+
+            let readers = params.open_seqair()?;
+            let result = readers.segments(u64::MAX, 0).map(Iterator::count);
+            assert!(result.is_err(), "explicit region absent from FASTA must be a hard error");
+            Ok(())
+        }
     }
 }

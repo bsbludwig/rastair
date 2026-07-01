@@ -4,6 +4,7 @@ use color_eyre::{
 };
 use rust_htslib::faidx;
 use std::{
+    collections::HashSet,
     fmt,
     path::{Path, PathBuf},
 };
@@ -22,6 +23,17 @@ impl fmt::Debug for FastaReader {
 }
 
 impl FastaReader {
+    /// Names of every sequence in the FASTA index.
+    pub fn sequence_names(&self) -> Result<HashSet<String>> {
+        self.reader
+            .seq_names()
+            .map_err(|e| eyre!(e))
+            .wrap_err_with(|| {
+                format!("Failed to list sequences in FASTA file {:?}", self.fasta_file)
+            })
+            .map(|names| names.into_iter().collect())
+    }
+
     /// Fetch a sequence region from the FASTA file.
     ///
     /// Uses 0-based half-open coordinates `[start, stop)` to match the previous
