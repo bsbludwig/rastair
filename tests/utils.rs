@@ -99,6 +99,34 @@ pub fn vcf_content_lines(vcf_text: &str) -> impl Iterator<Item = &str> {
     vcf_text.lines().filter(|line| !line.starts_with("#"))
 }
 
+/// Writes a plain FASTA holding only `contigs` (one short dummy sequence line each)
+/// plus a matching `.fai` index into `dir`, returning the FASTA path. Used to build a
+/// reference that deliberately omits a contig the test BAM carries.
+pub fn write_fasta_with_contigs(dir: &Path, contigs: &[&str]) -> Result<std::path::PathBuf> {
+    const SEQ: &str = "ACGTACGTAC";
+    let fasta = dir.join("ref.fa");
+    let mut body = String::new();
+    let mut fai = String::new();
+    for contig in contigs {
+        let header = format!(">{contig}\n");
+        // Offset of the sequence's first base is the current byte length of the file.
+        let offset = body.len() + header.len();
+        body.push_str(&header);
+        body.push_str(SEQ);
+        body.push('\n');
+        // fai columns: NAME, LENGTH, OFFSET, LINEBASES, LINEWIDTH (bases + newline).
+        fai.push_str(&format!(
+            "{contig}\t{}\t{offset}\t{}\t{}\n",
+            SEQ.len(),
+            SEQ.len(),
+            SEQ.len() + 1
+        ));
+    }
+    std::fs::write(&fasta, body).wrap_err("write fasta")?;
+    std::fs::write(dir.join("ref.fa.fai"), fai).wrap_err("write fai")?;
+    Ok(fasta)
+}
+
 /// Read a BCF file and ensure it has contigs and at least one record.
 pub fn read_bcf(path: &Path) -> Result<rust_htslib::bcf::Reader> {
     use rust_htslib::bcf::{Read, Reader};
