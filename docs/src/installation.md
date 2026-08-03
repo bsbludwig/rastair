@@ -6,7 +6,7 @@ For installing rastair locally on macOS and Linux,
 you can use [homebrew](https://brew.sh/):
 
 ```sh
-brew tap bsblabludwig/rastair git@bitbucket.org:bsblabludwig/homebrew-rastair.git
+brew tap bsblabludwig/rastair https://bitbucket.org/bsblabludwig/homebrew-rastair.git
 brew install rastair
 ```
 
@@ -51,10 +51,10 @@ We provide a pre-built binary for Linux (x86):
 This binary was built on Ubuntu 20.04 but should work on most recent distributions.
 
 ```admonish info
-While rastair itself is hard-linked and therefore independent of system libraries, this is unfortunately not yet the case for htslib. If your system uses a GLIBC older than 2.30, then you will have to [compile from source](#building-from-source).
+While rastair itself is statically linked and therefore independent of system libraries, this is unfortunately not yet the case for htslib. If your system uses a GLIBC older than 2.30, then you will have to [compile from source](#building-from-source).
 ```
 
-### Mac OSX
+### macOS
 
 For Apple users, we provide both Apple Silicon and Intel binaries:
 
@@ -65,7 +65,7 @@ For Apple users, we provide both Apple Silicon and Intel binaries:
 ## Building from source
 
 ### Pre-requisites
-To compile from source, you need a working [Rust installation](https://www.rust-lang.org/tools/install) (version 1.88 or later). Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang library](https://clang.llvm.org/get_started.html) as well as [cmake](https://cmake.org/download/). On most systems, these are either already available or can be installed using a standard package manager:
+To compile from source, you need a working [Rust installation](https://www.rust-lang.org/tools/install) (version 1.88 or later). Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang](https://clang.llvm.org/get_started.html) compiler as well as [cmake](https://cmake.org/download/). On most systems, these are either already available or can be installed using a standard package manager:
 
 First, clone the repo:
 
@@ -77,7 +77,7 @@ Then follow the platform-specific instructions below.
 
 #### Ubuntu
 ```bash
-sudo apt install cmake
+sudo apt install clang cmake
 ```
 
 #### Fedora
@@ -85,7 +85,7 @@ sudo apt install cmake
 sudo dnf install -y clang cmake
 ```
 
-#### Mac OSX (Homebrew)
+#### macOS (Homebrew)
 We assume that you have Xcode developer tools installed. In that case, you only need
 
 ```bash

@@ -17,7 +17,7 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`pre_ml`** | Low amount of usable evidence, skipping ML |
 | **`low_ml_score`** | Machine Learning module prediction below threshold |
 ## Info Fields
-| Name | Description | VCF Type | Rust Type | Occurance |
+| Name | Description | VCF Type | Rust Type | Occurrence |
 | -- | -- | -- | -- | -- |
 | **`AD`** | Total read depth for each allele | `Integer` | `usize` | R |
 | **`BQ`** | RMS base quality | `Float` | `RootMeanSquare` | 1 |
@@ -43,11 +43,11 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`CPG`** | Is this a CpG site? | `Flag` | `bool` | 0 |
 | **`CPGnovo`** | De-novo CPG candidate: Could the alt alleles create a new CpG site? | `Flag` | `bool` | 0 |
 ## Format Fields
-| Name | Description | VCF Type | Rust Type | Occurance |
+| Name | Description | VCF Type | Rust Type | Occurrence |
 | -- | -- | -- | -- | -- |
 | **`GT`** | Genotype | `String` | `GenotypeAllele` | 1 |
-| **`GL`** | Genotype likelihoods, Phred-scaled | `Float` | `Phred>` | G |
-| **`GC`** | Genotype confidence, Phred-scaled | `Float` | `Phred>` | G |
+| **`GL`** | Genotype likelihoods, Phred-scaled | `Float` | `Phred` | G |
+| **`GC`** | Genotype confidence, Phred-scaled | `Float` | `Phred` | G |
 | **`DP`** | Read depth | `Integer` | `usize` | 1 |
 | **`M5mC`** | Methylation level at CpG sites | `Float` | `Option<f64>` | M |
 | **`DPM5mC`** | Total read depth for 5-methylcytosine detection | `Integer` | `Option<u32>` | M |

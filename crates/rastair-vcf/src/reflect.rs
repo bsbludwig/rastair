@@ -73,7 +73,7 @@ impl VcfDescription {
         }
 
         writeln!(writer, "## Info Fields")?;
-        writeln!(writer, "| Name | Description | VCF Type | Rust Type | Occurance |")?;
+        writeln!(writer, "| Name | Description | VCF Type | Rust Type | Occurrence |")?;
         writeln!(writer, "| -- | -- | -- | -- | -- |")?;
         for field in &self.infos {
             let rust_type = field.rust_type.split("::").last().unwrap_or(&field.rust_type);
@@ -85,7 +85,7 @@ impl VcfDescription {
         }
 
         writeln!(writer, "## Format Fields")?;
-        writeln!(writer, "| Name | Description | VCF Type | Rust Type | Occurance |")?;
+        writeln!(writer, "| Name | Description | VCF Type | Rust Type | Occurrence |")?;
         writeln!(writer, "| -- | -- | -- | -- | -- |")?;
         for field in &self.formats {
             let rust_type = field.rust_type.split("::").last().unwrap_or(&field.rust_type);

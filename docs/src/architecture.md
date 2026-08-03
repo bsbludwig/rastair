@@ -16,7 +16,7 @@ This design ensures that positions at segment boundaries have access to adjacent
 After processing, only core positions are emitted, preventing duplicates.
 
 **Thread-Local Readers**:
-Each worker thread maintains its own @BAM and @FASTQ file handles, avoiding lock contention and serialize I/O.
+Each worker thread maintains its own @BAM and @FASTA file handles, avoiding lock contention and serialize I/O.
 Using index files (FAI, CSI, or TBI) enables efficient parallel random access.
 
 **Ordered Channel**:
@@ -32,8 +32,8 @@ Within each worker, processing proceeds through a lazy iterator chain with progr
 3. **Set de-novo adjacency** (context-aware): Check if adjacent positions could form @denovo sites
 4. **Add methylation info**: Analyze strand-specific evidence (OT/OB strands)
 5. **Filter site type**: Early filtering to reduce downstream computation
-6. **Apply thresholds**: Hard filters on depth, frequency, quality
-7. **Add @ML metrics** (context-aware): Random Forest scoring using current and adjacent positions
+6. **Add @ML metrics** (context-aware): Random Forest scoring using current and adjacent positions
+7. **Apply thresholds**: Hard filters on depth, frequency, quality
 8. **Propagate CpG flags** (context-aware): Coordinate @CpG pair decisions
 9. **Set variant calls**: Classify as variant, methylation, or error
 10. **Calls**: Final genotype and @methylation calls
@@ -52,7 +52,7 @@ Diagram ideas:
 ```mermaid
 flowchart TB
     Segments --> Pipeline
-    P11 --> Channel
+    P10 --> Channel
     Channel --> Writer
 
     Channel["Ordered Channel"]
@@ -78,15 +78,15 @@ flowchart TB
             P1[Generate Pileups]
             P2[Calculate Metrics]
             P3[Set De-novo Adjacency]
-            P5[Filter for CpG sites if requested]
-            P7[Add Threshold Filters]
-            P6[ML filtering]
-            P8["Propagate (de-novo) CpG Flags"]
-            P9[Set Variant Calls]
-            P10[Set Genotype and Methylation Calls]
-            P11[Filter out overlap positions]
+            P4[Filter for CpG sites if requested]
+            P5[Add ML Metrics]
+            P6[Apply Threshold Filters]
+            P7["Propagate (de-novo) CpG Flags"]
+            P8[Set Variant Calls]
+            P9[Set Genotype and Methylation Calls]
+            P10[Filter out overlap positions]
             
-            P1 --> P2 --> P3 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10 --> P11
+            P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10
             Readers --> P1
         end 
     end
@@ -114,11 +114,13 @@ Best for methylation-focused downstream analyses.
 
 Random Forest models disambiguate true variants from sequencing errors and methylation artifacts.
 
-**Three Separate Models**: Different variant contexts require different discriminatory features:
+**Five Separate Models**: Different variant contexts require different discriminatory features:
 - **CpG model**: C→T or G→A at canonical CpG sites
 - **De-novo CpG model**: Variants creating new CpG sites
 - **Others model**: Non-CpG variants
+- **Insertion model**: Insertion alleles (used when experimental indel calling is enabled)
+- **Deletion model**: Deletion alleles (used when experimental indel calling is enabled)
 
 Models are bundled as one compressed file.
 A default model file is bundled in the Rastair binary and loaded at startup.
-Custom models for domain-specific tuning can created with rastair's built-in `ml` subcommand and then specified via CLI flags.
+Custom models for domain-specific tuning can be created with rastair's built-in `ml` subcommand and then specified via CLI flags.

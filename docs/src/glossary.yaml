@@ -107,7 +107,7 @@
   long: "Variant Call Format"
   group: "File Formats"
   description: |
-    Tab-separated-file format that stores information about genetic variants. [Format Specification for VCFv4.5]("https://samtools.github.io/hts-specs/VCFv4.5.pdf"). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations.
+    Tab-separated-file format that stores information about genetic variants. [Format Specification for VCFv4.5](https://samtools.github.io/hts-specs/VCFv4.5.pdf). It is used to represent SNPs, insertions, deletions, and other types of genetic variations. VCF files contain information about the variant's position, @refAllele, @altAllele, quality score, and other annotations.
 
     It looks like this:
 
@@ -118,6 +118,11 @@
     ```
 
     The first row contains the column headers. The first eight columns are mandatory fields that describe the variant. The remaining columns contain information about the samples and their genotypes. Importantly, unlike in @BED, the position column in VCF files is 1-based.
+
+- key: FASTA
+  group: "File Formats"
+  description: |
+    A text-based file format for storing nucleotide or protein sequences. Each record consists of a header line starting with `>`, followed by one or more lines of sequence. Rastair uses FASTA files to store the @referenceGenome sequence, indexed with `samtools faidx` for efficient random access.
 
 - key: FASTQ
   group: "File Formats"
@@ -223,7 +228,7 @@
   group: "Genetics"
   # link: https://www.nist.gov/programs-projects/genome-bottle
   description: |
-    "A public-private-academic consortium hosted by NIST to develop the technical infrastructure (reference standards, reference methods, and reference data) to enable translation of whole human genome sequencing to clinical practice and innovations in technologies." -- [nist.gov]("https://www.nist.gov/programs-projects/genome-bottle")
+    "A public-private-academic consortium hosted by NIST to develop the technical infrastructure (reference standards, reference methods, and reference data) to enable translation of whole human genome sequencing to clinical practice and innovations in technologies." -- [nist.gov](https://www.nist.gov/programs-projects/genome-bottle)
 
 - key: DiploidGenome
   short: diploid genome

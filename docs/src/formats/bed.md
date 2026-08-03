@@ -55,8 +55,8 @@ The BED file for per-read methylation contains the following columns:
 | `mod_cpgs`      | Positions in read of modified CpGs            |
 | `unmod_cpgs`    | Positions in read of unmodified CpGs          |
 | `snp_cpgs`      | Positions in read that are @SNP:pl (mutated)  |
-| `mod_denovos`   | Positions in read of @denovo that are mutated |
-| `unmod_denovos` | Positions in read of @denovo that are mutated |
+| `mod_denovos`   | Positions in read of @denovo that are methylated |
+| `unmod_denovos` | Positions in read of @denovo that are unmethylated |
 
 **Note:** The positions in reads take @indel:pl into account,
 meaning that the positions are relative to the read, not the reference genome.

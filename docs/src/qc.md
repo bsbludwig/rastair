@@ -1,6 +1,6 @@
 # Quality control report
 
-Rastair comes with a helper script, written in [R](https://cran.r-project.org), which generates a comprehense QC report for your library.
+Rastair comes with a helper script, written in [R](https://cran.r-project.org), which generates a comprehensive QC report for your sequencing library.
 
 ```admonish info
 **If not using the docker image:**
@@ -39,12 +39,12 @@ rastair mbias --output-prefix test_qc --no-vbias --no-gc --bam test.bam
 
 ## Elements of the QC report
 
-Conversion of methyl-C to T should be independent of where in a sequencing read the methylation ocurred.
+Conversion of methyl-C to T should be independent of where in a sequencing read the methylation occurred.
 However, in reality, a number of experimental procedures can affect the evenness of conversion. For example,
 sonication or enzymatic digestion of genomic DNA can produce single-stranded ends. When these are repaired for
 A-tailing, the newly synthesized parts will be unmethylated.
 
-To identify any potential issues in your data, we are providing two types of plots to investigate the evenness of methylation:
+To identify any potential issues in your data, we provide several types of plots. The M-bias and V-bias plots investigate the evenness of methylation along reads, while the GC/CpG-bias plots examine the relationship between sequence context and methylation or coverage:
 
 ### M-bias
 
@@ -68,7 +68,7 @@ cat bacteriophage_lambda_CpG_cutoffs.txt
 0,0,0,5
 ```
 
-In other word, it suggested we set `--nOT 0,0,0,2` and `--nOB 0,0,0,5`, ie remove the last 2 and 5 bases of R2 in OT and OB, respectively.
+In other words, it suggested we set `--nOT 0,0,0,2` and `--nOB 0,0,0,5`, i.e. remove the last 2 and 5 bases of R2 in OT and OB, respectively.
 
 ### V-bias
 

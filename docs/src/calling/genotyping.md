@@ -1,7 +1,7 @@
 # Genotyping
 
 Rastair uses @ML scores to determine which @altAllele:pl represent true genetic @variant:pl, then applies statistical methods to estimate zygosity.
-Rastair only support diploid genotyping (two chromosome copies) at this time.
+Rastair only supports diploid genotyping (two chromosome copies) at this time.
 
 ## Multi-Allelic Sites
 

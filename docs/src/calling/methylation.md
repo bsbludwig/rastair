@@ -1,7 +1,7 @@
 # Methylation calling in Rastair
 
 A core feature of Rastair is the ability to call @methylation from @TAPS sequencing data.
-In @TAPS (and @5Base) sequences, a mehtylated position is a `CG` sequence
+In @TAPS (and @5Base) sequences, a methylated position is a `CG` sequence
 where the @OT `C` is read as `T` and the @OB `G` is read as `A`.
 
 For example, given this reference and @pileup (`.` means reference base):
@@ -42,11 +42,11 @@ the alt allele will be set to `.` since it is not considered a variant in the tr
 
 ## Criteria for methylation calling
 
-- Only @CpG sites (including [de-novo CpGs](calling/denovo.md)) are considered for methylation calling.
+- Only @CpG sites (including [de-novo CpGs](denovo.md)) are considered for methylation calling.
 - @OT reads showing `TG` on a ref `CG` position
 - @OB reads showing `CA` on the ref `CG` position
 - Not a homozygous variant away from C/T
-- Sufficient read depth (controlled with `--v-min-depth`)
+- Sufficient read depth (controlled with `--m-min-depth`)
 - High base quality (controlled with `--min-baseq`)
 - High mapping quality (controlled with `--min-mapq`)
 

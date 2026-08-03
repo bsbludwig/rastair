@@ -1,12 +1,24 @@
 # Examples
 
 rastair has two main modes:
+
 1. Call @methylation per genomic position
 2. Annotate individual @read:pl with the methylation states of the @CpG:pl they contain
 
 In addition, there are a number of convenience commands, e.g. to convert between different output file formats, and a small set of utility scripts written in R to produce quality-control metrics.
 
 Below we will give some examples that cover common use-cases. You can find an in-depth documentation of the complete command line syntax [here](cli.md).
+
+## Before you start
+
+To follow along, you need two files in your current directory:
+
+- a sorted and indexed `test.bam` @BAM file containing your sequencing reads, aligned to the reference genome
+- the reference genome that your reads were aligned to as `reference.fa.gz`
+
+Your reads should come from a mod-C→T experiment, such as @TAPS or @5Base.
+Rastair interprets the C→T (and G→A) mismatches caused by these methods as methylation signal,
+so libraries generated with other conversion methods will not yield meaningful methylation calls.
 
 ```admonish tip
 Nearly all rastair sub-commands are capable of multi-threading.
@@ -25,9 +37,13 @@ all high-confidence calls will be included:
 rastair call -r reference.fa.gz -o test.vcf.gz test.bam
 ```
 
+```admonish note
+`-o` is a short alias for `--vcf`, so this is equivalent to `rastair call -r reference.fa.gz --vcf test.vcf.gz test.bam`, as used in the [quick start](index.md).
+```
+
 ```admonish tip
 You can restrict processing to only a specific genomic region. For example `-l chr19` will process the entire chromosome 19.
-You can also chose an interval within the chromosome: `-l chr19:6103156-6143156`.
+You can also choose an interval within the chromosome: `-l chr19:6103156-6143156`.
 ```
 
 Rastair will only report variants that pass its internal filters. If you want to report absolutely all candidate variants, regardless of their score, you can use the `--all` flag:
@@ -35,6 +51,7 @@ Rastair will only report variants that pass its internal filters. If you want to
 ```bash
 rastair call -r reference.fa.gz --all -o test.vcf.gz test.bam
 ```
+
 ```admonish warning
 Beware that vcf files generated with `--all` can get very large!
 ```
@@ -61,7 +78,7 @@ If no output name is given, rastair writes VCF to @STDOUT.
 rastair call -r reference.fa.gz --bed test.bed.gz test.bam
 ```
 
-```admonish tip
+````admonish tip
 Rastair will automatically produce @bgzip compressed files if the output file name ends in `.gz`. They are also automaticall indexed with @tabix for rapid access to specific genomic ranges:
 
 > ```bash
@@ -69,9 +86,9 @@ Rastair will automatically produce @bgzip compressed files if the output file na
 > ```
 
 This is usually orders of magnitude faster than using e.g. @bedtools. You can also stream the @BED file to @STDOUT by setting `--bed -`.
-```
+````
 
-In some cases, you might prefer to write the bed output to @STDOUT and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (ie exclude @denovo):
+In some cases, you might prefer to write the bed output to @STDOUT and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (i.e. exclude @denovo):
 
 ```bash
 rastair call -r reference.fa.gz --cpgs-only --bed - test.bam | grep -Fw REF
@@ -100,8 +117,8 @@ R2:                         <AC-------------GC-
                              111111111000000000
 ```
 
-This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/360075017111-strand-bias-and-orientation-bias)" read represents the @OT (ie R1 is the OT, and R2 is the reverse complement of the OT).
-A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it ocurrs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
+This "[F1R2](https://gatk.broadinstitute.org/hc/en-us/community/posts/360075017111-strand-bias-and-orientation-bias)" read represents the @OT (i.e. R1 is the OT, and R2 is the reverse complement of the OT).
+A parameter of `--nOT 0,5,0,5` will exclude the `A` at position 18 in R2, because it occurs within 5 bases from the end of R2 _in read coordinates_, not in reference coordinates.
 
 ## 3. Report methylation per-read
 
@@ -113,7 +130,7 @@ rastair per-read -r reference.fa.gz --bed test_per-read.bed.gz test.bam
 
 For a description of the per-read bed format, see the [BED format](formats/bed.md#per-read-methylation) section.
 
-Alternatively, we also support two different ways to include methylation information in the bam file directly. To do this, you need to first generate a per-position bed file with `rastair call` as described earler. Once you have this, you can annotate your input bam with the `XM`/`XR` tags used in [Bismark](https://felixkrueger.github.io/Bismark/bismark/alignment/) and several other short-read methylation callers:
+Alternatively, we also support two different ways to include methylation information in the bam file directly. To do this, you need to first generate a per-position bed file with `rastair call` as described earlier. Once you have this, you can annotate your input bam with the `XM`/`XR` tags used in [Bismark](https://felixkrueger.github.io/Bismark/bismark/alignment/) and several other short-read methylation callers:
 
 ```bash
 rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
