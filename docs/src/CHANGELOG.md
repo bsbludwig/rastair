@@ -6,6 +6,7 @@ This is the changelog for Rastair 2.
 
 Highlights:
 
+- The reported beta values might change when updating to rastair 2.2. Methylation beta is now calculated by taking into account both positions of a CpG, meaning only reads containing `TG`/`CA` are counted as methylated.
 - Reporting insertion and deletion calls.
   This is not enabled by default, while we're refining the model. Enable with `--experimental-indels`.
 - Support guessing the read orientation using `--guess-read-orientation`
