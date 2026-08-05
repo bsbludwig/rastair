@@ -7,9 +7,12 @@ use crate::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, CpgBeta, CpgOrigin,
         DeNovoCpGCandidate, Entropy, Format, GenotypeConfidence, GenotypeLikelihood, Info,
         MachineLearningPrediction, Methylated, NumAlignedBases, NumIndels, PositionInRead,
-        StrandSpecificBaseQuality, StrandSpecificMappingQuality, low_ml_score,
+        StrandSpecificBaseQuality, StrandSpecificMappingQuality, indel_hom_ref, indel_strand,
+        low_ml_score,
     },
 };
+// Hard-filter verdict rendering for the non-ML indel pathway.
+use crate::call::variant_calling::indel_calling::hard_filters::IndelVerdict;
 use color_eyre::eyre::ensure;
 use color_eyre::{Result, eyre::Context as _};
 use rastair_vcf::{
@@ -490,11 +493,20 @@ fn build_indel_records(
             let genotype = Genotype::from(call.genotype);
 
             let mut filters = super::Filters::default();
-            let ml_below_threshold = call.ml.zip(ml_threshold).is_some_and(|(ml, t)| ml < t);
-            if ml_below_threshold {
-                filters.add(low_ml_score.filter());
-            } else {
-                filters.add(PASS.filter());
+            // With ML off, render the non-ML hard-filter indel verdict.
+            match (ml_threshold, call.hard_filter_verdict) {
+                (None, Some(IndelVerdict::Pass)) => filters.add(PASS.filter()),
+                (None, Some(IndelVerdict::FailStrand)) => filters.add(indel_strand.filter()),
+                (None, Some(IndelVerdict::FailHomRef)) => filters.add(indel_hom_ref.filter()),
+                _ => {
+                    let ml_below_threshold =
+                        call.ml.zip(ml_threshold).is_some_and(|(ml, t)| ml < t);
+                    if ml_below_threshold {
+                        filters.add(low_ml_score.filter());
+                    } else {
+                        filters.add(PASS.filter());
+                    }
+                }
             }
 
             Record {

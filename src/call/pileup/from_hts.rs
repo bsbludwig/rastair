@@ -180,6 +180,21 @@ impl Pileup {
         let mut indel_observations = SmallVec::new();
         let mut depth_offset: u32 = 0;
         let mut soft_clip_count: u32 = 0;
+        // Reference-read noise offset for the non-ML hard-filter pathway.
+        let mut ref_noise_offset: u32 = 0;
+
+        // All indel depth accounting is counted per fragment, consistent with the
+        // per-fragment deduplication applied to `reads` above. Both the alt count
+        // (indel observations) and the depth-penalty offsets must share the read
+        // granularity, otherwise `VAF = alt / depth` is distorted at overlapping
+        // mate-pairs and the genotype is biased. When overlap dedup is disabled
+        // (`keep_overlapping_reads`) everything stays at the alignment level, so it
+        // remains internally consistent there too. `fragment_key` is `None` when
+        // dedup is off, which makes `first_seen` a no-op (always counts).
+        let dedup_indels = !params.keep_overlapping_reads;
+        let mut seen_indel_fragments: SmallVec<u64, 8> = SmallVec::new();
+        let mut seen_depth_offset: SmallVec<u64, 8> = SmallVec::new();
+        let mut seen_noise_offset: SmallVec<u64, 8> = SmallVec::new();
 
         for a in pile.alignments() {
             let record = a.record_view();
@@ -187,17 +202,38 @@ impl Pileup {
             let (seq, qual) = record.seq_and_qual();
             let read_len = seq.len();
             let (matches, indels_in_read) = calc_cigar_data(record.raw_cigar());
+            let fragment_key = dedup_indels.then(|| hash_bytes(record.qname()));
 
-            if has_soft_clip(record.raw_cigar()) {
+            let soft_clipped = has_soft_clip(record.raw_cigar());
+            if soft_clipped {
                 soft_clip_count += 1;
             }
 
             match a.indel() {
                 Indel::None => {
-                    if has_repeat_seq(&seq, 1, repeat_limit)
-                        || has_repeat_seq(&seq, 2, repeat_limit)
+                    if (has_repeat_seq(&seq, 1, repeat_limit)
+                        || has_repeat_seq(&seq, 2, repeat_limit))
+                        && first_seen(&mut seen_depth_offset, fragment_key)
                     {
                         depth_offset += 1;
+                    }
+                    // Hard-filter: down-weight reference-supporting reads (base
+                    // matches the reference) that carry a terminal homopolymer or
+                    // dinucleotide repeat or a soft-clip. Counted once per fragment;
+                    // the dinucleotide cutoff is rounded up to even.
+                    let is_ref_read = a
+                        .qpos()
+                        .and_then(|q| seq.get(q))
+                        .is_some_and(|b| Base::from(b) == reference_base);
+                    if is_ref_read {
+                        let dinuc_cutoff = repeat_limit + (repeat_limit & 1);
+                        if (soft_clipped
+                            || has_repeat_seq(&seq, 1, repeat_limit)
+                            || has_repeat_seq(&seq, 2, dinuc_cutoff))
+                            && first_seen(&mut seen_noise_offset, fragment_key)
+                        {
+                            ref_noise_offset += 1;
+                        }
                     }
                 }
                 indel => {
@@ -262,6 +298,12 @@ impl Pileup {
                         IndelAllele::Deletion(_) => SmallVec::new(),
                     };
 
+                    // One vote per fragment: skip the second overlapping mate of
+                    // a fragment that already contributed an indel observation.
+                    if !first_seen(&mut seen_indel_fragments, fragment_key) {
+                        continue;
+                    }
+
                     let has_repeat = has_repeat_seq(&seq, 1, repeat_limit)
                         || has_repeat_seq(&seq, 2, repeat_limit);
                     let post_del_base_qual = match &allele {
@@ -306,6 +348,7 @@ impl Pileup {
             homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
             dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
             soft_clip_count,
+            ref_noise_offset,
             indel_ref_window,
             indel_ref_anchor,
         })
@@ -479,6 +522,21 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = FxHasher::default();
     bytes.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Records a per-fragment contribution once. Returns `true` the first time `key`
+/// is seen (and remembers it); returns `true` unconditionally when `key` is
+/// `None` (fragment deduplication disabled), so overlapping-mate deduplication
+/// of indel depth accounting is a no-op under `--keep-overlapping-reads`.
+fn first_seen(seen: &mut SmallVec<u64, 8>, key: Option<u64>) -> bool {
+    match key {
+        None => true,
+        Some(k) if seen.contains(&k) => false,
+        Some(k) => {
+            seen.push(k);
+            true
+        }
+    }
 }
 
 /// Calculate matches and indels from a packed CIGAR array.
@@ -664,6 +722,123 @@ mod tests {
     fn name_collector_collect_by_default() {
         let params = PileupMappingParams::default();
         assert!(matches!(NameCollector::new(&params), NameCollector::Collect(_)));
+    }
+
+    #[test]
+    fn first_seen_dedups_by_key() {
+        // Per-fragment dedup: a repeated key (second overlapping mate) is not counted.
+        let mut seen: SmallVec<u64, 8> = SmallVec::new();
+        assert!(first_seen(&mut seen, Some(7)));
+        assert!(!first_seen(&mut seen, Some(7)));
+        assert!(first_seen(&mut seen, Some(9)));
+        assert!(!first_seen(&mut seen, Some(9)));
+    }
+
+    #[test]
+    fn first_seen_none_is_always_true() {
+        // dedup disabled (`--keep-overlapping-reads`): every alignment counts, nothing tracked.
+        let mut seen: SmallVec<u64, 8> = SmallVec::new();
+        assert!(first_seen(&mut seen, None));
+        assert!(first_seen(&mut seen, None));
+        assert!(seen.is_empty());
+    }
+
+    /// Regression guard for the indel overlap double-counting fix: an indel supported
+    /// by overlapping mate-pairs must contribute one vote per *fragment* (the depth
+    /// denominator's granularity), not one per alignment. Drives the real
+    /// `get_pileups` → `Pileup::from_hts` path over a synthetic BAM.
+    #[test]
+    fn indel_observations_are_deduped_per_fragment() -> color_eyre::Result<()> {
+        use crate::{
+            call::process::get_pileups,
+            sequence::ReaderParams,
+            utils::{CliRegionInput, RegionString},
+        };
+        use rust_htslib::bam::{self, Header, Record, header::HeaderRecord};
+        use seqair_types::Pos1;
+
+        // Non-repetitive reference (no homopolymer/dinucleotide runs) so the ref-noise
+        // and depth offsets stay zero and we isolate the alt-count dedup.
+        let refseq = "ACGT".repeat(15);
+        let refbytes = refseq.as_bytes();
+        let dir = tempfile::TempDir::new()?;
+        let fasta = dir.path().join("ref.fasta");
+        std::fs::write(&fasta, format!(">chrT\n{refseq}\n"))?;
+        std::fs::write(
+            dir.path().join("ref.fasta.fai"),
+            format!("chrT\t{0}\t6\t{0}\t{1}\n", refseq.len(), refseq.len() + 1),
+        )?;
+
+        // A 1 bp insertion at the CIGAR anchor (ref index 29), supported by three
+        // fragments, each written as two fully-overlapping mates (fwd read1 + rev read2,
+        // same qname). CIGAR 10M1I10M from 0-based pos 20; the M bases match the reference.
+        let start = 20usize;
+        let seq: Vec<u8> = refbytes
+            .iter()
+            .skip(start)
+            .take(10)
+            .chain(b"A")
+            .chain(refbytes.iter().skip(start + 10).take(10))
+            .copied()
+            .collect();
+        let cigar = CigarString(vec![Cigar::Match(10), Cigar::Ins(1), Cigar::Match(10)].into());
+        let quals = vec![40u8; seq.len()];
+        let start_pos = i64::try_from(start)?;
+
+        let bam_path = dir.path().join("reads.bam");
+        {
+            let mut header = Header::new();
+            header.push_record(
+                HeaderRecord::new(b"SQ").push_tag(b"SN", "chrT").push_tag(b"LN", refseq.len()),
+            );
+            let mut writer = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam)?;
+            for i in 0..3 {
+                let qname = format!("frag{i}");
+                // 99 = paired+proper+mate-reverse+read1 (fwd); 147 = paired+proper+reverse+read2.
+                for &flags in &[99u16, 147u16] {
+                    let mut rec = Record::new();
+                    rec.set(qname.as_bytes(), Some(&cigar), &seq, &quals);
+                    rec.set_tid(0);
+                    rec.set_pos(start_pos);
+                    rec.set_mtid(0);
+                    rec.set_mpos(start_pos);
+                    rec.set_mapq(60);
+                    rec.set_flags(flags);
+                    writer.write(&rec)?;
+                }
+            }
+        }
+        bam::index::build(&bam_path, None, bam::index::Type::Bai, 1)?;
+
+        let total_indel_observations = |keep_overlapping: bool| -> color_eyre::Result<usize> {
+            let mut params = ReaderParams::test_with(
+                bam_path.to_str().expect("utf8 bam path"),
+                fasta.to_str().expect("utf8 fasta path"),
+            );
+            params.regions = Some(CliRegionInput::from_region(RegionString {
+                chromosome: "chrT".into(),
+                start: Some(Pos1::new(1).expect("valid pos")),
+                end: Some(Pos1::new(60).expect("valid pos")),
+            }));
+            let mut readers = params.readers()?;
+            let chunk = readers
+                .segments(1000, 0)?
+                .next()
+                .ok_or_else(|| color_eyre::eyre::eyre!("no segment fetched"))?;
+            let pileup_params = PileupMappingParams {
+                variant_calling: VariantCallingParams { keep_overlapping_reads: keep_overlapping, ..default() },
+                ..default()
+            };
+            let (_segment, pileups) = get_pileups(&mut readers, &chunk, &pileup_params)?;
+            Ok(pileups.map(|p| p.indel_observations.len()).sum())
+        };
+
+        // Default: overlapping mates collapse to one vote per fragment.
+        assert_eq!(total_indel_observations(false)?, 3, "expected fragment-level indel counting");
+        // `--keep-overlapping-reads`: every alignment votes (2 mates x 3 fragments).
+        assert_eq!(total_indel_observations(true)?, 6, "expected alignment-level counting with overlaps kept");
+
+        Ok(())
     }
 
     #[test]

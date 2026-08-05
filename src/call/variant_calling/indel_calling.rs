@@ -6,6 +6,9 @@ use seqair_types::{Phred, Probability};
 use std::num::NonZeroU8;
 use tracing::{instrument, trace};
 
+// Self-contained non-ML hard-filter indel pathway (used under `--no-ml`).
+pub mod hard_filters;
+
 /// CLI parameters for indel calling.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, Default)]
 pub struct IndelParams {
@@ -70,6 +73,8 @@ pub struct IndelCall {
     pub depth: u32,
     /// Reads supporting this indel allele.
     pub alt_count: u32,
+    /// Non-ML hard-filter verdict; `None` on the ML path.
+    pub hard_filter_verdict: Option<hard_filters::IndelVerdict>,
 }
 
 /// Call indels at a position. Returns empty vec if no indels pass filters.
@@ -84,6 +89,11 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams, ml_enabled: bool)
 
     if indels.is_empty() {
         return calls;
+    }
+
+    // With ML off, indels go through the non-ML hard-filter chain instead.
+    if !ml_enabled {
+        return hard_filters::call_indels(indels, params);
     }
 
     let total_reads = indels.ref_count + indels.total_indel_reads();
@@ -108,38 +118,18 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams, ml_enabled: bool)
         let genotype =
             binomial_genotype(alt_count as usize, filtered_depth as usize, params.indel_error_rate);
 
-        if !ml_enabled {
-            let Some(g) = genotype else { continue };
-            if matches!(g.tag, GenotypeTag::HomRef) {
-                trace!(
-                    allele = ?allele_counts.allele,
-                    alt_count,
-                    depth = filtered_depth,
-                    "Indel skipped: genotyped as hom ref (ML off)"
-                );
-                continue;
-            }
-            calls.push(IndelCall {
-                allele: allele_counts.allele.clone(),
-                genotype: g.tag,
-                quality: g.quality,
-                ml: None,
-                depth: filtered_depth,
-                alt_count,
-            });
-        } else {
-            let (tag, quality) = genotype
-                .map(|g| (g.tag, g.quality))
-                .unwrap_or((GenotypeTag::hom_ref(), Phred::from_phred(0_u8)));
-            calls.push(IndelCall {
-                allele: allele_counts.allele.clone(),
-                genotype: tag,
-                quality,
-                ml: None,
-                depth: filtered_depth,
-                alt_count,
-            });
-        }
+        let (tag, quality) = genotype
+            .map(|g| (g.tag, g.quality))
+            .unwrap_or((GenotypeTag::hom_ref(), Phred::from_phred(0_u8)));
+        calls.push(IndelCall {
+            allele: allele_counts.allele.clone(),
+            genotype: tag,
+            quality,
+            ml: None,
+            depth: filtered_depth,
+            alt_count,
+            hard_filter_verdict: None,
+        });
     }
 
     calls

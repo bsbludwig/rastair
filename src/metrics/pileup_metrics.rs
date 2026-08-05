@@ -574,7 +574,11 @@ pub struct MetricsForIndel<'p> {
 
 fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     if pileup.indel_observations.is_empty() {
-        return IndelCounts { ref_count: pileup.reads.len() as u32, ..Default::default() };
+        return IndelCounts {
+            ref_count: pileup.reads.len() as u32,
+            ref_noise_offset: pileup.ref_noise_offset,
+            ..Default::default()
+        };
     }
 
     let mut alleles: SmallVec<IndelAlleleCounts, 2> = SmallVec::new();
@@ -595,5 +599,10 @@ fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     let total_indel_reads: u32 = alleles.iter().map(|a| a.total()).sum();
     let ref_count = (pileup.reads.len() as u32).saturating_sub(total_indel_reads);
 
-    IndelCounts { alleles, ref_count, depth_offset: pileup.depth_offset }
+    IndelCounts {
+        alleles,
+        ref_count,
+        depth_offset: pileup.depth_offset,
+        ref_noise_offset: pileup.ref_noise_offset,
+    }
 }

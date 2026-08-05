@@ -12,3 +12,4 @@
 .Rproj.user
 docs/yapp.config
 .claude/settings.json
+/target-linux

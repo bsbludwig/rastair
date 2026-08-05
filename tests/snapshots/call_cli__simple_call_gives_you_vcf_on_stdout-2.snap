@@ -20,6 +20,8 @@ expression: stdout
 ##FILTER=<ID=m_highDp,Description="Excessive coverage for methylation candidate">
 ##FILTER=<ID=pre_ml,Description="Low amount of usable evidence, skipping ML">
 ##FILTER=<ID=low_ml_score,Description="Machine Learning module prediction below threshold">
+##FILTER=<ID=indel_strand,Description="Indel allele not supported on both strands">
+##FILTER=<ID=indel_hom_ref,Description="Indel genotyped as homozygous reference by binomial model">
 ##INFO=<ID=AD,Number=R,Type=Integer,Description="Total read depth for each allele">
 ##INFO=<ID=BQ,Number=1,Type=Float,Description="RMS base quality">
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="Combined depth across samples">

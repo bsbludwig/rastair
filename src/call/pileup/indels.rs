@@ -59,6 +59,10 @@ pub struct IndelCounts {
     /// Reads with problematic patterns (homopolymer, soft-clip) subtracted from depth
     /// for indel quality calculation.
     pub depth_offset: u32,
+    /// Reference-read noise offset (terminal homopolymer/dinucleotide repeat or
+    /// soft-clip) subtracted from depth by the `--no-ml` hard-filter pathway;
+    /// `depth_offset` still drives the ML path.
+    pub ref_noise_offset: u32,
 }
 
 impl IndelCounts {

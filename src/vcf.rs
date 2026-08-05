@@ -42,6 +42,8 @@ filter!(m_pos, "Alt allele evidence from read edges for methylation candidate");
 filter!(m_highDp, "Excessive coverage for methylation candidate");
 filter!(low_ml_score, "Machine Learning module prediction below threshold");
 filter!(pre_ml, "Low amount of usable evidence, skipping ML");
+filter!(indel_strand, "Indel allele not supported on both strands");
+filter!(indel_hom_ref, "Indel genotyped as homozygous reference by binomial model");
 
 info_field!(
     AlleleBaseQuality(f64),
@@ -102,6 +104,7 @@ vcf_record!(
         dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf, dnCpG_adj,
         m_vaf, m_bq_ratio, m_pos, m_highDp,
         pre_ml, low_ml_score,
+        indel_strand, indel_hom_ref,
     ],
     // general info
     // Fields marked "default" are included in minimal VCF output by default

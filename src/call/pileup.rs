@@ -44,6 +44,12 @@ pub struct Pileup {
     pub dinucleotide_run: u8,
     #[serde(default)]
     pub soft_clip_count: u32,
+    /// Reference reads down-weighted by the non-ML hard-filter indel pathway
+    /// (terminal homopolymer/dinucleotide repeat or soft-clip). Consumed only by
+    /// the `--no-ml` path; kept separate from `depth_offset` so ML features are
+    /// unaffected.
+    #[serde(default)]
+    pub ref_noise_offset: u32,
     /// Reference bases around the anchor (`indel_ref_anchor` is the anchor's
     /// index), used for tandem-repeat / slippage detection of indel alleles.
     /// Only populated when indel observations are present.
@@ -136,6 +142,7 @@ mod tests {
             homopolymer_run: 0,
             dinucleotide_run: 0,
             soft_clip_count: 0,
+            ref_noise_offset: 0,
             indel_ref_window: default(),
             indel_ref_anchor: 0,
         };
