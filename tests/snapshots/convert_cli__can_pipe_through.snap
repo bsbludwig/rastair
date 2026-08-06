@@ -18,6 +18,48 @@ chr19	6105743	6105744	.	0.80	+	2	8	6	0	16	C/C	99	18	REF
 chr19	6105744	6105745	.	0.50	-	3	3	10	0	16	G/G	99	30	REF
 
 ----- stderr -----
+warning: unreachable statement
+  --> src/metrics/ml/predict.rs:76:9
+   |
+74 |           return None;
+   |           ----------- any code following this expression is unreachable
+75 |
+76 | /         if !self.enabled() {
+77 | |             return None;
+78 | |         }
+   | |_________^ unreachable statement
+   |
+   = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `current`
+  --> src/metrics/ml/predict.rs:73:34
+   |
+73 |     pub fn predict_indels(&self, current: &MetricsForIndel) -> Option<Prediction> {
+   |                                  ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable statement
+  --> src/metrics/ml/predict.rs:76:9
+   |
+74 |           return None;
+   |           ----------- any code following this expression is unreachable
+75 |
+76 | /         if !self.enabled() {
+77 | |             return None;
+78 | |         }
+   | |_________^ unreachable statement
+   |
+   = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `current`
+  --> src/metrics/ml/predict.rs:73:34
+   |
+73 |     pub fn predict_indels(&self, current: &MetricsForIndel) -> Option<Prediction> {
+   |                                  ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
 [TIME] INFO rastair::call::writer: Wrote VCF output file="-"
 [TIME] INFO rastair: Call finished [DURATION]
 [TIME] INFO rastair: Convert finished [DURATION]
