@@ -13,7 +13,7 @@ Below we will give some examples that cover common use-cases. You can find an in
 
 To follow along, you need two files in your current directory:
 
-- a sorted and indexed `test.bam` @BAM file containing your sequencing reads, aligned to the reference genome
+- a sorted and indexed `test.bam` @BAM (or @CRAM) file containing your sequencing reads, aligned to the reference genome
 - the reference genome that your reads were aligned to as `reference.fa.gz`
 
 Your reads should come from a mod-C→T experiment, such as @TAPS or @5Base.
@@ -134,6 +134,10 @@ Alternatively, we also support two different ways to include methylation informa
 
 ```bash
 rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
+```
+
+```admonish tip
+All the `bam` subcommands also supports @CRAM input, but output will be written in @BAM.
 ```
 
 Alternatively, we also support the new official SAM standard for recording per-read methylation via [the `MM` tags](https://samtools.github.io/hts-specs/SAMtags.pdf):

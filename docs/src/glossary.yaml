@@ -84,6 +84,12 @@
   description: |
     A binary version of the @SAM file format. It is a compressed, indexed, and binary representation of the sequence alignment data. BAM files are used to store sequence data efficiently. They can be visualized and analyzed in genome browsers like @IGV.
 
+- key: CRAM
+  long: "Compressed Reference-oriented Alignment Map"
+  group: "File Formats"
+  description: |
+    A variant of  the @SAM/@BAM file format that reduces file size by only saving differences to a fixed reference sequence.
+
 - key: BED
   long: "Browser Extensible Data"
   group: "File Formats"

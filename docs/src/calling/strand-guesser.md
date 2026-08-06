@@ -1,13 +1,8 @@
 # Read Orientation Guessing (Strand Guesser)
 
-By default, Rastair determines @OT/@OB orientation from SAM flags.
-With `--guess-read-orientation`, Rastair instead infers OT/OB from mismatch motifs observed in each read.
+By default, Rastair determines @OT/@OB orientation from SAM flags, assuming "standard" Illumina paired-end reads. However, some datasets have read orientation metadata that is incomplete, inconsistent, or incompatible with expected TAPS pairing conventions. This is especially common in tagmentation-based library preparations, which can produce non-directional reads.
 
-## Why This Exists
-
-Some datasets have read orientation metadata that is incomplete, inconsistent, or incompatible with expected TAPS pairing conventions.
-This is especially common in tagmentation-based library preparations, which can produce non-directional reads.
-The strand guesser provides an evidence-based fallback so methylation/variant strand assignments can still be made.
+With `--guess-read-orientation`, Rastair instead infers OT/OB from mismatch motifs observed in each read. The strand guesser provides an evidence-based fallback so methylation/variant strand assignments can still be made.
 
 ## Inference Algorithm
 

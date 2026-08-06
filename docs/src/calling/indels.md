@@ -1,6 +1,7 @@
 # Indel Calling
 
-Rastair can call @indel:pl in the `call` workflow when `--experimental-indels` is enabled.
+As of version 2.2.0, rastair supports calling @indel:pl variants in the `call` workflow. This is still an experimental feature that is enabled with the `--experimental-indels` command-line flag.
+
 This mode extends normal variant/methylation processing with indel extraction from pileups, per-read filtering, and per-allele genotyping.
 
 ## How Indel Candidates Are Built
