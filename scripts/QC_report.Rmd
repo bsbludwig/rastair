@@ -206,7 +206,7 @@ for (chrom in unique(mbias_table$chr)) {
                              r_ob = .SD[read_pair=="Second", right]),
                          by=strand]
     setDF(out_table)
-    write.table(out_table[,2:5], file.path(params$output_dir, paste0(chrom, "_cutoffs.txt")), row.names = FALSE, col.names = FALSE, quote=FALSE, sep=",")
+    write.table(out_table[order(out_table[,1], decreasing=TRUE),2:5], file.path(params$output_dir, paste0(chrom, "_cutoffs.txt")), row.names = FALSE, col.names = FALSE, quote=FALSE, sep=",")
   }
 
   g <- ggplot(mbias_table[chr==chrom], aes(x=pos, y=beta, color=read_pair)) +
