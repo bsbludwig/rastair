@@ -46,8 +46,8 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | Name | Description | VCF Type | Rust Type | Occurrence |
 | -- | -- | -- | -- | -- |
 | **`GT`** | Genotype | `String` | `GenotypeAllele` | 1 |
-| **`GL`** | Genotype likelihoods, Phred-scaled | `Float` | `Phred>` | G |
-| **`GC`** | Genotype confidence, Phred-scaled | `Float` | `Phred>` | G |
+| **`GL`** | Genotype likelihoods, Phred-scaled | `Float` | `Phred` | G |
+| **`GC`** | Genotype confidence, Phred-scaled | `Float` | `Phred` | G |
 | **`DP`** | Read depth | `Integer` | `usize` | 1 |
 | **`M5mC`** | Methylation level at CpG sites | `Float` | `Option<f64>` | M |
 | **`DPM5mC`** | Total read depth for 5-methylcytosine detection | `Integer` | `Option<u32>` | M |
