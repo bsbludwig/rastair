@@ -86,7 +86,7 @@ fn het_with_non_confounding_alt_original_cpg_g_side() -> Result<()> {
     Ok(())
 }
 
-/// Edge case 2: HomAlt on original CpG
+/// Edge case 2: `HomAlt` on original CpG
 ///
 /// ref=C, genotype=HomAlt(T). No C allele → beta=0.0.
 /// This is not tested in the unit tests, only implicitly in integration tests.
@@ -151,7 +151,7 @@ fn homalt_on_original_cpg_g_side() -> Result<()> {
     Ok(())
 }
 
-/// Edge case 3: HomAlt on denovo CpG
+/// Edge case 3: `HomAlt` on denovo CpG
 ///
 /// ref=T, alt=G denovo, genotype=HomAlt(G). CpG on both chromosomes → normal beta.
 /// This differs from edge case 2 because it's a denovo CpG, not an original one.
@@ -227,7 +227,7 @@ fn homalt_on_denovo_cpg_c_side() -> Result<()> {
 /// Edge case 4: Denovo with unmod reads but no confounding reads
 ///
 /// ref=A, alt=G denovo, only G reads on OB, no A reads.
-/// Should be beta=0.0, not NoEvidence (the CpG exists but is unmethylated).
+/// Should be beta=0.0, not `NoEvidence` (the CpG exists but is unmethylated).
 #[test]
 fn denovo_with_unmod_reads_no_confounding() -> Result<()> {
     let (segment, pileups) = pileups!(
@@ -262,7 +262,7 @@ fn denovo_with_unmod_reads_no_confounding() -> Result<()> {
 /// Edge case 4b: Same but with C-side denovo CpG
 ///
 /// ref=T, alt=C denovo, only C reads on OT, no T reads.
-/// Should be beta=0.0, not NoEvidence.
+/// Should be beta=0.0, not `NoEvidence`.
 #[test]
 fn denovo_with_unmod_reads_no_confounding_c_side() -> Result<()> {
     let (segment, pileups) = pileups!(

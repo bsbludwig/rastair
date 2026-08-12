@@ -53,8 +53,10 @@ fn setup_test_bams() -> Result<TestBams> {
         .succeeds()
         .wrap_err("Failed to generate calls")?;
 
+    // `-f`: `rastair call -o <x>.bed.gz` already writes <x>.bed.gz.tbi itself, and
+    // tabix refuses to overwrite an existing index without it.
     let tabix_output = Command::new("tabix")
-        .args(["-p", "bed"])
+        .args(["-f", "-p", "bed"])
         .arg(&calls_bed)
         .output()
         .wrap_err("Failed to run tabix")?;
@@ -156,7 +158,7 @@ fn parse_calls_bed(path: &Path) -> Result<Vec<BedCall>> {
     Ok(calls)
 }
 
-/// Collect per-position (ref_pos, strand) → (methylated, unmethylated) counts
+/// Collect per-position (`ref_pos`, strand) → (methylated, unmethylated) counts
 /// from XM tags in a legacy BAM.
 fn count_xm_per_position(bam_path: &Path) -> Result<HashMap<(u32, char), (u32, u32)>> {
     use rust_htslib::bam::{self, Read as BamRead};
@@ -185,7 +187,7 @@ fn count_xm_per_position(bam_path: &Path) -> Result<HashMap<(u32, char), (u32, u
 
         for op in cigar.iter() {
             use rust_htslib::bam::record::Cigar::*;
-            let len = op.len() as u32;
+            let len = op.len();
             match op {
                 Match(_) | Equal(_) | Diff(_) => {
                     for _ in 0..len {
@@ -218,7 +220,7 @@ fn count_xm_per_position(bam_path: &Path) -> Result<HashMap<(u32, char), (u32, u
 }
 
 /// Use `modkit extract calls` to collect per-position methylation counts
-/// from MM/ML tags. Returns (ref_pos, strand) → (methylated, unmethylated).
+/// from MM/ML tags. Returns (`ref_pos`, strand) → (methylated, unmethylated).
 fn count_modkit_per_position(
     bam_path: &Path,
     temp_dir: &Path,
@@ -326,7 +328,7 @@ fn modkit_summary_validates_standard_bam() -> Result<()> {
     let bams = setup_test_bams()?;
 
     let output = Command::new("modkit")
-        .args(["summary", "--no-sampling"])
+        .args(["summary", "--sampling-frac", "1"])
         .arg(&bams.standard)
         .output()
         .wrap_err("Failed to run modkit")?;
@@ -359,7 +361,7 @@ fn bismark_extractor_reads_legacy_bam() -> Result<()> {
     std::fs::create_dir_all(&output_dir)?;
 
     let output = Command::new("bismark_methylation_extractor")
-        .args(["--comprehensive", "--single-end", "--output"])
+        .args(["--comprehensive", "--single-end", "--output_dir"])
         .arg(&output_dir)
         .arg(&bams.legacy)
         .output()
@@ -499,8 +501,8 @@ fn xm_counts_match_calls_bed() -> Result<()> {
             continue;
         }
 
-        let bed_frac = call.mod_count as f64 / bed_total as f64;
-        let obs_frac = obs_mod as f64 / obs_total as f64;
+        let bed_frac = f64::from(call.mod_count) / f64::from(bed_total);
+        let obs_frac = f64::from(obs_mod) / f64::from(obs_total);
         let diff = (bed_frac - obs_frac).abs();
 
         // Fractions should match exactly since both come from the same reads.
@@ -594,7 +596,7 @@ fn bismark_counts_match_calls_bed() -> Result<()> {
     std::fs::create_dir_all(&output_dir)?;
 
     let output = Command::new("bismark_methylation_extractor")
-        .args(["--comprehensive", "--single-end", "--output"])
+        .args(["--comprehensive", "--single-end", "--output_dir"])
         .arg(&output_dir)
         .arg(&bams.legacy)
         .output()
@@ -658,8 +660,8 @@ fn bismark_counts_match_calls_bed() -> Result<()> {
             continue;
         }
 
-        let bed_frac = call.mod_count as f64 / bed_total as f64;
-        let bk_frac = bk_mod as f64 / bk_total as f64;
+        let bed_frac = f64::from(call.mod_count) / f64::from(bed_total);
+        let bk_frac = f64::from(bk_mod) / f64::from(bk_total);
         let diff = (bed_frac - bk_frac).abs();
 
         if diff > 0.01 {

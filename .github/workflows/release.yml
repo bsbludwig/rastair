@@ -1,0 +1,484 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Lets you dry-run everything except the S3/GitHub uploads from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v2.2.0). Artifacts are built but NOT published."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  BIN_NAME: rastair
+
+jobs:
+  # Same fmt + test jobs as ordinary CI: never ship an untested tag.
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+    # A called workflow's jobs cannot request more than the calling job holds,
+    # so this must cover the union of ci.yml's job-level permissions.
+    permissions:
+      contents: read
+      checks: write
+
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: v
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="${INPUT_TAG:-}"
+            publish=false
+          else
+            version="${GITHUB_REF_NAME}"
+            publish=true
+          fi
+
+          case "$version" in
+            v*) ;;
+            *) echo "Version must start with 'v', got '$version'" >&2; exit 1 ;;
+          esac
+
+          # Guard against tagging a commit whose Cargo.toml was never bumped.
+          # See AGENTS.md "Release version bump checklist".
+          manifest="$(awk -F' *= *' '
+            $0 ~ /^\[package\]/ {in_pkg=1; next}
+            $0 ~ /^\[/ {in_pkg=0}
+            in_pkg && $1=="version" { gsub(/"/, "", $2); print $2; exit }' Cargo.toml)"
+          if [ "$version" != "v${manifest}" ]; then
+            echo "Tag '$version' does not match Cargo.toml version '$manifest'" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Building $version (publish=$publish)"
+
+  build-linux:
+    name: Build (x86_64-unknown-linux-gnu)
+    needs: [checks, resolve-version]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # The build environment lives in Dockerfile.release (RHEL 8, for a glibc
+      # 2.28 floor) rather than inline here, so it is reviewable and can be
+      # reproduced locally with the same command. Deliberately uncached: a
+      # tagged release is built from scratch, and GitHub caches are ref-scoped
+      # so a tag run could not read CI's cache anyway.
+      - name: Build binary in RHEL 8
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --file Dockerfile.release \
+            --target export \
+            --build-arg "TARGET=${TARGET}" \
+            --output "type=local,dest=build-out" \
+            .
+          chmod +x "build-out/${BIN_NAME}"
+          # Informational only, so never fail the release on it.
+          echo "Highest glibc symbol required:"
+          objdump -T "build-out/${BIN_NAME}" \
+            | { grep -o 'GLIBC_[0-9.]*' || true; } | sort -uV | tail -1
+
+      # Only staged, not archived: GitHub zips every uploaded artifact, so
+      # tarring here would hand anyone downloading from the Actions tab a zip
+      # containing a tar.gz. The `publish` job builds the real archives.
+      - name: Stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
+
+          mkdir -p "$OUTDIR"
+          cp "build-out/${BIN_NAME}" "$OUTDIR/"
+          cp -R scripts/* "$OUTDIR/"
+          cp LICENSE.txt README.md "$OUTDIR/"
+          ls -lR dist
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-linux
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    name: Build, sign & notarize (macOS)
+    needs: [checks, resolve-version]
+    runs-on: macos-15
+    timeout-minutes: 120
+    # All release credentials live in the `release` environment, not at repo
+    # level; without this the `secrets.*`/`vars.*` below resolve to empty.
+    environment: release
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      # Secrets — see .github/README.md for how to populate these.
+      MACOS_CERT_B64: ${{ secrets.MACOS_CERT_B64 }}
+      CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_NOTARIZATION_PASSWORD: ${{ secrets.APPLE_NOTARIZATION_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      # Repository variable: whitespace-separated URLs of extra Apple root and
+      # intermediate certificates to trust.
+      ALL_APPLE_CERTS: ${{ vars.ALL_APPLE_CERTS }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check required signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for var in MACOS_CERT_B64 CERT_PASSWORD APPLE_ID APPLE_TEAM_ID \
+                     APPLE_NOTARIZATION_PASSWORD MACOS_SIGN_IDENTITY; do
+            if [ -z "${!var:-}" ]; then
+              echo "Missing 'release' environment secret: $var" >&2
+              missing=1
+            fi
+          done
+          if [ -z "${ALL_APPLE_CERTS:-}" ]; then
+            echo "Missing 'release' environment variable: ALL_APPLE_CERTS" >&2
+            missing=1
+          fi
+          [ "$missing" -eq 0 ]
+
+      - name: Install build dependencies
+        run: command -v cmake >/dev/null || brew install cmake
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Set up signing keychain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          security create-keychain -p "$CERT_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$CERT_PASSWORD" "$KEYCHAIN_PATH"
+          # Prepend to the search list instead of replacing it, so the runner's
+          # login keychain (and its trust settings) stay reachable.
+          # shellcheck disable=SC2046 # word splitting of the keychain list is intended
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          echo "::group::Importing additional Apple root and intermediate certs"
+          mkdir -p "$RUNNER_TEMP/certs"
+          (
+            cd "$RUNNER_TEMP/certs"
+
+            # GitHub's web UI stores multi-line variable values with CRLF line
+            # endings, and word splitting only breaks on IFS (space/tab/newline)
+            # — so a bare `for url in $ALL_APPLE_CERTS` leaves a trailing \r on
+            # every URL but the last, which curl rejects as malformed (exit 3).
+            # Downloads go to a generated filename rather than curl -O so that
+            # two certs sharing a basename cannot overwrite each other.
+            n=0
+            # shellcheck disable=SC2086 # splitting the URL list is intended
+            for url in $(printf '%s' "$ALL_APPLE_CERTS" | tr -d '\r'); do
+              case "$url" in
+                https://*) ;;
+                *) echo "ALL_APPLE_CERTS entry is not an https URL: '$url'" >&2; exit 1 ;;
+              esac
+              n=$((n + 1))
+              curl -fsSL --retry 3 --retry-delay 2 -o "cert-${n}.cer" "$url"
+            done
+            if [ "$n" -eq 0 ]; then
+              echo "ALL_APPLE_CERTS contained no URLs" >&2
+              exit 1
+            fi
+            echo "Downloaded $n certificate(s)"
+
+            for cer in *.cer; do security import "$cer" -k "$KEYCHAIN_PATH"; done
+          )
+          echo "::endgroup::"
+
+          # Force-reload the trust daemon so the freshly imported roots are seen.
+          sudo killall -HUP trustd || true
+          sleep 1
+
+          echo "${MACOS_CERT_B64}" | base64 --decode > "$RUNNER_TEMP/macos_signing.p12"
+          security import "$RUNNER_TEMP/macos_signing.p12" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
+            -P "$CERT_PASSWORD" \
+            -k "$KEYCHAIN_PATH"
+          rm -f "$RUNNER_TEMP/macos_signing.p12"
+
+          # Allow codesign to use the private key without an interactive prompt.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: -s -k "$CERT_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "::group::Signing identity check"
+          security find-identity -p codesigning "$KEYCHAIN_PATH"
+          security find-certificate -c "$MACOS_SIGN_IDENTITY" -p "$KEYCHAIN_PATH" \
+            > "$RUNNER_TEMP/test.pem"
+          security verify-cert -k "$KEYCHAIN_PATH" -p codesign -c "$RUNNER_TEMP/test.pem"
+          echo "::endgroup::"
+
+      - name: Store notarization credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "notary-profile" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_NOTARIZATION_PASSWORD" \
+            --keychain "$KEYCHAIN_PATH"
+
+      - name: Build, sign, notarize & stage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
+            echo "::group::${TARGET}"
+
+            cargo build --release --locked --target "$TARGET"
+
+            codesign --force --options runtime --timestamp \
+              --keychain "$KEYCHAIN_PATH" \
+              --sign "$MACOS_SIGN_IDENTITY" \
+              "target/${TARGET}/release/${BIN_NAME}"
+            codesign --verify --verbose=2 "target/${TARGET}/release/${BIN_NAME}"
+
+            OUTDIR="dist/${BIN_NAME}-${VERSION}-${TARGET}"
+            mkdir -p "$OUTDIR"
+            cp "target/${TARGET}/release/${BIN_NAME}" "$OUTDIR/"
+            cp -R scripts/* "$OUTDIR/"
+            cp LICENSE.txt README.md "$OUTDIR/"
+
+            # notarytool only accepts an archive, so this zip exists purely to
+            # submit; it is not the published one. `xcrun stapler staple` does
+            # not work on a plain zip of a bare executable, so the ticket is
+            # only published to Apple's CDN and Gatekeeper resolves it online
+            # on first run — which means the archive users download can be
+            # built later, in `publish`, from the signed binary staged here.
+            NOTARY_ZIP="${RUNNER_TEMP}/${BIN_NAME}-${VERSION}-${TARGET}.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$OUTDIR" "$NOTARY_ZIP"
+
+            xcrun notarytool submit "$NOTARY_ZIP" \
+              --keychain-profile "notary-profile" \
+              --keychain "$KEYCHAIN_PATH" \
+              --wait
+            rm -f "$NOTARY_ZIP"
+
+            echo "::endgroup::"
+          done
+          ls -lR dist
+
+      - name: Tear down signing keychain
+        if: always()
+        shell: bash
+        run: security delete-keychain "${KEYCHAIN_PATH:-$RUNNER_TEMP/build.keychain-db}" || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-macos
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release artifacts
+    needs: [resolve-version, build-linux, build-macos]
+    if: needs.resolve-version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write # required to create the GitHub Release
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      # Archiving happens here, not in the build jobs, so that the artifacts on
+      # the Actions tab are a plain directory tree rather than GitHub's zip
+      # wrapped around a tar.gz. The published names and formats are the ones
+      # docs/src/installation.md links to: .tar.gz for Linux, .zip for macOS.
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          for dir in */; do
+            dir="${dir%/}"
+            # actions/upload-artifact does not preserve file modes.
+            chmod +x "${dir}/${BIN_NAME}" "${dir}"/*.R
+            case "$dir" in
+              *-apple-darwin) zip -qr "${dir}.zip" "$dir" ;;
+              *) tar -czf "${dir}.tar.gz" "$dir" ;;
+            esac
+            rm -rf "$dir"
+          done
+          ls -l
+
+      - name: Collect checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.tar.gz *.zip | sort -k2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload to S3
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${S3_BUCKET:?Set the S3_BUCKET environment variable}"
+          : "${AWS_REGION:?Set the AWS_REGION environment variable}"
+          : "${AWS_ACCESS_KEY_ID:?Set the AWS_ACCESS_KEY_ID environment secret}"
+          : "${AWS_SECRET_ACCESS_KEY:?Set the AWS_SECRET_ACCESS_KEY environment secret}"
+
+          aws s3 cp dist "s3://${S3_BUCKET}/build/release-${VERSION}/" \
+            --recursive \
+            --exclude "*" \
+            --include "*.tar.gz" \
+            --include "*.zip" \
+            --include "SHA256SUMS"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: ${{ env.VERSION }}
+          draft: false
+          prerelease: ${{ contains(needs.resolve-version.outputs.version, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+
+  docs:
+    name: Build & deploy docs
+    needs: [resolve-version, publish]
+    # Skipped for prerelease tags (anything with a `-`, e.g. v2.2.0-rc.1).
+    # `aws s3 sync` writes to the docs site root, so an RC would otherwise
+    # replace the live documentation with links to an unreleased build.
+    if: >-
+      needs.resolve-version.outputs.publish == 'true'
+      && !contains(needs.resolve-version.outputs.version, '-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: release
+    env:
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.version }}
+      # Template values baked into the rendered book (mdbook-yapp).
+      S3_BUCKET_REL: ${{ vars.S3_BUCKET_REL }}
+      AWS_REGION_REL: ${{ vars.AWS_REGION_REL }}
+      MSTDN_INSTANCE: ${{ vars.MSTDN_INSTANCE }}
+      MSTDN_ACCOUNT: ${{ vars.MSTDN_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libclang-dev cmake gettext-base
+
+      - uses: ./.github/actions/setup-rust
+
+      # Pinned to the same versions as `[package.metadata.bin]` in Cargo.toml.
+      - name: Install mdbook toolchain
+        run: |
+          cargo install --locked \
+            mdbook@0.4.52 \
+            mdbook-mermaid@0.16.2 \
+            mdbook-katex@0.9.4 \
+            mdbook-admonish@1.20.0 \
+            mdbook-yapp@1.2.4
+
+      - name: Render template substitutions
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${S3_BUCKET_REL:?Set the S3_BUCKET_REL environment variable}"
+          : "${AWS_REGION_REL:?Set the AWS_REGION_REL environment variable}"
+
+          # `{{VERSION}}` keeps the leading "v" (matching the S3 release prefix);
+          # `{{DOCKER_VERSION}}` is the bare semver used for image tags.
+          export VERSION_TRUNC="${RELEASE_TAG#v}"
+          export RELEASE_TAG GITHUB_REPOSITORY GITHUB_REPOSITORY_OWNER
+          envsubst < docs/template_yapp.config > docs/yapp.config
+          cat docs/yapp.config
+
+      - name: Build book
+        run: cargo xtask docs
+
+      - name: Deploy to S3 and invalidate CloudFront
+        shell: bash
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION_DOC }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION_DOC }}
+          S3_BUCKET_DOC: ${{ vars.S3_BUCKET_DOC }}
+          # Stored as an environment *secret*, not a variable.
+          CLOUDFRONT_DISTRIBUTION_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID_DOC }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_KEY_DOC }}
+        run: |
+          set -euo pipefail
+          : "${S3_BUCKET_DOC:?Set the S3_BUCKET_DOC repository variable}"
+          : "${AWS_REGION:?Set the AWS_REGION_DOC repository variable}"
+          : "${CLOUDFRONT_DISTRIBUTION_ID:?Set the CLOUDFRONT_DISTRIBUTION_ID environment secret}"
+          : "${AWS_ACCESS_KEY_ID:?Set the AWS_ACCESS_KEY_ID_DOC environment secret}"
+          : "${AWS_SECRET_ACCESS_KEY:?Set the AWS_SECRET_KEY_DOC environment secret}"
+
+          # No --delete, matching the previous Bitbucket behaviour: the bucket
+          # root is the docs site and may hold files this build does not produce.
+          aws s3 sync ./docs/book "s3://${S3_BUCKET_DOC}/"
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/*"

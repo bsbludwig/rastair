@@ -187,7 +187,7 @@ pub(crate) enum FieldValue {
 }
 
 impl FieldValue {
-    /// Compare with another FieldValue, using epsilon for float comparisons
+    /// Compare with another `FieldValue`, using epsilon for float comparisons
     fn matches(&self, other: &Self, epsilon: f64) -> bool {
         match (self, other) {
             (Self::F64(a), Self::F64(b)) => (a - b).abs() < epsilon,
@@ -250,7 +250,7 @@ impl FieldValue {
     }
 }
 
-/// Trait for converting values into FieldValue for test assertions
+/// Trait for converting values into `FieldValue` for test assertions
 pub(crate) trait ToFieldValue {
     fn to_field_value(self) -> FieldValue;
 }
@@ -306,8 +306,12 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
                 });
             }
             "DPM5mC" => {
-                let values: Vec<f64> =
-                    sample.methylation_depth.0.iter().filter_map(|v| v.map(|n| n as f64)).collect();
+                let values: Vec<f64> = sample
+                    .methylation_depth
+                    .0
+                    .iter()
+                    .filter_map(|v| v.map(|n| f64::from(n)))
+                    .collect();
                 return Ok(if values.len() == 1 {
                     FieldValue::OptF64(Some(values[0]))
                 } else {
@@ -319,7 +323,7 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
                     .methylation_alt_depth
                     .0
                     .iter()
-                    .filter_map(|v| v.map(|n| n as f64))
+                    .filter_map(|v| v.map(|n| f64::from(n)))
                     .collect();
                 return Ok(if values.len() == 1 {
                     FieldValue::OptF64(Some(values[0]))

@@ -77,7 +77,7 @@ pub struct IndelCall {
 /// When `ml_enabled` is true, the binomial genotype test is used only for
 /// informational genotyping — all alleles passing min AO and min depth
 /// are forwarded to the ML model. When ML is off, the binomial test
-/// acts as a hard gate (hom_ref alleles are rejected).
+/// acts as a hard gate (`hom_ref` alleles are rejected).
 #[instrument(level = "trace", skip_all)]
 pub fn call_indels(indels: &IndelCounts, params: &IndelParams, ml_enabled: bool) -> Vec<IndelCall> {
     let mut calls = Vec::new();

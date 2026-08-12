@@ -216,10 +216,14 @@ fn run_tests(with_coverage: bool) -> Result<Child> {
             .spawn()
             .wrap_err("Failed to run tests with coverage")
     } else {
-        StdCommand::new("cargo")
-            .arg("test")
-            .arg("--all")
-            .env("INSTA_UPDATE", if ci { "auto" } else { "always" })
+        let mut cmd = StdCommand::new("cargo");
+        cmd.arg("test").arg("--all");
+        if ci {
+            // Fail on a stale Cargo.lock instead of silently resolving a different
+            // dependency graph than the one the release build will use.
+            cmd.arg("--locked");
+        }
+        cmd.env("INSTA_UPDATE", if ci { "auto" } else { "always" })
             .spawn()
             .wrap_err("Failed to run tests")
     }
