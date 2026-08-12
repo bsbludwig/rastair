@@ -24,14 +24,14 @@ const PROPTEST_CASES: u32 = 2048;
 struct MethylationScenario {
     side: CpgSide,
     origin: CpgOrigin,
-    /// For DeNovo: the original ref base that was mutated.
+    /// For `DeNovo`: the original ref base that was mutated.
     /// For Original: ignored (ref is determined by side).
     denovo_ref: Base,
     /// Number of methylated-looking reads on the informative strand.
     mod_reads: u8,
     /// Number of unmethylated-looking reads on the informative strand.
     unmod_reads: u8,
-    /// Reads that should be ignored by read_counts() — tests the filtering.
+    /// Reads that should be ignored by `read_counts()` — tests the filtering.
     noise: NoiseReads,
     genotype: GenotypeScenario,
 }
@@ -48,13 +48,13 @@ struct NoiseReads {
 enum GenotypeScenario {
     /// No genotype set.
     None,
-    /// Explicit HomRef — should behave identically to None.
+    /// Explicit `HomRef` — should behave identically to None.
     HomRef,
     /// Het with the confounding base.
     HetConfounded,
     /// Het with a non-confounding base — should behave identically to None.
     HetNonConfounding,
-    /// HomAlt (Original only) — beta forced to 0.0.
+    /// `HomAlt` (Original only) — beta forced to 0.0.
     HomAlt,
 }
 
@@ -83,8 +83,8 @@ impl MethylationScenario {
     /// tests at the bottom of this file. This proptest verifies the *wiring*:
     /// that the right reads reach the right formula with the right adjustment.
     fn expected_beta(&self) -> Option<f64> {
-        let m = self.mod_reads as f64;
-        let u = self.unmod_reads as f64;
+        let m = f64::from(self.mod_reads);
+        let u = f64::from(self.unmod_reads);
         if m + u == 0.0 {
             return None;
         }
@@ -242,7 +242,7 @@ impl MethylationScenario {
         GenotypeTag::RefHet(allele)
     }
 
-    /// Mirror this scenario to the opposite CpgSide.
+    /// Mirror this scenario to the opposite `CpgSide`.
     fn mirror(&self) -> Self {
         let mirrored_side = match self.side {
             CpgSide::C => CpgSide::G,
@@ -861,8 +861,8 @@ proptest! {
 // Targeted tests for specific code paths
 // ---------------------------------------------------------------------------
 
-/// DenovoAdjecent path: cpg_origin detects Original CpG via denovo_adj flag
-/// (partner of a denovo CpG) rather than via InCpG from ref context.
+/// `DenovoAdjecent` path: `cpg_origin` detects Original CpG via `denovo_adj` flag
+/// (partner of a denovo CpG) rather than via `InCpG` from ref context.
 #[test]
 fn denovo_adjacent_produces_original_cpg() {
     for side in [CpgSide::C, CpgSide::G] {
@@ -1065,8 +1065,8 @@ fn formula_het_confounded_known_values() {
 fn formula_het_confounded_never_exceeds_unadjusted() {
     for m in 0..=20 {
         for u in 1..=20 {
-            let plain = adjusted_beta(m as f64, u as f64, GenotypeAdjustment::None);
-            let het = adjusted_beta(m as f64, u as f64, GenotypeAdjustment::HetConfounded);
+            let plain = adjusted_beta(f64::from(m), f64::from(u), GenotypeAdjustment::None);
+            let het = adjusted_beta(f64::from(m), f64::from(u), GenotypeAdjustment::HetConfounded);
             assert!(het <= plain + 1e-9, "het ({het}) > plain ({plain}) for m={m}, u={u}");
         }
     }

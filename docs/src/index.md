@@ -54,7 +54,7 @@ On the right, we plot the agreement in estimated beta between rastair (y-axis) a
 
 ## License
 
-Rastair is free for academic and other non-commercial use, and the [code is available on bitbucket](https://www.bitbucket.org/{{BITBUCKET_REPO_FULL_NAME}}/). You can read the details of the license [here](https://www.bitbucket.org/{{BITBUCKET_WORKSPACE}}/{{BITBUCKET_REPO_FULL_NAME}}/src/main/LICENSE.txt).
+Rastair is free for academic and other non-commercial use, and the [code is available on GitHub](https://github.com/{{REPO_FULL_NAME}}). You can read the details of the license [here](https://github.com/{{REPO_FULL_NAME}}/blob/main/LICENSE.txt).
 
 ```admonish info
 For commercial entities that would like to use rastair beyond internal evaluation, please contact [enquiries@innovation.ox.ac.uk](mailto:enquiries@innovation.ox.ac.uk?cc=benjamin.schuster-boeckler%40ludwig.ox.ac.uk&subject=Rastair%20%2F%20reference%2024811) quoting reference 24811.
@@ -86,7 +86,7 @@ For a more in-depth look at different use-cases of rastair with practical exampl
 
 ## Get help
 
-You can file an issue or question on our [issue tracker over on bitbucket](https://bitbucket.org/{{BITBUCKET_REPO_FULL_NAME}}/issues?status=new&status=open&status=submitted&is_spam=%21spam)!
+You can file an issue or question on our [issue tracker over on GitHub](https://github.com/{{REPO_FULL_NAME}}/issues)!
 
 ## Citing rastair
 

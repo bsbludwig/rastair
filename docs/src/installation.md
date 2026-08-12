@@ -65,12 +65,12 @@ For Apple users, we provide both Apple Silicon and Intel binaries:
 ## Building from source
 
 ### Pre-requisites
-To compile from source, you need a working [Rust installation](https://www.rust-lang.org/tools/install) (version 1.88 or later). Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang](https://clang.llvm.org/get_started.html) compiler as well as [cmake](https://cmake.org/download/). On most systems, these are either already available or can be installed using a standard package manager:
+To compile from source, you need a working [Rust installation](https://www.rust-lang.org/tools/install). You do not need to pick a version: the repository contains a `rust-toolchain.toml`, so `rustup` downloads and uses the exact toolchain rastair is built and tested with. Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang](https://clang.llvm.org/get_started.html) compiler as well as [cmake](https://cmake.org/download/). On most systems, these are either already available or can be installed using a standard package manager:
 
 First, clone the repo:
 
 ```bash
-git clone git@bitbucket.org:{{BITBUCKET_REPO_FULL_NAME}}.git
+git clone git@github.com:{{REPO_FULL_NAME}}.git
 ```
 
 Then follow the platform-specific instructions below.

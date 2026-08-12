@@ -3,7 +3,11 @@ name = "rastair"
 description = "Fast and flexible extraction of methylation information from BAM files"
 version = "2.2.0"
 edition = "2024"
-rust-version = "1.92.0"
+# Kept equal to [toolchain].channel in rust-toolchain.toml, which is the single
+# source of truth for the Rust version; .github/scripts/check-toolchain-pins.sh
+# enforces that. A lower value here would be unenforceable anyway, since
+# rust-toolchain.toml pins the toolchain for anyone building from source.
+rust-version = "1.97.1"
 license-file = "LICENSE.txt"
 authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"

@@ -1,0 +1,237 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets `release.yml` gate the release on the exact same checks.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  toolchain-pins:
+    name: Toolchain pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: .github/scripts/check-toolchain-pins.sh
+
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+
+      - name: cargo fmt --check
+        shell: bash
+        run: |
+          set -uo pipefail
+          if cargo fmt --all --check; then
+            exit 0
+          fi
+          # rustfmt has no line-level machine output in --check mode, so annotate
+          # at file level and leave the diff above for the details.
+          cargo fmt --all --message-format short --check | while read -r file; do
+            echo "::error file=${file#"$GITHUB_WORKSPACE/"},line=1::Not formatted; run \`cargo fmt --all\`"
+          done
+          exit 1
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # The problem matcher parses plain rustc diagnostics, not ANSI-coloured ones.
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libclang-dev cmake
+
+      - uses: ./.github/actions/setup-rust
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: clippy
+          cache-all-crates: true
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Turns every `error[E0432]: …` / `--> src/foo.rs:12:5` pair in the log into
+      # an inline annotation on the PR diff. No third-party action involved.
+      - name: Register rustc problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/rust.json"
+
+      # Lint levels live in [lints.clippy] in Cargo.toml. This is deliberately
+      # NOT `-- -D warnings`: the `deny`-level lints there (panic,
+      # undocumented_unsafe_blocks) are already clean and do fail this job, but
+      # the `warn`-level ones currently fire ~170 times — mostly
+      # indexing_slicing (74), unwrap_in_result (32) and
+      # cast_possible_truncation (15). Those show up as inline annotations to
+      # burn down; append `-- -D warnings` once they are gone.
+      - name: cargo clippy
+        run: cargo clippy --locked --workspace --all-targets
+
+      - name: Remove problem matcher
+        if: always()
+        run: echo "::remove-matcher owner=rust::"
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    # Bitbucket used `max-time: 30`; a cold GitHub runner needs more headroom
+    # because nothing is prebuilt in the image.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: write # for the JUnit annotations
+    env:
+      CARGO_TERM_COLOR: never
+      # Matches what `cargo xtask test` sets; insta treats `auto` as "never write"
+      # when CI is set, so a stale snapshot fails instead of being silently fixed.
+      INSTA_UPDATE: auto
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libclang-dev cmake samtools tabix
+
+      - uses: ./.github/actions/setup-rust
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          cache-all-crates: true
+          cache-on-failure: true
+          # Only write a new cache from the default branch: caches saved on a PR
+          # or tag ref cannot be read by anything else anyway, and would just eat
+          # into the repository's 10 GB cache quota.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Version pinned to match [package.metadata.bin] in Cargo.toml.
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        with:
+          tool: cargo-nextest@0.9.114
+
+      - name: Register rustc problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/rust.json"
+
+      # Invoked as `cargo-nextest nextest` on purpose: `.cargo/config.toml`
+      # aliases `cargo nextest` to cargo-run-bin, which would rebuild nextest
+      # from source instead of using the binary installed above.
+      # Without `--features external-tool-tests` this skips the two test targets
+      # that shell out to third-party tools; the `external-tools` job runs those.
+      - name: cargo nextest
+        run: cargo-nextest nextest run --profile ci --workspace --locked
+
+      # nextest does not run doctests, so `cargo test --doc` still has to happen.
+      - name: cargo test --doc
+        if: always()
+        run: cargo test --doc --workspace --locked
+
+      - name: Remove problem matcher
+        if: always()
+        run: echo "::remove-matcher owner=rust::"
+
+      # Annotates each failing test on the PR diff, using the JUnit report that
+      # [profile.ci.junit] in .config/nextest.toml already produces.
+      - name: Annotate test failures
+        uses: mikepenz/action-junit-report@d9f48fc87bc235f7e214acf696ca5abc0a986f16 # v6.4.2
+        if: always()
+        continue-on-error: true # forks get a read-only token; do not fail on that
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Test results
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false # the nextest step already failed the job
+
+  external-tools:
+    name: External tool tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: write
+    env:
+      CARGO_TERM_COLOR: never
+      INSTA_UPDATE: auto
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The r-cran-* packages are what let tests/mbias_report.rs actually render
+      # the QC report instead of self-skipping; perl is for bismark.
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libclang-dev cmake samtools tabix perl \
+            r-base-core r-cran-rmarkdown r-cran-knitr r-cran-data.table r-cran-ggplot2 r-cran-argparser
+
+      # bismark and modkit have no Debian/Ubuntu package, so they come from their
+      # upstream release tarballs (~19 MB, a few seconds — not worth caching).
+      - name: Install external bioinformatics tools
+        run: .github/scripts/install-external-tools.sh >> "$GITHUB_PATH"
+
+      - uses: ./.github/actions/setup-rust
+
+      # Same `shared-key` as the `test` job on purpose: this job restores that
+      # cache so the dependency tree is already built, and never saves its own,
+      # which would otherwise collide on the key and double the cache footprint.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          cache-all-crates: true
+          save-if: false
+
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        with:
+          tool: cargo-nextest@0.9.114
+
+      - name: Register rustc problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/rust.json"
+
+      # `--test <name>` rather than a nextest filter expression: it also stops
+      # cargo compiling the other test binaries, which the `test` job covers.
+      - name: cargo nextest
+        run: |
+          cargo-nextest nextest run --profile ci --locked \
+            --features external-tool-tests \
+            --test bam_external_tools --test mbias_report
+
+      - name: Remove problem matcher
+        if: always()
+        run: echo "::remove-matcher owner=rust::"
+
+      - name: Annotate test failures
+        uses: mikepenz/action-junit-report@d9f48fc87bc235f7e214acf696ca5abc0a986f16 # v6.4.2
+        if: always()
+        continue-on-error: true
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: External tool test results
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false

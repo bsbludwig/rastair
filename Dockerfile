@@ -1,15 +1,24 @@
 ################################################################################
 # BUILD STAGE
 ################################################################################
-FROM rust:1.89.0 AS builder
+FROM debian:bookworm-slim AS builder
 
 WORKDIR /app/rastair
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends curl unzip libclang-dev cmake && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install system dependencies. `git` is needed for the git-sourced cargo
+# dependencies; the old `rust:x.y.z` base image supplied it implicitly.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config unzip libclang-dev cmake && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy source code
 COPY . /app/rastair
+
+# `--default-toolchain none` makes rustup resolve the version from
+# rust-toolchain.toml, which is the single source of truth for it. Do not pin a
+# version here: a `FROM rust:x.y.z` base was silently overridden by that file
+# anyway, so it only ever cost an extra toolchain download.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none --profile minimal --no-modify-path -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 # Build for release
 RUN cargo xtask release
 

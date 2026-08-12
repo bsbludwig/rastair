@@ -199,7 +199,7 @@ fn cgg_middle_het_g_c_with_methylation() -> Result<()> {
 
 /// CGG with HomAlt(C/C) at middle position
 ///
-/// Tests HomAlt genotype where all chromosomes have the variant
+/// Tests `HomAlt` genotype where all chromosomes have the variant
 #[test]
 fn cgg_middle_homalt_c_with_methylation() -> Result<()> {
     let (segment, pileups) = pileups!(

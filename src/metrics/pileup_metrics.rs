@@ -32,16 +32,16 @@ pub struct PileupMetrics {
     pub ref_metrics: AlleleMetrics,
     /// Metrics and filters for each alternative allele
     pub alts: SmallVec<Alt, 2>,
-    /// Counts of (my_base, before_base) pairs by strand
+    /// Counts of (`my_base`, `before_base`) pairs by strand
     pub before_counts: PairedCounts,
-    /// Counts of (my_base, after_base) pairs by strand
+    /// Counts of (`my_base`, `after_base`) pairs by strand
     pub after_counts: PairedCounts,
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
     /// Aggregated indel counts at this position.
     #[serde(default)]
     pub indels: IndelCounts,
-    /// Called indel variants at this position (populated during process_region).
+    /// Called indel variants at this position (populated during `process_region`).
     #[serde(default)]
     pub indel_calls: Vec<IndelCall>,
 }

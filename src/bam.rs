@@ -578,7 +578,7 @@ mod tests {
 
         // === Legacy mode ===
         let mut legacy_record = record.clone();
-        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
         let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
             bail!("XM not a string");
@@ -608,7 +608,7 @@ mod tests {
 
         // === Standard mode ===
         let mut standard_record = record.clone();
-        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
         let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
             bail!("MM not a string");
@@ -686,7 +686,7 @@ mod tests {
 
         // === Legacy mode ===
         let mut legacy_record = record.clone();
-        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
         let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
             bail!("XM not a string");
@@ -699,7 +699,7 @@ mod tests {
 
         // === Standard mode ===
         let mut standard_record = record.clone();
-        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
         let new_seq = standard_record.seq().as_bytes();
         // Position 5 must be rewritten A→G (undo methylation evidence)
@@ -770,7 +770,7 @@ mod tests {
 
         // === Legacy mode ===
         let mut legacy_record = record.clone();
-        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
         let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
             bail!("XM not a string");
@@ -787,7 +787,7 @@ mod tests {
 
         // === Standard mode ===
         let mut standard_record = record.clone();
-        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
         let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
             bail!("MM not a string");
@@ -1442,7 +1442,7 @@ mod tests {
         Ok(())
     }
 
-    /// De-novo CpG calls (DeNovoCpg variant) must also appear in legacy XM tags.
+    /// De-novo CpG calls (`DeNovoCpg` variant) must also appear in legacy XM tags.
     #[test]
     fn xm_includes_denovo_cpg_methylation() -> Result<()> {
         use Base::*;
@@ -1494,7 +1494,7 @@ mod tests {
         Ok(())
     }
 
-    /// De-novo CpG calls must also be found by find_methylated_positions (standard mode).
+    /// De-novo CpG calls must also be found by `find_methylated_positions` (standard mode).
     #[test]
     fn standard_mode_includes_denovo_cpg() -> Result<()> {
         use Base::*;
@@ -1649,7 +1649,7 @@ mod tests {
 
         // === Legacy mode ===
         let mut legacy_record = record.clone();
-        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
         let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
         let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else { bail!("XR") };
@@ -1668,7 +1668,7 @@ mod tests {
 
         // === Standard mode ===
         let mut standard_record = record.clone();
-        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
         let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
         // OT, forward → C+m
@@ -1734,7 +1734,7 @@ mod tests {
 
         // === Legacy mode ===
         let mut legacy_record = record.clone();
-        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
         let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
         let xm_annotations: Vec<(usize, char)> =
@@ -1744,7 +1744,7 @@ mod tests {
 
         // === Standard mode ===
         let mut standard_record = record.clone();
-        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
         let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
         // Should still produce MM tag (standard mode doesn't distinguish ref vs de-novo)
@@ -1766,7 +1766,7 @@ mod tests {
     }
 
     /// De-novo CpGs must produce context-dependent XM letters (z/Z for CpG,
-    /// x/X for CHG, h/H for CHH) through the full rewrite_record path, for
+    /// x/X for CHG, h/H for CHH) through the full `rewrite_record` path, for
     /// both OT and OB strands, and both methylated and unmethylated reads.
     #[test]
     fn denovo_all_contexts_both_strands() -> Result<()> {
@@ -1802,7 +1802,7 @@ mod tests {
             ]);
             let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
             let mut record = ob_record.clone();
-            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
             let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
             let annotations: Vec<(usize, char)> =
                 xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
@@ -1825,7 +1825,7 @@ mod tests {
             ]);
             let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
             let mut record = ob_record.clone();
-            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
             let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
             let annotations: Vec<(usize, char)> =
                 xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
@@ -1848,7 +1848,7 @@ mod tests {
             ]);
             let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
             let mut record = ob_record.clone();
-            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
             let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
             let annotations: Vec<(usize, char)> =
                 xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
@@ -1885,7 +1885,7 @@ mod tests {
             ]);
             let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
             let mut record = ot_record.clone();
-            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
             let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
             let annotations: Vec<(usize, char)> =
                 xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
@@ -1908,7 +1908,7 @@ mod tests {
             ]);
             let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
             let mut record = ot_record.clone();
-            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
             let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
             let annotations: Vec<(usize, char)> =
                 xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
@@ -1931,7 +1931,7 @@ mod tests {
             ]);
             let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
             let mut record = ot_record.clone();
-            rewrite_record(&calls, &mut record, BamMode::Legacy, &ref_lookup)?;
+            rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
             let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
             let annotations: Vec<(usize, char)> =
                 xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
@@ -1942,7 +1942,7 @@ mod tests {
     }
 
     /// Reads with indels (insertions/deletions) must have correct position
-    /// mapping through aligned_pairs_full. Verify a read with a 1bp deletion
+    /// mapping through `aligned_pairs_full`. Verify a read with a 1bp deletion
     /// (61M1D19M) produces correct XM and MM output.
     #[test]
     fn golden_indel_read_legacy_and_standard_agree() -> Result<()> {
@@ -1987,7 +1987,7 @@ mod tests {
 
         // === Legacy mode ===
         let mut legacy_record = record.clone();
-        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+        rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
         let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
         assert_eq!(xm_tag.len(), seq.len());
@@ -1998,7 +1998,7 @@ mod tests {
 
         // === Standard mode ===
         let mut standard_record = record.clone();
-        rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+        rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
         let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
 
@@ -2075,7 +2075,7 @@ mod tests {
 
             // === Legacy ===
             let mut legacy_record = record.clone();
-            rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, &ref_lookup)?;
+            rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
             let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else { bail!("XR for {flag}") };
             let Aux::String(xg_tag) = legacy_record.aux(b"XG")? else { bail!("XG for {flag}") };
@@ -2091,7 +2091,7 @@ mod tests {
 
             // === Standard ===
             let mut standard_record = record.clone();
-            rewrite_record(&calls, &mut standard_record, BamMode::Standard, &ref_lookup)?;
+            rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
             // Cross-check: both modes find the same number of methylated positions.
             // MM/ML are absent when no methylation evidence is found (absent = 0 positions).

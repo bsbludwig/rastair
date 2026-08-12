@@ -36,33 +36,33 @@ Specific adn well-named types are the main way to ensure correctness and introdu
 
 ## General style
 
-* Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
-* Do not write organizational comments or ones that summarize the code.
-  * Comments should only be written in order to explain "why" the code is written in some way in the case there is a reason that is tricky / non-obvious.
-  * In doc comments, do not write parameters and return type sections. Only add susprising constraints.
-* Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
-* Never use files with `mod.rs` paths - modules are always in `src/some_module.rs` instead of `src/some_module/mod.rs`.
-* Avoid creative additions unless explicitly requested
+- Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
+- Do not write organizational comments or ones that summarize the code.
+  - Comments should only be written in order to explain "why" the code is written in some way in the case there is a reason that is tricky / non-obvious.
+  - In doc comments, do not write parameters and return type sections. Only add susprising constraints.
+- Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
+- Never use files with `mod.rs` paths - modules are always in `src/some_module.rs` instead of `src/some_module/mod.rs`.
+- Avoid creative additions unless explicitly requested
 
 ## Error handling and logging
 
-* Model the full error space—no shortcuts or simplified error handling. Use the type system to encode correctness constraints. Prefer compile-time guarantees over runtime checks where possible.
-* Use `color_eyre` for error handling and reporting 
-* Avoid using functions that panic like `unwrap()`, instead use mechanisms like `?` to propagate errors.
-* Don't use indexing operations, prefer methods like `get()` that return `Option` types.
-* If you can't ensure correctness via the type system, use `ensure!` or `bail!` macros from `color_eyre` to handle unexpected states.
-* Never silently discard errors with `let _ =` on fallible operations. Always handle errors appropriately:
+- Model the full error space—no shortcuts or simplified error handling. Use the type system to encode correctness constraints. Prefer compile-time guarantees over runtime checks where possible.
+- Use `color_eyre` for error handling and reporting
+- Avoid using functions that panic like `unwrap()`, instead use mechanisms like `?` to propagate errors.
+- Don't use indexing operations, prefer methods like `get()` that return `Option` types.
+- If you can't ensure correctness via the type system, use `ensure!` or `bail!` macros from `color_eyre` to handle unexpected states.
+- Never silently discard errors with `let _ =` on fallible operations. Always handle errors appropriately:
   - Propagate errors with `?` when the calling function should handle them
   - Call `warn!(?error, "<what went wrong>")` or similar when you need to ignore errors but want visibility
   - Use explicit error handling with `match` or `if let Err(...)` when you need custom logic
-* Use `tracing` for logging
+- Use `tracing` for logging
 
 ## Testing
 
-* Write comprehensive unit tests for the most critical and complex parts of the codebase when you either add them or encounter bugs in them
-* Write integration tests for critical workflows and components, e.g. like the ones in `tests/call_cli.rs`
-* Run the tests with `cargo test`.
-* Use `cargo xtask insta` to run tests and update any snapshot tests. You need to verify the updated content is correct!
+- Write comprehensive unit tests for the most critical and complex parts of the codebase when you either add them or encounter bugs in them
+- Write integration tests for critical workflows and components, e.g. like the ones in `tests/call_cli.rs`
+- Run the tests with `cargo test`.
+- Use `cargo xtask insta` to run tests and update any snapshot tests. You need to verify the updated content is correct!
 
 ### VCF Tests
 
@@ -95,7 +95,35 @@ and require minimum coverage to avoid noise at low-coverage positions.
 ### External tool tests
 
 Tests are in `tests/bam_external_tools.rs` behind `--features external-tool-tests`.
-Run in Docker: `docker build -f Dockerfile.external-tool-tests -t rastair-ext-tests . && docker run --rm -v "$(pwd):/rastair" rastair-ext-tests`
+CI runs them in a dedicated `external-tools` job — separate from `test` so third-party
+CLI drift does not redden the main test signal, but on a plain runner rather than in
+Docker, sharing the `test` job's cargo cache. On Linux:
+
+```bash
+export PATH="$(.github/scripts/install-external-tools.sh):$PATH"
+cargo test --features external-tool-tests
+```
+
+Each test self-skips when its tool is missing, so this is harmless elsewhere.
+
+On **macOS** neither modkit nor the Bismark tarball has a build, so use `Dockerfile.ci`:
+
+```bash
+docker build -f Dockerfile.ci -t rastair-ext-tests .
+docker run --rm -v "$(pwd):/rastair" rastair-ext-tests
+```
+
+That image is a fallback, not a mirror of CI, and nothing builds it automatically — which
+is how the `tabix` bug below survived. It has no R, so `tests/mbias_report.rs` self-skips
+there while CI renders the report; and it takes bismark/modkit from bioconda rather than
+the versions `install-external-tools.sh` pins. When the two disagree, the `external-tools`
+job is the source of truth. Header comment in the file has the details.
+
+Two tool-version traps, both encoded in `install-external-tools.sh`:
+
+- Use the **Perl** Bismark (`v0.25.x`), not the `bismark-rust-v3.x` rewrite — the rewrite aborts with
+  "not yet implemented in this build: paired-end extraction ... PE arrives in Phase C", and the test BAM is paired.
+- `modkit summary` dropped `--no-sampling`; `--sampling-frac 1` is the equivalent.
 
 Cross-validation tests use `RASTAIR_TEST_MIN_COVERAGE` env var (default 5) to set the minimum read
 coverage at a position before comparing fractions between tools. Lower values check more positions
@@ -116,13 +144,15 @@ The `reference_base` comes from the FASTA sequence via `Base::from(u8)`, which m
 There is **no filtering** to skip pileups with zero reads or Unknown reference bases before `PileupMetrics::new()` is called.
 
 Important implications:
-* `pileup.reference_base` can be `Base::Unknown` at N-positions in the reference — code must handle this gracefully (return default metrics), not treat it as an error.
-* A pileup can have zero reads after filtering (all reads removed by quality/flag/overlap filters) — the zero-depth allele path is a real code path, not dead code.
-* `Base::known_index()` maps A/C/G/T → `Some(0..3)` and Unknown → `None`. Use it to safely index into per-base arrays without needing an Unknown slot.
+
+- `pileup.reference_base` can be `Base::Unknown` at N-positions in the reference — code must handle this gracefully (return default metrics), not treat it as an error.
+- A pileup can have zero reads after filtering (all reads removed by quality/flag/overlap filters) — the zero-depth allele path is a real code path, not dead code.
+- `Base::known_index()` maps A/C/G/T → `Some(0..3)` and Unknown → `None`. Use it to safely index into per-base arrays without needing an Unknown slot.
 
 ## Single-pass accumulator pattern
 
 When computing grouped statistics from a collection of items (e.g. per-base metrics from reads), prefer a single-pass accumulator over collect-then-compute:
+
 1. Create an accumulator struct with `Default` that holds incremental state (e.g. `RmsAccumulator`, running counts).
 2. Feed items in one loop via an `add(&mut self, item)` method.
 3. Finalize with `finish(self) -> Result<T>` that **takes `self` by value** to prevent accidental double-use.
@@ -134,10 +164,11 @@ When computing grouped statistics from a collection of items (e.g. per-base metr
 The main pileup-based `call` path assigns OT/OB in `src/call/pileup/from_hts.rs` before `PileupMetrics::new()` sees a `SimpleRead`.
 The default `VariantCallingParams.read_orientation=flags` path still uses `strand_from_flags()`.
 The opt-in `--guess-read-orientation` mode does **not** require reference CpG annotation. Instead it scans each read over `aligned_pairs_full()` and only looks at read positions where the observed base mismatches the reference:
-* at each mismatch, inspect both 2 bp windows that include that read base: current+next and previous+current
-* count `TG` motifs and `CA` motifs in the htslib/reference-oriented read sequence
-* `TG > CA` means OT, `CA > TG` means OB
-* ties / no evidence: split deterministically from a hash of qname + start + flags so repeated runs stay reproducible
+
+- at each mismatch, inspect both 2 bp windows that include that read base: current+next and previous+current
+- count `TG` motifs and `CA` motifs in the htslib/reference-oriented read sequence
+- `TG > CA` means OT, `CA > TG` means OB
+- ties / no evidence: split deterministically from a hash of qname + start + flags so repeated runs stay reproducible
 
 Implementation detail: `src/call/process/pileups.rs` keeps a per-segment `ReadOrientationCache`, because `alignment_to_read()` is called once per pileup column and mismatch scoring would otherwise rescan the full read for every covered base.
 
@@ -152,17 +183,17 @@ fields built with the `define_features!` macro in `src/metrics/ml/features.rs`.
 **The struct field order IS the feature vector order**, so there are no hand-counted
 `buf[start..end]` index ranges anymore.
 
-* The macro generates, per struct: `FEATURES` (from `size_of`), `names()`/`extend_names()`,
+- The macro generates, per struct: `FEATURES` (from `size_of`), `names()`/`extend_names()`,
   and `as_row(&self) -> &[f32]` (zero-copy via `bytemuck::cast_slice`; the struct is `Pod`
   because all fields are `f32` and there is no padding).
-* Field kinds in the macro: `scalar name;` (one feature, named after the ident),
+- Field kinds in the macro: `scalar name;` (one feature, named after the ident),
   `array name: N = ["..", ..];` (N features with explicit per-slot names), and
   `flatten name: Type;` (embeds a nested feature struct and delegates its names).
-* `CommonFeatures` (in `shared.rs`) is the shared extractor; its layout is split into
+- `CommonFeatures` (in `shared.rs`) is the shared extractor; its layout is split into
   `CommonSectionA` (33) + `CommonSectionB` (18) because the alt-based models interleave
-  model-specific scalars (e.g. `alt_score`) *between* the two halves. Build them via
+  model-specific scalars (e.g. `alt_score`) _between_ the two halves. Build them via
   `CommonSectionA::from_common(&common)`.
-* Model structs: `CpgFeatures` (55), `DenovoCpgFeatures` (56), `OthersFeatures` (54),
+- Model structs: `CpgFeatures` (55), `DenovoCpgFeatures` (56), `OthersFeatures` (54),
   `InsertionFeatures` (34), `DeletionFeatures` (38). Each has an `extract()` returning the
   struct; `FeatureCalculator::calculate_*` wraps `as_row()` into an `Array2`.
 
@@ -179,46 +210,57 @@ and the `--export-features` TSV headers, so both exports agree by construction.
 ## Release version bump checklist
 
 When bumping Rastair's release version, update all user-facing version strings together:
-* Root crate version in `Cargo.toml` (`[package].version`)
-* Root package entry in `Cargo.lock` (`name = "rastair"`)
-* CLI docs version in `docs/src/cli.md`
-* README example tag references in `README.md` (e.g. `version-X.Y.Z`)
-* Snapshot VCF header lines in `tests/snapshots/` containing `##rastairVersion=...`
+
+- Root crate version in `Cargo.toml` (`[package].version`)
+- Root package entry in `Cargo.lock` (`name = "rastair"`)
+- CLI docs version in `docs/src/cli.md`
+- README example tag references in `README.md` (e.g. `version-X.Y.Z`)
+- Snapshot VCF header lines in `tests/snapshots/` containing `##rastairVersion=...`
+
+The release workflow refuses to build a tag whose name does not equal
+`v` + `[package].version` from `Cargo.toml`, so a forgotten bump fails fast.
+
+## CI (GitHub Actions)
+
+CI lives in `.github/`. See `.github/README.md` for the secrets/variables a release needs.
 
 ## CLI docs generation
 
 The command-line reference at `docs/src/cli.md` is generated from clap doc comments.
 Use the hidden command:
-* `cargo run -- internal cli-docs docs/src/cli.md`
 
-Toolchain note: this repository currently requires Rust `1.92.0` (see the root crate `rust-version` constraint), so docs generation via `cargo run` will fail on older compilers.
+- `cargo run -- internal cli-docs docs/src/cli.md`
+
+Toolchain note: `rust-toolchain.toml` pins the compiler, so `cargo run` picks it up automatically.
 
 ## QC report M-bias orientation
 
 In `scripts/QC_report.Rmd`, OT/OB assignment for the M-bias table must use the same pair-orientation logic as Rust:
-* OT if `bitwAnd(flag, 96) == 96` (F1R2) or `bitwAnd(flag, 144) == 144` (R2F1)
-* OB otherwise
+
+- OT if `bitwAnd(flag, 96) == 96` (F1R2) or `bitwAnd(flag, 144) == 144` (R2F1)
+- OB otherwise
 
 Using `80/160` (first+reverse / second+mate_reverse) swaps OT and OB labels and flips the wrong mate.
 
 To plot/read cutoffs in read 5'->3' coordinates, flip positions for reverse-aligned mates only:
-* OT + `Second`
-* OB + `First`
+
+- OT + `Second`
+- OB + `First`
 
 ## QC report (`rastair mbias`) architecture and testing
 
 The `mbias` subcommand (`src/mbias.rs`) has **no analysis logic of its own** — it only shells out to `scripts/mbias.R`, which renders `scripts/QC_report.Rmd`. All M-bias cutoff math, plotting, and the per-contig `{chrom}_cutoffs.txt` outputs live in the R code. Fixes to cutoff/plot behaviour go in the `.Rmd`, not Rust.
 
-* **Per-contig × per-group cutoffs.** The `plot_mbias` chunk computes cutoffs per `(chr, read_pair, strand)` group (up to 4 groups/contig). A group needs ≥`MIN_MBIAS_OBS` (3) covered read positions. Sparse groups (tiny alt/decoy contigs) used to `stop()` and abort the **entire** report. Now the behaviour depends on whether the run was scoped: for a **genome-wide run** (no `--region`) the chunk skips the whole sparse contig (no plot, no cutoffs file) and `warning()`s; when a **`--region`/chromosome was explicitly requested** a sparse contig is still a hard `stop()` (the user asked for exactly that data). `calculate_cutoff()` is also total (returns `left=0,right=0` instead of `stop()`).
-* **`--plot-fp` is opt-in.** In `mbias.R`, `plot_fp` must be `isTRUE(args$plot_fp)`, not `!is.na(...)` — argparser `flag=TRUE` args default to `FALSE` (not `NA`), so `!is.na()` is always TRUE and forces the false-positives plot on, which aborts any `--bed`-only run lacking a vcf/bam.
-* **Render path needs vcf/bam only for some chunks.** A `--bed`-only render skips V-bias/GC/FP chunks (gated by `params$plot_vbias`/`plot_gc`/`plot_fp`); `mbias.rs` auto-adds `--no-vbias`/`--no-gc` when no `--reference` is given.
+- **Per-contig × per-group cutoffs.** The `plot_mbias` chunk computes cutoffs per `(chr, read_pair, strand)` group (up to 4 groups/contig). A group needs ≥`MIN_MBIAS_OBS` (3) covered read positions. Sparse groups (tiny alt/decoy contigs) used to `stop()` and abort the **entire** report. Now the behaviour depends on whether the run was scoped: for a **genome-wide run** (no `--region`) the chunk skips the whole sparse contig (no plot, no cutoffs file) and `warning()`s; when a **`--region`/chromosome was explicitly requested** a sparse contig is still a hard `stop()` (the user asked for exactly that data). `calculate_cutoff()` is also total (returns `left=0,right=0` instead of `stop()`).
+- **`--plot-fp` is opt-in.** In `mbias.R`, `plot_fp` must be `isTRUE(args$plot_fp)`, not `!is.na(...)` — argparser `flag=TRUE` args default to `FALSE` (not `NA`), so `!is.na()` is always TRUE and forces the false-positives plot on, which aborts any `--bed`-only run lacking a vcf/bam.
+- **Render path needs vcf/bam only for some chunks.** A `--bed`-only render skips V-bias/GC/FP chunks (gated by `params$plot_vbias`/`plot_gc`/`plot_fp`); `mbias.rs` auto-adds `--no-vbias`/`--no-gc` when no `--reference` is given.
 
 ### Testing the report
 
 The render is exercised by `tests/mbias_report.rs`, gated behind the `external-tool-tests` feature and **self-skipping** when `Rscript` (+ `rmarkdown`/`argparser`/`data.table`/`ggplot2`), `tabix`, or `bgzip` are missing. It writes a synthetic per-read BED (header mirrors `PerRead::HEADER` in `src/bed/per_read/format.rs`) with one healthy and one sparse contig, then asserts the healthy contig gets a `*_cutoffs.txt` and the sparse one does not.
 
-* **macOS caveat:** the `.Rmd` loads the no-region input via `zcat <bgz>`, which on macOS only handles `.Z`, not `.gz`. The test therefore only renders cleanly on Linux/Docker (where `external-tool-tests` are meant to run). To run it locally on macOS, put a `zcat` shim that execs `gzip -dc` early on `PATH`.
-* To verify an `.Rmd` change quickly without the `mbias.R`/argparser wrapper, render directly: `Rscript -e "rmarkdown::render('scripts/QC_report.Rmd', params=list(input_bgz=..., output_dir=..., region=NA, plot_vbias=FALSE, plot_gc=FALSE))"` (pass `region=NA`, not NULL).
+- **macOS caveat:** the `.Rmd` loads the no-region input via `zcat <bgz>`, which on macOS only handles `.Z`, not `.gz`. The test therefore only renders cleanly on Linux/Docker (where `external-tool-tests` are meant to run). To run it locally on macOS, put a `zcat` shim that execs `gzip -dc` early on `PATH`.
+- To verify an `.Rmd` change quickly without the `mbias.R`/argparser wrapper, render directly: `Rscript -e "rmarkdown::render('scripts/QC_report.Rmd', params=list(input_bgz=..., output_dir=..., region=NA, plot_vbias=FALSE, plot_gc=FALSE))"` (pass `region=NA`, not NULL).
 
 # Keep this updated
 

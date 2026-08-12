@@ -1,3 +1,28 @@
+# Runs the external-tool tests (tests/bam_external_tools.rs) on a machine that
+# cannot run them natively — in practice macOS, because neither modkit nor the
+# Bismark release tarball ships a macOS build. On Linux you do not need this
+# image: see .github/scripts/install-external-tools.sh.
+#
+#   docker build -f Dockerfile.ci -t rastair-ext-tests .
+#   docker run --rm -v "$(pwd):/rastair" rastair-ext-tests
+#
+# The name is historical: **CI no longer builds this file.** The `external-tools`
+# job in .github/workflows/ci.yml installs the same tools straight onto the
+# runner instead, which lets it share the cargo cache rather than compiling the
+# workspace cold inside a container on every run.
+#
+# Two consequences worth knowing:
+#
+#  * Nothing exercises this file automatically, so it can rot. That is exactly
+#    how the `tabix` bug that broke all nine tests survived unnoticed. If it
+#    fails, compare against the `external-tools` job, which is the source of
+#    truth for how these tests are run.
+#  * It is not equivalent to CI. There is no R here, so tests/mbias_report.rs
+#    self-skips; CI installs r-base-core + r-cran-* and does render the QC
+#    report. Bismark and modkit also come from bioconda rather than the
+#    versions pinned in install-external-tools.sh, so a version-specific CLI
+#    difference can show up in one place and not the other.
+
 FROM condaforge/mambaforge:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -7,11 +32,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config curl ca-certificates libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust toolchain (pinned to match project MSRV)
+# Install Rust. `--default-toolchain none` leaves the version entirely to
+# rust-toolchain.toml, which is the single source of truth for it. Pinning one
+# here was pointless — rustup overrode it from that file at build time anyway —
+# and actively harmful: the dependency prebuild below then ran on a different
+# toolchain than the tests, throwing the whole prebuilt cache away.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- --default-toolchain 1.92.0 -y
+    | sh -s -- --default-toolchain none --profile minimal -y
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup component add clippy rustfmt llvm-tools-preview
+
+WORKDIR /rastair
+COPY rust-toolchain.toml ./
+RUN channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' rust-toolchain.toml)" \
+    && test -n "$channel" \
+    && rustup toolchain install "$channel" --profile default --no-self-update \
+    && rustup default "$channel" \
+    && rustup component add llvm-tools-preview \
+    && rustc --version
 
 # Install bioinformatics tools
 RUN mamba install -y -c bioconda -c conda-forge \
@@ -24,8 +61,6 @@ RUN mamba install -y -c bioconda -c conda-forge \
 # UV_CACHE_DIR is set so the same cache path is used at both build and run time.
 ENV UV_CACHE_DIR=/root/.cache/uv
 RUN pip install uv && uvx modbedtools --help
-
-WORKDIR /rastair
 
 # Prepopulate cargo registry and dependency build cache:
 # copy only manifests + dep sources, build deps once, then copy real source.

@@ -1,0 +1,51 @@
+# Builds the Linux release binary inside RHEL 8, so the result only requires
+# glibc 2.28 and stays runnable on RHEL/Rocky/Alma 8 and long-lived HPC images.
+# Building on a current Ubuntu would raise that floor to glibc 2.39.
+#
+# `.github/workflows/release.yml` builds exactly this file. To reproduce a
+# release binary locally:
+#
+#   docker buildx build -f Dockerfile.release --target export \
+#     --output type=local,dest=dist/linux .
+#
+# ...which leaves the binary at dist/linux/rastair.
+
+FROM redhat/ubi8:8.8 AS builder
+
+# cmake: libz-sys compiles zlib-ng. git: several cargo dependencies are git
+# sources. clang-devel/llvm-devel: insurance in case hts-sys ever re-enables its
+# optional bindgen feature — the current build does not use libclang.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        gcc gcc-c++ make cmake git perl clang-devel llvm-devel tar gzip xz which \
+    && dnf clean all
+
+# `--default-toolchain none` leaves the version entirely to rust-toolchain.toml,
+# which is the single source of truth for it. Do not pin a version here.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- --default-toolchain none --profile minimal --no-modify-path -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /src
+
+ARG TARGET=x86_64-unknown-linux-gnu
+
+# Copied on its own first so that editing sources does not invalidate the
+# (slow) toolchain download layer.
+COPY rust-toolchain.toml ./
+RUN channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' rust-toolchain.toml)" \
+    && test -n "$channel" \
+    && rustup toolchain install "$channel" --profile default --no-self-update \
+    && rustup default "$channel" \
+    && rustup target add --toolchain "$channel" "$TARGET" \
+    && rustc --version
+
+COPY . /src
+
+RUN cargo build --release --locked --target "$TARGET" \
+    && cp "target/$TARGET/release/rastair" /rastair \
+    && /rastair --version
+
+# `--target export` with `--output type=local` writes just the binary to the
+# host; no image layer is produced.
+FROM scratch AS export
+COPY --from=builder /rastair /rastair

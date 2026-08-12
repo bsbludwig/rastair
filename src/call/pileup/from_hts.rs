@@ -589,9 +589,8 @@ fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, cutoff: usi
     // Check start: do first `cutoff` bases repeat a pattern of length `n`?
     let start_pattern: SmallVec<u8, 4> = (0..n).filter_map(|i| seq.get(i)).collect();
     if start_pattern.len() == n {
-        let start_repeat = (n..cutoff).all(|i| {
-            seq.get(i).map_or(false, |b| start_pattern.get(i % n).map_or(false, |&p| b == p))
-        });
+        let start_repeat = (n..cutoff)
+            .all(|i| seq.get(i).is_some_and(|b| start_pattern.get(i % n).is_some_and(|&p| b == p)));
         if start_repeat {
             return true;
         }
@@ -603,10 +602,10 @@ fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, cutoff: usi
     if end_pattern.len() == n {
         let check_start = len.saturating_sub(cutoff);
         (check_start..end_start).all(|i| {
-            seq.get(i).map_or(false, |b| {
+            seq.get(i).is_some_and(|b| {
                 let offset = (i - check_start) % n;
                 // Align pattern index: the tail pattern repeats back from end
-                end_pattern.get(offset % n).map_or(false, |&p| b == p)
+                end_pattern.get(offset % n).is_some_and(|&p| b == p)
             })
         })
     } else {
