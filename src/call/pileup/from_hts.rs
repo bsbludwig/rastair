@@ -826,7 +826,10 @@ mod tests {
                 .next()
                 .ok_or_else(|| color_eyre::eyre::eyre!("no segment fetched"))?;
             let pileup_params = PileupMappingParams {
-                variant_calling: VariantCallingParams { keep_overlapping_reads: keep_overlapping, ..default() },
+                variant_calling: VariantCallingParams {
+                    keep_overlapping_reads: keep_overlapping,
+                    ..default()
+                },
                 ..default()
             };
             let (_segment, pileups) = get_pileups(&mut readers, &chunk, &pileup_params)?;
@@ -836,7 +839,11 @@ mod tests {
         // Default: overlapping mates collapse to one vote per fragment.
         assert_eq!(total_indel_observations(false)?, 3, "expected fragment-level indel counting");
         // `--keep-overlapping-reads`: every alignment votes (2 mates x 3 fragments).
-        assert_eq!(total_indel_observations(true)?, 6, "expected alignment-level counting with overlaps kept");
+        assert_eq!(
+            total_indel_observations(true)?,
+            6,
+            "expected alignment-level counting with overlaps kept"
+        );
 
         Ok(())
     }

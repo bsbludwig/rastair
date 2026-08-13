@@ -190,7 +190,8 @@ mod tests {
     #[test]
     fn min_ao_gate_is_inclusive_at_threshold() {
         // The gate is `alt_count < min_ao`, so exactly min_indel_ao (2) is kept and 1 is dropped.
-        let at_threshold = call_indels(&counts(10, vec![insertion("A", 1, 1)]), &IndelParams::default());
+        let at_threshold =
+            call_indels(&counts(10, vec![insertion("A", 1, 1)]), &IndelParams::default());
         assert_eq!(at_threshold.len(), 1);
         let below = call_indels(&counts(10, vec![insertion("A", 1, 0)]), &IndelParams::default());
         assert!(below.is_empty());
@@ -205,7 +206,9 @@ mod tests {
         for call in &calls {
             match call.allele.bases().first().copied() {
                 Some(Base::A) => assert_eq!(call.hard_filter_verdict, Some(IndelVerdict::Pass)),
-                Some(Base::T) => assert_eq!(call.hard_filter_verdict, Some(IndelVerdict::FailStrand)),
+                Some(Base::T) => {
+                    assert_eq!(call.hard_filter_verdict, Some(IndelVerdict::FailStrand))
+                }
                 other => panic!("unexpected allele lead base {other:?}"),
             }
         }
