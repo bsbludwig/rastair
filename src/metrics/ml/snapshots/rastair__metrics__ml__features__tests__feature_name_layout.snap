@@ -1,6 +1,5 @@
 ---
 source: src/metrics/ml/features.rs
-assertion_line: 409
 expression: report
 ---
 cpg (55 features)
@@ -174,7 +173,7 @@ others (54 features)
   52  num_indels_ref
   53  num_indels_alt
 
-insertion (17 features)
+insertion (23 features)
    0  indel_len
    1  indel_complexity
    2  indel_dominance
@@ -190,10 +189,16 @@ insertion (17 features)
   12  soft_clip_rate
   13  dinucleotide_run
   14  repeat_fraction
-  15  insertion_baseq_rms
-  16  relative_insertion_baseq
+  15  strand_bias_log_p
+  16  log_depth
+  17  log_alt_count
+  18  read_indel_burden
+  19  read_match_fraction
+  20  noisy_fraction
+  21  insertion_baseq_rms
+  22  relative_insertion_baseq
 
-deletion (17 features)
+deletion (23 features)
    0  indel_len
    1  indel_complexity
    2  indel_dominance
@@ -209,5 +214,11 @@ deletion (17 features)
   12  soft_clip_rate
   13  dinucleotide_run
   14  repeat_fraction
-  15  post_del_baseq_rms
-  16  relative_post_del_baseq
+  15  strand_bias_log_p
+  16  log_depth
+  17  log_alt_count
+  18  read_indel_burden
+  19  read_match_fraction
+  20  noisy_fraction
+  21  post_del_baseq_rms
+  22  relative_post_del_baseq

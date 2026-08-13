@@ -271,9 +271,9 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     info!("Processing {} segments to collect training data", regions.len());
 
-    // Use default IndelParams with experimental_indels enabled so we can
-    // collect training examples for insertion/deletion models.
-    let indel_params = IndelParams { experimental_indels: true, ..IndelParams::default() };
+    // Training data for the insertion/deletion models comes from the ML pathway,
+    // so select it explicitly rather than the hard-filter chain.
+    let indel_params = IndelParams { experimental_indels_ml: true, ..IndelParams::default() };
     let calculator = params.ml_features.get_calculator();
     let confident = params
         .regions_file
@@ -678,8 +678,10 @@ fn collect_training_data_from_segment(
     let mut insertion_data = TrainingData::new();
     let mut deletion_data = TrainingData::new();
 
-    // Build pileups
-    let mapping_params = PileupMappingParams::default();
+    // Build pileups. Indel observations are needed for the insertion/deletion
+    // training sets, so opt into collecting them.
+    let mapping_params =
+        PileupMappingParams { collect_indels: indel_params.enabled(), ..Default::default() };
     let (segment, pileup_iter) =
         get_pileups(readers, chunk_region, &mapping_params).wrap_err("Failed to build pileups")?;
 

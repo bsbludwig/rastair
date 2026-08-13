@@ -1,5 +1,5 @@
 use crate::{
-    call::pileup::indels::IndelAllele,
+    call::{pileup::indels::IndelAllele, variant_calling::indel_calling::IndelCall},
     metrics::{
         MetricsForAlt, MetricsForIndel, PileupMetrics,
         ml::types::{GpuRastairModel, MachineLearning, MlModel, PlattScaling},
@@ -64,7 +64,7 @@ pub fn add_ml_metrics(
     }
 
     let mut indel_scores: Vec<(usize, Probability)> = Vec::new();
-    for (i, call) in current.indel_calls.iter().enumerate() {
+    for (i, call) in indel_calls_to_score(&current.indel_calls) {
         let m = MetricsForIndel { metrics: current, indel: call };
         if let Some(pred) = ml.predict_indels(&m) {
             indel_scores.push((i, pred.prediction));
@@ -77,6 +77,17 @@ pub fn add_ml_metrics(
     }
 
     Ok(())
+}
+
+/// Indel calls that the ML models should score.
+///
+/// Calls carrying a hard-filter verdict were already decided by
+/// `--experimental-indels`, so re-scoring them would burn the insertion/deletion
+/// models on a result nothing consumes and attach an `ML` field to a record whose
+/// FILTER was not derived from it. Only `--experimental-indels-ml` produces
+/// verdict-less calls.
+fn indel_calls_to_score(calls: &[IndelCall]) -> impl Iterator<Item = (usize, &IndelCall)> {
+    calls.iter().enumerate().filter(|(_, call)| call.hard_filter_verdict.is_none())
 }
 
 /// Sequential ML prediction over a Vec of pileups, equivalent to streaming
@@ -208,7 +219,7 @@ pub fn batch_add_ml_metrics(
                 }
             }
 
-            for (indel_idx, call) in pileups_ref[i].indel_calls.iter().enumerate() {
+            for (indel_idx, call) in indel_calls_to_score(&pileups_ref[i].indel_calls) {
                 let indel_m = MetricsForIndel { metrics: &pileups_ref[i], indel: call };
 
                 let (model_type, platt, features_result) = match &call.allele {

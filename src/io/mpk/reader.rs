@@ -1,6 +1,6 @@
-use crate::io::mpk::format::{MpkEntry, MpkHeader, MpkVcfHeader};
+use crate::io::mpk::format::{MPK_FORMAT_VERSION, MpkEntry, MpkHeader, MpkVcfHeader};
 use clio::ClioPath;
-use color_eyre::eyre::{Context as _, Result, eyre};
+use color_eyre::eyre::{Context as _, Result, ensure, eyre};
 use serde::de::DeserializeOwned;
 use std::{
     io::{BufReader, ErrorKind, Read},
@@ -36,9 +36,23 @@ impl MessagePackReader {
             Some(Ok(_)) => {
                 return Err(eyre!("Expected header entry but found something else"));
             }
-            Some(Err(e)) => return Err(e.wrap_err("Failed to read header from Message Pack file")),
+            Some(Err(e)) => {
+                return Err(e.wrap_err("Failed to read header from Message Pack file").wrap_err(
+                    "The file may have been written by an incompatible Rastair version",
+                ));
+            }
             None => return Err(eyre!("No entries found in Message Pack file")),
         };
+        // Records are positional arrays, so a format mismatch silently decodes into
+        // the wrong fields rather than failing. Refuse it up front instead.
+        ensure!(
+            header.format_version == MPK_FORMAT_VERSION,
+            "Message Pack file has format version {} but this build reads version {} \
+             (written by Rastair {}); re-run `rastair call` to regenerate it",
+            header.format_version,
+            MPK_FORMAT_VERSION,
+            header.rastair_version,
+        );
         let vcf_header = if let Some(Ok(MpkEntry::VcfHeader(header))) = entries.peek() {
             Some(header.clone())
         } else {

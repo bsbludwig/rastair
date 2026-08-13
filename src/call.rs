@@ -179,6 +179,20 @@ pub fn call(mut params: CallParams) -> Result<()> {
     // Init ML model if requested
     let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
+    if params.indel.use_ml(ml.enabled()) {
+        // The indel feature extractors moved `allele_fraction` and `soft_clip_rate`
+        // from alignment-level to fragment-level numerators against denominators
+        // that were already fragment-level, and `has_repeat` now means a real
+        // tandem repeat rather than a 3 bp window that fired on 43.75% of reads.
+        // Every shipped indel model learned its splits against the old values.
+        warn!(
+            "--experimental-indels-ml scores against indel models trained before the \
+             fragment-level counting and terminal-repeat fixes; their feature \
+             distributions have moved and the models need a retrain. \
+             --experimental-indels (hard filters) is unaffected."
+        );
+    }
+
     debug!("Going to process {} segments", regions.len());
 
     crate::progress::register_signal_handler();
@@ -329,6 +343,7 @@ fn process_region_wrapper(
             require_tags: params.require_tags.filter(),
             indel_max_mismatches: params.indel.indel_max_mismatches,
             indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
+            collect_indels: params.indel.enabled(),
             ..Default::default()
         };
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
@@ -397,10 +412,11 @@ fn process_region(
         .filter(|p| params.record_filters.pre_filter(p))
         .collect();
 
-    if params.indel.experimental_indels {
+    if params.indel.enabled() {
+        let use_ml = params.indel.use_ml(ml.enabled());
         for p in &mut pileups {
             p.indel_calls =
-                variant_calling::indel_calling::call_indels(&p.indels, &params.indel, ml.enabled());
+                variant_calling::indel_calling::call_indels(&p.indels, &params.indel, use_ml);
         }
     }
 

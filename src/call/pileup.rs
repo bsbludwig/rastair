@@ -18,6 +18,12 @@ pub(crate) const INDEL_REF_WINDOW_DOWN: usize = 24;
 pub(crate) const INDEL_REF_WINDOW_LEN: usize = INDEL_REF_WINDOW_UP + 1 + INDEL_REF_WINDOW_DOWN;
 
 /// Rastair's representation of a pileup at a specific position in the genome
+///
+/// Deliberately carries no `#[serde(default)]`: the `.mpk` payload encodes structs
+/// as positional arrays, so a field added anywhere but the end shifts every field
+/// after it and a default would decode neighbouring data instead of failing.
+/// [`crate::io::mpk::format::MPK_FORMAT_VERSION`] is the compatibility mechanism —
+/// bump it when this struct changes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
@@ -32,31 +38,23 @@ pub struct Pileup {
     pub reference_base: Base,
     /// Indel observations collected from reads at this position.
     /// Empty at most positions — `SmallVec<_, 0>` avoids heap allocation when empty.
-    #[serde(default)]
     pub indel_observations: SmallVec<indels::IndelObservation, 0>,
-    /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
-    /// for indel depth adjustment.
-    #[serde(default)]
+    /// Non-indel-supporting reads with a terminal tandem repeat, subtracted from
+    /// depth by the ML indel pathway.
     pub depth_offset: u32,
-    #[serde(default)]
     pub homopolymer_run: u8,
-    #[serde(default)]
     pub dinucleotide_run: u8,
-    #[serde(default)]
     pub soft_clip_count: u32,
-    /// Reference reads down-weighted by the non-ML hard-filter indel pathway
-    /// (terminal homopolymer/dinucleotide repeat or soft-clip). Consumed only by
-    /// the `--no-ml` path; kept separate from `depth_offset` so ML features are
-    /// unaffected.
-    #[serde(default)]
-    pub ref_noise_offset: u32,
+    /// Non-indel-supporting reads the hard-filter indel pathway excludes as noise
+    /// (terminal tandem repeat or soft-clip). Paired with the per-allele
+    /// `IndelObservation::noisy` so the exclusion applies to both sides of the
+    /// alt/depth ratio; see [`indels::IndelCounts::noisy_ref_count`].
+    pub noisy_ref_count: u32,
     /// Reference bases around the anchor (`indel_ref_anchor` is the anchor's
     /// index), used for tandem-repeat / slippage detection of indel alleles.
     /// Only populated when indel observations are present.
-    #[serde(default)]
     pub indel_ref_window: SmallVec<Base, INDEL_REF_WINDOW_LEN>,
     /// Index of the anchor (pileup `pos`) base within [`Pileup::indel_ref_window`].
-    #[serde(default)]
     pub indel_ref_anchor: u8,
 }
 
@@ -142,7 +140,7 @@ mod tests {
             homopolymer_run: 0,
             dinucleotide_run: 0,
             soft_clip_count: 0,
-            ref_noise_offset: 0,
+            noisy_ref_count: 0,
             indel_ref_window: default(),
             indel_ref_anchor: 0,
         };

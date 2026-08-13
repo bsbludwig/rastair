@@ -186,6 +186,10 @@ macro_rules! vcf_record {
                 self.0.clear();
             }
 
+            pub fn iter(&self) -> impl Iterator<Item = &seqair_types::SmolStr> {
+                self.0.iter()
+            }
+
             pub fn pass(&self) -> bool {
                 self.0.is_empty() || (self.0.len() == 1 && self.0[0] == "PASS")
             }

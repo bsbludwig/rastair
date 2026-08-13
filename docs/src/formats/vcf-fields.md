@@ -16,6 +16,8 @@ Rastair's output follows the [VCFv4.5 specification](https://samtools.github.io/
 | **`m_highDp`** | Excessive coverage for methylation candidate |
 | **`pre_ml`** | Low amount of usable evidence, skipping ML |
 | **`low_ml_score`** | Machine Learning module prediction below threshold |
+| **`indel_strand`** | Indel allele not supported on both strands |
+| **`indel_hom_ref`** | Indel genotyped as homozygous reference by binomial model |
 ## Info Fields
 | Name | Description | VCF Type | Rust Type | Occurrence |
 | -- | -- | -- | -- | -- |

@@ -576,7 +576,7 @@ fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     if pileup.indel_observations.is_empty() {
         return IndelCounts {
             ref_count: pileup.reads.len() as u32,
-            ref_noise_offset: pileup.ref_noise_offset,
+            noisy_ref_count: pileup.noisy_ref_count,
             ..Default::default()
         };
     }
@@ -584,25 +584,199 @@ fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     let mut alleles: SmallVec<IndelAlleleCounts, 2> = SmallVec::new();
 
     for obs in &pileup.indel_observations {
-        if let Some(entry) = alleles.iter_mut().find(|e| e.allele == obs.allele) {
-            if obs.reverse {
-                entry.rev += 1;
-            } else {
-                entry.fwd += 1;
+        match alleles.iter_mut().find(|e| e.allele == obs.allele) {
+            Some(entry) => entry.add(obs.strand, obs.noisy),
+            None => {
+                let mut entry = IndelAlleleCounts::new(obs.allele.clone());
+                entry.add(obs.strand, obs.noisy);
+                alleles.push(entry);
             }
-        } else {
-            let (fwd, rev) = if obs.reverse { (0, 1) } else { (1, 0) };
-            alleles.push(IndelAlleleCounts { allele: obs.allele.clone(), fwd, rev });
         }
     }
 
     let total_indel_reads: u32 = alleles.iter().map(|a| a.total()).sum();
     let ref_count = (pileup.reads.len() as u32).saturating_sub(total_indel_reads);
 
+    // Strand mix of the locus as a whole, used as the null for the per-allele
+    // strand-bias test. Counted over `reads` — the same post-dedup fragments the
+    // observations came from — so the two are on one granularity.
+    let mut ot_depth = 0;
+    let mut ob_depth = 0;
+    for read in pileup.reads.iter() {
+        match read.strand {
+            Strand::OT => ot_depth += 1,
+            Strand::OB => ob_depth += 1,
+            Strand::Unknown => {}
+        }
+    }
+
     IndelCounts {
         alleles,
+        ot_depth,
+        ob_depth,
         ref_count,
         depth_offset: pileup.depth_offset,
-        ref_noise_offset: pileup.ref_noise_offset,
+        noisy_ref_count: pileup.noisy_ref_count,
+    }
+}
+
+#[cfg(test)]
+mod aggregate_indel_tests {
+    use super::*;
+    use crate::call::pileup::SimpleReads;
+    use crate::call::pileup::indels::{IndelAllele, IndelObservation};
+    use crate::sequence::{ChunkRegion, Region};
+    use crate::utils::{SequenceContext, default};
+
+    fn observation(strand: Strand, reverse: bool) -> IndelObservation {
+        IndelObservation {
+            allele: IndelAllele::Insertion([Base::A].into_iter().collect()),
+            strand,
+            reverse,
+            pos_in_read: 10,
+            read_length: 100,
+            mapq: 60,
+            base_qual: 40,
+            matching_bases: 100,
+            num_indels_in_read: 1,
+            insertion_base_quals: default(),
+            post_del_base_qual: 0,
+            has_repeat: false,
+            noisy: false,
+        }
+    }
+
+    fn pileup_with(observations: Vec<IndelObservation>) -> Pileup {
+        Pileup {
+            region: ChunkRegion {
+                region: Region { contig: "chrT".into(), start: 1000, end: 1100 },
+                last_position: 2000,
+                overlap_start: 0,
+                overlap_end: 0,
+            },
+            context: SequenceContext::default(),
+            pos: 1002,
+            reads: SimpleReads(Vec::new().into()),
+            reference_base: Base::T,
+            indel_observations: observations.into_iter().collect(),
+            depth_offset: 0,
+            homopolymer_run: 0,
+            dinucleotide_run: 0,
+            soft_clip_count: 0,
+            noisy_ref_count: 0,
+            indel_ref_window: default(),
+            indel_ref_anchor: 0,
+        }
+    }
+
+    /// Regression guard: per-fragment deduplication keeps one mate per fragment, and
+    /// for a coordinate-sorted FR library that is always the forward one — so every
+    /// surviving observation has `reverse == false`. The strand split must still
+    /// show both strands, which it only does if it splits on OT/OB rather than on
+    /// the alignment reverse flag.
+    #[test]
+    fn strand_split_survives_fragment_dedup() {
+        let counts = aggregate_indels(&pileup_with(vec![
+            observation(Strand::OT, false),
+            observation(Strand::OT, false),
+            observation(Strand::OB, false),
+        ]));
+
+        let allele = counts.alleles.first().expect("one allele");
+        assert_eq!((allele.ot, allele.ob), (2, 1));
+        assert_eq!(allele.total(), 3);
+        assert_eq!(
+            allele.strand_bias_p_value(0.5),
+            1.0,
+            "a 2/1 split is as balanced as an odd count allows"
+        );
+    }
+
+    /// The mirror of the above: the reverse flag carries no strand information
+    /// after deduplication, so two fragments from the same duplex strand must not
+    /// look balanced merely because their reverse flags differ.
+    #[test]
+    fn opposite_reverse_flags_on_one_strand_are_not_a_split() {
+        let counts = aggregate_indels(&pileup_with(vec![
+            observation(Strand::OT, false),
+            observation(Strand::OT, true),
+        ]));
+
+        let allele = counts.alleles.first().expect("one allele");
+        assert_eq!((allele.ot, allele.ob), (2, 0));
+    }
+
+    /// Reads whose orientation could not be determined still count toward depth
+    /// but contribute nothing to the strand split either way.
+    #[test]
+    fn unknown_strand_counts_toward_total_only() {
+        let counts = aggregate_indels(&pileup_with(vec![
+            observation(Strand::OT, false),
+            observation(Strand::Unknown, false),
+        ]));
+
+        let allele = counts.alleles.first().expect("one allele");
+        assert_eq!((allele.ot, allele.ob, allele.unknown_strand), (1, 0, 1));
+        assert_eq!(allele.total(), 2);
+    }
+
+    /// The null for the strand-bias test comes from the fragments *not* supporting
+    /// the allele, so an allele cannot dilute its own null.
+    #[test]
+    fn null_strand_fraction_excludes_the_alleles_own_support() {
+        let mut counts = aggregate_indels(&pileup_with(vec![
+            observation(Strand::OT, false),
+            observation(Strand::OT, false),
+        ]));
+        counts.ot_depth = 12;
+        counts.ob_depth = 8;
+
+        let allele = counts.alleles.first().expect("one allele");
+        // 10 of the 18 non-supporting fragments are OT, not 12 of 20 — plus one
+        // fragment of prior mass centred on the locus' own 12.5/21 OT share.
+        assert_eq!(counts.null_ot_fraction(allele), (10.0 + 12.5 / 21.0) / 19.0);
+    }
+
+    /// Noise on the supporting fragments has to reach the allele it supports, or
+    /// the hard-filter pathway would drop noisy fragments from the denominator
+    /// while leaving them in the numerator — the asymmetry the split was meant to
+    /// remove.
+    #[test]
+    fn supporting_fragment_noise_reaches_its_allele() {
+        let mut noisy = observation(Strand::OB, false);
+        noisy.noisy = true;
+        let mut pileup = pileup_with(vec![observation(Strand::OT, false), noisy]);
+        pileup.noisy_ref_count = 3;
+        // 2 supporting + 8 non-supporting fragments, 3 of the latter noisy.
+        pileup.reads = SimpleReads(vec![SimpleRead::default(); 10].into());
+
+        let counts = aggregate_indels(&pileup);
+        let allele = counts.alleles.first().expect("one allele");
+        assert_eq!((allele.total(), allele.noisy, allele.clean_total()), (2, 1, 1));
+        assert_eq!(counts.ref_count, 8);
+        assert_eq!(counts.noisy_ref_count, 3);
+        assert_eq!(counts.clean_depth(), 6, "5 clean reference + 1 clean supporting");
+    }
+
+    /// A homozygous indel leaves nothing to estimate the null from; the test must
+    /// fall back to unbiased rather than divide by zero.
+    #[test]
+    fn null_strand_fraction_falls_back_when_every_fragment_supports_the_allele() {
+        let mut counts = aggregate_indels(&pileup_with(vec![
+            observation(Strand::OT, false),
+            observation(Strand::OT, false),
+        ]));
+        // A locus covered on OT alone, every fragment of it supporting the allele:
+        // the homozygous case. With no background left, the null is the locus' own
+        // mix, so the allele is not judged against a strand it was never read on.
+        counts.ot_depth = 2;
+        counts.ob_depth = 0;
+
+        let allele = counts.alleles.first().expect("one allele");
+        assert!(
+            counts.null_ot_fraction(allele) > 0.8,
+            "null must follow the locus, not collapse to a balanced 0.5"
+        );
+        assert!(allele.strand_bias_p_value(counts.null_ot_fraction(allele)) > 0.05);
     }
 }

@@ -3,6 +3,7 @@ use crate::{
         pileup::{
             Pileup,
             from_hts::{ReadMismatchCache, ReadOrientationCache},
+            indels::TerminalRepeatLimits,
             overlapping_reads::NameCollector,
         },
         require_tags::TagRequirement,
@@ -23,12 +24,19 @@ pub struct PileupMappingParams {
     /// Ignore indels within this distance from read ends.
     #[default(0)]
     pub indel_end_of_read_cutoff: usize,
-    /// Homopolymer repeat length cutoff for indel depth filtering.
-    #[default(3)]
-    pub indel_repeat_limit: usize,
+    /// How long a terminal tandem repeat has to be before a read counts as
+    /// slippage-prone, per period.
+    pub indel_repeat_limits: TerminalRepeatLimits,
     /// Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
     #[default(5)]
     pub indel_max_mismatches: u32,
+    /// Collect indel observations and indel depth penalties while building pileups.
+    ///
+    /// Off by default: the extra per-alignment work (repeat scanning, TAPS-aware
+    /// mismatch counting, fragment bookkeeping) is pure overhead for runs that
+    /// never call indels.
+    #[default(false)]
+    pub collect_indels: bool,
 }
 
 impl Deref for PileupMappingParams {

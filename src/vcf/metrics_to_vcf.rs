@@ -7,8 +7,8 @@ use crate::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, CpgBeta, CpgOrigin,
         DeNovoCpGCandidate, Entropy, Format, GenotypeConfidence, GenotypeLikelihood, Info,
         MachineLearningPrediction, Methylated, NumAlignedBases, NumIndels, PositionInRead,
-        StrandSpecificBaseQuality, StrandSpecificMappingQuality, indel_hom_ref, indel_strand,
-        low_ml_score,
+        StrandSpecificBaseQuality, StrandSpecificMappingQuality, indel_hom_ref, indel_no_ml,
+        indel_strand, low_ml_score,
     },
 };
 // Hard-filter verdict rendering for the non-ML indel pathway.
@@ -441,8 +441,15 @@ impl<'p> VcfRecordSet<'p> {
             }
         };
 
-        // Indel records are always emitted when present (they already passed filters).
-        v.extend(&self.indel_records);
+        // Indels obey the same emission contract as SNVs. Every genotyped allele is
+        // *built* — failures carry a FILTER (`indel_strand` / `indel_hom_ref` /
+        // `indel_no_ml`) rather than being dropped in the caller — but only PASS
+        // ones are emitted by default. Emitting them unconditionally put tens of
+        // thousands of `indel_hom_ref` lines into a plain WGS run, and put indels
+        // into `--cpgs-only` output that by definition asked for CpGs.
+        if !filters.cpgs_only {
+            v.extend(self.indel_records.iter().filter(|r| filters.vcf_all || r.filters.pass()));
+        }
         v
     }
 }
@@ -493,12 +500,20 @@ fn build_indel_records(
             let genotype = Genotype::from(call.genotype);
 
             let mut filters = super::Filters::default();
-            // With ML off, render the non-ML hard-filter indel verdict.
-            match (ml_threshold, call.hard_filter_verdict) {
-                (None, Some(IndelVerdict::Pass)) => filters.add(PASS.filter()),
-                (None, Some(IndelVerdict::FailStrand)) => filters.add(indel_strand.filter()),
-                (None, Some(IndelVerdict::FailHomRef)) => filters.add(indel_hom_ref.filter()),
-                _ => {
+            // The pathway that produced the call decides how it is filtered: a
+            // hard-filter verdict is authoritative wherever one is present, including
+            // when re-rendering `.mpk` records through `rastair convert` (which always
+            // has an `ml_threshold` to hand, whether or not ML actually ran).
+            match call.hard_filter_verdict {
+                Some(IndelVerdict::Pass) => filters.add(PASS.filter()),
+                Some(IndelVerdict::FailStrand) => filters.add(indel_strand.filter()),
+                Some(IndelVerdict::FailHomRef) => filters.add(indel_hom_ref.filter()),
+                // The ML pathway with no score to show for it: a missing model, or a
+                // feature extraction that failed. Rendering that as PASS made "we
+                // could not judge this" indistinguishable from "we judged it and it
+                // passed" — the ML column is empty either way.
+                None if call.ml.is_none() => filters.add(indel_no_ml.filter()),
+                None => {
                     let ml_below_threshold =
                         call.ml.zip(ml_threshold).is_some_and(|(ml, t)| ml < t);
                     if ml_below_threshold {
@@ -531,4 +546,116 @@ fn build_indel_records(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod indel_record_tests {
+    use super::*;
+    use crate::call::pileup::{Pileup, SimpleReads, indels::IndelAllele};
+    use crate::call::variant_calling::{GenotypeTag, indel_calling::IndelCall};
+    use crate::sequence::{ChunkRegion, Region};
+    use crate::utils::SequenceContext;
+    use seqair_types::{Base, Phred};
+
+    fn metrics_with(call: IndelCall) -> PileupMetrics {
+        let pileup = Pileup {
+            region: ChunkRegion {
+                region: Region { contig: "chrT".into(), start: 1000, end: 1100 },
+                last_position: 2000,
+                overlap_start: 0,
+                overlap_end: 0,
+            },
+            context: SequenceContext::default(),
+            pos: 1002,
+            reads: SimpleReads(Vec::new().into()),
+            reference_base: Base::T,
+            indel_observations: default(),
+            depth_offset: 0,
+            homopolymer_run: 0,
+            dinucleotide_run: 0,
+            soft_clip_count: 0,
+            noisy_ref_count: 0,
+            indel_ref_window: default(),
+            indel_ref_anchor: 0,
+        };
+        let mut metrics = PileupMetrics::new(pileup).expect("metrics");
+        metrics.indel_calls = vec![call];
+        metrics
+    }
+
+    fn hard_filter_call(verdict: IndelVerdict) -> IndelCall {
+        IndelCall {
+            allele: IndelAllele::Insertion([Base::A].into_iter().collect()),
+            genotype: GenotypeTag::hom_ref(),
+            quality: Phred::from_phred(30_u8),
+            ml: None,
+            depth: 20,
+            alt_count: 4,
+            hard_filter_verdict: Some(verdict),
+        }
+    }
+
+    fn rendered_filters(call: IndelCall, ml_threshold: Option<Probability>) -> Vec<String> {
+        let metrics = metrics_with(call);
+        let records = build_indel_records(&metrics, ml_threshold);
+        let record = records.first().expect("one indel record");
+        record.filters.iter().map(ToString::to_string).collect()
+    }
+
+    /// A hard-filter verdict is authoritative regardless of whether an `ml_threshold`
+    /// is in scope. `rastair convert` always passes `Some(threshold)` — keying the
+    /// rendering off the threshold instead of the verdict silently turned every
+    /// hard-filtered indel into a PASS on that path.
+    #[test]
+    fn hard_filter_verdicts_render_with_an_ml_threshold_present() {
+        let threshold = Some(Probability::new(0.5).expect("valid probability"));
+
+        assert_eq!(
+            rendered_filters(hard_filter_call(IndelVerdict::FailStrand), threshold),
+            vec!["indel_strand"]
+        );
+        assert_eq!(
+            rendered_filters(hard_filter_call(IndelVerdict::FailHomRef), threshold),
+            vec!["indel_hom_ref"]
+        );
+        assert_eq!(rendered_filters(hard_filter_call(IndelVerdict::Pass), threshold), vec!["PASS"]);
+    }
+
+    #[test]
+    fn hard_filter_verdicts_render_without_an_ml_threshold() {
+        assert_eq!(
+            rendered_filters(hard_filter_call(IndelVerdict::FailStrand), None),
+            vec!["indel_strand"]
+        );
+    }
+
+    /// ML-pathway calls carry no verdict and stay on the ML threshold comparison.
+    #[test]
+    fn ml_calls_are_filtered_by_threshold() {
+        let threshold = Some(Probability::new(0.5).expect("valid probability"));
+        let ml_call = |score: f64| IndelCall {
+            ml: Some(Probability::new(score).expect("valid probability")),
+            hard_filter_verdict: None,
+            ..hard_filter_call(IndelVerdict::Pass)
+        };
+
+        assert_eq!(rendered_filters(ml_call(0.1), threshold), vec!["low_ml_score"]);
+        assert_eq!(rendered_filters(ml_call(0.9), threshold), vec!["PASS"]);
+    }
+
+    /// An ML-pathway call with no score — a missing model, or feature extraction
+    /// that failed — used to render as PASS. The ML column is empty either way, so
+    /// "could not judge" was indistinguishable from "judged and passed".
+    #[test]
+    fn ml_calls_without_a_score_are_not_a_silent_pass() {
+        let unscored = IndelCall {
+            ml: None,
+            hard_filter_verdict: None,
+            ..hard_filter_call(IndelVerdict::Pass)
+        };
+        let threshold = Some(Probability::new(0.5).expect("valid probability"));
+
+        assert_eq!(rendered_filters(unscored.clone(), threshold), vec!["indel_no_ml"]);
+        assert_eq!(rendered_filters(unscored, None), vec!["indel_no_ml"]);
+    }
 }

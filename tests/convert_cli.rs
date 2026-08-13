@@ -221,3 +221,64 @@ fn can_pipe_through() -> Result<()> {
 
     Ok(())
 }
+
+/// Indel lines as `(pos, ref, alt, filter)`.
+fn indel_calls(vcf_text: &str) -> Vec<(String, String, String, String)> {
+    vcf_content_lines(vcf_text)
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            let (pos, r, alt, filter) = (f.get(1)?, f.get(3)?, f.get(4)?, f.get(6)?);
+            (r.len() > 1 || alt.len() > 1)
+                .then(|| (pos.to_string(), r.to_string(), alt.to_string(), filter.to_string()))
+        })
+        .collect()
+}
+
+/// Round-tripping through `.mpk` must preserve the hard-filter verdicts.
+///
+/// `convert` always hands the VCF layer an `ml_threshold` (it has a default), so
+/// rendering that keys off the threshold rather than off the verdict silently turns
+/// every `indel_strand` / `indel_hom_ref` allele into a PASS on this path.
+#[test]
+fn convert_preserves_indel_hard_filter_verdicts() -> Result<()> {
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let mpk = temp_dir.path().join("indels.mpk.lz4");
+    let converted = temp_dir.path().join("indels.vcf");
+
+    let mut direct = rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels", "--all"])
+        .output()
+        .wrap_err("Failed to run rastair call")?;
+    direct.succeeds()?;
+    let direct_calls = indel_calls(&direct.stdout());
+    assert!(!direct_calls.is_empty(), "test BAM should produce indel calls");
+    assert!(
+        direct_calls.iter().any(|(_, _, _, filter)| filter != "PASS"),
+        "the comparison is only meaningful if some allele fails a hard filter"
+    );
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels", "-o"])
+        .arg(&mpk)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to run rastair call to mpk")?;
+
+    rastair()
+        .args(["convert", "--all", "--input"])
+        .arg(&mpk)
+        .arg("--output")
+        .arg(&converted)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to convert mpk to vcf")?;
+
+    let converted_calls = indel_calls(&std::fs::read_to_string(&converted)?);
+    assert_eq!(converted_calls, direct_calls);
+
+    Ok(())
+}

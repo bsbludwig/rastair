@@ -12,9 +12,13 @@ define_features! {
         scalar indel_len;
         /// Shannon entropy of the allele's base composition (A/C/G/T distribution).
         scalar indel_complexity;
-        /// Ratio of this allele's read count to the most frequent allele at this
-        /// position. Near 1.0 when this is the dominant allele; low when many
-        /// alleles compete.
+        /// This allele's share of all indel-supporting fragments at the position.
+        /// 1.0 when it is the only indel allele; 0.5 when two are tied.
+        ///
+        /// Deliberately not a ratio to the *most frequent* allele, which is what
+        /// this used to be: that scores the winner exactly 1.0 by construction, so
+        /// it was constant across the single-allele majority of loci and read the
+        /// same for a clean 10-vs-0 as for an ambiguous 10-vs-9.
         scalar indel_dominance;
         /// RMS mapping quality of reads supporting this specific indel allele.
         scalar mapq_rms;
@@ -55,6 +59,47 @@ define_features! {
         /// Fraction of reads supporting this indel allele that have a homopolymer or
         /// dinucleotide repeat at their read ends (potential alignment artifact).
         scalar repeat_fraction;
+        /// `-log10(p)` of the two-sided exact binomial strand-bias test, against the
+        /// strand mix of the *rest* of the locus. 0.0 = exactly as skewed as the
+        /// surrounding coverage; higher = more surprising. Clamped to 30.
+        ///
+        /// Supplies the depth `strand_bias` above lacks: that one is a bare ratio, so
+        /// a 2/0 split scores a maximal 1.0 identically to a 20/0 split, though the
+        /// first is a coin flip and the second is not. This also conditions on the
+        /// locus' own strand skew, so genuinely one-strand coverage does not read as
+        /// allele bias.
+        ///
+        /// Not a gate. As a hard filter at alpha 0.05 this test rejected 4,288 true
+        /// chr12 indels to remove 252 false ones, because its null is false for TAPS
+        /// — OT and OB reads present different sequence after C→T conversion, so
+        /// genuine indel support is strand-asymmetric. It is still real evidence when
+        /// weighed against everything else here, which is the point of moving it from
+        /// `--indel-strand-bias-alpha` (now defaulted off) into the feature vector.
+        scalar strand_bias_log_p;
+        /// `ln(1 + depth)` at this position. The vector carried `allele_fraction`
+        /// but nothing to scale it by, so a VAF of 0.5 from 2-of-4 fragments was
+        /// indistinguishable from 20-of-40. Log-compressed because the difference
+        /// between 4x and 40x matters and 400x versus 4000x does not.
+        scalar log_depth;
+        /// `ln(1 + supporting fragments)`, the other half of `allele_fraction`.
+        scalar log_alt_count;
+        /// Mean number of indels in the CIGAR of the reads supporting this allele,
+        /// the read itself included. Alignments that need several indels to fit are
+        /// where spurious ones are placed; a genuine indel usually sits in a read
+        /// that needs only it.
+        scalar read_indel_burden;
+        /// Mean `matching_bases / read_length` over the supporting reads: how much
+        /// of each read actually aligned. Low means the support comes from reads
+        /// that fit the reference poorly, independent of their mapping quality.
+        scalar read_match_fraction;
+        /// Fraction of supporting fragments flagged noisy — soft-clipped, or
+        /// carrying a terminal tandem repeat.
+        ///
+        /// The pre-existing `soft_clip_rate` is taken over *every* read at the
+        /// position, so it describes the neighbourhood rather than the evidence.
+        /// This one is the allele's own, which is what separates a slippage
+        /// artifact from a real indel in the same repeat tract.
+        scalar noisy_fraction;
     }
 }
 
@@ -123,8 +168,20 @@ impl CommonIndelFeatures {
             soft_clip_rate,
             dinucleotide_run: pileup.dinucleotide_run.f(),
             repeat_fraction: if agg.total > 0 { agg.repeat_count.f() / agg.total.f() } else { 0.0 },
+            strand_bias_log_p: strand_bias_log_p(&current.metrics.indels, allele),
+            log_depth: pos_depth.f().ln_1p(),
+            log_alt_count: agg.total.f().ln_1p(),
+            read_indel_burden: mean(agg.indel_burden_sum, agg.total),
+            read_match_fraction: mean(agg.match_fraction_sum, agg.total),
+            noisy_fraction: if agg.total > 0 { agg.noisy_count.f() / agg.total.f() } else { 0.0 },
         }
     }
+}
+
+/// Mean of a sum accumulated over `count` supporting reads; 0.0 when there are
+/// none, matching how the RMS aggregates report an empty allele.
+fn mean(sum: f32, count: u32) -> f32 {
+    if count > 0 { sum / count.f() } else { 0.0 }
 }
 
 impl InsertionFeatures {
@@ -161,6 +218,9 @@ struct Aggregates {
     ob_count: u32,
     total: u32,
     repeat_count: u32,
+    noisy_count: u32,
+    indel_burden_sum: f32,
+    match_fraction_sum: f32,
 }
 
 fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -> Aggregates {
@@ -171,6 +231,9 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
     let mut ob_count: u32 = 0;
     let mut total: u32 = 0;
     let mut repeat_count: u32 = 0;
+    let mut noisy_count: u32 = 0;
+    let mut indel_burden_sum: f32 = 0.0;
+    let mut match_fraction_sum: f32 = 0.0;
 
     for obs in observations {
         if &obs.allele != allele {
@@ -184,8 +247,21 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
         let bq = obs.base_qual.f();
         baseq_sq_sum += bq * bq;
 
-        let edge = (obs.pos_in_read.f()).min((obs.read_length - obs.pos_in_read).f());
+        // `saturating_sub`: these two come from different htslib accessors (query
+        // position vs stored SEQ length), so nothing in the type system stops
+        // `pos_in_read` exceeding `read_length`. Plain `-` wraps in release and
+        // turns one malformed record into an edge distance of ~4e9, which drags
+        // the RMS for the whole allele.
+        let edge = obs.pos_in_read.min(obs.read_length.saturating_sub(obs.pos_in_read)).f();
         edge_sq_sum += edge * edge;
+
+        indel_burden_sum += obs.num_indels_in_read.f();
+        if obs.read_length > 0 {
+            match_fraction_sum += obs.matching_bases.f() / obs.read_length.f();
+        }
+        if obs.noisy {
+            noisy_count += 1;
+        }
 
         match obs.strand {
             seqair_types::Strand::OT => ot_count += 1,
@@ -202,7 +278,18 @@ fn compute_aggregates(observations: &[IndelObservation], allele: &IndelAllele) -
     let baseq_rms = if total > 0 { (baseq_sq_sum / total.f()).sqrt() } else { 0.0 };
     let edge_dist_rms = if total > 0 { (edge_sq_sum / total.f()).sqrt() } else { 0.0 };
 
-    Aggregates { mapq_rms, baseq_rms, edge_dist_rms, ot_count, ob_count, total, repeat_count }
+    Aggregates {
+        mapq_rms,
+        baseq_rms,
+        edge_dist_rms,
+        ot_count,
+        ob_count,
+        total,
+        repeat_count,
+        noisy_count,
+        indel_burden_sum,
+        match_fraction_sum,
+    }
 }
 
 fn insertion_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -> f32 {
@@ -237,6 +324,25 @@ fn post_del_baseq_rms(observations: &[IndelObservation], allele: &IndelAllele) -
     if count > 0 { (sq_sum / count.f()).sqrt() } else { 0.0 }
 }
 
+/// `-log10` of this allele's strand-bias p-value, or 0.0 when the allele is not
+/// among the locus' counted alleles (nothing to test).
+///
+/// Clamped to 30, which is far past any p a real pileup produces and keeps the
+/// value finite for `p = 0` underflow. The counts come from
+/// [`IndelCounts`](crate::call::pileup::indels::IndelCounts) rather than from
+/// `compute_aggregates` so the test and its null are drawn from the same
+/// fragment-level bookkeeping.
+fn strand_bias_log_p(
+    indels: &crate::call::pileup::indels::IndelCounts,
+    allele: &IndelAllele,
+) -> f32 {
+    let Some(counts) = indels.alleles.iter().find(|a| &a.allele == allele) else {
+        return 0.0;
+    };
+    let p = counts.strand_bias_p_value(indels.null_ot_fraction(counts));
+    (-p.max(1e-30).log10() as f32).clamp(0.0, 30.0)
+}
+
 fn strand_bias(ot: u32, ob: u32) -> f32 {
     let total = ot + ob;
     if total == 0 {
@@ -253,9 +359,8 @@ fn compute_dominance(
     if total == 0 {
         return 0.0;
     }
-    let max_count = alleles.iter().map(|a| a.total()).max().unwrap_or(0);
     let this_count = alleles.iter().find(|a| &a.allele == target).map(|a| a.total()).unwrap_or(0);
-    if max_count > 0 { this_count.f() / max_count.f() } else { 0.0 }
+    this_count.f() / total.f()
 }
 
 /// Shannon entropy (bits) of the A/C/G/T composition of the allele's bases.
@@ -371,6 +476,61 @@ mod tests {
     }
     fn window(s: &str) -> Vec<Base> {
         s.bytes().map(Base::from).collect()
+    }
+
+    use crate::call::pileup::indels::IndelAlleleCounts;
+
+    fn allele_counts(seq: &str, total: u32) -> IndelAlleleCounts {
+        let mut counts = IndelAlleleCounts::new(IndelAllele::Insertion(bases(seq)));
+        counts.ot = total;
+        counts
+    }
+
+    /// Dominance is a share of all indel support, not a ratio to the winner. The
+    /// old form scored whichever allele led exactly 1.0 by construction, so it was
+    /// constant wherever only one allele existed — the common case — and could not
+    /// tell a clean call from a coin flip between two alleles.
+    #[test]
+    fn dominance_is_a_share_not_a_ratio_to_the_winner() {
+        let contested = [allele_counts("A", 10), allele_counts("T", 9)];
+        let lead = compute_dominance(&contested, &IndelAllele::Insertion(bases("A")));
+        assert!((lead - 10.0 / 19.0).abs() < 1e-6, "leading allele of a near-tie: {lead}");
+
+        let alone = [allele_counts("A", 10)];
+        assert_eq!(compute_dominance(&alone, &IndelAllele::Insertion(bases("A"))), 1.0);
+
+        // An allele that is not counted at this locus has no share of it.
+        assert_eq!(compute_dominance(&alone, &IndelAllele::Insertion(bases("G"))), 0.0);
+        assert_eq!(compute_dominance(&[], &IndelAllele::Insertion(bases("A"))), 0.0);
+    }
+
+    /// `pos_in_read` and `read_length` come from different htslib accessors, so a
+    /// malformed record can put the position past the end. The subtraction must
+    /// saturate: wrapping turns one record into an edge distance of ~4e9 and
+    /// destroys the RMS for the whole allele.
+    #[test]
+    fn edge_distance_saturates_past_the_read_end() {
+        let mut obs = IndelObservation {
+            allele: IndelAllele::Insertion(bases("A")),
+            strand: seqair_types::Strand::OT,
+            reverse: false,
+            pos_in_read: 150,
+            read_length: 100,
+            mapq: 60,
+            base_qual: 30,
+            matching_bases: 100,
+            num_indels_in_read: 1,
+            insertion_base_quals: SmallVec::new(),
+            post_del_base_qual: 0,
+            has_repeat: false,
+            noisy: false,
+        };
+        let agg = compute_aggregates(std::slice::from_ref(&obs), &obs.allele.clone());
+        assert_eq!(agg.edge_dist_rms, 0.0, "position past the end clamps to distance 0");
+
+        obs.pos_in_read = 10;
+        let agg = compute_aggregates(std::slice::from_ref(&obs), &obs.allele.clone());
+        assert_eq!(agg.edge_dist_rms, 10.0, "min(10, 100 - 10)");
     }
 
     #[test]

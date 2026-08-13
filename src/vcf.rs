@@ -44,6 +44,7 @@ filter!(low_ml_score, "Machine Learning module prediction below threshold");
 filter!(pre_ml, "Low amount of usable evidence, skipping ML");
 filter!(indel_strand, "Indel allele not supported on both strands");
 filter!(indel_hom_ref, "Indel genotyped as homozygous reference by binomial model");
+filter!(indel_no_ml, "Indel could not be scored by the machine learning model");
 
 info_field!(
     AlleleBaseQuality(f64),
@@ -104,7 +105,7 @@ vcf_record!(
         dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf, dnCpG_adj,
         m_vaf, m_bq_ratio, m_pos, m_highDp,
         pre_ml, low_ml_score,
-        indel_strand, indel_hom_ref,
+        indel_strand, indel_hom_ref, indel_no_ml,
     ],
     // general info
     // Fields marked "default" are included in minimal VCF output by default

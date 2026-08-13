@@ -182,7 +182,7 @@ mod tests {
             homopolymer_run: 0,
             dinucleotide_run: 0,
             soft_clip_count: 0,
-            ref_noise_offset: 0,
+            noisy_ref_count: 0,
             indel_ref_window: Default::default(),
             indel_ref_anchor: 0,
         };

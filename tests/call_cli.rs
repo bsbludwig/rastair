@@ -991,3 +991,164 @@ fn error_model_rejects_invalid_platform_name() -> Result<()> {
 // - max depth is set
 // - min bq is set
 // - min mapq is set
+
+/// Indel lines (REF or ALT longer than one base) as `(pos, ref, alt, filter)`.
+fn indel_calls(vcf_text: &str) -> Vec<(String, String, String, String)> {
+    vcf_content_lines(vcf_text)
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            let (pos, r, alt, filter) = (f.get(1)?, f.get(3)?, f.get(4)?, f.get(6)?);
+            (r.len() > 1 || alt.len() > 1)
+                .then(|| (pos.to_string(), r.to_string(), alt.to_string(), filter.to_string()))
+        })
+        .collect()
+}
+
+/// `--experimental-indels` selects the hard-filter pathway on its own — it no longer
+/// needs `--no-ml`, and the indel ML models do not run for it.
+#[test]
+fn experimental_indels_uses_the_hard_filter_pathway() -> Result<()> {
+    apply_common_filters!();
+
+    let mut out = rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels"])
+        .output()
+        .wrap_err("Failed to run rastair call")?;
+    out.succeeds()?;
+    let stdout = out.stdout();
+
+    assert!(
+        stdout.contains(r#"##FILTER=<ID=indel_strand"#)
+            && stdout.contains(r#"##FILTER=<ID=indel_hom_ref"#),
+        "hard-filter FILTER ids must be declared in the header"
+    );
+
+    // Indels obey the same emission contract as SNVs: only PASS by default.
+    let calls = indel_calls(&stdout);
+    assert!(!calls.is_empty(), "test BAM should produce indel calls");
+    for (pos, _, _, filter) in &calls {
+        assert_eq!(filter, "PASS", "non-PASS indel emitted without --all, at {pos}");
+    }
+
+    // `--all` reveals the failing verdicts, which are tagged rather than dropped.
+    let mut all = rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels", "--all"])
+        .output()
+        .wrap_err("Failed to run rastair call")?;
+    all.succeeds()?;
+    let all_calls = indel_calls(&all.stdout());
+    let verdict_set = |calls: &[(String, String, String, String)]| -> Vec<String> {
+        let mut v: Vec<String> = calls.iter().map(|(_, _, _, f)| f.clone()).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    // The strand-bias filter is off by default, so `indel_strand` is declared in
+    // the header but never applied.
+    assert_eq!(verdict_set(&all_calls), vec!["PASS", "indel_hom_ref"]);
+    assert!(all_calls.len() > calls.len(), "--all must add the failing alleles");
+
+    // Opting back into it brings the tag back, so the pathway still works.
+    let mut strand = rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels", "--all", "--indel-strand-bias-alpha", "0.05"])
+        .output()
+        .wrap_err("Failed to run rastair call")?;
+    strand.succeeds()?;
+    assert_eq!(
+        verdict_set(&indel_calls(&strand.stdout())),
+        vec!["PASS", "indel_hom_ref", "indel_strand"]
+    );
+
+    // No ML score is attached: the pathway did not consult the model, so reporting
+    // one would suggest the FILTER came from it.
+    for line in vcf_content_lines(&stdout) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let (Some(r), Some(alt), Some(format)) = (fields.get(3), fields.get(4), fields.get(8))
+        else {
+            continue;
+        };
+        if r.len() > 1 || alt.len() > 1 {
+            assert!(!format.contains("ML"), "unexpected ML field on a hard-filtered indel: {line}");
+        }
+    }
+
+    Ok(())
+}
+
+/// `--experimental-indels-ml` keeps the ML pathway: calls are scored and gated by the
+/// ML threshold rather than by a hard-filter verdict.
+#[test]
+fn experimental_indels_ml_uses_the_model() -> Result<()> {
+    apply_common_filters!();
+
+    let mut out = rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels-ml"])
+        .output()
+        .wrap_err("Failed to run rastair call")?;
+    out.succeeds()?;
+    let stdout = out.stdout();
+
+    for (pos, _, _, filter) in &indel_calls(&stdout) {
+        assert_eq!(filter, "PASS", "non-PASS indel emitted without --all, at {pos}");
+    }
+
+    let mut all = rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels-ml", "--all"])
+        .output()
+        .wrap_err("Failed to run rastair call")?;
+    all.succeeds()?;
+    let calls = indel_calls(&all.stdout());
+    assert!(!calls.is_empty(), "test BAM should produce indel calls");
+    for (pos, _, _, filter) in &calls {
+        assert!(
+            matches!(filter.as_str(), "PASS" | "low_ml_score" | "indel_no_ml"),
+            "ML pathway must not emit hard-filter verdicts, got {filter} at {pos}"
+        );
+    }
+
+    Ok(())
+}
+
+/// `--cpgs-only` asked for CpG positions; indels are not CpG positions, and letting
+/// them through made the flag mean "CpGs, plus every indel in the genome".
+#[test]
+fn cpgs_only_emits_no_indels() -> Result<()> {
+    apply_common_filters!();
+
+    for extra in [&["--experimental-indels"][..], &["--experimental-indels", "--all"][..]] {
+        let mut out = rastair()
+            .args(CALL_TEST_BAM)
+            .args(["--cpgs-only", "--vcf", "-"])
+            .args(extra)
+            .output()
+            .wrap_err("Failed to run rastair call")?;
+        out.succeeds()?;
+        assert_eq!(
+            indel_calls(&out.stdout()),
+            Vec::new(),
+            "--cpgs-only {extra:?} must not emit indel records"
+        );
+    }
+
+    Ok(())
+}
+
+/// The two flags select different pathways, so they are mutually exclusive.
+#[test]
+fn indel_pathway_flags_conflict() -> Result<()> {
+    let out = rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--experimental-indels", "--experimental-indels-ml"])
+        .output()
+        .wrap_err("Failed to run rastair call")?;
+
+    assert!(!out.status.success(), "both indel pathway flags at once must be rejected");
+    assert!(out.stderr().contains("cannot be used with"), "stderr: {}", out.stderr());
+
+    Ok(())
+}

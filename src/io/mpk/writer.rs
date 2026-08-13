@@ -1,5 +1,5 @@
 use crate::{
-    io::mpk::format::{MpkEntry, MpkHeader, MpkVcfHeader},
+    io::mpk::format::{MPK_FORMAT_VERSION, MpkEntry, MpkHeader, MpkVcfHeader},
     metrics::PileupMetrics,
 };
 use clio::ClioPath;
@@ -32,6 +32,7 @@ impl MessagePackWriter {
             Self { path: path.clone(), writer: Box::new(BufWriter::with_capacity(one_mb, writer)) };
         me.write(&MpkEntry::Header(MpkHeader {
             rastair_version: env!("CARGO_PKG_VERSION").into(),
+            format_version: MPK_FORMAT_VERSION,
         }))?;
         Ok(me)
     }
