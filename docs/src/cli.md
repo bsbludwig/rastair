@@ -117,6 +117,27 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Depth is computed at the locus after applying indel-specific read filters and depth adjustments.
 
   Default value: `2`
+* `--indel-strand-bias-alpha <INDEL_STRAND_BIAS_ALPHA>` — Significance level for the indel strand-bias filter. Off by default.
+
+   An indel allele is rejected when the OT/OB split of its supporting fragments is this unlikely or less under the strand mix of the rest of the locus. Lower is more permissive; `0`, the default, disables the filter.
+
+   It defaults to off because the hypothesis it tests is false for TAPS: OT and OB reads present different sequence after C→T conversion, so genuine indel support is strand-asymmetric for reasons that are not artifacts. At the 0.05 it used to default to, measured on chr12 against GIAB HG001, it rejected 4,288 true indels to remove 252 false ones and cost 0.098 F1. The p-value is still informative — it belongs in the ML feature vector rather than in a hard gate.
+
+  Default value: `0`
+* `--indel-noise-exclusion <INDEL_NOISE_EXCLUSION>` — How noisy fragments are excluded from the hard-filter genotype ratio
+
+   "Noisy" means soft-clipped or carrying a terminal tandem repeat. `symmetric` drops them from the alternate count and the depth alike, which leaves VAF unbiased but also costs candidates at the min-AO gate; `ratio-only` still counts them as observations for that gate; `depth-only` drops them from the depth alone, which raises VAF by roughly the local noise rate and so acts as a sensitivity boost. See [`IndelNoiseExclusion`](crate::call::variant_calling::indel_calling::IndelNoiseExclusion).
+
+  Default value: `symmetric`
+
+  Possible values:
+  - `symmetric`:
+    Drop noisy fragments from the alternate count and the depth alike
+  - `ratio-only`:
+    Keep noisy fragments as observations for the `min_indel_ao` gate, but exclude them from both sides of the ratio
+  - `depth-only`:
+    Drop noisy fragments from the depth only
+
 * `--indel-max-mismatches <INDEL_MAX_MISMATCHES>` — Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
 
    C->T mismatches on OT reads and G->A mismatches on OB reads are excluded from the count as they are expected TAPS methylation signal.
@@ -193,9 +214,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Options:**
 
-* `--experimental-indels` — Enable experimental indel calling
+* `--experimental-indels` — Enable experimental indel calling using hard filters
 
-   When disabled, Rastair calls SNPs and methylation only.
+   Candidate indels are accepted by a fixed filter chain (depth, alternate observations, strand bias, binomial genotype) with no ML scoring. When disabled, Rastair calls SNPs and methylation only.
+
+  Default value: `false`
+* `--experimental-indels-ml` — Enable experimental indel calling scored by the ML model
+
+   Selects the machine-learning indel pathway instead of the hard-filter chain of `--experimental-indels`. Has no effect together with `--no-ml`, which falls back to the hard-filter chain.
 
   Default value: `false`
 
@@ -285,6 +311,13 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--indel-error-rate <INDEL_ERROR_RATE>` — Error rate for indel genotyping (higher than SNV due to alignment uncertainty)
 
   Default value: `0.05`
+* `--indel-het-vaf <INDEL_HET_VAF>` — Expected alternate fraction of a heterozygous indel.
+
+   The 0.5 a heterozygote would show without reference bias. Reads carrying an indel are harder to place than reads matching the reference, so a genuine het indel is systematically observed below 0.5 and the binomial calls it homozygous reference. Lowering this models that bias where it happens.
+
+   It is not interchangeable with `--indel-error-rate`, which moves the same hom-ref/het boundary from the other side: lowering the error rate weakens the hom-ref hypothesis against genuine sequencing noise as well, so it buys recall by giving up precision at noise loci. Lowering this leaves the hom-ref null where the data says it is.
+
+  Default value: `0.5`
 * `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead.
 
    Requires a Metal/Vulkan/DX12-capable GPU.

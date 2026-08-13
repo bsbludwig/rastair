@@ -159,6 +159,13 @@ When computing grouped statistics from a collection of items (e.g. per-base metr
 4. When grouping by key (e.g. per-base), use `[Accumulator; N]` indexed by a method like `Base::known_index()` rather than named fields — this eliminates match arms for invalid variants and works naturally with const arrays like `Base::KNOWN`.
 5. To extract a single group's accumulator, use a `take(&mut self, key) -> Option<Accumulator>` method via `mem::take` — `None` signals "not applicable" (e.g. Unknown base) rather than an error.
 
+## Generated docs are partly machine-dependent
+
+`cargo run -- internal cli-docs docs/src/cli.md` bakes `available_parallelism()` into the
+`--threads` default, so regenerating on a machine with a different core count produces spurious
+diffs. Check `git diff docs/src/cli.md` and revert those hunks. `internal vcf-docs` currently
+also renders `Phred` as `Phred>`, which the committed file does not have.
+
 ## Read orientation modes
 
 The main pileup-based `call` path assigns OT/OB in `src/call/pileup/from_hts.rs` before `PileupMetrics::new()` sees a `SimpleRead`.
@@ -175,6 +182,149 @@ Implementation detail: `src/call/process/pileups.rs` keeps a per-segment `ReadOr
 Current scope: this new evidence-based OT/OB assignment only affects the main pileup-based `call` path. `call-reads` and BAM rewriting still use their existing orientation logic.
 
 For BAM-backed regression tests that compare strand-assignment modes, `tests/call_cli.rs` can write plain BED output with `call --cpgs-only --bed <path>` and compare per-CpG `(start, strand)` records via the BED columns `beta_est`, `unmod`, and `mod`. This is a convenient way to inspect differences before choosing hard thresholds.
+
+## Indel calling: two pathways, and the invariants they share
+
+`--experimental-indels` runs a hard-filter chain (`src/call/variant_calling/indel_calling/hard_filters.rs`);
+`--experimental-indels-ml` runs the ML model instead, degrading to the hard-filter chain under `--no-ml`.
+Both consume the same `IndelCounts` from `aggregate_indels()` in `src/metrics/pileup_metrics.rs`,
+so the invariants below apply to both.
+
+**Everything is per fragment, not per alignment.** Indel bookkeeping (`IndelReadData`) is built in
+lock-step with `raw_reads` in `src/call/pileup/from_hts.rs` and the same overlap deduplication
+`swap_remove`s both. `ref_count = reads.len() - total_indel_reads` is only a real partition because of
+this. Any per-alignment property that differs between mates — reverse flag, position in read, which
+mate carried the base — is *not* recoverable after that collapse.
+
+**Strand is OT/OB, never the reverse flag.** Both mates of a fragment share an OT/OB assignment but
+have opposite reverse flags, so OT/OB is the only strand notion invariant under deduplication. A
+reverse-flag split collapses to whichever mate survived (always the leftmost, hence forward-flagged).
+
+**The strand-bias test is the binding constraint on indel recall, and it does not pay for itself.**
+Measured on chr12 (BED-restricted, normalized), turning it off with `--indel-strand-bias-alpha 0`
+moves the hard-filter pathway from **P 0.9819 / R 0.7485 / F1 0.8495** to
+**P 0.9747 / R 0.9214 / F1 0.9473**: it was rejecting **4,288 true indels to remove 252 false ones**,
+17:1 against. That single flag beats the pre-fix `d4244fcc` (F1 0.9326) at far higher precision.
+
+The test is well constructed; the hypothesis it tests is false. Its null is "the supporting fragments
+are drawn from the locus' own strand mix", and for TAPS indels they are not — OT and OB reads present
+different sequence after C→T conversion, so genuine indel support is strand-asymmetric for reasons
+that have nothing to do with artifacts. The p-value is still *informative*, so the intended home for
+it is an ML feature, not a hard gate.
+
+Beware that this filter masks everything downstream of it. The `--indel-noise-exclusion`,
+`--indel-error-rate` and `--indel-het-vaf` sweeps below all saturate at F1 ≈ 0.85 **because they were
+measured with the strand test on**, throwing the recall away before those knobs could act. Re-measure
+anything in that table before trusting it at a lower alpha.
+
+**Strand bias is a test, not a rule.** `IndelAlleleCounts::strand_bias_p_value` is a two-sided exact
+binomial test against `IndelCounts::null_ot_fraction` — the strand mix of the *non-supporting*
+fragments at that locus, smoothed with one fragment of prior mass so an all-one-strand background
+(routine at low depth) does not produce a degenerate null. That prior is centred on the **locus'** own
+OT share, not on 0.5: a homozygous indel has no non-supporting fragments at all, and a flat 0.5 prior
+then judges it against balanced coverage it never had, rejecting every hom-alt call at a one-strand
+locus for a skew that belongs to the coverage. Rejection is at `--indel-strand-bias-alpha`
+(default 0.05).
+Do **not** replace this with an `ot > 0 && ob > 0` rule: at the default `min_indel_ao` of 2 that rejects
+a 2/0 split, which is a coin flip, and measured on real data it tracked the chance rate almost exactly
+below AO≈4 — rejecting ~26% of all indel candidates, ~85% of them by chance.
+
+**"Repeat" means a real repeat — and that, not the noise sidedness, is the lever.** `terminal_repeat`
+once used a single 3 bp window for both periods, which made the period-2 arm
+`seq[0]==seq[2] || seq[len-3]==seq[len-1]` — true for **43.75% of random reads**.
+`TerminalRepeatLimits` now counts whole repeat units per period (homopolymer ≥4 bp, dinucleotide
+≥3 units), ~3-4% on random sequence; `has_repeat_seq` guards `units < 2` because a sub-two-unit
+window makes the periodicity `all()` vacuously true. This changes `has_repeat`, an ML feature, so it
+deepens the retrain need.
+
+Which side of the ratio noisy fragments come off is `--indel-noise-exclusion`
+(`symmetric` default / `ratio-only` / `depth-only`). The theory says `symmetric`: noise is a property
+of the read, so it lands on supporting and non-supporting fragments alike, and a one-sided haircut
+inflates VAF by the noise rate with the binomial flipping hom-ref→het at VAF ≈ 0.218. **Measured, the
+choice is nearly inert** — chr12, GIAB-BED-restricted and normalized: symmetric F1 0.8509,
+ratio-only 0.8510, depth-only 0.8561. Do not spend time here.
+
+**The hom-ref/het boundary is not where the recall is. Stop tuning it.** The pre-fix `d4244fcc`
+scores **P 0.9194 / R 0.9462 / F1 0.9326** against HEAD's **P 0.9823 / R 0.7505 / F1 0.8509** (chr12,
+BED-restricted, normalized), and essentially all of the gap is recall. There are three knobs that
+move that boundary, and *all three saturate around F1 0.85*:
+
+| knob | best | at |
+| --- | --- | --- |
+| `--indel-noise-exclusion` | 0.8561 | `depth-only` |
+| `--indel-error-rate` | 0.8545 | 0.03 (default 0.05 → 0.8509) |
+| `--indel-het-vaf` | 0.8527 | 0.40 (default 0.5 → 0.8495) |
+
+Each buys recall by giving up more precision than it gains, and none gets near 0.93. `--indel-het-vaf`
+is the most defensible of the three — reads carrying an indel are harder to place than
+reference-matching reads, so a genuine het indel *is* observed below 0.5, and modelling that is
+better than reaching the same boundary via `--indel-error-rate`, which also weakens the hom-ref
+hypothesis against genuine sequencing noise. But defensible is not the same as effective: it is worth
++0.003 F1. Leave it at 0.5 unless you have a reason beyond F1.
+
+The conclusion this forces is that HEAD's *candidate set* is smaller, not merely genotyped more
+strictly — the missing true indels are being lost before genotyping, so look at the depth gate, the
+min-AO gate, the strand test, and the read-level indel filters in `from_hts.rs`, not at the binomial.
+
+The ML pathway deliberately keeps its own one-sided `depth_offset` so those distributions do not
+move further.
+
+**Known gap: mate discordance.** `resolve_pair` picks the surviving mate from the anchor base and
+`second` flag, blind to indels, so when the two mates' CIGARs disagree the fragment's vote is decided
+arbitrarily and the loser's evidence is dropped. Measured at ~1,562 lost votes per 5 Mb, **97% of it
+genuine mate-level alignment disagreement** and only 3% asymmetric read filters. Do not "fix" this by
+OR-ing the mates' observations — that promotes alignment ambiguity to positive support in exactly the
+repeat contexts where indel artifacts live. The intended fix is to make discordance explicit (abstain,
+and carry it as a feature).
+
+**Indels obey the same emission contract as SNVs.** Every genotyped allele is *built* with a FILTER
+(`indel_strand` / `indel_hom_ref` / `indel_no_ml`) rather than dropped in the caller, but `to_vec`
+emits only PASS by default, all of them under `--all`, and none under `--cpgs-only`. Emitting them
+unconditionally — the earlier behaviour — put tens of thousands of `indel_hom_ref` lines into a plain
+WGS run. `indel_no_ml` exists because the ML path's `FORMAT/ML` is empty both when the model declined
+to score and when it passed, so PASS alone could not distinguish them.
+
+`Pileup` carries **no `#[serde(default)]`**: `.mpk` encodes structs as positional arrays, so a field
+added anywhere but the end shifts everything after it and a default decodes neighbouring data instead
+of failing. `MPK_FORMAT_VERSION` (`src/io/mpk/format.rs`) is the compatibility mechanism — bump it
+when `Pileup`/`PileupMetrics` change.
+
+Measurements behind all of the above, and how to reproduce them, are in
+`.claude/notes/indel-strand-concordance-vs-fragment-dedup.md`. Validate changes with
+`rastair verify --experimental-indels --truth <GIAB HG001>` — the sample in `tmp/taps/` is NA12878.
+End to end, with the truth set and reference already on disk:
+
+```sh
+rastair call tmp/taps/NA12878_aa_chr12.bam \
+  -r tmp/na12878/GRCh38_full_analysis_set_plus_decoy_hla.fa \
+  -l chr12 --experimental-indels --no-ml -o out.bcf
+bcftools index -f out.bcf
+rastair verify --truth tmp/1000genomes/HG001_GRCh38_1_22_v4.2.1_benchmark.vcf.gz \
+  -l chr12 -R <GIAB high-confidence BED> out.bcf --experimental-indels
+```
+
+Tune on one chromosome, confirm on another before believing a threshold — chr20 is the conventional
+GIAB validation chromosome.
+
+`verify` loads **only PASS records**, so emission-policy changes do not perturb the comparison. It
+reports per-category FN/recall/F1 for the indel categories (they are classified by allele length, so
+the truth VCF bins them identically; the CpG/DeNovo/Other categories depend on rastair INFO flags the
+truth set does not carry, so those stay precision-only). Baseline a change by building the comparison
+commit in a throwaway worktree (`git worktree add --detach /tmp/rastair-baseline HEAD`) rather than
+stashing — the working tree stays intact and both binaries can run back to back.
+
+**Always pass `-R/--regions-file <GIAB high-confidence BED>`.** Without it `verify` scores calls in
+regions the truth set makes no claim about, and every one of them lands as a false positive: 40.6% of
+our PASS indels on chr12 fall in the 7.7% of the chromosome GIAB excludes. Unrestricted scoring
+reported P 0.618 for a caller that is actually at P 0.982, which is what made an internally-reported
+hap.py F1 of 0.814 look irreconcilable with our own numbers. `verify` also normalizes indels to
+minimal representation before matching (`minimal_representation` in `src/verify.rs`), so
+`100 TC>TCAA` and `99 C>CAA` are the same variant. Quote both scorings if you quote either — the
+whole-chromosome numbers are still a useful relative signal between two builds, they are just not
+comparable to anything external.
+
+Matching is on `(chrom, pos, ref, alt)` only — `verify` is **genotype-blind**, so it is more lenient
+than hap.py, which counts a GT mismatch as both an FP and an FN. That bias is currently unquantified.
 
 ## ML feature layout (`src/metrics/ml/features/`)
 
@@ -194,7 +344,7 @@ fields built with the `define_features!` macro in `src/metrics/ml/features.rs`.
   model-specific scalars (e.g. `alt_score`) _between_ the two halves. Build them via
   `CommonSectionA::from_common(&common)`.
 - Model structs: `CpgFeatures` (55), `DenovoCpgFeatures` (56), `OthersFeatures` (54),
-  `InsertionFeatures` (34), `DeletionFeatures` (38). Each has an `extract()` returning the
+  `InsertionFeatures` (23), `DeletionFeatures` (23). Each has an `extract()` returning the
   struct; `FeatureCalculator::calculate_*` wraps `as_row()` into an `Array2`.
 
 **Feature order is frozen by every trained model.** Reordering a field silently corrupts
@@ -202,6 +352,61 @@ predictions. Two tests guard this in `features.rs`: `feature_counts_are_stable` 
 counts) and `feature_name_layout` (an insta snapshot of every `name→index` mapping —
 this replaces the old "never change the order" comments; update it via `cargo xtask insta`
 only after verifying a layout change is intentional).
+
+A third guard is at runtime: `check_feature_widths` (`src/call/ml.rs`) refuses a model whose
+`ForestMeta::n_features` disagrees with what the build extracts. This has to be an error, not a
+warning — `FlatForest::predict` does no width check, so a stale forest fed a wider row reads
+whichever columns its split indices name and predicts confidently from the wrong features. It is the
+only way a model file can fail while still producing plausible output.
+
+**Always train with `-R <high-confidence BED>`.** Training labels every candidate not in the truth
+VCF as negative, and outside a truth set's high-confidence regions the VCF asserts nothing — so a
+real variant there is absent from it and gets taught to the model as a *negative*. Those mislabelled
+examples are not spread evenly: high-confidence BEDs exclude repetitive, low-mappability sequence,
+which is where indels concentrate. Restricting to the GIAB HG001 BED over chr1/chr6/chr11 drops
+**~40% of indel training examples, ~89% of them negatives**, against ~10% for the SNV sets (in line
+with the 7.7% of sequence excluded). Candidates outside the regions are dropped, not relabelled.
+
+**But apply it to the indel models only.** The same restriction measurably *hurts* cpg/denovo/others:
+chr12 overall F1 .9884 -> .9877, chr20 .9896 -> .9882, with false positives roughly doubling in every
+SNV category on both chromosomes (chr12 Other 842 -> 1,550 FP; DeNovo 151 -> 368). Recall improves,
+precision drops more. The asymmetry is in what gets dropped: of the out-of-BED examples removed,
+**11.7% of the indel ones were positives against 0.4% of the SNV ones** (cpg: 712,067 removed, 3,037
+positive). Out-of-BED SNV candidates are overwhelmingly genuine sequencing error — correctly labelled
+negatives, and valuable hard ones from the worst sequence, so dropping them starves the model and it
+turns permissive. Out-of-BED indel candidates are dominated by real variants GIAB could not confirm.
+Same operation, opposite sign. Train indels on the BED, keep the SNV models genome-wide, and let the
+splice below combine them — that is what the splice is *for*, not just a blast-radius convenience.
+
+The BED restriction was worth more than everything else tried on the indel ML path combined:
+
+| chr12 / chr20 | P | R | F1 |
+| --- | --- | --- | --- |
+| ML, trained genome-wide | .9948 / .9945 | .8066 / .8045 | .8909 / .8895 |
+| ML, trained on the BED | .9843 / .9820 | .9222 / .9214 | **.9523 / .9508** |
+| hard filters | .9747 / .9736 | .9214 / .9183 | .9473 / .9452 |
+
+Holdout Brier roughly halves for both indel models (.1119→.0556, .1034→.0576) and the forests get
+*smaller* (max_tree_size 6509→3501), because they stop spending depth memorising labels that were
+guesses. With this, **the ML indel path overtakes the hard-filter path** — same recall, better
+precision. Two caveats: a BED-trained model is only validated inside those regions but still scores
+everywhere at call time, so out-of-BED behaviour is unmeasured (and unmeasurable against GIAB, for
+the same reason the labels were unusable); and these figures are in-BED performance specifically.
+
+**Retraining for an indel change: splice, do not ship the whole retrain.** `ml train` retrains all
+five forests, so a change confined to the indel feature vector would otherwise also replace the
+methylation and SNV models — much wider blast radius, and unmeasured unless you separately validate
+methylation. `examples/splice_indel_models.rs` takes cpg/denovo/others from `--old` and
+insertion/deletion from `--new`; `--old` accepts either a current (11-field) or a pre-indel
+(7-field) model file. Confirm the result with `examples/model_stats.rs`: the kept and spliced
+forests should show the tree sizes of their respective source files.
+
+A symptom to recognise: replacing the cpg/denovo forests fails
+`test_adjacent_denovo_cpgs_dual_role_middle_position`, which used to run the bundled model live over
+a five-read synthetic pileup. It now forces its calls with `set_pass`/`reprocess`, so it pins the
+de-novo logic rather than the current model's opinion of made-up data. If a test like that starts
+failing after a retrain, decouple it rather than editing the expected values to match — the numbers
+it asserts are the behaviour under test.
 
 Feature names flow to training output via `FeatureCalculator::feature_names() -> FeatureNames`.
 `train.rs` uses them for the `--feature-analytics` importance CSVs (`index\tfeature\timportance`)
