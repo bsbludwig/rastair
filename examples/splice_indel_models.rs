@@ -60,10 +60,61 @@ fn read_decompressed(path: &PathBuf) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Load the pre-indel model, auto-detecting grouped vs interleaved field order.
-fn load_old(path: &PathBuf) -> Result<OldGrouped> {
+/// The forests kept from the `--old` model: everything except insertion/deletion.
+struct Kept {
+    cpg: FlatForest,
+    cpg_platt: PlattScaling,
+    denovo: FlatForest,
+    denovo_platt: PlattScaling,
+    others: FlatForest,
+    others_platt: PlattScaling,
+    feature_set: MlFeatureSet,
+}
+
+impl From<OldGrouped> for Kept {
+    fn from(m: OldGrouped) -> Self {
+        Self {
+            cpg: m.cpg,
+            cpg_platt: m.cpg_platt,
+            denovo: m.denovo,
+            denovo_platt: m.denovo_platt,
+            others: m.others,
+            others_platt: m.others_platt,
+            feature_set: m.feature_set,
+        }
+    }
+}
+
+impl From<RastairFlatModel> for Kept {
+    fn from(m: RastairFlatModel) -> Self {
+        Self {
+            cpg: m.cpg,
+            cpg_platt: m.cpg_platt,
+            denovo: m.denovo,
+            denovo_platt: m.denovo_platt,
+            others: m.others,
+            others_platt: m.others_platt,
+            feature_set: m.feature_set,
+        }
+    }
+}
+
+/// Load the model to keep cpg/denovo/others from, accepting either shape.
+///
+/// `--old` is usually a *current* model now — the point of splicing is to keep
+/// validated methylation/SNV forests across an indel-only retrain, not just to
+/// upgrade a pre-indel file once. The two shapes are 11-field and 7-field
+/// msgpack arrays, and rmp decodes them positionally, so the wrong one fails on
+/// length or type rather than mis-decoding: trying both in turn is safe.
+fn load_old(path: &PathBuf) -> Result<Kept> {
     let raw = read_decompressed(path)?;
-    rmp_serde::from_slice(&raw).wrap_err("could not load old model")
+    if let Ok(current) = rmp_serde::from_slice::<RastairFlatModel>(&raw) {
+        return Ok(current.into());
+    }
+    let pre_indel: OldGrouped = rmp_serde::from_slice(&raw).wrap_err(
+        "could not load old model as either a current (with-indel) or a pre-indel model file",
+    )?;
+    Ok(pre_indel.into())
 }
 
 fn load_new(path: &PathBuf) -> Result<RastairFlatModel> {
