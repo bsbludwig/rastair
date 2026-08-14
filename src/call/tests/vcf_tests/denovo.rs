@@ -83,7 +83,16 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
         (G A) FAIL,
     ];
 
-    let records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    // Force the two C>G calls rather than letting the bundled model score a
+    // five-read synthetic pileup: what is under test is the dual-role de-novo
+    // logic, not the current model's opinion of made-up data. Without this the
+    // test re-fails on every retrain, for a reason that says nothing about the
+    // behaviour it is meant to pin.
+    let mut records = test_call(segment, pileups, RecordFilters::cpgs())?;
+    set_pass(&mut records[0], G);
+    set_pass(&mut records[1], G);
+    let records = reprocess(records)?;
+
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 

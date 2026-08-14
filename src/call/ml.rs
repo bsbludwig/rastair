@@ -73,6 +73,34 @@ pub struct MachineLearningParams {
     model: Option<ClioPath>,
 }
 
+/// Reject a model whose forests were trained on a different number of features
+/// than the current build extracts.
+///
+/// `FlatForest::predict` does not check this. A forest trained on 17 features fed
+/// an 18-wide row simply reads whichever columns its split indices name, so a
+/// stale model does not fail — it silently predicts from the wrong features. That
+/// is the one failure mode a model file can have that produces plausible-looking
+/// output, so it has to be an error rather than a warning.
+fn check_feature_widths(model: &RastairFlatModel) -> Result<()> {
+    let expected = model.feature_set.get_calculator().feature_num();
+    for (name, trained, extracted) in [
+        ("cpg", model.cpg.meta.n_features, expected.cpg),
+        ("denovo", model.denovo.meta.n_features, expected.denovo_cpg),
+        ("others", model.others.meta.n_features, expected.others),
+        ("insertion", model.insertion.meta.n_features, expected.insertion),
+        ("deletion", model.deletion.meta.n_features, expected.deletion),
+    ] {
+        ensure!(
+            trained as usize == extracted,
+            "Model is incompatible with this build of rastair: its `{name}` forest was trained \
+             on {trained} features, but this build extracts {extracted}. Predictions from a \
+             mismatched forest are silently wrong rather than failing, so it is refused. \
+             Retrain with `rastair ml train`, or pass a matching --model."
+        );
+    }
+    Ok(())
+}
+
 impl MachineLearningParams {
     #[instrument(name = "init_ml", skip(self))]
     pub fn init(&self) -> Result<MachineLearning> {
@@ -85,6 +113,8 @@ impl MachineLearningParams {
             &include_bytes!("../../models/rastair_with_indels.rff.mpk.lz4")[..],
         )
         .wrap_err("Failed to load combined RF model")?;
+
+        check_feature_widths(&model)?;
 
         let max_samples = GPU_BATCH_BUFFER_SIZE;
         let gpu_prototype = if self.gpu {
