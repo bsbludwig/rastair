@@ -39,6 +39,7 @@ use rust_htslib::bcf::{self, Read as _};
 use seqair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
 use std::{
     collections::HashSet,
+    fmt,
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -797,6 +798,32 @@ fn train_and_save(
         holdout_labels.as_slice().unwrap_or(&[]),
     );
 
+    let raw = raw_scores.as_slice().unwrap_or(&[]);
+    let labels = holdout_labels.as_slice().unwrap_or(&[]);
+    if let (Some(before), Some(after)) = (
+        calibration(raw, labels),
+        calibration(&raw.iter().map(|&s| *platt.calibrate_score(s)).collect::<Vec<_>>(), labels),
+    ) {
+        // The holdout is "everything not sampled for training", so its base rate
+        // is a side effect of the subsampling: training consumes `n_negative`
+        // negatives against `n_positive` positives, which leaves the holdout
+        // enriched in positives wherever those counts are a large share of the
+        // data. That is negligible for the CpG models and material for the indel
+        // ones, and it biases the fit — worth seeing next to the numbers.
+        info!(%before, %after, "Calibration on holdout (raw forest votes vs Platt-scaled)");
+        if after.ece > before.ece {
+            warn!(
+                model = model_name,
+                before_ece = before.ece,
+                after_ece = after.ece,
+                "Platt scaling made calibration worse. A random forest's vote fraction is \
+                 already a bounded probability, so a two-parameter sigmoid has little to fix \
+                 and can distort it; isotonic regression is the usual alternative at this \
+                 holdout size."
+            );
+        }
+    }
+
     if platt.a == 1.0 && platt.b == 0.0 {
         error!(
             "Platt scaling is identity (a=1.0, b=0.0) — model likely failed to learn. \
@@ -807,11 +834,26 @@ fn train_and_save(
     Ok((model, platt))
 }
 
-/// Subsample training data to balance positive and negative examples.
+/// Split into a calibration set that preserves the natural class prior, and a
+/// class-balanced training sample drawn from what is left.
 ///
 /// Returns `(train_features, train_labels, holdout_features, holdout_labels)`.
-/// The held-out set is capped at `MAX_HOLDOUT` to keep memory bounded while
-/// still providing enough data for a stable Platt scaling fit.
+///
+/// The order matters, and it used to be the other way round: training took its
+/// `n_positive`/`n_negative` from the whole set and Platt was fitted on the
+/// leftovers. That makes the calibration set's class balance an artifact of the
+/// sampling counts rather than a property of the data — and it moves when those
+/// counts move. Measured on chr1/chr6/chr11, the insertion holdout was 45.9%
+/// positive at 8000/20000 and 53.0% at 40000/60000, against a natural 41.7%;
+/// deletion swung 39.0% -> 25.8% against a natural 35.4%. Platt calibrates the
+/// mean predicted probability onto whatever prior it is shown, so a distorted
+/// holdout yields a model whose probabilities are systematically off, by an
+/// amount that differs per model. That is what stops one `--ml` threshold from
+/// meaning the same thing for a CpG call and an indel call.
+///
+/// Carving the calibration set out first, uniformly at random, gives it the
+/// natural prior by construction. Training still balances the classes from the
+/// remainder, which is the right thing at CpG's 1% prevalence.
 fn subsample_training_data(
     data: &TrainingData,
     n_positive: usize,
@@ -819,21 +861,31 @@ fn subsample_training_data(
     seed: u64,
 ) -> Result<(Array2<f64>, Array1<f64>, Array2<f64>, Array1<f64>)> {
     const MAX_HOLDOUT: usize = 100_000;
+    /// Share of the data reserved for calibration. Capped by `MAX_HOLDOUT`, and
+    /// small enough that the training pool is never starved for the models whose
+    /// candidate sets are small (the indel ones, ~100-150k examples).
+    const HOLDOUT_FRACTION: f64 = 0.2;
+
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
-    // Separate positive and negative indices
-    let mut positive_indices = Vec::new();
-    let mut negative_indices = Vec::new();
+    let mut all_indices: Vec<usize> = (0..data.len()).collect();
+    all_indices.shuffle(&mut rng);
 
-    for (i, &label) in data.labels.iter().enumerate() {
-        if label == 1.0 {
-            positive_indices.push(i);
-        } else {
-            negative_indices.push(i);
+    let n_holdout = ((data.len() as f64 * HOLDOUT_FRACTION) as usize).min(MAX_HOLDOUT);
+    let (holdout_slice, train_pool) = all_indices.split_at(n_holdout);
+    let holdout: HashSet<usize> = holdout_slice.iter().copied().collect();
+
+    // Balance the classes for training, from the pool the calibration set did
+    // not claim.
+    let (mut positive_indices, mut negative_indices) = (Vec::new(), Vec::new());
+    for &i in train_pool {
+        match data.labels.get(i) {
+            Some(&label) if label == 1.0 => positive_indices.push(i),
+            Some(_) => negative_indices.push(i),
+            None => {}
         }
     }
 
-    // Sample indices for training
     let n_pos_actual = positive_indices.len().min(n_positive);
     let n_neg_actual = negative_indices.len().min(n_negative);
 
@@ -843,22 +895,16 @@ fn subsample_training_data(
     positive_indices.shuffle(&mut rng);
     negative_indices.shuffle(&mut rng);
 
-    let selected_pos = &positive_indices[..n_pos_actual];
-    let selected_neg = &negative_indices[..n_neg_actual];
+    let mut train_indices: Vec<usize> = positive_indices
+        .get(..n_pos_actual)
+        .unwrap_or_default()
+        .iter()
+        .chain(negative_indices.get(..n_neg_actual).unwrap_or_default())
+        .copied()
+        .collect();
 
-    let train_indices: HashSet<usize> =
-        selected_pos.iter().chain(selected_neg.iter()).copied().collect();
-
-    // Build training matrix
-    let train_matrix = build_matrix(data, &mut train_indices.iter().copied().collect::<Vec<_>>())?;
-
-    // Build held-out matrix from remaining indices, capped for memory
-    let mut holdout_indices: Vec<usize> =
-        (0..data.len()).filter(|i| !train_indices.contains(i)).collect();
-    holdout_indices.shuffle(&mut rng);
-    holdout_indices.truncate(MAX_HOLDOUT);
-
-    let holdout_matrix = build_matrix(data, &mut holdout_indices)?;
+    let train_matrix = build_matrix(data, &mut train_indices)?;
+    let holdout_matrix = build_matrix(data, &mut holdout.into_iter().collect::<Vec<_>>())?;
 
     Ok((train_matrix.0, train_matrix.1, holdout_matrix.0, holdout_matrix.1))
 }
@@ -889,6 +935,75 @@ fn build_matrix(data: &TrainingData, indices: &mut [usize]) -> Result<(Array2<f6
     let labels = Array1::from_vec(label_vec);
 
     Ok((features, labels))
+}
+
+/// How well a set of scores matches the outcomes they claim to predict.
+///
+/// Reported for the raw forest votes and again after Platt scaling, because
+/// calibration is a step that can make things *worse* and nothing was checking.
+/// Platt fits a two-parameter sigmoid, which is the right correction when the
+/// distortion is sigmoid-shaped (SVMs, boosting) but not obviously right for a
+/// random forest, whose vote fraction is already a bounded, roughly calibrated
+/// probability.
+#[derive(Debug, Clone, Copy)]
+struct Calibration {
+    /// Mean squared error against the outcome. Lower is better; sensitive to
+    /// both calibration and discrimination.
+    brier: f64,
+    /// Expected calibration error: mean over bins of |mean predicted − observed
+    /// frequency|, weighted by bin population. Purely a calibration measure.
+    ece: f64,
+    /// Mean prediction against the actual positive rate. A gap between these two
+    /// is systematic over- or under-confidence.
+    mean_score: f64,
+    base_rate: f64,
+}
+
+impl fmt::Display for Calibration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "brier={:.4} ece={:.4} mean={:.3} vs base={:.3}",
+            self.brier, self.ece, self.mean_score, self.base_rate
+        )
+    }
+}
+
+fn calibration(scores: &[f64], labels: &[f64]) -> Option<Calibration> {
+    const BINS: usize = 20;
+    let n = scores.len();
+    if n == 0 || n != labels.len() {
+        return None;
+    }
+
+    let mut bin_sum = [0.0_f64; BINS];
+    let mut bin_pos = [0.0_f64; BINS];
+    let mut bin_n = [0.0_f64; BINS];
+    let (mut brier, mut score_sum, mut pos) = (0.0, 0.0, 0.0);
+
+    for (&s, &y) in scores.iter().zip(labels) {
+        let s = s.clamp(0.0, 1.0);
+        brier += (s - y) * (s - y);
+        score_sum += s;
+        pos += y;
+        // The top edge belongs to the last bin rather than to a BINS+1'th one.
+        let idx = ((s * BINS as f64) as usize).min(BINS - 1);
+        bin_sum[idx] += s;
+        bin_pos[idx] += y;
+        bin_n[idx] += 1.0;
+    }
+
+    let ece = (0..BINS)
+        .filter(|&i| bin_n[i] > 0.0)
+        .map(|i| (bin_n[i] / n as f64) * (bin_sum[i] / bin_n[i] - bin_pos[i] / bin_n[i]).abs())
+        .sum();
+
+    Some(Calibration {
+        brier: brier / n as f64,
+        ece,
+        mean_score: score_sum / n as f64,
+        base_rate: pos / n as f64,
+    })
 }
 
 /// Fit Platt scaling parameters A and B so that
