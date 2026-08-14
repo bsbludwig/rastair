@@ -40,6 +40,18 @@ pub struct VerifyParams {
     #[arg(short = 'l', long = "region", help_heading = cli::sections::INPUT)]
     regions: Vec<RegionString>,
 
+    /// Restrict the comparison to the intervals of a BED file
+    ///
+    /// Variants outside the intervals are dropped from the predictions, the truth
+    /// set and the competitor alike. Truth sets are only valid inside their own
+    /// confident regions — GIAB excludes segmental duplications and long repeats
+    /// precisely because it cannot resolve them — so without this every call in
+    /// an excluded region is scored as a false positive. `hap.py` applies the
+    /// benchmark BED by default; numbers computed without it are not comparable
+    /// to numbers computed with it.
+    #[arg(long = "regions-file", short = 'R', help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
+    regions_file: Option<ClioPath>,
+
     /// Write JSON report to file
     #[arg(long = "output-json", help_heading = cli::sections::OUTPUT, value_hint = clap::ValueHint::FilePath)]
     output_json: Option<ClioPath>,
@@ -96,6 +108,86 @@ struct FullPositionKey {
     alt_allele: SmolStr,
 }
 
+/// Half-open intervals a comparison is restricted to, keyed by contig.
+///
+/// Intervals are sorted and merged on load so that membership is a binary search
+/// and overlapping input lines cannot make the search miss a hit.
+#[derive(Debug, Default)]
+struct ConfidentRegions {
+    by_contig: FxHashMap<SmolStr, Vec<(u64, u64)>>,
+}
+
+impl ConfidentRegions {
+    #[instrument(level = "info", skip_all, fields(path = %path.display()))]
+    fn load(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .wrap_err_with(|| format!("Failed to read BED file: {}", path.display()))?;
+
+        let mut by_contig: FxHashMap<SmolStr, Vec<(u64, u64)>> = FxHashMap::default();
+        for (lineno, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty()
+                || line.starts_with('#')
+                || line.starts_with("track")
+                || line.starts_with("browser")
+            {
+                continue;
+            }
+            let mut fields = line.split('\t');
+            let (Some(chrom), Some(start), Some(end)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                warn!(line = lineno + 1, "Skipping BED line with fewer than 3 columns");
+                continue;
+            };
+            let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
+                warn!(line = lineno + 1, "Skipping BED line with unparsable coordinates");
+                continue;
+            };
+            if end <= start {
+                continue;
+            }
+            by_contig.entry(SmolStr::from(chrom)).or_default().push((start, end));
+        }
+
+        for intervals in by_contig.values_mut() {
+            intervals.sort_unstable();
+            let mut merged: Vec<(u64, u64)> = Vec::with_capacity(intervals.len());
+            for &(start, end) in intervals.iter() {
+                match merged.last_mut() {
+                    Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                    _ => merged.push((start, end)),
+                }
+            }
+            *intervals = merged;
+        }
+
+        let total: usize = by_contig.values().map(Vec::len).sum();
+        ensure!(total > 0, "BED file `{}` contains no usable intervals", path.display());
+        info!(contigs = by_contig.len(), intervals = total, "Loaded confident regions");
+
+        Ok(Self { by_contig })
+    }
+
+    /// Whether `pos` (0-based, as `bcf::Record::pos` reports it) is covered.
+    fn contains(&self, chrom: &str, pos: u64) -> bool {
+        let Some(intervals) = self.by_contig.get(chrom) else {
+            return false;
+        };
+        intervals
+            .binary_search_by(|&(start, end)| {
+                if end <= pos {
+                    std::cmp::Ordering::Less
+                } else if start > pos {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .is_ok()
+    }
+}
+
 /// Position key for methylation beta matching.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MethylationKey {
@@ -148,6 +240,25 @@ struct CategoryPrecision {
     /// Total predictions in this category
     n: usize,
     precision: f64,
+    /// Recall against the truth variants of this same category.
+    ///
+    /// Only available where the category can be derived from the truth VCF as
+    /// well as from ours: insertions and deletions are classified by allele
+    /// length, which works on any VCF, whereas CpG/DeNovo/Other depend on
+    /// rastair's own INFO flags that a GIAB-style truth set does not carry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recall: Option<CategoryRecall>,
+}
+
+/// Recall of one category against the truth variants of that category.
+#[derive(Debug, serde::Serialize)]
+struct CategoryRecall {
+    /// Truth variants in this category
+    truth_n: usize,
+    /// Truth variants in this category that were not predicted
+    fn_count: usize,
+    recall: f64,
+    f1: f64,
 }
 
 /// Pred vs competitor set overlap for one variant category.
@@ -250,6 +361,14 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 
     let experimental_indels = params.experimental_indels;
 
+    let confident = params
+        .regions_file
+        .as_ref()
+        .map(|p| ConfidentRegions::load(p.path()))
+        .transpose()
+        .wrap_err("Failed to load --regions-file")?;
+    let confident = confident.as_ref();
+
     // Slots filled by each rayon task.
     let mut pred_variants: Result<FxHashMap<FullPositionKey, VariantCategory>> =
         Err(eyre!("pred variants not loaded"));
@@ -260,19 +379,20 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 
     rayon::scope(|s| {
         s.spawn(|_| {
-            pred_variants = load_variants(&pred_path, regions, threads, experimental_indels)
-                .wrap_err("Failed to load predictions variants");
+            pred_variants =
+                load_variants(&pred_path, regions, threads, experimental_indels, confident)
+                    .wrap_err("Failed to load predictions variants");
         });
         if let Some(p) = truth_path.as_deref() {
             s.spawn(|_| {
-                truth_variants = load_variants(p, regions, threads, experimental_indels)
+                truth_variants = load_variants(p, regions, threads, experimental_indels, confident)
                     .wrap_err("Failed to load truth variants")
                     .map(Some);
             });
         }
         if let Some(p) = comp_path.as_deref() {
             s.spawn(|_| {
-                comp_variants = load_variants(p, regions, threads, experimental_indels)
+                comp_variants = load_variants(p, regions, threads, experimental_indels, confident)
                     .wrap_err("Failed to load competitor variants")
                     .map(Some);
             });
@@ -339,6 +459,7 @@ fn load_variants(
     regions: &[RegionString],
     threads: usize,
     experimental_indels: bool,
+    confident: Option<&ConfidentRegions>,
 ) -> Result<FxHashMap<FullPositionKey, VariantCategory>> {
     ensure!(path.exists(), "VCF file `{}` not found", path.display());
 
@@ -351,7 +472,7 @@ fn load_variants(
         let header = reader.header().clone();
         for rec in reader.records() {
             match rec {
-                Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
+                Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels, confident),
                 Err(e) => warn!(error = %e, "Failed to read VCF record"),
             }
         }
@@ -374,7 +495,9 @@ fn load_variants(
                 .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
             for rec in reader.records() {
                 match rec {
-                    Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
+                    Ok(r) => {
+                        extract_variants(&r, &header, &mut result, experimental_indels, confident)
+                    }
                     Err(e) => warn!(error = %e, "Failed to read VCF record"),
                 }
             }
@@ -384,11 +507,53 @@ fn load_variants(
     Ok(result)
 }
 
+/// Minimal representation of a REF/ALT pair: shared suffix trimmed, then shared
+/// prefix, with the position advanced by however much prefix was removed.
+///
+/// Two callers that describe the same event with different padding — `TC`→`TCAA`
+/// against `C`→`CAA` — only key alike once both are trimmed. Without this, a
+/// padding difference costs one false positive *and* one false negative.
+///
+/// This is deliberately not left-alignment: an indel inside a homopolymer can
+/// still be placed at different offsets by two callers, and resolving that needs
+/// the reference sequence. Trimming is what can be done from the VCF alone.
+fn minimal_representation<'a>(
+    pos: u64,
+    reference: &'a [u8],
+    alt: &'a [u8],
+) -> (u64, &'a [u8], &'a [u8]) {
+    let (mut pos, mut reference, mut alt) = (pos, reference, alt);
+
+    while reference.len() > 1 && alt.len() > 1 {
+        match (reference.split_last(), alt.split_last()) {
+            (Some((r, r_rest)), Some((a, a_rest))) if r == a => {
+                reference = r_rest;
+                alt = a_rest;
+            }
+            _ => break,
+        }
+    }
+
+    while reference.len() > 1 && alt.len() > 1 {
+        match (reference.split_first(), alt.split_first()) {
+            (Some((r, r_rest)), Some((a, a_rest))) if r == a => {
+                reference = r_rest;
+                alt = a_rest;
+                pos += 1;
+            }
+            _ => break,
+        }
+    }
+
+    (pos, reference, alt)
+}
+
 fn extract_variants(
     record: &bcf::Record,
     header: &HeaderView,
     result: &mut FxHashMap<FullPositionKey, VariantCategory>,
     experimental_indels: bool,
+    confident: Option<&ConfidentRegions>,
 ) {
     if !record.has_filter("PASS".as_bytes()) {
         return;
@@ -408,17 +573,16 @@ fn extract_variants(
         return;
     }
 
-    let ref_str = match std::str::from_utf8(ref_allele) {
-        Ok(s) => SmolStr::from(s),
-        Err(_) => return,
-    };
-
     let chrom = match record.rid().and_then(|rid| header.rid2name(rid).ok()) {
         Some(name) => SmolStr::from(std::str::from_utf8(name).unwrap_or("unknown")),
         None => return,
     };
 
     let pos = record.pos() as u64;
+
+    if confident.is_some_and(|regions| !regions.contains(&chrom, pos)) {
+        return;
+    }
     let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
     let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
 
@@ -441,9 +605,14 @@ fn extract_variants(
         {
             continue;
         }
-        let alt_str = match std::str::from_utf8(alt_allele) {
-            Ok(s) => SmolStr::from(s),
-            Err(_) => continue,
+        // Keyed on the trimmed form so that two callers padding the same event
+        // differently still land on one key.
+        let (pos, ref_allele, alt_allele) = minimal_representation(pos, ref_allele, alt_allele);
+
+        let (Ok(ref_str), Ok(alt_str)) =
+            (std::str::from_utf8(ref_allele), std::str::from_utf8(alt_allele))
+        else {
+            continue;
         };
 
         // When indels are not enabled, skip multi-base alleles entirely
@@ -471,8 +640,8 @@ fn extract_variants(
             FullPositionKey {
                 chrom: chrom.clone(),
                 pos,
-                ref_allele: ref_str.clone(),
-                alt_allele: alt_str,
+                ref_allele: SmolStr::from(ref_str),
+                alt_allele: SmolStr::from(alt_str),
             },
             category,
         );
@@ -587,9 +756,13 @@ fn compute_variant_report(
 
     let pred_by_cat = split_by_category(pred);
     let comp_by_cat = competitor.map(split_by_category);
+    let truth_by_cat = truth.map(split_by_category);
 
-    // Per-category precision: compare each category's predictions against the *full* truth set.
-    // We cannot compute recall because GIAB-style truth VCFs carry no CPG/CPGnovo flags.
+    // Per-category precision compares each category's predictions against the *full*
+    // truth set. Recall additionally needs the truth restricted to the same category,
+    // which is only meaningful for indels: they are classified by allele length, so
+    // the truth VCF bins them exactly as we do, whereas CpG/DeNovo/Other rely on
+    // rastair's INFO flags that a GIAB-style truth set does not carry.
     let mut by_category: FxHashMap<String, CategoryMetrics> = FxHashMap::default();
     for cat in [
         VariantCategory::CpG,
@@ -601,11 +774,23 @@ fn compute_variant_report(
         let pred_cat = pred_by_cat.get(&cat).cloned().unwrap_or_default();
         let comp_cat = comp_by_cat.as_ref().and_then(|m| m.get(&cat)).cloned().unwrap_or_default();
 
+        let truth_cat = matches!(cat, VariantCategory::Insertion | VariantCategory::Deletion)
+            .then(|| truth_by_cat.as_ref().and_then(|m| m.get(&cat)))
+            .flatten();
+
         let pred_vs_truth_cat = truth_keys.as_ref().and_then(|t| {
-            if pred_cat.is_empty() { None } else { Some(compute_category_precision(&pred_cat, t)) }
+            if pred_cat.is_empty() {
+                None
+            } else {
+                Some(compute_category_precision(&pred_cat, t, truth_cat))
+            }
         });
         let comp_vs_truth_cat = truth_keys.as_ref().and_then(|t| {
-            if comp_cat.is_empty() { None } else { Some(compute_category_precision(&comp_cat, t)) }
+            if comp_cat.is_empty() {
+                None
+            } else {
+                Some(compute_category_precision(&comp_cat, t, truth_cat))
+            }
         });
         let cat_overlap = if !pred_cat.is_empty() && !comp_cat.is_empty() {
             Some(CategoryOverlap {
@@ -723,15 +908,38 @@ fn compute_metrics(
 
 /// Compute precision for a single category against the full truth set.
 /// We check how many of the caller's variants in this category appear anywhere in truth.
+/// Precision of one category against the whole truth set, plus recall against
+/// this category's own truth variants where `truth_cat` is available.
+///
+/// Precision deliberately matches against *all* of truth, not just the same
+/// category: a prediction we call an insertion and truth records as an insertion
+/// is a hit regardless of how either side bins it. Recall needs the category
+/// restriction, since the denominator has to be the truth variants of this kind.
 fn compute_category_precision(
     caller_cat: &FxHashSet<FullPositionKey>,
     truth_all: &FxHashSet<FullPositionKey>,
+    truth_cat: Option<&FxHashSet<FullPositionKey>>,
 ) -> CategoryPrecision {
     let n = caller_cat.len();
     let tp = caller_cat.intersection(truth_all).count();
     let fp = n - tp;
     let precision = if n > 0 { tp as f64 / n as f64 } else { 0.0 };
-    CategoryPrecision { tp, fp, n, precision }
+
+    let recall = truth_cat.map(|truth_cat| {
+        let truth_n = truth_cat.len();
+        // Counted against this category's truth so that the ratio cannot exceed
+        // 1 the way a whole-truth `tp` over a category denominator can.
+        let cat_tp = caller_cat.intersection(truth_cat).count();
+        let recall = if truth_n > 0 { cat_tp as f64 / truth_n as f64 } else { 0.0 };
+        let f1 = if precision + recall > 0.0 {
+            2.0 * precision * recall / (precision + recall)
+        } else {
+            0.0
+        };
+        CategoryRecall { truth_n, fn_count: truth_n - cat_tp, recall, f1 }
+    });
+
+    CategoryPrecision { tp, fp, n, precision, recall }
 }
 
 fn split_by_category(
@@ -997,7 +1205,25 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
         ];
 
         let mut builder = Builder::default();
-        builder.push_record(["Category", "Target", "N", "TP", "FP", "Precision"]);
+        builder.push_record([
+            "Category",
+            "Target",
+            "N",
+            "TP",
+            "FP",
+            "Precision",
+            "FN",
+            "Recall",
+            "F1",
+        ]);
+
+        // Recall columns are only filled for the categories whose truth-side
+        // membership we can determine (indels); the rest stay blank rather than
+        // showing a number computed against the wrong denominator.
+        let recall_cells = |m: &CategoryPrecision| match &m.recall {
+            Some(r) => [fmt_n(r.fn_count), format!("{:.4}", r.recall), format!("{:.4}", r.f1)],
+            None => ["—".into(), "—".into(), "—".into()],
+        };
 
         for cat in cats {
             let Some(cm) = variant_report.by_category.get(&cat.to_string()) else {
@@ -1006,6 +1232,7 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
             let cat_str = cat.to_string();
 
             if let Some(m) = &cm.predictions_vs_truth {
+                let [fn_c, rec, f1] = recall_cells(m);
                 builder.push_record([
                     cat_str.clone(),
                     "Predictions".into(),
@@ -1013,6 +1240,9 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
                     fmt_n(m.tp),
                     fmt_n(m.fp),
                     format!("{:.4}", m.precision),
+                    fn_c,
+                    rec,
+                    f1,
                 ]);
             } else {
                 builder.push_record([
@@ -1022,10 +1252,14 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
                     "—".into(),
                     "—".into(),
                     "—".into(),
+                    "—".into(),
+                    "—".into(),
+                    "—".into(),
                 ]);
             }
             if has_comp {
                 if let Some(c) = &cm.competitor_vs_truth {
+                    let [fn_c, rec, f1] = recall_cells(c);
                     builder.push_record([
                         cat_str.clone(),
                         "Competitor".into(),
@@ -1033,11 +1267,17 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
                         fmt_n(c.tp),
                         fmt_n(c.fp),
                         format!("{:.4}", c.precision),
+                        fn_c,
+                        rec,
+                        f1,
                     ]);
                 } else {
                     builder.push_record([
                         cat_str,
                         "Competitor".into(),
+                        "—".into(),
+                        "—".into(),
+                        "—".into(),
                         "—".into(),
                         "—".into(),
                         "—".into(),
@@ -1049,7 +1289,7 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
 
         let mut table = builder.build();
         table.with(Style::markdown());
-        table.with(Modify::new(Columns::new(2..6)).with(Alignment::right()));
+        table.with(Modify::new(Columns::new(2..9)).with(Alignment::right()));
         println!("{table}\n");
     }
 
@@ -1107,6 +1347,82 @@ mod tests {
 
     fn set_of(keys: impl IntoIterator<Item = FullPositionKey>) -> FxHashSet<FullPositionKey> {
         keys.into_iter().collect()
+    }
+
+    fn normalized(pos: u64, reference: &str, alt: &str) -> (u64, String, String) {
+        let (pos, r, a) = minimal_representation(pos, reference.as_bytes(), alt.as_bytes());
+        (pos, String::from_utf8_lossy(r).into_owned(), String::from_utf8_lossy(a).into_owned())
+    }
+
+    /// The whole point: the same event padded two ways has to produce one key.
+    /// Without this a padding difference costs a false positive *and* a false
+    /// negative, which double-counts against precision and recall at once.
+    #[test]
+    fn padded_and_minimal_indels_normalize_alike() {
+        // Trimming the leading T moves the anchor onto the C, one base along.
+        assert_eq!(normalized(100, "TC", "TCAA"), normalized(101, "C", "CAA"));
+        assert_eq!(normalized(100, "CAAT", "CAT"), (100, "CA".into(), "C".into()));
+    }
+
+    #[test]
+    fn minimal_representation_leaves_canonical_indels_alone() {
+        assert_eq!(normalized(100, "C", "CAA"), (100, "C".into(), "CAA".into()));
+        assert_eq!(normalized(100, "CAA", "C"), (100, "CAA".into(), "C".into()));
+    }
+
+    /// An anchor base must survive trimming — VCF has no empty allele, so both
+    /// loops stop at length 1 even when every base is shared.
+    #[test]
+    fn trimming_always_leaves_an_anchor_base() {
+        let (_, r, a) = normalized(100, "AAAA", "AAAA");
+        assert!(!r.is_empty() && !a.is_empty());
+    }
+
+    #[test]
+    fn snvs_are_untouched_by_trimming() {
+        assert_eq!(normalized(100, "C", "T"), (100, "C".into(), "T".into()));
+        // A same-length MNP shares its outer bases but is not an indel; trimming
+        // must not slide it off its own position.
+        assert_eq!(normalized(100, "CAT", "CGT"), (101, "A".into(), "G".into()));
+    }
+
+    fn regions(intervals: &[(&str, u64, u64)]) -> ConfidentRegions {
+        let mut by_contig: FxHashMap<SmolStr, Vec<(u64, u64)>> = FxHashMap::default();
+        for &(chrom, start, end) in intervals {
+            by_contig.entry(SmolStr::from(chrom)).or_default().push((start, end));
+        }
+        for v in by_contig.values_mut() {
+            v.sort_unstable();
+        }
+        ConfidentRegions { by_contig }
+    }
+
+    #[test]
+    fn confident_regions_are_half_open() {
+        let r = regions(&[("chr1", 100, 200)]);
+        assert!(!r.contains("chr1", 99));
+        assert!(r.contains("chr1", 100));
+        assert!(r.contains("chr1", 199));
+        assert!(!r.contains("chr1", 200), "BED end is exclusive");
+    }
+
+    /// A contig absent from the BED is outside the confident set, not inside it —
+    /// otherwise restricting to a chr12 BED would silently score all of chr1 too.
+    #[test]
+    fn unlisted_contig_is_not_confident() {
+        let r = regions(&[("chr1", 100, 200)]);
+        assert!(!r.contains("chr2", 150));
+    }
+
+    #[test]
+    fn membership_finds_the_right_interval_among_many() {
+        let r = regions(&[("chr1", 0, 10), ("chr1", 100, 200), ("chr1", 1000, 1010)]);
+        for pos in [0, 9, 100, 199, 1000, 1009] {
+            assert!(r.contains("chr1", pos), "{pos} should be covered");
+        }
+        for pos in [10, 99, 200, 999, 1010] {
+            assert!(!r.contains("chr1", pos), "{pos} should not be covered");
+        }
     }
 
     #[test]
