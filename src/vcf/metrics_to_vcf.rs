@@ -7,7 +7,7 @@ use crate::{
         AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, CpgBeta, CpgOrigin,
         DeNovoCpGCandidate, Entropy, Format, GenotypeConfidence, GenotypeLikelihood, Info,
         MachineLearningPrediction, Methylated, NumAlignedBases, NumIndels, PositionInRead,
-        StrandSpecificBaseQuality, StrandSpecificMappingQuality, low_ml_score,
+        StrandSpecificBaseQuality, StrandSpecificMappingQuality, indel_strand, low_ml_score,
     },
 };
 use color_eyre::eyre::ensure;
@@ -438,16 +438,99 @@ impl<'p> VcfRecordSet<'p> {
             }
         };
 
-        // Indel records are always emitted when present (they already passed filters).
-        v.extend(&self.indel_records);
+        // Indels obey the same emission contract as SNVs: only PASS by default,
+        // everything under `--all`.
+        v.extend(self.indel_records.iter().filter(|r| filters.vcf_all || r.filters.pass()));
         v
     }
+}
+
+/// Render a compound heterozygote as one multi-allelic record.
+///
+/// Both alleles share an anchor, so REF spans the longest deletion among them and
+/// each ALT is written against that span. Two biallelic records would each carry a
+/// `1/2` genotype referring to an allele they do not declare.
+type IndelCall = crate::call::variant_calling::indel_calling::IndelCall;
+
+fn build_compound_het_record(
+    metrics: &PileupMetrics,
+    ml_threshold: Option<Probability>,
+) -> Option<Record> {
+    let calls: SmallVec<&IndelCall, 2> = metrics.indel_calls.iter().take(2).collect();
+    let (first, second) = (calls.first()?, calls.get(1)?);
+    let anchor: seqair_types::SmolStr = metrics.pileup.reference_base.into();
+    let render =
+        |bases: &[seqair_types::Base]| -> String { bases.iter().map(|b| b.as_str()).collect() };
+    let deleted: &[seqair_types::Base] = calls
+        .iter()
+        .filter_map(|c| match &c.allele {
+            IndelAllele::Deletion(bases) => Some(&bases[..]),
+            IndelAllele::Insertion(_) => None,
+        })
+        .max_by_key(|b| b.len())
+        .unwrap_or(&[]);
+    let alt_of = |call: &IndelCall| -> String {
+        match &call.allele {
+            IndelAllele::Deletion(bases) => {
+                format!("{anchor}{}", render(deleted.get(bases.len()..).unwrap_or(&[])))
+            }
+            IndelAllele::Insertion(bases) => {
+                format!("{anchor}{}{}", render(bases), render(deleted))
+            }
+        }
+    };
+
+    let mut filters = super::Filters::default();
+    let below = |c: &IndelCall| c.ml.zip(ml_threshold).is_some_and(|(ml, t)| ml < t);
+    if below(first) || below(second) {
+        filters.add(low_ml_score.filter());
+    } else {
+        filters.add(PASS.filter());
+    }
+
+    let depth = first.depth;
+    Some(Record {
+        main: VcfFixedFields {
+            chrom: metrics.pileup.contig(),
+            pos: metrics.pileup.pos,
+            id: default(),
+            r#ref: format!("{anchor}{}", render(deleted)).into(),
+            alt: smallvec![alt_of(first).into(), alt_of(second).into()],
+            qual: Some(first.quality.as_int()),
+        },
+        filters,
+        info: Info {
+            read_depth: ReadDepth(depth as usize),
+            allele_read_depth: AlleleReadDepth(smallvec![
+                depth.saturating_sub(first.alt_count + second.alt_count) as usize,
+                first.alt_count as usize,
+                second.alt_count as usize,
+            ]),
+            ..default()
+        },
+        samples: smallvec_inline![Format {
+            genotype: Genotype::from(first.genotype),
+            sample_read_depth: SampleReadDepth(depth as usize),
+            machine_learning_prediction: MachineLearningPrediction(
+                calls.iter().filter_map(|c| c.ml.map(|ml| *ml)).collect()
+            ),
+            ..default()
+        }],
+    })
 }
 
 fn build_indel_records(
     metrics: &PileupMetrics,
     ml_threshold: Option<Probability>,
 ) -> SmallVec<Record, 1> {
+    if metrics
+        .indel_calls
+        .iter()
+        .any(|c| matches!(c.genotype, crate::call::variant_calling::GenotypeTag::AltHet(..)))
+    {
+        return build_compound_het_record(metrics, ml_threshold).into_iter().collect();
+    }
+
     metrics
         .indel_calls
         .iter()
@@ -491,7 +574,9 @@ fn build_indel_records(
 
             let mut filters = super::Filters::default();
             let ml_below_threshold = call.ml.zip(ml_threshold).is_some_and(|(ml, t)| ml < t);
-            if ml_below_threshold {
+            if call.one_sided {
+                filters.add(indel_strand.filter());
+            } else if ml_below_threshold {
                 filters.add(low_ml_score.filter());
             } else {
                 filters.add(PASS.filter());

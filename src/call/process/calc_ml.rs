@@ -26,6 +26,7 @@ pub fn add_ml_metrics(
     current: &mut PileupMetrics,
     after: Option<&PileupMetrics>,
     ml: &MachineLearning,
+    score_indels: bool,
 ) -> Result<()> {
     if !ml.enabled() {
         return Ok(());
@@ -63,8 +64,11 @@ pub fn add_ml_metrics(
         }
     }
 
+    // The hard-filter pathway must not carry an ML score: it did not consult the
+    // model, and a score would make `low_ml_score` reachable for calls the model
+    // never judged.
     let mut indel_scores: Vec<(usize, Probability)> = Vec::new();
-    for (i, call) in current.indel_calls.iter().enumerate() {
+    for (i, call) in current.indel_calls.iter().enumerate().filter(|_| score_indels) {
         let m = MetricsForIndel { metrics: current, indel: call };
         if let Some(pred) = ml.predict_indels(&m) {
             indel_scores.push((i, pred.prediction));
@@ -84,14 +88,18 @@ pub fn add_ml_metrics(
 /// prediction is unavailable.
 ///
 /// FIXME: Does this do the same really in regard to matching by position?
-pub fn add_ml_metrics_vec(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Result<()> {
+pub fn add_ml_metrics_vec(
+    pileups: &mut [PileupMetrics],
+    ml: &MachineLearning,
+    score_indels: bool,
+) -> Result<()> {
     for i in 0..pileups.len() {
         let (left, rest) = pileups.split_at_mut(i);
         let (current, right) =
             rest.split_first_mut().wrap_err("Failed to split pileups").this_is_a_bug()?;
         let before = left.last().map(|p| p as &_);
         let after = right.first().map(|p| p as &_);
-        add_ml_metrics(before, current, after, ml)?;
+        add_ml_metrics(before, current, after, ml, score_indels)?;
     }
 
     Ok(())
@@ -106,6 +114,7 @@ pub fn batch_add_ml_metrics(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     gpu: &GpuRastairModel,
+    score_indels: bool,
 ) -> Result<()> {
     let Some(rastair_model) = ml.model.as_ref() else {
         return Ok(());
@@ -208,7 +217,9 @@ pub fn batch_add_ml_metrics(
                 }
             }
 
-            for (indel_idx, call) in pileups_ref[i].indel_calls.iter().enumerate() {
+            for (indel_idx, call) in
+                pileups_ref[i].indel_calls.iter().enumerate().filter(|_| score_indels)
+            {
                 let indel_m = MetricsForIndel { metrics: &pileups_ref[i], indel: call };
 
                 let (model_type, platt, features_result) = match &call.allele {

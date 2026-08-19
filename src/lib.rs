@@ -19,6 +19,7 @@ pub use vcf::Record as VcfRecord;
 pub(crate) mod bam;
 pub(crate) mod bed;
 pub mod metrics;
+mod regions;
 pub(crate) mod train;
 pub use train::{TrainModelParams, train_model};
 mod verify;

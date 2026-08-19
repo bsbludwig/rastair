@@ -25,6 +25,7 @@ use crate::{
         },
     },
     rayon_all,
+    regions::ConfidentRegions,
     sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli},
 };
@@ -56,6 +57,21 @@ pub struct TrainModelParams {
     truth: ClioPath,
 
     /// Output directory for trained models
+    /// Restrict training to the intervals of a BED file (e.g. a GIAB
+    /// high-confidence region file).
+    ///
+    /// Strongly recommended whenever the truth set has one. Outside its
+    /// high-confidence regions a truth VCF asserts nothing, so a real variant
+    /// there is simply missing from it and would be labelled *negative*. Those
+    /// mislabelled negatives concentrate in the repetitive regions the truth set
+    /// excludes — which is where indels live — so training without this teaches
+    /// the model that indel-like signal in a repeat is false, using examples
+    /// where the truth is merely unknown.
+    ///
+    /// Candidates outside the intervals are dropped, not relabelled.
+    #[arg(long = "regions-file", short = 'R', help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
+    regions_file: Option<ClioPath>,
+
     #[arg(short = 'o', long = "output", default_value = "./models")]
     #[arg(help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::FilePath)]
     output: ClioPath,
@@ -254,10 +270,23 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     info!("Processing {} segments to collect training data", regions.len());
 
-    // Use default IndelParams with experimental_indels enabled so we can
-    // collect training examples for insertion/deletion models.
-    let indel_params = IndelParams { experimental_indels: true, ..IndelParams::default() };
+    // Training examples come from the ML pathway, so select it explicitly rather
+    // than the hard-filter chain.
+    let indel_params = IndelParams { experimental_indels_ml: true, ..IndelParams::default() };
     let calculator = params.ml_features.get_calculator();
+    let confident = params
+        .regions_file
+        .as_ref()
+        .map(|p| ConfidentRegions::load(p.path()))
+        .transpose()
+        .wrap_err("Failed to load training regions")?;
+    if confident.is_none() {
+        warn!(
+            "Training without --regions-file: candidates outside the truth set's \
+             high-confidence regions will be labelled negative even though the truth set \
+             makes no claim there, which is most severe for indels."
+        );
+    }
 
     // Process segments in parallel to collect training data
     let results: Vec<SegmentResult> = rayon::ThreadPoolBuilder::new()
@@ -315,6 +344,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
                             &indel_variants,
                             &indel_params,
                             &*calculator,
+                            confident.as_ref(),
                         ) {
                             Ok(data) => data,
                             Err(e) => {
@@ -638,6 +668,7 @@ fn collect_training_data_from_segment(
     indel_truth: &HashSet<IndelKey>,
     indel_params: &IndelParams,
     calculator: &dyn FeatureCalculator,
+    confident: Option<&ConfidentRegions>,
 ) -> Result<SegmentResult> {
     // Create local training data for this segment
     let mut cpg_data = TrainingData::new();
@@ -664,6 +695,13 @@ fn collect_training_data_from_segment(
         })
         .map_surrounding(|before, current, after| {
             let pos = u64::from(current.pileup.pos);
+
+            // Outside the confident regions the truth set makes no claim, so a
+            // candidate there cannot be labelled either way — drop it rather than
+            // teach the model a negative we cannot support.
+            if confident.is_some_and(|r| !r.contains(&chunk_region.contig, pos)) {
+                return Ok(());
+            }
 
             // -- SNP alt alleles --
             for alt in &current.alts {
@@ -707,7 +745,10 @@ fn collect_training_data_from_segment(
 
             // -- Indel alleles --
             if !current.indels.is_empty() {
-                let indel_calls = indel_calling::call_indels(&current.indels, indel_params, true);
+                let tract =
+                    u32::from(current.pileup.homopolymer_run.max(current.pileup.dinucleotide_run));
+                let indel_calls =
+                    indel_calling::call_indels(&current.indels, indel_params, true, tract, false);
                 for call in &indel_calls {
                     let indel_key = IndelKey { pos, allele: call.allele.clone() };
                     let label = if indel_truth.contains(&indel_key) { 1.0 } else { 0.0 };

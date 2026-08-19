@@ -397,17 +397,28 @@ fn process_region(
         .filter(|p| params.record_filters.pre_filter(p))
         .collect();
 
-    if params.indel.experimental_indels {
+    if params.indel.enabled() {
         for p in &mut pileups {
-            p.indel_calls =
-                variant_calling::indel_calling::call_indels(&p.indels, &params.indel, ml.enabled());
+            let tract = u32::from(p.pileup.homopolymer_run.max(p.pileup.dinucleotide_run));
+            p.indel_calls = variant_calling::indel_calling::call_indels(
+                &p.indels,
+                &params.indel,
+                params.indel.use_ml(ml.enabled()),
+                tract,
+                params.indel.indel_ml_rescue,
+            );
         }
     }
 
     // Pass 2: ML prediction — GPU batch if available, otherwise or on error,
     // use sequential CPU fallback.
     GPU_FORESTS.with(|gf| -> Result<()> {
-        match gf.borrow().as_ref().map(|gpu| process::batch_add_ml_metrics(&mut pileups, ml, gpu)) {
+        let score_indels = params.indel.needs_ml_scores(ml.enabled());
+        match gf
+            .borrow()
+            .as_ref()
+            .map(|gpu| process::batch_add_ml_metrics(&mut pileups, ml, gpu, score_indels))
+        {
             Some(Ok(_)) => return Ok(()),
             Some(Err(error)) => {
                 warn!(
@@ -417,8 +428,17 @@ fn process_region(
             }
             None => {}
         }
-        process::add_ml_metrics_vec(&mut pileups, ml)
+        process::add_ml_metrics_vec(&mut pileups, ml, score_indels)
     })?;
+
+    if params.indel.indel_ml_rescue {
+        for p in &mut pileups {
+            variant_calling::indel_calling::rescue_hom_ref(
+                &mut p.indel_calls,
+                params.ml.threshold(),
+            );
+        }
+    }
 
     let pileups: Vec<PileupMetrics> = pileups
         .into_iter()
