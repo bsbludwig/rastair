@@ -80,7 +80,7 @@ fn set_filters() -> Result<()> {
 
     let pileups = pileups
         .into_iter()
-        .map_surrounding(|b, c, a| process::add_ml_metrics(b, c, a, &ml))
+        .map_surrounding(|b, c, a| process::add_ml_metrics(b, c, a, &ml, true))
         .collect::<Result<Vec<_>>>()?;
 
     // get pileups for a CpG site

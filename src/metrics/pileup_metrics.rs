@@ -574,26 +574,46 @@ pub struct MetricsForIndel<'p> {
 
 fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     if pileup.indel_observations.is_empty() {
-        return IndelCounts { ref_count: pileup.reads.len() as u32, ..Default::default() };
+        return IndelCounts {
+            ref_count: pileup.reads.len() as u32,
+            noisy_ref_count: pileup.noisy_ref_count,
+            ..Default::default()
+        };
     }
 
     let mut alleles: SmallVec<IndelAlleleCounts, 2> = SmallVec::new();
 
     for obs in &pileup.indel_observations {
-        if let Some(entry) = alleles.iter_mut().find(|e| e.allele == obs.allele) {
-            if obs.reverse {
-                entry.rev += 1;
-            } else {
-                entry.fwd += 1;
+        let entry = match alleles.iter_mut().find(|e| e.allele == obs.allele) {
+            Some(entry) => entry,
+            None => {
+                alleles.push(IndelAlleleCounts {
+                    allele: obs.allele.clone(),
+                    ot: 0,
+                    ob: 0,
+                    unknown_strand: 0,
+                    noisy: 0,
+                });
+                alleles.last_mut().expect("just pushed")
             }
-        } else {
-            let (fwd, rev) = if obs.reverse { (0, 1) } else { (1, 0) };
-            alleles.push(IndelAlleleCounts { allele: obs.allele.clone(), fwd, rev });
+        };
+        match obs.strand {
+            Strand::OT => entry.ot += 1,
+            Strand::OB => entry.ob += 1,
+            Strand::Unknown => entry.unknown_strand += 1,
+        }
+        if obs.noisy {
+            entry.noisy += 1;
         }
     }
 
     let total_indel_reads: u32 = alleles.iter().map(|a| a.total()).sum();
     let ref_count = (pileup.reads.len() as u32).saturating_sub(total_indel_reads);
 
-    IndelCounts { alleles, ref_count, depth_offset: pileup.depth_offset }
+    IndelCounts {
+        alleles,
+        ref_count,
+        depth_offset: pileup.depth_offset,
+        noisy_ref_count: pileup.noisy_ref_count,
+    }
 }

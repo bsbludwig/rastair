@@ -41,6 +41,7 @@ filter!(m_bq_ratio, "Low quality ratio for methylation candidate");
 filter!(m_pos, "Alt allele evidence from read edges for methylation candidate");
 filter!(m_highDp, "Excessive coverage for methylation candidate");
 filter!(low_ml_score, "Machine Learning module prediction below threshold");
+filter!(indel_strand, "Indel allele supported on only one bisulfite strand");
 filter!(pre_ml, "Low amount of usable evidence, skipping ML");
 
 info_field!(
@@ -101,7 +102,7 @@ vcf_record!(
         lowDp,
         dnCpG_lowDp, dnCpG_bq, dnCpG_mapq, dnCpG_vaf, dnCpG_adj,
         m_vaf, m_bq_ratio, m_pos, m_highDp,
-        pre_ml, low_ml_score,
+        pre_ml, low_ml_score, indel_strand,
     ],
     // general info
     // Fields marked "default" are included in minimal VCF output by default

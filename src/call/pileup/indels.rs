@@ -47,6 +47,9 @@ pub struct IndelObservation {
     pub insertion_base_quals: SmallVec<u8, 4>,
     pub post_del_base_qual: u8,
     pub has_repeat: bool,
+    /// Terminal tandem repeat or soft-clip: this fragment's alignment is the kind
+    /// that slips. Subtracted from the alternate side of the ratio.
+    pub noisy: bool,
 }
 
 /// Aggregated indel counts at a position, ready for calling.
@@ -56,6 +59,10 @@ pub struct IndelCounts {
     pub alleles: SmallVec<IndelAlleleCounts, 2>,
     /// Total reads at this position that do NOT have an indel (reference-supporting).
     pub ref_count: u32,
+    /// Non-supporting fragments that look noisy. The reference-side counterpart of
+    /// [`IndelAlleleCounts::noisy`]; both come off together so the noise exclusion
+    /// cannot move the ratio on its own.
+    pub noisy_ref_count: u32,
     /// Reads with problematic patterns (homopolymer, soft-clip) subtracted from depth
     /// for indel quality calculation.
     pub depth_offset: u32,
@@ -66,6 +73,16 @@ impl IndelCounts {
         self.alleles.iter().map(|a| a.total()).sum()
     }
 
+    /// Depth with repeat-noisy reads removed from *both* sides of the ratio.
+    ///
+    /// `depth_offset` counts only noisy reads without an indel, so subtracting it
+    /// alone shrinks the denominator and inflates the alternate fraction by the
+    /// noise rate — worst exactly in the repeats where indels concentrate.
+    pub fn clean_depth(&self) -> u32 {
+        self.ref_count.saturating_sub(self.noisy_ref_count)
+            + self.alleles.iter().map(|a| a.clean_total()).sum::<u32>()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.alleles.is_empty()
     }
@@ -74,16 +91,28 @@ impl IndelCounts {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndelAlleleCounts {
     pub allele: IndelAllele,
-    pub fwd: u32,
-    pub rev: u32,
+    /// Supporting reads by *bisulfite* strand, not by the alignment reverse flag.
+    /// Both mates of a fragment share an OT/OB assignment but have opposite reverse
+    /// flags, so a reverse-flag split is present on almost every real allele and
+    /// carries no signal.
+    pub ot: u32,
+    pub ob: u32,
+    pub unknown_strand: u32,
+    /// Supporting reads carrying a terminal tandem repeat. The alternate-side
+    /// counterpart of [`IndelCounts::depth_offset`].
+    pub noisy: u32,
 }
 
 impl IndelAlleleCounts {
     pub fn total(&self) -> u32 {
-        self.fwd + self.rev
+        self.ot + self.ob + self.unknown_strand
+    }
+
+    pub fn clean_total(&self) -> u32 {
+        self.total().saturating_sub(self.noisy)
     }
 
     pub fn on_both_strands(&self) -> bool {
-        self.fwd > 0 && self.rev > 0
+        self.ot > 0 && self.ob > 0
     }
 }

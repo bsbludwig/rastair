@@ -176,10 +176,21 @@ impl Pileup {
         // FIXME: Do in same pass
         let segment_start = segment.range.region.start as usize;
         let indel_cutoff = params.indel_end_of_read_cutoff;
-        let repeat_limit = params.indel_repeat_limit;
         let mut indel_observations = SmallVec::new();
         let mut depth_offset: u32 = 0;
         let mut soft_clip_count: u32 = 0;
+
+        // Indel accounting is per *fragment*, matching the deduplication already
+        // applied to `reads` above. Both sides of `VAF = alt / depth` must share a
+        // granularity: counting observations per alignment while the depth is per
+        // fragment double-counts overlapping mates, and `ref_count` (computed as
+        // `reads.len() - total_indel_reads`) can then floor to zero and read VAF as
+        // 1.0. With `--keep-overlapping-reads` nothing is deduplicated and both
+        // sides stay at the alignment level, which is equally consistent.
+        let dedup_indels = !params.keep_overlapping_reads;
+        let mut seen_indel_fragments: SmallVec<u64, 8> = SmallVec::new();
+        let mut seen_depth_offset: SmallVec<u64, 8> = SmallVec::new();
+        let mut noisy_ref_count: u32 = 0;
 
         for a in pile.alignments() {
             let record = a.record_view();
@@ -187,17 +198,24 @@ impl Pileup {
             let (seq, qual) = record.seq_and_qual();
             let read_len = seq.len();
             let (matches, indels_in_read) = calc_cigar_data(record.raw_cigar());
+            let fragment_key = dedup_indels.then(|| hash_bytes(record.qname()));
 
-            if has_soft_clip(record.raw_cigar()) {
+            let soft_clipped = has_soft_clip(record.raw_cigar());
+            if soft_clipped {
                 soft_clip_count += 1;
             }
 
             match a.indel() {
                 Indel::None => {
-                    if has_repeat_seq(&seq, 1, repeat_limit)
-                        || has_repeat_seq(&seq, 2, repeat_limit)
+                    let terminal_repeat = has_repeat_seq(&seq, 1, HOMOPOLYMER_UNITS)
+                        || has_repeat_seq(&seq, 2, DINUCLEOTIDE_UNITS);
+                    if (terminal_repeat || soft_clipped)
+                        && first_seen(&mut seen_depth_offset, fragment_key)
                     {
-                        depth_offset += 1;
+                        if terminal_repeat {
+                            depth_offset += 1;
+                        }
+                        noisy_ref_count += 1;
                     }
                 }
                 indel => {
@@ -262,8 +280,14 @@ impl Pileup {
                         IndelAllele::Deletion(_) => SmallVec::new(),
                     };
 
-                    let has_repeat = has_repeat_seq(&seq, 1, repeat_limit)
-                        || has_repeat_seq(&seq, 2, repeat_limit);
+                    // One vote per fragment: the second overlapping mate of a
+                    // fragment that already contributed is skipped.
+                    if !first_seen(&mut seen_indel_fragments, fragment_key) {
+                        continue;
+                    }
+
+                    let has_repeat = has_repeat_seq(&seq, 1, HOMOPOLYMER_UNITS)
+                        || has_repeat_seq(&seq, 2, DINUCLEOTIDE_UNITS);
                     let post_del_base_qual = match &allele {
                         IndelAllele::Deletion(_) => qual.get(qpos + 1).copied().unwrap_or(0),
                         IndelAllele::Insertion(_) => 0,
@@ -282,6 +306,7 @@ impl Pileup {
                         insertion_base_quals,
                         post_del_base_qual,
                         has_repeat,
+                        noisy: has_repeat || soft_clipped,
                     });
                 }
             }
@@ -303,8 +328,12 @@ impl Pileup {
             reference_base,
             indel_observations,
             depth_offset,
-            homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
-            dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
+            noisy_ref_count,
+            // `pos` is the anchor, i.e. the base *before* the indel; for a
+            // left-aligned indel that is the base before the repeat. Measured at the
+            // anchor these read ~1 exactly where the tract is longest.
+            homopolymer_run: homopolymer_run_at(pos as usize + 1, &segment, segment_start),
+            dinucleotide_run: dinucleotide_run_at(pos as usize + 1, &segment, segment_start),
             soft_clip_count,
             indel_ref_window,
             indel_ref_anchor,
@@ -475,6 +504,18 @@ fn pseudo_random_strand(record: &Record) -> Strand {
     if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
 }
 
+/// Records a per-fragment contribution once. `None` (dedup disabled) always counts.
+fn first_seen(seen: &mut SmallVec<u64, 8>, key: Option<u64>) -> bool {
+    match key {
+        None => true,
+        Some(k) if seen.contains(&k) => false,
+        Some(k) => {
+            seen.push(k);
+            true
+        }
+    }
+}
+
 fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = FxHasher::default();
     bytes.hash(&mut hasher);
@@ -580,37 +621,35 @@ fn dinucleotide_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u
 }
 
 /// Check if first or last `cutoff` bases of a read form a repeating pattern of length `n`.
-fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, cutoff: usize) -> bool {
+/// Whether either read terminus is a tandem repeat of period `n`, measured in whole
+/// repeat units.
+///
+/// Units rather than a shared base window: with a 3 bp window the period-2 arm
+/// reduces to `seq[0] == seq[2] || seq[len-3] == seq[len-1]`, true for 43.75% of
+/// random reads, which makes the noise flag fire on a typical read rather than an
+/// unusual one. At 4 units a terminal homopolymer occurs ~3% of the time and a
+/// 3-unit dinucleotide repeat ~0.8%.
+/// A flagged read should be unusual, not typical: see [`has_repeat_seq`].
+const HOMOPOLYMER_UNITS: usize = 4;
+const DINUCLEOTIDE_UNITS: usize = 3;
+
+fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, units: usize) -> bool {
     let len = seq.len();
-    if len < cutoff || n == 0 || cutoff < n {
+    let Some(window) = n.checked_mul(units).filter(|w| *w <= len) else {
+        return false;
+    };
+    if n == 0 || units < 2 {
         return false;
     }
 
-    // Check start: do first `cutoff` bases repeat a pattern of length `n`?
-    let start_pattern: SmallVec<u8, 4> = (0..n).filter_map(|i| seq.get(i)).collect();
-    if start_pattern.len() == n {
-        let start_repeat = (n..cutoff)
-            .all(|i| seq.get(i).is_some_and(|b| start_pattern.get(i % n).is_some_and(|&p| b == p)));
-        if start_repeat {
-            return true;
-        }
-    }
-
-    // Check end: do last `cutoff` bases repeat a pattern of length `n`?
-    let end_start = len.saturating_sub(n);
-    let end_pattern: SmallVec<u8, 4> = (end_start..len).filter_map(|i| seq.get(i)).collect();
-    if end_pattern.len() == n {
-        let check_start = len.saturating_sub(cutoff);
-        (check_start..end_start).all(|i| {
-            seq.get(i).is_some_and(|b| {
-                let offset = (i - check_start) % n;
-                // Align pattern index: the tail pattern repeats back from end
-                end_pattern.get(offset % n).is_some_and(|&p| b == p)
-            })
+    let periodic = |start: usize| {
+        (start..start + window - n).all(|i| match (seq.get(i), seq.get(i + n)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
         })
-    } else {
-        false
-    }
+    };
+
+    periodic(0) || periodic(len - window)
 }
 
 #[cfg(test)]
@@ -788,5 +827,24 @@ mod tests {
         let segment = test_segment(b"ACGT");
         let record = test_record(b"two-errors", 99, 100, b"GCGG"); // A→G and T→G
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 2);
+    }
+
+    #[test]
+    fn first_seen_dedups_by_key() {
+        // Per-fragment dedup: a repeated key (second overlapping mate) is not counted.
+        let mut seen: SmallVec<u64, 8> = SmallVec::new();
+        assert!(first_seen(&mut seen, Some(7)));
+        assert!(!first_seen(&mut seen, Some(7)));
+        assert!(first_seen(&mut seen, Some(9)));
+        assert!(!first_seen(&mut seen, Some(9)));
+    }
+
+    #[test]
+    fn first_seen_none_is_always_true() {
+        // dedup disabled (`--keep-overlapping-reads`): every alignment counts, nothing tracked.
+        let mut seen: SmallVec<u64, 8> = SmallVec::new();
+        assert!(first_seen(&mut seen, None));
+        assert!(first_seen(&mut seen, None));
+        assert!(seen.is_empty());
     }
 }
