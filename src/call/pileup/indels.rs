@@ -246,6 +246,20 @@ impl IndelAlleleCounts {
     pub fn strand_bias_p_value(&self, null_ot_fraction: f64) -> f64 {
         two_sided_binomial_p(self.ot, self.ot + self.ob, null_ot_fraction)
     }
+
+    /// Both-strand concordance: the allele is supported by at least one fragment
+    /// on each of OT and OB.
+    ///
+    /// This is a *presence* criterion, deliberately distinct from
+    /// [`Self::strand_bias_p_value`], which tests the *degree* of skew. Genuine
+    /// TAPS indels are frequently strand-asymmetric (alt-allele reference bias, not
+    /// methylation), so a degree test rejects real calls; a presence test rejects
+    /// only the single-stranded fraction, which is ~9x enriched in artefacts.
+    /// The known cost is the low-AO regime: at `min_indel_ao` 2 a genuine 2/0 split
+    /// fails here even though it is a coin flip under a balanced null.
+    pub fn on_both_strands(&self) -> bool {
+        self.ot > 0 && self.ob > 0
+    }
 }
 
 /// Two-sided exact binomial test of `successes` out of `trials` against `p`.

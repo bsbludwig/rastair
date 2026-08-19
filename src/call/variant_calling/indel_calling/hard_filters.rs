@@ -19,21 +19,24 @@
 //!   * "Noisy" is decided without looking at the observed base, so — unlike the
 //!     read-level mismatch filter, which is TAPS-aware — the exclusion cannot vary
 //!     with local methylation.
-//!   * The strand-bias test is **off by default** (`--indel-strand-bias-alpha 0`).
-//!     Its null — that supporting fragments are drawn from the locus' strand mix —
-//!     is false for TAPS, where OT and OB reads present different sequence after
-//!     C→T conversion and genuine indel support is therefore strand-asymmetric. At
-//!     the 0.05 it once defaulted to it rejected 4,288 true chr12 indels to remove
-//!     252 false ones (0.8495 F1 against 0.9473 with it off), reproduced on chr20.
-//!     The p-value is still informative and is intended as an ML feature.
-//!   * Strand bias is the one place all supporting fragments are used, noisy
-//!     included: its null (`IndelCounts::null_ot_fraction`) is taken over the
-//!     locus' full strand mix, so both sides have to be on the same footing.
-//!   * Strand bias is judged on OT/OB, not the alignment reverse flag — see
+//!   * The default strand gate is **both-strand concordance**
+//!     (`IndelAlleleCounts::on_both_strands`): an allele confined to one strand
+//!     fails. This is a *presence* criterion — genuine TAPS indels are frequently
+//!     strand-asymmetric (alt-allele reference bias, not methylation), so a *degree*
+//!     test rejects real calls, whereas single-strandedness is ~9x enriched in
+//!     artefacts. Its known cost is the low-AO regime: a genuine 2/0 split is a coin
+//!     flip yet fails here. Trade-off measured genotype-aware (hap.py) vs
+//!     genotype-blind (`verify`); the two metrics rank concordance vs the
+//!     significance test differently, which is a live discussion.
+//!   * The significance test (`strand_bias_p_value`) stays available as an **opt-in
+//!     additional** gate via `--indel-strand-bias-alpha` (default 0 = off, since a
+//!     p-value is never < 0). Its null is the locus' own strand mix, taken over all
+//!     supporting fragments, noisy included, so both sides are on the same footing.
+//!     At the 0.05 it once defaulted to it rejected 4,288 true chr12 indels to
+//!     remove 252 false ones; the p-value is still informative as an ML feature.
+//!   * Strand is judged on OT/OB, not the alignment reverse flag — see
 //!     [`crate::call::pileup::indels::IndelAlleleCounts`] for why the reverse flag
-//!     cannot work under per-fragment deduplication. It is an exact binomial test
-//!     against the locus' own strand mix, not a "seen on both strands" rule: the
-//!     latter rejects a 2/0 split, which is a coin flip under the null.
+//!     cannot work under per-fragment deduplication.
 //!   * Failing alleles are emitted with a FILTER tag rather than dropped, matching
 //!     rastair's "always emit indels" convention. `IndelVerdict` travels on the call
 //!     to the VCF layer, so `rastair convert` renders the same FILTERs as a direct
@@ -123,12 +126,19 @@ pub fn call_indels(indels: &IndelCounts, params: &IndelParams) -> Vec<IndelCall>
             continue;
         };
 
-        // Strand bias is judged on *all* supporting fragments, noisy ones
-        // included: the null is the locus' own strand mix, which is likewise
-        // taken over all fragments, and dropping observations here would only
-        // cost the test power without making the two sides comparable.
+        // Both-strand concordance is the default strand gate: an allele confined to
+        // a single strand fails. The significance test (below) is judged on *all*
+        // supporting fragments, noisy included, against the locus' own strand mix,
+        // and stays available as an opt-in additional gate via
+        // `--indel-strand-bias-alpha` (default 0 leaves it off, since a p-value is
+        // never < 0). See the module docs for why presence beats degree on TAPS.
+        // FailStrand if the allele is single-stranded (concordance, default) or, when
+        // the opt-in significance test is enabled, if its OT/OB split is significantly
+        // biased against the locus' own strand mix (alpha default 0 = off).
         let strand_bias = allele_counts.strand_bias_p_value(indels.null_ot_fraction(allele_counts));
-        let verdict = if strand_bias < params.indel_strand_bias_alpha {
+        let verdict = if !allele_counts.on_both_strands()
+            || strand_bias < params.indel_strand_bias_alpha
+        {
             IndelVerdict::FailStrand
         } else if matches!(genotype.tag, GenotypeTag::HomRef) {
             IndelVerdict::FailHomRef
@@ -198,8 +208,9 @@ mod tests {
         }
     }
 
-    /// The strand-bias filter is off by default, so tests that exercise it have
-    /// to switch it on. `strand_bias_filter_is_off_by_default` pins the default.
+    /// The default strand gate is both-strand concordance; the significance test is
+    /// opt-in, so tests that exercise it have to switch it on.
+    /// `significance_test_is_off_by_default` pins the default.
     fn with_strand_test() -> IndelParams {
         IndelParams { indel_strand_bias_alpha: 0.05, ..IndelParams::default() }
     }
@@ -218,77 +229,67 @@ mod tests {
     }
 
     #[test]
-    fn single_stranded_indel_fails_strand_bias() {
-        // 8 supporting fragments all on OT, at a locus with balanced coverage:
-        // p = 2 * 0.5^8 ≈ 0.008 → rejected.
+    fn single_stranded_indel_fails_concordance() {
+        // A single-stranded allele fails concordance by default; no significance
+        // test needed.
         let c = counts(20, vec![insertion("A", 8, 0)]);
-        let calls = call_indels(&c, &with_strand_test());
+        let calls = call_indels(&c, &IndelParams::default());
         assert_eq!(verdicts(&calls), vec![Some(IndelVerdict::FailStrand)]);
     }
 
-    /// The point of the strand-bias test: a split that happens half the time by
-    /// chance must not be treated as evidence. The old `ot > 0 && ob > 0` rule
-    /// rejected this, and at the default `min_indel_ao` of 2 that made the
-    /// filter a coin flip over a third of all candidates.
+    /// Known cost of concordance at low AO: a 2/0 split is a coin flip under a
+    /// balanced null, yet it fails here for being single-stranded. The significance
+    /// test deliberately kept it; concordance does not. See the module docs.
     #[test]
-    fn two_supporting_fragments_on_one_strand_is_not_bias() {
+    fn two_supporting_fragments_on_one_strand_fail_concordance() {
         let c = counts(10, vec![insertion("A", 2, 0)]);
-        let calls = call_indels(&c, &with_strand_test());
-        assert_ne!(verdicts(&calls), vec![Some(IndelVerdict::FailStrand)]);
+        let calls = call_indels(&c, &IndelParams::default());
+        assert_eq!(verdicts(&calls), vec![Some(IndelVerdict::FailStrand)]);
     }
 
-    /// Where the filter starts to discriminate, pinned so a change in the test
-    /// or the default alpha is visible.
+    /// Under concordance every one-sided split fails, independent of AO or alpha —
+    /// unlike the significance test, which only rejected 6/0 and up. Pinned so the
+    /// behavioural change from the significance gate stays explicit.
     #[test]
-    fn one_sided_support_becomes_significant_at_six_fragments() {
-        let params = with_strand_test();
+    fn concordance_rejects_every_one_sided_split() {
         let verdict_for = |ot: u32| -> Option<IndelVerdict> {
-            let calls = call_indels(&counts(30, vec![insertion("A", ot, 0)]), &params);
+            let calls = call_indels(&counts(30, vec![insertion("A", ot, 0)]), &IndelParams::default());
             calls.first()?.hard_filter_verdict
         };
-
-        for ot in 2..=5 {
-            assert_ne!(
-                verdict_for(ot),
-                Some(IndelVerdict::FailStrand),
-                "{ot}/0 is not significant at alpha {}",
-                params.indel_strand_bias_alpha
-            );
+        for ot in 2..=8 {
+            assert_eq!(verdict_for(ot), Some(IndelVerdict::FailStrand), "{ot}/0 is single-stranded");
         }
-        assert_eq!(verdict_for(6), Some(IndelVerdict::FailStrand), "6/0 is p = 2*0.5^6 = 0.031");
     }
 
-    /// A locus whose coverage is itself strand skewed must not make every allele
-    /// on it look biased: the null comes from the non-supporting fragments. The
-    /// same 8/0 split that fails against a balanced background passes here.
+    /// Concordance depends only on the allele's own OT/OB support, not the locus
+    /// background — so the same one-sided allele fails whether surrounding coverage
+    /// is balanced or skewed. (The significance test used the background as its null
+    /// and could pass the skewed case; concordance cannot.)
     #[test]
-    fn skewed_locus_coverage_does_not_by_itself_signal_bias() {
+    fn concordance_ignores_locus_background() {
         let balanced = counts(10, vec![insertion("A", 8, 0)]);
         assert_eq!(
-            verdicts(&call_indels(&balanced, &with_strand_test())),
+            verdicts(&call_indels(&balanced, &IndelParams::default())),
             vec![Some(IndelVerdict::FailStrand)]
         );
 
-        // Same allele, but the 10 non-supporting fragments are 9:1 OT.
         let mut skewed = balanced.clone();
         skewed.ot_depth = 17;
         skewed.ob_depth = 1;
         assert_eq!(
-            verdicts(&call_indels(&skewed, &with_strand_test())),
-            vec![Some(IndelVerdict::Pass)]
+            verdicts(&call_indels(&skewed, &IndelParams::default())),
+            vec![Some(IndelVerdict::FailStrand)]
         );
     }
 
-    /// The filter is off unless asked for. It tests a hypothesis that is false for
-    /// TAPS — OT and OB reads present different sequence after C→T conversion, so
-    /// genuine indel support is strand-asymmetric — and at the 0.05 it used to
-    /// default to it rejected 4,288 true chr12 indels to remove 252 false ones.
+    /// Only concordance runs by default; the significance test is opt-in. A
+    /// two-sided but skewed 18/2 allele satisfies concordance and passes by default,
+    /// but the opt-in significance test rejects it.
     #[test]
-    fn strand_bias_filter_is_off_by_default() {
+    fn significance_test_is_off_by_default() {
         assert_eq!(IndelParams::default().indel_strand_bias_alpha, 0.0);
 
-        // The most lopsided split there is, against balanced background coverage.
-        let c = counts(20, vec![insertion("A", 14, 0)]);
+        let c = counts(20, vec![insertion("A", 18, 2)]);
         assert_eq!(
             verdicts(&call_indels(&c, &IndelParams::default())),
             vec![Some(IndelVerdict::Pass)]
@@ -300,8 +301,10 @@ mod tests {
     }
 
     #[test]
-    fn zero_alpha_disables_the_strand_filter() {
-        let c = counts(20, vec![insertion("A", 12, 0)]);
+    fn zero_alpha_disables_only_the_significance_test() {
+        // A two-sided skewed allele the significance test would reject passes at
+        // alpha 0; concordance is satisfied because it is present on both strands.
+        let c = counts(20, vec![insertion("A", 12, 2)]);
         let params = IndelParams { indel_strand_bias_alpha: 0.0, ..IndelParams::default() };
         assert_ne!(verdicts(&call_indels(&c, &params)), vec![Some(IndelVerdict::FailStrand)]);
     }
@@ -401,32 +404,31 @@ mod tests {
         assert!(depth_only[0].genotype.is_heterozygous());
     }
 
-    /// Noisy fragments still carry strand information, and the null they are
-    /// judged against is the locus' full strand mix — so excluding them from
-    /// genotyping must not quietly exclude them from the strand-bias test.
+    /// Noisy fragments stay in the significance test's numerator even though they
+    /// are excluded from genotyping. A two-sided but skewed allele with noisy
+    /// support is still rejected by the opt-in significance test.
     #[test]
-    fn strand_bias_still_sees_noisy_support() {
-        let mut c = counts(20, vec![insertion("A", 8, 0)]);
-        c.alleles[0].noisy = 6;
+    fn significance_test_still_sees_noisy_support() {
+        let mut c = counts(20, vec![insertion("A", 18, 2)]);
+        c.alleles[0].noisy = 4;
         assert_eq!(
             verdicts(&call_indels(&c, &with_strand_test())),
             vec![Some(IndelVerdict::FailStrand)]
         );
     }
 
-    /// A homozygous indel has no non-supporting fragments to build a null from, so
-    /// the null falls back to the locus' own strand mix — which is the allele's.
-    /// Judging it against a flat 0.5 instead rejects every hom-alt call at a
-    /// one-strand locus for a skew that belongs to the coverage.
+    /// Known cost of concordance: a homozygous indel at a locus with no OB coverage
+    /// at all cannot satisfy the both-strand requirement, so it fails — even though
+    /// it is a genuine call the significance test (whose null is the locus' own
+    /// one-strand mix) would pass. Matters at capture edges and low coverage.
     #[test]
-    fn homozygous_indel_at_a_one_strand_locus_is_not_biased() {
+    fn homozygous_indel_at_a_one_strand_locus_fails_concordance() {
         let mut c = counts(0, vec![insertion("A", 9, 0)]);
         c.ot_depth = 9;
         c.ob_depth = 0;
 
-        let calls = call_indels(&c, &with_strand_test());
-        assert_eq!(verdicts(&calls), vec![Some(IndelVerdict::Pass)]);
-        assert!(calls[0].genotype.is_homozygous());
+        let calls = call_indels(&c, &IndelParams::default());
+        assert_eq!(verdicts(&calls), vec![Some(IndelVerdict::FailStrand)]);
     }
 
     /// The counterpart: once there *are* non-supporting fragments on the other
@@ -480,25 +482,22 @@ mod tests {
         );
     }
 
-    /// Fragments whose orientation could not be determined count toward depth and
-    /// AO, but carry no information about strand skew — so they neither trigger
-    /// the filter nor protect an allele from it.
+    /// Under concordance, unknown-orientation fragments cannot satisfy the
+    /// both-strand requirement — they are neither OT nor OB — so an allele that
+    /// leans on them fails. (The significance test read them as no-evidence and
+    /// could pass such an allele; another cost of the presence rule.)
     #[test]
-    fn unknown_strand_is_evidence_neither_way() {
+    fn unknown_strand_cannot_satisfy_concordance() {
         let mut allele = insertion("A", 3, 0);
         allele.unknown_strand = 2;
         assert_eq!(allele.total(), 5, "unknown-strand fragments still count as support");
+        let calls = call_indels(&counts(15, vec![allele]), &IndelParams::default());
+        assert_eq!(verdicts(&calls), vec![Some(IndelVerdict::FailStrand)]);
 
-        // Judged on the 3/0 known split, which is p = 0.25 — not significant.
-        let calls = call_indels(&counts(15, vec![allele]), &with_strand_test());
-        assert_eq!(verdicts(&calls), vec![Some(IndelVerdict::Pass)]);
-
-        // Support that is *entirely* of unknown orientation cannot be shown to be
-        // skewed, so it is not rejected on strand grounds.
         let mut opaque = insertion("A", 0, 0);
         opaque.unknown_strand = 9;
-        let calls = call_indels(&counts(15, vec![opaque]), &with_strand_test());
-        assert_ne!(verdicts(&calls), vec![Some(IndelVerdict::FailStrand)]);
+        let calls = call_indels(&counts(15, vec![opaque]), &IndelParams::default());
+        assert_eq!(verdicts(&calls), vec![Some(IndelVerdict::FailStrand)]);
     }
 
     #[test]

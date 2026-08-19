@@ -200,34 +200,45 @@ mate carried the base — is *not* recoverable after that collapse.
 have opposite reverse flags, so OT/OB is the only strand notion invariant under deduplication. A
 reverse-flag split collapses to whichever mate survived (always the leftmost, hence forward-flagged).
 
-**The strand-bias test is the binding constraint on indel recall, and it does not pay for itself.**
-Measured on chr12 (BED-restricted, normalized), turning it off with `--indel-strand-bias-alpha 0`
-moves the hard-filter pathway from **P 0.9819 / R 0.7485 / F1 0.8495** to
-**P 0.9747 / R 0.9214 / F1 0.9473**: it was rejecting **4,288 true indels to remove 252 false ones**,
-17:1 against. That single flag beats the pre-fix `d4244fcc` (F1 0.9326) at far higher precision.
+**Two scoreboards disagree on the strand handling; always say which one you mean.** Measured
+genotype-blind (`verify`: matches on `(chrom,pos,ref,alt)`, no GT) on chr12, turning the
+significance test off with `--indel-strand-bias-alpha 0` moves the hard-filter pathway from
+**P 0.9819 / R 0.7485 / F1 0.8495** to **P 0.9747 / R 0.9214 / F1 0.9473** — it was rejecting
+**4,288 true indels to remove 252 false ones**, 17:1 against. So under genotype-blind scoring the
+significance test does not pay for itself.
 
-The test is well constructed; the hypothesis it tests is false. Its null is "the supporting fragments
-are drawn from the locus' own strand mix", and for TAPS indels they are not — OT and OB reads present
-different sequence after C→T conversion, so genuine indel support is strand-asymmetric for reasons
-that have nothing to do with artifacts. The p-value is still *informative*, so the intended home for
-it is an ML feature, not a hard gate.
+That ranking is metric-dependent. The same VCFs under **hap.py (genotype-aware)** rank the
+approaches differently, because hap.py counts a het↔hom genotype mismatch as both an FP and an
+FN and `verify` ignores it. Scoring one build both ways (chr20): hard filter hap.py 0.844 /
+verify 0.941; ML hap.py 0.820 / verify 0.951 — the winner flips. The ML detects alleles slightly
+*better* (verify precision 0.984 vs 0.960) but genotypes them worse. So "which strand handling
+wins" is not settled; it depends on whether the genotype counts. Tag every indel number with its
+scoreboard.
 
-Beware that this filter masks everything downstream of it. The `--indel-noise-exclusion`,
-`--indel-error-rate` and `--indel-het-vaf` sweeps below all saturate at F1 ≈ 0.85 **because they were
-measured with the strand test on**, throwing the recall away before those knobs could act. Re-measure
-anything in that table before trusting it at a lower alpha.
+The significance test's null is "the supporting fragments are drawn from the locus' own strand
+mix", which for TAPS indels is false — OT and OB reads present different sequence after C→T
+conversion, so genuine indel support is strand-asymmetric for reasons unrelated to artifacts. The
+p-value is still *informative* and is a candidate ML feature.
 
-**Strand bias is a test, not a rule.** `IndelAlleleCounts::strand_bias_p_value` is a two-sided exact
-binomial test against `IndelCounts::null_ot_fraction` — the strand mix of the *non-supporting*
-fragments at that locus, smoothed with one fragment of prior mass so an all-one-strand background
-(routine at low depth) does not produce a degenerate null. That prior is centred on the **locus'** own
-OT share, not on 0.5: a homozygous indel has no non-supporting fragments at all, and a flat 0.5 prior
-then judges it against balanced coverage it never had, rejecting every hom-alt call at a one-strand
-locus for a skew that belongs to the coverage. Rejection is at `--indel-strand-bias-alpha`
-(default 0.05).
-Do **not** replace this with an `ot > 0 && ob > 0` rule: at the default `min_indel_ao` of 2 that rejects
-a 2/0 split, which is a coin flip, and measured on real data it tracked the chance rate almost exactly
-below AO≈4 — rejecting ~26% of all indel candidates, ~85% of them by chance.
+Beware that any strand gate masks everything downstream of it. The `--indel-noise-exclusion`,
+`--indel-error-rate` and `--indel-het-vaf` sweeps below saturate at F1 ≈ 0.85 **because they were
+measured with a strand gate on**, throwing recall away before those knobs could act. Re-measure
+anything in that table before trusting it under a different gate.
+
+**The default strand gate is both-strand concordance; the significance test is opt-in.**
+`IndelAlleleCounts::on_both_strands` (`ot > 0 && ob > 0`) is the default — an allele confined to
+one strand fails (`indel_strand`). It is a *presence* rule, chosen under genotype-aware (hap.py)
+scoring, where single-strandedness is ~9x enriched in artifacts while the *degree* of skew does
+not discriminate. Its cost is real and deterministic: at `min_indel_ao` 2 a 2/0 split is a coin
+flip yet fails; it rejects ~26% of candidates (~85% by chance below AO≈4); and it rejects
+homozygous indels at loci with coverage on only one strand. Raise `--min-indel-ao` to recover
+those rather than loosening the gate.
+`IndelAlleleCounts::strand_bias_p_value` (the two-sided exact binomial against
+`IndelCounts::null_ot_fraction` — the strand mix of the *non-supporting* fragments, smoothed with
+one fragment of prior mass and centred on the locus' own OT share, not 0.5, so a homozygous indel
+at a one-strand locus is not judged against balanced coverage it never had) remains available as
+an *additional* gate via `--indel-strand-bias-alpha` (default 0 = off, since a p-value is never
+< 0).
 
 **"Repeat" means a real repeat — and that, not the noise sidedness, is the lever.** `terminal_repeat`
 once used a single 3 bp window for both periods, which made the period-2 arm
@@ -324,7 +335,10 @@ whole-chromosome numbers are still a useful relative signal between two builds, 
 comparable to anything external.
 
 Matching is on `(chrom, pos, ref, alt)` only — `verify` is **genotype-blind**, so it is more lenient
-than hap.py, which counts a GT mismatch as both an FP and an FN. That bias is currently unquantified.
+than hap.py, which counts a GT mismatch as both an FP and an FN. That bias is large enough to flip
+conclusions: on chr20 the hard filter scores hap.py 0.844 / verify 0.941 and the ML 0.820 / verify
+0.951, so `verify` ranks the ML above the hard filter and hap.py ranks it below. Quote the scoreboard
+with any indel number.
 
 ## ML feature layout (`src/metrics/ml/features/`)
 
@@ -388,10 +402,13 @@ The BED restriction was worth more than everything else tried on the indel ML pa
 
 Holdout Brier roughly halves for both indel models (.1119→.0556, .1034→.0576) and the forests get
 *smaller* (max_tree_size 6509→3501), because they stop spending depth memorising labels that were
-guesses. With this, **the ML indel path overtakes the hard-filter path** — same recall, better
-precision. Two caveats: a BED-trained model is only validated inside those regions but still scores
-everywhere at call time, so out-of-BED behaviour is unmeasured (and unmeasurable against GIAB, for
-the same reason the labels were unusable); and these figures are in-BED performance specifically.
+guesses. With this, **the ML indel path overtakes the hard-filter path under genotype-blind
+scoring** — same recall, better precision. Note the metric caveat above: this table is `verify`
+(genotype-blind); under genotype-aware hap.py the ranking reverses, because the ML's advantage is
+allele detection while it genotypes worse than the binomial. Two further caveats: a BED-trained
+model is only validated inside those regions but still scores everywhere at call time, so
+out-of-BED behaviour is unmeasured (and unmeasurable against GIAB, for the same reason the labels
+were unusable); and these figures are in-BED performance specifically.
 
 **Retraining for an indel change: splice, do not ship the whole retrain.** `ml train` retrains all
 five forests, so a change confined to the indel feature vector would otherwise also replace the

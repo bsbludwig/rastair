@@ -85,37 +85,34 @@ the ML pathway the genotype is informational and the @ML score decides.
 
 ## Strand Bias
 
-An allele is rejected (`indel_strand`) when the @OT/@OB split of its supporting fragments is
-significantly skewed against the strand mix of the *rest* of the locus, by a two-sided exact
-binomial test at `--indel-strand-bias-alpha` (default 0.05). Taking the null from the
-non-supporting fragments means a locus whose coverage is genuinely strand-skewed does not
-make every allele on it look biased.
+The default strand gate is **both-strand concordance**: an allele supported on only one of
+@OT/@OB is rejected (`indel_strand`). This is a *presence* rule — genuine TAPS indels are
+frequently strand-asymmetric (alt-allele reference bias, not methylation), so the *degree* of
+skew does not separate real calls from artifacts, whereas single-strandedness is strongly
+enriched in them.
 
 The split is on OT/OB, never the alignment reverse flag: both mates of a fragment share an
 OT/OB assignment but have opposite reverse flags, so OT/OB is the only strand notion that
 survives fragment deduplication.
 
-This is deliberately a *test* rather than a "seen on both strands" rule. At `--min-indel-ao 2`
-a 2/0 split occurs half the time by chance, so requiring both strands rejected a coin flip:
-measured on chr12:1-6 Mb of an NA12878 TAPS BAM it rejected 26.5% of all indel candidates,
-of which only ~15% were excess over the chance rate.
+### Cost at low AO
 
-### Joint sensitivity at low AO
+Concordance is deterministic, which makes it aggressive where support is thin. At
+`--min-indel-ao 2` a genuine 2/0 split is a coin flip yet still fails, and an allele supported
+entirely on one strand fails at any AO. Measured on chr12:1-6 Mb of an NA12878 TAPS BAM the
+`ot > 0 && ob > 0` rule rejects 26.5% of all indel candidates, of which only ~15% are excess
+over the chance rate; it also rejects homozygous indels at loci with no coverage on one strand.
+To recover those, raise `--min-indel-ao` — so a one-sided split is no longer a coin flip —
+rather than loosening the gate.
 
-The two default thresholds interact, and the combination is stricter than either alone:
+### Optional significance test
 
-| AO | Rejected as strand-biased by chance | Notes |
-| -- | ----------------------------------- | ----- |
-| 2  | never (p = 0.5)                     | at the AO floor; the test cannot discriminate |
-| 3  | never (p = 0.25)                    | |
-| 4  | never (p = 0.125)                   | |
-| 6  | 2·0.5⁶ = 0.031 < α                  | first AO at which one-sided support is rejected |
-
-So an allele supported entirely on one strand needs about six fragments before the filter
-fires. Below that, `--min-indel-ao` is the only thing standing between a slippage artifact
-and a PASS — which is why the noise exclusion above matters most in exactly that range. If
-you need higher precision at low depth, raise `--min-indel-ao` rather than tightening
-`--indel-strand-bias-alpha`; alpha has no discriminating power at AO < 6.
+A two-sided exact binomial test of the OT/OB split against the strand mix of the *rest* of the
+locus remains available as an additional gate via `--indel-strand-bias-alpha` (default 0 =
+off). Taking the null from the non-supporting fragments means a locus whose coverage is itself
+strand-skewed does not make every allele on it look biased. Because it keys on the *degree* of
+skew — which on TAPS data also flags genuine strand-asymmetric indels — it is opt-in rather
+than on by default.
 
 ## Output
 
