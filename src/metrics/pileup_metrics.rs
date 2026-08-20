@@ -18,7 +18,7 @@ use color_eyre::{
 use rastair_vcf::VcfFilter;
 use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, SmallVec, SmolStr, Strand};
 use std::ops::Deref;
-use tracing::trace;
+use tracing::{trace, warn};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PileupMetrics {
@@ -608,7 +608,20 @@ fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     }
 
     let total_indel_reads: u32 = alleles.iter().map(|a| a.total()).sum();
-    let ref_count = (pileup.reads.len() as u32).saturating_sub(total_indel_reads);
+    let depth = pileup.reads.len() as u32;
+    // `from_hts` draws both counts from one pass over the same alignments, so
+    // every indel-carrying fragment is also part of the depth. If that stops
+    // holding, `ref_count` floors to zero and every VAF here silently reads 1.0.
+    if total_indel_reads > depth {
+        warn!(
+            pos = pileup.pos,
+            total_indel_reads,
+            depth,
+            "More indel-supporting fragments than reads at this position; the VAF \
+             denominator is wrong. This is a bug in rastair, please report it."
+        );
+    }
+    let ref_count = depth.saturating_sub(total_indel_reads);
 
     IndelCounts {
         alleles,

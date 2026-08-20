@@ -59,9 +59,13 @@ pub struct IndelCounts {
     pub alleles: SmallVec<IndelAlleleCounts, 2>,
     /// Total reads at this position that do NOT have an indel (reference-supporting).
     pub ref_count: u32,
-    /// Non-supporting fragments that look noisy. The reference-side counterpart of
-    /// [`IndelAlleleCounts::noisy`]; both come off together so the noise exclusion
-    /// cannot move the ratio on its own.
+    /// Reference-supporting fragments that look noisy. The reference-side
+    /// counterpart of [`IndelAlleleCounts::noisy`]; both come off together so the
+    /// noise exclusion cannot move the ratio on its own.
+    ///
+    /// A fragment carrying the indel is excluded even when one of its mates is
+    /// soft-clipped over it: `ref_count` has already dropped that fragment via
+    /// `total_indel_reads`, so counting it here too would subtract it twice.
     pub noisy_ref_count: u32,
     /// Reads with problematic patterns (homopolymer, soft-clip) subtracted from depth
     /// for indel quality calculation.

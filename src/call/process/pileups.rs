@@ -1,10 +1,6 @@
 use crate::{
     call::{
-        pileup::{
-            Pileup,
-            from_hts::{ReadMismatchCache, ReadOrientationCache},
-            overlapping_reads::NameCollector,
-        },
+        pileup::{Pileup, from_hts::PileupScratch},
         require_tags::TagRequirement,
         variant_calling::VariantCallingParams,
     },
@@ -72,9 +68,7 @@ pub fn get_pileups(
     // Go over each column in the pileup from htslib and build our own pileup
     let mut pileup = readers.bam.pileup();
     pileup.set_max_depth(params.max_coverage);
-    let mut collector = NameCollector::new(params);
-    let mut orientation_cache = ReadOrientationCache::default();
-    let mut mismatch_cache = ReadMismatchCache::default();
+    let mut scratch = PileupScratch::new(params);
     let piles = pileup
         .filter_map(|p| match p {
             Ok(p) => Some(p),
@@ -94,14 +88,7 @@ pub fn get_pileups(
             region.contains(u64::from(p.pos()))
         })
         .map(move |pile| {
-            Pileup::from_hts(
-                &pile,
-                segment.clone(),
-                params,
-                &mut collector,
-                &mut orientation_cache,
-                &mut mismatch_cache,
-            )
+            Pileup::from_hts(&pile, segment.clone(), params, &mut scratch)
             .wrap_err_with(|| {
                 format!("Failed to get candidate from pileup at position {}", pile.pos())
             })

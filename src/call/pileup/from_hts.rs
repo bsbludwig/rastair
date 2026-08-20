@@ -16,11 +16,13 @@ use rust_htslib::bam::{
     Record,
     ext::BamRecordExtensions as _,
     pileup::{Alignment, Indel, Pileup as HtsPileup},
+    record::RecordView,
 };
 use rustc_hash::{FxHashMap, FxHasher};
 use seqair_types::{Base, SmallVec, Strand, strand_from_flags};
 use std::{
     hash::{Hash, Hasher},
+    mem,
     rc::Rc,
 };
 use tracing::{debug, instrument, trace};
@@ -106,6 +108,139 @@ impl ReadOrientationEvidence {
     }
 }
 
+/// Buffers and caches reused across every pileup column in a segment.
+///
+/// A whole-genome run calls [`Pileup::from_hts`] once per reference base, so
+/// anything allocated per call is allocated billions of times; these clear and
+/// refill instead.
+pub(crate) struct PileupScratch {
+    names: NameCollector,
+    orientation: ReadOrientationCache,
+    mismatches: ReadMismatchCache,
+    fragments: FragmentVotes,
+}
+
+impl PileupScratch {
+    pub(crate) fn new(params: &PileupMappingParams) -> Self {
+        Self {
+            names: NameCollector::new(params),
+            orientation: ReadOrientationCache::default(),
+            mismatches: ReadMismatchCache::default(),
+            fragments: FragmentVotes::default(),
+        }
+    }
+}
+
+/// What each fragment contributes to one pileup column.
+///
+/// Entries are indexed by the slot of whichever mate the pileup reported first,
+/// so both mates of an overlapping pair land on the same vote. Keeping separate
+/// tallies instead lets a fragment whose mates disagree — one spanning the
+/// indel, the other soft-clipped over it — be counted on the alternate side
+/// *and* on the noisy-reference side, and [`IndelCounts::clean_depth`] then
+/// subtracts it twice.
+///
+/// [`IndelCounts::clean_depth`]: super::indels::IndelCounts::clean_depth
+#[derive(Default)]
+struct FragmentVotes {
+    votes: Vec<FragmentVote>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct FragmentVote {
+    /// Some mate of this fragment carries an indel here.
+    indel: bool,
+    /// Some mate supports the reference from an alignment of the kind that slips.
+    noisy_ref: bool,
+    /// That mate's terminus is a tandem repeat rather than (only) a soft clip.
+    terminal_repeat: bool,
+    soft_clipped: bool,
+}
+
+#[derive(Default)]
+struct FragmentTotals {
+    noisy_ref_count: u32,
+    depth_offset: u32,
+    soft_clip_count: u32,
+}
+
+impl FragmentVotes {
+    fn prepare(&mut self, capacity: usize) {
+        self.votes.clear();
+        self.votes.reserve(capacity);
+    }
+
+    fn slot(&mut self, fragment: usize) -> Option<&mut FragmentVote> {
+        if fragment >= self.votes.len() {
+            self.votes.resize(fragment + 1, FragmentVote::default());
+        }
+        self.votes.get_mut(fragment)
+    }
+
+    /// Record an indel for this fragment, reporting whether it is the first one:
+    /// a pair whose mates both span the indel casts one vote, not two.
+    fn saw_indel(&mut self, fragment: usize) -> bool {
+        self.slot(fragment).is_some_and(|vote| !mem::replace(&mut vote.indel, true))
+    }
+
+    fn saw_reference(&mut self, fragment: usize, shape: AlignmentShape) {
+        if let Some(vote) = self.slot(fragment) {
+            vote.noisy_ref |= shape.noisy();
+            vote.terminal_repeat |= shape.terminal_repeat;
+        }
+    }
+
+    fn saw_soft_clip(&mut self, fragment: usize) {
+        if let Some(vote) = self.slot(fragment) {
+            vote.soft_clipped = true;
+        }
+    }
+
+    /// An indel-carrying fragment is already off the reference side, because
+    /// `ref_count` is `reads.len() - total_indel_reads`, so it must not also
+    /// appear in `noisy_ref_count`.
+    fn totals(&self) -> FragmentTotals {
+        let mut totals = FragmentTotals::default();
+        for vote in &self.votes {
+            if vote.soft_clipped {
+                totals.soft_clip_count += 1;
+            }
+            if vote.indel {
+                continue;
+            }
+            if vote.noisy_ref {
+                totals.noisy_ref_count += 1;
+            }
+            if vote.terminal_repeat {
+                totals.depth_offset += 1;
+            }
+        }
+        totals
+    }
+}
+
+/// The alignment shapes that make an indel call at this column unreliable.
+#[derive(Clone, Copy)]
+struct AlignmentShape {
+    terminal_repeat: bool,
+    soft_clipped: bool,
+}
+
+impl AlignmentShape {
+    fn of(record: &RecordView<'_>) -> Self {
+        let (seq, _) = record.seq_and_qual();
+        Self {
+            terminal_repeat: has_repeat_seq(&seq, 1, HOMOPOLYMER_UNITS)
+                || has_repeat_seq(&seq, 2, DINUCLEOTIDE_UNITS),
+            soft_clipped: has_soft_clip(record.raw_cigar()),
+        }
+    }
+
+    fn noisy(self) -> bool {
+        self.terminal_repeat || self.soft_clipped
+    }
+}
+
 impl Pileup {
     /// Convert a pileup from htslib into our internal Pileup representation.
     #[instrument(level = "trace", skip_all)]
@@ -113,9 +248,7 @@ impl Pileup {
         pile: &HtsPileup,
         segment: Rc<Segment>,
         params: &PileupMappingParams,
-        collector: &mut NameCollector,
-        orientation_cache: &mut ReadOrientationCache,
-        mismatch_cache: &mut ReadMismatchCache,
+        scratch: &mut PileupScratch,
     ) -> Result<Pileup> {
         let pos = pile.pos();
         let idx = segment.pos_to_idx(pos)?;
@@ -127,190 +260,93 @@ impl Pileup {
         let max_reads = usize::try_from(max_reads).wrap_err("max_reads exceeds usize")?;
 
         let mut raw_reads = Vec::with_capacity(max_reads);
+        let mut to_remove = SmallVec::<usize, 16>::new();
+        let mut indel_observations = SmallVec::new();
 
-        // NOTE: The pileup might have already had some reads filtered out by
-        // the pileup-level filter, so we don't need to worry about flag and
-        // read-group filtering here. We do still apply read masking and quality
-        // filtering, however.
-        let alignments = pile
-            .alignments()
-            .filter_map(|alignment| {
-                alignment_to_read(alignment, segment.as_ref(), params, orientation_cache)
-            })
-            .filter(|(_, seen_base)| params.read_masking.filter(seen_base))
-            .filter(|(_, seen_base)| params.quality.filter(seen_base))
-            .take(max_reads);
+        scratch.fragments.prepare(max_reads);
+        if let NameCollector::Collect(buf) = &mut scratch.names {
+            buf.prepare(max_reads);
+        }
 
-        let reads = match collector {
-            NameCollector::Skip => {
-                for (_, read) in alignments {
-                    raw_reads.push(read);
-                }
-                SimpleReads(raw_reads.into())
+        // Both sides of `VAF = alt / depth` have to be drawn from the same reads,
+        // so indel observations are collected in the same pass, behind the same
+        // filters, as the reads that make up the depth. Collecting them separately
+        // let an alignment that `alignment_to_read` rejects — MAPQ 0, a base below
+        // `--min-baseq`, the interior of a deletion, anything past `--max-coverage`
+        // — still cast an indel vote while contributing nothing to the depth, which
+        // floors `ref_count` to zero and reads VAF as 1.0.
+        //
+        // NOTE: flag and read-group filtering already happened in the pileup-level
+        // filter, so only read masking and quality are applied here.
+        for a in pile.alignments() {
+            if raw_reads.len() >= max_reads {
+                break;
             }
-            NameCollector::Collect(buf) => {
-                buf.prepare(max_reads);
-                let mut to_remove = SmallVec::<usize, 16>::new();
-                for (name, read) in alignments {
-                    let this_idx = raw_reads.len();
-                    raw_reads.push(read);
-                    if let Some(other_idx) = buf.see(name, this_idx) {
-                        resolve_pair(&raw_reads, this_idx, other_idx, &mut to_remove);
+            let Some((name, read)) =
+                alignment_to_read(&a, segment.as_ref(), params, &mut scratch.orientation)
+            else {
+                continue;
+            };
+            if !params.read_masking.filter(&read) || !params.quality.filter(&read) {
+                continue;
+            }
+
+            // Indel accounting is per *fragment*, matching the deduplication that
+            // `reads` gets below: counting observations per alignment while the
+            // depth is per fragment double-counts overlapping mates. With
+            // `--keep-overlapping-reads` nothing is deduplicated and both sides
+            // stay at the alignment level, which is equally consistent.
+            let slot = raw_reads.len();
+            let duplicate = match &mut scratch.names {
+                NameCollector::Skip => None,
+                NameCollector::Collect(buf) => buf.see(name, slot),
+            };
+            let fragment = duplicate.unwrap_or(slot);
+
+            let shape = AlignmentShape::of(&a.record_view());
+            if shape.soft_clipped {
+                scratch.fragments.saw_soft_clip(fragment);
+            }
+            match a.indel() {
+                Indel::None => scratch.fragments.saw_reference(fragment, shape),
+                _ => {
+                    let observation = indel_observation(
+                        &a,
+                        &read,
+                        pos,
+                        segment.as_ref(),
+                        params,
+                        &mut scratch.mismatches,
+                        shape,
+                    );
+                    if let Some(observation) = observation
+                        && scratch.fragments.saw_indel(fragment)
+                    {
+                        indel_observations.push(observation);
                     }
                 }
-                to_remove.sort_unstable();
-                for &idx in to_remove.iter().rev() {
-                    raw_reads.swap_remove(idx);
-                }
-                SimpleReads(raw_reads.into())
             }
-        };
+
+            raw_reads.push(read);
+            if let Some(first) = duplicate {
+                resolve_pair(&raw_reads, slot, first, &mut to_remove);
+            }
+        }
+
+        to_remove.sort_unstable();
+        for &slot in to_remove.iter().rev() {
+            raw_reads.swap_remove(slot);
+        }
+        let reads = SimpleReads(raw_reads.into());
+
+        let FragmentTotals { noisy_ref_count, depth_offset, soft_clip_count } =
+            scratch.fragments.totals();
 
         let reference_base: Base =
             segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
 
         let context =
             SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
-
-        // Second pass: collect indel observations and compute depth_offset.
-        // FIXME: Do in same pass
-        let segment_start = segment.range.region.start as usize;
-        let indel_cutoff = params.indel_end_of_read_cutoff;
-        let mut indel_observations = SmallVec::new();
-        let mut depth_offset: u32 = 0;
-        let mut soft_clip_count: u32 = 0;
-
-        // Indel accounting is per *fragment*, matching the deduplication already
-        // applied to `reads` above. Both sides of `VAF = alt / depth` must share a
-        // granularity: counting observations per alignment while the depth is per
-        // fragment double-counts overlapping mates, and `ref_count` (computed as
-        // `reads.len() - total_indel_reads`) can then floor to zero and read VAF as
-        // 1.0. With `--keep-overlapping-reads` nothing is deduplicated and both
-        // sides stay at the alignment level, which is equally consistent.
-        let dedup_indels = !params.keep_overlapping_reads;
-        let mut seen_indel_fragments: SmallVec<u64, 8> = SmallVec::new();
-        let mut seen_depth_offset: SmallVec<u64, 8> = SmallVec::new();
-        let mut noisy_ref_count: u32 = 0;
-
-        for a in pile.alignments() {
-            let record = a.record_view();
-            let flags = record.flags();
-            let (seq, qual) = record.seq_and_qual();
-            let read_len = seq.len();
-            let (matches, indels_in_read) = calc_cigar_data(record.raw_cigar());
-            let fragment_key = dedup_indels.then(|| hash_bytes(record.qname()));
-
-            let soft_clipped = has_soft_clip(record.raw_cigar());
-            if soft_clipped {
-                soft_clip_count += 1;
-            }
-
-            match a.indel() {
-                Indel::None => {
-                    let terminal_repeat = has_repeat_seq(&seq, 1, HOMOPOLYMER_UNITS)
-                        || has_repeat_seq(&seq, 2, DINUCLEOTIDE_UNITS);
-                    if (terminal_repeat || soft_clipped)
-                        && first_seen(&mut seen_depth_offset, fragment_key)
-                    {
-                        if terminal_repeat {
-                            depth_offset += 1;
-                        }
-                        noisy_ref_count += 1;
-                    }
-                }
-                indel => {
-                    let Some(qpos) = a.qpos() else { continue };
-
-                    // End-of-read filter (stricter than SNVs)
-                    if qpos < indel_cutoff || qpos >= read_len.saturating_sub(indel_cutoff) {
-                        continue;
-                    }
-
-                    let strand = orientation_cache
-                        .strand_for_alignment(&a, &segment, params)
-                        .unwrap_or(Strand::Unknown);
-
-                    let mismatches =
-                        mismatch_cache.mismatch_count_for_alignment(&a, &segment, strand);
-                    if mismatches > params.indel_max_mismatches {
-                        trace!(
-                            mismatches,
-                            max = params.indel_max_mismatches,
-                            "Indel skipped: too many non-TAPS mismatches"
-                        );
-                        continue;
-                    }
-
-                    let allele = match indel {
-                        Indel::Ins(len) => {
-                            let start = qpos + 1;
-                            let end = start + len as usize;
-                            let bases: SmallVec<Base, 4> =
-                                (start..end).filter_map(|i| seq.get(i).map(Base::from)).collect();
-                            if bases.is_empty() {
-                                continue;
-                            }
-                            IndelAllele::Insertion(bases)
-                        }
-                        Indel::Del(len) => {
-                            let ref_start = (pos as usize + 1).saturating_sub(segment_start);
-                            let ref_end = ref_start + len as usize;
-                            let bases: SmallVec<Base, 4> = segment
-                                .sequence
-                                .get(ref_start..ref_end)
-                                .map(|slice| slice.iter().copied().map(Base::from).collect())
-                                .unwrap_or_default();
-                            if bases.is_empty() {
-                                continue;
-                            }
-                            IndelAllele::Deletion(bases)
-                        }
-                        Indel::None => unreachable!(),
-                    };
-
-                    let base_qual = qual.get(qpos).copied().unwrap_or(0);
-                    let mapq = record.mapq();
-
-                    let insertion_base_quals = match &allele {
-                        IndelAllele::Insertion(bases) => {
-                            let start = qpos + 1;
-                            let end = start + bases.len();
-                            (start..end).filter_map(|i| qual.get(i).copied()).collect()
-                        }
-                        IndelAllele::Deletion(_) => SmallVec::new(),
-                    };
-
-                    // One vote per fragment: the second overlapping mate of a
-                    // fragment that already contributed is skipped.
-                    if !first_seen(&mut seen_indel_fragments, fragment_key) {
-                        continue;
-                    }
-
-                    let has_repeat = has_repeat_seq(&seq, 1, HOMOPOLYMER_UNITS)
-                        || has_repeat_seq(&seq, 2, DINUCLEOTIDE_UNITS);
-                    let post_del_base_qual = match &allele {
-                        IndelAllele::Deletion(_) => qual.get(qpos + 1).copied().unwrap_or(0),
-                        IndelAllele::Insertion(_) => 0,
-                    };
-
-                    indel_observations.push(IndelObservation {
-                        allele,
-                        strand,
-                        reverse: flags & 0x10 != 0,
-                        pos_in_read: qpos as u32,
-                        read_length: read_len as u32,
-                        mapq,
-                        base_qual,
-                        matching_bases: matches,
-                        num_indels_in_read: indels_in_read,
-                        insertion_base_quals,
-                        post_del_base_qual,
-                        has_repeat,
-                        noisy: has_repeat || soft_clipped,
-                    });
-                }
-            }
-        }
 
         // The reference window is only needed for indel slippage features, so
         // skip the allocation at the (vast majority of) positions without indels.
@@ -320,10 +356,12 @@ impl Pileup {
             indel_ref_window_at(idx, &segment)
         };
 
+        let segment_start = segment.range.region.start as usize;
+
         Ok(Pileup {
             region: segment.range.clone(),
             context,
-            pos: pile.pos(),
+            pos,
             reads,
             reference_base,
             indel_observations,
@@ -341,8 +379,95 @@ impl Pileup {
     }
 }
 
+/// The indel this alignment shows at `pos`, if it survives the indel-specific
+/// filters.
+///
+/// Everything both an observation and a [`SimpleRead`] need is taken from `read`
+/// rather than recomputed, so the CIGAR is walked once per alignment.
+fn indel_observation(
+    a: &Alignment<'_>,
+    read: &SimpleRead,
+    pos: u32,
+    segment: &Segment,
+    params: &PileupMappingParams,
+    mismatch_cache: &mut ReadMismatchCache,
+    shape: AlignmentShape,
+) -> Option<IndelObservation> {
+    let qpos = read.position.pos as usize;
+    let read_len = read.position.read_length as usize;
+    let cutoff = params.indel_end_of_read_cutoff;
+    // End-of-read filter, stricter than the one SNVs get.
+    if qpos < cutoff || qpos >= read_len.saturating_sub(cutoff) {
+        return None;
+    }
+
+    let mismatches = mismatch_cache.mismatch_count_for_alignment(a, segment, read.strand);
+    if mismatches > params.indel_max_mismatches {
+        trace!(
+            mismatches,
+            max = params.indel_max_mismatches,
+            "Indel skipped: too many non-TAPS mismatches"
+        );
+        return None;
+    }
+
+    let record = a.record_view();
+    let (seq, qual) = record.seq_and_qual();
+    let allele = match a.indel() {
+        Indel::Ins(len) => {
+            let start = qpos + 1;
+            let end = start + len as usize;
+            let bases: SmallVec<Base, 4> =
+                (start..end).filter_map(|i| seq.get(i).map(Base::from)).collect();
+            IndelAllele::Insertion(bases)
+        }
+        Indel::Del(len) => {
+            let ref_start = (pos as usize + 1).saturating_sub(segment.range.region.start as usize);
+            let ref_end = ref_start + len as usize;
+            let bases: SmallVec<Base, 4> = segment
+                .sequence
+                .get(ref_start..ref_end)
+                .map(|slice| slice.iter().copied().map(Base::from).collect())
+                .unwrap_or_default();
+            IndelAllele::Deletion(bases)
+        }
+        Indel::None => return None,
+    };
+    if allele.bases().is_empty() {
+        return None;
+    }
+
+    let insertion_base_quals = match &allele {
+        IndelAllele::Insertion(bases) => {
+            let start = qpos + 1;
+            (start..start + bases.len()).filter_map(|i| qual.get(i).copied()).collect()
+        }
+        IndelAllele::Deletion(_) => SmallVec::new(),
+    };
+    let post_del_base_qual = match &allele {
+        IndelAllele::Deletion(_) => qual.get(qpos + 1).copied().unwrap_or(0),
+        IndelAllele::Insertion(_) => 0,
+    };
+
+    Some(IndelObservation {
+        allele,
+        strand: read.strand,
+        reverse: read.reverse,
+        pos_in_read: read.position.pos,
+        read_length: read.position.read_length,
+        mapq: read.mapq,
+        base_qual: read.qual,
+        matching_bases: read.matching_bases,
+        num_indels_in_read: read.indels,
+        insertion_base_quals,
+        post_del_base_qual,
+        has_repeat: shape.terminal_repeat,
+        noisy: shape.noisy(),
+    })
+}
+
 fn alignment_to_read<'a>(
-    a: Alignment<'a>,
+    a: &Alignment<'a>,
     segment: &Segment,
     params: &PileupMappingParams,
     orientation_cache: &mut ReadOrientationCache,
@@ -350,7 +475,7 @@ fn alignment_to_read<'a>(
     let pos = a.qpos()?;
     let record = a.record_view();
     let flags = record.flags();
-    let strand = orientation_cache.strand_for_alignment(&a, segment, params)?;
+    let strand = orientation_cache.strand_for_alignment(a, segment, params)?;
     let (matches, indels) = calc_cigar_data(record.raw_cigar());
     let (seq, qual) = record.seq_and_qual();
 
@@ -502,18 +627,6 @@ fn pseudo_random_strand(record: &Record) -> Strand {
     record.pos().hash(&mut hasher);
     record.flags().hash(&mut hasher);
     if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
-}
-
-/// Records a per-fragment contribution once. `None` (dedup disabled) always counts.
-fn first_seen(seen: &mut SmallVec<u64, 8>, key: Option<u64>) -> bool {
-    match key {
-        None => true,
-        Some(k) if seen.contains(&k) => false,
-        Some(k) => {
-            seen.push(k);
-            true
-        }
-    }
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
@@ -829,22 +942,76 @@ mod tests {
         assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 2);
     }
 
+    const CLEAN: AlignmentShape = AlignmentShape { terminal_repeat: false, soft_clipped: false };
+    const CLIPPED: AlignmentShape = AlignmentShape { terminal_repeat: false, soft_clipped: true };
+    const REPEAT: AlignmentShape = AlignmentShape { terminal_repeat: true, soft_clipped: false };
+
     #[test]
-    fn first_seen_dedups_by_key() {
-        // Per-fragment dedup: a repeated key (second overlapping mate) is not counted.
-        let mut seen: SmallVec<u64, 8> = SmallVec::new();
-        assert!(first_seen(&mut seen, Some(7)));
-        assert!(!first_seen(&mut seen, Some(7)));
-        assert!(first_seen(&mut seen, Some(9)));
-        assert!(!first_seen(&mut seen, Some(9)));
+    fn both_mates_spanning_an_indel_cast_one_vote() {
+        let mut votes = FragmentVotes::default();
+        votes.prepare(2);
+        assert!(votes.saw_indel(0));
+        // Second mate of the same fragment: `duplicate` resolves it to slot 0.
+        assert!(!votes.saw_indel(0));
     }
 
     #[test]
-    fn first_seen_none_is_always_true() {
-        // dedup disabled (`--keep-overlapping-reads`): every alignment counts, nothing tracked.
-        let mut seen: SmallVec<u64, 8> = SmallVec::new();
-        assert!(first_seen(&mut seen, None));
-        assert!(first_seen(&mut seen, None));
-        assert!(seen.is_empty());
+    fn a_fragment_is_alternate_or_noisy_reference_but_never_both() {
+        // The mate configuration that used to be subtracted twice: one mate
+        // soft-clipped over the indel, the other spanning it. Whichever the
+        // pileup reports first, the fragment leaves `ref_count` via
+        // `total_indel_reads` and must not leave it again via `noisy_ref_count`.
+        for indel_first in [true, false] {
+            let mut votes = FragmentVotes::default();
+            votes.prepare(2);
+            if indel_first {
+                assert!(votes.saw_indel(0));
+                votes.saw_reference(0, CLIPPED);
+            } else {
+                votes.saw_reference(0, CLIPPED);
+                assert!(votes.saw_indel(0));
+            }
+            assert_eq!(votes.totals().noisy_ref_count, 0);
+        }
+    }
+
+    #[test]
+    fn noisy_reference_mates_are_counted_once_per_fragment() {
+        let mut votes = FragmentVotes::default();
+        votes.prepare(4);
+        // One fragment, both mates in a terminal repeat.
+        votes.saw_reference(0, REPEAT);
+        votes.saw_reference(0, REPEAT);
+        // A second, clean fragment.
+        votes.saw_reference(2, CLEAN);
+
+        let totals = votes.totals();
+        assert_eq!(totals.noisy_ref_count, 1);
+        assert_eq!(totals.depth_offset, 1);
+    }
+
+    #[test]
+    fn soft_clips_count_per_fragment_including_indel_carriers() {
+        // `soft_clip_rate` divides by `reads.len()`, which is per fragment, so
+        // the numerator has to be too or the rate can exceed 1.
+        let mut votes = FragmentVotes::default();
+        votes.prepare(3);
+        votes.saw_soft_clip(0);
+        votes.saw_soft_clip(0);
+        assert!(votes.saw_indel(0));
+        votes.saw_soft_clip(2);
+
+        assert_eq!(votes.totals().soft_clip_count, 2);
+    }
+
+    #[test]
+    fn votes_do_not_leak_between_positions() {
+        let mut votes = FragmentVotes::default();
+        votes.prepare(1);
+        votes.saw_reference(0, REPEAT);
+        assert_eq!(votes.totals().noisy_ref_count, 1);
+
+        votes.prepare(1);
+        assert_eq!(votes.totals().noisy_ref_count, 0);
     }
 }
