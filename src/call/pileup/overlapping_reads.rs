@@ -274,6 +274,7 @@ mod tests {
             }
         }
         to_remove.sort_unstable();
+        to_remove.dedup();
         for &idx in to_remove.iter().rev() {
             raw_reads.swap_remove(idx);
         }
@@ -378,6 +379,22 @@ mod tests {
         ];
         assert_eq!(run_dedup(reads.clone()).len(), 1);
         assert_eq!(run_dedup_linear(reads).len(), 1);
+    }
+
+    /// Three alignments sharing a qname all nominate the first slot for removal.
+    /// Removing that slot twice takes an unrelated fragment with it, because
+    /// swap_remove has already moved a different read into the index.
+    #[test]
+    fn three_reads_same_name_spare_the_unrelated_read() {
+        let reads = vec![
+            (b"read1".as_ref(), sr(Base::A, false)),
+            (b"read1".as_ref(), sr(Base::C, false)),
+            (b"read1".as_ref(), sr(Base::G, false)),
+            (b"read2".as_ref(), sr(Base::T, false)),
+        ];
+        for result in [run_dedup(reads.clone()), run_dedup_linear(reads)] {
+            assert!(result.iter().any(|r| r.base == Base::T), "unrelated read was removed");
+        }
     }
 
     #[test]

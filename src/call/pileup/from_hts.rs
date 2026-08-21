@@ -326,7 +326,10 @@ impl Pileup {
             }
         }
 
+        // Three-plus alignments sharing a qname can nominate the same slot twice,
+        // and swap_remove of an already-removed slot deletes an unrelated read.
         to_remove.sort_unstable();
+        to_remove.dedup();
         for &slot in to_remove.iter().rev() {
             raw_reads.swap_remove(slot);
         }
