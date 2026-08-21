@@ -67,9 +67,6 @@ pub struct IndelCounts {
     /// soft-clipped over it: `ref_count` has already dropped that fragment via
     /// `total_indel_reads`, so counting it here too would subtract it twice.
     pub noisy_ref_count: u32,
-    /// Reads with problematic patterns (homopolymer, soft-clip) subtracted from depth
-    /// for indel quality calculation.
-    pub depth_offset: u32,
 }
 
 impl IndelCounts {
@@ -79,9 +76,10 @@ impl IndelCounts {
 
     /// Depth with repeat-noisy reads removed from *both* sides of the ratio.
     ///
-    /// `depth_offset` counts only noisy reads without an indel, so subtracting it
-    /// alone shrinks the denominator and inflates the alternate fraction by the
-    /// noise rate — worst exactly in the repeats where indels concentrate.
+    /// `noisy_ref_count` covers only the reference side, so subtracting it alone
+    /// would shrink the denominator and inflate the alternate fraction by the noise
+    /// rate — worst exactly in the repeats where indels concentrate. Hence the
+    /// alternate side comes in via `clean_total`, which drops its own noisy reads.
     pub fn clean_depth(&self) -> u32 {
         self.ref_count.saturating_sub(self.noisy_ref_count)
             + self.alleles.iter().map(|a| a.clean_total()).sum::<u32>()
@@ -103,7 +101,7 @@ pub struct IndelAlleleCounts {
     pub ob: u32,
     pub unknown_strand: u32,
     /// Supporting reads carrying a terminal tandem repeat. The alternate-side
-    /// counterpart of [`IndelCounts::depth_offset`].
+    /// counterpart of [`IndelCounts::noisy_ref_count`].
     pub noisy: u32,
 }
 

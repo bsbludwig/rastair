@@ -107,7 +107,6 @@ pub(crate) fn create_pileups(
                 reads: SimpleReads(reads.into()),
                 reference_base,
                 indel_observations: Default::default(),
-                depth_offset: 0,
                 noisy_ref_count: 0,
                 homopolymer_run: 0,
                 dinucleotide_run: 0,

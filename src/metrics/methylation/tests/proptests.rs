@@ -66,7 +66,6 @@ fn empty_pileup() -> Pileup {
         reads: SimpleReads(std::sync::Arc::new([])),
         reference_base: Base::Unknown,
         indel_observations: SmallVec::new(),
-        depth_offset: 0,
         noisy_ref_count: 0,
         homopolymer_run: 0,
         dinucleotide_run: 0,

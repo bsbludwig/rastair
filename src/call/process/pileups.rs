@@ -19,9 +19,6 @@ pub struct PileupMappingParams {
     /// Ignore indels within this distance from read ends.
     #[default(0)]
     pub indel_end_of_read_cutoff: usize,
-    /// Homopolymer repeat length cutoff for indel depth filtering.
-    #[default(3)]
-    pub indel_repeat_limit: usize,
     /// Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
     #[default(5)]
     pub indel_max_mismatches: u32,
@@ -88,8 +85,7 @@ pub fn get_pileups(
             region.contains(u64::from(p.pos()))
         })
         .map(move |pile| {
-            Pileup::from_hts(&pile, segment.clone(), params, &mut scratch)
-            .wrap_err_with(|| {
+            Pileup::from_hts(&pile, segment.clone(), params, &mut scratch).wrap_err_with(|| {
                 format!("Failed to get candidate from pileup at position {}", pile.pos())
             })
         })

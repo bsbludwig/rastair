@@ -152,15 +152,12 @@ struct FragmentVote {
     indel: bool,
     /// Some mate supports the reference from an alignment of the kind that slips.
     noisy_ref: bool,
-    /// That mate's terminus is a tandem repeat rather than (only) a soft clip.
-    terminal_repeat: bool,
     soft_clipped: bool,
 }
 
 #[derive(Default)]
 struct FragmentTotals {
     noisy_ref_count: u32,
-    depth_offset: u32,
     soft_clip_count: u32,
 }
 
@@ -186,7 +183,6 @@ impl FragmentVotes {
     fn saw_reference(&mut self, fragment: usize, shape: AlignmentShape) {
         if let Some(vote) = self.slot(fragment) {
             vote.noisy_ref |= shape.noisy();
-            vote.terminal_repeat |= shape.terminal_repeat;
         }
     }
 
@@ -210,9 +206,6 @@ impl FragmentVotes {
             }
             if vote.noisy_ref {
                 totals.noisy_ref_count += 1;
-            }
-            if vote.terminal_repeat {
-                totals.depth_offset += 1;
             }
         }
         totals
@@ -339,8 +332,7 @@ impl Pileup {
         }
         let reads = SimpleReads(raw_reads.into());
 
-        let FragmentTotals { noisy_ref_count, depth_offset, soft_clip_count } =
-            scratch.fragments.totals();
+        let FragmentTotals { noisy_ref_count, soft_clip_count } = scratch.fragments.totals();
 
         let reference_base: Base =
             segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
@@ -365,7 +357,6 @@ impl Pileup {
             reads,
             reference_base,
             indel_observations,
-            depth_offset,
             noisy_ref_count,
             // `pos` is the anchor, i.e. the base *before* the indel; for a
             // left-aligned indel that is the base before the repeat. Measured at the
@@ -987,7 +978,6 @@ mod tests {
 
         let totals = votes.totals();
         assert_eq!(totals.noisy_ref_count, 1);
-        assert_eq!(totals.depth_offset, 1);
     }
 
     #[test]

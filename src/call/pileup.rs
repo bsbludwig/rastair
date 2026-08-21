@@ -37,7 +37,6 @@ pub struct Pileup {
     /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
     /// for indel depth adjustment.
     #[serde(default)]
-    pub depth_offset: u32,
     pub noisy_ref_count: u32,
     #[serde(default)]
     pub homopolymer_run: u8,
@@ -133,7 +132,6 @@ mod tests {
             reads: bases,
             reference_base: Base::T, // Assume T is the reference base at this position
             indel_observations: default(),
-            depth_offset: 0,
             noisy_ref_count: 0,
             homopolymer_run: 0,
             dinucleotide_run: 0,

@@ -86,7 +86,7 @@ pub struct IndelCall {
     pub quality: Phred,
     /// ML score: probability this indel is a true variant.
     pub ml: Option<Probability>,
-    /// Filtered depth (total minus `depth_offset`).
+    /// Depth with noisy reads removed from both sides; see [`IndelCounts::clean_depth`].
     pub depth: u32,
     /// Reads supporting this indel allele.
     pub alt_count: u32,
