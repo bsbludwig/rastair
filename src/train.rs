@@ -56,7 +56,6 @@ pub struct TrainModelParams {
     #[arg(help_heading = cli::sections::INPUT, value_hint=clap::ValueHint::FilePath)]
     truth: ClioPath,
 
-    /// Output directory for trained models
     /// Restrict training to the intervals of a BED file (e.g. a GIAB
     /// high-confidence region file).
     ///
@@ -72,6 +71,7 @@ pub struct TrainModelParams {
     #[arg(long = "regions-file", short = 'R', help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
     regions_file: Option<ClioPath>,
 
+    /// Output directory for trained models
     #[arg(short = 'o', long = "output", default_value = "./models")]
     #[arg(help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::FilePath)]
     output: ClioPath,
