@@ -178,7 +178,6 @@ mod tests {
             reads: SimpleReads(vec![].into()),
             reference_base: Base::C,
             indel_observations: Default::default(),
-            depth_offset: 0,
             noisy_ref_count: 0,
             homopolymer_run: 0,
             dinucleotide_run: 0,

@@ -623,10 +623,5 @@ fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     }
     let ref_count = depth.saturating_sub(total_indel_reads);
 
-    IndelCounts {
-        alleles,
-        ref_count,
-        depth_offset: pileup.depth_offset,
-        noisy_ref_count: pileup.noisy_ref_count,
-    }
+    IndelCounts { alleles, ref_count, noisy_ref_count: pileup.noisy_ref_count }
 }
