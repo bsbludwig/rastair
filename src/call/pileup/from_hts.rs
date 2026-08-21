@@ -674,7 +674,7 @@ fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8
     while i > 0 {
         i -= 1;
         if seq.get(i) == Some(&center) {
-            run += 1;
+            run = run.saturating_add(1);
         } else {
             break;
         }
@@ -683,7 +683,7 @@ fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u8
     while i + 1 < seq.len() {
         i += 1;
         if seq.get(i) == Some(&center) {
-            run += 1;
+            run = run.saturating_add(1);
         } else {
             break;
         }
@@ -707,7 +707,7 @@ fn dinucleotide_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u
         let mut i = start;
         while i >= 2 {
             if seq.get(i - 2) == Some(&p0) && seq.get(i - 1) == Some(&p1) {
-                run += 2;
+                run = run.saturating_add(2);
                 i -= 2;
             } else {
                 break;
@@ -716,7 +716,7 @@ fn dinucleotide_run_at(pos: usize, segment: &Segment, segment_start: usize) -> u
         i = start + 2;
         while i + 1 < seq.len() {
             if seq.get(i) == Some(&p0) && seq.get(i + 1) == Some(&p1) {
-                run += 2;
+                run = run.saturating_add(2);
                 i += 2;
             } else {
                 break;
@@ -768,6 +768,19 @@ mod tests {
         utils::default,
     };
     use rust_htslib::bam::record::{Cigar, CigarString};
+
+    /// A run counter is a `u8` but a reference tract can be longer than 255. The
+    /// wrapped value would land back in the short-tract rows of
+    /// `ALLELE_FRACTION_BY_TRACT`, applying the simple-sequence prior inside the
+    /// longest repeat in the genome — and panic outright in a debug build.
+    #[test]
+    fn a_reference_run_longer_than_the_counter_saturates() {
+        let homopolymer = test_segment(&[b'A'; 400]);
+        assert_eq!(homopolymer_run_at(300, &homopolymer, 100), u8::MAX);
+
+        let dinucleotide = test_segment(&b"AT".repeat(200));
+        assert!(dinucleotide_run_at(300, &dinucleotide, 100) >= u8::MAX - 1);
+    }
 
     fn test_segment(sequence: &[u8]) -> Segment {
         let start = 100u64;
