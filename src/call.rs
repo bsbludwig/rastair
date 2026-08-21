@@ -405,7 +405,7 @@ fn process_region(
                 &params.indel,
                 params.indel.use_ml(ml.enabled()),
                 tract,
-                params.indel.indel_ml_rescue,
+                params.indel.rescues_hom_ref(),
             );
         }
     }
@@ -431,7 +431,7 @@ fn process_region(
         process::add_ml_metrics_vec(&mut pileups, ml, score_indels)
     })?;
 
-    if params.indel.indel_ml_rescue {
+    if params.indel.rescues_hom_ref() {
         for p in &mut pileups {
             variant_calling::indel_calling::rescue_hom_ref(
                 &mut p.indel_calls,

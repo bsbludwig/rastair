@@ -6,34 +6,34 @@ use seqair_types::{Phred, Probability};
 use std::num::NonZeroU8;
 use tracing::{instrument, trace};
 
+/// Which decision procedure accepts a candidate indel.
+///
+/// Measured on GIAB HG001, the choice is depth-dependent: `ml-rescue` wins on every
+/// library above ~32x and `ml` on every library below ~25x, so neither dominates.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndelPathway {
+    /// The model decides: a low score vetoes an allele the hard chain would keep.
+    /// Best precision, worst recall.
+    Ml,
+    /// A fixed filter chain only, with no ML scoring of indels at call time.
+    NoMl,
+    /// The hard chain's calls all stand, and the model reinstates an allele the
+    /// chain dropped as homozygous reference. Best recall.
+    MlRescue,
+}
+
 /// CLI parameters for indel calling.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, Default)]
 pub struct IndelParams {
-    /// Enable experimental indel calling using hard filters
+    /// Enable experimental indel calling
     ///
-    /// Candidate indels are accepted by a fixed filter chain with no ML scoring.
-    /// When disabled, Rastair calls SNPs and methylation only.
-    #[arg(long, default_value_t = false)]
-    pub experimental_indels: bool,
-
-    /// Enable experimental indel calling scored by the ML model
-    ///
-    /// Selects the ML indel pathway instead of the hard-filter chain. Unlike
-    /// `--no-ml` this leaves the SNV and CpG models alone, so the indel pathway can
-    /// be chosen independently of them. Degrades to the hard-filter chain under
-    /// `--no-ml` rather than erroring.
-    #[arg(long, default_value_t = false, conflicts_with = "experimental_indels")]
-    pub experimental_indels_ml: bool,
-
-    /// Let the model rescue indels the binomial genotyped homozygous reference.
-    ///
-    /// The two pathways currently intersect: `--experimental-indels-ml` lets a low
-    /// score veto an allele the hard chain would have kept, which measured costs
-    /// more recall than it buys precision. This unions them instead -- the hard
-    /// chain's calls stand, and an allele it dropped as hom-ref is reinstated as a
-    /// heterozygote when the model rates it above the threshold.
-    #[arg(long, default_value_t = false, conflicts_with = "experimental_indels_ml")]
-    pub indel_ml_rescue: bool,
+    /// Defaults to ML scoring.
+    #[arg(long, value_enum)]
+    #[arg(num_args = 0..=1, require_equals = true, default_missing_value = "ml")]
+    pub experimental_indels: Option<IndelPathway>,
 
     /// Minimum alternate observations to call an indel
     ///
@@ -184,18 +184,25 @@ pub fn call_indels(
 
 impl IndelParams {
     pub fn enabled(&self) -> bool {
-        self.experimental_indels || self.experimental_indels_ml || self.indel_ml_rescue
+        self.experimental_indels.is_some()
     }
 
     /// Whether indels need ML scores at all: either the model decides, or it is
     /// there to rescue what the binomial rejected.
     pub fn needs_ml_scores(&self, ml_enabled: bool) -> bool {
-        (self.experimental_indels_ml || self.indel_ml_rescue) && ml_enabled
+        matches!(self.experimental_indels, Some(IndelPathway::Ml | IndelPathway::MlRescue))
+            && ml_enabled
     }
 
     /// Whether the ML pathway is selected *and* a model is available.
     pub fn use_ml(&self, ml_enabled: bool) -> bool {
-        self.experimental_indels_ml && ml_enabled
+        self.experimental_indels == Some(IndelPathway::Ml) && ml_enabled
+    }
+
+    /// Whether the model may reinstate alleles the binomial called homozygous
+    /// reference. Independent of `use_ml`: the two pathways are alternatives.
+    pub fn rescues_hom_ref(&self) -> bool {
+        self.experimental_indels == Some(IndelPathway::MlRescue)
     }
 }
 

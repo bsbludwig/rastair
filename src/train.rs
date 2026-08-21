@@ -15,7 +15,7 @@ use crate::{
         ml::DEFAULT_ML_THRESHOLD,
         pileup::indels::IndelAllele,
         process::{PileupMappingParams, calculate_pileup_metrics, get_pileups},
-        variant_calling::indel_calling::{self, IndelParams},
+        variant_calling::indel_calling::{self, IndelParams, IndelPathway},
     },
     metrics::{
         MetricsForIndel, PileupMetrics,
@@ -272,7 +272,8 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     // Training examples come from the ML pathway, so select it explicitly rather
     // than the hard-filter chain.
-    let indel_params = IndelParams { experimental_indels_ml: true, ..IndelParams::default() };
+    let indel_params =
+        IndelParams { experimental_indels: Some(IndelPathway::Ml), ..IndelParams::default() };
     let calculator = params.ml_features.get_calculator();
     let confident = params
         .regions_file
