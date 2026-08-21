@@ -193,21 +193,18 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Options:**
 
-* `--experimental-indels` — Enable experimental indel calling using hard filters
+* `--experimental-indels <EXPERIMENTAL_INDELS>` — Enable experimental indel calling
 
-   Candidate indels are accepted by a fixed filter chain with no ML scoring. When disabled, Rastair calls SNPs and methylation only.
+   Defaults to ML scoring.
 
-  Default value: `false`
-* `--experimental-indels-ml` — Enable experimental indel calling scored by the ML model
+  Possible values:
+  - `ml`:
+    The model decides: a low score vetoes an allele the hard chain would keep. Best precision, worst recall
+  - `no-ml`:
+    A fixed filter chain only, with no ML scoring of indels at call time
+  - `ml-rescue`:
+    The hard chain's calls all stand, and the model reinstates an allele the chain dropped as homozygous reference. Best recall
 
-   Selects the ML indel pathway instead of the hard-filter chain. Unlike `--no-ml` this leaves the SNV and CpG models alone, so the indel pathway can be chosen independently of them. Degrades to the hard-filter chain under `--no-ml` rather than erroring.
-
-  Default value: `false`
-* `--indel-ml-rescue` — Let the model rescue indels the binomial genotyped homozygous reference.
-
-   The two pathways currently intersect: `--experimental-indels-ml` lets a low score veto an allele the hard chain would have kept, which measured costs more recall than it buys precision. This unions them instead -- the hard chain's calls stand, and an allele it dropped as hom-ref is reinstated as a heterozygote when the model rates it above the threshold.
-
-  Default value: `false`
 
 ###### **Output Options:**
 
