@@ -304,12 +304,17 @@ fn resolve_compound_het(calls: &mut Vec<IndelCall>, depth: u32, error_rate: f64,
     let mass = |p: f64| Binomial::new(depth as usize, clamp_probability(p)).mass(pooled);
     let (p_het, p_compound, p_hom_alt) =
         (mass(het), mass(interpolate(COMPOUND_FRACTION_BY_TRACT, tract)), mass(hom_alt));
+    // All three masses can underflow to zero at high depth, and then no `<`
+    // comparison holds and every locus would promote to 1/2 with QUAL 0.
+    let total = p_het + p_compound + p_hom_alt;
+    if total == 0.0 {
+        return;
+    }
     if p_compound < p_het || p_compound < p_hom_alt {
         return;
     }
 
-    let total = p_het + p_compound + p_hom_alt;
-    let quality = phred_from_confidence(if total > 0.0 { p_compound / total } else { 0.0 });
+    let quality = phred_from_confidence(p_compound / total);
     let (one, two) = (NonZeroU8::new(1).expect("nonzero"), NonZeroU8::new(2).expect("nonzero"));
     calls.truncate(2);
     for call in calls.iter_mut() {
@@ -468,6 +473,16 @@ mod tests {
         let mut calls = vec![call("A", 14), call("AA", 2)];
         resolve_compound_het(&mut calls, 30, 0.05, SIMPLE);
         assert!(!matches!(calls[0].genotype, GenotypeTag::AltHet(..)));
+    }
+
+    /// At high depth all three pooled masses underflow to zero, and then neither
+    /// `<` comparison holds. Without a total-mass guard the locus promotes to 1/2
+    /// on a hypothesis every model rates as impossible.
+    #[test]
+    fn an_underflowing_pool_is_not_a_compound_het() {
+        let mut calls = vec![call("A", 6927), call("AA", 6927)];
+        resolve_compound_het(&mut calls, 20000, 0.05, SIMPLE);
+        assert!(calls.iter().all(|c| !matches!(c.genotype, GenotypeTag::AltHet(..))));
     }
 
     /// The model reinstates a hom-ref allele it rates highly, and its score is
