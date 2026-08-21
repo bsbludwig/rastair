@@ -512,7 +512,12 @@ fn build_compound_het_record(
             genotype: Genotype::from(first.genotype),
             sample_read_depth: SampleReadDepth(depth as usize),
             machine_learning_prediction: MachineLearningPrediction(
-                calls.iter().filter_map(|c| c.ml.map(|ml| *ml)).collect()
+                // ML is Number=A: either one value per declared ALT, or none at all.
+                if calls.iter().any(|c| c.ml.is_some()) {
+                    calls.iter().map(|c| c.ml.map(|ml| *ml).unwrap_or_default()).collect()
+                } else {
+                    smallvec![]
+                }
             ),
             ..default()
         }],
