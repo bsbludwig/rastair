@@ -107,26 +107,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `-F`, `--exclude-flags <EXCLUDE_FLAGS>` — Exclude reads that match any of these bit-flags
 
   Default value: `3852`
-* `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations to call an indel
-
-   This threshold is evaluated per indel allele after read-level indel filters are applied.
-
-  Default value: `2`
-* `--min-indel-depth <MIN_INDEL_DEPTH>` — Minimum depth to call an indel
-
-   Depth is computed at the locus after applying indel-specific read filters and depth adjustments.
-
-  Default value: `2`
-* `--indel-max-mismatches <INDEL_MAX_MISMATCHES>` — Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
-
-   C->T mismatches on OT reads and G->A mismatches on OB reads are excluded from the count as they are expected TAPS methylation signal.
-
-  Default value: `5`
-* `--indel-end-of-read-cutoff <INDEL_END_OF_READ_CUTOFF>` — Ignore indels within this many bases of either read end.
-
-   This stricter end-of-read filter helps suppress alignment artifacts at read starts and ends.
-
-  Default value: `0`
 * `--cpg-novo-min-depth <CPG_NOVO_MIN_DEPTH>` — Minimum reads needed in support of de-novo CpG
 
   Default value: `2`
@@ -139,24 +119,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--cpg-novo-min-vaf <CPG_NOVO_MIN_VAF>` — Minimum variant allele frequency for de-novo CpGs
 
   Default value: `0.2`
-* `--m-vaf-min <M_VAF_MIN>` — The minimum variant allele frequency
-
-  Default value: `0.2`
-* `--m-min-depth <M_MIN_DEPTH>` — The minimum number of reads to call a position as methylated
-
-  Default value: `3`
-* `--m-bq-ratio-min <M_BQ_RATIO_MIN>` — The minimum quality ratio `(ad_alt*bq_alt + 1) / (ad_ref*bq_ref + 1)`
-
-  Default value: `0.27`
-* `--m-read-position-min <M_READ_POSITION_MIN>` — The minimum relative position in read for alt allele evidence
-
-  Default value: `0.2`
-* `--m-read-position-max <M_READ_POSITION_MAX>` — The maximum relative position in read for alt allele evidence
-
-  Default value: `0.8`
-* `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
-
-  Default value: `1000`
 * `--no-ml` — Only use hard thresholds to call variants and methylation events.
 
    This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
@@ -181,17 +143,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
 
-###### **Input Options:**
-
-* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
-* `-l`, `--region <REGIONS>` — Restrict processing to specific genomic regions.
-
-   Accepts either space-separated region strings or a single BED file: - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive) - Multiple regions separated by whitespace: `"chr1 chr2:100-200"` - BED files with `@` prefix: `@targets.bed`
-* `--require-tags <REQUIRE_TAGS>` — Require reads to have a specific SAM tag value
-
-   Format: TAG=VALUE, e.g. `--require-tags RG=mygroup`. Accepts one or more values (space-separated). A read is kept only if it matches all of the specified tag=value pairs.
-
-###### **Options:**
+###### **Indel Options:**
 
 * `--experimental-indels <EXPERIMENTAL_INDELS>` — Enable experimental indel calling
 
@@ -205,6 +157,57 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `ml-rescue`:
     The hard chain's calls all stand, and the model reinstates an allele the chain dropped as homozygous reference. Best recall
 
+* `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations to call an indel
+
+   This threshold is evaluated per indel allele after read-level indel filters are applied.
+
+  Default value: `2`
+* `--min-indel-depth <MIN_INDEL_DEPTH>` — Minimum depth to call an indel
+
+   Depth is computed at the locus after applying indel-specific read filters and depth adjustments.
+
+  Default value: `2`
+* `--indel-max-mismatches <INDEL_MAX_MISMATCHES>` — Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
+
+   C->T mismatches on OT reads and G->A mismatches on OB reads are excluded from the count as they are expected TAPS methylation signal.
+
+  Default value: `5`
+* `--indel-end-of-read-cutoff <INDEL_END_OF_READ_CUTOFF>` — Ignore indels within this many bases of either read end.
+
+   This stricter end-of-read filter helps suppress alignment artifacts at read starts and ends.
+
+  Default value: `0`
+
+###### **Input Options:**
+
+* `-r`, `--fasta-file <FASTA_FILE>` — Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip compressed, but requires both a gzi index and a fai index
+* `-l`, `--region <REGIONS>` — Restrict processing to specific genomic regions.
+
+   Accepts either space-separated region strings or a single BED file: - Region strings: `chr`, `chr:start`, `chr:start-end` (1-based inclusive) - Multiple regions separated by whitespace: `"chr1 chr2:100-200"` - BED files with `@` prefix: `@targets.bed`
+* `--require-tags <REQUIRE_TAGS>` — Require reads to have a specific SAM tag value
+
+   Format: TAG=VALUE, e.g. `--require-tags RG=mygroup`. Accepts one or more values (space-separated). A read is kept only if it matches all of the specified tag=value pairs.
+
+###### **Methylation Options:**
+
+* `--m-vaf-min <M_VAF_MIN>` — The minimum variant allele frequency
+
+  Default value: `0.2`
+* `--m-min-depth <M_MIN_DEPTH>` — The minimum number of reads to call a position as methylated
+
+  Default value: `3`
+* `--m-bq-ratio-min <M_BQ_RATIO_MIN>` — The minimum quality ratio `(ad_alt*bq_alt + 1) / (ad_ref*bq_ref + 1)`
+
+  Default value: `0.27`
+* `--m-read-position-min <M_READ_POSITION_MIN>` — The minimum relative position in read for alt allele evidence
+
+  Default value: `0.2`
+* `--m-read-position-max <M_READ_POSITION_MAX>` — The maximum relative position in read for alt allele evidence
+
+  Default value: `0.8`
+* `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
+
+  Default value: `1000`
 
 ###### **Output Options:**
 

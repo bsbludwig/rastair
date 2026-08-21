@@ -33,6 +33,7 @@ pub struct IndelParams {
     /// Defaults to ML scoring.
     #[arg(long, value_enum)]
     #[arg(num_args = 0..=1, require_equals = true, default_missing_value = "ml")]
+    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     pub experimental_indels: Option<IndelPathway>,
 
     /// Minimum alternate observations to call an indel
@@ -40,7 +41,7 @@ pub struct IndelParams {
     /// This threshold is evaluated per indel allele after read-level indel
     /// filters are applied.
     #[arg(long, default_value_t = 2)]
-    #[arg(help_heading = crate::utils::cli::sections::FILTER)]
+    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     #[default(2)]
     pub min_indel_ao: u32,
 
@@ -49,7 +50,7 @@ pub struct IndelParams {
     /// Depth is computed at the locus after applying indel-specific read
     /// filters and depth adjustments.
     #[arg(long, default_value_t = 2)]
-    #[arg(help_heading = crate::utils::cli::sections::FILTER)]
+    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     #[default(2)]
     pub min_indel_depth: u32,
 
@@ -64,7 +65,7 @@ pub struct IndelParams {
     /// C->T mismatches on OT reads and G->A mismatches on OB reads are excluded
     /// from the count as they are expected TAPS methylation signal.
     #[arg(long, default_value_t = 5)]
-    #[arg(help_heading = crate::utils::cli::sections::FILTER)]
+    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     #[default(5)]
     pub indel_max_mismatches: u32,
 
@@ -73,7 +74,7 @@ pub struct IndelParams {
     /// This stricter end-of-read filter helps suppress alignment artifacts at
     /// read starts and ends.
     #[arg(long, default_value_t = 0)]
-    #[arg(help_heading = crate::utils::cli::sections::FILTER)]
+    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     #[default(0)]
     pub indel_end_of_read_cutoff: usize,
 }
