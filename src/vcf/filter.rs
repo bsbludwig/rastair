@@ -36,6 +36,8 @@ pub enum RastairFilter {
     PreMl,
     /// `low_ml_score`
     LowMlScore,
+    /// `indel_strand`
+    IndelStrand,
 }
 
 impl RastairFilter {
@@ -44,7 +46,7 @@ impl RastairFilter {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every filter, in registration (header / dictionary) order.
-    pub const ALL: [RastairFilter; 12] = [
+    pub const ALL: [RastairFilter; 13] = [
         Self::LowDp,
         Self::DnCpgLowDp,
         Self::DnCpgBq,
@@ -57,6 +59,7 @@ impl RastairFilter {
         Self::MHighDp,
         Self::PreMl,
         Self::LowMlScore,
+        Self::IndelStrand,
     ];
 
     /// The filter's VCF ID, as it appears in the header and FILTER column.
@@ -74,6 +77,7 @@ impl RastairFilter {
             Self::MHighDp => "m_highDp",
             Self::PreMl => "pre_ml",
             Self::LowMlScore => "low_ml_score",
+            Self::IndelStrand => "indel_strand",
         }
     }
 
@@ -94,6 +98,7 @@ impl RastairFilter {
             Self::MHighDp => "Excessive coverage for methylation candidate",
             Self::PreMl => "Low amount of usable evidence, skipping ML",
             Self::LowMlScore => "Machine Learning module prediction below threshold",
+            Self::IndelStrand => "Indel allele supported on only one bisulfite strand",
         }
     }
 }

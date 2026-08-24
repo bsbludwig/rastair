@@ -8,7 +8,8 @@ use super::{
 use crate::{
     call::process::PileupMappingParams,
     metrics::{
-        Alt, AltFilters, Filters, PerBaseAccumulators, PileupMetrics, RecordTags, aggregate_indels,
+        Alt, AltFilters, Filters, PairedCounts, PerBaseAccumulators, PileupMetrics, ReadKey,
+        RecordTags, aggregate_indels,
     },
     sequence::Segment,
     utils::SequenceContext,
@@ -91,6 +92,8 @@ impl PileupMetrics {
         let mut indel_observations = SmallVec::new();
         let mut depth_offset: u32 = 0;
         let mut soft_clip_count: u32 = 0;
+        let mut before_counts = PairedCounts::default();
+        let mut after_counts = PairedCounts::default();
 
         for (_idx, view) in column
             .alignments()
@@ -136,6 +139,20 @@ impl PileupMetrics {
             if base.known_index().is_some() && base != reference_base && !alt_bases.contains(&base)
             {
                 alt_bases.push(base);
+            }
+
+            if strand != Strand::Unknown {
+                let seq = view.seq();
+                if let Some(&adj) = pos.checked_sub(1).and_then(|i| seq.get(i)) {
+                    before_counts.increment(ReadKey { strand, current: base, adj });
+                }
+                // An adjacent base is only adjacent in the alignment when nothing
+                // is inserted or deleted between them.
+                if matches!(view.alignment().indel_after(), Indel::None)
+                    && let Some(&adj) = seq.get(pos + 1)
+                {
+                    after_counts.increment(ReadKey { strand, current: base, adj });
+                }
             }
 
             if params.call_indels {
@@ -187,8 +204,7 @@ impl PileupMetrics {
         let indel_data = if indel_observations.is_empty() {
             None
         } else {
-            let counts =
-                aggregate_indels(&indel_observations, total_depth, depth_offset, pos_u32);
+            let counts = aggregate_indels(&indel_observations, total_depth, depth_offset, pos_u32);
             let (indel_ref_window, indel_ref_anchor) = indel_ref_window_at(idx, &segment);
             let segment_start = segment.range.region.start as usize;
             Some(Box::new(crate::call::pileup::indels::IndelData {
@@ -212,6 +228,8 @@ impl PileupMetrics {
             pos_filters: Filters::default(),
             ref_metrics,
             alts,
+            before_counts,
+            after_counts,
             tags: RecordTags::default(),
             indel_data,
         })
@@ -292,5 +310,6 @@ fn build_indel_observation(
         insertion_base_quals,
         post_del_base_qual,
         has_repeat: extras.has_repeat,
+        noisy: extras.has_repeat || extras.has_soft_clip,
     })
 }

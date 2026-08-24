@@ -25,7 +25,7 @@ pub(crate) fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: u
     while i > 0 {
         i -= 1;
         if seq.get(i) == Some(&center) {
-            run += 1;
+            run = run.saturating_add(1);
         } else {
             break;
         }
@@ -34,7 +34,7 @@ pub(crate) fn homopolymer_run_at(pos: usize, segment: &Segment, segment_start: u
     while i + 1 < seq.len() {
         i += 1;
         if seq.get(i) == Some(&center) {
-            run += 1;
+            run = run.saturating_add(1);
         } else {
             break;
         }
@@ -58,7 +58,7 @@ pub(crate) fn dinucleotide_run_at(pos: usize, segment: &Segment, segment_start: 
         let mut i = start;
         while i >= 2 {
             if seq.get(i - 2) == Some(&p0) && seq.get(i - 1) == Some(&p1) {
-                run += 2;
+                run = run.saturating_add(2);
                 i -= 2;
             } else {
                 break;
@@ -67,7 +67,7 @@ pub(crate) fn dinucleotide_run_at(pos: usize, segment: &Segment, segment_start: 
         i = start + 2;
         while i + 1 < seq.len() {
             if seq.get(i) == Some(&p0) && seq.get(i + 1) == Some(&p1) {
-                run += 2;
+                run = run.saturating_add(2);
                 i += 2;
             } else {
                 break;

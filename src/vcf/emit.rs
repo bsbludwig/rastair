@@ -9,7 +9,7 @@ use std::io::Write;
 
 use color_eyre::{Result, eyre::Context as _, eyre::ContextCompat as _, eyre::ensure};
 use seqair::vcf::{Alleles, ContigId, Genotype as SeqGenotype, Ready, Writer};
-use seqair_types::{Base, Phred, Pos1, Probability, SmallVec};
+use seqair_types::{Base, Phred, Pos1, Probability, SmallVec, SmolStr};
 
 use crate::{
     call::{
@@ -95,11 +95,147 @@ pub fn emit_pileup<W: Write>(
         }
     }
 
-    for call in pileup.indel_data.as_ref().map_or(&[][..], |d| d.calls.as_slice()) {
-        emit_indel_record(pileup, schema, contig, config, call, ml_threshold, writer)
+    let indel_calls = pileup.indel_data.as_ref().map_or(&[][..], |d| d.calls.as_slice());
+    // A compound het's two alleles share an anchor, so they have to go out as one
+    // multi-allelic record: two biallelic ones would each carry a `1/2` genotype
+    // referring to an allele they do not declare.
+    if indel_calls.iter().any(|c| matches!(c.genotype, GenotypeTag::AltHet(..))) {
+        emit_compound_het_record(
+            pileup,
+            schema,
+            contig,
+            config,
+            indel_calls,
+            ml_threshold,
+            record_filter.vcf_all,
+            writer,
+        )
+        .wrap_err("Failed to emit compound-het indel VCF record")?;
+    } else {
+        for call in indel_calls {
+            emit_indel_record(
+                pileup,
+                schema,
+                contig,
+                config,
+                call,
+                ml_threshold,
+                record_filter.vcf_all,
+                writer,
+            )
             .wrap_err("Failed to emit indel VCF record")?;
+        }
     }
 
+    Ok(())
+}
+
+/// The FILTER an indel call earns, or `None` for PASS.
+///
+/// One-sided strand support wins over a low ML score: it says the evidence is
+/// structurally unusable, which is more informative than the model's verdict.
+fn indel_filter(
+    call: &crate::call::variant_calling::indel_calling::IndelCall,
+    ml_threshold: Option<Probability>,
+) -> Option<RastairFilter> {
+    if call.one_sided {
+        Some(RastairFilter::IndelStrand)
+    } else if call.ml.zip(ml_threshold).is_some_and(|(ml, threshold)| ml < threshold) {
+        Some(RastairFilter::LowMlScore)
+    } else {
+        None
+    }
+}
+
+/// Emit a compound heterozygote as one multi-allelic record.
+///
+/// Both alleles share an anchor, so REF spans the longest deletion among them
+/// and each ALT is written against that span.
+#[allow(clippy::too_many_arguments, reason = "encoder plumbing, mirrors emit_indel_record")]
+fn emit_compound_het_record<W: Write>(
+    pileup: &PileupMetrics,
+    schema: &Schema,
+    contig: &ContigId,
+    config: &FieldConfig,
+    calls: &[crate::call::variant_calling::indel_calling::IndelCall],
+    ml_threshold: Option<Probability>,
+    vcf_all: bool,
+    writer: &mut Writer<W, Ready>,
+) -> Result<()> {
+    let (Some(first), Some(second)) = (calls.first(), calls.get(1)) else {
+        return Ok(());
+    };
+
+    // The record carries whichever filter either allele earned; PASS needs both.
+    let filter = indel_filter(first, ml_threshold).or_else(|| indel_filter(second, ml_threshold));
+    if filter.is_some() && !vcf_all {
+        return Ok(());
+    }
+
+    let anchor = pileup.reference_base;
+    let render = |bases: &[Base]| -> String { bases.iter().map(|b| b.as_str()).collect() };
+    let deleted: &[Base] = calls
+        .iter()
+        .take(2)
+        .filter_map(|c| match &c.allele {
+            IndelAllele::Deletion(bases) => Some(&bases[..]),
+            IndelAllele::Insertion(_) => None,
+        })
+        .max_by_key(|b| b.len())
+        .unwrap_or(&[]);
+    let alt_of = |call: &crate::call::variant_calling::indel_calling::IndelCall| -> SmolStr {
+        match &call.allele {
+            IndelAllele::Deletion(bases) => {
+                format!("{anchor}{}", render(deleted.get(bases.len()..).unwrap_or(&[]))).into()
+            }
+            IndelAllele::Insertion(bases) => {
+                format!("{anchor}{}{}", render(bases), render(deleted)).into()
+            }
+        }
+    };
+    let mut alts: SmallVec<SmolStr, 2> = SmallVec::new();
+    alts.push(alt_of(first));
+    alts.push(alt_of(second));
+    let alleles = Alleles::complex(format!("{anchor}{}", render(deleted)).into(), alts);
+
+    let depth = first.depth;
+    let enc = writer.begin_record(
+        contig,
+        pos1(pileup)?,
+        &alleles,
+        Some(first.quality.as_int() as f32),
+    )?;
+    let mut enc = match filter {
+        Some(filter) => encode_filters(enc, schema, &[filter])?,
+        None => enc.filter_pass(),
+    };
+
+    if config.info.dp {
+        schema.info.dp.encode(&mut enc, i32::try_from(depth).unwrap_or(i32::MAX));
+    }
+    if config.info.ad {
+        let ref_count = depth.saturating_sub(first.alt_count + second.alt_count);
+        let ad = [
+            i32::try_from(ref_count).unwrap_or(i32::MAX),
+            i32::try_from(first.alt_count).unwrap_or(i32::MAX),
+            i32::try_from(second.alt_count).unwrap_or(i32::MAX),
+        ];
+        schema.info.ad.encode(&mut enc, &ad);
+    }
+
+    let mut enc = enc.begin_samples();
+    if config.format.gt {
+        schema.format.gt.encode(&mut enc, &[to_seqair_gt(first.genotype)])?;
+    }
+    if config.format.dp {
+        schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
+    }
+    // ML is Number=A: either one value per declared ALT, or none at all.
+    if config.format.ml && [first, second].iter().any(|c| c.ml.is_some()) {
+        let ml: [f32; 2] = [first, second].map(|c| c.ml.map(|ml| *ml as f32).unwrap_or_default());
+        schema.format.ml.encode_single_sample(&mut enc, &ml)?;
+    }
+    enc.emit()?;
     Ok(())
 }
 
@@ -199,6 +335,7 @@ fn emit_rejected_record<W: Write>(
 }
 
 #[expect(clippy::cast_possible_truncation, reason = "VCF float fields are f32")]
+#[allow(clippy::too_many_arguments, reason = "encoder plumbing")]
 fn emit_indel_record<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
@@ -206,8 +343,13 @@ fn emit_indel_record<W: Write>(
     config: &FieldConfig,
     call: &crate::call::variant_calling::indel_calling::IndelCall,
     ml_threshold: Option<Probability>,
+    vcf_all: bool,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
+    let filter = indel_filter(call, ml_threshold);
+    if filter.is_some() && !vcf_all {
+        return Ok(());
+    }
     let anchor = pileup.reference_base;
     let alleles = match &call.allele {
         IndelAllele::Insertion(bases) => Alleles::insertion(anchor, bases),
@@ -220,13 +362,10 @@ fn emit_indel_record<W: Write>(
         .map(|ml| Phred::from(ml.inverted()).as_int())
         .unwrap_or_else(|| call.quality.as_int()) as f32;
 
-    let ml_below = call.ml.zip(ml_threshold).is_some_and(|(ml, threshold)| ml < threshold);
-
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, Some(qual))?;
-    let mut enc = if ml_below {
-        encode_filters(enc, schema, &[RastairFilter::LowMlScore])?
-    } else {
-        enc.filter_pass()
+    let mut enc = match filter {
+        Some(filter) => encode_filters(enc, schema, &[filter])?,
+        None => enc.filter_pass(),
     };
 
     // Minimal INFO: combined depth + per-allele depth.

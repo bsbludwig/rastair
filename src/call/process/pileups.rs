@@ -154,7 +154,7 @@ pub fn get_pileups(
     readers.inner_mut().customize_mut().read_flags = params.read_flags.clone();
     readers.inner_mut().customize_mut().unpaired = params.unpaired;
     readers.inner_mut().customize_mut().tag_requirement = params.require_tags.clone();
-    readers.inner_mut().customize_mut().repeat_limit = params.indel_repeat_limit;
+    readers.inner_mut().customize_mut().repeat_limit = crate::call::pileup::HOMOPOLYMER_UNITS;
     readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
 
     let depth_limit = match NonZeroU32::new(params.max_coverage) {

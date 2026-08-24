@@ -21,6 +21,15 @@ pub(crate) const INDEL_REF_WINDOW_DOWN: usize = 24;
 /// spills to the heap.
 pub(crate) const INDEL_REF_WINDOW_LEN: usize = INDEL_REF_WINDOW_UP + 1 + INDEL_REF_WINDOW_DOWN;
 
+/// Repeat units at a read terminus needed to flag the alignment as the kind that
+/// slips. A flagged read should be unusual, not typical: at 4 units a terminal
+/// homopolymer occurs ~3% of the time and a 3-unit dinucleotide repeat ~0.8%.
+pub(crate) const HOMOPOLYMER_UNITS: usize = 4;
+// Only the htslib pileup path inspects dinucleotide repeats; seqair's engine
+// takes a single repeat limit.
+#[cfg_attr(feature = "experimental-seqair", allow(dead_code))]
+pub(crate) const DINUCLEOTIDE_UNITS: usize = 3;
+
 /// Rastair's representation of a pileup at a specific position in the genome
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pileup {
