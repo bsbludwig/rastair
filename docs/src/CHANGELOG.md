@@ -2,7 +2,7 @@
 
 This is the changelog for Rastair 2.
 
-## Version 2.2.0 (unreleased)
+## Version 2.2.0 (2026-08-24)
 
 Highlights:
 
