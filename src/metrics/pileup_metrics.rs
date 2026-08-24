@@ -153,8 +153,7 @@ impl PileupMetrics {
         let indel_data = if indel_observations.is_empty() {
             None
         } else {
-            let counts =
-                aggregate_indels(&indel_observations, total_reads, noisy_ref_count, pos);
+            let counts = aggregate_indels(&indel_observations, total_reads, noisy_ref_count, pos);
             Some(Box::new(indels::IndelData {
                 observations: indel_observations,
                 ref_window: indel_ref_window,

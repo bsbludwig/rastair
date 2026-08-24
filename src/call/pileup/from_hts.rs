@@ -5,7 +5,10 @@ use super::{
     overlapping_reads::{DedupInfo, NameCollector, resolve_pair},
     ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
 };
-use crate::{call::pileup::hts_utils::*, sequence::Segment};
+use crate::{
+    call::pileup::{DINUCLEOTIDE_UNITS, HOMOPOLYMER_UNITS, hts_utils::*},
+    sequence::Segment,
+};
 use crate::{
     call::{
         pileup::{Pileup, PositionInRead, SimpleRead, SimpleReads},
@@ -16,8 +19,8 @@ use crate::{
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use rust_htslib::bam::pileup::{Alignment, Indel, Pileup as HtsPileup};
 use rust_htslib::bam::record::RecordView;
-use seqair_types::SmallVec;
 use seqair_types::Base;
+use seqair_types::SmallVec;
 use std::{mem, rc::Rc};
 use tracing::trace;
 use tracing::{debug, instrument};
@@ -433,11 +436,7 @@ fn has_soft_clip(cigar: &[u32]) -> bool {
 /// reduces to `seq[0] == seq[2] || seq[len-3] == seq[len-1]`, true for 43.75% of
 /// random reads, which makes the noise flag fire on a typical read rather than an
 /// unusual one. At 4 units a terminal homopolymer occurs ~3% of the time and a
-/// 3-unit dinucleotide repeat ~0.8%.
-/// A flagged read should be unusual, not typical: see [`has_repeat_seq`].
-const HOMOPOLYMER_UNITS: usize = 4;
-const DINUCLEOTIDE_UNITS: usize = 3;
-
+/// 3-unit dinucleotide repeat ~0.8%. See [`HOMOPOLYMER_UNITS`].
 fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, units: usize) -> bool {
     let len = seq.len();
     let Some(window) = n.checked_mul(units).filter(|w| *w <= len) else {
