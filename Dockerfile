@@ -5,17 +5,13 @@ FROM debian:bookworm-slim AS builder
 
 WORKDIR /app/rastair
 
-# Install system dependencies. `git` is needed for the git-sourced cargo
-# dependencies; the old `rust:x.y.z` base image supplied it implicitly.
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config unzip libclang-dev cmake && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy source code
 COPY . /app/rastair
 
-# `--default-toolchain none` makes rustup resolve the version from
-# rust-toolchain.toml, which is the single source of truth for it. Do not pin a
-# version here: a `FROM rust:x.y.z` base was silently overridden by that file
-# anyway, so it only ever cost an extra toolchain download.
+# `--default-toolchain none` makes rustup use rust-toolchain.toml
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none --profile minimal --no-modify-path -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -25,17 +21,24 @@ RUN cargo xtask release
 ################################################################################
 # RELEASE STAGE
 ################################################################################
-FROM r-base:4.3.3 AS release
+FROM rocker/r-ver:4.3.3 AS release
 
-# Install useful dependencies
-RUN apt update && apt-get -y upgrade && apt-get -y --no-install-recommends install procps bash-completion samtools bedtools bcftools vcftools tabix pandoc gzip libcurl4-openssl-dev libssl-dev && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash-completion bcftools bedtools gzip pandoc procps samtools tabix vcftools \
+        libbz2-dev libcurl4-openssl-dev liblzma-dev libssl-dev libuv1-dev libxml2-dev zlib1g-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# `Ncpus` only affects build speed: every R package below is compiled from
+# source, since the pinned CRAN versions postdate the base image's snapshot.
+ENV R_INSTALL_OPTS="options(Ncpus = parallel::detectCores())"
 
 # Install BiocManager for Bioconductor package management
-RUN Rscript -e "install.packages('BiocManager', repos='https://cloud.r-project.org')"
+RUN Rscript -e "$R_INSTALL_OPTS" -e "install.packages('BiocManager', repos='https://cloud.r-project.org')"
 
-# Install required R and Bioconductor packages
-RUN Rscript -e "BiocManager::install(c('Rsamtools', 'Biostrings', 'GenomicRanges'), version = '3.18', ask = FALSE)"
-RUN Rscript -e "if (!requireNamespace('remotes', quietly = TRUE)) install.packages('remotes', repos = 'https://cloud.r-project.org')" \
+RUN Rscript -e "$R_INSTALL_OPTS" -e "BiocManager::install(c('Rsamtools', 'Biostrings', 'GenomicRanges'), version = '3.18', ask = FALSE)"
+
+RUN Rscript -e "$R_INSTALL_OPTS" \
+    -e "if (!requireNamespace('remotes', quietly = TRUE)) install.packages('remotes', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('argparser', version = '0.7.2', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('knitr', version = '1.50', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('rmarkdown', version = '2.29', repos = 'https://cloud.r-project.org')" \
@@ -44,6 +47,8 @@ RUN Rscript -e "if (!requireNamespace('remotes', quietly = TRUE)) install.packag
     -e "remotes::install_version('ggplot2', version = '4.0.2', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('gtable', version = '0.3.6', repos = 'https://cloud.r-project.org')" \
     -e "remotes::install_version('ggside', version = '0.4.1', repos = 'https://cloud.r-project.org')"
+
+RUN Rscript -e "invisible(lapply(c('argparser', 'Biostrings', 'data.table', 'GenomicRanges', 'ggplot2', 'ggside', 'gtable', 'knitr', 'R.utils', 'rmarkdown', 'Rsamtools'), function(p) library(p, character.only = TRUE)))"
 
 # Copy the compiled binary from the build stage
 # (up until here both stages can run in parallel)
