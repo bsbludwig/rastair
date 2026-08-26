@@ -252,7 +252,7 @@ fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
 
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T); // High ML score
-    records[0].alt_filters_mut(T).unwrap().filters.add(crate::vcf::lowDp, || true);
+    records[0].alt_filters_mut(T).unwrap().filters.add(crate::vcf::RastairFilter::LowDp, || true);
     let mut records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![

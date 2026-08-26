@@ -53,7 +53,7 @@ pub struct BamRewriteArgs {
     ///
     /// Used for splitting work between threads. Tweak this to adjust memory
     /// usage.
-    #[arg(long, default_value_t = 100_000)]
+    #[arg(long, default_value_t = 10_000)]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_max_length: u64,
 

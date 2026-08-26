@@ -40,10 +40,11 @@ pub struct ReadMaskParams {
 
 impl ReadMaskParams {
     pub fn filter(&self, read: &SimpleRead) -> bool {
-        let len = read.position.read_length;
-        let pos = read.position.pos;
+        self.filter_fields(read.strand, read.reverse, read.position.pos, read.position.read_length)
+    }
 
-        match (read.strand, read.reverse) {
+    pub fn filter_fields(&self, strand: Strand, reverse: bool, pos: u32, len: u32) -> bool {
+        match (strand, reverse) {
             (Strand::Unknown, _) => {
                 // If the strand is unknown, we don't apply any masking
                 true

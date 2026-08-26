@@ -53,6 +53,14 @@ enum Command {
         /// Genomic range for profiling (e.g., chr1:1716080-1716100)
         #[arg(short = 'l', long)]
         range: String,
+
+        /// Include GPU profiling (requires a GPU)
+        #[arg(long)]
+        gpu: bool,
+
+        /// Enable experimental-seqair feature
+        #[arg(long)]
+        use_seqair: bool,
     },
 }
 
@@ -108,9 +116,9 @@ fn main() -> Result<()> {
             info!("Building release version without PGO...");
             build_release()?;
         }
-        Command::Pgo { bam, fasta, range } => {
+        Command::Pgo { bam, fasta, range, gpu, use_seqair } => {
             info!("Building PGO-optimized release version...");
-            let binary_path = build_pgo_release(bam.path(), fasta.path(), &range)?;
+            let binary_path = build_pgo_release(bam.path(), fasta.path(), &range, gpu, use_seqair)?;
             info!("✓ PGO-optimized binary built at: {}", binary_path.display());
         }
     }
@@ -282,7 +290,13 @@ fn generate_docs(serve: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
+fn build_pgo_release(
+    bam: &Path,
+    fasta: &Path,
+    range: &str,
+    gpu: bool,
+    use_seqair: bool,
+) -> Result<PathBuf> {
     // Verify cargo-pgo is installed
     ensure!(
         StdCommand::new("cargo")
@@ -302,21 +316,39 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         .arg("add")
         .arg("llvm-tools-preview")
         .status()
-        .wrap_err("Failed to install llvm-tools-preview")?;
+        .wrap_err("Failed to install llvm-tools-preview using rustup")?;
 
     ensure!(
         rustup_install.success(),
         "Failed to install llvm-tools-preview. Please install it manually with: rustup component add llvm-tools-preview"
     );
 
-    info!("Step 1/3: Generating profiles by running different scenarios...");
+    info!("Step 1/2: Generating profiles by running different scenarios...");
+
+    macro_rules! cargo_pgo {
+        ($exp:expr) => {{
+            let mut cmd = StdCommand::new("cargo");
+            cmd.args(["pgo", "run"]).arg("--");
+            if $exp {
+                cmd.args(["--features", "experimental-seqair"]);
+            }
+            cmd.arg("--");
+            cmd
+        }};
+        ($exp:expr, keep) => {{
+            let mut cmd = StdCommand::new("cargo");
+            cmd.args(["pgo", "run"]).arg("--keep-profiles").arg("--");
+            if $exp {
+                cmd.args(["--features", "experimental-seqair"]);
+            }
+            cmd.arg("--");
+            cmd
+        }};
+    }
 
     // Profile 1: VCF to stdout
-    info!("  → Profile 1/3: VCF output to stdout");
-    StdCommand::new("cargo")
-        .arg("pgo")
-        .arg("run")
-        .arg("--")
+    info!("Step 1 → Profile 1/3: VCF output to stdout");
+    cargo_pgo!(use_seqair)
         .arg("call")
         .arg(bam)
         .arg("-r")
@@ -328,15 +360,12 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         .wrap_err("Failed to generate profile 1 (VCF to stdout)")?;
 
     // Profile 2: BCF file output
-    info!("  → Profile 2/3: BCF output to file");
+    info!("Step 1 → Profile 2/4: BCF output to file");
     let tmp_bcf = tempfile::Builder::new()
         .suffix(".bcf")
         .tempfile()
         .wrap_err("Failed to create temporary BCF file")?;
-    StdCommand::new("cargo")
-        .arg("pgo")
-        .arg("run")
-        .arg("--")
+    cargo_pgo!(use_seqair, keep)
         .arg("call")
         .arg(bam)
         .arg("-r")
@@ -350,15 +379,12 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         .wrap_err("Failed to generate profile 2 (BCF output)")?;
 
     // Profile 3: BED file output
-    info!("  → Profile 3/3: BED output to file");
+    info!("Step 1 → Profile 3/4: BED output to file");
     let tmp_bed = tempfile::Builder::new()
         .suffix(".bed")
         .tempfile()
         .wrap_err("Failed to create temporary BED file")?;
-    StdCommand::new("cargo")
-        .arg("pgo")
-        .arg("run")
-        .arg("--")
+    cargo_pgo!(use_seqair, keep)
         .arg("call")
         .arg(bam)
         .arg("-r")
@@ -371,13 +397,36 @@ fn build_pgo_release(bam: &Path, fasta: &Path, range: &str) -> Result<PathBuf> {
         .is_success()
         .wrap_err("Failed to generate profile 3 (BED output)")?;
 
+    info!(
+        "Step 1 → Profile 4/4: GPU profiling {}",
+        if gpu { "" } else { "skipped (pass `--gpu` to enable)" }
+    );
+    if gpu {
+        let tmp_bcf = tempfile::Builder::new()
+            .suffix(".bcf")
+            .tempfile()
+            .wrap_err("Failed to create temporary BCF file")?;
+        cargo_pgo!(use_seqair, keep)
+            .arg("call")
+            .arg(bam)
+            .arg("-r")
+            .arg(fasta)
+            .arg("-l")
+            .arg(range)
+            .arg("-o")
+            .arg(tmp_bcf.path())
+            .stdout(std::process::Stdio::null())
+            .is_success()
+            .wrap_err("Failed to generate profile 2 (BCF output)")?;
+    }
+
     info!("Step 2/2: Building PGO-optimized binary...");
-    let optimize_output = StdCommand::new("cargo")
-        .arg("pgo")
-        .arg("optimize")
-        .arg("build")
-        .output()
-        .wrap_err("Failed to build PGO-optimized binary")?;
+    let mut optimize_cmd = StdCommand::new("cargo");
+    optimize_cmd.arg("pgo").arg("optimize").arg("build").arg("--");
+    if use_seqair {
+        optimize_cmd.args(["--features", "experimental-seqair"]);
+    }
+    let optimize_output = optimize_cmd.output().wrap_err("Failed to build PGO-optimized binary")?;
 
     if !optimize_output.status.success() {
         let stderr = String::from_utf8_lossy(&optimize_output.stderr);

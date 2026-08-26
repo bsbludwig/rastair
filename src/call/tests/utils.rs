@@ -1,23 +1,24 @@
 //! Test utilities for writing concise and readable tests for rastair call
 #![allow(clippy::cast_possible_truncation, reason = "Test code")]
-
+use crate::call::process_region;
 use crate::call::variant_calling::ErrorModel;
-use crate::utils::IntoF64 as _;
 use crate::{
     CallParams,
     call::{
         pileup::{Pileup, SimpleRead, SimpleReads},
-        process, process_region,
+        process,
     },
     metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, Region, Segment},
     utils::{PileupMetricsIteratorExt as _, SequenceContext},
-    vcf::Record as VcfRecord,
+    vcf::{Contig, FieldConfig, emit_pileup, register},
 };
 pub use crate::{call::record_filters::RecordFilters, utils::default};
 use clio::ClioPath;
-use color_eyre::eyre::ContextCompat as _;
+use color_eyre::eyre::{ContextCompat as _, WrapErr as _};
 pub(crate) use color_eyre::{Result, eyre::bail};
+use rustc_hash::FxHashMap;
+use seqair::vcf::{OutputFormat, Writer as SeqWriter};
 use seqair_types::{Base, Probability, Strand};
 use std::{rc::Rc, str::FromStr, sync::OnceLock};
 
@@ -214,38 +215,14 @@ impl FieldValue {
     /// Compare field values with special handling for GT field
     fn matches_field(&self, other: &Self, field_name: &str, epsilon: f64) -> bool {
         if field_name == "GT" {
-            // For GT field, convert VCF-style strings like "0/1" to expected format
+            // Both expected and actual are now VCF-style genotype strings ("0/1").
+            // Normalize separator order is not needed; compare directly.
             match (self, other) {
-                (Self::String(expected), Self::String(actual)) => {
-                    let normalized_expected = Self::normalize_gt_string(expected);
-                    normalized_expected == *actual
-                }
+                (Self::String(expected), Self::String(actual)) => expected == actual,
                 _ => self.matches(other, epsilon),
             }
         } else {
             self.matches(other, epsilon)
-        }
-    }
-
-    /// Normalize a genotype string - converts "0/1" to "Genotype([Unphased(0), Unphased(1)])"
-    fn normalize_gt_string(s: &str) -> String {
-        // If it's already in the expected format, return as-is
-        if s.starts_with("Genotype(") {
-            return s.to_string();
-        }
-
-        // Parse VCF-style format like "0/1" or "1/1"
-        let parts: Vec<&str> = s.split('/').collect();
-        if parts.len() != 2 {
-            // Not a genotype format, return as-is
-            return s.to_string();
-        }
-
-        if let (Ok(allele1), Ok(allele2)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-            format!("Genotype([Unphased({}), Unphased({})])", allele1, allele2)
-        } else {
-            // Parse failed, return as-is
-            s.to_string()
         }
     }
 }
@@ -285,68 +262,81 @@ impl ToFieldValue for Vec<f64> {
     }
 }
 
-/// Get a field value from a VCF record by field ID
-fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
-    // FORMAT fields (sample 0)
-    if let Some(sample) = record.samples.first() {
-        match field_id {
-            "M5mC" => {
-                let m = &sample.methylated;
-                let mut betas = Vec::new();
-                if let Some(b) = m.original() {
-                    betas.push(b.beta.f());
-                }
-                if let Some(b) = m.denovo() {
-                    betas.push(b.beta.f());
-                }
-                return Ok(match betas.len() {
-                    0 => FieldValue::OptF64(None),
-                    1 => FieldValue::OptF64(Some(betas[0])),
-                    _ => FieldValue::VecF64(betas),
-                });
-            }
-            "DPM5mC" => {
-                let values: Vec<f64> = sample
-                    .methylation_depth
-                    .0
-                    .iter()
-                    .filter_map(|v| v.map(|n| f64::from(n)))
-                    .collect();
-                return Ok(if values.len() == 1 {
-                    FieldValue::OptF64(Some(values[0]))
-                } else {
-                    FieldValue::VecF64(values)
-                });
-            }
-            "ADM5mC" => {
-                let values: Vec<f64> = sample
-                    .methylation_alt_depth
-                    .0
-                    .iter()
-                    .filter_map(|v| v.map(|n| f64::from(n)))
-                    .collect();
-                return Ok(if values.len() == 1 {
-                    FieldValue::OptF64(Some(values[0]))
-                } else {
-                    FieldValue::VecF64(values)
-                });
-            }
-            "ML" => {
-                // ML is OnePerAlt, so we get the first value
-                let ml_value = sample
-                    .machine_learning_prediction
-                    .first()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("ML field is empty"))?;
-                return Ok(FieldValue::F64(*ml_value));
-            }
-            "GT" => {
-                return Ok(FieldValue::String(format!("{:?}", sample.genotype)));
-            }
-            _ => {}
-        }
-    }
+/// A parsed VCF data line, used to assert against emitted output.
+#[derive(Debug, Clone)]
+pub(crate) struct VcfRecord {
+    pub r#ref: String,
+    /// ALT alleles; `["."]` for a reference-only site.
+    pub alt: Vec<String>,
+    /// FILTER codes; empty or `["PASS"]` means the record passes.
+    filters: Vec<String>,
+    /// FORMAT key → first sample's value.
+    format: FxHashMap<String, String>,
+}
 
-    bail!("Unknown or unsupported field: {}", field_id)
+impl VcfRecord {
+    fn passes(&self) -> bool {
+        self.filters.is_empty() || self.filters == ["."] || self.filters == ["PASS"]
+    }
+}
+
+/// Parse the data lines of a (plain text) VCF into [`VcfRecord`]s.
+fn parse_vcf(text: &str) -> Vec<VcfRecord> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .map(|line| {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let r#ref = cols.get(3).copied().unwrap_or(".").to_string();
+            let alt = cols.get(4).copied().unwrap_or(".").split(',').map(String::from).collect();
+            let filters = match cols.get(6).copied().unwrap_or(".") {
+                "." => Vec::new(),
+                f => f.split(';').map(String::from).collect(),
+            };
+            let mut format = FxHashMap::default();
+            if let (Some(keys), Some(sample)) = (cols.get(8), cols.get(9)) {
+                for (k, v) in keys.split(':').zip(sample.split(':')) {
+                    format.insert(k.to_string(), v.to_string());
+                }
+            }
+            VcfRecord { r#ref, alt, filters, format }
+        })
+        .collect()
+}
+
+/// Get a field value from a parsed VCF record by field ID (FORMAT fields only,
+/// matching the previous behaviour).
+fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
+    match field_id {
+        "M5mC" | "DPM5mC" | "ADM5mC" => Ok(match record.format.get(field_id) {
+            None => FieldValue::OptF64(None),
+            Some(v) if v == "." => FieldValue::OptF64(None),
+            Some(v) => {
+                let values: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                match values.as_slice() {
+                    [single] => FieldValue::OptF64(Some(*single)),
+                    _ => FieldValue::VecF64(values),
+                }
+            }
+        }),
+        "ML" => {
+            let v = record
+                .format
+                .get("ML")
+                .filter(|v| *v != ".")
+                .ok_or_else(|| color_eyre::eyre::eyre!("ML field is empty"))?;
+            let first = v
+                .split(',')
+                .next()
+                .and_then(|x| x.parse::<f64>().ok())
+                .ok_or_else(|| color_eyre::eyre::eyre!("ML field is empty"))?;
+            Ok(FieldValue::F64(first))
+        }
+        "GT" => {
+            let gt = record.format.get("GT").cloned().unwrap_or_else(|| ".".to_string());
+            Ok(FieldValue::String(gt))
+        }
+        other => bail!("Unknown or unsupported field: {}", other),
+    }
 }
 
 #[derive(Debug)]
@@ -380,7 +370,7 @@ impl VcfMatcher {
         // Check each record
         for (idx, (expected, actual)) in self.expected.iter().zip(actual.iter()).enumerate() {
             // Check REF
-            let actual_ref = actual.main.r#ref.as_str();
+            let actual_ref = actual.r#ref.as_str();
             let expected_ref: &str = expected.ref_base.into();
             if actual_ref != expected_ref {
                 errors.push(format!(
@@ -390,7 +380,7 @@ impl VcfMatcher {
             }
 
             // Check ALT
-            let actual_alts = &actual.main.alt;
+            let actual_alts = &actual.alt;
             let expected_alts_count = expected.alt_bases.len();
             if expected_alts_count != actual_alts.len() {
                 errors.push(format!(
@@ -403,7 +393,7 @@ impl VcfMatcher {
                 for (alt_idx, (expected_alt, actual_alt)) in
                     expected.alt_bases.iter().zip(actual_alts.iter()).enumerate()
                 {
-                    let actual_alt_str = actual_alt.as_str();
+                    let actual_alt_str: &str = actual_alt.as_str();
                     match expected_alt {
                         None => {
                             if actual_alt_str != "." {
@@ -429,7 +419,7 @@ impl VcfMatcher {
             // Check FILTER status if expected
             if let Some(expected_pass) = expected.pass_status {
                 let actual_filters = &actual.filters;
-                let actual_passes = actual_filters.pass();
+                let actual_passes = actual.passes();
 
                 if expected_pass {
                     // Expect PASS
@@ -479,7 +469,7 @@ impl VcfMatcher {
                         .enumerate()
                         .map(|(i, r)| format!(
                             "({i}) ref={} alt={:?} {:?}",
-                            r.main.r#ref, r.main.alt, r.filters
+                            r.r#ref, r.alt, r.filters
                         ))
                         .collect::<Vec<_>>()
                         .join("\n    ")
@@ -537,8 +527,6 @@ pub(crate) fn set_pass(m: &mut PileupMetrics, base: Base) {
     alt.ml = Some(Probability::ONE);
 }
 
-rastair_vcf::filter!(MANUAL, "manual");
-
 #[track_caller]
 pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     assert!(
@@ -551,7 +539,7 @@ pub(crate) fn set_fail(m: &mut PileupMetrics, base: Base) {
     alt.filters.other_pos_in_denovo_passes = false;
     alt.ml = Some(Probability::ZERO);
 
-    alt.filters.add(MANUAL, || true);
+    alt.filters.add(crate::vcf::RastairFilter::LowMlScore, || true);
 }
 
 pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics>> {
@@ -606,16 +594,76 @@ impl RecordFilters {
     }
 }
 
+/// Emit the metrics to an in-memory plain-text VCF (all fields enabled) and
+/// parse it back, so assertions run against the real encoded output.
 pub(crate) fn metrics_to_vcf(
     metrics: &[PileupMetrics],
     filters: RecordFilters,
 ) -> Result<Vec<VcfRecord>> {
-    let mut vcf_records = Vec::new();
-    for metric in metrics {
-        let records = metric.to_vcf_records(Some(ML_THRESHOLD), &ErrorModel::default())?;
-        vcf_records.extend(records.to_vec(&filters).into_iter().cloned());
+    let contigs = [Contig { name: "chr_test".into(), length: 100_000 }];
+    let samples = [seqair_types::SmolStr::new("sample")];
+    let (header, schema) = register(&contigs, &samples, &[])?;
+    let config = FieldConfig::default().with_all_fields();
+    let error_model = ErrorModel::default();
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = SeqWriter::new(&mut buf, OutputFormat::Vcf).write_header(&header)?;
+        for metric in metrics {
+            let contig = schema
+                .contig(metric.contig_name())
+                .wrap_err_with(|| format!("Contig {} not in header", metric.contig_name()))?;
+            emit_pileup(
+                metric,
+                &schema,
+                contig,
+                &config,
+                Some(ML_THRESHOLD),
+                &error_model,
+                &filters,
+                &mut writer,
+            )?;
+        }
+        writer.finish()?;
     }
-    Ok(vcf_records)
+
+    let text = String::from_utf8(buf).wrap_err("VCF output was not valid UTF-8")?;
+    Ok(parse_vcf(&text))
+}
+
+/// Emit the given metrics as binary BCF bytes. Unlike [`metrics_to_vcf`], this
+/// exercises the BCF encoding path, where the distinction between a present
+/// FORMAT field with zero values per sample and a proper missing value matters
+/// (the former makes htslib-based float readers panic on `chunks(0)`).
+pub(crate) fn metrics_to_bcf(metrics: &[PileupMetrics], filters: RecordFilters) -> Result<Vec<u8>> {
+    let contigs = [Contig { name: "chr_test".into(), length: 100_000 }];
+    let samples = [seqair_types::SmolStr::new("sample")];
+    let (header, schema) = register(&contigs, &samples, &[])?;
+    let config = FieldConfig::default().with_all_fields();
+    let error_model = ErrorModel::default();
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = SeqWriter::new(&mut buf, OutputFormat::Bcf).write_header(&header)?;
+        for metric in metrics {
+            let contig = schema
+                .contig(metric.contig_name())
+                .wrap_err_with(|| format!("Contig {} not in header", metric.contig_name()))?;
+            emit_pileup(
+                metric,
+                &schema,
+                contig,
+                &config,
+                Some(ML_THRESHOLD),
+                &error_model,
+                &filters,
+                &mut writer,
+            )?;
+        }
+        writer.finish()?;
+    }
+
+    Ok(buf)
 }
 
 #[cfg(test)]

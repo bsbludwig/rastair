@@ -30,16 +30,16 @@ where
     fn is_valid_neighbor(&self, idx: usize, current: &PileupMetrics, is_before: bool) -> bool {
         let Some(neighbor) = self.window[idx].as_ref() else { return false };
 
-        if neighbor.pileup.contig() != current.pileup.contig() {
+        if neighbor.contig() != current.contig() {
             return false;
         }
 
         if is_before {
             // Check if neighbor.pos + 1 == current.pos
-            neighbor.pileup.pos.checked_add(1) == Some(current.pileup.pos)
+            neighbor.pos.checked_add(1) == Some(current.pos)
         } else {
             // Check if neighbor.pos - 1 == current.pos (i.e., current.pos + 1 == neighbor.pos)
-            current.pileup.pos.checked_add(1) == Some(neighbor.pileup.pos)
+            current.pos.checked_add(1) == Some(neighbor.pos)
         }
     }
 }
@@ -220,7 +220,7 @@ mod tests {
                 calls += 1;
                 assert!(before.is_none(), "Single element should have no before");
                 assert!(after.is_none(), "Single element should have no after");
-                assert_eq!(current.pileup.pos, 100);
+                assert_eq!(current.pos, 100);
                 Ok(())
             })
             .collect::<Result<Vec<_>>>()
@@ -228,7 +228,7 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(calls, 1);
-        assert_eq!(result[0].pileup.pos, 100);
+        assert_eq!(result[0].pos, 100);
     }
 
     #[test]
@@ -242,14 +242,14 @@ mod tests {
                 if first_call {
                     assert!(before.is_none());
                     assert!(after.is_some());
-                    assert_eq!(after.unwrap().pileup.pos, 101);
-                    assert_eq!(current.pileup.pos, 100);
+                    assert_eq!(after.unwrap().pos, 101);
+                    assert_eq!(current.pos, 100);
                     first_call = false;
                 } else {
                     assert!(before.is_some());
-                    assert_eq!(before.unwrap().pileup.pos, 100);
+                    assert_eq!(before.unwrap().pos, 100);
                     assert!(after.is_none());
-                    assert_eq!(current.pileup.pos, 101);
+                    assert_eq!(current.pos, 101);
                 }
                 Ok(())
             })
@@ -267,17 +267,17 @@ mod tests {
         let result: Vec<_> = items
             .into_iter()
             .map_surrounding(|before, current, after| {
-                match current.pileup.pos {
+                match current.pos {
                     100 => {
                         assert!(before.is_none());
-                        assert_eq!(after.unwrap().pileup.pos, 101);
+                        assert_eq!(after.unwrap().pos, 101);
                     }
                     101 => {
-                        assert_eq!(before.unwrap().pileup.pos, 100);
-                        assert_eq!(after.unwrap().pileup.pos, 102);
+                        assert_eq!(before.unwrap().pos, 100);
+                        assert_eq!(after.unwrap().pos, 102);
                     }
                     102 => {
-                        assert_eq!(before.unwrap().pileup.pos, 101);
+                        assert_eq!(before.unwrap().pos, 101);
                         assert!(after.is_none());
                     }
                     _ => panic!("Unexpected position"),
@@ -302,17 +302,17 @@ mod tests {
         let result: Vec<_> = items
             .into_iter()
             .map_surrounding(|before, current, after| {
-                match current.pileup.pos {
+                match current.pos {
                     100 => {
                         assert!(before.is_none());
                         assert!(after.is_none(), "105 is not consecutive to 100");
                     }
                     105 => {
                         assert!(before.is_none(), "100 is not consecutive to 105");
-                        assert_eq!(after.unwrap().pileup.pos, 106);
+                        assert_eq!(after.unwrap().pos, 106);
                     }
                     106 => {
-                        assert_eq!(before.unwrap().pileup.pos, 105);
+                        assert_eq!(before.unwrap().pos, 105);
                         assert!(after.is_none());
                     }
                     _ => panic!("Unexpected position"),
@@ -336,17 +336,17 @@ mod tests {
         let result: Vec<_> = items
             .into_iter()
             .map_surrounding(|before, current, after| {
-                match (current.pileup.contig().as_str(), current.pileup.pos) {
+                match (current.contig().as_str(), current.pos) {
                     ("chr1", 100) => {
                         assert!(before.is_none());
                         assert!(after.is_none(), "chr2 is different contig");
                     }
                     ("chr2", 101) => {
                         assert!(before.is_none(), "chr1 is different contig");
-                        assert_eq!(after.unwrap().pileup.pos, 102);
+                        assert_eq!(after.unwrap().pos, 102);
                     }
                     ("chr2", 102) => {
-                        assert_eq!(before.unwrap().pileup.pos, 101);
+                        assert_eq!(before.unwrap().pos, 101);
                         assert!(after.is_none());
                     }
                     _ => panic!("Unexpected contig/position"),
@@ -368,16 +368,16 @@ mod tests {
             .into_iter()
             .map_surrounding(|_before, current, _after| {
                 // Mutate the position by adding 1000
-                current.pileup.pos += 1000;
+                current.pos += 1000;
                 Ok(())
             })
             .collect::<Result<Vec<_>>>()
             .unwrap();
 
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].pileup.pos, 1100);
-        assert_eq!(result[1].pileup.pos, 1101);
-        assert_eq!(result[2].pileup.pos, 1102);
+        assert_eq!(result[0].pos, 1100);
+        assert_eq!(result[1].pos, 1101);
+        assert_eq!(result[2].pos, 1102);
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
         let result: Vec<_> = items
             .into_iter()
             .map_surrounding(|before, current, after| {
-                let pos = current.pileup.pos;
+                let pos = current.pos;
                 if pos == 100 {
                     assert!(before.is_none());
                     assert!(after.is_some());
@@ -398,8 +398,8 @@ mod tests {
                 } else {
                     assert!(before.is_some());
                     assert!(after.is_some());
-                    assert_eq!(before.unwrap().pileup.pos, pos - 1);
-                    assert_eq!(after.unwrap().pileup.pos, pos + 1);
+                    assert_eq!(before.unwrap().pos, pos - 1);
+                    assert_eq!(after.unwrap().pos, pos + 1);
                 }
                 Ok(())
             })
@@ -422,13 +422,13 @@ mod tests {
         let result: Vec<_> = items
             .into_iter()
             .map_surrounding(|before, current, after| {
-                match (current.pileup.contig().as_str(), current.pileup.pos) {
+                match (current.contig().as_str(), current.pos) {
                     ("chr1", 100) => {
                         assert!(before.is_none());
-                        assert_eq!(after.unwrap().pileup.pos, 101);
+                        assert_eq!(after.unwrap().pos, 101);
                     }
                     ("chr1", 101) => {
-                        assert_eq!(before.unwrap().pileup.pos, 100);
+                        assert_eq!(before.unwrap().pos, 100);
                         assert!(after.is_none(), "Gap to 105");
                     }
                     ("chr1", 105) => {
@@ -437,10 +437,10 @@ mod tests {
                     }
                     ("chr2", 106) => {
                         assert!(before.is_none(), "Different contig from chr1");
-                        assert_eq!(after.unwrap().pileup.pos, 107);
+                        assert_eq!(after.unwrap().pos, 107);
                     }
                     ("chr2", 107) => {
-                        assert_eq!(before.unwrap().pileup.pos, 106);
+                        assert_eq!(before.unwrap().pos, 106);
                         assert!(after.is_none());
                     }
                     _ => panic!("Unexpected combination"),
@@ -462,7 +462,7 @@ mod tests {
             .into_iter()
             .map_surrounding(|_before, current, _after| {
                 // Fail on position 101
-                if current.pileup.pos == 101 {
+                if current.pos == 101 {
                     color_eyre::eyre::bail!("Simulated error at position 101")
                 } else {
                     Ok(())
@@ -484,7 +484,7 @@ mod tests {
             .map_surrounding(|_before, current, _after| {
                 processed_count += 1;
                 // Fail on position 105
-                if current.pileup.pos == 105 {
+                if current.pos == 105 {
                     color_eyre::eyre::bail!("Error at position 105")
                 } else {
                     Ok(())

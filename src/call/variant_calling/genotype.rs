@@ -2,12 +2,12 @@
 use crate::{
     call::variant_calling::ErrorModel,
     metrics::{AltCall, FormsDenovo, PileupMetrics},
-    utils::{Base, Base::*, IntoF64 as _, Strand::*},
+    utils::{Base, Base::*, IntoF64 as _},
     vcf::InCpG,
 };
 use color_eyre::eyre::{ContextCompat, Result, ensure};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
-use rastair_vcf::standard_fields::{Genotype, GenotypeAllele};
+use rust_htslib::bcf::record::GenotypeAllele as HtslibGenotypeAllele;
 use seqair_types::{Probability, SmallVec};
 use std::num::{NonZeroI32, NonZeroU8};
 use tracing::{instrument, trace};
@@ -190,62 +190,31 @@ impl PileupMetrics {
     /// This prevents methylation evidence from confounding genotype calls.
     fn get_counts_for_alt(&self, alt_base: Base, forms_denovo: FormsDenovo) -> (usize, usize) {
         let ref_base = self.ref_base();
-        let reads = || self.pileup.reads.iter();
-        let obs = || reads().filter(|r| r.strand == OB);
-        let ots = || reads().filter(|r| r.strand == OT);
-        let count_all = || {
-            (
-                reads().filter(|r| r.base == ref_base).count(),
-                reads().filter(|r| r.base == alt_base).count(),
-            )
-        };
-        let count_ob = || {
-            (
-                obs().filter(|r| r.base == ref_base).count(),
-                obs().filter(|r| r.base == alt_base).count(),
-            )
-        };
-        let count_ot = || {
-            (
-                ots().filter(|r| r.base == ref_base).count(),
-                ots().filter(|r| r.base == alt_base).count(),
-            )
-        };
+
+        // Per-base, per-strand counts from pre-computed AlleleMetrics.
+        // Returns 0 for bases not seen in this pileup.
+        let sc = |base: Base| self.allele(base).map_or(0, |a| a.depth as usize);
+        let ot = |base: Base| self.allele(base).map_or(0, |a| a.strand_count.ot as usize);
+        let ob = |base: Base| self.allele(base).map_or(0, |a| a.strand_count.ob as usize);
+
+        let count_all = || (sc(ref_base), sc(alt_base));
+        let count_ob = || (ob(ref_base), ob(alt_base));
+        let count_ot = || (ot(ref_base), ot(alt_base));
 
         // For de-novo CpGs, treat them like CpG SNPs to avoid methylation confounding:
         // - ThisBecomesC: new C can be methylated (C→T on OT strand), so use OB strand only
         // - ThisBecomesG: partner C can be methylated (shows as A on OB strand), so use OT strand only
         match forms_denovo {
             FormsDenovo::ThisBecomesC if ref_base == T => count_ob(),
-            FormsDenovo::ThisBecomesC => {
-                let ref_count = reads().filter(|r| r.base == ref_base).count();
-                let alt_count = obs().filter(|r| r.base == C).count()
-                    + ots().filter(|r| matches!(r.base, C | T)).count();
-                (ref_count, alt_count)
-            }
+            FormsDenovo::ThisBecomesC => (sc(ref_base), ob(C) + ot(C) + ot(T)),
             FormsDenovo::ThisBecomesG if ref_base == A => count_ot(),
-            FormsDenovo::ThisBecomesG => {
-                let ref_count = reads().filter(|r| r.base == ref_base).count();
-                let alt_count = ots().filter(|r| r.base == G).count()
-                    + obs().filter(|r| matches!(r.base, G | A)).count();
-                (ref_count, alt_count)
-            }
+            FormsDenovo::ThisBecomesG => (sc(ref_base), ot(G) + ob(G) + ob(A)),
             // For regular variants (not de-novo CpGs), use CpG-aware counting when needed.
             FormsDenovo::No => match self.pos_metrics.cpg {
                 InCpG::C if alt_base == T => count_ob(),
-                InCpG::C => {
-                    let ref_count = obs().filter(|r| r.base == C).count()
-                        + ots().filter(|r| matches!(r.base, C | T)).count();
-                    let alt_count = reads().filter(|r| r.base == alt_base).count();
-                    (ref_count, alt_count)
-                }
+                InCpG::C => (ob(C) + ot(C) + ot(T), sc(alt_base)),
                 InCpG::G if alt_base == A => count_ot(),
-                InCpG::G => {
-                    let ref_count = ots().filter(|r| r.base == G).count()
-                        + obs().filter(|r| matches!(r.base, G | A)).count();
-                    let alt_count = reads().filter(|r| r.base == alt_base).count();
-                    (ref_count, alt_count)
-                }
+                InCpG::G => (ot(G) + ob(G) + ob(A), sc(alt_base)),
                 InCpG::No => count_all(),
             },
         }
@@ -329,6 +298,32 @@ impl GenotypeTag {
     pub const TT: Self = Self::HomAlt(NonZeroU8::new(1).unwrap());
 }
 
+/// A single genotype allele, mirroring [`rust_htslib::bcf::record::GenotypeAllele`]
+/// with serde support. Used when reading genotypes back from a VCF (e.g. BED
+/// conversion); writing goes through seqair's [`Genotype`](seqair::vcf::Genotype).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GenotypeAllele {
+    /// Unphased allele with index `i`.
+    Unphased(i32),
+    /// Phased allele with index `i`.
+    Phased(i32),
+    /// Unphased missing allele.
+    UnphasedMissing,
+    /// Phased missing allele.
+    PhasedMissing,
+}
+
+impl From<HtslibGenotypeAllele> for GenotypeAllele {
+    fn from(allele: HtslibGenotypeAllele) -> Self {
+        match allele {
+            HtslibGenotypeAllele::Unphased(i) => GenotypeAllele::Unphased(i),
+            HtslibGenotypeAllele::Phased(i) => GenotypeAllele::Phased(i),
+            HtslibGenotypeAllele::UnphasedMissing => GenotypeAllele::UnphasedMissing,
+            HtslibGenotypeAllele::PhasedMissing => GenotypeAllele::PhasedMissing,
+        }
+    }
+}
+
 impl From<GenotypeTag> for [GenotypeAllele; 2] {
     fn from(value: GenotypeTag) -> Self {
         match value {
@@ -345,13 +340,6 @@ impl From<GenotypeTag> for [GenotypeAllele; 2] {
                 GenotypeAllele::Unphased(NonZeroI32::from(n).get()),
             ],
         }
-    }
-}
-
-impl From<GenotypeTag> for Genotype {
-    fn from(value: GenotypeTag) -> Self {
-        let genotype: [GenotypeAllele; 2] = value.into();
-        Genotype(genotype.into())
     }
 }
 

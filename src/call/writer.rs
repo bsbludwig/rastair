@@ -83,13 +83,9 @@ pub fn writer_thread(
                         use crate::io::vcf_writer::Writer;
                         match vcf_writer {
                             Writer::Vcf(writer) => {
-                                let records = record
-                                    .to_vcf_records(ml_threshold, &error_model)
-                                    .wrap_err("Failed to convert metrics to VCF record")
-                                    .this_is_a_bug()?;
-                                for vcf_record in records.to_vec(&record_filter) {
-                                    writer.add(vcf_record).wrap_err("Failed to write VCF record")?;
-                                }
+                                writer
+                                    .emit(&record, ml_threshold, &error_model, &record_filter)
+                                    .wrap_err("Failed to write VCF record")?;
                             }
                             Writer::MessagePack(writer) => {
                                 writer
@@ -104,6 +100,9 @@ pub fn writer_thread(
             }
 
             if let Some(vcf_output) = vcf_output.as_ref() {
+                if let Some(crate::io::vcf_writer::Writer::Vcf(writer)) = vcf_writer.as_mut() {
+                    writer.finish().wrap_err("Failed to finish VCF output")?;
+                }
                 drop(vcf_writer);
                 info!(file = %vcf_output, "Wrote VCF output");
             }

@@ -10,11 +10,13 @@
 //! 4. Scaling: do Platt scaling on everything but the sampled data
 //! 5. Export: Build `RastairFlatModel` and write to file
 
+#[cfg(not(feature = "experimental-seqair"))]
+use crate::call::process::calculate_pileup_metrics;
 use crate::{
     call::{
         ml::DEFAULT_ML_THRESHOLD,
         pileup::indels::IndelAllele,
-        process::{PileupMappingParams, calculate_pileup_metrics, get_pileups},
+        process::{PileupMappingParams, get_pileups},
         variant_calling::indel_calling::{self, IndelParams, IndelPathway},
     },
     metrics::{
@@ -26,7 +28,7 @@ use crate::{
     },
     rayon_all,
     regions::ConfidentRegions,
-    sequence::{ChunkRegion, ReaderParams, Readers, SegmentationParams},
+    sequence::{ChunkRegion, PileupReaders, ReaderParams, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli},
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
@@ -258,7 +260,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let segmentation = SegmentationParams::default();
     let regions: Vec<ChunkRegion> = params
         .reader
-        .readers()
+        .pileup_readers()
         .wrap_err("Failed to read BAM/FASTA files")?
         .segments(segmentation.segment_max_length, segmentation.segment_overlap)
         .wrap_err("Could not fetch segments from BAM file")?
@@ -301,7 +303,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
             thread_local! {
                 /// Readers for the BAM and FASTA files, initialized per thread to avoid
                 /// re-opening files or having a lock
-                static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
+                static READERS: std::cell::RefCell<Option<PileupReaders>> = const { std::cell::RefCell::new(None) };
             }
 
             regions
@@ -315,7 +317,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
                         let readers = {
                             // Initialize thread-local readers first time the thread accesses them
                             if local_readers.is_none() {
-                                match params.reader.readers() {
+                                match params.reader.pileup_readers() {
                                     Ok(readers) => {
                                         *local_readers = Some(readers);
                                     }
@@ -664,7 +666,7 @@ fn process_truth_record(record: &bcf::Record) -> (SmallVec<PositionKey, 2>, Smal
 /// Collect training data from a single segment
 fn collect_training_data_from_segment(
     chunk_region: &ChunkRegion,
-    readers: &mut Readers,
+    readers: &mut PileupReaders,
     snp_truth: &HashSet<PositionKey>,
     indel_truth: &HashSet<IndelKey>,
     indel_params: &IndelParams,
@@ -683,7 +685,14 @@ fn collect_training_data_from_segment(
     let (segment, pileup_iter) =
         get_pileups(readers, chunk_region, &mapping_params).wrap_err("Failed to build pileups")?;
 
-    let metrics = calculate_pileup_metrics(pileup_iter, &segment);
+    #[cfg(not(feature = "experimental-seqair"))]
+    let metrics: Box<dyn Iterator<Item = Result<PileupMetrics>>> =
+        Box::new(calculate_pileup_metrics(pileup_iter, &segment));
+    #[cfg(feature = "experimental-seqair")]
+    let metrics: Box<dyn Iterator<Item = Result<PileupMetrics>>> = {
+        let _ = segment;
+        Box::new(pileup_iter.map(Ok))
+    };
 
     // Process each position with metrics
     metrics
@@ -695,7 +704,7 @@ fn collect_training_data_from_segment(
             Ok(x) => Some(x),
         })
         .map_surrounding(|before, current, after| {
-            let pos = u64::from(current.pileup.pos);
+            let pos = u64::from(current.pos);
 
             // Outside the confident regions the truth set makes no claim, so a
             // candidate there cannot be labelled either way — drop it rather than
@@ -706,7 +715,7 @@ fn collect_training_data_from_segment(
 
             // -- SNP alt alleles --
             for alt in &current.alts {
-                let ref_base = current.pileup.reference_base;
+                let ref_base = current.reference_base;
                 let alt_base = alt.base;
 
                 // Skip Unknown bases
@@ -745,11 +754,10 @@ fn collect_training_data_from_segment(
             }
 
             // -- Indel alleles --
-            if !current.indels.is_empty() {
-                let tract =
-                    u32::from(current.pileup.homopolymer_run.max(current.pileup.dinucleotide_run));
+            if let Some(ref d) = current.indel_data {
+                let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
                 let indel_calls =
-                    indel_calling::call_indels(&current.indels, indel_params, true, tract, false);
+                    indel_calling::call_indels(&d.counts, indel_params, true, tract, false);
                 for call in &indel_calls {
                     let indel_key = IndelKey { pos, allele: call.allele.clone() };
                     let label = if indel_truth.contains(&indel_key) { 1.0 } else { 0.0 };

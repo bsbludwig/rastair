@@ -26,13 +26,16 @@ mdbook-admonish = { version = "1.20.0" }
 mdbook-yapp = { version = "1.2.4" }
 
 [workspace]
-members = ["crates/*", "tools/*"]
+members = ["tools/*"]
 
 [workspace.dependencies]
 color-eyre = "0.6.5"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 cstr8 = "0.1.4"
-seqair-types = { version = "0.1.0", features = ["hts-compat"] }
+seqair-types = { git = "https://github.com/Softleif/seqair.git", branch = "main", features = [
+    "hts-compat",
+] }
+seqair = { git = "https://github.com/Softleif/seqair.git", branch = "main" }
 rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git", default-features = false, features = [
     "libdeflate",
     "bzip2",
@@ -53,8 +56,8 @@ serde = { workspace = true, features = ["derive"] }
 cstr8 = { workspace = true }
 tracing = { workspace = true }
 
-rastair-vcf = { version = "0.2.0", path = "crates/rastair-vcf" }
 seqair-types = { workspace = true }
+seqair = { workspace = true }
 
 # bio tools
 bio-types = "1"
@@ -79,7 +82,7 @@ clio = { version = "0.3.5", features = ["clap", "clap-parse", "pipe"] }
 # multithreading
 rayon = "1.10.0"
 ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
-mimalloc = { version = "0.1.48", features = ["override", "v3"] }
+mimalloc = { version = "0.1.52", features = ["override"] }
 
 # I/O
 lz4 = "1.28.1"
@@ -121,6 +124,9 @@ pastey = { workspace = true }
 
 [features]
 external-tool-tests = []
+# seqair is now a core dependency (VCF writer); this flag only toggles the
+# experimental seqair-backed pileup *reading* path.
+experimental-seqair = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

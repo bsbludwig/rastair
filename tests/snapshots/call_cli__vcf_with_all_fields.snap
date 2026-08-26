@@ -15,7 +15,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-##fileformat=VCFv4.2
+##fileformat=VCFv4.3
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##rastairVersion=2.2.0
 ##rastairCommand=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105800 --vcf-all-fields
@@ -65,7 +65,7 @@ exit_code: 0
 ##FORMAT=<ID=DPM5mC,Number=M,Type=Integer,Description="Total read depth for 5-methylcytosine detection">
 ##FORMAT=<ID=ADM5mC,Number=M,Type=Integer,Description="Read depth supporting 5-methylcytosine modification">
 ##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelihood by rastair's machine learning model">
-##contig=<ID=chr19,length=100>
+##contig=<ID=chr19,length=61431566>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
 chr19	6105712	.	C	.	99	PASS	AD=10;BQ=35.5778;DP=18;MQ=60;MQ0=0;NS=1;AS_SB_OT=4;AS_SB_OB=6;SC5=AACGT;ABQ=35.6202;AMQ=60;AS_SS_BQ_OT=36;AS_SS_BQ_OB=35.3648;AS_SS_MQ_OT=60;AS_SS_MQ_OB=60;PIR=0.549563;ENT100=1.90852;NAB=79.1094;NOI=0;M5mC_Strands=4,8,6,0;CPG	GT:GL:GC:DP:M5mC:DPM5mC:ADM5mC	0/0:99:18:18:0.666667:12:8
 chr19	6105713	.	G	.	99	PASS	AD=14;BQ=34.7083;DP=18;MQ=60;MQ0=0;NS=1;AS_SB_OT=12;AS_SB_OB=2;SC5=ACGTC;ABQ=34.3303;AMQ=60;AS_SS_BQ_OT=34.0441;AS_SS_BQ_OB=36;AS_SS_MQ_OT=60;AS_SS_MQ_OB=60;PIR=0.622738;ENT100=1.90063;NAB=79.4355;NOI=0;M5mC_Strands=2,4,12,0;CPG	GT:GL:GC:DP:M5mC:DPM5mC:ADM5mC	0/0:99:36:18:0.666667:6:4

@@ -2,7 +2,7 @@
 source: tests/call_cli.rs
 expression: stdout
 ---
-##fileformat=VCFv4.2
+##fileformat=VCFv4.3
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##rastairVersion=2.2.0
 ##rastairCommand=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105800 --no-ml
@@ -52,7 +52,7 @@ expression: stdout
 ##FORMAT=<ID=DPM5mC,Number=M,Type=Integer,Description="Total read depth for 5-methylcytosine detection">
 ##FORMAT=<ID=ADM5mC,Number=M,Type=Integer,Description="Read depth supporting 5-methylcytosine modification">
 ##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelihood by rastair's machine learning model">
-##contig=<ID=chr19,length=100>
+##contig=<ID=chr19,length=61431566>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
 chr19	6105712	.	C	T	42	PASS	AD=10,8;BQ=35.5778;DP=18;MQ=60;M5mC_Strands=4,8,6,0;CPG	GT:GL:GC:DP:M5mC:DPM5mC:ADM5mC	0/0:99:18:18:0.666667:12:8
 chr19	6105713	.	G	.	99	PASS	AD=14;BQ=34.7083;DP=18;MQ=60;M5mC_Strands=2,4,12,0;CPG	GT:GL:GC:DP:M5mC:DPM5mC:ADM5mC	0/0:99:36:18:0.666667:6:4

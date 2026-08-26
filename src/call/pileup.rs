@@ -5,7 +5,11 @@ pub mod indels;
 mod read;
 pub use read::*;
 pub(crate) mod from_hts;
+#[cfg(feature = "experimental-seqair")]
+pub(crate) mod from_seqair;
+pub(crate) mod hts_utils;
 pub(crate) mod overlapping_reads;
+pub(crate) mod ref_features;
 
 /// Reference bases kept upstream / downstream of the anchor for indel slippage
 /// detection. Downstream must span the indel plus a few repeat units; a little
@@ -16,6 +20,15 @@ pub(crate) const INDEL_REF_WINDOW_DOWN: usize = 24;
 /// of [`Pileup::indel_ref_window`] is sized to this so a populated window never
 /// spills to the heap.
 pub(crate) const INDEL_REF_WINDOW_LEN: usize = INDEL_REF_WINDOW_UP + 1 + INDEL_REF_WINDOW_DOWN;
+
+/// Repeat units at a read terminus needed to flag the alignment as the kind that
+/// slips. A flagged read should be unusual, not typical: at 4 units a terminal
+/// homopolymer occurs ~3% of the time and a 3-unit dinucleotide repeat ~0.8%.
+pub(crate) const HOMOPOLYMER_UNITS: usize = 4;
+// Only the htslib pileup path inspects dinucleotide repeats; seqair's engine
+// takes a single repeat limit.
+#[cfg_attr(feature = "experimental-seqair", allow(dead_code))]
+pub(crate) const DINUCLEOTIDE_UNITS: usize = 3;
 
 /// Rastair's representation of a pileup at a specific position in the genome
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -33,7 +46,7 @@ pub struct Pileup {
     /// Indel observations collected from reads at this position.
     /// Empty at most positions — `SmallVec<_, 0>` avoids heap allocation when empty.
     #[serde(default)]
-    pub indel_observations: SmallVec<indels::IndelObservation, 0>,
+    pub indel_observations: SmallVec<indels::IndelObservation, 3>,
     /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
     /// for indel depth adjustment.
     #[serde(default)]

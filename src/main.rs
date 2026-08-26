@@ -133,6 +133,11 @@ fn main() -> Result<()> {
     let args = Cli::parse();
     setup_logging(args.verbose);
 
+    #[cfg(feature = "experimental-seqair")]
+    {
+        info!("Using experimental seqair backend.");
+    }
+
     #[cfg(unix)]
     // make sure we quit when the pipe closes
     // SAFETY: Calls libc, but at the start of the program
@@ -213,8 +218,7 @@ fn main() -> Result<()> {
             }
             Generate::VcfDocs { output } => {
                 let mut file = output.clone().create().wrap_err("Failed to create output")?;
-                rastair::VcfRecord::description()
-                    .to_markdown(&mut file)
+                rastair::vcf::schema::write_vcf_docs(&mut file)
                     .wrap_err("Failed to generate VCF docs")?;
             }
         },

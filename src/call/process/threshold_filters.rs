@@ -2,7 +2,7 @@ use crate::{
     call::{denovo_cpg, methylation, variant_calling::VariantCallingParams},
     metrics::{Filters, PileupMetrics},
     utils::logging::ThisIsABug as _,
-    vcf::lowDp,
+    vcf::RastairFilter,
 };
 use color_eyre::eyre::{ContextCompat as _, Result};
 use tracing::instrument;
@@ -18,9 +18,9 @@ pub fn apply_threshold_filters(
     current: &mut PileupMetrics,
     params: &ThresholdFilterParams,
 ) -> Result<()> {
-    current
-        .pos_filters
-        .add(lowDp, || current.pos_metrics.depth < params.variant_calling.v_min_depth);
+    current.pos_filters.add(RastairFilter::LowDp, || {
+        current.pos_metrics.depth < params.variant_calling.v_min_depth
+    });
 
     for alt_base in current.alts() {
         let alt =
@@ -28,7 +28,8 @@ pub fn apply_threshold_filters(
 
         let generic = {
             let mut filters = Filters::default();
-            filters.add(lowDp, || alt.alt.depth < params.variant_calling.v_min_depth);
+            filters
+                .add(RastairFilter::LowDp, || alt.alt.depth < params.variant_calling.v_min_depth);
             filters
         };
         let m_filters = methylation::add_filters(&params.methylation, &alt)?;
