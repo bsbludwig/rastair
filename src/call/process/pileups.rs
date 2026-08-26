@@ -53,6 +53,9 @@ pub struct PileupMappingParams {
     /// estimated above this are subdivided. `0` disables the budget.
     #[default(32 * 1024 * 1024)]
     pub segment_max_bytes: u64,
+    /// Rescue the soft-clipped CpG-partner base adjacent to each alignment
+    /// (seqair backend only). See `MethylationCallingParams::rescue_soft_clip_cpg`.
+    pub rescue_soft_clip_cpg: bool,
 }
 
 impl Deref for PileupMappingParams {
@@ -206,6 +209,10 @@ pub fn get_pileups(
             .pileup(seqair_seg, depth_limit)
             .wrap_err("Failed to start seqair pileup")?;
         guard.set_max_depth(params.max_coverage);
+        if params.rescue_soft_clip_cpg {
+            // Recover exactly the single CpG-partner base the aligner clipped.
+            guard.set_soft_clip_overhang(1);
+        }
 
         while let Some(col) = guard.pileups() {
             let pos = col.pos().as_u64();

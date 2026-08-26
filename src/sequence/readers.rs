@@ -36,7 +36,7 @@ mod seqair_readers {
     use seqair::bam::record_store::{
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
     };
-    use seqair_types::{Base, Pos0, SmallVec, Strand, strand_from_flags};
+    use seqair_types::{Base, Pos0, SmallVec, Strand};
     use std::sync::Arc;
     use tracing::{debug, instrument};
 
@@ -118,7 +118,7 @@ mod seqair_readers {
             rec: &SlimRecord,
             store: &RecordStore<RastairReadExtras>,
         ) -> RastairReadExtras {
-            let from_flags = strand_from_flags(rec.flags);
+            let from_flags = Strand::from(rec.flags);
 
             let strand = if self.guess_orientation {
                 if let Some(reference) = self.reference.as_ref() {
