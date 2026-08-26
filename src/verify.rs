@@ -52,6 +52,15 @@ pub struct VerifyParams {
     #[arg(long, default_value_t = false, help_heading = cli::sections::PROCESSING)]
     experimental_indels: bool,
 
+    /// How strictly a call has to agree with truth to count as a true positive.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = MatchMode::Genotype,
+        help_heading = cli::sections::PROCESSING
+    )]
+    match_mode: MatchMode,
+
     /// Number of threads
     #[arg(
         short = '@',
@@ -64,6 +73,63 @@ pub struct VerifyParams {
 }
 
 // ─── Core types ────────────────────────────────────────────────────────────
+
+/// How strictly a call has to agree with truth to count as a true positive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MatchMode {
+    /// Position, alleles and zygosity must agree — hap.py's genotype match.
+    ///
+    /// Alt alleles the sample does not carry (`GT` `0/0`) are not calls and are ignored.
+    Genotype,
+    /// Position and alleles must agree; zygosity is ignored.
+    Allele,
+}
+
+impl std::fmt::Display for MatchMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MatchMode::Genotype => write!(f, "genotype"),
+            MatchMode::Allele => write!(f, "allele"),
+        }
+    }
+}
+
+/// Copies of one alt allele carried by the first sample's genotype.
+///
+/// `Unknown` covers sites-only VCFs, `./.` no-calls, and [`MatchMode::Allele`]; it stays
+/// compatible with every dosage so a truth file without `FORMAT/GT` still scores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlleleCopies {
+    Unknown,
+    One,
+    Two,
+}
+
+impl AlleleCopies {
+    /// Do two calls of the same allele agree on zygosity?
+    fn agrees_with(self, other: Self) -> bool {
+        self == other || self == Self::Unknown || other == Self::Unknown
+    }
+}
+
+/// One alt allele of one VCF record, in minimal representation.
+#[derive(Debug, Clone, Copy)]
+struct VariantCall {
+    category: VariantCategory,
+    copies: AlleleCopies,
+}
+
+type VariantMap = FxHashMap<FullPositionKey, VariantCall>;
+
+/// What one VCF contributed, plus the caveats worth telling the user about.
+struct LoadedVariants {
+    variants: VariantMap,
+    /// Alt alleles listed but not carried by the genotype (`0/0`), skipped in genotype mode.
+    not_carried: usize,
+    /// PASS records without a usable `FORMAT/GT`, matched on alleles alone.
+    without_genotype: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 enum VariantCategory {
@@ -134,6 +200,21 @@ struct VariantMetrics {
     fp: usize,
     fn_count: usize,
     fn_rate: f64,
+    /// Why the false positives are false. Only in [`MatchMode::Genotype`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    genotype_errors: Option<GenotypeBreakdown>,
+}
+
+/// hap.py-style split of the false positives into the ones that are near-misses.
+///
+/// `fp_gt` counts on both sides: the same event is one FP for the caller and one FN
+/// for truth, exactly as hap.py scores a zygosity disagreement.
+#[derive(Debug, serde::Serialize)]
+struct GenotypeBreakdown {
+    /// Right allele at the right place, wrong zygosity (het called hom, or vice versa).
+    fp_gt: usize,
+    /// Wrong allele at a position where truth does call something.
+    fp_al: usize,
 }
 
 /// Per-category precision: how many predictions in this category are in the truth set.
@@ -145,6 +226,8 @@ struct CategoryPrecision {
     tp: usize,
     /// Predictions in this category not found in truth
     fp: usize,
+    /// Of `fp`, the ones that matched a truth allele but disagreed on zygosity
+    fp_gt: usize,
     /// Total predictions in this category
     n: usize,
     precision: f64,
@@ -224,8 +307,25 @@ struct MethylationComparison {
     diff_histogram: Option<DiffHistogram>,
 }
 
+/// How this run compared variants, so a report is readable without the command line.
+#[derive(Debug, serde::Serialize)]
+struct Matching {
+    mode: MatchMode,
+    /// Alleles are always reduced to minimal representation before matching.
+    minimal_representation: bool,
+    /// Predictions whose alt allele the genotype does not carry, ignored in genotype mode.
+    predictions_not_carried: usize,
+    /// Predictions without a usable `FORMAT/GT`, matched on alleles alone.
+    predictions_without_genotype: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    truth_without_genotype: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    competitor_without_genotype: Option<usize>,
+}
+
 #[derive(Debug, serde::Serialize)]
 struct Report {
+    matching: Matching,
     #[serde(skip_serializing_if = "Option::is_none")]
     variants: Option<VariantReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -249,30 +349,30 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
     let load_betas_for_methyl = comp_path.is_some();
 
     let experimental_indels = params.experimental_indels;
+    let mode = params.match_mode;
 
     // Slots filled by each rayon task.
-    let mut pred_variants: Result<FxHashMap<FullPositionKey, VariantCategory>> =
-        Err(eyre!("pred variants not loaded"));
-    let mut truth_variants: Result<Option<FxHashMap<FullPositionKey, VariantCategory>>> = Ok(None);
-    let mut comp_variants: Result<Option<FxHashMap<FullPositionKey, VariantCategory>>> = Ok(None);
+    let mut pred_variants: Result<LoadedVariants> = Err(eyre!("pred variants not loaded"));
+    let mut truth_variants: Result<Option<LoadedVariants>> = Ok(None);
+    let mut comp_variants: Result<Option<LoadedVariants>> = Ok(None);
     let mut pred_betas: Result<Option<Vec<BetaRecord>>> = Ok(None);
     let mut comp_betas: Result<Option<Vec<BetaRecord>>> = Ok(None);
 
     rayon::scope(|s| {
         s.spawn(|_| {
-            pred_variants = load_variants(&pred_path, regions, threads, experimental_indels)
+            pred_variants = load_variants(&pred_path, regions, threads, experimental_indels, mode)
                 .wrap_err("Failed to load predictions variants");
         });
         if let Some(p) = truth_path.as_deref() {
             s.spawn(|_| {
-                truth_variants = load_variants(p, regions, threads, experimental_indels)
+                truth_variants = load_variants(p, regions, threads, experimental_indels, mode)
                     .wrap_err("Failed to load truth variants")
                     .map(Some);
             });
         }
         if let Some(p) = comp_path.as_deref() {
             s.spawn(|_| {
-                comp_variants = load_variants(p, regions, threads, experimental_indels)
+                comp_variants = load_variants(p, regions, threads, experimental_indels, mode)
                     .wrap_err("Failed to load competitor variants")
                     .map(Some);
             });
@@ -299,19 +399,33 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
     let pred_betas = pred_betas?;
     let comp_betas = comp_betas?;
 
-    info!(count = pred_variants.len(), "Loaded predictions variants");
+    info!(count = pred_variants.variants.len(), "Loaded predictions variants");
 
-    let variant_report =
-        compute_variant_report(&pred_variants, truth_variants.as_ref(), comp_variants.as_ref());
+    let matching = Matching {
+        mode,
+        minimal_representation: true,
+        predictions_not_carried: pred_variants.not_carried,
+        predictions_without_genotype: pred_variants.without_genotype,
+        truth_without_genotype: truth_variants.as_ref().map(|t| t.without_genotype),
+        competitor_without_genotype: comp_variants.as_ref().map(|c| c.without_genotype),
+    };
+
+    let variant_report = compute_variant_report(
+        &pred_variants.variants,
+        truth_variants.as_ref().map(|t| &t.variants),
+        comp_variants.as_ref().map(|c| &c.variants),
+        mode,
+    );
 
     let methyl_comparison = match (pred_betas, comp_betas) {
         (Some(pb), Some(cb)) => Some(compare_methylation(pb, cb)),
         _ => None,
     };
 
-    print_report(&variant_report, methyl_comparison.as_ref());
+    print_report(&matching, &variant_report, methyl_comparison.as_ref());
 
-    let report = Report { variants: Some(variant_report), methylation: methyl_comparison };
+    let report =
+        Report { matching, variants: Some(variant_report), methylation: methyl_comparison };
 
     if let Some(json_path) = &params.output_json {
         let mut file = json_path.clone().create().wrap_err("Failed to create JSON output file")?;
@@ -339,10 +453,12 @@ fn load_variants(
     regions: &[RegionString],
     threads: usize,
     experimental_indels: bool,
-) -> Result<FxHashMap<FullPositionKey, VariantCategory>> {
+    mode: MatchMode,
+) -> Result<LoadedVariants> {
     ensure!(path.exists(), "VCF file `{}` not found", path.display());
 
-    let mut result = FxHashMap::default();
+    let mut result =
+        LoadedVariants { variants: VariantMap::default(), not_carried: 0, without_genotype: 0 };
 
     if regions.is_empty() {
         let mut reader = bcf::Reader::from_path(path)
@@ -351,7 +467,7 @@ fn load_variants(
         let header = reader.header().clone();
         for rec in reader.records() {
             match rec {
-                Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
+                Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels, mode),
                 Err(e) => warn!(error = %e, "Failed to read VCF record"),
             }
         }
@@ -374,21 +490,90 @@ fn load_variants(
                 .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
             for rec in reader.records() {
                 match rec {
-                    Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
+                    Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels, mode),
                     Err(e) => warn!(error = %e, "Failed to read VCF record"),
                 }
             }
         }
     }
 
+    if result.without_genotype > 0 && mode == MatchMode::Genotype {
+        warn!(
+            path = %path.display(),
+            records = result.without_genotype,
+            "PASS records without FORMAT/GT — those are matched on alleles alone"
+        );
+    }
+
     Ok(result)
+}
+
+/// Reduce an allele pair to its minimal representation: trim shared suffix bases,
+/// then shared prefix bases, always keeping the one anchor base VCF requires.
+///
+/// This is what makes `100 TC>TCAA` compare equal to `101 C>CAA` instead of scoring as
+/// one false positive plus one false negative. It deliberately stops short of
+/// left-aligning repeats (`100 AAT>AATAT` vs `98 AA>AAAT`), which needs the reference
+/// sequence — `verify` reads no FASTA.
+fn minimal_representation<'a>(
+    pos: u64,
+    mut reference: &'a [u8],
+    mut alt: &'a [u8],
+) -> (u64, &'a [u8], &'a [u8]) {
+    let mut pos = pos;
+
+    while let (Some((ref_last, ref_rest)), Some((alt_last, alt_rest))) =
+        (reference.split_last(), alt.split_last())
+    {
+        if ref_rest.is_empty() || alt_rest.is_empty() || ref_last != alt_last {
+            break;
+        }
+        reference = ref_rest;
+        alt = alt_rest;
+    }
+
+    while let (Some((ref_first, ref_rest)), Some((alt_first, alt_rest))) =
+        (reference.split_first(), alt.split_first())
+    {
+        if ref_rest.is_empty() || alt_rest.is_empty() || ref_first != alt_first {
+            break;
+        }
+        reference = ref_rest;
+        alt = alt_rest;
+        pos += 1;
+    }
+
+    (pos, reference, alt)
+}
+
+/// Copies of each allele index in the first sample's genotype.
+///
+/// `None` when the record carries no usable `FORMAT/GT` (sites-only VCF, or an all-missing
+/// genotype), in which case every alt is [`AlleleCopies::Unknown`]. A haploid `1` counts as
+/// one copy, so a haploid truth call and a diploid `1/1` prediction read as a zygosity
+/// disagreement — which is what they are.
+fn allele_copies(record: &bcf::Record, allele_count: usize) -> Option<Vec<u8>> {
+    if record.sample_count() == 0 {
+        return None;
+    }
+    let genotypes = record.genotypes().ok()?;
+    let mut copies = vec![0u8; allele_count];
+    let mut any = false;
+    for allele in genotypes.get(0).iter() {
+        let Some(index) = allele.index() else { continue };
+        let Some(slot) = copies.get_mut(index as usize) else { continue };
+        *slot = slot.saturating_add(1);
+        any = true;
+    }
+    any.then_some(copies)
 }
 
 fn extract_variants(
     record: &bcf::Record,
     header: &HeaderView,
-    result: &mut FxHashMap<FullPositionKey, VariantCategory>,
+    result: &mut LoadedVariants,
     experimental_indels: bool,
+    mode: MatchMode,
 ) {
     if !record.has_filter("PASS".as_bytes()) {
         return;
@@ -408,17 +593,20 @@ fn extract_variants(
         return;
     }
 
-    let ref_str = match std::str::from_utf8(ref_allele) {
-        Ok(s) => SmolStr::from(s),
-        Err(_) => return,
-    };
-
     let chrom = match record.rid().and_then(|rid| header.rid2name(rid).ok()) {
         Some(name) => SmolStr::from(std::str::from_utf8(name).unwrap_or("unknown")),
         None => return,
     };
 
-    let pos = record.pos() as u64;
+    let record_pos = record.pos() as u64;
+    let copies = match mode {
+        MatchMode::Genotype => allele_copies(record, alleles.len()),
+        MatchMode::Allele => None,
+    };
+    if copies.is_none() && mode == MatchMode::Genotype {
+        result.without_genotype += 1;
+    }
+
     let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
     let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
 
@@ -430,7 +618,7 @@ fn extract_variants(
         VariantCategory::Other
     };
 
-    for alt_allele in alleles.iter().skip(1) {
+    for (index, alt_allele) in alleles.iter().enumerate().skip(1) {
         if alt_allele.is_empty() {
             continue;
         }
@@ -441,25 +629,42 @@ fn extract_variants(
         {
             continue;
         }
-        let alt_str = match std::str::from_utf8(alt_allele) {
-            Ok(s) => SmolStr::from(s),
-            Err(_) => continue,
+
+        // An allele the genotype does not carry is not a call, so hap.py never scores it.
+        let copies = match &copies {
+            Some(counts) => match counts.get(index).copied().unwrap_or(0) {
+                0 => {
+                    result.not_carried += 1;
+                    continue;
+                }
+                1 => AlleleCopies::One,
+                _ => AlleleCopies::Two,
+            },
+            None => AlleleCopies::Unknown,
         };
+
+        let (pos, ref_min, alt_min) = minimal_representation(record_pos, ref_allele, alt_allele);
 
         // When indels are not enabled, skip multi-base alleles entirely
         // (preserves the pre-indel behavior of only matching SNVs).
-        if !experimental_indels && (ref_allele.len() != 1 || alt_allele.len() != 1) {
+        if !experimental_indels && (ref_min.len() != 1 || alt_min.len() != 1) {
             continue;
         }
 
+        let (Ok(ref_str), Ok(alt_str)) =
+            (std::str::from_utf8(ref_min), std::str::from_utf8(alt_min))
+        else {
+            continue;
+        };
+
         // Classify by allele lengths (VCF anchor-base convention: first base is shared).
-        let category = if ref_allele.len() == 1 && alt_allele.len() == 1 {
+        let category = if ref_min.len() == 1 && alt_min.len() == 1 {
             // Single-base substitution → use INFO flag-based category.
             snv_category
-        } else if ref_allele.len() == 1 && alt_allele.len() > 1 {
+        } else if ref_min.len() == 1 && alt_min.len() > 1 {
             // REF shorter than ALT → insertion after anchor base.
             VariantCategory::Insertion
-        } else if ref_allele.len() > 1 && alt_allele.len() == 1 {
+        } else if ref_min.len() > 1 && alt_min.len() == 1 {
             // REF longer than ALT → deletion after anchor base.
             VariantCategory::Deletion
         } else {
@@ -467,14 +672,14 @@ fn extract_variants(
             VariantCategory::Other
         };
 
-        result.insert(
+        result.variants.insert(
             FullPositionKey {
                 chrom: chrom.clone(),
                 pos,
-                ref_allele: ref_str.clone(),
-                alt_allele: alt_str,
+                ref_allele: SmolStr::from(ref_str),
+                alt_allele: SmolStr::from(alt_str),
             },
-            category,
+            VariantCall { category, copies },
         );
     }
 }
@@ -568,9 +773,10 @@ fn ensure_index_exists(path: &Path) -> Result<()> {
 // ─── Comparison logic ──────────────────────────────────────────────────────
 
 fn compute_variant_report(
-    pred: &FxHashMap<FullPositionKey, VariantCategory>,
-    truth: Option<&FxHashMap<FullPositionKey, VariantCategory>>,
-    competitor: Option<&FxHashMap<FullPositionKey, VariantCategory>>,
+    pred: &VariantMap,
+    truth: Option<&VariantMap>,
+    competitor: Option<&VariantMap>,
+    mode: MatchMode,
 ) -> VariantReport {
     let pred_keys: FxHashSet<FullPositionKey> = pred.keys().cloned().collect();
     let truth_keys: Option<FxHashSet<FullPositionKey>> = truth.map(|m| m.keys().cloned().collect());
@@ -579,9 +785,9 @@ fn compute_variant_report(
 
     let overlap = compute_overlap(&pred_keys, truth_keys.as_ref(), comp_keys.as_ref());
 
-    let pred_vs_truth = truth_keys.as_ref().map(|t| compute_metrics(&pred_keys, t));
-    let comp_vs_truth = match (truth_keys.as_ref(), comp_keys.as_ref()) {
-        (Some(t), Some(c)) => Some(compute_metrics(c, t)),
+    let pred_vs_truth = truth.map(|t| compute_metrics(pred, t, mode));
+    let comp_vs_truth = match (truth, competitor) {
+        (Some(t), Some(c)) => Some(compute_metrics(c, t, mode)),
         _ => None,
     };
 
@@ -601,17 +807,27 @@ fn compute_variant_report(
         let pred_cat = pred_by_cat.get(&cat).cloned().unwrap_or_default();
         let comp_cat = comp_by_cat.as_ref().and_then(|m| m.get(&cat)).cloned().unwrap_or_default();
 
-        let pred_vs_truth_cat = truth_keys.as_ref().and_then(|t| {
-            if pred_cat.is_empty() { None } else { Some(compute_category_precision(&pred_cat, t)) }
+        let pred_vs_truth_cat = truth.and_then(|t| {
+            if pred_cat.is_empty() {
+                None
+            } else {
+                Some(compute_category_precision(&pred_cat, t, mode))
+            }
         });
-        let comp_vs_truth_cat = truth_keys.as_ref().and_then(|t| {
-            if comp_cat.is_empty() { None } else { Some(compute_category_precision(&comp_cat, t)) }
+        let comp_vs_truth_cat = truth.and_then(|t| {
+            if comp_cat.is_empty() {
+                None
+            } else {
+                Some(compute_category_precision(&comp_cat, t, mode))
+            }
         });
         let cat_overlap = if !pred_cat.is_empty() && !comp_cat.is_empty() {
+            let pred_cat_keys: FxHashSet<&FullPositionKey> = pred_cat.keys().collect();
+            let comp_cat_keys: FxHashSet<&FullPositionKey> = comp_cat.keys().collect();
             Some(CategoryOverlap {
-                pred_only: pred_cat.difference(&comp_cat).count(),
-                comp_only: comp_cat.difference(&pred_cat).count(),
-                pred_and_comp: pred_cat.intersection(&comp_cat).count(),
+                pred_only: pred_cat_keys.difference(&comp_cat_keys).count(),
+                comp_only: comp_cat_keys.difference(&pred_cat_keys).count(),
+                pred_and_comp: pred_cat_keys.intersection(&comp_cat_keys).count(),
             })
         } else {
             None
@@ -703,13 +919,48 @@ fn compute_overlap(
     }
 }
 
-fn compute_metrics(
-    caller: &FxHashSet<FullPositionKey>,
-    truth: &FxHashSet<FullPositionKey>,
-) -> VariantMetrics {
-    let tp = caller.intersection(truth).count();
-    let fp = caller.difference(truth).count();
-    let fn_count = truth.difference(caller).count();
+/// Does a caller allele match a truth allele under `mode`?
+///
+/// In [`MatchMode::Genotype`] the zygosity has to agree as well; that is the whole
+/// difference between hap.py's genotype match and its allele match.
+fn calls_agree(caller: &VariantCall, truth: &VariantCall, mode: MatchMode) -> bool {
+    match mode {
+        MatchMode::Allele => true,
+        MatchMode::Genotype => caller.copies.agrees_with(truth.copies),
+    }
+}
+
+fn compute_metrics(caller: &VariantMap, truth: &VariantMap, mode: MatchMode) -> VariantMetrics {
+    // Positions truth calls *something* at, for splitting off allele mismatches.
+    let truth_loci: FxHashSet<(&SmolStr, u64)> = truth.keys().map(|k| (&k.chrom, k.pos)).collect();
+
+    let mut tp = 0usize;
+    let mut fp = 0usize;
+    let mut fp_gt = 0usize;
+    let mut fp_al = 0usize;
+    for (key, call) in caller {
+        match truth.get(key) {
+            Some(t) if calls_agree(call, t, mode) => tp += 1,
+            Some(_) => {
+                fp += 1;
+                fp_gt += 1;
+            }
+            None => {
+                fp += 1;
+                if truth_loci.contains(&(&key.chrom, key.pos)) {
+                    fp_al += 1;
+                }
+            }
+        }
+    }
+
+    let fn_count = truth
+        .iter()
+        .filter(|(key, t)| !caller.get(*key).is_some_and(|c| calls_agree(c, t, mode)))
+        .count();
+
+    let genotype_errors =
+        (mode == MatchMode::Genotype).then_some(GenotypeBreakdown { fp_gt, fp_al });
     let precision = if tp + fp > 0 { tp as f64 / (tp + fp) as f64 } else { 0.0 };
     let recall = if tp + fn_count > 0 { tp as f64 / (tp + fn_count) as f64 } else { 0.0 };
     let f1 = if precision + recall > 0.0 {
@@ -718,28 +969,35 @@ fn compute_metrics(
         0.0
     };
     let fn_rate = if tp + fn_count > 0 { fn_count as f64 / (tp + fn_count) as f64 } else { 0.0 };
-    VariantMetrics { precision, recall, f1, tp, fp, fn_count, fn_rate }
+    VariantMetrics { precision, recall, f1, tp, fp, fn_count, fn_rate, genotype_errors }
 }
 
 /// Compute precision for a single category against the full truth set.
 /// We check how many of the caller's variants in this category appear anywhere in truth.
 fn compute_category_precision(
-    caller_cat: &FxHashSet<FullPositionKey>,
-    truth_all: &FxHashSet<FullPositionKey>,
+    caller_cat: &VariantMap,
+    truth_all: &VariantMap,
+    mode: MatchMode,
 ) -> CategoryPrecision {
     let n = caller_cat.len();
-    let tp = caller_cat.intersection(truth_all).count();
+    let mut tp = 0usize;
+    let mut fp_gt = 0usize;
+    for (key, call) in caller_cat {
+        match truth_all.get(key) {
+            Some(t) if calls_agree(call, t, mode) => tp += 1,
+            Some(_) => fp_gt += 1,
+            None => {}
+        }
+    }
     let fp = n - tp;
     let precision = if n > 0 { tp as f64 / n as f64 } else { 0.0 };
-    CategoryPrecision { tp, fp, n, precision }
+    CategoryPrecision { tp, fp, fp_gt, n, precision }
 }
 
-fn split_by_category(
-    map: &FxHashMap<FullPositionKey, VariantCategory>,
-) -> FxHashMap<VariantCategory, FxHashSet<FullPositionKey>> {
-    let mut result: FxHashMap<VariantCategory, FxHashSet<FullPositionKey>> = FxHashMap::default();
-    for (key, &cat) in map {
-        result.entry(cat).or_default().insert(key.clone());
+fn split_by_category(map: &VariantMap) -> FxHashMap<VariantCategory, VariantMap> {
+    let mut result: FxHashMap<VariantCategory, VariantMap> = FxHashMap::default();
+    for (key, call) in map {
+        result.entry(call.category).or_default().insert(key.clone(), *call);
     }
     result
 }
@@ -909,8 +1167,40 @@ fn fmt_n(n: usize) -> String {
     readable::num::Unsigned::from(n).to_string()
 }
 
-fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationComparison>) {
+fn print_report(
+    matching: &Matching,
+    variant_report: &VariantReport,
+    methyl: Option<&MethylationComparison>,
+) {
     println!("\n# Variant Verification\n");
+
+    match matching.mode {
+        MatchMode::Genotype => println!(
+            "Genotype-aware matching (like hap.py): alleles are compared in minimal \
+             representation, and a call is a true positive only when its zygosity agrees \
+             with truth."
+        ),
+        MatchMode::Allele => println!(
+            "Allele matching: alleles are compared in minimal representation, zygosity is \
+             ignored. Use `--match-mode genotype` to score like hap.py."
+        ),
+    }
+    if matching.predictions_not_carried > 0 {
+        println!(
+            "Ignored {} predicted alt allele(s) the genotype does not carry (GT 0/0).",
+            fmt_n(matching.predictions_not_carried)
+        );
+    }
+    let missing_gt = matching.predictions_without_genotype
+        + matching.truth_without_genotype.unwrap_or(0)
+        + matching.competitor_without_genotype.unwrap_or(0);
+    if missing_gt > 0 {
+        println!(
+            "{} record(s) carry no FORMAT/GT and were matched on alleles alone.",
+            fmt_n(missing_gt)
+        );
+    }
+    println!();
 
     if let Some(overlap) = &variant_report.overlap {
         let has_truth = overlap.truth_and_predictions > 0
@@ -920,7 +1210,7 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
         let has_comp = variant_report.competitor_vs_truth.is_some();
 
         let mut builder = Builder::default();
-        builder.push_record(["Overlap", "Count"]);
+        builder.push_record(["Overlap (alleles, zygosity ignored)", "Count"]);
 
         if has_truth {
             builder.push_record(["Truth only", &fmt_n(overlap.truth_only)]);
@@ -978,6 +1268,28 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
         add_metric("F1", |m| m.f1);
         add_metric("FN rate", |m| m.fn_rate);
 
+        let mut add_count = |label: &str, get: fn(&VariantMetrics) -> usize| {
+            let pv = fmt_n(get(pred));
+            if has_comp {
+                let cv = comp.map(|c| fmt_n(get(c))).unwrap_or_else(|| "—".into());
+                builder.push_record([label.into(), pv, cv]);
+            } else {
+                builder.push_record([label.into(), pv]);
+            }
+        };
+
+        add_count("TP", |m| m.tp);
+        add_count("FP", |m| m.fp);
+        add_count("FN", |m| m.fn_count);
+        if pred.genotype_errors.is_some() {
+            add_count("FP: wrong zygosity", |m| {
+                m.genotype_errors.as_ref().map(|g| g.fp_gt).unwrap_or_default()
+            });
+            add_count("FP: wrong allele", |m| {
+                m.genotype_errors.as_ref().map(|g| g.fp_al).unwrap_or_default()
+            });
+        }
+
         let mut table = builder.build();
         table.with(Style::markdown());
         table.with(Modify::new(Columns::new(1..)).with(Alignment::right()));
@@ -996,8 +1308,18 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
             VariantCategory::Deletion,
         ];
 
+        let show_gt = variant_report
+            .by_category
+            .values()
+            .filter_map(|m| m.predictions_vs_truth.as_ref().or(m.competitor_vs_truth.as_ref()))
+            .any(|m| m.fp_gt > 0);
+
         let mut builder = Builder::default();
-        builder.push_record(["Category", "Target", "N", "TP", "FP", "Precision"]);
+        if show_gt {
+            builder.push_record(["Category", "Target", "N", "TP", "FP", "FP: zyg", "Precision"]);
+        } else {
+            builder.push_record(["Category", "Target", "N", "TP", "FP", "Precision"]);
+        }
 
         for cat in cats {
             let Some(cm) = variant_report.by_category.get(&cat.to_string()) else {
@@ -1005,51 +1327,33 @@ fn print_report(variant_report: &VariantReport, methyl: Option<&MethylationCompa
             };
             let cat_str = cat.to_string();
 
-            if let Some(m) = &cm.predictions_vs_truth {
-                builder.push_record([
-                    cat_str.clone(),
-                    "Predictions".into(),
-                    fmt_n(m.n),
-                    fmt_n(m.tp),
-                    fmt_n(m.fp),
-                    format!("{:.4}", m.precision),
-                ]);
-            } else {
-                builder.push_record([
-                    cat_str.clone(),
-                    "Predictions".into(),
-                    "—".into(),
-                    "—".into(),
-                    "—".into(),
-                    "—".into(),
-                ]);
-            }
-            if has_comp {
-                if let Some(c) = &cm.competitor_vs_truth {
-                    builder.push_record([
-                        cat_str.clone(),
-                        "Competitor".into(),
-                        fmt_n(c.n),
-                        fmt_n(c.tp),
-                        fmt_n(c.fp),
-                        format!("{:.4}", c.precision),
-                    ]);
-                } else {
-                    builder.push_record([
-                        cat_str,
-                        "Competitor".into(),
-                        "—".into(),
-                        "—".into(),
-                        "—".into(),
-                        "—".into(),
-                    ]);
+            let mut push = |target: &str, metrics: Option<&CategoryPrecision>| {
+                let mut row = vec![cat_str.clone(), target.into()];
+                match metrics {
+                    Some(m) => {
+                        row.extend([fmt_n(m.n), fmt_n(m.tp), fmt_n(m.fp)]);
+                        if show_gt {
+                            row.push(fmt_n(m.fp_gt));
+                        }
+                        row.push(format!("{:.4}", m.precision));
+                    }
+                    None => row.extend(std::iter::repeat_n(
+                        String::from("—"),
+                        if show_gt { 5 } else { 4 },
+                    )),
                 }
+                builder.push_record(row);
+            };
+
+            push("Predictions", cm.predictions_vs_truth.as_ref());
+            if has_comp {
+                push("Competitor", cm.competitor_vs_truth.as_ref());
             }
         }
 
         let mut table = builder.build();
         table.with(Style::markdown());
-        table.with(Modify::new(Columns::new(2..6)).with(Alignment::right()));
+        table.with(Modify::new(Columns::new(2..)).with(Alignment::right()));
         println!("{table}\n");
     }
 
@@ -1109,6 +1413,19 @@ mod tests {
         keys.into_iter().collect()
     }
 
+    /// Build a variant map from `(key, copies)` pairs, all in the `Other` category.
+    fn map_of(calls: impl IntoIterator<Item = (FullPositionKey, AlleleCopies)>) -> VariantMap {
+        calls
+            .into_iter()
+            .map(|(key, copies)| (key, VariantCall { category: VariantCategory::Other, copies }))
+            .collect()
+    }
+
+    fn min_rep(pos: u64, reference: &str, alt: &str) -> (u64, String, String) {
+        let (pos, r, a) = minimal_representation(pos, reference.as_bytes(), alt.as_bytes());
+        (pos, String::from_utf8_lossy(r).into_owned(), String::from_utf8_lossy(a).into_owned())
+    }
+
     #[test]
     fn full_position_key_equality() {
         let k1 = key("chr1", 100, "C", "T");
@@ -1160,13 +1477,16 @@ mod tests {
 
     #[test]
     fn metrics_perfect_recall() {
-        let truth = set_of([key("chr1", 100, "C", "T"), key("chr1", 200, "G", "A")]);
-        let caller = set_of([
-            key("chr1", 100, "C", "T"),
-            key("chr1", 200, "G", "A"),
-            key("chr1", 300, "A", "G"),
+        let truth = map_of([
+            (key("chr1", 100, "C", "T"), AlleleCopies::One),
+            (key("chr1", 200, "G", "A"), AlleleCopies::One),
         ]);
-        let m = compute_metrics(&caller, &truth);
+        let caller = map_of([
+            (key("chr1", 100, "C", "T"), AlleleCopies::One),
+            (key("chr1", 200, "G", "A"), AlleleCopies::One),
+            (key("chr1", 300, "A", "G"), AlleleCopies::One),
+        ]);
+        let m = compute_metrics(&caller, &truth, MatchMode::Genotype);
         assert_eq!(m.recall, 1.0);
         assert!((m.precision - 2.0 / 3.0).abs() < 1e-10);
         assert_eq!(m.fn_count, 0);
@@ -1176,11 +1496,128 @@ mod tests {
 
     #[test]
     fn metrics_empty_sets_no_panic() {
-        let empty = FxHashSet::default();
-        let m = compute_metrics(&empty, &empty);
+        let empty = VariantMap::default();
+        let m = compute_metrics(&empty, &empty, MatchMode::Genotype);
         assert_eq!(m.precision, 0.0);
         assert_eq!(m.recall, 0.0);
         assert_eq!(m.f1, 0.0);
+    }
+
+    #[test]
+    fn minimal_representation_trims_padded_insertion() {
+        // The same insertion written with an extra anchor base has to compare equal.
+        assert_eq!(min_rep(100, "TC", "TCAA"), (101, "C".into(), "CAA".into()));
+        assert_eq!(min_rep(101, "C", "CAA"), (101, "C".into(), "CAA".into()));
+    }
+
+    #[test]
+    fn minimal_representation_trims_padded_deletion() {
+        assert_eq!(min_rep(100, "CAAG", "CG"), (100, "CAA".into(), "C".into()));
+    }
+
+    #[test]
+    fn minimal_representation_reduces_padded_snv() {
+        assert_eq!(min_rep(100, "AT", "GT"), (100, "A".into(), "G".into()));
+        assert_eq!(min_rep(100, "TA", "TG"), (101, "A".into(), "G".into()));
+    }
+
+    #[test]
+    fn minimal_representation_leaves_snvs_and_mnps_alone() {
+        assert_eq!(min_rep(100, "C", "T"), (100, "C".into(), "T".into()));
+        assert_eq!(min_rep(100, "AT", "GC"), (100, "AT".into(), "GC".into()));
+    }
+
+    #[test]
+    fn minimal_representation_keeps_an_anchor_base() {
+        // Trimming must never produce an empty allele, even for identical alleles.
+        // The suffix pass gets there first, so the position does not move.
+        assert_eq!(min_rep(100, "AAA", "AAA"), (100, "A".into(), "A".into()));
+    }
+
+    #[test]
+    fn genotype_mismatch_is_not_a_true_positive() {
+        let truth = map_of([(key("chr1", 100, "C", "T"), AlleleCopies::One)]);
+        let caller = map_of([(key("chr1", 100, "C", "T"), AlleleCopies::Two)]);
+
+        let gt = compute_metrics(&caller, &truth, MatchMode::Genotype);
+        assert_eq!(gt.tp, 0);
+        assert_eq!(gt.fp, 1, "a hom call of a het truth allele is a false positive");
+        assert_eq!(gt.fn_count, 1, "and the truth allele is still missed");
+        let errors = gt.genotype_errors.expect("genotype mode reports a breakdown");
+        assert_eq!(errors.fp_gt, 1);
+        assert_eq!(errors.fp_al, 0);
+
+        let allele = compute_metrics(&caller, &truth, MatchMode::Allele);
+        assert_eq!(allele.tp, 1, "allele mode ignores zygosity");
+        assert_eq!(allele.fp, 0);
+        assert!(allele.genotype_errors.is_none());
+    }
+
+    #[test]
+    fn matching_zygosity_is_a_true_positive() {
+        let truth = map_of([
+            (key("chr1", 100, "C", "T"), AlleleCopies::One),
+            (key("chr1", 200, "G", "A"), AlleleCopies::Two),
+        ]);
+        let caller = truth.iter().map(|(k, c)| (k.clone(), c.copies)).collect::<Vec<_>>();
+        let m = compute_metrics(&map_of(caller), &truth, MatchMode::Genotype);
+        assert_eq!(m.tp, 2);
+        assert_eq!(m.fp, 0);
+        assert_eq!(m.fn_count, 0);
+        assert_eq!(m.precision, 1.0);
+        assert_eq!(m.recall, 1.0);
+    }
+
+    #[test]
+    fn unknown_zygosity_stays_compatible() {
+        // A sites-only truth VCF must not turn every call into a genotype error.
+        let truth = map_of([(key("chr1", 100, "C", "T"), AlleleCopies::Unknown)]);
+        let caller = map_of([(key("chr1", 100, "C", "T"), AlleleCopies::Two)]);
+        let m = compute_metrics(&caller, &truth, MatchMode::Genotype);
+        assert_eq!(m.tp, 1);
+        assert_eq!(m.genotype_errors.map(|g| g.fp_gt), Some(0));
+    }
+
+    #[test]
+    fn wrong_allele_at_a_truth_position_is_split_out() {
+        let truth = map_of([(key("chr1", 100, "C", "T"), AlleleCopies::One)]);
+        let caller = map_of([
+            (key("chr1", 100, "C", "A"), AlleleCopies::One),
+            (key("chr1", 500, "G", "A"), AlleleCopies::One),
+        ]);
+        let m = compute_metrics(&caller, &truth, MatchMode::Genotype);
+        assert_eq!(m.tp, 0);
+        assert_eq!(m.fp, 2);
+        let errors = m.genotype_errors.expect("genotype mode reports a breakdown");
+        assert_eq!(errors.fp_al, 1, "chr1:100 C>A sits on a truth position");
+        assert_eq!(errors.fp_gt, 0);
+    }
+
+    #[test]
+    fn category_precision_counts_zygosity_errors() {
+        let truth = map_of([
+            (key("chr1", 100, "C", "T"), AlleleCopies::One),
+            (key("chr1", 200, "G", "A"), AlleleCopies::One),
+        ]);
+        let caller = map_of([
+            (key("chr1", 100, "C", "T"), AlleleCopies::One),
+            (key("chr1", 200, "G", "A"), AlleleCopies::Two),
+        ]);
+        let c = compute_category_precision(&caller, &truth, MatchMode::Genotype);
+        assert_eq!(c.n, 2);
+        assert_eq!(c.tp, 1);
+        assert_eq!(c.fp, 1);
+        assert_eq!(c.fp_gt, 1);
+        assert_eq!(c.precision, 0.5);
+    }
+
+    #[test]
+    fn allele_copies_agreement_is_symmetric() {
+        assert!(AlleleCopies::One.agrees_with(AlleleCopies::One));
+        assert!(!AlleleCopies::One.agrees_with(AlleleCopies::Two));
+        assert!(!AlleleCopies::Two.agrees_with(AlleleCopies::One));
+        assert!(AlleleCopies::Unknown.agrees_with(AlleleCopies::Two));
+        assert!(AlleleCopies::Two.agrees_with(AlleleCopies::Unknown));
     }
 
     #[test]
