@@ -861,6 +861,63 @@ proptest! {
 // Targeted tests for specific code paths
 // ---------------------------------------------------------------------------
 
+#[test]
+fn denovo_adjacent_without_called_partner_is_not_a_cpg() {
+    for side in [CpgSide::C, CpgSide::G] {
+        let ref_base = side.unmod_base();
+        let context = match side {
+            CpgSide::C => SequenceContext { me: ref_base, after_1: Some(A), ..default() },
+            CpgSide::G => SequenceContext { me: ref_base, before_1: Some(T), ..default() },
+        };
+
+        let strand = side.strand();
+        let (bb, ab) = match side {
+            CpgSide::C => (Option::None, Some(G)),
+            CpgSide::G => (Some(C), Option::None),
+        };
+        let reads: Vec<SimpleRead> = (0..5)
+            .map(|_| SimpleRead {
+                base: side.mod_base(),
+                strand,
+                before_base: bb,
+                after_base: ab,
+                ..default()
+            })
+            .chain((0..5).map(|_| SimpleRead {
+                base: side.unmod_base(),
+                strand,
+                before_base: bb,
+                after_base: ab,
+                ..default()
+            }))
+            .collect();
+
+        let pileup = Pileup {
+            region: dummy_region(),
+            context,
+            pos: 1000,
+            reads: SimpleReads(reads.into()),
+            reference_base: ref_base,
+            ..empty_pileup()
+        };
+        let mut metrics = PileupMetrics::new(pileup).unwrap();
+
+        metrics.pos_metrics.extended.denovo_adj = match side {
+            CpgSide::C => DenovoAdjecent::ThisIsTheMatchingC,
+            CpgSide::G => DenovoAdjecent::ThisIsTheMatchingG,
+        };
+        metrics.pos_filters.other_pos_in_denovo_passes = false;
+
+        let result = call(&metrics).unwrap();
+        assert!(
+            result.is_none(),
+            "adjacency to a rejected denovo candidate produced methylation for {:?}: {:?}",
+            side,
+            result
+        );
+    }
+}
+
 /// `DenovoAdjecent` path: `cpg_origin` detects Original CpG via `denovo_adj` flag
 /// (partner of a denovo CpG) rather than via `InCpG` from ref context.
 #[test]
@@ -907,11 +964,11 @@ fn denovo_adjacent_produces_original_cpg() {
         };
         let mut metrics = PileupMetrics::new(pileup).unwrap();
 
-        // Set the denovo_adj flag — this is what makes cpg_origin detect it.
         metrics.pos_metrics.extended.denovo_adj = match side {
             CpgSide::C => DenovoAdjecent::ThisIsTheMatchingC,
             CpgSide::G => DenovoAdjecent::ThisIsTheMatchingG,
         };
+        metrics.pos_filters.other_pos_in_denovo_passes = true;
 
         let result = call(&metrics).unwrap();
         let beta = extract_beta(&result, CpgOrigin::Original);
@@ -984,8 +1041,8 @@ fn both_sides_independent() {
     };
 
     let mut metrics = PileupMetrics::new(pileup).unwrap();
-    // Make this also the G-side partner of a denovo CpG
     metrics.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingG;
+    metrics.pos_filters.other_pos_in_denovo_passes = true;
 
     let result = call(&metrics).unwrap();
     let methylated = result.as_ref().expect("should have methylation");

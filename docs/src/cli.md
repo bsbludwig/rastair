@@ -211,7 +211,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Output Options:**
 
-* `--all` — Output all positions, even if they do not pass filters.
+* `--all` — Output all variants, even if they do not pass filters.
+
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG..
 
    If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs, and those without coverage.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
@@ -550,7 +552,9 @@ Convert between different file formats
   - `bed-gz`:
     BGZIP compressed file, usually `.bed.gz`
 
-* `--all` — Output all positions, even if they do not pass filters.
+* `--all` — Output all variants, even if they do not pass filters.
+
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG..
 
    If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs, and those without coverage.
 

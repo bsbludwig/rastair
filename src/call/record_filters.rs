@@ -14,7 +14,10 @@ use crate::{metrics::PileupMetrics, utils::cli};
 /// Note: We alwasy report both positions of a CpG.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct RecordFilters {
-    /// Output all positions, even if they do not pass filters.
+    /// Output all variants, even if they do not pass filters.
+    ///
+    /// Positions where nothing but the reference was observed are still only
+    /// reported when they are a CpG or a de-novo CpG..
     ///
     /// If combined with `--cpgs-only`, only CpG positions will be reported,
     /// including non-passing de-novo CpGs, and those without coverage.
