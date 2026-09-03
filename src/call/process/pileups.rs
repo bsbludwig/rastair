@@ -20,7 +20,6 @@ use tracing::{Level, debug, instrument, trace, warn};
 
 #[cfg(feature = "experimental-seqair")]
 use crate::{
-    call::pileup::overlapping_reads::NameCollector,
     metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{PileupReaders, ReferenceWindow},
 };
@@ -159,6 +158,7 @@ pub fn get_pileups(
     readers.inner_mut().customize_mut().tag_requirement = params.require_tags.clone();
     readers.inner_mut().customize_mut().repeat_limit = crate::call::pileup::HOMOPOLYMER_UNITS;
     readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
+    readers.inner_mut().customize_mut().read_masking = params.read_masking.clone();
 
     let depth_limit = match NonZeroU32::new(params.max_coverage) {
         Some(cap) => DepthLimit::PerColumn(cap),
@@ -197,7 +197,6 @@ pub fn get_pileups(
         .collect();
 
     let segment = Rc::new(segment);
-    let mut collector = NameCollector::new(params);
     let mut pileup_metrics: Vec<PileupMetrics> = Vec::new();
 
     for seqair_seg in &seqair_segments {
@@ -219,7 +218,7 @@ pub fn get_pileups(
             if !region.contains(pos) {
                 continue;
             }
-            match PileupMetrics::from_seqair(&col, segment.clone(), params, &mut collector) {
+            match PileupMetrics::from_seqair(&col, segment.clone(), params) {
                 Ok(p) => pileup_metrics.push(p),
                 Err(error) => {
                     warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");

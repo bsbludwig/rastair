@@ -25,7 +25,10 @@ pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
 #[cfg(feature = "experimental-seqair")]
 mod seqair_readers {
     use crate::{
-        call::{require_tags::TagRequirement, variant_calling::ReadFlags},
+        call::{
+            require_tags::TagRequirement,
+            variant_calling::{ReadFlags, ReadMaskParams},
+        },
         sequence::{
             ChunkRegion, Region, SelectedRegion, chunked::ChunkedRegions, segementation::Segment,
         },
@@ -37,7 +40,7 @@ mod seqair_readers {
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
     };
     use seqair_types::{Base, Pos0, SmallVec, Strand};
-    use std::sync::Arc;
+    use std::{ops::Range, sync::Arc};
     use tracing::{debug, instrument};
 
     /// Reference sequence window installed by the pileup driver before each
@@ -78,6 +81,11 @@ mod seqair_readers {
         /// TAPS-aware mismatch count. Only computed when `indel_bases > 0`
         /// (expensive walk); zero otherwise.
         pub taps_aware_mismatches: u32,
+        /// Read positions that survive read-end masking. Resolved here from
+        /// (strand, reverse, `seq_len`) so the per-column check is one range
+        /// comparison — masking is evaluated at every base of every read, and
+        /// none of its inputs change between columns.
+        pub mask: Range<u32>,
     }
 
     /// Push-time record filter + per-record extras provider for seqair.
@@ -87,6 +95,7 @@ mod seqair_readers {
         pub unpaired: bool,
         pub tag_requirement: TagRequirement,
         pub guess_orientation: bool,
+        pub read_masking: ReadMaskParams,
         pub reference: Option<ReferenceWindow>,
         /// Repeat limit for `has_repeat` (matches `PileupMappingParams::indel_repeat_limit`).
         pub repeat_limit: usize,
@@ -100,6 +109,11 @@ mod seqair_readers {
         }
 
         fn filter(&mut self, rec: &SlimRecord, store: &RecordStore<Self::Extra>) -> bool {
+            // A read the mask covers end to end contributes to no column, so
+            // keeping it would only cost store space and pileup depth.
+            if rec.extra(store).is_ok_and(|extra| extra.mask.is_empty()) {
+                return false;
+            }
             match &self.tag_requirement {
                 TagRequirement::All => true,
                 TagRequirement::AllOf(filters) => {
@@ -157,7 +171,12 @@ mod seqair_readers {
                 0
             };
 
-            RastairReadExtras { strand, has_soft_clip, has_repeat, taps_aware_mismatches }
+            let mask = self
+                .read_masking
+                .keep_range(strand, rec.flags.is_reverse(), rec.seq_len)
+                .unwrap_or(0..0);
+
+            RastairReadExtras { strand, has_soft_clip, has_repeat, taps_aware_mismatches, mask }
         }
     }
 

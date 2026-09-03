@@ -9,7 +9,7 @@ use crate::{
     utils::{Strand, cli},
 };
 use seqair_types::SmallVec;
-use std::{num::ParseIntError, str::FromStr};
+use std::{num::ParseIntError, ops::Range, str::FromStr};
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct ReadMaskParams {
@@ -48,58 +48,39 @@ impl ReadMaskParams {
     }
 
     pub fn filter_fields(&self, strand: Strand, reverse: bool, pos: u32, len: u32) -> bool {
-        match (strand, reverse) {
-            (Strand::Unknown, _) => {
-                // If the strand is unknown, we don't apply any masking
-                true
-            }
-            (Strand::OT, true) => {
-                let mask = self.n_ot.r2;
+        self.keep_range(strand, reverse, len).is_some_and(|keep| keep.contains(&pos))
+    }
 
-                let too_small = len < mask.from_start + mask.from_end + 1;
+    /// The `[start, end)` window of read positions this read contributes, or
+    /// `None` when the mask covers the whole read (including reads too short
+    /// for it, which contribute nothing anywhere).
+    ///
+    /// Computed once per read at fetch time so the per-column check is a range
+    /// comparison instead of four branches and two subtractions per base.
+    /// Reads of unknown strand are never masked, so their window is unbounded
+    /// rather than `0..len` — a read with no sequence still has no masked
+    /// positions.
+    pub fn keep_range(&self, strand: Strand, reverse: bool, len: u32) -> Option<Range<u32>> {
+        // The mask is expressed in read 5'->3' coordinates while `pos` counts
+        // in reference direction, so a reverse-aligned mate has its two ends
+        // swapped. R1/R2 selection differs between OT and OB for the same
+        // reason.
+        let (mask, flip) = match (strand, reverse) {
+            (Strand::Unknown, _) => return Some(0..u32::MAX),
+            (Strand::OT, true) => (self.n_ot.r2, true),
+            (Strand::OT, false) => (self.n_ot.r1, false),
+            (Strand::OB, true) => (self.n_ob.r1, true),
+            (Strand::OB, false) => (self.n_ob.r2, false),
+        };
 
-                // flipped end/start mask, the read is mapped in reverse
-                let masked_start = pos < mask.from_end;
-                let masked_end = pos > len - mask.from_start - 1;
+        let (from_start, from_end) =
+            if flip { (mask.from_end, mask.from_start) } else { (mask.from_start, mask.from_end) };
 
-                !too_small && !masked_start && !masked_end
-            }
-            (Strand::OT, false) => {
-                let mask = self.n_ot.r1;
-
-                let too_small = len < mask.from_start + mask.from_end + 1;
-
-                // normal start/end mask, the read is mapped in forward
-                let masked_start = pos < mask.from_start;
-                let masked_end = pos > len - mask.from_end - 1;
-
-                !too_small && !masked_start && !masked_end
-            }
-            (Strand::OB, true) => {
-                let mask = self.n_ob.r1;
-
-                let too_small = len < mask.from_start + mask.from_end + 1;
-
-                // I'm flipping the start/end here, because the R1 of the OB is reversed but
-                // samtools reports it in ref direction, so if I want to remove 5 bases from the start
-                // of the read, that's actually the "end" in the coordinate system that htslib provides
-                let masked_start = pos < mask.from_end;
-                let masked_end = pos > len - mask.from_start - 1;
-
-                !too_small && !masked_start && !masked_end
-            }
-            (Strand::OB, false) => {
-                let mask = self.n_ob.r2;
-
-                let too_small = len < mask.from_start + mask.from_end + 1;
-
-                // normal start/end mask, the read is mapped in forward
-                let masked_start = pos < mask.from_start;
-                let masked_end = pos > len - mask.from_end - 1;
-
-                !too_small && !masked_start && !masked_end
-            }
+        let keep = len.checked_sub(from_start)?.checked_sub(from_end)?;
+        if keep == 0 {
+            return None;
         }
+        Some(from_start..from_start.saturating_add(keep))
     }
 }
 
@@ -157,7 +138,88 @@ mod tests {
 
     use proptest::prelude::*;
 
+    /// The masking rule as originally written, in i64 so the subtractions
+    /// cannot wrap: an independent oracle for `keep_range`.
+    fn masked_oracle(
+        p: &ReadMaskParams,
+        strand: Strand,
+        reverse: bool,
+        pos: u32,
+        len: u32,
+    ) -> bool {
+        let mask = match (strand, reverse) {
+            (Strand::Unknown, _) => return true,
+            (Strand::OT, true) => p.n_ot.r2,
+            (Strand::OT, false) => p.n_ot.r1,
+            (Strand::OB, true) => p.n_ob.r1,
+            (Strand::OB, false) => p.n_ob.r2,
+        };
+        // Reverse-aligned mates have the 5'/3' ends swapped in reference coords.
+        let (start, end) = if reverse {
+            (i64::from(mask.from_end), i64::from(mask.from_start))
+        } else {
+            (i64::from(mask.from_start), i64::from(mask.from_end))
+        };
+        let (pos, len) = (i64::from(pos), i64::from(len));
+        let too_small = len < start + end + 1;
+        !too_small && pos >= start && pos < len - end
+    }
+
+    fn params(ot: [u32; 4], ob: [u32; 4]) -> ReadMaskParams {
+        let setting = |v: [u32; 4]| ReadMaskSetting {
+            r1: ReadMask { from_start: v[0], from_end: v[1] },
+            r2: ReadMask { from_start: v[2], from_end: v[3] },
+        };
+        ReadMaskParams::new(setting(ot), setting(ob))
+    }
+
+    #[test]
+    fn keep_range_covers_the_whole_read_when_unmasked() {
+        let p = params([0, 0, 0, 0], [0, 0, 0, 0]);
+        assert_eq!(p.keep_range(Strand::OT, false, 100), Some(0..100));
+        assert_eq!(p.keep_range(Strand::OB, true, 100), Some(0..100));
+        assert_eq!(p.keep_range(Strand::Unknown, false, 100), Some(0..u32::MAX));
+    }
+
+    #[test]
+    fn keep_range_trims_both_ends_and_flips_for_reverse_mates() {
+        // OT R1 masks 5 from the 5' end and 3 from the 3' end; a reverse-aligned
+        // OT mate uses R2 with the two ends swapped.
+        let p = params([5, 3, 7, 2], [0, 0, 0, 0]);
+        assert_eq!(p.keep_range(Strand::OT, false, 100), Some(5..97));
+        assert_eq!(p.keep_range(Strand::OT, true, 100), Some(2..93));
+    }
+
+    #[test]
+    fn a_read_shorter_than_its_mask_keeps_nothing() {
+        let p = params([50, 50, 50, 50], [50, 50, 50, 50]);
+        assert_eq!(p.keep_range(Strand::OT, false, 100), None);
+        assert_eq!(p.keep_range(Strand::OT, false, 99), None);
+        assert_eq!(p.keep_range(Strand::OT, false, 101), Some(50..51));
+    }
+
     proptest! {
+        /// `keep_range` must decide exactly what the original per-position
+        /// masking rule decided, for every position of every read.
+        #[test]
+        fn keep_range_agrees_with_the_original_rule(
+            ot in prop::array::uniform4(0u32..40),
+            ob in prop::array::uniform4(0u32..40),
+            len in 0u32..80,
+            reverse in any::<bool>(),
+            strand_idx in 0usize..3,
+        ) {
+            let p = params(ot, ob);
+            let strand = [Strand::OT, Strand::OB, Strand::Unknown][strand_idx];
+            for pos in 0..len.max(1) {
+                prop_assert_eq!(
+                    p.filter_fields(strand, reverse, pos, len),
+                    masked_oracle(&p, strand, reverse, pos, len),
+                    "pos {} of {} ({:?}, reverse={})", pos, len, strand, reverse
+                );
+            }
+        }
+
         #[test]
         fn test_parse_read_mask_setting_valid(
             r1_left in 0u32..1000,
