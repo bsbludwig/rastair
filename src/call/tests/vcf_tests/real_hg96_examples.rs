@@ -20,10 +20,8 @@ fn test_denovo_cpg_that_is_variant_hg96_chr20_75254() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS,  // First position with A alt
-        (C A) FAIL,  // First position with A alt
-        (C .) PASS,  // Second position with G alt
-        (C G) FAIL,  // Second position with G alt
+        (C A) FAIL M5mC=None,  // First position with A alt
+        (C G) FAIL M5mC=None,  // Second position with G alt
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;

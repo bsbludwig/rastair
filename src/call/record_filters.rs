@@ -4,20 +4,25 @@ use crate::{metrics::PileupMetrics, utils::cli};
 ///
 /// Here's a table with all the combinations:
 ///
-/// | `vcf_all` | `cpgs_only` | Output behavior                                  |
-/// | --------- | ----------- | ------------------------------------------------ |
-/// | ``        | ``          | All covered CpG sites and variants that PASS     |
-/// | ``        | `-c`        | All covered CpG sites and PASSing de-novo CpGs   |
-/// | `--all`   | ``          | All CpG sites and all variants                   |
-/// | `--all`   | `-c`        | All CpG and de-novo CpG candidates               |
+/// | `vcf_all` | `cpgs_only` | Output behavior                                              |
+/// | --------- | ----------- | ------------------------------------------------------------ |
+/// | ``        | ``          | All covered CpG sites and variants that PASS                 |
+/// | ``        | `-c`        | All covered CpG sites and PASSing de-novo CpGs               |
+/// | `--all`   | ``          | All CpG sites and all variants                               |
+/// | `--all`   | `-c`        | All reference CpGs (incl. uncovered) and called de-novo CpGs |
 ///
 /// Note: We alwasy report both positions of a CpG.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct RecordFilters {
-    /// Output all positions, even if they do not pass filters.
+    /// Output all variants, even if they do not pass filters.
     ///
-    /// If combined with `--cpgs-only`, only CpG positions will be reported,
-    /// including non-passing de-novo CpGs, and those without coverage.
+    /// Positions where nothing but the reference was observed are still only
+    /// reported when they are a CpG or a de-novo CpG.
+    ///
+    /// If combined with `--cpgs-only`, only CpG positions are reported: every
+    /// reference CpG including those without coverage, plus de-novo CpGs that
+    /// were actually called. De-novo candidates rejected by filters or ML are
+    /// not included.
     #[arg(long = "all")]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_all: bool,
@@ -27,8 +32,9 @@ pub struct RecordFilters {
     /// Only report positions that are CpGs in the reference or variants that
     /// would result in a de-novo CpG.
     ///
-    /// If combined with `--all`, non-passing de-novo CpG positions and CpGs in
-    /// the reference but without coverage in the sample will also be reported.
+    /// If combined with `--all`, reference CpGs without coverage in the sample
+    /// are also reported. De-novo CpG candidates that were rejected by filters
+    /// or ML are not reported.
     #[arg(short = 'c', long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
     pub cpgs_only: bool,
@@ -63,7 +69,7 @@ impl RecordFilters {
             (false, false) => t.covered && (cpg || t.variant),
             (false, true) => t.covered && cpg,
             (true, false) => true, // --all means all
-            (true, true) => t.covered && cpg,
+            (true, true) => cpg,
         }
     }
 

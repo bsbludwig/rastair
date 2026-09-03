@@ -94,17 +94,36 @@ impl CpgSide {
     }
 }
 
+pub fn origins(record: &PileupMetrics) -> SmallVec<CpgOrigin, 2> {
+    let mut origins = SmallVec::new();
+    for side in [CpgSide::C, CpgSide::G] {
+        if let Some(origin) = cpg_origin(record, side)
+            && !origins.contains(&origin)
+        {
+            origins.push(origin);
+        }
+    }
+    origins
+}
+
 /// Determine the CpG origin for this position on the given side, or None if
 /// this position doesn't have a CpG allele on that side.
 fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
+    // `denovo_adj` is set from de-novo candidate alts, before ML scoring, so on
+    // its own it does not mean a de-novo CpG exists. Only once the partner's
+    // alt was actually called does this position become the other half of a
+    // CpG.
+    let denovo_partner_called = record.pos_filters.other_pos_in_denovo_passes;
     let is_original = match side {
         CpgSide::C => {
             record.pos_metrics.cpg == InCpG::C
-                || record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC
+                || (record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC
+                    && denovo_partner_called)
         }
         CpgSide::G => {
             record.pos_metrics.cpg == InCpG::G
-                || record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG
+                || (record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG
+                    && denovo_partner_called)
         }
     };
 

@@ -4,10 +4,10 @@ use crate::{
     metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
     utils::{IntoF64 as _, default},
     vcf::{
-        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, CpgBeta, CpgOrigin,
-        DeNovoCpGCandidate, Entropy, Format, GenotypeConfidence, GenotypeLikelihood, Info,
-        MachineLearningPrediction, Methylated, NumAlignedBases, NumIndels, PositionInRead,
-        StrandSpecificBaseQuality, StrandSpecificMappingQuality, indel_strand, low_ml_score,
+        AlleleBaseQuality, AlleleMapQuality, AlleleSpecificStrandBias, CpgBeta, DeNovoCpGCandidate,
+        Entropy, Format, GenotypeConfidence, GenotypeLikelihood, Info, MachineLearningPrediction,
+        Methylated, NumAlignedBases, NumIndels, PositionInRead, StrandSpecificBaseQuality,
+        StrandSpecificMappingQuality, indel_strand, low_ml_score,
     },
 };
 use color_eyre::eyre::ensure;
@@ -68,6 +68,7 @@ impl PileupMetrics {
 
         // Build main record
         let main = self.build_main_record(&real_variants, ml_threshold, error_model)?;
+        let main_is_ref_only = real_variants.is_empty();
 
         // Build rejected records
         let mut rejected = SmallVec::new();
@@ -79,7 +80,7 @@ impl PileupMetrics {
 
         let indel_records = build_indel_records(self, ml_threshold);
 
-        Ok(VcfRecordSet { pileup: self, main, rejected, indel_records })
+        Ok(VcfRecordSet { pileup: self, main, main_is_ref_only, rejected, indel_records })
     }
 
     fn build_main_record(
@@ -346,31 +347,19 @@ impl PileupMetrics {
 
         let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
 
-        let is_cpg = matches!(self.pos_metrics.cpg, super::InCpG::C | super::InCpG::G);
-        // Original CpG context: either the position itself is a CpG in the reference,
-        // or it is the matching partner of a de-novo CpG (denovo_adj flag).
-        let is_orig_cpg = is_cpg || *self.pos_metrics.denovo_adj;
-        // De-novo CpG context: any alt whose base + adjacent reference base creates a new
-        // CpG dinucleotide. FormsDenovo already encodes the adjacency check, so we don't
-        // need to replicate it here. We include all call types (not just RealVariant) so
-        // that rejected records written with --all also receive a beta value.
-        let is_denovo_cpg = self.alts.iter().any(|a| *a.metrics.denovo);
-        let methylated = if self.pos_metrics.methylated.is_empty() && (is_orig_cpg || is_denovo_cpg)
-        {
-            let zero = CpgBeta {
-                origin: CpgOrigin::Original,
-                beta: Probability::ZERO,
-                mod_count: 0,
-                total_count: 0,
-            };
-            let mut betas = SmallVec::new();
-            if is_orig_cpg {
-                betas.push(zero);
-            }
-            if is_denovo_cpg {
-                betas.push(CpgBeta { origin: CpgOrigin::DeNovo, ..zero });
-            }
-            Methylated(betas)
+        // A CpG with no reads still gets a beta of 0
+        let methylated = if self.pos_metrics.methylated.is_empty() {
+            Methylated(
+                crate::metrics::methylation::origins(self)
+                    .into_iter()
+                    .map(|origin| CpgBeta {
+                        origin,
+                        beta: Probability::ZERO,
+                        mod_count: 0,
+                        total_count: 0,
+                    })
+                    .collect(),
+            )
         } else {
             self.pos_metrics.methylated.clone()
         };
@@ -398,6 +387,7 @@ impl PileupMetrics {
 pub struct VcfRecordSet<'p> {
     pileup: &'p PileupMetrics,
     main: Record,
+    main_is_ref_only: bool,
     rejected: SmallVec<Record, 2>,
     indel_records: SmallVec<Record, 1>,
 }
@@ -407,36 +397,22 @@ impl<'p> VcfRecordSet<'p> {
         let t = &self.pileup.tags;
         let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
 
-        let mut v = match (filters.vcf_all, filters.cpgs_only) {
-            (false, false) => {
-                if t.covered {
-                    smallvec![&self.main]
-                } else {
-                    smallvec![]
-                }
-            }
-            (false, true) => {
-                if t.covered && cpg {
-                    smallvec![&self.main]
-                } else {
-                    smallvec![]
-                }
-            }
-            (true, false) => {
-                let mut v = smallvec![&self.main];
-                v.extend(&self.rejected);
-                v
-            }
-            (true, true) => {
-                if cpg {
-                    let mut v = smallvec![&self.main];
-                    v.extend(&self.rejected);
-                    v
-                } else {
-                    smallvec![]
-                }
-            }
-        };
+        // A reference-only record is only emitted when there is methylation
+        let want_main = (!self.main_is_ref_only || cpg)
+            && match (filters.vcf_all, filters.cpgs_only) {
+                (false, false) => t.covered,
+                (false, true) => t.covered && cpg,
+                (true, false) => true,
+                (true, true) => cpg,
+            };
+
+        let mut v: SmallVec<&Record, 3> = SmallVec::new();
+        if want_main {
+            v.push(&self.main);
+        }
+        if filters.vcf_all && (!filters.cpgs_only || cpg) {
+            v.extend(&self.rejected);
+        }
 
         // Indels obey the same emission contract as SNVs: only PASS by default,
         // everything under `--all`.

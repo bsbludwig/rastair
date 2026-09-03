@@ -136,12 +136,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
 
-   If combined with `--all`, non-passing de-novo CpG positions and CpGs in the reference but without coverage in the sample will also be reported.
+   If combined with `--all`, reference CpGs without coverage in the sample are also reported. De-novo CpG candidates that were rejected by filters or ML are not reported.
 
   Default value: `false`
-* `--bed-include-empty` — Include CpG positions with zero coverage
-
-   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
 
 ###### **Indel Options:**
 
@@ -211,9 +208,11 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Output Options:**
 
-* `--all` — Output all positions, even if they do not pass filters.
+* `--all` — Output all variants, even if they do not pass filters.
 
-   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs, and those without coverage.
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG.
+
+   If combined with `--cpgs-only`, only CpG positions are reported: every reference CpG including those without coverage, plus de-novo CpGs that were actually called. De-novo candidates rejected by filters or ML are not included.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
    Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
@@ -501,12 +500,12 @@ Convert between different file formats
 
    Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
 
-   If combined with `--all`, non-passing de-novo CpG positions and CpGs in the reference but without coverage in the sample will also be reported.
+   If combined with `--all`, reference CpGs without coverage in the sample are also reported. De-novo CpG candidates that were rejected by filters or ML are not reported.
 
   Default value: `false`
 * `--bed-include-empty` — Include CpG positions with zero coverage
 
-   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--cpgs-only` option when calling methylation.
+   This can be useful to get a complete list of CpG positions in the output BED file. Note that this requires the input data to contain a complete list of CpG positions, e.g. by using the `--all --cpgs-only` options when calling methylation.
 * `--bed-ml <ML_THRESHOLD>` — Minimum ML score to consider a position as variant
 
    This does nothing if the input data does not contain ML scores.
@@ -550,9 +549,11 @@ Convert between different file formats
   - `bed-gz`:
     BGZIP compressed file, usually `.bed.gz`
 
-* `--all` — Output all positions, even if they do not pass filters.
+* `--all` — Output all variants, even if they do not pass filters.
 
-   If combined with `--cpgs-only`, only CpG positions will be reported, including non-passing de-novo CpGs, and those without coverage.
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG.
+
+   If combined with `--cpgs-only`, only CpG positions are reported: every reference CpG including those without coverage, plus de-novo CpGs that were actually called. De-novo candidates rejected by filters or ML are not included.
 
 ###### **Processing Options:**
 

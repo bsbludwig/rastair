@@ -334,11 +334,9 @@ fn test_all_alts_below_ml_threshold() -> Result<()> {
     set_fail(&mut records[0], G); // ML = 0.0
     let records = reprocess(records)?;
 
-    // Both alts below ML threshold -> combined in one row
     let expected_vcf = vcf_assert![
-        (A .) PASS GT="0/0",
-        (A T) FAIL,
-        (A G) FAIL,
+        (A T) FAIL GT="0/0",
+        (A G) FAIL GT="0/0",
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;

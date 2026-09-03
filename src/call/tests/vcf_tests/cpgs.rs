@@ -1,5 +1,12 @@
-use crate::{call::tests::utils::*, pileups, vcf_assert};
+use crate::{
+    call::{
+        pileup::{SimpleRead, SimpleReads},
+        tests::utils::*,
+    },
+    pileups, vcf_assert,
+};
 use seqair_types::Base::*;
+use std::sync::Arc;
 
 #[test]
 fn test_cpg_context() -> Result<()> {
@@ -557,6 +564,46 @@ fn test_non_ct_variant() -> Result<()> {
     let expected_vcf = vcf_assert![
         (C A) PASS M5mC=0.5,  // C allele shows 2 converted reads out of 4 OT reads
         (G .) PASS M5mC=0.5, // 2 OB reads are converted
+    ];
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
+fn uncovered_reference_cpg_reported_with_all_and_cpgs_only() -> Result<()> {
+    // A reference CpG whose C column has zero surviving reads (e.g. all reads
+    // filtered out) must still be reported when `--all` and `--cpgs-only` are
+    // combined, matching the contract documented on `RecordFilters`. Only
+    // `--cpgs-only` on its own keeps requiring coverage.
+    let (segment, mut pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OT,
+        [ C G ] OT,
+        [ C G ] OB,
+    );
+    pileups[0].reads = SimpleReads(Arc::from(Vec::<SimpleRead>::new()));
+
+    let records = test_call(segment, pileups, RecordFilters::all())?;
+    assert_eq!(records.len(), 2, "both reference CpG positions should survive pre-filtering");
+    let c_record = &records[0];
+    let g_record = &records[1];
+    assert!(c_record.tags.cpg && !c_record.tags.covered, "C column should be an uncovered CpG");
+    assert!(g_record.tags.cpg && g_record.tags.covered, "G column should be a covered CpG");
+
+    let all_cpgs = RecordFilters { vcf_all: true, cpgs_only: true };
+    let cpgs_only = RecordFilters { vcf_all: false, cpgs_only: true };
+
+    assert!(all_cpgs.matches(c_record), "--all --cpgs-only must report the uncovered CpG");
+    assert!(!cpgs_only.matches(c_record), "--cpgs-only alone must keep dropping uncovered CpGs");
+    assert!(all_cpgs.matches(g_record), "--all --cpgs-only must report the covered CpG");
+    assert!(cpgs_only.matches(g_record), "--cpgs-only must report the covered CpG");
+
+    // The uncovered CpG should also make it into the VCF as a reference-only record.
+    let vcf_records = metrics_to_vcf(&records, all_cpgs)?;
+    let expected_vcf = vcf_assert![
+        (C .),
+        (G .),
     ];
     expected_vcf.matches(vcf_records)?;
 

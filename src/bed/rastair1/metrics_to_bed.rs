@@ -1,5 +1,5 @@
 use crate::{
-    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat, format::GenotypeString},
+    bed::rastair1::{Rastair1BedFormat, format::GenotypeString},
     call::variant_calling::{EstimatedGenotype, GenotypeTag},
     metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
     utils::logging::ThisIsABug as _,
@@ -11,15 +11,8 @@ use tracing::{debug, instrument, trace, warn};
 
 impl Rastair1BedFormat {
     #[instrument(level = "trace", skip_all, fields(pos=%pileup.contig_pos()))]
-    pub fn from_metrics(
-        pileup: &PileupMetrics,
-        params: &BedRecordsConvertParams,
-    ) -> Result<Option<Self>> {
+    pub fn from_metrics(pileup: &PileupMetrics) -> Result<Option<Self>> {
         let t = &pileup.tags;
-        if !params.filters.include_empty && !t.covered {
-            trace!("no coverage, skipping");
-            return Ok(None);
-        }
         if !(t.cpg || t.denovo_cpg || t.denovo_cpg_partner) {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);

@@ -217,3 +217,57 @@ fn test_cpg_that_is_also_denovo() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_rejected_denovo_candidate_reports_no_methylation() -> Result<()> {
+    // pos0 is a plain CpH C; pos1 has a low-VAF T>G that would create a CpG.
+    let (segment, pileups) = pileups!(
+        [ C T ] Ref,
+        [ C T ] OT,
+        [ C T ] OT,
+        [ T G ] OT,
+        [ C T ] OB,
+        [ C T ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_fail(&mut records[1], G);
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (C T) FAIL M5mC=None,
+        (T G) FAIL M5mC=None,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_accepted_denovo_candidate_reports_methylation() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C T ] Ref,
+        [ C T ] OT,
+        [ C T ] OT,
+        [ T G ] OT,
+        [ C T ] OB,
+        [ C T ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[1], G);
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (C .) PASS M5mC=1.0,  // matching C of the new CpG: the single TG read is methylated
+        (C T) FAIL,
+        (T G) PASS M5mC=0.0,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}

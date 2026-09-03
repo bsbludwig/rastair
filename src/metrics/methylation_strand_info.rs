@@ -106,8 +106,7 @@ impl VcfField for MethylationEvidenceStrandInfo {
 }
 
 impl HeaderField for MethylationEvidenceStrandInfo {
-    const DESCRIPTION: &'static str =
-        "Number of reads that are evidence for unmodified, modified, no SNP, snp";
+    const DESCRIPTION: &'static str = "Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset.";
 }
 
 impl InfoField for MethylationEvidenceStrandInfo {

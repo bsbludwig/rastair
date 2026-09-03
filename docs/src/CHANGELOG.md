@@ -2,6 +2,11 @@
 
 This is the changelog for Rastair 2.
 
+## Unreleased
+
+- `M5mC` (and `DPM5mC`, `ADM5mC`) are now written exactly where `CPG` or `CPGnovo` is set ([#12](https://github.com/bsbludwig/rastair/issues/12)).
+- Reference-only records (`ALT=.`) are only written at CpG and de-novo CpG positions.
+
 ## Version 2.2.0 (2026-08-24)
 
 Highlights:

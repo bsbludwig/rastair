@@ -1,10 +1,6 @@
 use crate::{
-    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat},
-    call::CallParams,
-    metrics::PileupMetrics,
-    progress::ProgressTracker,
-    sequence::ChunkRegion,
-    utils::logging::ThisIsABug as _,
+    bed::rastair1::Rastair1BedFormat, call::CallParams, metrics::PileupMetrics,
+    progress::ProgressTracker, sequence::ChunkRegion, utils::logging::ThisIsABug as _,
 };
 use color_eyre::{Result, eyre::Context as _};
 use ordered_channel::Receiver;
@@ -35,8 +31,6 @@ pub fn writer_thread(
 
     let bed = params.bed.clone();
     let mut bed_writer = bed.writer().wrap_err("Failed to create BED writer")?;
-    let bed_params =
-        BedRecordsConvertParams { ml_threshold: params.ml.ml, filters: bed.filters.clone() };
 
     let ml_threshold = params.ml.threshold();
     let error_model = params.variant_calling.error_model;
@@ -70,7 +64,7 @@ pub fn writer_thread(
 
                     // Write BED record if requested
                     if let Some(bed_writer) = bed_writer.as_mut()
-                        && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record, &bed_params)
+                        && let Some(bed_record) = Rastair1BedFormat::from_metrics(&record)
                             .wrap_err("Failed to convert record to BED format")
                             .this_is_a_bug()?
                         {
