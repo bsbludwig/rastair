@@ -19,12 +19,18 @@ Rastair allows selecting which positions to consider and write to VCF.
 This is controlled by two flags, `--cpgs-only` (`-c`) and `--all`.
 The combinations yield the following outputs:
 
-|                       | VCF will contain                                                                       |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| (no flags)            | Covered reference CpGs and variants that pass all filters                              |
-| `--cpgs-only`         | Reference CpGs and found de-novo CpGs. _Note:_ Defaults to @BED output without `--vcf` |
-| `--cpgs-only` `--all` | All CpG and de-novo CpG candidates, incl. non-passing ones and CpGs without coverage   |
-| `--all`               | All variants (whether passing or not) and all reference CpGs                           |
+|                       | VCF will contain                                                                               |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| (no flags)            | Covered reference CpGs and variants that pass all filters                                      |
+| `--cpgs-only`         | Covered reference CpGs and found de-novo CpGs. _Note:_ Defaults to @BED output without `--vcf` |
+| `--cpgs-only` `--all` | All reference CpGs and called de-novo CpGs.                                                    |
+| `--all`               | All variants (whether passing or not) and all reference CpGs                                   |
+
+```admonish note
+When converting an existing VCF/BCF file to @BED with `rastair convert`,
+`--bed-include-empty` decides whether to keep the zero-coverage rows
+that might be present in the input file.
+```
 
 ## Fields
 
