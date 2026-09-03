@@ -2,7 +2,7 @@
 
 The main output of Rastair is a @VCF file.
 It contains all metrics that Rastair calculates,
-either for all @variant:pl, or only for @CpG sites.
+either for all @variant:pl, or only for @CpG sites (incl. @denovo:pl).
 
 ## BCF output, compression
 
@@ -12,6 +12,19 @@ Alternatively, it can compress the VCF file transparently using @bgzip.
 All formats can be read by `bcftools`, just like regular VCF files.
 
 By specifying the file extension (`.vcf`, `.bcf`, or `.vcf.gz`) Rastair will automatically detect which format to write.
+
+## Which positions to output
+
+Rastair allows selecting which positions to consider and write to VCF.
+This is controlled by two flags, `--cpgs-only` (`-c`) and `--all`.
+The combinations yield the following outputs:
+
+|                       | VCF will contain                                                                       |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| (no flags)            | Covered reference CpGs and variants that pass all filters                              |
+| `--cpgs-only`         | Reference CpGs and found de-novo CpGs. _Note:_ Defaults to @BED output without `--vcf` |
+| `--cpgs-only` `--all` | All CpG and de-novo CpG candidates, incl. non-passing ones and CpGs without coverage   |
+| `--all`               | All variants (whether passing or not) and all reference CpGs                           |
 
 ## Fields
 
