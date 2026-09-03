@@ -66,7 +66,7 @@ impl RecordFilters {
             (false, false) => t.covered && (cpg || t.variant),
             (false, true) => t.covered && cpg,
             (true, false) => true, // --all means all
-            (true, true) => t.covered && cpg,
+            (true, true) => cpg,
         }
     }
 

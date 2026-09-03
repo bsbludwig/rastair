@@ -985,6 +985,98 @@ fn error_model_rejects_invalid_platform_name() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn cpgs_only_with_all_reports_uncovered_reference_cpgs_in_bed() -> Result<()> {
+    apply_common_filters!();
+
+    const REGION: &str = "--region=chr19:6105700-6105800";
+
+    let temp_dir = TempDir::new()?;
+    let gapped_bam = temp_dir.path().join("gapped.bam");
+    // Set MAPQ 0 on every read covering the second reference CpG pair in the
+    // region (0-based 6105743..6105745, i.e. 1-based 6105744). The reads still
+    // align there, so the pileup column exists, but with the default
+    // `--min-mapq 1` they are filtered out and the position has zero coverage.
+    write_bam_with_zero_mapq_overlapping(&gapped_bam, "chr19", 6_105_743, 6_105_745)?;
+
+    let cpgs_only_bed = temp_dir.path().join("cpgs-only.bed");
+    let all_bed = temp_dir.path().join("all.bed");
+
+    rastair()
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+        .arg(&gapped_bam)
+        .args([REGION, NO_ML, "--cpgs-only", "--bed-include-empty", "--bed"])
+        .arg(&cpgs_only_bed)
+        .succeeds()?;
+
+    rastair()
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+        .arg(&gapped_bam)
+        .args([REGION, NO_ML, "--cpgs-only", "--all", "--bed-include-empty", "--bed"])
+        .arg(&all_bed)
+        .succeeds()?;
+
+    let cpgs_only_positions: BTreeSet<(u32, char)> =
+        parse_cpg_bed(&cpgs_only_bed)?.keys().copied().collect();
+    let all_positions: BTreeSet<(u32, char)> = parse_cpg_bed(&all_bed)?.keys().copied().collect();
+
+    // The second CpG pair has no coverage, so plain `--cpgs-only` drops it …
+    assert_eq!(
+        cpgs_only_positions,
+        BTreeSet::from([(6_105_711, '+'), (6_105_712, '-')]),
+        "expected only the covered CpG pair under --cpgs-only"
+    );
+    // … but `--all --cpgs-only` must report every reference CpG in the region,
+    // whether it has coverage or not (both CpG pairs here).
+    assert_eq!(
+        all_positions,
+        BTreeSet::from([(6_105_711, '+'), (6_105_712, '-'), (6_105_743, '+'), (6_105_744, '-'),]),
+        "expected all reference CpGs under --all --cpgs-only"
+    );
+
+    Ok(())
+}
+
+/// Copy `tests/data/test.bam`, setting MAPQ 0 on all reads whose alignment
+/// overlaps the 0-based half-open window `[win_start, win_end)` on `chrom`.
+fn write_bam_with_zero_mapq_overlapping(
+    output: &std::path::Path,
+    chrom: &str,
+    win_start: i64,
+    win_end: i64,
+) -> Result<()> {
+    use rust_htslib::bam::{self, Read as _, Record};
+
+    let mut reader = bam::Reader::from_path("tests/data/test.bam")?;
+    let header = bam::Header::from_template(reader.header());
+    let tid = i32::try_from(
+        bam::HeaderView::from_header(&header)
+            .tid(chrom.as_bytes())
+            .ok_or_else(|| eyre!("chrom not in header"))?,
+    )
+    .wrap_err("tid does not fit in i32")?;
+
+    let mut writer = bam::Writer::from_path(output, &header, bam::Format::Bam)?;
+
+    let mut record = Record::new();
+    while let Some(result) = reader.read(&mut record) {
+        result?;
+        let overlaps = record.tid() == tid && record.pos() >= 0 && {
+            let pos = record.pos();
+            let end = record.cigar().end_pos();
+            pos < win_end && end > win_start
+        };
+        if overlaps {
+            record.set_mapq(0);
+        }
+        writer.write(&record)?;
+    }
+    drop(writer);
+
+    bam::index::build(output, None, bam::index::Type::Bai, 1)?;
+    Ok(())
+}
+
 // TODO: add tests that compare default output with output when
 // - mbias (nOT/nOB) are set
 // - min depth is set
