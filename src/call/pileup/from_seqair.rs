@@ -2,11 +2,10 @@
 
 use super::{
     indels::{IndelAllele, IndelObservation},
-    overlapping_reads::{DedupInfo, NameCollector, resolve_pair},
     ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
 };
 use crate::{
-    call::{process::PileupMappingParams, variant_calling::ReadMaskParams},
+    call::process::PileupMappingParams,
     metrics::{
         Alt, AltFilters, Filters, PairedCounts, PerBaseAccumulators, PileupMetrics, ReadKey,
         RecordTags, aggregate_indels,
@@ -22,11 +21,14 @@ use tracing::{debug, instrument, trace};
 
 impl PileupMetrics {
     #[instrument(level = "trace", skip_all)]
+    /// `mate_drops` is scratch: a reusable buffer for the right mates this
+    /// column drops. It is cleared here, and lives across columns only so a
+    /// deep pileup does not allocate one per position.
     pub(crate) fn from_seqair(
         column: &PileupColumn<'_, RastairReadExtras>,
         segment: Rc<Segment>,
         params: &PileupMappingParams,
-        collector: &mut NameCollector,
+        mate_drops: &mut Vec<u32>,
     ) -> Result<PileupMetrics> {
         let pos = column.pos().as_u64();
         let pos_u32 = u32::try_from(pos).wrap_err("pileup position exceeds u32")?;
@@ -43,40 +45,13 @@ impl PileupMetrics {
         let context =
             SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
 
-        // First pass: determine which overlapping-pair indices to remove.
-        let mut to_remove = SmallVec::<usize, 16>::new();
-        collector.prepare(max_reads);
-        if matches!(collector, NameCollector::Collect(..)) {
-            let filtered = column
-                .alignments()
-                .enumerate()
-                .filter_map(|(idx, view)| {
-                    let mapq = view.mapq;
-                    let baseq = view.qual()?;
-
-                    if !passes_read_masking(&view, reference_base, &context, &params.read_masking) {
-                        return None;
-                    }
-                    if !params.quality.filter_fields(mapq, baseq.get()?) {
-                        return None;
-                    }
-
-                    let info = DedupInfo {
-                        idx,
-                        base: view.base()?,
-                        second: view.flags.is_second_in_template(),
-                    };
-                    Some((view.qname(), info))
-                })
-                .take(max_reads);
-
-            for (name, info) in filtered {
-                if let Some(other) = collector.see(name, info) {
-                    resolve_pair(&info, info.idx, &other, other.idx, &mut to_remove);
-                }
-            }
-            to_remove.sort_unstable();
-        }
+        let dedup_overlaps = !params.keep_overlapping_reads;
+        // Right mates whose left mate won the overlap at this column, in
+        // ascending record index so membership is a binary search. Only the
+        // reads inside a mate overlap ever touch it; at high coverage there can
+        // be hundreds, which is why the buffer is the caller's and not an
+        // inline `SmallVec` that would spill to the heap once per column.
+        mate_drops.clear();
 
         let mut accumulators = PerBaseAccumulators::default();
         let mut pos_baseq = RmsAccumulator::new();
@@ -90,12 +65,10 @@ impl PileupMetrics {
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
 
-        for (_idx, view) in column
-            .alignments()
-            .enumerate()
-            .filter(|(idx, _)| to_remove.binary_search(idx).is_err())
-            .take(max_reads)
-        {
+        for view in column.alignments() {
+            if total_depth >= max_reads {
+                break;
+            }
             let Some(baseq) = view.qual().and_then(|q| q.get()) else {
                 continue;
             };
@@ -109,7 +82,20 @@ impl PileupMetrics {
             if !params.quality.filter_fields(view.mapq, baseq) {
                 continue;
             }
-            if !passes_read_masking(&view, reference_base, &context, &params.read_masking) {
+            if !passes_read_masking(&view, reference_base, &context) {
+                continue;
+            }
+            if dedup_overlaps
+                && drops_overlapping_mate(
+                    column,
+                    &view,
+                    base,
+                    params,
+                    reference_base,
+                    &context,
+                    mate_drops,
+                )
+            {
                 continue;
             }
             total_depth += 1;
@@ -231,19 +217,74 @@ impl PileupMetrics {
     }
 }
 
+/// Decide the fate of a read that shares a mate overlap with another read in
+/// this column, returning `true` when *this* read is the one to drop.
+///
+/// Called once per read inside an overlap, in column order. The left mate
+/// (lower record index) is always seen first, so it is the one that decides:
+/// it looks its mate up in the column, applies the same rule the name-based
+/// collector used — drop the second-in-template read, or the later one when
+/// both show the same base — and, when it wins, records the mate for the
+/// `mate_drops` check the right mate then hits. Deciding at the left mate
+/// keeps every kept read accumulating in column order.
+fn drops_overlapping_mate(
+    column: &PileupColumn<'_, RastairReadExtras>,
+    view: &AlignmentView<'_, '_, RastairReadExtras>,
+    base: Base,
+    params: &PileupMappingParams,
+    reference_base: Base,
+    context: &SequenceContext,
+    mate_drops: &mut Vec<u32>,
+) -> bool {
+    if !view.in_mate_overlap() {
+        return false;
+    }
+    let this_idx = view.alignment().record_idx();
+    let Some(mate_idx) = view.alignment().mate_idx() else { return false };
+
+    if this_idx > mate_idx {
+        return mate_drops.binary_search(&this_idx).is_ok();
+    }
+
+    // A mate that is absent from this column, or that fails a filter here,
+    // never formed a pair — this read stands on its own.
+    let Some(mate) = column.find_record(mate_idx) else { return false };
+    let Some(mate_base) = mate.base() else { return false };
+    let Some(mate_baseq) = mate.qual().and_then(|q| q.get()) else { return false };
+    if !params.quality.filter_fields(mate.mapq, mate_baseq)
+        || !passes_read_masking(&mate, reference_base, context)
+    {
+        return false;
+    }
+
+    // The name-based collector resolved the pair when it reached the *later*
+    // read: it dropped that read if the bases agreed or it was read 2, and
+    // otherwise dropped the earlier one.
+    if base != mate_base && !mate.flags.is_second_in_template() {
+        return true;
+    }
+    if let Err(slot) = mate_drops.binary_search(&mate_idx) {
+        mate_drops.insert(slot, mate_idx);
+    }
+    false
+}
+
 fn passes_read_masking(
     view: &AlignmentView<'_, '_, RastairReadExtras>,
     reference_base: Base,
     context: &SequenceContext,
-    read_masking: &ReadMaskParams,
 ) -> bool {
-    let strand = view.extra().strand;
     if view.is_soft_clip() {
+        // A rescued fringe base is a read-end base by construction, so the
+        // read-end mask would always reject it; the CpG-partner check is its
+        // filter instead.
         let Some(observed) = view.base() else { return false };
-        soft_clip_cpg_partner(reference_base, observed, context, strand)
+        soft_clip_cpg_partner(reference_base, observed, context, view.extra().strand)
     } else {
-        let Some(pos) = view.qpos() else { return false };
-        read_masking.filter_fields(strand, view.flags.is_reverse(), pos as u32, view.seq_len)
+        let Some(qpos) = u32::try_from(view.qpos().unwrap_or(usize::MAX)).ok() else {
+            return false;
+        };
+        view.extra().mask.contains(&qpos)
     }
 }
 
@@ -354,8 +395,10 @@ mod tests {
     use seqair::bam::record_store::{CustomizeRecordStore, RecordStore, SlimRecord};
     use seqair_types::{BamFlags, Pos0, Strand};
 
+    /// The parts of `RastairRecordFilter::compute` these tests need: strand
+    /// from the flags, soft-clip detection, and the read-end mask window.
     #[derive(Default, Clone)]
-    struct TestExtras;
+    struct TestExtras(ReadMaskParams);
 
     impl CustomizeRecordStore for TestExtras {
         type Extra = RastairReadExtras;
@@ -369,13 +412,226 @@ mod tests {
                 .cigar(store)
                 .map(|ops| ops.iter().any(|op| op.op_type() == CigarOpType::SoftClip))
                 .unwrap_or(false);
+            let strand = Strand::from(rec.flags);
             RastairReadExtras {
-                strand: Strand::from(rec.flags),
+                strand,
                 has_soft_clip,
                 has_repeat: false,
                 taps_aware_mismatches: 0,
+                mask: self
+                    .0
+                    .keep_range(strand, rec.flags.is_reverse(), rec.seq_len)
+                    .unwrap_or(0..0),
             }
         }
+    }
+
+    /// A read to push into a test store: everything the overlap dedup looks at.
+    #[derive(Clone, Debug)]
+    struct TestRead {
+        qname: Vec<u8>,
+        pos: u32,
+        flags: u16,
+        bases: Vec<Base>,
+        quals: Vec<u8>,
+        mapq: u8,
+        cigar: Vec<CigarOp>,
+        mate_pos: i32,
+    }
+
+    impl TestRead {
+        /// A plain `<len>M` read whose every base is `base`.
+        fn matching(qname: &[u8], pos: u32, len: usize, base: Base, flags: u16) -> Self {
+            Self {
+                qname: qname.to_vec(),
+                pos,
+                flags,
+                bases: vec![base; len],
+                quals: vec![40; len],
+                mapq: 60,
+                cigar: vec![CigarOp::new(CigarOpType::Match, len as u32)],
+                mate_pos: -1,
+            }
+        }
+
+        fn with_base_at(mut self, offset: usize, base: Base) -> Self {
+            if let Some(slot) = self.bases.get_mut(offset) {
+                *slot = base;
+            }
+            self
+        }
+
+        fn with_qual(mut self, qual: u8) -> Self {
+            self.quals = vec![qual; self.bases.len()];
+            self
+        }
+
+        fn with_mapq(mut self, mapq: u8) -> Self {
+            self.mapq = mapq;
+            self
+        }
+
+        fn ref_span(&self) -> u32 {
+            self.cigar
+                .iter()
+                .filter(|op| matches!(op.op_type(), CigarOpType::Match | CigarOpType::Deletion))
+                .map(|op| op.len())
+                .sum()
+        }
+    }
+
+    /// Push `reads` as one mate pair per qname, wire up the mate fields, and
+    /// link — what `Readers::pileup` does for a real fetch.
+    fn store_of(reads: &[TestRead], masking: &ReadMaskParams) -> RecordStore<RastairReadExtras> {
+        let mut extras = TestExtras(masking.clone());
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        for read in reads {
+            let mate_pos = reads
+                .iter()
+                .find(|other| other.qname == read.qname && other.pos != read.pos)
+                .map_or(read.mate_pos, |other| other.pos as i32);
+            let end = read.pos + read.ref_span().max(1) - 1;
+            store
+                .push_fields(
+                    Pos0::new(read.pos).unwrap(),
+                    Pos0::new(end).unwrap(),
+                    BamFlags::from(read.flags),
+                    read.mapq,
+                    read.bases.len() as u32,
+                    0,
+                    &read.qname,
+                    &read.cigar,
+                    &read.bases,
+                    &read.quals,
+                    &[],
+                    0,
+                    0,
+                    mate_pos,
+                    0,
+                    &mut extras,
+                )
+                .unwrap();
+        }
+        let _stats = store.link_mates();
+        store
+    }
+
+    /// The overlapping-pair rule as it was before mate links: group the
+    /// column's surviving alignments by qname and, on the second one, drop
+    /// whichever `resolve_pair` chose. An independent oracle — it reaches the
+    /// answer by matching names, which is exactly what the new code does not do.
+    fn kept_by_name_collector(
+        column: &PileupColumn<'_, RastairReadExtras>,
+        params: &PileupMappingParams,
+        reference_base: Base,
+        context: &SequenceContext,
+    ) -> Vec<usize> {
+        let passing: Vec<usize> = column
+            .alignments()
+            .enumerate()
+            .filter_map(|(idx, view)| {
+                let baseq = view.qual()?.get()?;
+                view.base()?;
+                view.qpos()?;
+                if !params.quality.filter_fields(view.mapq, baseq) {
+                    return None;
+                }
+                if !passes_read_masking(&view, reference_base, context) {
+                    return None;
+                }
+                Some(idx)
+            })
+            .collect();
+
+        let alignments: Vec<AlignmentView<'_, '_, RastairReadExtras>> =
+            column.alignments().collect();
+        let mut first_by_name: Vec<(&[u8], usize)> = Vec::new();
+        let mut removed: Vec<usize> = Vec::new();
+        for &idx in &passing {
+            let view = &alignments[idx];
+            let name = view.qname();
+            match first_by_name.iter().find(|(seen, _)| *seen == name) {
+                None => first_by_name.push((name, idx)),
+                Some(&(_, other)) => {
+                    let this_base = view.base();
+                    let other_base = alignments[other].base();
+                    if this_base == other_base || view.flags.is_second_in_template() {
+                        removed.push(idx);
+                    } else {
+                        removed.push(other);
+                    }
+                }
+            }
+        }
+        passing.into_iter().filter(|idx| !removed.contains(idx)).collect()
+    }
+
+    /// Run both implementations over every column of `reads` and require the
+    /// same surviving observations: total depth, and per allele the depth and
+    /// the OT/OB split.
+    fn assert_same_as_name_collector(reads: &[TestRead], seq: &[u8], params: &PileupMappingParams) {
+        let seg = segment(seq);
+        let store = store_of(reads, &params.read_masking);
+        let last = seq.len().saturating_sub(1) as u32;
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(last).unwrap());
+        if params.rescue_soft_clip_cpg {
+            engine.set_soft_clip_overhang(1);
+        }
+        engine.set_max_depth(params.max_coverage);
+
+        let mut scratch = Vec::new();
+        let mut columns = 0;
+        while let Some(col) = engine.pileups() {
+            let pos = col.pos().as_u64() as usize;
+            let reference_base = Base::from(*seq.get(pos).unwrap());
+            let context = SequenceContext::new(pos, &seg).unwrap();
+            let expected = kept_by_name_collector(&col, params, reference_base, &context);
+
+            let alignments: Vec<AlignmentView<'_, '_, RastairReadExtras>> =
+                col.alignments().collect();
+            let mut expected_depth = 0u32;
+            let mut expected_by_base: Vec<(Base, u32, u32)> = Vec::new();
+            for &idx in &expected {
+                let view = &alignments[idx];
+                let Some(base) = view.base() else { continue };
+                expected_depth += 1;
+                let strand = view.extra().strand;
+                let slot = match expected_by_base.iter_mut().find(|(b, _, _)| *b == base) {
+                    Some(slot) => slot,
+                    None => {
+                        expected_by_base.push((base, 0, 0));
+                        expected_by_base.last_mut().unwrap()
+                    }
+                };
+                match strand {
+                    Strand::OT => slot.1 += 1,
+                    Strand::OB => slot.2 += 1,
+                    Strand::Unknown => {}
+                }
+            }
+
+            let pm = PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap();
+            assert_eq!(
+                pm.pos_metrics.depth as u32, expected_depth,
+                "pos {pos}: depth differs from the name-collector rule"
+            );
+            for (base, ot, ob) in expected_by_base {
+                let metrics = if base == pm.reference_base {
+                    &pm.ref_metrics
+                } else {
+                    pm.alts
+                        .iter()
+                        .find(|alt| alt.base == base)
+                        .map(|alt| &alt.metrics)
+                        .unwrap_or_else(|| panic!("pos {pos}: no alt for {base}"))
+                };
+                assert_eq!(metrics.depth, ot + ob, "pos {pos}, {base}: allele depth");
+                assert_eq!(metrics.strand_count.ot, ot, "pos {pos}, {base}: OT count");
+                assert_eq!(metrics.strand_count.ob, ob, "pos {pos}, {base}: OB count");
+            }
+            columns += 1;
+        }
+        assert!(columns > 0, "no columns produced");
     }
 
     fn segment(seq: &[u8]) -> Rc<Segment> {
@@ -402,8 +658,9 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
+        let mut extras = TestExtras(params.read_masking.clone());
 
-        let build_store = || {
+        let mut build_store = || {
             let mut store = RecordStore::<RastairReadExtras>::new();
             // 1S 3M at pos 3: clip base T over ref C@2, aligned G,T,T over 3,4,5.
             // flags 99 = paired/proper/mate-reverse/first → OT.
@@ -424,22 +681,21 @@ mod tests {
                     -1,
                     0,
                     0,
-                    &mut TestExtras,
+                    &mut extras,
                 )
                 .unwrap();
             store
         };
 
-        let metrics_at = |overhang: u32| -> Option<PileupMetrics> {
+        let mut metrics_at = |overhang: u32| -> Option<PileupMetrics> {
             let mut engine =
                 PileupEngine::new(build_store(), Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
             engine.set_soft_clip_overhang(overhang);
-            let mut collector = NameCollector::new(&params);
             let mut out = None;
             while let Some(col) = engine.pileups() {
                 if col.pos() == Pos0::new(2).unwrap() {
                     out = Some(
-                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector)
+                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
                             .unwrap(),
                     );
                 }
@@ -463,8 +719,9 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
+        let mut extras = TestExtras(params.read_masking.clone());
 
-        let build_store = || {
+        let mut build_store = || {
             let mut store = RecordStore::<RastairReadExtras>::new();
             // 3M 1S at pos 0: aligned T,T,C over ref 0,1,2; clip base A over ref
             // G@3. flag 83 = paired/proper/reverse/first → OB.
@@ -485,22 +742,21 @@ mod tests {
                     -1,
                     0,
                     0,
-                    &mut TestExtras,
+                    &mut extras,
                 )
                 .unwrap();
             store
         };
 
-        let metrics_at = |overhang: u32| -> Option<PileupMetrics> {
+        let mut metrics_at = |overhang: u32| -> Option<PileupMetrics> {
             let mut engine =
                 PileupEngine::new(build_store(), Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
             engine.set_soft_clip_overhang(overhang);
-            let mut collector = NameCollector::new(&params);
             let mut out = None;
             while let Some(col) = engine.pileups() {
                 if col.pos() == Pos0::new(3).unwrap() {
                     out = Some(
-                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector)
+                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
                             .unwrap(),
                     );
                 }
@@ -525,6 +781,7 @@ mod tests {
         // Reference: T T C G T T — G@3 is the CpG-G, before_1 = C@2.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
+        let mut extras = TestExtras(params.read_masking.clone());
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // 3M 1S at pos 0, flag 99 → OT. Trailing clip A projects onto ref G@3.
@@ -545,17 +802,16 @@ mod tests {
                 -1,
                 0,
                 0,
-                &mut TestExtras,
+                &mut extras,
             )
             .unwrap();
 
         let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
         engine.set_soft_clip_overhang(1);
-        let mut collector = NameCollector::new(&params);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(3).unwrap() {
-                let pm =
-                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
+                    .unwrap();
                 assert!(pm.alt(Base::A).is_none(), "OT clip over ref G must not be rescued");
                 assert_eq!(pm.pos_metrics.depth, 0);
             }
@@ -569,6 +825,7 @@ mod tests {
         // Reference: T T C A T T — C@2 is followed by A, so not a CpG.
         let seg = segment(b"TTCATT");
         let params = PileupMappingParams::default();
+        let mut extras = TestExtras(params.read_masking.clone());
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         store
@@ -588,17 +845,16 @@ mod tests {
                 -1,
                 0,
                 0,
-                &mut TestExtras,
+                &mut extras,
             )
             .unwrap();
 
         let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
         engine.set_soft_clip_overhang(1);
-        let mut collector = NameCollector::new(&params);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
-                let pm =
-                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
+                    .unwrap();
                 // The soft-clip view exists but is gated out: no T alt, no depth.
                 assert!(pm.alt(Base::T).is_none(), "non-CpG clip must not be rescued");
                 assert_eq!(pm.pos_metrics.depth, 0);
@@ -616,6 +872,7 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
+        let mut extras = TestExtras(params.read_masking.clone());
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // 1S 3M at pos 3, flag 99 → OT. Clip base G (not T/C) projects onto C@2.
@@ -636,17 +893,16 @@ mod tests {
                 -1,
                 0,
                 0,
-                &mut TestExtras,
+                &mut extras,
             )
             .unwrap();
 
         let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
         engine.set_soft_clip_overhang(1);
-        let mut collector = NameCollector::new(&params);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
-                let pm =
-                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
+                    .unwrap();
                 assert!(pm.alt(Base::G).is_none(), "non-bisulfite fringe clip must not be rescued");
                 assert_eq!(pm.pos_metrics.depth, 0);
             }
@@ -663,6 +919,7 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
+        let mut extras = TestExtras(params.read_masking.clone());
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // Mate A: first in template, forward (flag 99 → OT). 3M at pos 2 covers
@@ -681,10 +938,10 @@ mod tests {
                 &[40u8; 3],
                 &[],
                 0,
-                -1,
                 0,
+                3,
                 0,
-                &mut TestExtras,
+                &mut extras,
             )
             .unwrap();
         // Mate B: second in template, reverse (flag 147 → OT). 1S 3M at pos 3,
@@ -703,24 +960,26 @@ mod tests {
                 &[40u8; 4],
                 &[],
                 0,
-                -1,
                 0,
+                2,
                 0,
-                &mut TestExtras,
+                &mut extras,
             )
             .unwrap();
 
+        // `Readers::pileup` links mates after fetching; this test drives the
+        // engine directly, so it links by hand.
+        store.link_mates();
         let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
         engine.set_soft_clip_overhang(1);
-        let mut collector = NameCollector::new(&params);
 
         let mut checked = false;
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
                 // The engine presents both the aligned mate and the rescued clip.
                 assert_eq!(col.depth(), 2, "both mates present at the CpG-C before dedup");
-                let pm =
-                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
+                    .unwrap();
                 assert_eq!(pm.pos_metrics.depth, 1, "rescued partner deduped against its mate");
                 checked = true;
             }
@@ -744,6 +1003,7 @@ mod tests {
         let mut params = PileupMappingParams::default();
         params.variant_calling.read_masking =
             ReadMaskParams::new("0,0,0,1".parse().unwrap(), ReadMaskSetting::default());
+        let mut extras = TestExtras(params.read_masking.clone());
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // Mate A: first in template, forward (flag 99 → OT). 3M at pos 2 covers
@@ -762,10 +1022,10 @@ mod tests {
                 &[40u8; 3],
                 &[],
                 0,
-                -1,
                 0,
+                3,
                 0,
-                &mut TestExtras,
+                &mut extras,
             )
             .unwrap();
         // Mate B: second in template, reverse (flag 147 → OT). 1S 3M at pos 3,
@@ -785,22 +1045,24 @@ mod tests {
                 &[40u8; 4],
                 &[],
                 0,
-                -1,
                 0,
+                2,
                 0,
-                &mut TestExtras,
+                &mut extras,
             )
             .unwrap();
 
+        // `Readers::pileup` links mates after fetching; this test drives the
+        // engine directly, so it links by hand.
+        store.link_mates();
         let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
         engine.set_soft_clip_overhang(1);
-        let mut collector = NameCollector::new(&params);
 
         let mut checked = false;
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
-                let pm =
-                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut collector).unwrap();
+                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
+                    .unwrap();
                 assert_eq!(
                     pm.pos_metrics.depth, 1,
                     "rescued partner deduped against its mate even with read-end masking active"
@@ -809,5 +1071,218 @@ mod tests {
             }
         }
         assert!(checked, "CpG-C column must be produced");
+    }
+
+    // ── differential: mate links vs. the old name-collector rule ────────────
+
+    const OT_FIRST: u16 = 99; // paired, proper, mate reverse, first in template
+    const OT_SECOND: u16 = 147; // paired, proper, reverse, second in template
+    const OB_FIRST: u16 = 83; // paired, proper, reverse, first in template
+    const OB_SECOND: u16 = 163; // paired, proper, mate reverse, second in template
+
+    /// `ACGTACGTACGTACGTACGT`, long enough for two 8bp reads to overlap.
+    const REF: &[u8] = b"ACGTACGTACGTACGTACGT";
+
+    fn dedup_params() -> PileupMappingParams {
+        PileupMappingParams::default()
+    }
+
+    /// Mates that agree on every base: the later one goes, whichever way round
+    /// the pair is.
+    #[test]
+    fn dedup_matches_the_old_rule_when_mates_agree() {
+        for (a_flags, b_flags) in [(OT_FIRST, OT_SECOND), (OB_SECOND, OB_FIRST)] {
+            let reads = vec![
+                TestRead::matching(b"pair", 2, 8, Base::A, a_flags),
+                TestRead::matching(b"pair", 6, 8, Base::A, b_flags),
+            ];
+            assert_same_as_name_collector(&reads, REF, &dedup_params());
+        }
+    }
+
+    /// Mates that disagree at the overlapped base. Which one survives depends
+    /// on which is second in the template — the case the single-pass rewrite
+    /// had to get right without seeing the pair as a unit.
+    #[test]
+    fn dedup_matches_the_old_rule_when_mates_disagree() {
+        for (a_flags, b_flags) in [(OT_FIRST, OT_SECOND), (OT_SECOND, OT_FIRST)] {
+            let reads = vec![
+                TestRead::matching(b"pair", 2, 8, Base::A, a_flags),
+                TestRead::matching(b"pair", 6, 8, Base::A, b_flags).with_base_at(0, Base::G),
+            ];
+            assert_same_as_name_collector(&reads, REF, &dedup_params());
+        }
+    }
+
+    /// A mate that fails base quality, mapping quality, or read-end masking at
+    /// the shared column never forms a pair there, so the other one survives
+    /// even though both cover the position.
+    #[test]
+    fn dedup_matches_the_old_rule_when_one_mate_is_filtered() {
+        let params = dedup_params();
+        let low_baseq = vec![
+            TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST),
+            TestRead::matching(b"pair", 6, 8, Base::A, OT_SECOND).with_qual(2),
+        ];
+        assert_same_as_name_collector(&low_baseq, REF, &params);
+
+        let low_mapq = vec![
+            TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST).with_mapq(0),
+            TestRead::matching(b"pair", 6, 8, Base::A, OT_SECOND),
+        ];
+        assert_same_as_name_collector(&low_mapq, REF, &params);
+
+        // Mask the first two bases of every read: at the overlap's left edge
+        // one mate is masked out while the other is not.
+        let mut masked = dedup_params();
+        masked.variant_calling.read_masking =
+            ReadMaskParams::new("2,0,2,0".parse().unwrap(), "2,0,2,0".parse().unwrap());
+        let reads = vec![
+            TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST),
+            TestRead::matching(b"pair", 6, 8, Base::A, OT_SECOND),
+        ];
+        assert_same_as_name_collector(&reads, REF, &masked);
+    }
+
+    /// A deletion in one mate: at the deleted positions it has no base, so no
+    /// pair forms and the other mate stands alone.
+    #[test]
+    fn dedup_matches_the_old_rule_across_a_deletion() {
+        let mut with_del = TestRead::matching(b"pair", 6, 8, Base::A, OT_SECOND);
+        with_del.cigar = vec![
+            CigarOp::new(CigarOpType::Match, 2),
+            CigarOp::new(CigarOpType::Deletion, 2),
+            CigarOp::new(CigarOpType::Match, 6),
+        ];
+        with_del.bases = vec![Base::A; 8];
+        with_del.quals = vec![40; 8];
+        let reads = vec![TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST), with_del];
+        assert_same_as_name_collector(&reads, REF, &dedup_params());
+    }
+
+    /// An insertion in one mate — the anchor base is still a normal
+    /// observation, and the pair must resolve there like any other column.
+    #[test]
+    fn dedup_matches_the_old_rule_across_an_insertion() {
+        let mut with_ins = TestRead::matching(b"pair", 6, 8, Base::A, OT_SECOND);
+        with_ins.cigar = vec![
+            CigarOp::new(CigarOpType::Match, 2),
+            CigarOp::new(CigarOpType::Insertion, 2),
+            CigarOp::new(CigarOpType::Match, 6),
+        ];
+        let reads = vec![TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST), with_ins];
+        assert_same_as_name_collector(&reads, REF, &dedup_params());
+    }
+
+    /// The exact edges of the overlap: the pair meets on one base only, at the
+    /// last position of the left mate. This is where the half-open/inclusive
+    /// mix-up in the overlap interval showed up on real data.
+    #[test]
+    fn dedup_matches_the_old_rule_at_the_overlap_boundaries() {
+        // Left mate covers 2..=9, right mate 9..=16: they share exactly base 9.
+        let reads = vec![
+            TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST),
+            TestRead::matching(b"pair", 9, 8, Base::A, OT_SECOND),
+        ];
+        assert_same_as_name_collector(&reads, REF, &dedup_params());
+
+        // And one base further apart: no shared position at all.
+        let disjoint = vec![
+            TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST),
+            TestRead::matching(b"pair", 10, 8, Base::A, OT_SECOND),
+        ];
+        assert_same_as_name_collector(&disjoint, REF, &dedup_params());
+    }
+
+    /// Several pairs at one column, interleaved, some agreeing and some not —
+    /// the pending-drop bookkeeping has to keep them apart.
+    #[test]
+    fn dedup_matches_the_old_rule_for_interleaved_pairs() {
+        let reads = vec![
+            TestRead::matching(b"p1", 2, 8, Base::A, OT_FIRST),
+            TestRead::matching(b"p2", 3, 8, Base::A, OB_FIRST),
+            TestRead::matching(b"p3", 4, 8, Base::A, OT_SECOND),
+            TestRead::matching(b"p1", 6, 8, Base::A, OT_SECOND).with_base_at(0, Base::G),
+            TestRead::matching(b"p2", 7, 8, Base::A, OB_SECOND),
+            TestRead::matching(b"p3", 8, 8, Base::A, OT_FIRST).with_base_at(0, Base::T),
+        ];
+        assert_same_as_name_collector(&reads, REF, &dedup_params());
+    }
+
+    /// With `--rescue-soft-clip-cpg`, a clipped base is projected onto a column
+    /// outside its own alignment. It still belongs to the same molecule as its
+    /// mate's aligned base there, so it must dedup against it — which is why
+    /// the mate-overlap interval is widened by the overhang.
+    #[test]
+    fn dedup_matches_the_old_rule_for_a_rescued_soft_clip() {
+        // REF has a CpG at 5 (C) / 6 (G). The left mate covers it directly; the
+        // right mate's clipped T projects back onto the C.
+        let mut clipped = TestRead::matching(b"pair", 6, 3, Base::G, OT_SECOND);
+        clipped.cigar =
+            vec![CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 3)];
+        clipped.bases = vec![Base::T, Base::G, Base::T, Base::A];
+        clipped.quals = vec![40; 4];
+
+        let reads = vec![TestRead::matching(b"pair", 5, 3, Base::C, OT_FIRST), clipped];
+        let params = PileupMappingParams { rescue_soft_clip_cpg: true, ..dedup_params() };
+        assert_same_as_name_collector(&reads, REF, &params);
+
+        // And the column is genuinely one where dedup has to fire: without the
+        // widened interval both mates would be counted at the CpG-C.
+        let seg = segment(REF);
+        let store = store_of(&reads, &params.read_masking);
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(19).unwrap());
+        engine.set_soft_clip_overhang(1);
+        let mut scratch = Vec::new();
+        let mut depth_at_cpg = None;
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(5).unwrap() {
+                assert_eq!(col.depth(), 2, "engine presents both the aligned base and the clip");
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut scratch).unwrap();
+                depth_at_cpg = Some(pm.pos_metrics.depth);
+            }
+        }
+        assert_eq!(depth_at_cpg, Some(1), "the rescued clip deduped against its mate");
+    }
+
+    /// `--max-coverage` truncates the column before either implementation sees
+    /// it, so both must agree on the truncated column too.
+    #[test]
+    fn dedup_matches_the_old_rule_under_max_depth_truncation() {
+        let mut reads = Vec::new();
+        for i in 0..6u32 {
+            let name = format!("p{i}");
+            reads.push(TestRead::matching(name.as_bytes(), 2, 8, Base::A, OT_FIRST));
+            reads.push(TestRead::matching(name.as_bytes(), 6, 8, Base::A, OT_SECOND));
+        }
+        let mut capped = dedup_params();
+        capped.variant_calling.max_coverage = 3;
+        assert_same_as_name_collector(&reads, REF, &capped);
+    }
+
+    /// With `--keep-overlapping-reads` no dedup happens at all, so every
+    /// filtered observation survives — including both halves of a pair.
+    #[test]
+    fn keeping_overlapping_reads_keeps_both_mates() {
+        let reads = vec![
+            TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST),
+            TestRead::matching(b"pair", 6, 8, Base::A, OT_SECOND),
+        ];
+        let mut params = dedup_params();
+        params.variant_calling.keep_overlapping_reads = true;
+        let seg = segment(REF);
+        let store = store_of(&reads, &params.read_masking);
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(19).unwrap());
+        let mut scratch = Vec::new();
+        let mut overlap_depth = None;
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(7).unwrap() {
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut scratch).unwrap();
+                overlap_depth = Some(pm.pos_metrics.depth);
+            }
+        }
+        assert_eq!(overlap_depth, Some(2), "both mates must survive inside the overlap");
     }
 }

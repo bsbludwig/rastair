@@ -198,6 +198,8 @@ pub fn get_pileups(
 
     let segment = Rc::new(segment);
     let mut pileup_metrics: Vec<PileupMetrics> = Vec::new();
+    // Reused across every column of every sub-segment; see `from_seqair`.
+    let mut mate_drops: Vec<u32> = Vec::new();
 
     for seqair_seg in &seqair_segments {
         // Fetch BAM records + FASTA into PileupEngine (compute() runs here).
@@ -218,7 +220,7 @@ pub fn get_pileups(
             if !region.contains(pos) {
                 continue;
             }
-            match PileupMetrics::from_seqair(&col, segment.clone(), params) {
+            match PileupMetrics::from_seqair(&col, segment.clone(), params, &mut mate_drops) {
                 Ok(p) => pileup_metrics.push(p),
                 Err(error) => {
                     warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");
@@ -278,21 +280,41 @@ mod tests {
         let mut readers = params.pileup_readers()?;
         let segments: Vec<_> = readers.segments(10_000, 100)?.collect();
 
-        // (pos, reference_base, read_count) per position — sensitive to dropped
-        // or duplicated boundary reads. Types stay inferred so this compiles on
-        // both the htslib and seqair backends.
+        // Everything a boundary read could move: depth, the ALT list *in order*
+        // (it becomes the VCF ALT column), per-allele depth and strand split,
+        // and the indel observation count. A read fetched twice, or dropped at
+        // a sub-segment edge, shows up in one of these. Types stay inferred so
+        // this compiles on both the htslib and seqair backends.
+        #[allow(clippy::type_complexity)]
+        fn fingerprint(
+            pileups: impl Iterator<Item = PileupMetrics>,
+        ) -> Vec<(u32, Base, usize, Vec<(Base, u32, u32, u32)>, usize)> {
+            pileups
+                .map(|p| {
+                    let alleles = std::iter::once(&p.ref_metrics)
+                        .chain(p.alts.iter().map(|alt| &alt.metrics))
+                        .map(|m| (m.base, m.depth, m.strand_count.ot, m.strand_count.ob))
+                        .collect();
+                    let indels = p.indel_data.as_ref().map_or(0, |data| data.observations.len());
+                    (p.pos, p.reference_base, p.pos_metrics.depth as usize, alleles, indels)
+                })
+                .collect()
+        }
+
         let huge = PileupMappingParams { segment_max_bytes: u64::MAX, ..Default::default() };
         let (_s1, p1) = get_pileups(&mut readers, &segments[0], &huge)?;
-        let baseline: Vec<_> =
-            p1.map(|p| (p.pos, p.reference_base, p.pos_metrics.depth as usize)).collect();
+        let baseline = fingerprint(p1);
 
         // A 1-byte budget forces the region to split into many sub-segments.
         let tiny = PileupMappingParams { segment_max_bytes: 1, ..Default::default() };
         let (_s2, p2) = get_pileups(&mut readers, &segments[0], &tiny)?;
-        let subdivided: Vec<_> =
-            p2.map(|p| (p.pos, p.reference_base, p.pos_metrics.depth as usize)).collect();
+        let subdivided = fingerprint(p2);
 
         assert!(!baseline.is_empty());
+        assert!(
+            baseline.iter().any(|(_, _, _, alleles, _)| alleles.len() > 1),
+            "the region must contain alts, or the ALT comparison proves nothing"
+        );
         assert_eq!(baseline, subdivided, "subdivision changed the pileups");
         Ok(())
     }

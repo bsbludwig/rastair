@@ -283,6 +283,63 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
     Ok(())
 }
 
+/// Overlapping-mate dedup, end to end on a real BAM: linking happens inside
+/// `Readers::pileup`, the column loop acts on it, and the counts land in the
+/// BED. The synthetic differential tests in `from_seqair.rs` pin the *rule*;
+/// this pins that the rule is reached at all — a mate link that silently never
+/// formed (stale mate coordinates, a reader that stopped linking) would leave
+/// both runs identical.
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
+    const REGION: &str = "--region=chr19:6103000-6106000";
+
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let deduped = temp_dir.path().join("deduped.bed");
+    let kept = temp_dir.path().join("kept.bed");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--bed"])
+        .arg(&deduped)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--keep-overlapping-reads", "--bed"])
+        .arg(&kept)
+        .succeeds()?;
+
+    let deduped = parse_cpg_bed(&deduped)?;
+    let kept = parse_cpg_bed(&kept)?;
+    assert!(!deduped.is_empty(), "no CpG calls to compare");
+
+    let total = |calls: &BTreeMap<(u32, char), CpgBedCall>| -> u32 {
+        calls.values().map(|c| c.mod_count + c.unmod_count).sum()
+    };
+    let (deduped_total, kept_total) = (total(&deduped), total(&kept));
+    assert!(
+        deduped_total < kept_total,
+        "dedup removed nothing: {deduped_total} observations with it, {kept_total} without"
+    );
+
+    // Every position must lose observations, never gain them: dedup only ever
+    // drops one half of a pair.
+    for (key, kept_call) in &kept {
+        let Some(deduped_call) = deduped.get(key) else { continue };
+        let before = kept_call.mod_count + kept_call.unmod_count;
+        let after = deduped_call.mod_count + deduped_call.unmod_count;
+        assert!(
+            after <= before,
+            "{key:?}: dedup increased coverage from {before} to {after}"
+        );
+    }
+
+    Ok(())
+}
+
 #[test]
 #[cfg(feature = "experimental-seqair")]
 fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
