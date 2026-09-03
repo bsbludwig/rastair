@@ -22,9 +22,6 @@ pub struct BedParams {
     #[arg(long, requires = "bed")]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub bed_format: Option<BedFormat>,
-
-    #[command(flatten)]
-    pub filters: BedRecordsFilterParams,
 }
 
 impl BedParams {
@@ -57,14 +54,14 @@ impl BedParams {
     }
 }
 
-/// Parameters for filtering BED records
+/// Parameters for filtering BED records produced by `convert`
 #[derive(Debug, Clone, clap::Args, Default)]
 pub struct BedRecordsFilterParams {
     /// Include CpG positions with zero coverage
     ///
     /// This can be useful to get a complete list of CpG positions in the output BED file.
     /// Note that this requires the input data to contain a complete list of CpG positions,
-    /// e.g. by using the `--cpgs-only` option when calling methylation.
+    /// e.g. by using the `--all --cpgs-only` options when calling methylation.
     #[arg(long = "bed-include-empty")]
     #[arg(help_heading = cli::sections::FILTER)]
     pub include_empty: bool,

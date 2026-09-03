@@ -1005,14 +1005,14 @@ fn cpgs_only_with_all_reports_uncovered_reference_cpgs_in_bed() -> Result<()> {
     rastair()
         .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
         .arg(&gapped_bam)
-        .args([REGION, NO_ML, "--cpgs-only", "--bed-include-empty", "--bed"])
+        .args([REGION, NO_ML, "--cpgs-only", "--bed"])
         .arg(&cpgs_only_bed)
         .succeeds()?;
 
     rastair()
         .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
         .arg(&gapped_bam)
-        .args([REGION, NO_ML, "--cpgs-only", "--all", "--bed-include-empty", "--bed"])
+        .args([REGION, NO_ML, "--cpgs-only", "--all", "--bed"])
         .arg(&all_bed)
         .succeeds()?;
 
@@ -1032,6 +1032,66 @@ fn cpgs_only_with_all_reports_uncovered_reference_cpgs_in_bed() -> Result<()> {
         all_positions,
         BTreeSet::from([(6_105_711, '+'), (6_105_712, '-'), (6_105_743, '+'), (6_105_744, '-'),]),
         "expected all reference CpGs under --all --cpgs-only"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Result<()> {
+    apply_common_filters!();
+
+    const REGION: &str = "--region=chr19:6105700-6105800";
+
+    let temp_dir = TempDir::new()?;
+    let gapped_bam = temp_dir.path().join("gapped.bam");
+    write_bam_with_zero_mapq_overlapping(&gapped_bam, "chr19", 6_105_743, 6_105_745)?;
+
+    // `call --all --cpgs-only` already reports the uncovered CpG pair with no
+    // extra flag needed (that's the point of this refactor), so the mpk file
+    // contains both pairs.
+    let mpk = temp_dir.path().join("all.mpk.lz4");
+    rastair()
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+        .arg(&gapped_bam)
+        .args([REGION, NO_ML, "--cpgs-only", "--all", "-o"])
+        .arg(&mpk)
+        .succeeds()?;
+
+    let without_empty = temp_dir.path().join("without-empty.bed");
+    let with_empty = temp_dir.path().join("with-empty.bed");
+
+    rastair()
+        .args(["convert", "--input"])
+        .arg(&mpk)
+        .arg("--output")
+        .arg(&without_empty)
+        .succeeds()?;
+
+    rastair()
+        .args(["convert", "--input"])
+        .arg(&mpk)
+        .arg("--output")
+        .arg(&with_empty)
+        .arg("--bed-include-empty")
+        .succeeds()?;
+
+    let without_empty_positions: BTreeSet<(u32, char)> =
+        parse_cpg_bed(&without_empty)?.keys().copied().collect();
+    let with_empty_positions: BTreeSet<(u32, char)> =
+        parse_cpg_bed(&with_empty)?.keys().copied().collect();
+
+    // `convert` still has to decide independently whether to carry the
+    // uncovered pair, already present in the mpk, into this BED output.
+    assert_eq!(
+        without_empty_positions,
+        BTreeSet::from([(6_105_711, '+'), (6_105_712, '-')]),
+        "convert without --bed-include-empty should drop the uncovered CpG pair"
+    );
+    assert_eq!(
+        with_empty_positions,
+        BTreeSet::from([(6_105_711, '+'), (6_105_712, '-'), (6_105_743, '+'), (6_105_744, '-')]),
+        "convert --bed-include-empty should keep the uncovered CpG pair"
     );
 
     Ok(())

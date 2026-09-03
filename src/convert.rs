@@ -295,11 +295,10 @@ fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
-                let params = crate::bed::rastair1::BedRecordsConvertParams {
-                    ml_threshold: params.ml_threshold,
-                    filters: params.bed_params.clone(),
-                };
-                let Some(record) = Rastair1BedFormat::from_metrics(&record, &params)
+                if !params.bed_params.include_empty && !record.tags.covered {
+                    continue;
+                }
+                let Some(record) = Rastair1BedFormat::from_metrics(&record)
                     .wrap_err("Failed to convert record to BED format")?
                 else {
                     continue;
