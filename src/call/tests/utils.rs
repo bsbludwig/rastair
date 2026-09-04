@@ -10,7 +10,7 @@ use crate::{
     },
     metrics::{PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, Region, Segment},
-    utils::{PileupMetricsIteratorExt as _, SequenceContext},
+    utils::{SequenceContext, map_surrounding},
     vcf::{Contig, FieldConfig, emit_pileup, register},
 };
 pub use crate::{call::record_filters::RecordFilters, utils::default};
@@ -547,13 +547,18 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
         call::variant_calling::ErrorModel, metrics, metrics::MethylationEvidenceStrandInfo,
     };
 
+    let mut records = records;
+    map_surrounding(
+        &mut records,
+        |before, current, after| {
+            process::propagate_denovo_pass_flags(before, current, after, Some(ML_THRESHOLD))
+        },
+        "failed to propagate CpG pass flags",
+    );
+
     records
         .into_iter()
-        .map_surrounding(|before, current, after| {
-            process::propagate_denovo_pass_flags(before, current, after, Some(ML_THRESHOLD))
-        })
-        .map(|current| {
-            let mut current = current?;
+        .map(|mut current| {
             process::set_alt_calls(&mut current, Some(ML_THRESHOLD))?;
             process::add_position_tags(&mut current);
 

@@ -34,7 +34,7 @@ use crate::{
         ml::types::{GpuRastairModel, MachineLearning},
     },
     sequence::{ChunkRegion, PileupReaders, ReaderParams, Segment, SegmentationParams},
-    utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
+    utils::{cli, logging::ThisIsABug as _, map_surrounding},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -402,17 +402,15 @@ fn process_region(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    let pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
+    let mut pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
         .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
-        .map_surrounding(process::set_denovo_adj)
-        .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
-        .map(|mut current| {
-            current.pos_metrics.extended.methylation_strand_info =
-                MethylationEvidenceStrandInfo::from_pileup(&current);
-            current
-        })
-        .filter(|p| params.record_filters.pre_filter(p))
         .collect();
+    map_surrounding(
+        &mut pileups,
+        process::set_denovo_adj,
+        "failed to set denovo adjacency, skipping",
+    );
+    set_strand_info_and_prefilter(&mut pileups, params);
 
     process_collected_pileups(segment, pileups, params, ml)
 }
@@ -424,17 +422,25 @@ fn process_pre_built_metrics(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    let pileups: Vec<PileupMetrics> = pileups
-        .map_surrounding(process::set_denovo_adj)
-        .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
-        .map(|mut current| {
-            current.pos_metrics.extended.methylation_strand_info =
-                MethylationEvidenceStrandInfo::from_pileup(&current);
-            current
-        })
-        .filter(|p| params.record_filters.pre_filter(p))
-        .collect();
+    let mut pileups: Vec<PileupMetrics> = pileups.collect();
+    map_surrounding(
+        &mut pileups,
+        process::set_denovo_adj,
+        "failed to set denovo adjacency, skipping",
+    );
+    set_strand_info_and_prefilter(&mut pileups, params);
     process_collected_pileups(segment, pileups, params, ml)
+}
+
+/// The step both backends run between de-novo adjacency and the shared
+/// pipeline: strand info depends on the adjacency flags just set, and the
+/// pre-filter on the alts, so the order matters.
+fn set_strand_info_and_prefilter(pileups: &mut Vec<PileupMetrics>, params: &CallParams) {
+    for pileup in pileups.iter_mut() {
+        pileup.pos_metrics.extended.methylation_strand_info =
+            MethylationEvidenceStrandInfo::from_pileup(pileup);
+    }
+    pileups.retain(|p| params.record_filters.pre_filter(p));
 }
 
 fn process_collected_pileups(
@@ -493,7 +499,7 @@ fn process_collected_pileups(
         }
     }
 
-    let pileups: Vec<PileupMetrics> = pileups
+    let mut pileups: Vec<PileupMetrics> = pileups
         .into_iter()
         .map(|mut pileup| {
             process::apply_threshold_filters(&mut pileup, &threshold_filters)
@@ -501,12 +507,17 @@ fn process_collected_pileups(
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to add threshold filters, skipping"))
-        .map_surrounding(|b, c, a| {
-            // For CpG sites and de-novo CpG sites, if one position is pass, mark
-            // corresponding as pass as well
-            process::propagate_denovo_pass_flags(b, c, a, params.ml.threshold())
-        })
-        .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
+        .collect();
+    // For CpG sites and de-novo CpG sites, if one position is pass, mark
+    // corresponding as pass as well
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::propagate_denovo_pass_flags(b, c, a, params.ml.threshold()),
+        "failed to propagate CpG pass flags, skipping",
+    );
+
+    let pileups: Vec<PileupMetrics> = pileups
+        .into_iter()
         .map(|mut pileup| {
             // Finally, set the actual variant calls based on all metrics and filters
             process::set_alt_calls(&mut pileup, params.ml.threshold())?;

@@ -29,7 +29,7 @@ use crate::{
     rayon_all,
     regions::ConfidentRegions,
     sequence::{ChunkRegion, PileupReaders, ReaderParams, SegmentationParams},
-    utils::{PileupMetricsIteratorExt, cli},
+    utils::{cli, map_surrounding},
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
 use clio::ClioPath;
@@ -694,8 +694,11 @@ fn collect_training_data_from_segment(
         Box::new(pileup_iter.map(Ok))
     };
 
-    // Process each position with metrics
-    metrics
+    // Process each position with metrics. The pileups are only read here — the
+    // features go into the accumulators — so this collects rather than
+    // streaming, which is what lets the walk borrow neighbours instead of
+    // cloning every one of them.
+    let mut pileups: Vec<PileupMetrics> = metrics
         .filter_map(|x: Result<PileupMetrics>| match x {
             Err(e) => {
                 warn!(error = format!("{e:#}"), "Failed to calculate pileup metrics");
@@ -703,7 +706,10 @@ fn collect_training_data_from_segment(
             }
             Ok(x) => Some(x),
         })
-        .map_surrounding(|before, current, after| {
+        .collect();
+    map_surrounding(
+        &mut pileups,
+        |before, current, after| {
             let pos = u64::from(current.pos);
 
             // Outside the confident regions the truth set makes no claim, so a
@@ -794,8 +800,9 @@ fn collect_training_data_from_segment(
             }
 
             Ok(())
-        })
-        .for_each(|_x| {});
+        },
+        "failed to extract training features, skipping",
+    );
 
     Ok((cpg_data, denovo_data, other_data, insertion_data, deletion_data))
 }

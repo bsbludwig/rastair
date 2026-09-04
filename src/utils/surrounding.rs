@@ -1,143 +1,67 @@
 use crate::metrics::PileupMetrics;
 use color_eyre::Result;
+use tracing::warn;
 
-/// Iterator adapter that processes elements with access to their validated neighbors.
+/// Are these two pileups genuine neighbours in the genome?
 ///
-/// This adapter maintains a sliding window of 3 elements and validates that neighbors
-/// are actually adjacent (same contig, consecutive positions) before passing them to
-/// the mapping function.
-pub struct SurroundingMap<I, F>
+/// By the time this runs the sequence has usually been filtered, so two entries
+/// sitting next to each other in memory are often nowhere near each other on
+/// the chromosome.
+fn adjacent(left: &PileupMetrics, right: &PileupMetrics) -> bool {
+    left.contig_name() == right.contig_name() && left.pos.checked_add(1) == Some(right.pos)
+}
+
+/// Apply `f` to every pileup together with its immediate neighbours, in place.
+///
+/// `before` is the previous pileup *after* `f` has already run on it, `after`
+/// the next one *before* it has, so a mutation propagates forwards — which is
+/// what the de-novo CpG passes rely on. Either is `None` unless it is genuinely
+/// adjacent.
+///
+/// A pileup `f` fails on is logged with `context` and dropped, but only once
+/// the pass is over: until then it stays visible as a neighbour, which is what
+/// the sliding window this replaced did. Errors never stop the pass.
+///
+/// Deliberately not an iterator adapter. Yielding each pileup while also
+/// keeping it as the next one's `before` meant cloning all 944 bytes of it once
+/// per pass, and the window itself moved each pileup three times more; that
+/// `memcpy` was 8 % of worker CPU.
+pub fn map_surrounding<F>(pileups: &mut Vec<PileupMetrics>, mut f: F, context: &str)
 where
-    I: Iterator<Item = PileupMetrics>,
     F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
 {
-    iter: I,
-    window: [Option<PileupMetrics>; 3],
-    mapper: F,
-    started: bool,
-}
+    let mut failed: Vec<usize> = Vec::new();
 
-impl<I, F> SurroundingMap<I, F>
-where
-    I: Iterator<Item = PileupMetrics>,
-    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
-{
-    fn new(iter: I, mapper: F) -> Self {
-        Self { iter, window: [None, None, None], mapper, started: false }
-    }
+    for i in 0..pileups.len() {
+        let (left, rest) = pileups.split_at_mut(i);
+        // `i < len`, so `rest` is never empty; `break` keeps the loop total
+        // without an unreachable branch.
+        let Some((current, right)) = rest.split_first_mut() else { break };
 
-    /// Validate if the element at window[idx] is a true neighbor of current
-    fn is_valid_neighbor(&self, idx: usize, current: &PileupMetrics, is_before: bool) -> bool {
-        let Some(neighbor) = self.window[idx].as_ref() else { return false };
+        let before = left.last().filter(|previous| adjacent(previous, current));
+        let after = right.first().filter(|next| adjacent(current, next));
 
-        if neighbor.contig() != current.contig() {
-            return false;
-        }
-
-        if is_before {
-            // Check if neighbor.pos + 1 == current.pos
-            neighbor.pos.checked_add(1) == Some(current.pos)
-        } else {
-            // Check if neighbor.pos - 1 == current.pos (i.e., current.pos + 1 == neighbor.pos)
-            current.pos.checked_add(1) == Some(neighbor.pos)
+        if let Err(error) = f(before, current, after) {
+            warn!(error = format!("{error:#}"), "{context}");
+            failed.push(i);
         }
     }
-}
 
-impl<I, F> Iterator for SurroundingMap<I, F>
-where
-    I: Iterator<Item = PileupMetrics>,
-    F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
-{
-    type Item = Result<PileupMetrics>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.started {
-            // Bootstrap: fill window as [None, first, second]
-            // This allows the first element to have before=None
-            self.window[1] = self.iter.next();
-            self.window[2] = self.iter.next();
-            self.started = true;
-        } else {
-            // Slide the window: pull a new element and shift
-            let new_elem = self.iter.next();
-            self.window[0] = self.window[1].take();
-            self.window[1] = self.window[2].take();
-            self.window[2] = new_elem;
-        }
-
-        // Load-bearing `?`: If window[1] is None, we're done
-        let current = self.window[1].as_ref()?;
-
-        // Phase 1: Validate neighbors while everything is still borrowed
-        let before_valid = { self.is_valid_neighbor(0, current, true) };
-        let after_valid = { self.is_valid_neighbor(2, current, false) };
-
-        // Phase 2: Take current element to get mutable access
-        let Some(mut current) = self.window[1].take() else {
-            unreachable!("could not take current element even though we just had it");
-        };
-
-        // Phase 3: Call mapper with validated neighbor references
-        let before_ref = if before_valid { self.window[0].as_ref() } else { None };
-        let after_ref = if after_valid { self.window[2].as_ref() } else { None };
-
-        // Phase 4: Call mapper and handle the result
-        match (self.mapper)(before_ref, &mut current, after_ref) {
-            Ok(()) => {
-                // Clone the result to return, then put current back in window for next slide
-                let result = current.clone();
-                self.window[1] = Some(current);
-                Some(Ok(result))
-            }
-            Err(e) => {
-                // Put current back in window before returning error
-                self.window[1] = Some(current);
-                Some(Err(e))
-            }
-        }
+    if failed.is_empty() {
+        return;
     }
+    // `failed` is ascending, so one pass in step with `retain` is enough.
+    let mut failed = failed.into_iter().peekable();
+    let mut idx = 0usize;
+    pileups.retain(|_| {
+        let keep = failed.peek() != Some(&idx);
+        if !keep {
+            failed.next();
+        }
+        idx += 1;
+        keep
+    });
 }
-
-/// Extension trait to add `map_surrounding` method to iterators of `PileupMetrics`
-pub trait PileupMetricsIteratorExt: Iterator<Item = PileupMetrics> + Sized {
-    /// Map over elements while providing access to validated neighbors.
-    ///
-    /// The mapping function receives:
-    /// - `before`: Reference to the previous element if it exists and is adjacent
-    ///   (same contig, position - 1)
-    /// - `current`: Mutable reference to the current element
-    /// - `after`: Reference to the next element if it exists and is adjacent
-    ///   (same contig, position + 1)
-    ///
-    /// The function should mutate `current` in place and return `Result<()>`.
-    /// The iterator will yield `Result<PileupMetrics>` - `Ok(current)` if the
-    /// function succeeds, or `Err` if it fails.
-    ///
-    /// # Example
-    /// ```ignore
-    /// use rastair::utils::surrounding::PileupMetricsIteratorExt;
-    ///
-    /// let processed: Result<Vec<_>> = pileups
-    ///     .map_surrounding(|before, current, after| {
-    ///         // Mutate current based on neighbors
-    ///         if before.is_some() && after.is_some() {
-    ///             current.has_both_neighbors = true;
-    ///         }
-    ///         Ok(())
-    ///     })
-    ///     .collect();
-    /// ```
-    fn map_surrounding<F>(self, f: F) -> SurroundingMap<Self, F>
-    where
-        F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
-    {
-        SurroundingMap::new(self, f)
-    }
-}
-
-/// Implement the extension trait for all iterators that yield `PileupMetrics`
-impl<I> PileupMetricsIteratorExt for I where I: Iterator<Item = PileupMetrics> {}
 
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation, reason = "test code")]
@@ -189,311 +113,148 @@ mod tests {
         PileupMetrics::new(pileup).unwrap()
     }
 
+    /// Run `f` over `items` and hand back what survived, so each test reads as
+    /// "these went in, these came out".
+    fn run<F>(items: &mut Vec<PileupMetrics>, f: F)
+    where
+        F: FnMut(Option<&PileupMetrics>, &mut PileupMetrics, Option<&PileupMetrics>) -> Result<()>,
+    {
+        map_surrounding(items, f, "test mapper failed");
+    }
+
     #[test]
-    fn test_empty_iterator() {
-        let items: Vec<PileupMetrics> = vec![];
+    fn an_empty_sequence_never_calls_the_mapper() {
+        let mut items: Vec<PileupMetrics> = vec![];
         let mut calls = 0;
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, _current, after| {
-                calls += 1;
-                assert!(before.is_none());
-                assert!(after.is_none());
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 0);
+        run(&mut items, |_, _, _| {
+            calls += 1;
+            Ok(())
+        });
+        assert!(items.is_empty());
         assert_eq!(calls, 0);
     }
 
     #[test]
-    fn test_single_element() {
-        let items = vec![make_pileup("chr1", 100)];
+    fn a_lone_pileup_has_no_neighbours() {
+        let mut items = vec![make_pileup("chr1", 100)];
         let mut calls = 0;
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, current, after| {
-                calls += 1;
-                assert!(before.is_none(), "Single element should have no before");
-                assert!(after.is_none(), "Single element should have no after");
-                assert_eq!(current.pos, 100);
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 1);
+        run(&mut items, |before, current, after| {
+            calls += 1;
+            assert!(before.is_none());
+            assert!(after.is_none());
+            assert_eq!(current.pos, 100);
+            Ok(())
+        });
         assert_eq!(calls, 1);
-        assert_eq!(result[0].pos, 100);
+        assert_eq!(items.len(), 1);
     }
 
     #[test]
-    fn test_two_consecutive_elements() {
-        let items = vec![make_pileup("chr1", 100), make_pileup("chr1", 101)];
-        let mut first_call = true;
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, current, after| {
-                if first_call {
-                    assert!(before.is_none());
-                    assert!(after.is_some());
-                    assert_eq!(after.unwrap().pos, 101);
-                    assert_eq!(current.pos, 100);
-                    first_call = false;
-                } else {
-                    assert!(before.is_some());
-                    assert_eq!(before.unwrap().pos, 100);
-                    assert!(after.is_none());
-                    assert_eq!(current.pos, 101);
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 2);
+    fn consecutive_pileups_see_each_other() {
+        let mut items: Vec<_> = (0..10).map(|i| make_pileup("chr1", 100 + i)).collect();
+        run(&mut items, |before, current, after| {
+            let pos = current.pos;
+            assert_eq!(before.map(|p| p.pos), (pos > 100).then(|| pos - 1));
+            assert_eq!(after.map(|p| p.pos), (pos < 109).then(|| pos + 1));
+            Ok(())
+        });
+        assert_eq!(items.len(), 10);
     }
 
+    /// Neighbouring in the vector is not neighbouring in the genome: the
+    /// sequence has usually been filtered before this runs.
     #[test]
-    fn test_three_consecutive_elements() {
-        let items =
-            vec![make_pileup("chr1", 100), make_pileup("chr1", 101), make_pileup("chr1", 102)];
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, current, after| {
-                match current.pos {
-                    100 => {
-                        assert!(before.is_none());
-                        assert_eq!(after.unwrap().pos, 101);
-                    }
-                    101 => {
-                        assert_eq!(before.unwrap().pos, 100);
-                        assert_eq!(after.unwrap().pos, 102);
-                    }
-                    102 => {
-                        assert_eq!(before.unwrap().pos, 101);
-                        assert!(after.is_none());
-                    }
-                    _ => panic!("Unexpected position"),
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_non_consecutive_positions() {
-        // Gap between positions means they shouldn't be treated as neighbors
-        let items = vec![
-            make_pileup("chr1", 100),
-            make_pileup("chr1", 105), // Gap of 5
-            make_pileup("chr1", 106),
-        ];
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, current, after| {
-                match current.pos {
-                    100 => {
-                        assert!(before.is_none());
-                        assert!(after.is_none(), "105 is not consecutive to 100");
-                    }
-                    105 => {
-                        assert!(before.is_none(), "100 is not consecutive to 105");
-                        assert_eq!(after.unwrap().pos, 106);
-                    }
-                    106 => {
-                        assert_eq!(before.unwrap().pos, 105);
-                        assert!(after.is_none());
-                    }
-                    _ => panic!("Unexpected position"),
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_different_contigs() {
-        let items = vec![
-            make_pileup("chr1", 100),
-            make_pileup("chr2", 101), // Different contig
-            make_pileup("chr2", 102),
-        ];
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, current, after| {
-                match (current.contig().as_str(), current.pos) {
-                    ("chr1", 100) => {
-                        assert!(before.is_none());
-                        assert!(after.is_none(), "chr2 is different contig");
-                    }
-                    ("chr2", 101) => {
-                        assert!(before.is_none(), "chr1 is different contig");
-                        assert_eq!(after.unwrap().pos, 102);
-                    }
-                    ("chr2", 102) => {
-                        assert_eq!(before.unwrap().pos, 101);
-                        assert!(after.is_none());
-                    }
-                    _ => panic!("Unexpected contig/position"),
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_mutation_is_preserved() {
-        let items =
-            vec![make_pileup("chr1", 100), make_pileup("chr1", 101), make_pileup("chr1", 102)];
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|_before, current, _after| {
-                // Mutate the position by adding 1000
-                current.pos += 1000;
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].pos, 1100);
-        assert_eq!(result[1].pos, 1101);
-        assert_eq!(result[2].pos, 1102);
-    }
-
-    #[test]
-    fn test_long_sequence() {
-        // Test with more elements to ensure sliding window works correctly
-        let items: Vec<_> = (0..10).map(|i| make_pileup("chr1", 100 + i)).collect();
-
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, current, after| {
-                let pos = current.pos;
-                if pos == 100 {
-                    assert!(before.is_none());
-                    assert!(after.is_some());
-                } else if pos == 109 {
-                    assert!(before.is_some());
-                    assert!(after.is_none());
-                } else {
-                    assert!(before.is_some());
-                    assert!(after.is_some());
-                    assert_eq!(before.unwrap().pos, pos - 1);
-                    assert_eq!(after.unwrap().pos, pos + 1);
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        assert_eq!(result.len(), 10);
-    }
-
-    #[test]
-    fn test_mixed_gaps_and_contigs() {
-        let items = vec![
+    fn gaps_and_contig_changes_break_adjacency() {
+        let mut items = vec![
             make_pileup("chr1", 100),
             make_pileup("chr1", 101),
-            make_pileup("chr1", 105), // Gap
-            make_pileup("chr2", 106), // Different contig (but consecutive pos)
+            make_pileup("chr1", 105), // gap
+            make_pileup("chr2", 106), // consecutive position, different contig
             make_pileup("chr2", 107),
         ];
 
-        let result: Vec<_> = items
-            .into_iter()
-            .map_surrounding(|before, current, after| {
-                match (current.contig().as_str(), current.pos) {
-                    ("chr1", 100) => {
-                        assert!(before.is_none());
-                        assert_eq!(after.unwrap().pos, 101);
-                    }
-                    ("chr1", 101) => {
-                        assert_eq!(before.unwrap().pos, 100);
-                        assert!(after.is_none(), "Gap to 105");
-                    }
-                    ("chr1", 105) => {
-                        assert!(before.is_none(), "Gap from 101");
-                        assert!(after.is_none(), "Different contig");
-                    }
-                    ("chr2", 106) => {
-                        assert!(before.is_none(), "Different contig from chr1");
-                        assert_eq!(after.unwrap().pos, 107);
-                    }
-                    ("chr2", 107) => {
-                        assert_eq!(before.unwrap().pos, 106);
-                        assert!(after.is_none());
-                    }
-                    _ => panic!("Unexpected combination"),
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
+        let mut seen = Vec::new();
+        run(&mut items, |before, current, after| {
+            seen.push((
+                current.contig_name().to_owned(),
+                current.pos,
+                before.map(|p| p.pos),
+                after.map(|p| p.pos),
+            ));
+            Ok(())
+        });
 
-        assert_eq!(result.len(), 5);
+        assert_eq!(
+            seen,
+            vec![
+                ("chr1".to_owned(), 100, None, Some(101)),
+                ("chr1".to_owned(), 101, Some(100), None),
+                ("chr1".to_owned(), 105, None, None),
+                ("chr2".to_owned(), 106, None, Some(107)),
+                ("chr2".to_owned(), 107, Some(106), None),
+            ]
+        );
     }
 
     #[test]
-    fn test_error_propagation() {
-        let items =
+    fn mutations_are_kept() {
+        let mut items =
             vec![make_pileup("chr1", 100), make_pileup("chr1", 101), make_pileup("chr1", 102)];
+        run(&mut items, |_, current, _| {
+            current.pos += 1000;
+            Ok(())
+        });
+        assert_eq!(items.iter().map(|p| p.pos).collect::<Vec<_>>(), vec![1100, 1101, 1102]);
+    }
 
-        let result: Result<Vec<_>> = items
-            .into_iter()
-            .map_surrounding(|_before, current, _after| {
-                // Fail on position 101
-                if current.pos == 101 {
-                    color_eyre::eyre::bail!("Simulated error at position 101")
-                } else {
-                    Ok(())
-                }
-            })
-            .collect();
+    /// The mapper sees the *mutated* previous pileup and the *untouched* next
+    /// one. The de-novo CpG passes depend on that direction.
+    #[test]
+    fn mutation_propagates_forwards_only() {
+        let mut items =
+            vec![make_pileup("chr1", 100), make_pileup("chr1", 101), make_pileup("chr1", 102)];
+        let mut seen = Vec::new();
+        run(&mut items, |before, current, after| {
+            seen.push((before.map(|p| p.pos_metrics.mapq0), after.map(|p| p.pos_metrics.mapq0)));
+            current.pos_metrics.mapq0 = 7;
+            Ok(())
+        });
+        assert_eq!(seen, vec![(None, Some(0)), (Some(7), Some(0)), (Some(7), None)]);
+    }
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Simulated error at position 101"));
+    /// A failing pileup is dropped, but not before the one after it has had a
+    /// chance to see it — and the pass runs to the end regardless.
+    #[test]
+    fn a_failing_pileup_is_dropped_after_serving_as_a_neighbour() {
+        let mut items: Vec<_> = (0..5).map(|i| make_pileup("chr1", 100 + i)).collect();
+        let mut saw_101_as_before = false;
+        let mut calls = 0;
+
+        run(&mut items, |before, current, _| {
+            calls += 1;
+            if before.is_some_and(|p| p.pos == 101) {
+                saw_101_as_before = true;
+            }
+            if current.pos == 101 {
+                color_eyre::eyre::bail!("simulated failure at 101");
+            }
+            Ok(())
+        });
+
+        assert_eq!(calls, 5, "a failure must not stop the pass");
+        assert!(saw_101_as_before, "the failed pileup still served as a neighbour");
+        assert_eq!(items.iter().map(|p| p.pos).collect::<Vec<_>>(), vec![100, 102, 103, 104]);
     }
 
     #[test]
-    fn test_error_stops_iteration() {
-        let items: Vec<_> = (0..10).map(|i| make_pileup("chr1", 100 + i)).collect();
-        let mut processed_count = 0;
-
-        let result: Result<Vec<_>> = items
-            .into_iter()
-            .map_surrounding(|_before, current, _after| {
-                processed_count += 1;
-                // Fail on position 105
-                if current.pos == 105 {
-                    color_eyre::eyre::bail!("Error at position 105")
-                } else {
-                    Ok(())
-                }
-            })
-            .collect();
-
-        assert!(result.is_err());
-        // Should have processed elements up to and including 105
-        assert_eq!(processed_count, 6); // positions 100-105
+    fn several_failures_are_all_dropped() {
+        let mut items: Vec<_> = (0..6).map(|i| make_pileup("chr1", 100 + i)).collect();
+        run(&mut items, |_, current, _| {
+            if current.pos % 2 == 0 {
+                color_eyre::eyre::bail!("simulated failure at {}", current.pos);
+            }
+            Ok(())
+        });
+        assert_eq!(items.iter().map(|p| p.pos).collect::<Vec<_>>(), vec![101, 103, 105]);
     }
 }

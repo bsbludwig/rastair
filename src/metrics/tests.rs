@@ -2,7 +2,7 @@ use crate::{
     call::{ml::MachineLearningParams, process},
     metrics::PileupMetrics,
     sequence::{ReaderParams, Segment},
-    utils::{PileupMetricsIteratorExt, default},
+    utils::{default, map_surrounding},
 };
 use color_eyre::{
     Result,
@@ -55,10 +55,12 @@ fn test_cpg_detection() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let pileups = build_test_pileups(pileups, &segment, &threshold_filters)
-        .into_iter()
-        .map_surrounding(|b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold))
-        .collect::<Result<Vec<_>>>()?;
+    let mut pileups = build_test_pileups(pileups, &segment, &threshold_filters);
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold),
+        "failed to propagate CpG pass flags",
+    );
 
     // get pileups for a CpG site
     let ref_c = pileups.iter().find(|p| p.pos == 6105711).wrap_err("Could not find C pileup")?;
@@ -88,15 +90,18 @@ fn set_filters() -> Result<()> {
 
     let ml = MachineLearningParams::default().init()?;
 
-    let pileups = build_test_pileups(pileups, &segment, &threshold_filters)
-        .into_iter()
-        .map_surrounding(|b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold))
-        .collect::<Result<Vec<_>>>()?;
+    let mut pileups = build_test_pileups(pileups, &segment, &threshold_filters);
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold),
+        "failed to propagate CpG pass flags",
+    );
 
-    let pileups = pileups
-        .into_iter()
-        .map_surrounding(|b, c, a| process::add_ml_metrics(b, c, a, &ml, true))
-        .collect::<Result<Vec<_>>>()?;
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::add_ml_metrics(b, c, a, &ml, true),
+        "failed to add ML metrics",
+    );
 
     // get pileups for a CpG site
     let low_dp_on_a =
