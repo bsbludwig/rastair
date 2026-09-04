@@ -131,7 +131,7 @@ const M5MC_STRANDS_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::new(
     "M5mC_Strands",
     Number::Count(4),
     ValueType::Integer,
-    "Number of reads that are evidence for unmodified, modified, no SNP, snp",
+    "Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset.",
 );
 const CPG_DEF: InfoFieldDef<seqair::vcf::Flag> =
     InfoFieldDef::new("CPG", Number::Count(0), ValueType::Flag, "Is this a CpG site?");

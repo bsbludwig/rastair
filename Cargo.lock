@@ -1155,6 +1155,11 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "heck"
@@ -2665,11 +2670,12 @@ checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 [[package]]
 name = "seqair"
 version = "0.2.0"
-source = "git+https://github.com/Softleif/seqair.git?branch=main#7dcbeaba80c7dbeb3da0b6fb6bbf092f71506b10"
+source = "git+https://github.com/Softleif/seqair.git?branch=main#1c59f72ac53726dc00b118200488b3d7acee606d"
 dependencies = [
  "bytemuck",
  "bzip2",
  "flate2",
+ "hashbrown 0.17.1",
  "indexmap",
  "itoa",
  "libdeflater",
@@ -2685,7 +2691,7 @@ dependencies = [
 [[package]]
 name = "seqair-types"
 version = "0.1.0"
-source = "git+https://github.com/Softleif/seqair.git?branch=main#7dcbeaba80c7dbeb3da0b6fb6bbf092f71506b10"
+source = "git+https://github.com/Softleif/seqair.git?branch=main#1c59f72ac53726dc00b118200488b3d7acee606d"
 dependencies = [
  "bytemuck",
  "rust-htslib",

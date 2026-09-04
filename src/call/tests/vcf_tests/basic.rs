@@ -100,17 +100,17 @@ fn test_all_matching_ref() -> Result<()> {
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
-    // Now with all filter: prints all positions
-    // TODO: Should we print ALL the positions?
-    // let records = test_call(segment, pileups, RecordFilters::all())?;
-    // let expected_vcf = vcf_assert![
-    //     (A .) PASS M5mC=None,
-    //     (C .) PASS M5mC=0.0,
-    //     (G .) PASS M5mC=0.0,
-    //     (T .) PASS M5mC=None,
-    // ];
-    // let vcf_records = metrics_to_vcf(&records)?;
-    // expected_vcf.matches(vcf_records)?;
+    // Now with `--all`: only the CpG positions are emitted. The reference-only
+    // non-CpG positions (A and T) must stay suppressed even under `--all` —
+    // emitting them would surface a bare M5mC value without the CPG/CPGnovo
+    // tags set.
+    let records = test_call(segment, pileups, RecordFilters::all())?;
+    let expected_vcf = vcf_assert![
+        (C .) PASS M5mC=0.0,
+        (G .) PASS M5mC=0.0,
+    ];
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
 
     Ok(())
 }

@@ -20,7 +20,7 @@ use crate::{
     metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
     utils::IntoF64 as _,
     vcf::{
-        CpgBeta, CpgOrigin, InCpG, Methylated, MethylationAltDepth, MethylationDepth,
+        CpgBeta, InCpG, Methylated, MethylationAltDepth, MethylationDepth,
         RastairFilter,
         schema::{FieldConfig, Schema},
     },
@@ -67,14 +67,24 @@ pub fn emit_pileup<W: Write>(
     // Line selection, ported from `VcfRecordSet::to_vec`.
     let t = &pileup.tags;
     let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
-    let (emit_main, emit_rejected) = match (record_filter.vcf_all, record_filter.cpgs_only) {
-        (false, false) => (t.covered, false),
-        (false, true) => (t.covered && cpg, false),
-        (true, false) => (true, true),
-        (true, true) => (cpg, cpg),
+    // A reference-only record (no real variants) is only emitted when it is a
+    // CpG/de-novo-CpG; otherwise a covered non-CpG would carry M5mC values
+    // without the CPG/CPGnovo tags set.
+    let main_is_ref_only = real_variants.is_empty();
+    let want_main = (!main_is_ref_only || cpg)
+        && match (record_filter.vcf_all, record_filter.cpgs_only) {
+            (false, false) => t.covered,
+            (false, true) => t.covered && cpg,
+            (true, false) => true,
+            (true, true) => cpg,
+        };
+    let emit_rejected = match (record_filter.vcf_all, record_filter.cpgs_only) {
+        (false, _) => false,
+        (true, false) => true,
+        (true, true) => cpg,
     };
 
-    if emit_main {
+    if want_main {
         emit_main_record(
             pileup,
             schema,
@@ -655,33 +665,25 @@ fn counts(values: &SmallVec<Option<u32>, 2>) -> SmallVec<i32, 2> {
 /// present, or zero-filled entries when the position sits in a CpG context that
 /// produced no evidence. Empty means there is no CpG context at all, and the
 /// M5mC/DPM5mC/ADM5mC fields render as the missing value `.`.
+///
+/// `origins()` only reports a de-novo partner as a CpG once its partner's alt
+/// was actually called (`other_pos_in_denovo_passes`), so a rejected de-novo
+/// candidate no longer yields a zero `M5mC` without the `CPG`/`CPGnovo` tags set.
 fn effective_methylation(pileup: &PileupMetrics) -> Methylated {
     let observed = &pileup.pos_metrics.methylated;
     if !observed.is_empty() {
         return observed.clone();
     }
 
-    // Original CpG context: the position is a reference CpG, or it is the
-    // matching partner of a de-novo CpG.
-    let is_orig_cpg =
-        matches!(pileup.pos_metrics.cpg, InCpG::C | InCpG::G) || *pileup.pos_metrics.denovo_adj;
-    // `FormsDenovo` already encodes the adjacency check, so it is not repeated
-    // here. All call types count, so that rejected records written with
-    // `--vcf-all` also receive a beta value.
-    let is_denovo_cpg = pileup.alts.iter().any(|a| *a.metrics.denovo);
-
-    let zero = CpgBeta {
-        origin: CpgOrigin::Original,
-        beta: Probability::ZERO,
-        mod_count: 0,
-        total_count: 0,
-    };
-    let mut betas = SmallVec::new();
-    if is_orig_cpg {
-        betas.push(zero);
-    }
-    if is_denovo_cpg {
-        betas.push(CpgBeta { origin: CpgOrigin::DeNovo, ..zero });
-    }
-    Methylated(betas)
+    Methylated(
+        crate::metrics::methylation::origins(pileup)
+            .into_iter()
+            .map(|origin| CpgBeta {
+                origin,
+                beta: Probability::ZERO,
+                mod_count: 0,
+                total_count: 0,
+            })
+            .collect(),
+    )
 }

@@ -371,3 +371,42 @@ fn het_denovo_ref_not_confounding_g_side() -> Result<()> {
 
     Ok(())
 }
+
+/// A covered reference-only position with no CpG context must not emit a
+/// record, even under `--all`. A methylated `CpH` (reads showing `T` at a
+/// non-CpG `C`) that fails to be called a real variant carries no `CPG`/
+/// `CPGnovo` tag, so emitting a reference-only line would surface a bare
+/// `M5mC` value on a non-CpG position. This is the `main_is_ref_only` gating.
+#[test]
+fn methylated_cph_without_cpg_context_is_not_emitted_under_all() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C ] Ref,
+        [ T ] OT, // methylated C read at a non-CpG position
+        [ T ] OT,
+        [ C ] OB,
+    );
+
+    let mut records = test_call(segment.clone(), pileups.clone(), RecordFilters::all())?;
+    set_fail(&mut records[0], T); // the T is not a real variant
+    let records = reprocess(records)?;
+
+    // Under `--all`, the failing T variant is still reported, but the
+    // reference-only line for this non-CpG position must not be. Expecting
+    // exactly one record fails if a stray `(C .)` line is emitted too.
+    let expected_vcf = vcf_assert![
+        (C T) FAIL,
+    ];
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    // Under the default filter, the non-PASSing T and the reference-only
+    // position together produce nothing at all.
+    let records = test_call(segment, pileups, RecordFilters::variants())?;
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    assert!(
+        vcf_records.is_empty(),
+        "non-CpG reference-only position must not emit under the default filter, got: {vcf_records:?}"
+    );
+
+    Ok(())
+}
