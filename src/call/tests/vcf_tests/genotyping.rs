@@ -1,6 +1,7 @@
 //! Tests for genotyping with ML scores
-use crate::{call::tests::utils::*, pileups, vcf_assert};
+use crate::{call::tests::utils::*, call::variant_calling::GenotypeTag, pileups, vcf_assert};
 use seqair_types::{Base::*, Probability};
+use std::num::NonZeroU8;
 
 #[test]
 fn test_a_to_t_high_ml_score() -> Result<()> {
@@ -650,6 +651,38 @@ fn test_denovo_cpg_genotyping_ignores_converted_strand_ref_reads() -> Result<()>
         (A T) FAIL,
         (G .) PASS,  // partner position of de-novo CpG
         (G A) FAIL,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// The writer must report the genotype the pipeline stored, not one it derives
+/// again for itself. `--error-model` only reaches the stored estimate, so a
+/// writer that re-estimates with the default model contradicts the BED output
+/// and the methylation calls, which both read `pos_metrics.extended.genotype`.
+#[test]
+fn vcf_genotype_is_the_stored_estimate() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ A ] Ref,
+        [ T ] OT,
+        [ T ] OT,
+        [ T ] OB,
+        [ A ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], T);
+    let mut records = reprocess(records)?;
+
+    // Stand-in for what another error model concludes from the same counts.
+    let stored = records[0].pos_metrics.extended.genotype.as_mut().expect("genotype");
+    stored.genotype = GenotypeTag::hom_alt(NonZeroU8::new(1).expect("1 > 0"));
+
+    let expected_vcf = vcf_assert![
+        (A T) PASS GT="1/1",
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;

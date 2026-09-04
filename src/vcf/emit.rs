@@ -20,8 +20,7 @@ use crate::{
     metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
     utils::IntoF64 as _,
     vcf::{
-        CpgBeta, InCpG, Methylated, MethylationAltDepth, MethylationDepth,
-        RastairFilter,
+        CpgBeta, InCpG, Methylated, MethylationAltDepth, MethylationDepth, RastairFilter,
         schema::{FieldConfig, Schema},
     },
 };
@@ -85,17 +84,8 @@ pub fn emit_pileup<W: Write>(
     };
 
     if want_main {
-        emit_main_record(
-            pileup,
-            schema,
-            contig,
-            config,
-            &real_variants,
-            ml_threshold,
-            error_model,
-            writer,
-        )
-        .wrap_err("Failed to emit main VCF record")?;
+        emit_main_record(pileup, schema, contig, config, &real_variants, error_model, writer)
+            .wrap_err("Failed to emit main VCF record")?;
     }
 
     if emit_rejected {
@@ -264,14 +254,12 @@ fn to_seqair_gt(tag: GenotypeTag) -> SeqGenotype {
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "self-contained per-record encode")]
 fn emit_main_record<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
     contig: &ContigId,
     config: &FieldConfig,
     real_variants: &[&Alt],
-    ml_threshold: Option<Probability>,
     error_model: &ErrorModel,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
@@ -308,7 +296,7 @@ fn emit_main_record<W: Write>(
     let mut enc = enc.filter_pass();
     encode_info(&mut enc, schema, config, pileup, main_alts)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, main_alts, ml_threshold)?;
+    encode_format(&mut enc, schema, config, pileup, main_alts)?;
     enc.emit()?;
     Ok(())
 }
@@ -339,7 +327,7 @@ fn emit_rejected_record<W: Write>(
     let alts = [alt];
     encode_info(&mut enc, schema, config, pileup, &alts)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, &alts, ml_threshold)?;
+    encode_format(&mut enc, schema, config, pileup, &alts)?;
     enc.emit()?;
     Ok(())
 }
@@ -544,12 +532,11 @@ fn encode_format(
     config: &FieldConfig,
     pileup: &PileupMetrics,
     main_alts: &[&Alt],
-    ml_threshold: Option<Probability>,
 ) -> Result<()> {
     let f = &schema.format;
     let c = &config.format;
 
-    let (genotype, gl, gc) = compute_genotype(pileup, main_alts, ml_threshold);
+    let (genotype, gl, gc) = compute_genotype(pileup, main_alts);
 
     if c.gt {
         f.gt.encode(enc, &[genotype])?;
@@ -607,14 +594,15 @@ fn phred_value(p: Probability) -> f32 {
 }
 
 /// The genotype plus its GL/GC values, ported from the old `build_format`.
-fn compute_genotype(
-    pileup: &PileupMetrics,
-    main_alts: &[&Alt],
-    ml_threshold: Option<Probability>,
-) -> (SeqGenotype, f32, f32) {
+///
+/// The estimate is the one the calling pipeline stored, not a fresh one: an
+/// estimate re-derived here would silently ignore `--error-model` and so
+/// contradict the BED output and the methylation calls, which read the stored
+/// value.
+fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> (SeqGenotype, f32, f32) {
     use std::num::NonZeroU8;
 
-    let Some(estimated) = pileup.estimate_genotype(ml_threshold, ErrorModel::default()) else {
+    let Some(estimated) = pileup.pos_metrics.extended.genotype else {
         return (
             SeqGenotype::unphased(0, 0),
             phred_value(Probability::ZERO),
@@ -678,12 +666,7 @@ fn effective_methylation(pileup: &PileupMetrics) -> Methylated {
     Methylated(
         crate::metrics::methylation::origins(pileup)
             .into_iter()
-            .map(|origin| CpgBeta {
-                origin,
-                beta: Probability::ZERO,
-                mod_count: 0,
-                total_count: 0,
-            })
+            .map(|origin| CpgBeta { origin, beta: Probability::ZERO, mod_count: 0, total_count: 0 })
             .collect(),
     )
 }
