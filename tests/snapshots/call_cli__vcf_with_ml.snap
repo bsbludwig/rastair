@@ -61,9 +61,9 @@ exit_code: 0
 ##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods, Phred-scaled">
 ##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence, Phred-scaled">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
-##FORMAT=<ID=M5mC,Number=M,Type=Float,Description="Methylation level at CpG sites">
-##FORMAT=<ID=DPM5mC,Number=M,Type=Integer,Description="Total read depth for 5-methylcytosine detection">
-##FORMAT=<ID=ADM5mC,Number=M,Type=Integer,Description="Read depth supporting 5-methylcytosine modification">
+##FORMAT=<ID=M5mC,Number=.,Type=Float,Description="Methylation level at CpG sites, one value per CpG context">
+##FORMAT=<ID=DPM5mC,Number=.,Type=Integer,Description="Total read depth for 5-methylcytosine detection, one value per CpG context">
+##FORMAT=<ID=ADM5mC,Number=.,Type=Integer,Description="Read depth supporting 5-methylcytosine modification, one value per CpG context">
 ##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelihood by rastair's machine learning model">
 ##contig=<ID=chr19,length=61431566>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample

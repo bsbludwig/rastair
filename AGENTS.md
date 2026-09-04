@@ -207,6 +207,16 @@ Feature names flow to training output via `FeatureCalculator::feature_names() ->
 `train.rs` uses them for the `--feature-analytics` importance CSVs (`index\tfeature\timportance`)
 and the `--export-features` TSV headers, so both exports agree by construction.
 
+## VCF header cardinality
+
+**Keep the methylation FORMAT fields at `Number=.`.** They used to be `Number=M`,
+seqair's `Number::BaseModification` ("VCF 4.2+ extension"), which is not in the VCF
+grammar: htslib tolerates it, but noodles — and therefore every tool built on
+noodles, PacBio's `aardvark` included — rejects the *whole file* with
+`invalid FORMAT: ID=M5mC: invalid number`. Anything reintroducing a non-grammar
+cardinality makes rastair's output unreadable to that whole ecosystem, and the
+failure reads like a parser bug rather than our header.
+
 ## Release version bump checklist
 
 When bumping Rastair's release version, update all user-facing version strings together:

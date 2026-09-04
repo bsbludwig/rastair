@@ -160,23 +160,28 @@ const GC_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
 );
 const SAMPLE_DP_DEF: FormatFieldDef<Scalar<i32>> =
     FormatFieldDef::new("DP", Number::Count(1), ValueType::Integer, "Read depth");
+// `Number=M` — seqair's base-modification cardinality — is not in the VCF
+// grammar. htslib tolerates it, but a strict parser (noodles, and so every tool
+// built on it) rejects the whole file rather than the line. These fields carry
+// one value per CpG the position takes part in, one or two, which `.` states in
+// a way every reader understands.
 const M5MC_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(
     "M5mC",
-    Number::BaseModification,
+    Number::Unknown,
     ValueType::Float,
-    "Methylation level at CpG sites",
+    "Methylation level at CpG sites, one value per CpG context",
 );
 const DPM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
     "DPM5mC",
-    Number::BaseModification,
+    Number::Unknown,
     ValueType::Integer,
-    "Total read depth for 5-methylcytosine detection",
+    "Total read depth for 5-methylcytosine detection, one value per CpG context",
 );
 const ADM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
     "ADM5mC",
-    Number::BaseModification,
+    Number::Unknown,
     ValueType::Integer,
-    "Read depth supporting 5-methylcytosine modification",
+    "Read depth supporting 5-methylcytosine modification, one value per CpG context",
 );
 const ML_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(
     "ML",
