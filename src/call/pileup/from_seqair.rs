@@ -75,7 +75,7 @@ impl PileupMetrics {
             let Some(base) = view.base() else {
                 continue;
             };
-            let Some(pos) = view.qpos() else {
+            let Some(qpos) = view.qpos() else {
                 continue;
             };
             let strand = view.extra().strand;
@@ -109,7 +109,7 @@ impl PileupMetrics {
                 strand,
                 view.matching_bases,
                 view.indel_bases,
-                pos as u32,
+                qpos as u32,
                 view.seq_len,
             );
             pos_baseq.add_squared(qual_sq);
@@ -124,13 +124,13 @@ impl PileupMetrics {
 
             if strand != Strand::Unknown {
                 let seq = view.seq();
-                if let Some(&adj) = pos.checked_sub(1).and_then(|i| seq.get(i)) {
+                if let Some(&adj) = qpos.checked_sub(1).and_then(|i| seq.get(i)) {
                     before_counts.increment(ReadKey { strand, current: base, adj });
                 }
                 // An adjacent base is only adjacent in the alignment when nothing
                 // is inserted or deleted between them.
                 if matches!(view.alignment().indel_after(), Indel::None)
-                    && let Some(&adj) = seq.get(pos + 1)
+                    && let Some(&adj) = seq.get(qpos + 1)
                 {
                     after_counts.increment(ReadKey { strand, current: base, adj });
                 }
@@ -147,9 +147,7 @@ impl PileupMetrics {
                     depth_offset += 1;
                 }
 
-                if let Some(obs) =
-                    build_indel_observation(&view, pos as u64, segment.as_ref(), params)
-                {
+                if let Some(obs) = build_indel_observation(&view, pos, segment.as_ref(), params) {
                     indel_observations.push(obs);
                 }
             }
@@ -308,7 +306,7 @@ fn soft_clip_cpg_partner(
 
 fn build_indel_observation(
     view: &AlignmentView<'_, '_, RastairReadExtras>,
-    pos: u64,
+    genomic_pos: u64,
     segment: &Segment,
     params: &PileupMappingParams,
 ) -> Option<IndelObservation> {
@@ -349,7 +347,7 @@ fn build_indel_observation(
             (IndelAllele::Insertion(bases), quals, 0)
         }
         Indel::Deletion(del_len) => {
-            let ref_start = (pos as usize + 1).saturating_sub(segment_start);
+            let ref_start = (genomic_pos as usize + 1).saturating_sub(segment_start);
             let ref_end = ref_start + del_len as usize;
             let bases: SmallVec<Base, 4> = segment
                 .sequence
@@ -635,11 +633,19 @@ mod tests {
     }
 
     fn segment(seq: &[u8]) -> Rc<Segment> {
-        let end = seq.len().saturating_sub(1) as u64;
+        segment_at(0, seq)
+    }
+
+    /// A segment placed at `start` on the contig. Everything a segment resolves
+    /// against the reference goes through `pos - start`, so a fixture at 0
+    /// cannot tell a genomic position from a read offset — see
+    /// [`deletion_allele_reads_the_reference_at_the_deletion_site`].
+    fn segment_at(start: u64, seq: &[u8]) -> Rc<Segment> {
+        let end = start + seq.len().saturating_sub(1) as u64;
         Rc::new(Segment {
             range: ChunkRegion {
-                region: Region { contig: "chr1".into(), start: 0, end },
-                last_position: seq.len() as u64,
+                region: Region { contig: "chr1".into(), start, end },
+                last_position: start + seq.len() as u64,
                 overlap_start: 0,
                 overlap_end: 0,
             },
@@ -647,6 +653,80 @@ mod tests {
             overlap_start: 0,
             overlap_end: 0,
         })
+    }
+
+    /// A deletion's REF bases must come from the reference *at the deletion*,
+    /// which is `genomic_pos + 1 - segment.start` into the segment's sequence.
+    ///
+    /// The regression this guards: the loop's genomic `pos` was shadowed by
+    /// `view.qpos()`, a read-local offset, so the subtraction saturated to 0 and
+    /// the allele became the segment's opening bases — real-looking sequence
+    /// from the wrong locus. A segment starting at 0 cannot see this, because
+    /// there the clamp and the correct answer coincide for a read at offset 0.
+    #[test]
+    fn deletion_allele_reads_the_reference_at_the_deletion_site() {
+        const START: u64 = 1000;
+        // Segment sequence, offset:  0123456789
+        //                            AAAACGTTGG
+        // A read matches 4 bases from 1000, deletes CG at 1004-1005, matches on.
+        // The anchor column is 1003 (the base before the deletion), so the
+        // deleted bases are the segment's offsets 4..6 = C,G — and *not* its
+        // opening A,A, which is what the read-offset bug produced.
+        let seq = b"AAAACGTTGG";
+        let seg = segment_at(START, seq);
+        let mut params = PileupMappingParams::default();
+        params.call_indels = true;
+        params.indel_end_of_read_cutoff = 0;
+
+        let mut extras = TestExtras(params.read_masking.clone());
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        store
+            .push_fields(
+                Pos0::new(START as u32).unwrap(),
+                Pos0::new(START as u32 + 9).unwrap(),
+                BamFlags::from(99u16),
+                60,
+                8,
+                0,
+                b"deleter",
+                &[
+                    CigarOp::new(CigarOpType::Match, 4),
+                    CigarOp::new(CigarOpType::Deletion, 2),
+                    CigarOp::new(CigarOpType::Match, 4),
+                ],
+                &[Base::A, Base::A, Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
+                &[40u8; 8],
+                &[],
+                0,
+                -1,
+                0,
+                0,
+                &mut extras,
+            )
+            .unwrap();
+
+        let mut engine = PileupEngine::new(
+            store,
+            Pos0::new(START as u32).unwrap(),
+            Pos0::new(START as u32 + 9).unwrap(),
+        );
+        let mut allele = None;
+        while let Some(col) = engine.pileups() {
+            if col.pos().as_u64() != START + 3 {
+                continue;
+            }
+            let metrics =
+                PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new()).unwrap();
+            let data = metrics.indel_data.expect("the anchor column carries the deletion");
+            let obs = data.observations.first().expect("one deletion observation").clone();
+            allele = Some(obs.allele);
+        }
+
+        assert_eq!(
+            allele,
+            Some(IndelAllele::Deletion([Base::C, Base::G].into_iter().collect())),
+            "deleted bases must be read at the deletion site, not at the segment start"
+        );
     }
 
     /// A read aligned to the G of a CpG with its leading base (a methylated T
