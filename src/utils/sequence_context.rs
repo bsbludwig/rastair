@@ -70,12 +70,12 @@ mod tests {
     #[test]
     fn test_new_sequence_context() -> Result<()> {
         let segment = Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: b"ACGTA".to_vec(),
             overlap_start: 0,
             overlap_end: 0,
@@ -98,12 +98,12 @@ mod tests {
     #[test]
     fn test_new_sequence_context_at_start() -> Result<()> {
         let segment = Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: b"ACGTA".to_vec(),
             overlap_start: 0,
             overlap_end: 0,
@@ -126,12 +126,12 @@ mod tests {
     #[test]
     fn test_new_sequence_context_before_end() -> Result<()> {
         let segment = Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: b"ACGTA".to_vec(),
             overlap_start: 0,
             overlap_end: 0,
@@ -154,12 +154,12 @@ mod tests {
     #[test]
     fn test_new_sequence_context_at_end() -> Result<()> {
         let segment = Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: b"ACGTA".to_vec(),
             overlap_start: 0,
             overlap_end: 0,
@@ -182,12 +182,12 @@ mod tests {
     #[test]
     fn test_new_sequence_context_oor() -> Result<()> {
         let segment = Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr_test".into(), start: 100, end: 105 },
                 last_position: 105,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: b"ACGTA".to_vec(),
             overlap_start: 0,
             overlap_end: 0,

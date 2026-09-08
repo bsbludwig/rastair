@@ -742,12 +742,12 @@ mod tests {
     fn segment_at(start: u64, seq: &[u8]) -> Rc<Segment> {
         let end = start + seq.len().saturating_sub(1) as u64;
         Rc::new(Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr1".into(), start, end },
                 last_position: start + seq.len() as u64,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: seq.to_vec(),
             overlap_start: 0,
             overlap_end: 0,

@@ -17,21 +17,57 @@ use seqair_types::SmallVec;
 use seqair_types::SmolStr;
 use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
 use std::ops::Deref;
+use std::sync::Arc;
 use tracing::{trace, warn};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PileupMetrics {
-    pub region: ChunkRegion,
+    /// The region this position came from, shared by every `PileupMetrics` in
+    /// it. Inline it is 64 bytes — a `SmolStr` contig plus five `u64` — copied
+    /// once per covered base and identical every time; behind an `Arc` it is 8.
+    pub region: Arc<ChunkRegion>,
     pub pos: u32,
     pub reference_base: Base,
     pub context: SequenceContext,
     pub pos_metrics: PositionMetrics,
     pub pos_filters: Filters,
     pub ref_metrics: AlleleMetrics,
-    /// Inline capacity one, not two: an `Alt` is 152 bytes, and measured over
-    /// 10 M positions of chr12, 95.4 % of positions have no alt at all, 4.5 %
-    /// have one, and 0.08 % have two. The second inline slot cost every
-    /// position 152 bytes to save 7 760 heap allocations in 10 Mb.
+    /// Alternate alleles at this position.
+    ///
+    /// Inline capacity **one**, not two. An `Alt` is 152 bytes, so each inline
+    /// slot is charged to every position in the genome, and almost no position
+    /// uses the second one. Measured over 10,035,867 positions of chr12
+    /// (NA12878, ~26x):
+    ///
+    /// | alts | positions | share |
+    /// | ---: | ---: | ---: |
+    /// | 0 | 9,573,352 | 95.39 % |
+    /// | 1 | 454,755 | 4.53 % |
+    /// | 2 | 7,564 | 0.08 % |
+    /// | 3+ | 196 | 0.002 % |
+    ///
+    /// So the second inline slot cost 152 bytes at every position to save
+    /// 7,760 heap allocations per 10 Mb — about one allocation per 1,300
+    /// positions, against 1.5 GB of extra memory traffic over the same span.
+    ///
+    /// To re-measure after any change to alt calling, drop this into
+    /// `get_pileups` in `src/call/process/pileups.rs`, just before
+    /// `SlidingEntropy::new`:
+    ///
+    /// ```ignore
+    /// let mut hist = [0u64; 8];
+    /// for pm in &pileup_metrics {
+    ///     hist[pm.alts.len().min(7)] += 1;
+    /// }
+    /// eprintln!("ALTSTAT {hist:?}");
+    /// ```
+    ///
+    /// then sum the arrays over a run:
+    ///
+    /// ```text
+    /// rastair call --gpu -f hg38.fa.gz in.bam -@ 8 -l chr12:20000000-30000000 --vcf /dev/null \
+    ///   2>&1 | grep ALTSTAT | ...
+    /// ```
     pub alts: SmallVec<Alt, 1>,
     /// Counts of (`my_base`, `before_base`) pairs by strand
     pub before_counts: PairedCounts,
@@ -716,3 +752,4 @@ mod size_tests {
         assert!(size < 1024, "PileupMetrics grew to {size} bytes");
     }
 }
+

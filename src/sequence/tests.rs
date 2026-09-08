@@ -40,7 +40,7 @@ fn test_segment_reading() -> Result<()> {
     let segment = readers.segment(&region, 2)?;
 
     // Verify segment properties
-    assert_eq!(segment.range, region);
+    assert_eq!(*segment.range, region);
 
     Ok(())
 }
@@ -125,7 +125,7 @@ fn test_segment_to_fetch_definition() -> Result<()> {
         overlap_end: 0,
     };
     let segment = Segment {
-        range: region.clone(),
+        range: std::sync::Arc::new(region.clone()),
         sequence: vec![65, 66, 67],
         overlap_start: 0,
         overlap_end: 0,
@@ -195,12 +195,12 @@ fn test_non_overlapping_segments() -> Result<()> {
 #[test]
 fn test_sequence_slice() -> Result<()> {
     let segment = Segment {
-        range: ChunkRegion {
+        range: std::sync::Arc::new(ChunkRegion {
             region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
             last_position: 6105900,
             overlap_start: 0,
             overlap_end: 0,
-        },
+        }),
         sequence: b"ATCGG".into(),
         overlap_start: 0,
         overlap_end: 0,
@@ -222,12 +222,12 @@ proptest!(
     fn proptest_sequence_slice(start in 0usize..100, extra in 0usize..100, seq in "[ATCG]{0,10}") {
         let end = start + extra;
         let segment = Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
                 last_position: 6105900,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: seq.into_bytes(),
             overlap_start: 0,
             overlap_end: 0,

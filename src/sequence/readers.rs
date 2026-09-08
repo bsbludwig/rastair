@@ -365,7 +365,7 @@ mod seqair_readers {
             let sequence: Vec<u8> = bases.iter().map(|b| *b as u8).collect();
 
             Ok(Segment {
-                range: region.clone(),
+                range: std::sync::Arc::new(region.clone()),
                 sequence,
                 overlap_start: region.overlap_start,
                 overlap_end: region.overlap_end,
@@ -563,7 +563,7 @@ impl Readers {
             .wrap_err_with(|| format!("Failed to get region {} from FASTA file", region.region))?;
 
         Ok(Segment {
-            range: region.clone(),
+            range: std::sync::Arc::new(region.clone()),
             sequence: seq,
             overlap_start: region.overlap_start,
             overlap_end: region.overlap_end,

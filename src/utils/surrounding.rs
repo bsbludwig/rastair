@@ -1,5 +1,6 @@
 use crate::metrics::PileupMetrics;
 use color_eyre::Result;
+use std::sync::Arc;
 use tracing::warn;
 
 /// Are these two pileups genuine neighbours in the genome?
@@ -7,8 +8,16 @@ use tracing::warn;
 /// By the time this runs the sequence has usually been filtered, so two entries
 /// sitting next to each other in memory are often nowhere near each other on
 /// the chromosome.
+///
+/// The contig check is `Arc::ptr_eq`, not a name comparison. Every pileup of a
+/// region shares one region, so pointer identity settles it — and comparing
+/// the `SmolStr` instead was 2.2 % of worker CPU in a `--gpu` chr12 profile,
+/// spent establishing at every position that chr12 is chr12. Two pileups from
+/// *different* `Arc`s are correctly not adjacent even if the contigs match by
+/// name, which is the conservative direction: they cannot be neighbours in one
+/// region's output anyway.
 fn adjacent(left: &PileupMetrics, right: &PileupMetrics) -> bool {
-    left.contig_name() == right.contig_name() && left.pos.checked_add(1) == Some(right.pos)
+    Arc::ptr_eq(&left.region, &right.region) && left.pos.checked_add(1) == Some(right.pos)
 }
 
 /// Apply `f` to every pileup together with its immediate neighbours, in place.
@@ -73,7 +82,31 @@ mod tests {
         vcf::SequenceContext,
     };
     use seqair_types::Base;
+    use seqair_types::SmolStr;
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
+
+    /// One shared region per contig, as production has it: every pileup of a
+    /// region is built from the same `Arc`, which is what `adjacent` asks
+    /// about. Building a fresh one per pileup would make every pair
+    /// non-adjacent and the tests below vacuous.
+    fn region_for(contig: &str, start: u64, end: u64) -> Arc<ChunkRegion> {
+        thread_local! {
+            static REGIONS: RefCell<HashMap<SmolStr, Arc<ChunkRegion>>> =
+                RefCell::new(HashMap::new());
+        }
+        REGIONS.with(|regions| {
+            Arc::clone(regions.borrow_mut().entry(contig.into()).or_insert_with(|| {
+                Arc::new(ChunkRegion {
+                    region: Region { contig: contig.into(), start, end },
+                    last_position: end,
+                    overlap_start: 0,
+                    overlap_end: 0,
+                })
+            }))
+        })
+    }
 
     /// Helper to create a minimal `PileupMetrics` for testing
     fn make_pileup(contig: &str, pos: u64) -> PileupMetrics {
@@ -81,12 +114,7 @@ mod tests {
         let start = pos.saturating_sub(10);
         let end = pos + 20;
         let segment = Rc::new(Segment {
-            range: ChunkRegion {
-                region: Region { contig: contig.into(), start, end },
-                last_position: end,
-                overlap_start: 0,
-                overlap_end: 0,
-            },
+            range: region_for(contig, start, end),
             sequence: vec![b'C'; (end - start) as usize],
             overlap_start: 0,
             overlap_end: 0,

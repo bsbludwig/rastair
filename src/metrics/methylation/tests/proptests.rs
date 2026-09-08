@@ -267,13 +267,13 @@ impl MethylationScenario {
 // Helpers for building minimal Pileup / PileupMetrics by hand
 // ---------------------------------------------------------------------------
 
-fn dummy_region() -> ChunkRegion {
-    ChunkRegion {
+fn dummy_region() -> std::sync::Arc<ChunkRegion> {
+    std::sync::Arc::new(ChunkRegion {
         region: Region { contig: "chr_test".into(), start: 1000, end: 1002 },
         last_position: 1002,
         overlap_start: 0,
         overlap_end: 0,
-    }
+    })
 }
 
 fn ctx_after_g(me: Base) -> SequenceContext {

@@ -79,7 +79,7 @@ fn periodic_terminus<T: PartialEq>(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
-    pub region: ChunkRegion,
+    pub region: std::sync::Arc<ChunkRegion>,
     /// Sequence context around the position in the reference
     pub context: SequenceContext,
     /// Position in the sequence, 0-based
@@ -194,12 +194,12 @@ mod tests {
         );
 
         let segment = Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chr19".into(), start: 1000, end: 1100 },
                 last_position: 2000,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: vec![],
             overlap_start: 0,
             overlap_end: 0,

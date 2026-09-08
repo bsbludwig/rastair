@@ -107,7 +107,7 @@ impl SegmentationParams {
 
 #[derive(Debug, Clone)]
 pub struct Segment {
-    pub range: ChunkRegion,
+    pub range: std::sync::Arc<ChunkRegion>,
     pub sequence: Vec<u8>,
     /// Number of bases of overlap at the start of this segment
     pub overlap_start: u64,

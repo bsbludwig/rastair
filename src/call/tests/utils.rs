@@ -66,12 +66,12 @@ pub(crate) fn create_pileups(
     let end = start + num_positions as u64;
 
     let segment = Segment {
-        range: ChunkRegion {
+        range: std::sync::Arc::new(ChunkRegion {
             region: Region { contig: "chr_test".into(), start, end },
             last_position: end,
             overlap_start: 0,
             overlap_end: 0,
-        },
+        }),
         sequence: ref_bases.iter().map(|b| *b as u8).collect(),
         overlap_start: 0,
         overlap_end: 0,

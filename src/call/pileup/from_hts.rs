@@ -438,12 +438,12 @@ mod tests {
         let start = 100u64;
         let end = start + u64::try_from(sequence.len()).expect("sequence length fits") - 1;
         Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chrTest".into(), start, end },
                 last_position: end,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: sequence.to_vec(),
             overlap_start: 0,
             overlap_end: 0,
