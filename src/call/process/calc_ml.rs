@@ -2,13 +2,15 @@ use crate::{
     call::pileup::indels::IndelAllele,
     metrics::{
         MetricsForAlt, MetricsForIndel, PileupMetrics,
-        ml::types::{GpuRastairModel, MachineLearning, MlModel, PlattScaling},
+        ml::types::{
+            ByModel, GpuRastairModel, MachineLearning, MlModel, PlattScaling, RastairFlatModel,
+        },
     },
     utils::logging::ThisIsABug,
     vcf::RastairFilter,
 };
 use color_eyre::eyre::{ContextCompat as _, Result};
-use ndarray::{Array2, s};
+use ndarray::{Array2, ArrayView2, s};
 use seqair_types::{Base, Probability};
 use tracing::{debug, instrument};
 
@@ -108,305 +110,212 @@ pub fn add_ml_metrics_vec(
 
     Ok(())
 }
+
 /// Batch GPU ML prediction over a full chunk of pileups.
 ///
-/// Groups all passing alts by model type (CpG / de-novo CpG / others), runs
-/// a single `GpuForest::predict` call per model, and writes the Platt-calibrated
-/// predictions back into the pileup filter state. This is 10k-30× fewer GPU
-/// dispatches than the per-alt streaming approach.
+/// Three stages, deliberately separate: [`extract_ml_rows`] needs the region's
+/// pileups and their neighbours, [`submit_and_collect`] needs nothing but `f32`
+/// rows, and [`apply_ml_scores`] needs the region again. Only the middle one
+/// touches the GPU.
 pub fn batch_add_ml_metrics(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     gpu: &GpuRastairModel,
     score_indels: bool,
 ) -> Result<()> {
-    let Some(rastair_model) = ml.model.as_ref() else {
+    let Some(model) = ml.model.as_ref() else {
         return Ok(());
     };
     if pileups.is_empty() {
         return Ok(());
     }
-    let positions = pileups.len();
 
+    let batch = extract_ml_rows(pileups, ml, model, score_indels);
+    let scores = submit_and_collect(&batch, gpu)?;
+    apply_ml_scores(pileups, &batch, &scores, ml.threshold);
+    Ok(())
+}
+
+/// Build one feature row per ML candidate, and tag the alts not worth scoring.
+///
+/// Reads `pileups[i - 1]` and `pileups[i + 1]`, so this has to run where the
+/// region's `Vec` lives. Candidates whose features fail to compute or come out
+/// `NaN` are dropped here and simply never receive a score.
+pub fn extract_ml_rows(
+    pileups: &mut [PileupMetrics],
+    ml: &MachineLearning,
+    model: &RastairFlatModel,
+    score_indels: bool,
+) -> MlBatch {
     let calc = &ml.feature_calculator;
-    let feature_num = ml.feature_calculator.feature_num();
+    let feature_num = calc.feature_num();
 
-    // Each alt belongs to exactly one model; positions * 4 is the per-model upper bound.
-    let max_alts = positions * 4;
-    let mut pending = PendingGroups {
-        cpg: Vec::with_capacity(positions),
-        cpg_features: Array2::zeros((max_alts, feature_num.cpg)),
-        cpg_count: 0,
-        denovo: Vec::with_capacity(positions),
-        denovo_features: Array2::zeros((max_alts, feature_num.denovo_cpg)),
-        denovo_count: 0,
-        others: Vec::with_capacity(positions),
-        others_features: Array2::zeros((max_alts, feature_num.others)),
-        others_count: 0,
-        insertion: Vec::with_capacity(positions),
-        insertion_features: Array2::zeros((max_alts, feature_num.insertion)),
-        insertion_count: 0,
-        deletion: Vec::with_capacity(positions),
-        deletion_features: Array2::zeros((max_alts, feature_num.deletion)),
-        deletion_count: 0,
-    };
-    // (pileup_idx, alt_base) pairs that failed pre_ml_filter
+    // Each candidate belongs to exactly one model, so `positions * 4` bounds
+    // every per-model row count at once.
+    let max_rows = pileups.len() * 4;
+    let mut batch = MlBatch::from_fn(|m| ModelBatch::new(max_rows, feature_num.get(m)));
     let mut pre_ml_rejected: Vec<(usize, Base)> = Vec::new();
 
-    // Phase 1: read-only pass — compute features for all alts
-    {
-        let pileups_ref: &[PileupMetrics] = pileups;
-        for i in 0..pileups_ref.len() {
-            let before = if i > 0 { Some(&pileups_ref[i - 1]) } else { None };
-            let after = pileups_ref.get(i + 1);
+    for i in 0..pileups.len() {
+        let before = if i > 0 { pileups.get(i - 1) } else { None };
+        let after = pileups.get(i + 1);
+        let Some(current) = pileups.get(i) else { continue };
 
-            // alts() returns a Vec<Base>; collect into local so we can reborrow
-            // pileups_ref[i] for alt_metrics inside the loop.
-            let alt_bases = pileups_ref[i].alts();
+        for alt_base in current.alts() {
+            let Some(alt) = current.alt_metrics(alt_base) else { continue };
 
-            for alt_base in alt_bases {
-                let Some(alt) = pileups_ref[i].alt_metrics(alt_base) else { continue };
-
-                if !pre_ml_filter(&alt) {
-                    pre_ml_rejected.push((i, alt_base));
-                    continue;
-                }
-
-                let (model_type, platt, features_result) = if alt.is_evidence_for_methylation() {
-                    (MlModel::Cpg, rastair_model.cpg_platt, calc.calculate_cpg(&alt, before, after))
-                } else if *alt.alt.denovo {
-                    (
-                        MlModel::DenovoCpg,
-                        rastair_model.denovo_platt,
-                        calc.calculate_denovo_cpg(&alt, before, after),
-                    )
-                } else {
-                    (
-                        MlModel::Others,
-                        rastair_model.others_platt,
-                        calc.calculate_others(&alt, before, after),
-                    )
-                };
-
-                let f = match features_result {
-                    Err(error) => {
-                        debug!(%error, "Failed to calculate features for ML prediction");
-                        continue;
-                    }
-                    Ok(f) if f.is_any_nan() => continue,
-                    Ok(f) => f,
-                };
-
-                let pending_item = Pending::snp(i, alt_base, platt);
-
-                match model_type {
-                    MlModel::Cpg => {
-                        pending.cpg_features.row_mut(pending.cpg_count).assign(&f.row(0));
-                        pending.cpg.push(pending_item);
-                        pending.cpg_count += 1;
-                    }
-                    MlModel::DenovoCpg => {
-                        pending.denovo_features.row_mut(pending.denovo_count).assign(&f.row(0));
-                        pending.denovo.push(pending_item);
-                        pending.denovo_count += 1;
-                    }
-                    MlModel::Others => {
-                        pending.others_features.row_mut(pending.others_count).assign(&f.row(0));
-                        pending.others.push(pending_item);
-                        pending.others_count += 1;
-                    }
-                    MlModel::Insertion | MlModel::Deletion => {
-                        unreachable!("indels are handled in a separate loop below")
-                    }
-                }
+            if !pre_ml_filter(&alt) {
+                pre_ml_rejected.push((i, alt_base));
+                continue;
             }
 
-            if let Some(ref d) = pileups_ref[i].indel_data {
-                for (indel_idx, call) in d.calls.iter().enumerate().filter(|_| score_indels) {
-                    let indel_m = MetricsForIndel { metrics: &pileups_ref[i], indel: call };
+            let (which, features) = if alt.is_evidence_for_methylation() {
+                (MlModel::Cpg, calc.calculate_cpg(&alt, before, after))
+            } else if *alt.alt.denovo {
+                (MlModel::DenovoCpg, calc.calculate_denovo_cpg(&alt, before, after))
+            } else {
+                (MlModel::Others, calc.calculate_others(&alt, before, after))
+            };
 
-                    let (model_type, platt, features_result) = match &call.allele {
-                        IndelAllele::Insertion(_) => (
-                            MlModel::Insertion,
-                            rastair_model.insertion_platt,
-                            calc.calculate_insertion(&indel_m),
-                        ),
-                        IndelAllele::Deletion(_) => (
-                            MlModel::Deletion,
-                            rastair_model.deletion_platt,
-                            calc.calculate_deletion(&indel_m),
-                        ),
-                    };
-
-                    let f = match features_result {
-                        Err(error) => {
-                            debug!(%error, "Failed to calculate indel features for ML prediction");
-                            continue;
-                        }
-                        Ok(f) if f.is_any_nan() => continue,
-                        Ok(f) => f,
-                    };
-
-                    let pending_item = Pending::indel(i, indel_idx, platt);
-
-                    match model_type {
-                        MlModel::Insertion => {
-                            pending
-                                .insertion_features
-                                .row_mut(pending.insertion_count)
-                                .zip_mut_with(&f.row(0), |d, &s| *d = s);
-                            pending.insertion.push(pending_item);
-                            pending.insertion_count += 1;
-                        }
-                        MlModel::Deletion => {
-                            pending
-                                .deletion_features
-                                .row_mut(pending.deletion_count)
-                                .zip_mut_with(&f.row(0), |d, &s| *d = s);
-                            pending.deletion.push(pending_item);
-                            pending.deletion_count += 1;
-                        }
-                        _ => unreachable!("indel alleles always map to Insertion or Deletion"),
-                    }
-                }
-            }
+            let Some(f) = usable_features(features, "alt") else { continue };
+            batch[which].push(Pending::snp(i, alt_base, model.platt(which)), &f);
         }
-    } // end read-only borrow of pileups
 
-    // Phase 2a: apply pre_ml filter tags
+        let indel_calls = current.indel_data.as_deref().map_or(&[][..], |d| &d.calls);
+        for (indel_idx, call) in indel_calls.iter().enumerate().filter(|_| score_indels) {
+            let indel = MetricsForIndel { metrics: current, indel: call };
+
+            let (which, features) = match &call.allele {
+                IndelAllele::Insertion(_) => (MlModel::Insertion, calc.calculate_insertion(&indel)),
+                IndelAllele::Deletion(_) => (MlModel::Deletion, calc.calculate_deletion(&indel)),
+            };
+
+            let Some(f) = usable_features(features, "indel") else { continue };
+            batch[which].push(Pending::indel(i, indel_idx, model.platt(which)), &f);
+        }
+    }
+
     for (i, alt_base) in pre_ml_rejected {
-        if let Some(filters) = pileups[i].alt_filters_mut(alt_base) {
+        if let Some(filters) = pileups.get_mut(i).and_then(|p| p.alt_filters_mut(alt_base)) {
             filters.filters.add(RastairFilter::PreMl, || true);
         }
     }
 
-    // Phase 2b: predict in sub-batches that fit the GPU buffer.
-    // Within each round, submit all models before collecting so GPU work overlaps.
-    let cpg_features = pending.cpg_features.slice(s![..pending.cpg_count, ..]);
-    let denovo_features = pending.denovo_features.slice(s![..pending.denovo_count, ..]);
-    let others_features = pending.others_features.slice(s![..pending.others_count, ..]);
-    let insertion_features = pending.insertion_features.slice(s![..pending.insertion_count, ..]);
-    let deletion_features = pending.deletion_features.slice(s![..pending.deletion_count, ..]);
+    batch
+}
 
-    let max_count = pending
-        .cpg_count
-        .max(pending.denovo_count)
-        .max(pending.others_count)
-        .max(pending.insertion_count)
-        .max(pending.deletion_count);
-    let mut cpg_preds = Vec::with_capacity(pending.cpg_count);
-    let mut denovo_preds = Vec::with_capacity(pending.denovo_count);
-    let mut others_preds = Vec::with_capacity(pending.others_count);
-    let mut insertion_preds = Vec::with_capacity(pending.insertion_count);
-    let mut deletion_preds = Vec::with_capacity(pending.deletion_count);
+/// The one feature row a calculator produced, unless it failed or is `NaN`.
+///
+/// A `NaN` anywhere in the row would propagate through the forest into the
+/// score, so such a candidate is left unscored rather than scored wrongly.
+fn usable_features(features: Result<Array2<f32>>, kind: &'static str) -> Option<Array2<f32>> {
+    match features {
+        Err(error) => {
+            debug!(%error, kind, "Failed to calculate features for ML prediction");
+            None
+        }
+        Ok(f) if f.is_any_nan() => None,
+        Ok(f) => Some(f),
+    }
+}
 
-    for start in (0..max_count).step_by(GPU_BATCH_BUFFER_SIZE) {
-        // Submit all models for this sub-batch round concurrently.
-        let h_cpg = {
-            if start < pending.cpg_count {
-                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.cpg_count);
-                gpu.cpg.predict_submit(&cpg_features.slice(s![start..end, ..]))?
-            } else {
-                None
-            }
-        };
-        let h_denovo = {
-            if start < pending.denovo_count {
-                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.denovo_count);
-                gpu.denovo.predict_submit(&denovo_features.slice(s![start..end, ..]))?
-            } else {
-                None
-            }
-        };
-        let h_others = {
-            if start < pending.others_count {
-                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.others_count);
-                gpu.others.predict_submit(&others_features.slice(s![start..end, ..]))?
-            } else {
-                None
-            }
-        };
-        let h_insertion = {
-            if start < pending.insertion_count {
-                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.insertion_count);
-                gpu.insertion.predict_submit(&insertion_features.slice(s![start..end, ..]))?
-            } else {
-                None
-            }
-        };
-        let h_deletion = {
-            if start < pending.deletion_count {
-                let end = (start + GPU_BATCH_BUFFER_SIZE).min(pending.deletion_count);
-                gpu.deletion.predict_submit(&deletion_features.slice(s![start..end, ..]))?
-            } else {
-                None
-            }
-        };
+/// Score a batch on the GPU: one dispatch per model per [`GPU_BATCH_BUFFER_SIZE`] rows.
+///
+/// Every model is submitted before any is collected. The five forests sit on
+/// five separate devices, so this is what lets their GPU work overlap.
+pub fn submit_and_collect(batch: &MlBatch, gpu: &GpuRastairModel) -> Result<MlScores> {
+    let mut scores = MlScores::from_fn(|m| Vec::with_capacity(batch[m].len()));
+    let longest = MlModel::ALL.into_iter().map(|m| batch[m].len()).max().unwrap_or(0);
 
-        // Collect all before next round.
-        if let Some(h) = h_cpg {
-            cpg_preds.extend(h.collect()?.iter().copied());
+    for start in (0..longest).step_by(GPU_BATCH_BUFFER_SIZE) {
+        let mut handles = ByModel::from_fn(|_| None);
+
+        for model in MlModel::ALL {
+            let rows = batch[model].rows();
+            if start >= rows.nrows() {
+                continue;
+            }
+            let end = (start + GPU_BATCH_BUFFER_SIZE).min(rows.nrows());
+            handles[model] = gpu.forest(model).predict_submit(&rows.slice(s![start..end, ..]))?;
         }
-        if let Some(h) = h_denovo {
-            denovo_preds.extend(h.collect()?.iter().copied());
-        }
-        if let Some(h) = h_others {
-            others_preds.extend(h.collect()?.iter().copied());
-        }
-        if let Some(h) = h_insertion {
-            insertion_preds.extend(h.collect()?.iter().copied());
-        }
-        if let Some(h) = h_deletion {
-            deletion_preds.extend(h.collect()?.iter().copied());
+
+        for model in MlModel::ALL {
+            if let Some(handle) = handles[model].take() {
+                scores[model].extend(handle.collect()?.iter().copied());
+            }
         }
     }
 
-    // Phase 2c: write calibrated predictions back.
-    for (items, preds) in [
-        (&pending.cpg, &cpg_preds),
-        (&pending.denovo, &denovo_preds),
-        (&pending.others, &others_preds),
-        (&pending.insertion, &insertion_preds),
-        (&pending.deletion, &deletion_preds),
-    ] {
-        for (p, &raw_pred) in items.iter().zip(preds.iter()) {
-            let calibrated: Probability = p.platt.calibrate_score(f64::from(raw_pred));
-            let threshold = ml.threshold;
+    Ok(scores)
+}
+
+/// Platt-calibrate the raw scores and write them back into the region.
+///
+/// A candidate whose score is missing — the batch was truncated, or the model
+/// returned fewer rows than were submitted — is skipped, not defaulted: `zip`
+/// stops at the shorter side.
+pub fn apply_ml_scores(
+    pileups: &mut [PileupMetrics],
+    batch: &MlBatch,
+    scores: &MlScores,
+    threshold: Probability,
+) {
+    for model in MlModel::ALL {
+        for (p, &raw) in batch[model].pending.iter().zip(scores[model].iter()) {
+            let Some(pileup) = pileups.get_mut(p.pileup_idx) else { continue };
+            let calibrated: Probability = p.platt.calibrate_score(f64::from(raw));
+
             if let Some(indel_idx) = p.indel_idx {
-                if let Some(ref mut d) = pileups[p.pileup_idx].indel_data {
-                    if let Some(call) = d.calls.get_mut(indel_idx) {
-                        call.ml = Some(calibrated);
-                    }
+                if let Some(d) = pileup.indel_data.as_mut()
+                    && let Some(call) = d.calls.get_mut(indel_idx)
+                {
+                    call.ml = Some(calibrated);
                 }
-            } else if let Some(filters) = pileups[p.pileup_idx].alt_filters_mut(p.alt_base) {
+            } else if let Some(filters) = pileup.alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);
                 filters.filters.add(RastairFilter::LowMlScore, move || calibrated < threshold);
             }
         }
     }
-
-    Ok(())
 }
 
-struct PendingGroups {
-    cpg: Vec<Pending>,
-    cpg_features: Array2<f32>,
-    cpg_count: usize,
-    denovo: Vec<Pending>,
-    denovo_features: Array2<f32>,
-    denovo_count: usize,
-    others: Vec<Pending>,
-    others_features: Array2<f32>,
-    others_count: usize,
-    insertion: Vec<Pending>,
-    insertion_features: Array2<f32>,
-    insertion_count: usize,
-    deletion: Vec<Pending>,
-    deletion_features: Array2<f32>,
-    deletion_count: usize,
+/// One region's ML work: a feature row per candidate, grouped by the model that
+/// scores it.
+///
+/// Holds no borrow of the region, so it can be handed to another thread.
+pub type MlBatch = ByModel<ModelBatch>;
+
+/// Raw, uncalibrated forest scores for an [`MlBatch`], in the same row order.
+pub type MlScores = ByModel<Vec<f32>>;
+
+/// Feature rows for one model, and where each row's score has to be written back.
+///
+/// `features` is allocated to an upper bound; `pending.len()` is how many of its
+/// rows are filled, so the two cannot drift apart.
+pub struct ModelBatch {
+    pending: Vec<Pending>,
+    features: Array2<f32>,
 }
 
-/// Each pending prediction records where to write the result back.
+impl ModelBatch {
+    fn new(max_rows: usize, n_features: usize) -> Self {
+        Self { pending: Vec::new(), features: Array2::zeros((max_rows, n_features)) }
+    }
+
+    fn push(&mut self, item: Pending, features: &Array2<f32>) {
+        self.features.row_mut(self.pending.len()).assign(&features.row(0));
+        self.pending.push(item);
+    }
+
+    fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn rows(&self) -> ArrayView2<'_, f32> {
+        self.features.slice(s![..self.pending.len(), ..])
+    }
+}
+
 struct Pending {
     pileup_idx: usize,
     /// For SNPs: the alt base. For indels: unused.

@@ -4,6 +4,7 @@ use biosphere::gpu::GpuForest;
 use ndarray::Array1;
 use seqair_types::{Probability, SmolStr};
 use std::fmt;
+use std::ops::{Index, IndexMut};
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlattScaling {
@@ -52,6 +53,61 @@ pub struct RastairFlatModel {
     pub feature_set: MlFeatureSet,
 }
 
+/// One value per [`MlModel`], addressed by the model itself.
+///
+/// The five models are always handled together — a feature block, a dispatch
+/// and a score vector each — so this replaces the five parallel fields that
+/// shape would otherwise grow.
+#[derive(Debug, Clone)]
+pub struct ByModel<T>([T; MlModel::COUNT]);
+
+impl<T> ByModel<T> {
+    /// One entry per model, built in [`MlModel::ALL`] order.
+    pub fn from_fn(f: impl FnMut(MlModel) -> T) -> Self {
+        Self(MlModel::ALL.map(f))
+    }
+}
+
+// `MlModel::index` is a total map onto `0..COUNT` and the array has exactly
+// that many slots, so neither impl can be out of bounds.
+impl<T> Index<MlModel> for ByModel<T> {
+    type Output = T;
+
+    #[expect(clippy::indexing_slicing, reason = "MlModel::index is total over the array")]
+    fn index(&self, model: MlModel) -> &T {
+        &self.0[model.index()]
+    }
+}
+
+impl<T> IndexMut<MlModel> for ByModel<T> {
+    #[expect(clippy::indexing_slicing, reason = "MlModel::index is total over the array")]
+    fn index_mut(&mut self, model: MlModel) -> &mut T {
+        &mut self.0[model.index()]
+    }
+}
+
+impl RastairFlatModel {
+    pub fn forest(&self, model: MlModel) -> &FlatForest {
+        match model {
+            MlModel::Others => &self.others,
+            MlModel::Cpg => &self.cpg,
+            MlModel::DenovoCpg => &self.denovo,
+            MlModel::Insertion => &self.insertion,
+            MlModel::Deletion => &self.deletion,
+        }
+    }
+
+    pub fn platt(&self, model: MlModel) -> PlattScaling {
+        match model {
+            MlModel::Others => self.others_platt,
+            MlModel::Cpg => self.cpg_platt,
+            MlModel::DenovoCpg => self.denovo_platt,
+            MlModel::Insertion => self.insertion_platt,
+            MlModel::Deletion => self.deletion_platt,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum MlFeatureSet {
     #[default]
@@ -94,6 +150,16 @@ pub struct GpuRastairModel {
 }
 
 impl GpuRastairModel {
+    pub fn forest(&self, model: MlModel) -> &GpuForest {
+        match model {
+            MlModel::Others => &self.others,
+            MlModel::Cpg => &self.cpg,
+            MlModel::DenovoCpg => &self.denovo,
+            MlModel::Insertion => &self.insertion,
+            MlModel::Deletion => &self.deletion,
+        }
+    }
+
     /// Create per-thread handles that share GPU pipelines and node data with `self`.
     pub fn fork(&self, max_samples: usize) -> Self {
         Self {
@@ -162,4 +228,24 @@ pub enum MlModel {
     DenovoCpg,
     Insertion,
     Deletion,
+}
+
+impl MlModel {
+    /// Every model, in the order [`MlModel::index`] assigns.
+    pub const ALL: [Self; 5] =
+        [Self::Others, Self::Cpg, Self::DenovoCpg, Self::Insertion, Self::Deletion];
+
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// Position in a per-model array. Only meaningful within one run — nothing
+    /// on disk is keyed by it.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Others => 0,
+            Self::Cpg => 1,
+            Self::DenovoCpg => 2,
+            Self::Insertion => 3,
+            Self::Deletion => 4,
+        }
+    }
 }
