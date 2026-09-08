@@ -28,7 +28,11 @@ pub struct PileupMetrics {
     pub pos_metrics: PositionMetrics,
     pub pos_filters: Filters,
     pub ref_metrics: AlleleMetrics,
-    pub alts: SmallVec<Alt, 2>,
+    /// Inline capacity one, not two: an `Alt` is 152 bytes, and measured over
+    /// 10 M positions of chr12, 95.4 % of positions have no alt at all, 4.5 %
+    /// have one, and 0.08 % have two. The second inline slot cost every
+    /// position 152 bytes to save 7 760 heap allocations in 10 Mb.
+    pub alts: SmallVec<Alt, 1>,
     /// Counts of (`my_base`, `before_base`) pairs by strand
     pub before_counts: PairedCounts,
     /// Counts of (`my_base`, `after_base`) pairs by strand

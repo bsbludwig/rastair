@@ -14,14 +14,21 @@ pub struct ReadKey {
 /// Counts of (`current_base`, `adjacent_base`) pairs by strand.
 ///
 /// Array-backed for O(1) access. Indexed as `[strand][current_base][adj_base]`.
+///
+/// Counters are `u16`: each one counts reads at a single position, which
+/// `--max-coverage` bounds (default 1000), so the range is 65x the default cap
+/// and the table is 64 bytes instead of 128. Two of these live in every
+/// `PileupMetrics`, of which a region holds one per covered base. A cap set
+/// past `u16::MAX` saturates rather than wraps — a wrapped count would read as
+/// a plausible small number and quietly move an ML feature.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PairedCounts {
-    inner: [[[u32; 4]; 4]; 2],
+    inner: [[[u16; 4]; 4]; 2],
 }
 
 impl PairedCounts {
     pub fn get(&self, key: ReadKey) -> u32 {
-        key.slot().and_then(|slot| self.flat().get(slot).copied()).unwrap_or(0)
+        key.slot().and_then(|slot| self.flat().get(slot).copied()).map_or(0, u32::from)
     }
 
     pub fn increment(&mut self, key: ReadKey) {
@@ -36,11 +43,11 @@ impl PairedCounts {
     /// serialises, but every access here is by a computed slot, and three
     /// nested index expressions is three bounds checks and three dependent
     /// address computations for one increment that runs per read per column.
-    fn flat(&self) -> &[u32] {
+    fn flat(&self) -> &[u16] {
         self.inner.as_flattened().as_flattened()
     }
 
-    fn flat_mut(&mut self) -> &mut [u32] {
+    fn flat_mut(&mut self) -> &mut [u16] {
         self.inner.as_flattened_mut().as_flattened_mut()
     }
 }
@@ -127,5 +134,18 @@ mod tests {
             counts.increment(key(Strand::OB, Base::G, Base::T));
         }
         assert_eq!(counts.get(key(Strand::OB, Base::G, Base::T)), 7);
+    }
+
+    /// A counter is bounded by the position's depth, which `--max-coverage`
+    /// caps (default 1000). A run with a cap above the counter's range must
+    /// still saturate rather than wrap — a wrapped count would read as a
+    /// plausible small number and quietly change an ML feature.
+    #[test]
+    fn a_counter_saturates_instead_of_wrapping() {
+        let mut counts = PairedCounts::default();
+        for _ in 0..=u32::from(u16::MAX) {
+            counts.increment(key(Strand::OT, Base::C, Base::G));
+        }
+        assert_eq!(counts.get(key(Strand::OT, Base::C, Base::G)), u32::from(u16::MAX));
     }
 }
