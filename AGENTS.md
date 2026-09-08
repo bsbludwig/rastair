@@ -344,10 +344,17 @@ and the `--export-features` TSV headers, so both exports agree by construction.
 
 ## VCF header version and cardinality
 
-Rastair declares **`##fileformat=VCFv4.5`** (set in `schema.rs::register`;
-seqair's builder defaults to 4.3). That is the version that defines the fields
-we emit: `M5mC`, `DPM5mC` and `ADM5mC` are VCF 4.5 reserved FORMAT keys, aliases
-for the ChEBI-numbered `M27551C` family. 4.3 defines none of them.
+Output is **`##fileformat=VCFv4.5`**, and seqair writes that unconditionally —
+`VcfHeader::FILE_FORMAT`, with no setter — so rastair does not ask for it. That
+is the version defining the fields we emit: `M5mC`, `DPM5mC` and `ADM5mC` are
+VCF 4.5 reserved FORMAT keys, aliases for the ChEBI-numbered `M27551C` family,
+and 4.3 defines none of them.
+
+Declaring 4.5 is not cosmetic. From VCF 4.4 the **first allele's `GT` phase bit
+is read** rather than ignored, so an encoder that leaves it unset makes htslib
+render a phased `0|1` as `/0|1`. seqair sets it now (spec rule
+`vcf_record.gt_first_phase`); if phased output ever comes back looking like
+that, this is why.
 
 **Keep those three at `Number=.` anyway.** VCF 4.5 pairs them with `Number=M`
 ("one value for each possible base modification for the corresponding ChEBI

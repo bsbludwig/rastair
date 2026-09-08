@@ -367,12 +367,6 @@ pub fn register(
     metadata: &[String],
 ) -> Result<(VcfHeader, Schema)> {
     let mut builder = VcfHeader::builder();
-    // `M5mC`/`DPM5mC`/`ADM5mC` are VCF 4.5 reserved FORMAT keys (aliases for the
-    // ChEBI-numbered `M27551C` family). 4.3, seqair's default, does not define
-    // them. See `methylation_fields_avoid_the_cardinality_noodles_rejects` for
-    // why their `Number` is still `.` rather than the `M` the spec pairs them
-    // with.
-    builder.file_format("VCFv4.5");
     for line in metadata {
         builder.add_other_line(SmolStr::from(line.as_str()));
     }
@@ -678,10 +672,10 @@ mod tests {
 
     /// The header must declare the version that defines the fields it uses.
     ///
-    /// `M5mC`, `DPM5mC` and `ADM5mC` are VCF 4.5 reserved FORMAT keys (aliases
-    /// for the ChEBI-numbered `M27551C` family); 4.3 does not define them, nor
-    /// the `Number=M` cardinality the spec pairs them with. seqair's builder
-    /// defaults to 4.3, so this has to be set here, where the fields are.
+    /// `M5mC`, `DPM5mC` and `ADM5mC` are VCF 4.5 reserved FORMAT keys, aliases
+    /// for the ChEBI-numbered `M27551C` family; 4.3 defines none of them. seqair
+    /// writes 4.5 unconditionally and offers no way to ask for less, so this
+    /// asserts the property rather than a call rastair has to remember to make.
     #[test]
     fn the_header_declares_the_version_that_defines_its_fields() {
         let (header, _schema) = register(&[], &[SmolStr::from("sample")], &[])
