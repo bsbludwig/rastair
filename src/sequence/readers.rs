@@ -234,7 +234,7 @@ mod seqair_readers {
                 continue;
             }
 
-            count_motifs_at_with_store(rec, store, matched.qpos as usize, &mut tg, &mut ca);
+            count_motifs_at_with_store(rec, store, matched.qpos.as_usize(), &mut tg, &mut ca);
         }
 
         match tg.cmp(&ca) {

@@ -109,7 +109,7 @@ impl PileupMetrics {
                 strand,
                 view.matching_bases,
                 view.indel_bases,
-                qpos as u32,
+                qpos.get(),
                 view.seq_len,
             );
             pos_baseq.add_squared(qual_sq);
@@ -124,13 +124,13 @@ impl PileupMetrics {
 
             if strand != Strand::Unknown {
                 let seq = view.seq();
-                if let Some(&adj) = qpos.checked_sub(1).and_then(|i| seq.get(i)) {
+                if let Some(&adj) = qpos.checked_sub(1).and_then(|i| seq.get(i.as_usize())) {
                     before_counts.increment(ReadKey { strand, current: base, adj });
                 }
                 // An adjacent base is only adjacent in the alignment when nothing
                 // is inserted or deleted between them.
                 if matches!(view.alignment().indel_after(), Indel::None)
-                    && let Some(&adj) = seq.get(qpos + 1)
+                    && let Some(&adj) = qpos.checked_add(1).and_then(|i| seq.get(i.as_usize()))
                 {
                     after_counts.increment(ReadKey { strand, current: base, adj });
                 }
@@ -279,10 +279,10 @@ fn passes_read_masking(
         let Some(observed) = view.base() else { return false };
         soft_clip_cpg_partner(reference_base, observed, context, view.extra().strand)
     } else {
-        let Some(qpos) = u32::try_from(view.qpos().unwrap_or(usize::MAX)).ok() else {
+        let Some(qpos) = view.qpos() else {
             return false;
         };
-        view.extra().mask.contains(&qpos)
+        view.extra().mask.contains(&qpos.get())
     }
 }
 
@@ -319,11 +319,12 @@ fn build_indel_observation(
     }
 
     let qpos = aln.qpos()?;
+    let qpos_usize = qpos.as_usize();
     let read_len = aln.seq_len as usize;
     let indel_cutoff = params.indel_end_of_read_cutoff;
 
-    if qpos < indel_cutoff || qpos >= read_len.saturating_sub(indel_cutoff) {
-        trace!(qpos, read_len, "Indel skipped: too close to read end");
+    if qpos_usize < indel_cutoff || qpos_usize >= read_len.saturating_sub(indel_cutoff) {
+        trace!(qpos = qpos.get(), read_len, "Indel skipped: too close to read end");
         return None;
     }
     if extras.taps_aware_mismatches > params.indel_max_mismatches {
@@ -357,19 +358,23 @@ fn build_indel_observation(
             if bases.is_empty() {
                 return None;
             }
-            let post_del = view.qualities().get(qpos + 1).and_then(|q| q.get()).unwrap_or(0);
+            let post_del = qpos
+                .checked_add(1)
+                .and_then(|i| view.qualities().get(i.as_usize()))
+                .and_then(|q| q.get())
+                .unwrap_or(0);
             (IndelAllele::Deletion(bases), SmallVec::new(), post_del)
         }
         Indel::None => unreachable!("matched a non-None indel above"),
     };
 
-    let base_qual = view.qualities().get(qpos).and_then(|q| q.get()).unwrap_or(0);
+    let base_qual = view.qualities().get(qpos.as_usize()).and_then(|q| q.get()).unwrap_or(0);
 
     Some(IndelObservation {
         allele,
         strand: extras.strand,
         reverse: aln.flags.is_reverse(),
-        pos_in_read: u32::try_from(qpos).ok().unwrap_or(0),
+        pos_in_read: qpos.get(),
         read_length: aln.seq_len,
         mapq: aln.mapq,
         base_qual,
@@ -529,7 +534,7 @@ mod tests {
             .enumerate()
             .filter_map(|(idx, view)| {
                 let baseq = view.qual()?.get()?;
-                view.base()?;
+                let _base = view.base()?;
                 view.qpos()?;
                 if !params.quality.filter_fields(view.mapq, baseq) {
                     return None;
@@ -1049,7 +1054,8 @@ mod tests {
 
         // `Readers::pileup` links mates after fetching; this test drives the
         // engine directly, so it links by hand.
-        store.link_mates();
+        let stats = store.link_mates();
+        assert_eq!(stats.pairs, 1, "the fixture's mates must link");
         let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
         engine.set_soft_clip_overhang(1);
 
@@ -1134,7 +1140,8 @@ mod tests {
 
         // `Readers::pileup` links mates after fetching; this test drives the
         // engine directly, so it links by hand.
-        store.link_mates();
+        let stats = store.link_mates();
+        assert_eq!(stats.pairs, 1, "the fixture's mates must link");
         let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
         engine.set_soft_clip_overhang(1);
 
