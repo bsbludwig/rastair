@@ -20,15 +20,12 @@ use crate::{
     call::{
         methylation::params::MethylationCallingParams,
         pileup::{Pileup, SimpleRead},
-        process::{GPU_BATCH_BUFFER_SIZE, calculate_pileup_metrics, get_pileups},
+        process::{calculate_pileup_metrics, get_pileups},
         require_tags::RequireTagsParams,
         variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{
-        self, MethylationEvidenceStrandInfo, PileupMetrics,
-        ml::types::{GpuRastairModel, MachineLearning},
-    },
+    metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
     sequence::{ChunkRegion, ReaderParams, Readers, Segment, SegmentationParams},
     utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
 };
@@ -176,9 +173,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
         warn!(region=%regions[0].region, "Given range is one base long, this will not yield any results for context-specific methylation calling.");
     }
 
-    // Init ML model if requested
-    let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
-
     debug!("Going to process {} segments", regions.len());
 
     crate::progress::register_signal_handler();
@@ -193,14 +187,12 @@ pub fn call(mut params: CallParams) -> Result<()> {
     // parallel. From there, we send ready-made VCF records to a special writer
     // thread that only deals with writing the VCF file.
     let writer_threads = params.vcf.vcf_threads;
-    let mut worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
+    let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
 
-    // If the user is using GPU-accelerated ML, we'll add in some more threads
-    // since there is gonna be some time spent waiting for the GPU and we can do
-    // some CPU processing in the meantime. This is a bit of a heuristic, which
-    // we might want to tweak later.
-    let bonus_threads = if params.ml.gpu { 2 } else { 0 };
-    worker_threads += bonus_threads;
+    // Needs the worker count to size the inference queue, so it cannot be built
+    // before now.
+    let ml =
+        params.ml.init(worker_threads).wrap_err("Failed to initialize machine learning model")?;
 
     debug!(
         "Gonna use {} threads: {} for processing, {} for writing VCF",
@@ -232,16 +224,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
         .thread_name(|idx| format!("worker-{idx}"))
         .num_threads(worker_threads)
         .start_handler(|idx| trace!(idx, "Starting worker thread"))
-        .exit_handler(|idx| {
-            trace!(idx, "Closing worker thread");
-            // Explicitly drop GPU resources *before* the thread's TLS destructors
-            // fire. This avoids "TLS value accessed during/after destruction" panics
-            // on Metal/wgpu, where the OS autorelease pool is torn down during
-            // thread exit before Rust TLS destructors run.
-            GPU_FORESTS.with(|gf| {
-                gf.borrow_mut().take();
-            });
-        })
+        .exit_handler(|idx| trace!(idx, "Closing worker thread"))
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {
@@ -265,15 +248,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
     Ok(())
 }
 
-thread_local! {
-    /// Per-thread GPU forest handles forked from the prototype in [`MachineLearning`].
-    /// Initialized lazily on the first call to [`process_region_wrapper`] in each
-    /// rayon worker thread. Each handle owns its own pre-allocated GPU buffers and
-    /// shares compiled pipelines with the prototype via `Arc`.
-    static GPU_FORESTS: std::cell::RefCell<Option<GpuRastairModel>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 /// Wrapper function for processing a region in a thread-safe manner.
 ///
 /// Calls [`process_region`] with thread-local readers and ships the result to
@@ -290,17 +264,6 @@ fn process_region_wrapper(
         /// Readers for the BAM and FASTA files, initialized per thread to avoid
         /// re-opening files or having a lock
         static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
-    }
-
-    // Lazily fork the GPU forests for this thread on its first chunk.
-    if let Some(proto) = ml.gpu_prototype.as_ref() {
-        GPU_FORESTS.with(|gf| {
-            if gf.borrow().is_none() {
-                // 10_000 positions × 4 alts max — matches the buffer size allocated
-                // in MachineLearningParams::init for the prototype forests.
-                *gf.borrow_mut() = Some(proto.fork(GPU_BATCH_BUFFER_SIZE));
-            }
-        });
     }
 
     // Use thread-local readers to avoid re-opening files in each thread
@@ -410,26 +373,21 @@ fn process_region(
         }
     }
 
-    // Pass 2: ML prediction — GPU batch if available, otherwise or on error,
-    // use sequential CPU fallback.
-    GPU_FORESTS.with(|gf| -> Result<()> {
-        let score_indels = params.indel.needs_ml_scores(ml.enabled());
-        match gf
-            .borrow()
-            .as_ref()
-            .map(|gpu| process::batch_add_ml_metrics(&mut pileups, ml, gpu, score_indels))
-        {
-            Some(Ok(_)) => return Ok(()),
-            Some(Err(error)) => {
-                warn!(
-                    error = format!("{error:#}"),
-                    "failed to calculate ML score on GPU, falling back to CPU"
-                )
-            }
-            None => {}
+    // Pass 2: ML prediction on the inference thread when there is one, and on
+    // this thread otherwise or if the GPU failed. Both score the region as one
+    // batch per model; see `score_on_cpu` for why that matters on the CPU.
+    let score_indels = params.indel.needs_ml_scores(ml.enabled());
+    match process::score_on_gpu(&mut pileups, ml, score_indels) {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            warn!(
+                error = format!("{error:#}"),
+                "failed to calculate ML score on GPU, scoring this region on the CPU"
+            );
+            process::score_on_cpu(&mut pileups, ml, score_indels)?;
         }
-        process::add_ml_metrics_vec(&mut pileups, ml, score_indels)
-    })?;
+        None => process::score_on_cpu(&mut pileups, ml, score_indels)?,
+    }
 
     if params.indel.rescues_hom_ref() {
         for p in &mut pileups {

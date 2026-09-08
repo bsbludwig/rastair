@@ -522,7 +522,7 @@ pub(crate) fn test_call(
     };
 
     static ML: OnceLock<MachineLearning> = OnceLock::new();
-    let ml = ML.get_or_init(|| params.ml.init().unwrap());
+    let ml = ML.get_or_init(|| params.ml.init(1).unwrap());
 
     process_region(segment, pileups.into_iter(), &params, ml)
 }

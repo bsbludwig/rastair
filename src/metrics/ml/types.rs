@@ -4,6 +4,7 @@ use biosphere::gpu::GpuForest;
 use ndarray::Array1;
 use seqair_types::{Probability, SmolStr};
 use std::fmt;
+use std::ops::{Index, IndexMut};
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlattScaling {
@@ -52,6 +53,77 @@ pub struct RastairFlatModel {
     pub feature_set: MlFeatureSet,
 }
 
+/// One value per [`MlModel`], addressed by the model itself.
+///
+/// The five models are always handled together — a feature block, a dispatch
+/// and a score vector each — so this replaces the five parallel fields that
+/// shape would otherwise grow.
+#[derive(Debug, Clone)]
+pub struct ByModel<T>([T; MlModel::COUNT]);
+
+impl<T> ByModel<T> {
+    /// One entry per model, built in [`MlModel::ALL`] order.
+    pub fn from_fn(f: impl FnMut(MlModel) -> T) -> Self {
+        Self(MlModel::ALL.map(f))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (MlModel, &T)> {
+        MlModel::ALL.into_iter().zip(self.0.iter())
+    }
+}
+
+impl<T> IntoIterator for ByModel<T> {
+    type Item = (MlModel, T);
+    type IntoIter = std::iter::Zip<
+        std::array::IntoIter<MlModel, { MlModel::COUNT }>,
+        std::array::IntoIter<T, { MlModel::COUNT }>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        MlModel::ALL.into_iter().zip(self.0)
+    }
+}
+
+// `MlModel::index` is a total map onto `0..COUNT` and the array has exactly
+// that many slots, so neither impl can be out of bounds.
+impl<T> Index<MlModel> for ByModel<T> {
+    type Output = T;
+
+    #[expect(clippy::indexing_slicing, reason = "MlModel::index is total over the array")]
+    fn index(&self, model: MlModel) -> &T {
+        &self.0[model.index()]
+    }
+}
+
+impl<T> IndexMut<MlModel> for ByModel<T> {
+    #[expect(clippy::indexing_slicing, reason = "MlModel::index is total over the array")]
+    fn index_mut(&mut self, model: MlModel) -> &mut T {
+        &mut self.0[model.index()]
+    }
+}
+
+impl RastairFlatModel {
+    pub fn forest(&self, model: MlModel) -> &FlatForest {
+        match model {
+            MlModel::Others => &self.others,
+            MlModel::Cpg => &self.cpg,
+            MlModel::DenovoCpg => &self.denovo,
+            MlModel::Insertion => &self.insertion,
+            MlModel::Deletion => &self.deletion,
+        }
+    }
+
+    pub fn platt(&self, model: MlModel) -> PlattScaling {
+        match model {
+            MlModel::Others => self.others_platt,
+            MlModel::Cpg => self.cpg_platt,
+            MlModel::DenovoCpg => self.denovo_platt,
+            MlModel::Insertion => self.insertion_platt,
+            MlModel::Deletion => self.deletion_platt,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum MlFeatureSet {
     #[default]
@@ -80,11 +152,16 @@ pub struct FlatRastairModel {
     pub deletion: FlatForest,
 }
 
-/// GPU-accelerated forests for each model type, used as per-thread prototypes.
+/// The five forests on one shared [`biosphere::gpu::GpuContext`], owned by the
+/// inference thread.
 ///
-/// Create once via [`MachineLearningParams::init`], then call [`GpuRastairModel::fork`]
-/// inside each worker thread to get a thread-local handle that shares compiled
-/// pipelines and uploaded node data without re-uploading.
+/// They used to sit on five devices, because biosphere's UMA upload waited on
+/// the device's most recent submission from any source, which on a shared
+/// device was the previous model's dispatch. Biosphere now uploads with
+/// `write_buffer` everywhere, and with that fixed one device measures the same
+/// as five on Metal (chr12:20-30Mb, 1.87 s vs 1.90 s) while being what a
+/// discrete GPU wants: one queue pipelines the five dispatches that separate
+/// devices would time-slice.
 pub struct GpuRastairModel {
     pub cpg: GpuForest,
     pub denovo: GpuForest,
@@ -94,14 +171,13 @@ pub struct GpuRastairModel {
 }
 
 impl GpuRastairModel {
-    /// Create per-thread handles that share GPU pipelines and node data with `self`.
-    pub fn fork(&self, max_samples: usize) -> Self {
-        Self {
-            cpg: self.cpg.fork(max_samples),
-            denovo: self.denovo.fork(max_samples),
-            others: self.others.fork(max_samples),
-            insertion: self.insertion.fork(max_samples),
-            deletion: self.deletion.fork(max_samples),
+    pub fn forest(&self, model: MlModel) -> &GpuForest {
+        match model {
+            MlModel::Others => &self.others,
+            MlModel::Cpg => &self.cpg,
+            MlModel::DenovoCpg => &self.denovo,
+            MlModel::Insertion => &self.insertion,
+            MlModel::Deletion => &self.deletion,
         }
     }
 }
@@ -112,9 +188,9 @@ pub struct MachineLearning {
     pub model: Option<Box<RastairFlatModel>>,
     pub feature_set: MlFeatureSet,
     pub feature_calculator: FeatureCalculatorBox,
-    /// Prototype GPU forests. Worker threads call [`GpuRastairModel::fork`] on
-    /// first use to obtain thread-local handles without recompiling shaders.
-    pub gpu_prototype: Option<GpuRastairModel>,
+    /// The thread that owns the GPU forests, when `--gpu` is on. Workers hand
+    /// it feature rows rather than each forking a copy of the forests.
+    pub inference: Option<crate::call::process::InferenceStage>,
 }
 
 impl MachineLearning {
@@ -126,7 +202,7 @@ impl MachineLearning {
             model: None,
             feature_set,
             feature_calculator: feature_set.get_calculator(),
-            gpu_prototype: None,
+            inference: None,
         }
     }
 
@@ -162,4 +238,24 @@ pub enum MlModel {
     DenovoCpg,
     Insertion,
     Deletion,
+}
+
+impl MlModel {
+    /// Every model, in the order [`MlModel::index`] assigns.
+    pub const ALL: [Self; 5] =
+        [Self::Others, Self::Cpg, Self::DenovoCpg, Self::Insertion, Self::Deletion];
+
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// Position in a per-model array. Only meaningful within one run — nothing
+    /// on disk is keyed by it.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Others => 0,
+            Self::Cpg => 1,
+            Self::DenovoCpg => 2,
+            Self::Insertion => 3,
+            Self::Deletion => 4,
+        }
+    }
 }

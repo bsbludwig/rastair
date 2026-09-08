@@ -18,12 +18,12 @@
 //! for input to a random forest classifier.
 
 use crate::{
-    call::process::GPU_BATCH_BUFFER_SIZE,
+    call::process::{GPU_BATCH_BUFFER_SIZE, InferenceStage},
     metrics::ml::types::{GpuRastairModel, MachineLearning, RastairFlatModel},
     utils::cli,
 };
 use better_default::Default;
-use biosphere::gpu::{GpuForest, GpuInitError};
+use biosphere::gpu::{GpuContext, GpuForest, GpuInitError};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
@@ -31,7 +31,7 @@ use color_eyre::{
     eyre::{Context, ensure},
 };
 use seqair_types::Probability;
-use std::{fs, io::Read, path::Path};
+use std::{fs, io::Read, path::Path, sync::Arc};
 use tracing::{debug, instrument};
 
 pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.5);
@@ -75,7 +75,7 @@ pub struct MachineLearningParams {
 
 impl MachineLearningParams {
     #[instrument(name = "init_ml", skip(self))]
-    pub fn init(&self) -> Result<MachineLearning> {
+    pub fn init(&self, workers: usize) -> Result<MachineLearning> {
         if self.no_ml {
             return Ok(MachineLearning::disabled());
         };
@@ -86,30 +86,35 @@ impl MachineLearningParams {
         )
         .wrap_err("Failed to load combined RF model")?;
 
-        let max_samples = GPU_BATCH_BUFFER_SIZE;
-        let gpu_prototype = if self.gpu {
-            let gpu_forest = |forest| {
-                GpuForest::from_flat_forest(forest, max_samples)
-                    .wrap_err("Failed to initialise GPU context")
-                    .note(GpuInitError::hints())
-            };
+        let gpu = if self.gpu {
+            let ctx = GpuContext::new()
+                .wrap_err("Failed to initialise GPU context")
+                .note(GpuInitError::hints())?;
+            let gpu_forest =
+                |forest| GpuForest::with_context(Arc::clone(&ctx), forest, GPU_BATCH_BUFFER_SIZE);
+
             Some(GpuRastairModel {
-                cpg: gpu_forest(&model.cpg)?,
-                denovo: gpu_forest(&model.denovo)?,
-                others: gpu_forest(&model.others)?,
-                insertion: gpu_forest(&model.insertion)?,
-                deletion: gpu_forest(&model.deletion)?,
+                cpg: gpu_forest(&model.cpg),
+                denovo: gpu_forest(&model.denovo),
+                others: gpu_forest(&model.others),
+                insertion: gpu_forest(&model.insertion),
+                deletion: gpu_forest(&model.deletion),
             })
         } else {
             None
         };
+
+        let inference = gpu
+            .map(|gpu| InferenceStage::spawn(gpu, workers))
+            .transpose()
+            .wrap_err("Failed to start the GPU inference thread")?;
 
         Ok(MachineLearning {
             threshold: self.ml,
             feature_set: model.feature_set,
             feature_calculator: model.feature_set.get_calculator(),
             model: Some(Box::new(model)),
-            gpu_prototype,
+            inference,
         })
     }
 

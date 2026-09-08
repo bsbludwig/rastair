@@ -63,7 +63,7 @@ noodles-bgzf = { version = "0.46.0", features = ["libdeflate"] }
 rust-htslib = { workspace = true }
 
 # ml
-biosphere = { git = "https://github.com/Softleif/biosphere", branch = "feature-importances", version = "0.5.0", features = [
+biosphere = { git = "https://github.com/Softleif/biosphere", branch = "main", version = "0.5.0", features = [
     "serde",
     "gpu",
 ] }
@@ -79,6 +79,7 @@ clio = { version = "0.3.5", features = ["clap", "clap-parse", "pipe"] }
 # multithreading
 rayon = "1.10.0"
 ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
+crossbeam-channel = "0.5.15"
 mimalloc = { version = "0.1.48", features = ["override", "v3"] }
 
 # I/O

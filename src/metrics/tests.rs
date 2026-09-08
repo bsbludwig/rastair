@@ -65,7 +65,7 @@ fn set_filters() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let ml = MachineLearningParams::default().init()?;
+    let ml = MachineLearningParams::default().init(1)?;
 
     let pileups = process::calculate_pileup_metrics(pileups, &segment)
         .map(|x: Result<PileupMetrics>| -> PileupMetrics {
