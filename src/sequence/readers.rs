@@ -26,6 +26,7 @@ pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
 mod seqair_readers {
     use crate::{
         call::{
+            pileup::has_terminal_repeat,
             require_tags::TagRequirement,
             variant_calling::{ReadFlags, ReadMaskParams},
         },
@@ -39,7 +40,7 @@ mod seqair_readers {
     use seqair::bam::record_store::{
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
     };
-    use seqair_types::{Base, Pos0, SmallVec, Strand};
+    use seqair_types::{Base, Pos0, Strand};
     use std::{ops::Range, sync::Arc};
     use tracing::{debug, instrument};
 
@@ -97,8 +98,6 @@ mod seqair_readers {
         pub guess_orientation: bool,
         pub read_masking: ReadMaskParams,
         pub reference: Option<ReferenceWindow>,
-        /// Repeat limit for `has_repeat` (matches `PileupMappingParams::indel_repeat_limit`).
-        pub repeat_limit: usize,
     }
 
     impl CustomizeRecordStore for RastairRecordFilter {
@@ -149,16 +148,10 @@ mod seqair_readers {
                 .map(|ops| ops.iter().any(|op| op.op_type() == CigarOpType::SoftClip))
                 .unwrap_or(false);
 
-            let repeat_limit = self.repeat_limit;
-            let has_repeat = if repeat_limit > 0 {
-                rec.seq(store)
-                    .map(|seq| {
-                        has_repeat_seq(seq, 1, repeat_limit) || has_repeat_seq(seq, 2, repeat_limit)
-                    })
-                    .unwrap_or(false)
-            } else {
-                false
-            };
+            let has_repeat = rec
+                .seq(store)
+                .map(|seq| has_terminal_repeat(seq.len(), |i| seq.get(i)))
+                .unwrap_or(false);
 
             let has_indels = rec.indel_bases > 0;
             let taps_aware_mismatches = if has_indels {
@@ -284,38 +277,6 @@ mod seqair_readers {
         pos.hash(&mut hasher);
         flags.hash(&mut hasher);
         if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
-    }
-
-    /// Check if first or last `cutoff` bases repeat a pattern of length `n`.
-    pub(crate) fn has_repeat_seq(seq: &[Base], n: usize, cutoff: usize) -> bool {
-        let len = seq.len();
-        if len < cutoff || n == 0 || cutoff < n {
-            return false;
-        }
-        let start_pattern: SmallVec<Base, 4> =
-            seq.get(..n).map(|s| s.iter().copied().collect()).unwrap_or_default();
-        if start_pattern.len() == n {
-            let start_repeat = (n..cutoff).all(|i| {
-                seq.get(i).map_or(false, |&b| start_pattern.get(i % n).map_or(false, |&p| b == p))
-            });
-            if start_repeat {
-                return true;
-            }
-        }
-        let end_start = len.saturating_sub(n);
-        let end_pattern: SmallVec<Base, 4> =
-            seq.get(end_start..len).map(|s| s.iter().copied().collect()).unwrap_or_default();
-        if end_pattern.len() == n {
-            let check_start = len.saturating_sub(cutoff);
-            (check_start..end_start).all(|i| {
-                seq.get(i).map_or(false, |&b| {
-                    let offset = (i - check_start) % n;
-                    end_pattern.get(offset % n).map_or(false, |&p| b == p)
-                })
-            })
-        } else {
-            false
-        }
     }
 
     /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` that exposes

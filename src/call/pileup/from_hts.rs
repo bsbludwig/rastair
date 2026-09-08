@@ -6,7 +6,7 @@ use super::{
     ref_features::{indel_ref_window_at, indel_tract_runs_at},
 };
 use crate::{
-    call::pileup::{DINUCLEOTIDE_UNITS, HOMOPOLYMER_UNITS, hts_utils::*},
+    call::pileup::{has_terminal_repeat, hts_utils::*},
     sequence::Segment,
 };
 use crate::{
@@ -147,8 +147,7 @@ impl AlignmentShape {
     fn of(record: &RecordView<'_>) -> Self {
         let (seq, _) = record.seq_and_qual();
         Self {
-            terminal_repeat: has_repeat_seq(&seq, 1, HOMOPOLYMER_UNITS)
-                || has_repeat_seq(&seq, 2, DINUCLEOTIDE_UNITS),
+            terminal_repeat: has_terminal_repeat(seq.len(), |i| seq.get(i)),
             soft_clipped: has_soft_clip(record.raw_cigar()),
         }
     }
@@ -423,34 +422,6 @@ fn alignment_to_read<'a>(
 /// Check if a CIGAR array contains a soft-clip operation (op 4).
 fn has_soft_clip(cigar: &[u32]) -> bool {
     cigar.iter().any(|&c| c & 0xF == 4)
-}
-
-/// Check if first or last `cutoff` bases of a read form a repeating pattern of length `n`.
-/// Whether either read terminus is a tandem repeat of period `n`, measured in whole
-/// repeat units.
-///
-/// Units rather than a shared base window: with a 3 bp window the period-2 arm
-/// reduces to `seq[0] == seq[2] || seq[len-3] == seq[len-1]`, true for 43.75% of
-/// random reads, which makes the noise flag fire on a typical read rather than an
-/// unusual one. At 4 units a terminal homopolymer occurs ~3% of the time and a
-/// 3-unit dinucleotide repeat ~0.8%. See [`HOMOPOLYMER_UNITS`].
-fn has_repeat_seq(seq: &rust_htslib::bam::record::Seq<'_>, n: usize, units: usize) -> bool {
-    let len = seq.len();
-    let Some(window) = n.checked_mul(units).filter(|w| *w <= len) else {
-        return false;
-    };
-    if n == 0 || units < 2 {
-        return false;
-    }
-
-    let periodic = |start: usize| {
-        (start..start + window - n).all(|i| match (seq.get(i), seq.get(i + n)) {
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        })
-    };
-
-    periodic(0) || periodic(len - window)
 }
 
 #[cfg(test)]

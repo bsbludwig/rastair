@@ -29,10 +29,51 @@ pub(crate) const INDEL_REF_WINDOW_LEN: usize = INDEL_REF_WINDOW_UP + 1 + INDEL_R
 /// slips. A flagged read should be unusual, not typical: at 4 units a terminal
 /// homopolymer occurs ~3% of the time and a 3-unit dinucleotide repeat ~0.8%.
 pub(crate) const HOMOPOLYMER_UNITS: usize = 4;
-// Only the htslib pileup path inspects dinucleotide repeats; seqair's engine
-// takes a single repeat limit.
-#[cfg_attr(feature = "experimental-seqair", allow(dead_code))]
 pub(crate) const DINUCLEOTIDE_UNITS: usize = 3;
+
+/// Whether either terminus of a read is a tandem repeat of period 1 or 2 — the
+/// alignment shape that makes an indel call unreliable, because the aligner can
+/// slide the indel along the tract.
+///
+/// **Units, not a shared base window.** With a 3 bp window the period-2 arm
+/// reduces to `seq[0] == seq[2]`, true for 43.75% of random reads, which makes
+/// the flag fire on a typical read rather than an unusual one. At 4 units a
+/// terminal homopolymer occurs ~3% of the time and a 3-unit dinucleotide repeat
+/// ~0.8%.
+///
+/// One definition for both backends. They had two, and disagreed: the seqair
+/// path measured the period-2 arm over 4 bases (2 units, ~6% of read ends)
+/// instead of 6. The sequence is passed as a length plus an indexer because the
+/// htslib path holds a 4-bit packed `Seq` and the seqair path a `&[Base]`;
+/// neither is decoded or copied.
+pub(crate) fn has_terminal_repeat<T: PartialEq>(
+    len: usize,
+    base_at: impl Fn(usize) -> Option<T>,
+) -> bool {
+    periodic_terminus(len, &base_at, 1, HOMOPOLYMER_UNITS)
+        || periodic_terminus(len, &base_at, 2, DINUCLEOTIDE_UNITS)
+}
+
+fn periodic_terminus<T: PartialEq>(
+    len: usize,
+    base_at: &impl Fn(usize) -> Option<T>,
+    period: usize,
+    units: usize,
+) -> bool {
+    if period == 0 || units < 2 {
+        return false;
+    }
+    let Some(window) = period.checked_mul(units).filter(|w| *w <= len) else {
+        return false;
+    };
+    let periodic = |start: usize| {
+        (start..start + window - period).all(|i| match (base_at(i), base_at(i + period)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        })
+    };
+    periodic(0) || periodic(len - window)
+}
 
 /// Rastair's representation of a pileup at a specific position in the genome
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -113,6 +154,27 @@ mod tests {
     };
     use insta::assert_debug_snapshot;
     use seqair_types::Strand;
+
+    /// The flag must fire on an unusual read, not a typical one. The seqair
+    /// path used to measure the period-2 arm over 4 bases — two repeat units,
+    /// ~6% of random read ends — where the htslib path required three units
+    /// over 6 bases. `ACAC` is exactly that boundary: two units, and not a
+    /// terminal repeat.
+    #[test]
+    fn terminal_repeat_needs_whole_units_at_both_periods() {
+        let repeat = |seq: &[u8]| has_terminal_repeat(seq.len(), |i| seq.get(i));
+
+        assert!(repeat(b"AAAACGTTGC"), "4-unit homopolymer at the start");
+        assert!(repeat(b"CGTTGCAAAA"), "4-unit homopolymer at the end");
+        assert!(!repeat(b"AAACGTTGCA"), "3 units is one short of the homopolymer limit");
+
+        assert!(repeat(b"ACACACGTTG"), "3-unit dinucleotide at the start");
+        assert!(repeat(b"GTTGCACACA"), "3-unit dinucleotide at the end");
+        assert!(!repeat(b"ACACGTTGCA"), "2 units is one short of the dinucleotide limit");
+
+        assert!(!repeat(b"ACGT"), "a read with neither terminus repeating");
+        assert!(!repeat(b"AA"), "shorter than either window");
+    }
 
     #[test]
     fn test_alleles_in_order() {
