@@ -8,6 +8,7 @@
 use std::io::Write;
 
 use color_eyre::{Result, eyre::Context as _, eyre::ContextCompat as _, eyre::ensure};
+use enumset::EnumSet;
 use seqair::vcf::{Alleles, ContigId, Genotype as SeqGenotype, Ready, Writer};
 use seqair_types::{Base, Phred, Pos1, Probability, SmallVec, SmolStr};
 
@@ -206,7 +207,7 @@ fn emit_compound_het_record<W: Write>(
         Some(first.quality.as_int() as f32),
     )?;
     let mut enc = match filter {
-        Some(filter) => encode_filters(enc, schema, &[filter])?,
+        Some(filter) => encode_filters(enc, schema, filter.into())?,
         None => enc.filter_pass(),
     };
 
@@ -315,15 +316,13 @@ fn emit_rejected_record<W: Write>(
     let qual = alt.filters.ml.map(|ml| Phred::from(ml.inverted()).as_int() as f32);
 
     // Filters: low_ml_score (if below threshold) + position + alt filters.
-    let mut filters: SmallVec<RastairFilter, 8> = SmallVec::new();
+    let mut filters = pileup.pos_filters.as_set() | alt.filters.filters.as_set();
     if alt.filters.ml < ml_threshold {
-        filters.push(RastairFilter::LowMlScore);
+        filters.insert(RastairFilter::LowMlScore);
     }
-    filters.extend(pileup.pos_filters.iter().copied());
-    filters.extend(alt.filters.filters.iter().copied());
 
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, qual)?;
-    let mut enc = encode_filters(enc, schema, &filters)?;
+    let mut enc = encode_filters(enc, schema, filters)?;
     let alts = [alt];
     encode_info(&mut enc, schema, config, pileup, &alts)?;
     let mut enc = enc.begin_samples();
@@ -362,7 +361,7 @@ fn emit_indel_record<W: Write>(
 
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, Some(qual))?;
     let mut enc = match filter {
-        Some(filter) => encode_filters(enc, schema, &[filter])?,
+        Some(filter) => encode_filters(enc, schema, filter.into())?,
         None => enc.filter_pass(),
     };
 
@@ -399,12 +398,12 @@ fn emit_indel_record<W: Write>(
 fn encode_filters<'a>(
     enc: seqair::vcf::RecordEncoder<'a, seqair::vcf::Begun>,
     schema: &Schema,
-    filters: &[RastairFilter],
+    filters: EnumSet<RastairFilter>,
 ) -> Result<seqair::vcf::RecordEncoder<'a, seqair::vcf::Filtered>> {
     if filters.is_empty() {
         return Ok(enc.filter_pass());
     }
-    Ok(enc.filter_fail(filters.iter().map(|f| schema.filter(*f))))
+    Ok(enc.filter_fail(filters.iter().map(|f| schema.filter(f))))
 }
 
 /// Per-allele metric refs: reference allele first, then the given alts.

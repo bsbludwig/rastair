@@ -13,6 +13,7 @@ use color_eyre::{
     Result,
     eyre::{Context, bail},
 };
+use enumset::EnumSet;
 use seqair_types::SmallVec;
 use seqair_types::SmolStr;
 use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
@@ -482,37 +483,41 @@ impl AltFilters {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+/// The set of FILTER codes a position or an alt allele has earned.
+///
+/// FILTER is a set, so this is a bitset: 13 variants fit in the `u16` that
+/// `RastairFilter`'s `#[enumset(repr)]` pins down. Iteration is therefore in
+/// discriminant order, which is also header registration order.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct Filters {
     pub other_pos_in_denovo_passes: bool,
-    filters: SmallVec<RastairFilter, 6>,
+    filters: EnumSet<RastairFilter>,
 }
 
 impl Filters {
     pub fn add(&mut self, filter: RastairFilter, condition: impl FnOnce() -> bool) {
-        if condition() && !self.filters.contains(&filter) {
-            self.filters.push(filter);
+        if condition() {
+            self.filters.insert(filter);
         }
     }
 
     pub fn merge(&mut self, other: Filters) {
-        for filter in other.filters {
-            if !self.filters.contains(&filter) {
-                self.filters.push(filter);
-            }
-        }
+        self.filters |= other.filters;
     }
 
     pub fn pass(&self) -> bool {
         self.other_pos_in_denovo_passes || self.filters.is_empty()
     }
-}
 
-impl Deref for Filters {
-    type Target = SmallVec<RastairFilter, 6>;
+    pub fn is_empty(&self) -> bool {
+        self.filters.is_empty()
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.filters
+    /// The codes themselves, for a caller that has to union or emit them.
+    /// Iterating an [`EnumSet`] yields discriminant order, which is the order
+    /// the filters are registered in the VCF header.
+    pub fn as_set(&self) -> EnumSet<RastairFilter> {
+        self.filters
     }
 }
 
@@ -748,16 +753,87 @@ mod size_tests {
     /// `--segment-max-length` — and the pipeline walks that vec six or seven
     /// times, so this number is the memory traffic of the whole back half of
     /// `call`. It came down from 928 by sizing three fields for the common
-    /// case rather than the tail (see `alts`, `PairedCounts`, and `region`);
-    /// pinning it exactly means growing it again is a decision someone makes
-    /// on purpose, with a measurement, rather than a field that slipped in.
+    /// case rather than the tail (see `alts`, `PairedCounts`, and `region`),
+    /// and from 568 by making `Filters` a bitset instead of a list; pinning it
+    /// exactly means growing it again is a decision someone makes on purpose,
+    /// with a measurement, rather than a field that slipped in.
     #[test]
     fn pileup_metrics_stays_small() {
         let size = std::mem::size_of::<PileupMetrics>();
         assert_eq!(
-            size, 568,
+            size, 520,
             "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
              (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
         );
+    }
+
+    // A `Filters` is copied into every `Alt`, so it is one of the few places
+    // where a byte or two is worth pinning down.
+    #[test]
+    fn filters_are_a_bitset() {
+        assert_eq!(size_of::<Filters>(), 4);
+    }
+}
+
+#[cfg(test)]
+mod filter_set_tests {
+    use super::*;
+    use crate::vcf::RastairFilter::{DnCpgBq, LowDp, LowMlScore, MVaf};
+
+    #[test]
+    fn a_filter_added_twice_is_present_once() {
+        let mut filters = Filters::default();
+        filters.add(LowDp, || true);
+        filters.add(LowDp, || true);
+
+        assert_eq!(filters.as_set().iter().collect::<Vec<_>>(), [LowDp]);
+    }
+
+    #[test]
+    fn a_filter_is_only_added_when_its_condition_holds() {
+        let mut filters = Filters::default();
+        filters.add(LowDp, || false);
+
+        assert!(filters.is_empty());
+        assert!(filters.pass());
+    }
+
+    #[test]
+    fn merging_unions_the_two_sets() {
+        let mut filters = Filters::default();
+        filters.add(MVaf, || true);
+        filters.add(LowDp, || true);
+
+        let mut other = Filters::default();
+        other.add(DnCpgBq, || true);
+        other.add(LowDp, || true);
+        filters.merge(other);
+
+        assert_eq!(filters.as_set().iter().collect::<Vec<_>>(), [LowDp, DnCpgBq, MVaf]);
+    }
+
+    // The FILTER column prints in this order, and `Schema::filter` indexes its
+    // `FilterId` table by the same discriminant, so both follow the enum.
+    #[test]
+    fn iteration_follows_header_registration_order() {
+        let mut filters = Filters::default();
+        for filter in [LowMlScore, MVaf, DnCpgBq, LowDp] {
+            filters.add(filter, || true);
+        }
+
+        assert_eq!(filters.as_set().iter().collect::<Vec<_>>(), [LowDp, DnCpgBq, MVaf, LowMlScore]);
+    }
+
+    // `other_pos_in_denovo_passes` overrides the set rather than living in it:
+    // it is not a VCF FILTER code.
+    #[test]
+    fn the_denovo_override_passes_a_non_empty_set() {
+        let mut filters = Filters::default();
+        filters.add(LowDp, || true);
+        assert!(!filters.pass());
+
+        filters.other_pos_in_denovo_passes = true;
+        assert!(filters.pass());
+        assert!(!filters.is_empty());
     }
 }

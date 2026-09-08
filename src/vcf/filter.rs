@@ -1,15 +1,22 @@
 //! The closed set of VCF FILTER codes rastair can emit.
 //!
 //! Filters are modelled as a `#[repr(u8)]` enum rather than carried around as
-//! strings, so storage on [`PileupMetrics`](crate::metrics::PileupMetrics) is a
-//! single byte per filter. This enum is the single source of truth: the VCF
-//! header is registered from [`RastairFilter::ALL`] (in declaration order) and
-//! each filter resolves to its [`FilterId`](seqair::vcf::FilterId) by name at
-//! write time (see [`crate::vcf::schema`]).
+//! strings. FILTER is a set, and there are only 13 codes, so a whole set is a
+//! `u16` bitset ([`Filters`](crate::metrics::Filters)) rather than a list.
+//! This enum is the single source of truth: the VCF header is registered from
+//! [`RastairFilter::ALL`] (in declaration order) and each filter resolves to
+//! its [`FilterId`](seqair::vcf::FilterId) by name at write time (see
+//! [`crate::vcf::schema`]).
+//!
+//! Two things depend on the declaration order, so reordering the variants is
+//! an output change: `RastairFilter as usize` indexes the resolved-`FilterId`
+//! table in [`crate::vcf::schema`], and a set iterates in discriminant order,
+//! which is what the FILTER column prints.
 
 /// A VCF FILTER code. `PASS` is implicit (an empty filter set), so it is not a
 /// variant here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Hash, enumset::EnumSetType, serde::Serialize, serde::Deserialize)]
+#[enumset(repr = "u16", serialize_repr = "list")]
 #[repr(u8)]
 pub enum RastairFilter {
     /// `lowDp`
