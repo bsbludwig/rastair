@@ -89,7 +89,11 @@ pub struct Pileup {
     /// Reference base at this position
     pub reference_base: Base,
     /// Indel observations collected from reads at this position.
-    /// Empty at most positions — `SmallVec<_, 0>` avoids heap allocation when empty.
+    ///
+    /// Empty at most positions. The inline capacity of 3 is 248 bytes of this
+    /// (per-column, htslib-path) temporary; `0` would make it 24 and cost a
+    /// heap allocation only where an indel actually is. Unmeasured — histogram
+    /// `indel_observations.len()` in `Pileup::from_hts` before changing it.
     #[serde(default)]
     pub indel_observations: SmallVec<indels::IndelObservation, 3>,
     /// Number of reference reads with problematic patterns (homopolymer, soft-clip)

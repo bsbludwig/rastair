@@ -38,9 +38,30 @@ impl fmt::Debug for CpgBeta {
 ///
 /// Empty means the position is not in a CpG context. One or two entries
 /// represent original and/or de-novo CpG measurements.
+///
+/// Inline capacity **one**, not two, for the same reason as
+/// [`PileupMetrics::alts`]: a `CpgBeta` is 24 bytes, this lives in every
+/// `PileupMetrics`, and two entries need an original CpG on one side *and* a
+/// called de-novo alt on the other at the same column. Measured over 526,603
+/// emitted records of chr12 (NA12878, ~26x):
+///
+/// | entries | records | share |
+/// | ---: | ---: | ---: |
+/// | 0 | 378,558 | 71.89 % |
+/// | 1 | 148,035 | 28.11 % |
+/// | 2 | 10 | 0.0019 % |
+/// | 3+ | 0 | — |
+///
+/// So the second inline slot was 24 bytes at every position in the genome for
+/// ten positions in 10 Mb. Re-measure it with the recipe in
+/// [`PileupMetrics::alts`], histogramming
+/// `pm.pos_metrics.extended.methylated.0.len()` at the end of
+/// `process_collected_pileups`.
+///
+/// [`PileupMetrics::alts`]: crate::metrics::PileupMetrics::alts
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 #[must_use]
-pub struct Methylated(pub SmallVec<CpgBeta, 2>);
+pub struct Methylated(pub SmallVec<CpgBeta, 1>);
 
 impl Methylated {
     pub fn is_empty(&self) -> bool {

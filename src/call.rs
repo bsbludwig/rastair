@@ -398,13 +398,19 @@ macro_rules! log_failed_and_skip {
 /// Analyse pileups in a region
 fn process_region(
     segment: Rc<Segment>,
-    pileups: impl Iterator<Item = Pileup>,
+    pileups_iter: impl Iterator<Item = Pileup>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    let mut pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
-        .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
-        .collect();
+    // One per covered position, as on the seqair path — see the note in
+    // `process::pileups::get_pileups`. Doubling into a vec of 592-byte entries
+    // both copies and overshoots.
+    let mut pileups: Vec<PileupMetrics> =
+        Vec::with_capacity(usize::try_from(segment.range.len()).unwrap_or(0));
+    pileups.extend(
+        calculate_pileup_metrics(pileups_iter, &segment)
+            .filter_map(log_failed_and_skip!("failed to calculate metric, skipping")),
+    );
     map_surrounding(
         &mut pileups,
         process::set_denovo_adj,

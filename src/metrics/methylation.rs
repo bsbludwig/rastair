@@ -18,7 +18,7 @@ mod tests;
     name = "methylation_call"
 )]
 pub fn call(current: &PileupMetrics) -> Result<Option<Methylated>> {
-    let mut betas: SmallVec<CpgBeta, 2> = SmallVec::new();
+    let mut betas: SmallVec<CpgBeta, 1> = SmallVec::new();
 
     if let Some(b) = compute_beta(current, CpgSide::C).wrap_err("C-side beta")? {
         betas.push(b);

@@ -744,11 +744,20 @@ pub(crate) fn aggregate_indels(
 mod size_tests {
     use super::*;
 
-    // The budget covers the two inline `PairedCounts` tables (128 bytes each);
-    // without them the struct fits in the original 800.
+    /// A region holds one of these per covered base — 100,401 at the default
+    /// `--segment-max-length` — and the pipeline walks that vec six or seven
+    /// times, so this number is the memory traffic of the whole back half of
+    /// `call`. It came down from 928 by sizing three fields for the common
+    /// case rather than the tail (see `alts`, `PairedCounts`, and `region`);
+    /// pinning it exactly means growing it again is a decision someone makes
+    /// on purpose, with a measurement, rather than a field that slipped in.
     #[test]
-    fn pileup_metrics_size() {
+    fn pileup_metrics_stays_small() {
         let size = std::mem::size_of::<PileupMetrics>();
-        assert!(size < 1024, "PileupMetrics grew to {size} bytes");
+        assert_eq!(
+            size, 568,
+            "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
+             (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
+        );
     }
 }
