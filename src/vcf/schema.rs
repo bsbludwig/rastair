@@ -367,6 +367,12 @@ pub fn register(
     metadata: &[String],
 ) -> Result<(VcfHeader, Schema)> {
     let mut builder = VcfHeader::builder();
+    // `M5mC`/`DPM5mC`/`ADM5mC` are VCF 4.5 reserved FORMAT keys (aliases for the
+    // ChEBI-numbered `M27551C` family). 4.3, seqair's default, does not define
+    // them. See `methylation_fields_avoid_the_cardinality_noodles_rejects` for
+    // why their `Number` is still `.` rather than the `M` the spec pairs them
+    // with.
+    builder.file_format("VCFv4.5");
     for line in metadata {
         builder.add_other_line(SmolStr::from(line.as_str()));
     }
@@ -663,5 +669,41 @@ impl std::str::FromStr for FormatFieldId {
         ALL_FORMAT_IDS.iter().find(|id| **id == s).map(|id| FormatFieldId(id)).ok_or_else(|| {
             format!("Unknown FORMAT field: '{s}'. Available: {}", ALL_FORMAT_IDS.join(", "))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The header must declare the version that defines the fields it uses.
+    ///
+    /// `M5mC`, `DPM5mC` and `ADM5mC` are VCF 4.5 reserved FORMAT keys (aliases
+    /// for the ChEBI-numbered `M27551C` family); 4.3 does not define them, nor
+    /// the `Number=M` cardinality the spec pairs them with. seqair's builder
+    /// defaults to 4.3, so this has to be set here, where the fields are.
+    #[test]
+    fn the_header_declares_the_version_that_defines_its_fields() {
+        let (header, _schema) = register(&[], &[SmolStr::from("sample")], &[])
+            .expect("the schema registers without contigs");
+        assert_eq!(header.file_format(), "VCFv4.5");
+    }
+
+    /// The methylation fields stay at `Number=.`, not the `Number=M` that VCF
+    /// 4.5 pairs them with.
+    ///
+    /// `M` is correct per the spec — "one value for each possible base
+    /// modification for the corresponding ChEBI ID" — but noodles rejects it,
+    /// and *declaring 4.5 does not help*: measured, a 4.5 header with
+    /// `Number=M` is still refused with `invalid FORMAT: ID=M5mC: invalid
+    /// number`. Since noodles is what PacBio's aardvark and much of the
+    /// ecosystem parse with, `M` would make rastair's output unreadable to
+    /// them. `.` says the same thing in a way every reader accepts. Revisit
+    /// when noodles implements the 4.5 cardinalities.
+    #[test]
+    fn methylation_fields_avoid_the_cardinality_noodles_rejects() {
+        for def in [M5MC_DEF.number, DPM5MC_DEF.number, ADM5MC_DEF.number] {
+            assert_eq!(def, Number::Unknown, "must stay `.` until noodles accepts `M`");
+        }
     }
 }

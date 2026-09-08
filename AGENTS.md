@@ -342,15 +342,30 @@ Feature names flow to training output via `FeatureCalculator::feature_names() ->
 `train.rs` uses them for the `--feature-analytics` importance CSVs (`index\tfeature\timportance`)
 and the `--export-features` TSV headers, so both exports agree by construction.
 
-## VCF header cardinality
+## VCF header version and cardinality
 
-**Keep the methylation FORMAT fields at `Number=.`.** They used to be `Number=M`,
-seqair's `Number::BaseModification` ("VCF 4.2+ extension"), which is not in the VCF
-grammar: htslib tolerates it, but noodles — and therefore every tool built on
-noodles, PacBio's `aardvark` included — rejects the *whole file* with
-`invalid FORMAT: ID=M5mC: invalid number`. Anything reintroducing a non-grammar
-cardinality makes rastair's output unreadable to that whole ecosystem, and the
-failure reads like a parser bug rather than our header.
+Rastair declares **`##fileformat=VCFv4.5`** (set in `schema.rs::register`;
+seqair's builder defaults to 4.3). That is the version that defines the fields
+we emit: `M5mC`, `DPM5mC` and `ADM5mC` are VCF 4.5 reserved FORMAT keys, aliases
+for the ChEBI-numbered `M27551C` family. 4.3 defines none of them.
+
+**Keep those three at `Number=.` anyway.** VCF 4.5 pairs them with `Number=M`
+("one value for each possible base modification for the corresponding ChEBI
+ID"), and seqair still has a `Number::BaseModification` variant that emits it —
+but noodles rejects `M`, and **declaring 4.5 does not help.** Measured on one of
+our own files with only the header rewritten:
+
+| `##fileformat` | `Number` on M5mC | aardvark |
+| --- | --- | --- |
+| VCFv4.3 | `M` | rejects the whole file |
+| VCFv4.5 | `M` | **still rejects** |
+| VCFv4.5 | `.` | reads it |
+
+The rejection is `invalid FORMAT: ID=M5mC: invalid number`, and it kills the
+*file*, not the line — so every noodles-based tool, PacBio's `aardvark`
+included, sees nothing. `.` states the same cardinality in a way every reader
+accepts. Revisit when noodles implements the 4.5 cardinalities; the two tests in
+`src/vcf/schema.rs` pin both halves of this.
 
 ## Release version bump checklist
 
