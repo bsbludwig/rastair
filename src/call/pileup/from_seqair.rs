@@ -14,8 +14,8 @@ use crate::{
     utils::SequenceContext,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
-use seqair::bam::pileup::{AlignmentView, Indel, PileupColumn};
-use seqair_types::{Base, RmsAccumulator, SmallVec, Strand};
+use seqair::bam::pileup::{AlignmentView, Indel, PairIndel, PileupColumn};
+use seqair_types::{Base, QPos, RmsAccumulator, SmallVec, Strand};
 use std::rc::Rc;
 use tracing::{debug, instrument, trace};
 
@@ -69,22 +69,12 @@ impl PileupMetrics {
             if total_depth >= max_reads {
                 break;
             }
-            let Some(baseq) = view.qual().and_then(|q| q.get()) else {
-                continue;
-            };
-            let Some(base) = view.base() else {
-                continue;
-            };
-            let Some(qpos) = view.qpos() else {
+            let Some(Observed { base, baseq, qpos }) =
+                observed(&view, params, reference_base, &context)
+            else {
                 continue;
             };
             let strand = view.extra().strand;
-            if !params.quality.filter_fields(view.mapq, baseq) {
-                continue;
-            }
-            if !passes_read_masking(&view, reference_base, &context) {
-                continue;
-            }
             if dedup_overlaps
                 && drops_overlapping_mate(
                     column,
@@ -147,7 +137,27 @@ impl PileupMetrics {
                     depth_offset += 1;
                 }
 
-                if let Some(obs) = build_indel_observation(&view, pos, segment.as_ref(), params) {
+                // A deduplicated column keeps one read per fragment, and that
+                // read is not necessarily the one carrying the fragment's
+                // indel: when the mates disagree the rule can drop exactly the
+                // mate that spans it, and the fragment's only indel observation
+                // goes with it. `from_hts` never had this problem because it
+                // votes per fragment *before* deduplicating. Ask the column for
+                // the pair's evidence instead, and require the mate to pass the
+                // same filters a read in its own right would have to.
+                let evidence = match dedup_overlaps.then(|| column.pair_indel(&view)) {
+                    Some(PairIndel::Mate(mate))
+                        if observed(&mate, params, reference_base, &context).is_some() =>
+                    {
+                        build_indel_observation(&mate, pos, segment.as_ref(), params)
+                    }
+                    Some(PairIndel::Mate(_)) => None,
+                    // `Own`, `None`, and dedup being off all resolve to this
+                    // read; `build_indel_observation` yields `None` when it
+                    // carries no indel.
+                    _ => build_indel_observation(&view, pos, segment.as_ref(), params),
+                };
+                if let Some(obs) = evidence {
                     indel_observations.push(obs);
                 }
             }
@@ -247,13 +257,10 @@ fn drops_overlapping_mate(
     // A mate that is absent from this column, or that fails a filter here,
     // never formed a pair — this read stands on its own.
     let Some(mate) = column.find_record(mate_idx) else { return false };
-    let Some(mate_base) = mate.base() else { return false };
-    let Some(mate_baseq) = mate.qual().and_then(|q| q.get()) else { return false };
-    if !params.quality.filter_fields(mate.mapq, mate_baseq)
-        || !passes_read_masking(&mate, reference_base, context)
-    {
+    let Some(Observed { base: mate_base, .. }) = observed(&mate, params, reference_base, context)
+    else {
         return false;
-    }
+    };
 
     // The name-based collector resolved the pair when it reached the *later*
     // read: it dropped that read if the bases agreed or it was read 2, and
@@ -265,6 +272,38 @@ fn drops_overlapping_mate(
         mate_drops.insert(slot, mate_idx);
     }
     false
+}
+
+/// What a column requires of a read before it counts: a called base, a base
+/// quality, a query position, and the mapping/base-quality and read-end mask
+/// filters.
+///
+/// One definition, applied to a read the column iterates *and* to a mate
+/// consulted through it, so a mate can never contribute evidence that a read in
+/// its own right would have been denied.
+fn observed(
+    view: &AlignmentView<'_, '_, RastairReadExtras>,
+    params: &PileupMappingParams,
+    reference_base: Base,
+    context: &SequenceContext,
+) -> Option<Observed> {
+    let baseq = view.qual()?.get()?;
+    let base = view.base()?;
+    let qpos = view.qpos()?;
+    if !params.quality.filter_fields(view.mapq, baseq) {
+        return None;
+    }
+    if !passes_read_masking(view, reference_base, context) {
+        return None;
+    }
+    Some(Observed { base, baseq, qpos })
+}
+
+/// What a read contributes at one column, once it has passed [`observed`].
+struct Observed {
+    base: Base,
+    baseq: u8,
+    qpos: QPos,
 }
 
 fn passes_read_masking(
@@ -393,6 +432,7 @@ mod tests {
     use crate::call::process::PileupMappingParams;
     use crate::call::variant_calling::{ReadMaskParams, ReadMaskSetting};
     use crate::sequence::{ChunkRegion, Region, Segment};
+    use crate::utils::default;
     use seqair::bam::cigar::{CigarOp, CigarOpType};
     use seqair::bam::pileup::PileupEngine;
     use seqair::bam::record_store::{CustomizeRecordStore, RecordStore, SlimRecord};
@@ -658,6 +698,89 @@ mod tests {
             overlap_start: 0,
             overlap_end: 0,
         })
+    }
+
+    /// Overlap dedup keeps one read per fragment, and the rule can keep the
+    /// mate that does *not* span the indel. The fragment's indel evidence must
+    /// survive that: `from_hts` votes per fragment before deduplicating, so it
+    /// never lost one, and the seqair path has to reach the same answer through
+    /// the column's `pair_indel`.
+    ///
+    /// Fixture: mates agree on the anchor base, so the rule drops the right
+    /// mate — which is the one carrying the deletion.
+    #[test]
+    fn a_dropped_mate_does_not_take_the_fragments_indel_with_it() {
+        // Segment offsets:  0123456789
+        let seq = b"AAAACGTTGG";
+        let seg = segment(seq);
+        let params =
+            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 0, ..default() };
+
+        // Left mate, 6M at 0, no indel. Right mate, 2M2D4M at 2: it deletes the
+        // segment's C,G at offsets 4-5, anchored at position 3.
+        let reads = [
+            TestRead {
+                qname: b"pair".to_vec(),
+                pos: 0,
+                flags: 99,
+                bases: vec![Base::A, Base::A, Base::A, Base::A, Base::C, Base::G],
+                quals: vec![40; 6],
+                mapq: 60,
+                cigar: vec![CigarOp::new(CigarOpType::Match, 6)],
+                mate_pos: 2,
+            },
+            TestRead {
+                qname: b"pair".to_vec(),
+                pos: 2,
+                flags: 147,
+                bases: vec![Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
+                quals: vec![40; 6],
+                mapq: 60,
+                cigar: vec![
+                    CigarOp::new(CigarOpType::Match, 2),
+                    CigarOp::new(CigarOpType::Deletion, 2),
+                    CigarOp::new(CigarOpType::Match, 4),
+                ],
+                mate_pos: 0,
+            },
+        ];
+
+        let alleles_at_anchor = |params: &PileupMappingParams| {
+            let store = store_of(&reads, &params.read_masking);
+            let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(9).unwrap());
+            let mut scratch = Vec::new();
+            let mut out = Vec::new();
+            while let Some(col) = engine.pileups() {
+                if col.pos().as_u64() != 3 {
+                    continue;
+                }
+                let pm =
+                    PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap();
+                out = pm
+                    .indel_data
+                    .map(|d| d.observations.iter().map(|o| o.allele.clone()).collect())
+                    .unwrap_or_default();
+            }
+            out
+        };
+
+        let deletion = IndelAllele::Deletion([Base::C, Base::G].into_iter().collect());
+        assert_eq!(
+            alleles_at_anchor(&params),
+            vec![deletion.clone()],
+            "the deduplicated column must still report the dropped mate's deletion"
+        );
+
+        // With dedup off both mates are their own fragment, and only one of
+        // them spans the deletion — so the count is unchanged, not doubled.
+        let mut kept =
+            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 0, ..default() };
+        kept.variant_calling.keep_overlapping_reads = true;
+        assert_eq!(
+            alleles_at_anchor(&kept),
+            vec![deletion],
+            "keeping both mates must not turn one fragment's indel into two"
+        );
     }
 
     /// A deletion's REF bases must come from the reference *at the deletion*,
