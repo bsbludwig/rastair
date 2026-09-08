@@ -133,9 +133,6 @@ impl PileupMetrics {
                 if extras.has_soft_clip {
                     soft_clip_count += 1;
                 }
-                if extras.has_repeat && matches!(aln.indel_after(), Indel::None) {
-                    depth_offset += 1;
-                }
 
                 // A deduplicated column keeps one read per fragment, and that
                 // read is not necessarily the one carrying the fragment's
@@ -157,6 +154,21 @@ impl PileupMetrics {
                     // carries no indel.
                     _ => build_indel_observation(&view, pos, segment.as_ref(), params),
                 };
+                // The noisy-reference count and the alternate side are two
+                // sides of one split, and `IndelCounts::clean_depth` subtracts
+                // a fragment counted on both twice. So a fragment is
+                // noisy-reference only when *this* read shows no indel (the
+                // alignment shape it slipped from is this read's) and the
+                // fragment contributed no observation at all — the pair's
+                // verdict, not the kept read's. `from_hts` reaches the same
+                // rule through per-fragment votes.
+                if matches!(aln.indel_after(), Indel::None)
+                    && (extras.has_repeat || extras.has_soft_clip)
+                    && evidence.is_none()
+                {
+                    depth_offset += 1;
+                }
+
                 if let Some(obs) = evidence {
                     indel_observations.push(obs);
                 }
