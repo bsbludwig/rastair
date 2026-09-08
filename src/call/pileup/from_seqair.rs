@@ -14,7 +14,7 @@ use crate::{
     utils::SequenceContext,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
-use seqair::bam::pileup::{AlignmentView, Indel, PairIndel, PileupColumn};
+use seqair::bam::pileup::{AlignmentView, Indel, PileupColumn};
 use seqair_types::{Base, QPos, RmsAccumulator, SmallVec, Strand};
 use std::rc::Rc;
 use tracing::{debug, instrument, trace};
@@ -150,22 +150,24 @@ impl PileupMetrics {
                 // read is not necessarily the one carrying the fragment's
                 // indel: when the mates disagree the rule can drop exactly the
                 // mate that spans it, and the fragment's only indel observation
-                // goes with it. `from_hts` never had this problem because it
-                // votes per fragment *before* deduplicating. Ask the column for
-                // the pair's evidence instead, and require the mate to pass the
-                // same filters a read in its own right would have to.
-                let evidence = match dedup_overlaps.then(|| column.pair_indel(&view)) {
-                    Some(PairIndel::Mate(mate))
-                        if observed(&mate, params, reference_base, &context).is_some() =>
-                    {
-                        build_indel_observation(&mate, pos, segment.as_ref(), params)
-                    }
-                    Some(PairIndel::Mate(_)) => None,
-                    // `Own`, `None`, and dedup being off all resolve to this
-                    // read; `build_indel_observation` yields `None` when it
-                    // carries no indel.
-                    _ => build_indel_observation(&view, pos, segment.as_ref(), params),
-                };
+                // would go with it. `from_hts` never had this problem because
+                // it votes per fragment *before* deduplicating — every mate
+                // gets a turn, and the first surviving observation is the
+                // fragment's.
+                //
+                // So the fallback is on the *observation*, not on the indel:
+                // this read's own indel may exist and still be rejected by
+                // `build_indel_observation`'s end-of-read and mismatch filters,
+                // and the mate then still speaks for the fragment. Testing the
+                // indel instead (seqair's `PileupColumn::pair_indel`, whose
+                // rule is "own indel wins, mate never consulted") silently
+                // drops those fragments — it cannot know about filters the
+                // caller owns.
+                let evidence = build_indel_observation(&view, pos, segment.as_ref(), params)
+                    .or_else(|| {
+                        let mate = mate.as_ref()?;
+                        build_indel_observation(mate, pos, segment.as_ref(), params)
+                    });
                 // The noisy-reference count and the alternate side are two
                 // sides of one split, and `IndelCounts::clean_depth` subtracts
                 // a fragment counted on both twice. So a fragment is
@@ -829,6 +831,85 @@ mod tests {
             alleles_at_anchor(&kept),
             vec![deletion],
             "keeping both mates must not turn one fragment's indel into two"
+        );
+    }
+
+    /// The mate speaks for the fragment when the kept read's *observation* is
+    /// missing — not only when its indel is.
+    ///
+    /// `build_indel_observation` rejects an indel too close to a read end or on
+    /// a read with too many non-TAPS mismatches, and those are filters the
+    /// caller owns. A rule keyed on the indel alone (seqair's
+    /// `PileupColumn::pair_indel`: "own indel wins, the mate is never
+    /// consulted") therefore short-circuits on a read whose own indel is about
+    /// to be thrown away, and the fragment contributes nothing. `from_hts` gets
+    /// this right by giving every mate a turn and taking the first observation
+    /// that survives.
+    ///
+    /// Fixture: the mates disagree on the anchor base and the *right* mate is
+    /// first-in-template, so the rule drops the left one — and the surviving
+    /// read reaches the deletion 1 bp into itself, inside the cutoff, while the
+    /// dropped mate reaches it 3 bp in.
+    #[test]
+    fn the_mate_speaks_when_the_kept_reads_observation_is_filtered() {
+        // Segment offsets:  0123456789
+        let seq = b"AAAACGTTGG";
+        let seg = segment(seq);
+        let params =
+            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 2, ..default() };
+
+        let reads = [
+            // Dropped by the rule; reaches the anchor at qpos 3, outside the cutoff.
+            TestRead {
+                qname: b"pair".to_vec(),
+                pos: 0,
+                flags: 147,
+                bases: vec![Base::A, Base::A, Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
+                quals: vec![40; 8],
+                mapq: 60,
+                cigar: vec![
+                    CigarOp::new(CigarOpType::Match, 4),
+                    CigarOp::new(CigarOpType::Deletion, 2),
+                    CigarOp::new(CigarOpType::Match, 4),
+                ],
+                mate_pos: 2,
+            },
+            // Kept; reaches the anchor at qpos 1, inside the cutoff.
+            TestRead {
+                qname: b"pair".to_vec(),
+                pos: 2,
+                flags: 99,
+                bases: vec![Base::A, Base::G, Base::T, Base::T, Base::G, Base::G],
+                quals: vec![40; 6],
+                mapq: 60,
+                cigar: vec![
+                    CigarOp::new(CigarOpType::Match, 2),
+                    CigarOp::new(CigarOpType::Deletion, 2),
+                    CigarOp::new(CigarOpType::Match, 4),
+                ],
+                mate_pos: 0,
+            },
+        ];
+
+        let store = store_of(&reads, &params.read_masking);
+        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(9).unwrap());
+        let mut scratch = Vec::new();
+        let mut alleles: Vec<IndelAllele> = Vec::new();
+        while let Some(col) = engine.pileups() {
+            if col.pos().as_u64() != 3 {
+                continue;
+            }
+            let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut scratch).unwrap();
+            alleles = pm
+                .indel_data
+                .map(|d| d.observations.iter().map(|o| o.allele.clone()).collect())
+                .unwrap_or_default();
+        }
+
+        assert_eq!(
+            alleles,
+            vec![IndelAllele::Deletion([Base::C, Base::G].into_iter().collect())],
+            "the dropped mate's surviving observation must stand in for the kept read's"
         );
     }
 
