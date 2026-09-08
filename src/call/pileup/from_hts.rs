@@ -3,7 +3,7 @@
 use super::{
     indels::{IndelAllele, IndelObservation},
     overlapping_reads::{DedupInfo, NameCollector, resolve_pair},
-    ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
+    ref_features::{indel_ref_window_at, indel_tract_runs_at},
 };
 use crate::{
     call::pileup::{DINUCLEOTIDE_UNITS, HOMOPOLYMER_UNITS, hts_utils::*},
@@ -272,7 +272,7 @@ impl Pileup {
             indel_ref_window_at(idx, &segment)
         };
 
-        let segment_start = segment.range.region.start as usize;
+        let runs = indel_tract_runs_at(pos.into(), &segment);
 
         Ok(Pileup {
             region: segment.range.clone(),
@@ -282,11 +282,8 @@ impl Pileup {
             reference_base,
             indel_observations,
             noisy_ref_count,
-            // `pos` is the anchor, i.e. the base *before* the indel; for a
-            // left-aligned indel that is the base before the repeat. Measured at the
-            // anchor these read ~1 exactly where the tract is longest.
-            homopolymer_run: homopolymer_run_at(pos as usize + 1, &segment, segment_start),
-            dinucleotide_run: dinucleotide_run_at(pos as usize + 1, &segment, segment_start),
+            homopolymer_run: runs.homopolymer,
+            dinucleotide_run: runs.dinucleotide,
             soft_clip_count,
             indel_ref_window,
             indel_ref_anchor,
@@ -465,19 +462,6 @@ mod tests {
     use rust_htslib::bam::Record;
     use rust_htslib::bam::record::{Cigar, CigarString};
     use seqair_types::Strand;
-
-    /// A run counter is a `u8` but a reference tract can be longer than 255. The
-    /// wrapped value would land back in the short-tract rows of
-    /// `ALLELE_FRACTION_BY_TRACT`, applying the simple-sequence prior inside the
-    /// longest repeat in the genome — and panic outright in a debug build.
-    #[test]
-    fn a_reference_run_longer_than_the_counter_saturates() {
-        let homopolymer = test_segment(&[b'A'; 400]);
-        assert_eq!(homopolymer_run_at(300, &homopolymer, 100), u8::MAX);
-
-        let dinucleotide = test_segment(&b"AT".repeat(200));
-        assert!(dinucleotide_run_at(300, &dinucleotide, 100) >= u8::MAX - 1);
-    }
 
     fn test_segment(sequence: &[u8]) -> Segment {
         let start = 100u64;

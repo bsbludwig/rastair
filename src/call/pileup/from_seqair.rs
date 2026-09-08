@@ -2,7 +2,7 @@
 
 use super::{
     indels::{IndelAllele, IndelObservation},
-    ref_features::{dinucleotide_run_at, homopolymer_run_at, indel_ref_window_at},
+    ref_features::{indel_ref_window_at, indel_tract_runs_at},
 };
 use crate::{
     call::process::PileupMappingParams,
@@ -185,13 +185,13 @@ impl PileupMetrics {
         } else {
             let counts = aggregate_indels(&indel_observations, total_depth, depth_offset, pos_u32);
             let (indel_ref_window, indel_ref_anchor) = indel_ref_window_at(idx, &segment);
-            let segment_start = segment.range.region.start as usize;
+            let runs = indel_tract_runs_at(pos, &segment);
             Some(Box::new(crate::call::pileup::indels::IndelData {
                 observations: indel_observations,
                 ref_window: indel_ref_window,
                 ref_anchor: indel_ref_anchor,
-                homopolymer_run: homopolymer_run_at(pos as usize, &segment, segment_start),
-                dinucleotide_run: dinucleotide_run_at(pos as usize, &segment, segment_start),
+                homopolymer_run: runs.homopolymer,
+                dinucleotide_run: runs.dinucleotide,
                 soft_clip_count,
                 counts,
                 calls: Vec::new(),
