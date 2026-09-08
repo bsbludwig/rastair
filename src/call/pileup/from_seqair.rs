@@ -129,8 +129,20 @@ impl PileupMetrics {
             if params.call_indels {
                 let aln = view.alignment();
                 let extras = view.extra();
+                // Every count below describes the *fragment*, not the read that
+                // happened to survive dedup, so the dropped mate's shape has to
+                // be OR'd in — `from_hts` accumulates these over both mates
+                // before it deduplicates.
+                let mate = dedup_overlaps
+                    .then(|| counted_mate(column, &view, params, reference_base, &context))
+                    .flatten();
+                let mate_extras = mate.as_ref().map(|mate| mate.extra());
+                let has_soft_clip =
+                    extras.has_soft_clip || mate_extras.is_some_and(|extras| extras.has_soft_clip);
+                let has_repeat =
+                    extras.has_repeat || mate_extras.is_some_and(|extras| extras.has_repeat);
 
-                if extras.has_soft_clip {
+                if has_soft_clip {
                     soft_clip_count += 1;
                 }
 
@@ -163,7 +175,7 @@ impl PileupMetrics {
                 // verdict, not the kept read's. `from_hts` reaches the same
                 // rule through per-fragment votes.
                 if matches!(aln.indel_after(), Indel::None)
-                    && (extras.has_repeat || extras.has_soft_clip)
+                    && (has_repeat || has_soft_clip)
                     && evidence.is_none()
                 {
                     depth_offset += 1;
@@ -316,6 +328,31 @@ struct Observed {
     base: Base,
     baseq: u8,
     qpos: QPos,
+}
+
+/// The linked mate of `view` in this column, when it would count in its own
+/// right.
+///
+/// Deduplication keeps one read per fragment, but the soft-clip and
+/// noisy-reference counts are properties of the *fragment*: `from_hts` votes
+/// per fragment before it deduplicates, so whatever either mate shows counts
+/// once. Reading them off the surviving read alone loses whatever only the
+/// dropped mate showed.
+///
+/// The mate must clear [`observed`], the same bar the kept read cleared, so it
+/// cannot contribute evidence a read in its own right would have been denied.
+fn counted_mate<'a, 'eng>(
+    column: &'a PileupColumn<'eng, RastairReadExtras>,
+    view: &AlignmentView<'a, 'eng, RastairReadExtras>,
+    params: &PileupMappingParams,
+    reference_base: Base,
+    context: &SequenceContext,
+) -> Option<AlignmentView<'a, 'eng, RastairReadExtras>> {
+    if !view.in_mate_overlap() {
+        return None;
+    }
+    let mate = column.find_record(view.alignment().mate_idx()?)?;
+    observed(&mate, params, reference_base, context).is_some().then_some(mate)
 }
 
 fn passes_read_masking(
