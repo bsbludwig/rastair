@@ -170,11 +170,11 @@ impl Pileup {
         let pos = pile.pos();
         let idx = segment.pos_to_idx(pos)?;
         let depth = pile.depth();
-        let max_reads = depth.min(params.max_coverage);
+        let depth = usize::try_from(depth).wrap_err("pileup depth exceeds usize")?;
+        let max_reads = params.max_coverage.clamp(depth);
         if depth > max_reads {
             debug!(pos, depth, "Capping number of reads in pileup to {max_reads}");
         }
-        let max_reads = usize::try_from(max_reads).wrap_err("max_reads exceeds usize")?;
 
         let mut raw_reads = Vec::with_capacity(max_reads);
         let mut to_remove = SmallVec::<usize, 16>::new();

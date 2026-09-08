@@ -171,6 +171,29 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
     Ok(())
 }
 
+/// `--max-coverage 0` means "no limit", and used to mean two opposite things
+/// two lines apart: the seqair depth cap read it as `Unlimited` and loaded
+/// every read, while the per-column code read it as a cap of zero and counted
+/// none of them. The run produced an empty VCF at unbounded memory.
+#[test]
+fn max_coverage_zero_means_no_limit() -> Result<()> {
+    let unlimited =
+        rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML, "--max-coverage=0"]).output()?;
+    let huge = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--max-coverage=4000000000"])
+        .output()?;
+
+    let body = |out: &str| {
+        out.lines().filter(|l| !l.starts_with("##")).map(str::to_owned).collect::<Vec<_>>()
+    };
+    let unlimited_body = body(&unlimited.stdout());
+    assert!(unlimited_body.len() > 1, "--max-coverage=0 produced no records at all");
+    assert_eq!(unlimited_body, body(&huge.stdout()), "a cap of 0 must not cap anything");
+
+    Ok(())
+}
+
 #[test]
 fn vcf_with_ml() -> Result<()> {
     apply_common_filters!();

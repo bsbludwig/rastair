@@ -34,7 +34,7 @@ impl PileupMetrics {
         let pos_u32 = u32::try_from(pos).wrap_err("pileup position exceeds u32")?;
         let idx = segment.pos_to_idx(pos_u32)?;
         let depth = column.depth();
-        let max_reads = depth.min(params.max_coverage as usize);
+        let max_reads = params.max_coverage.clamp(depth);
         if depth > max_reads {
             debug!(pos, depth, "Capping number of reads in pileup to {max_reads}");
         }
@@ -674,7 +674,9 @@ mod tests {
         if params.rescue_soft_clip_cpg {
             engine.set_soft_clip_overhang(1);
         }
-        engine.set_max_depth(params.max_coverage);
+        if let Some(cap) = params.max_coverage.per_column() {
+            engine.set_max_depth(cap);
+        }
 
         let mut scratch = Vec::new();
         let mut columns = 0;
@@ -1638,7 +1640,7 @@ mod tests {
             reads.push(TestRead::matching(name.as_bytes(), 6, 8, Base::A, OT_SECOND));
         }
         let mut capped = dedup_params();
-        capped.variant_calling.max_coverage = 3;
+        capped.variant_calling.max_coverage = crate::call::variant_calling::MaxCoverage::new(3);
         assert_same_as_name_collector(&reads, REF, &capped);
     }
 

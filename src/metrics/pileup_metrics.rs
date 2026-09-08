@@ -752,4 +752,3 @@ mod size_tests {
         assert!(size < 1024, "PileupMetrics grew to {size} bytes");
     }
 }
-

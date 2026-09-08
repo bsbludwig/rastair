@@ -98,7 +98,11 @@ pub fn get_pileups(
 
     // Go over each column in the pileup from htslib and build our own pileup
     let mut pileup = readers.bam.pileup();
-    pileup.set_max_depth(params.max_coverage);
+    // htslib's own cap; `0` there means "use the default", not "unlimited", so
+    // an unlimited run asks for the largest cap htslib can take instead.
+    pileup.set_max_depth(
+        params.max_coverage.per_column().map_or(u32::MAX, std::num::NonZeroU32::get),
+    );
     let mut scratch = PileupScratch::new(params);
     let piles = pileup
         .filter_map(|p| match p {
@@ -159,7 +163,7 @@ pub fn get_pileups(
     readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
     readers.inner_mut().customize_mut().read_masking = params.read_masking.clone();
 
-    let depth_limit = match NonZeroU32::new(params.max_coverage) {
+    let depth_limit = match params.max_coverage.per_column() {
         Some(cap) => DepthLimit::PerColumn(cap),
         None => DepthLimit::Unlimited,
     };
@@ -218,7 +222,9 @@ pub fn get_pileups(
             .inner_mut()
             .pileup(seqair_seg, depth_limit)
             .wrap_err("Failed to start seqair pileup")?;
-        guard.set_max_depth(params.max_coverage);
+        if let Some(cap) = params.max_coverage.per_column() {
+            guard.set_max_depth(cap);
+        }
         if params.rescue_soft_clip_cpg {
             // Recover exactly the single CpG-partner base the aligner clipped.
             guard.set_soft_clip_overhang(1);
