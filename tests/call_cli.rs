@@ -331,10 +331,7 @@ fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
         let Some(deduped_call) = deduped.get(key) else { continue };
         let before = kept_call.mod_count + kept_call.unmod_count;
         let after = deduped_call.mod_count + deduped_call.unmod_count;
-        assert!(
-            after <= before,
-            "{key:?}: dedup increased coverage from {before} to {after}"
-        );
+        assert!(after <= before, "{key:?}: dedup increased coverage from {before} to {after}");
     }
 
     Ok(())
