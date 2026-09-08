@@ -23,7 +23,7 @@ use crate::{
     utils::cli,
 };
 use better_default::Default;
-use biosphere::gpu::{GpuForest, GpuInitError};
+use biosphere::gpu::{GpuContext, GpuForest, GpuInitError};
 use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
@@ -31,7 +31,7 @@ use color_eyre::{
     eyre::{Context, ensure},
 };
 use seqair_types::Probability;
-use std::{fs, io::Read, path::Path};
+use std::{fs, io::Read, path::Path, sync::Arc};
 use tracing::{debug, instrument};
 
 pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.5);
@@ -86,19 +86,19 @@ impl MachineLearningParams {
         )
         .wrap_err("Failed to load combined RF model")?;
 
-        let max_samples = GPU_BATCH_BUFFER_SIZE;
         let gpu = if self.gpu {
-            let gpu_forest = |forest| {
-                GpuForest::from_flat_forest(forest, max_samples)
-                    .wrap_err("Failed to initialise GPU context")
-                    .note(GpuInitError::hints())
-            };
+            let ctx = GpuContext::new()
+                .wrap_err("Failed to initialise GPU context")
+                .note(GpuInitError::hints())?;
+            let gpu_forest =
+                |forest| GpuForest::with_context(Arc::clone(&ctx), forest, GPU_BATCH_BUFFER_SIZE);
+
             Some(GpuRastairModel {
-                cpg: gpu_forest(&model.cpg)?,
-                denovo: gpu_forest(&model.denovo)?,
-                others: gpu_forest(&model.others)?,
-                insertion: gpu_forest(&model.insertion)?,
-                deletion: gpu_forest(&model.deletion)?,
+                cpg: gpu_forest(&model.cpg),
+                denovo: gpu_forest(&model.denovo),
+                others: gpu_forest(&model.others),
+                insertion: gpu_forest(&model.insertion),
+                deletion: gpu_forest(&model.deletion),
             })
         } else {
             None

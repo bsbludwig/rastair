@@ -152,11 +152,16 @@ pub struct FlatRastairModel {
     pub deletion: FlatForest,
 }
 
-/// GPU-accelerated forests for each model type, used as per-thread prototypes.
+/// The five forests on one shared [`biosphere::gpu::GpuContext`], owned by the
+/// inference thread.
 ///
-/// Create once via [`MachineLearningParams::init`], then call [`GpuRastairModel::fork`]
-/// inside each worker thread to get a thread-local handle that shares compiled
-/// pipelines and uploaded node data without re-uploading.
+/// They used to sit on five devices, because biosphere's UMA upload waited on
+/// the device's most recent submission from any source, which on a shared
+/// device was the previous model's dispatch. Biosphere now uploads with
+/// `write_buffer` everywhere, and with that fixed one device measures the same
+/// as five on Metal (chr12:20-30Mb, 1.87 s vs 1.90 s) while being what a
+/// discrete GPU wants: one queue pipelines the five dispatches that separate
+/// devices would time-slice.
 pub struct GpuRastairModel {
     pub cpg: GpuForest,
     pub denovo: GpuForest,
@@ -173,17 +178,6 @@ impl GpuRastairModel {
             MlModel::DenovoCpg => &self.denovo,
             MlModel::Insertion => &self.insertion,
             MlModel::Deletion => &self.deletion,
-        }
-    }
-
-    /// Create per-thread handles that share GPU pipelines and node data with `self`.
-    pub fn fork(&self, max_samples: usize) -> Self {
-        Self {
-            cpg: self.cpg.fork(max_samples),
-            denovo: self.denovo.fork(max_samples),
-            others: self.others.fork(max_samples),
-            insertion: self.insertion.fork(max_samples),
-            deletion: self.deletion.fork(max_samples),
         }
     }
 }

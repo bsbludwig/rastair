@@ -20,8 +20,15 @@ use color_eyre::eyre::{Report, Result, eyre};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ndarray::{Array2, s};
 use seqair_types::Probability;
-use std::{sync::Arc, thread};
-use tracing::{debug, trace};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+use tracing::{debug, trace, warn};
 
 /// A dispatch failed for a whole round, so every job in it hears about it. A
 /// [`Report`] is not `Clone`, and this is only ever read to log and fall back.
@@ -32,6 +39,12 @@ pub struct InferenceStage {
     /// `None` only while [`Drop`] closes the channel to stop the thread.
     jobs: Option<Sender<Job>>,
     thread: Option<thread::JoinHandle<()>>,
+    /// Set by the first region the GPU fails to score. From then on every
+    /// region goes straight to the CPU: a GPU that has failed once tends to
+    /// keep failing, and each retry costs a full collect timeout serialised
+    /// through this one thread, plus a second feature extraction for the
+    /// fallback.
+    failed: AtomicBool,
 }
 
 struct Job {
@@ -59,7 +72,7 @@ impl InferenceStage {
             .spawn(move || run(&gpu, &incoming))
             .map_err(|error| eyre!("Failed to start the GPU inference thread: {error}"))?;
 
-        Ok(Self { jobs: Some(jobs), thread: Some(thread) })
+        Ok(Self { jobs: Some(jobs), thread: Some(thread), failed: AtomicBool::new(false) })
     }
 
     /// Extract, score and apply a region's ML candidates.
@@ -80,7 +93,7 @@ impl InferenceStage {
             return Ok(());
         }
 
-        let (rows, targets) = extract_ml_rows(pileups, ml, model, score_indels).split();
+        let (rows, targets) = extract_ml_rows(pileups, ml, model, score_indels)?.split()?;
         self.submit(rows, targets)?.apply(pileups, ml.threshold)
     }
 
@@ -97,18 +110,28 @@ impl InferenceStage {
     }
 }
 
-/// Score `pileups` on the inference thread, if this run has one.
+/// Score `pileups` on the inference thread, if this run has one that still works.
 ///
-/// `None` says there is no GPU stage, so the caller has to score on its own
-/// thread; `Some(Err(_))` says the GPU tried and failed, and the caller should
-/// fall back the same way.
+/// `None` says there is no GPU stage, or it has already failed once, so the
+/// caller has to score on its own thread; `Some(Err(_))` says the GPU tried
+/// and failed just now, and the caller should fall back the same way. Only the
+/// first failure is reported this way; after it the stage is retired for the
+/// rest of the run.
 pub fn score_on_gpu(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     score_indels: bool,
 ) -> Option<Result<()>> {
     let stage = ml.inference.as_ref()?;
-    Some(stage.score(pileups, ml, score_indels))
+    if stage.failed.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let result = stage.score(pileups, ml, score_indels);
+    if result.is_err() && !stage.failed.swap(true, Ordering::Relaxed) {
+        warn!("GPU inference failed once; scoring the rest of the run on the CPU");
+    }
+    Some(result)
 }
 
 impl Ticket {
@@ -131,19 +154,23 @@ impl Drop for InferenceStage {
         // dropped on the inference thread rather than on a rayon worker during
         // TLS teardown, which is what used to upset Metal.
         self.jobs = None;
-        if let Some(thread) = self.thread.take() {
-            if thread.join().is_err() {
-                tracing::error!("The GPU inference thread panicked");
-            }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::error!("The GPU inference thread panicked");
         }
     }
 }
 
 fn run(gpu: &GpuRastairModel, incoming: &Receiver<Job>) {
-    let mut dispatches: u64 = 0;
-    let mut rows_total: u64 = 0;
+    let mut tally = Tally::default();
+    let started = Instant::now();
 
-    while let Ok(first) = incoming.recv() {
+    loop {
+        let waiting = Instant::now();
+        let Ok(first) = incoming.recv() else { break };
+        tally.idle += waiting.elapsed();
+
         let mut jobs = vec![first];
         // Take whatever else is already waiting, but never wait for more: a
         // timer here would add exactly the latency this thread exists to
@@ -152,20 +179,60 @@ fn run(gpu: &GpuRastairModel, incoming: &Receiver<Job>) {
         jobs.extend(incoming.try_iter());
 
         let round = Round::new(jobs);
-        dispatches += 1;
-        rows_total += round.rows.iter().map(|(_, r)| r.nrows() as u64).sum::<u64>();
+        tally.rounds += 1;
+        tally.jobs += round.replies.len() as u64;
+        tally.rows += round.rows.iter().map(|(_, rows)| rows.nrows() as u64).sum::<u64>();
         trace!(jobs = round.replies.len(), "Scoring a round");
 
+        let scoring = Instant::now();
         let scored = submit_and_collect(&round.rows, gpu).map_err(Arc::new);
+        tally.busy += scoring.elapsed();
+
         round.reply(scored);
     }
 
-    debug!(
-        dispatches,
-        rows = rows_total,
-        rows_per_dispatch = rows_total.checked_div(dispatches).unwrap_or(0),
-        "GPU inference thread finished"
-    );
+    tally.report(started.elapsed());
+}
+
+/// What the stage did, so the next question — is it the bottleneck, and is a
+/// worker's wait long enough to be worth pipelining around? — has an answer
+/// that is measured rather than reasoned about.
+#[derive(Default)]
+struct Tally {
+    rounds: u64,
+    jobs: u64,
+    rows: u64,
+    /// Time inside `submit_and_collect`. This is the whole of what a waiting
+    /// worker can be blocked on, so it bounds what pipelining could recover.
+    busy: Duration,
+    /// Time blocked in `recv` with nothing to do.
+    idle: Duration,
+}
+
+impl Tally {
+    fn report(&self, wall: Duration) {
+        let per = |n: u64| n.checked_div(self.rounds);
+        debug!(
+            rounds = self.rounds,
+            jobs = self.jobs,
+            rows = self.rows,
+            jobs_per_round = per(self.jobs).unwrap_or(0),
+            rows_per_round = per(self.rows).unwrap_or(0),
+            busy_ms = self.busy.as_millis(),
+            idle_ms = self.idle.as_millis(),
+            wall_ms = wall.as_millis(),
+            busy_percent = percent(self.busy, wall),
+            "GPU inference thread finished"
+        );
+    }
+}
+
+fn percent(part: Duration, whole: Duration) -> u64 {
+    let whole = whole.as_micros();
+    if whole == 0 {
+        return 0;
+    }
+    u64::try_from(part.as_micros().saturating_mul(100) / whole).unwrap_or(u64::MAX)
 }
 
 /// One dispatch's worth of work: the queued jobs' rows in one set of arrays,

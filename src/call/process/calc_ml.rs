@@ -1,3 +1,4 @@
+use crate::utils::logging::ThisIsABug;
 use crate::{
     call::pileup::indels::IndelAllele,
     metrics::{
@@ -6,22 +7,35 @@ use crate::{
             ByModel, GpuRastairModel, MachineLearning, MlModel, PlattScaling, RastairFlatModel,
         },
     },
-    utils::logging::ThisIsABug,
     vcf::RastairFilter,
 };
-use color_eyre::eyre::{ContextCompat as _, Result};
+use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
 use ndarray::{Array2, s};
 use seqair_types::{Base, Probability};
-use tracing::{debug, instrument};
+use tracing::debug;
+#[cfg(test)]
+use tracing::instrument;
 
-/// Size buffer for reasonably full chunk (10k positions × 4 alts max) per thread.
-pub const GPU_BATCH_BUFFER_SIZE: usize = 40_000;
+/// Rows a single dispatch can carry, and so the size of the per-model GPU
+/// buffers: `max_samples × n_trees × 4 B` of intermediates, 26 MB per model at
+/// this value against the 800-tree bundled forests.
+///
+/// A larger round is not refused, it is split — [`submit_and_collect`] chunks
+/// by this — so the only cost of a low value is more rounds, and the only cost
+/// of a high one is a reservation that on a discrete GPU is real VRAM. A 100 kb
+/// segment produces ~4,900 rows across all five models, so a region is never
+/// split, and there is room left should the inference queue ever back up
+/// enough for regions to coalesce (measured so far: it does not).
+pub const GPU_BATCH_BUFFER_SIZE: usize = 8_192;
 
 /// Filter out very unlikely alts before running slow ML
 fn pre_ml_filter(c: &MetricsForAlt) -> bool {
     c.metrics.pos_metrics.depth > 1 && *c.metrics.pos_metrics.mapq > 5.
 }
 
+/// One candidate at a time, the way scoring worked before regions were batched.
+/// Kept as the reference the batched paths are tested against.
+#[cfg(test)]
 #[instrument(level = "debug", skip_all)]
 pub fn add_ml_metrics(
     before: Option<&PileupMetrics>,
@@ -79,33 +93,11 @@ pub fn add_ml_metrics(
         }
     }
     for (i, score) in indel_scores {
-        if let Some(ref mut d) = current.indel_data {
-            if let Some(call) = d.calls.get_mut(i) {
-                call.ml = Some(score);
-            }
+        if let Some(d) = current.indel_data.as_mut()
+            && let Some(call) = d.calls.get_mut(i)
+        {
+            call.ml = Some(score);
         }
-    }
-
-    Ok(())
-}
-
-/// Sequential ML prediction over a Vec of pileups, equivalent to streaming
-/// `map_surrounding(add_ml_metrics)`. Used as a CPU fallback when GPU batch
-/// prediction is unavailable.
-///
-/// FIXME: Does this do the same really in regard to matching by position?
-pub fn add_ml_metrics_vec(
-    pileups: &mut [PileupMetrics],
-    ml: &MachineLearning,
-    score_indels: bool,
-) -> Result<()> {
-    for i in 0..pileups.len() {
-        let (left, rest) = pileups.split_at_mut(i);
-        let (current, right) =
-            rest.split_first_mut().wrap_err("Failed to split pileups").this_is_a_bug()?;
-        let before = left.last().map(|p| p as &_);
-        let after = right.first().map(|p| p as &_);
-        add_ml_metrics(before, current, after, ml, score_indels)?;
     }
 
     Ok(())
@@ -121,14 +113,11 @@ pub fn extract_ml_rows(
     ml: &MachineLearning,
     model: &RastairFlatModel,
     score_indels: bool,
-) -> MlBatch {
+) -> Result<MlBatch> {
     let calc = &ml.feature_calculator;
     let feature_num = calc.feature_num();
 
-    // Each candidate belongs to exactly one model, so `positions * 4` bounds
-    // every per-model row count at once.
-    let max_rows = pileups.len() * 4;
-    let mut batch = MlBatch::from_fn(|m| ModelBatch::new(max_rows, feature_num.get(m)));
+    let mut batch = MlBatch::from_fn(|m| ModelBatch::new(feature_num.get(m)));
     let mut pre_ml_rejected: Vec<(usize, Base)> = Vec::new();
 
     for i in 0..pileups.len() {
@@ -153,7 +142,7 @@ pub fn extract_ml_rows(
             };
 
             let Some(f) = usable_features(features, "alt") else { continue };
-            batch[which].push(Pending::snp(i, alt_base, model.platt(which)), &f);
+            batch[which].push(Pending::snp(i, alt_base, model.platt(which)), &f)?;
         }
 
         let indel_calls = current.indel_data.as_deref().map_or(&[][..], |d| &d.calls);
@@ -166,7 +155,7 @@ pub fn extract_ml_rows(
             };
 
             let Some(f) = usable_features(features, "indel") else { continue };
-            batch[which].push(Pending::indel(i, indel_idx, model.platt(which)), &f);
+            batch[which].push(Pending::indel(i, indel_idx, model.platt(which)), &f)?;
         }
     }
 
@@ -176,7 +165,7 @@ pub fn extract_ml_rows(
         }
     }
 
-    batch
+    Ok(batch)
 }
 
 /// The one feature row a calculator produced, unless it failed or is `NaN`.
@@ -192,6 +181,37 @@ fn usable_features(features: Result<Array2<f32>>, kind: &'static str) -> Option<
         Ok(f) if f.is_any_nan() => None,
         Ok(f) => Some(f),
     }
+}
+
+/// Score `pileups` on the calling thread with the flat forests: the CPU twin of
+/// the inference thread's scoring.
+///
+/// Every candidate in the region goes into one `predict` call per model. That
+/// batch is what lets biosphere walk 16 samples per tree in lockstep, which is
+/// ~5x faster than scoring candidates one at a time as [`add_ml_metrics`]
+/// does.
+pub fn score_on_cpu(
+    pileups: &mut [PileupMetrics],
+    ml: &MachineLearning,
+    score_indels: bool,
+) -> Result<()> {
+    let Some(model) = ml.model.as_ref() else {
+        return Ok(());
+    };
+    if pileups.is_empty() {
+        return Ok(());
+    }
+
+    let (rows, targets) = extract_ml_rows(pileups, ml, model, score_indels)?.split()?;
+    let scores = MlScores::from_fn(|m| {
+        let rows = rows[m].view();
+        if rows.nrows() == 0 {
+            return Vec::new();
+        }
+        model.forest(m).predict(&rows).to_vec()
+    });
+    apply_ml_scores(pileups, &targets, &scores, ml.threshold);
+    Ok(())
 }
 
 /// Score a batch on the GPU: one dispatch per model per [`GPU_BATCH_BUFFER_SIZE`] rows.
@@ -216,7 +236,7 @@ pub fn submit_and_collect(rows: &MlRows, gpu: &GpuRastairModel) -> Result<MlScor
 
         for model in MlModel::ALL {
             if let Some(handle) = handles[model].take() {
-                scores[model].extend(handle.collect()?.iter().copied());
+                scores[model].extend(handle.collect()?.iter().map(|&score| f64::from(score)));
             }
         }
     }
@@ -238,7 +258,7 @@ pub fn apply_ml_scores(
     for model in MlModel::ALL {
         for (p, &raw) in targets[model].iter().zip(scores[model].iter()) {
             let Some(pileup) = pileups.get_mut(p.pileup_idx) else { continue };
-            let calibrated: Probability = p.platt.calibrate_score(f64::from(raw));
+            let calibrated: Probability = p.platt.calibrate_score(raw);
 
             if let Some(indel_idx) = p.indel_idx {
                 if let Some(d) = pileup.indel_data.as_mut()
@@ -261,7 +281,14 @@ pub fn apply_ml_scores(
 pub type MlBatch = ByModel<ModelBatch>;
 
 /// Raw, uncalibrated forest scores for an [`MlBatch`], in the same row order.
-pub type MlScores = ByModel<Vec<f32>>;
+///
+/// `f64` because that is what [`FlatForest::predict`] returns and what
+/// [`PlattScaling::calibrate_score`] takes; the CPU path then calibrates the
+/// very same value the one-candidate-at-a-time path did, so batching does not
+/// change a single output. The GPU's `f32` scores widen losslessly.
+///
+/// [`FlatForest::predict`]: biosphere::FlatForest::predict
+pub type MlScores = ByModel<Vec<f64>>;
 
 /// The half of an [`MlBatch`] the GPU needs: a filled feature matrix per model.
 pub type MlRows = ByModel<Array2<f32>>;
@@ -275,39 +302,52 @@ impl MlBatch {
     ///
     /// The row-to-target alignment [`ModelBatch`] maintains is what survives
     /// the split, so this is the only place allowed to take the two apart.
-    pub fn split(self) -> (MlRows, MlTargets) {
+    pub fn split(self) -> Result<(MlRows, MlTargets)> {
         let mut rows = MlRows::from_fn(|_| Array2::zeros((0, 0)));
         let mut targets = MlTargets::from_fn(|_| Vec::new());
         for (model, batch) in self {
-            (rows[model], targets[model]) = batch.split();
+            (rows[model], targets[model]) = batch.split()?;
         }
-        (rows, targets)
+        Ok((rows, targets))
     }
 }
 
 /// Feature rows for one model, and where each row's score has to be written back.
 ///
-/// `features` is allocated to an upper bound; `pending.len()` is how many of its
-/// rows are filled, so the two cannot drift apart.
+/// Rows are appended to a flat `Vec` that grows with the candidates actually
+/// found, rather than reserved at `positions × 4` up front: a 100 kb region
+/// has ~5,000 rows across all five models, and the bound was two orders of
+/// magnitude above that. `pending.len() × n_features` is always the length of
+/// `features`, which [`Self::push`] enforces, so the two cannot drift apart.
 pub struct ModelBatch {
     pending: Vec<Pending>,
-    features: Array2<f32>,
+    features: Vec<f32>,
+    n_features: usize,
 }
 
 impl ModelBatch {
-    fn new(max_rows: usize, n_features: usize) -> Self {
-        Self { pending: Vec::new(), features: Array2::zeros((max_rows, n_features)) }
+    fn new(n_features: usize) -> Self {
+        Self { pending: Vec::new(), features: Vec::new(), n_features }
     }
 
-    fn push(&mut self, item: Pending, features: &Array2<f32>) {
-        self.features.row_mut(self.pending.len()).assign(&features.row(0));
+    fn push(&mut self, item: Pending, features: &Array2<f32>) -> Result<()> {
+        let row = features.as_slice().wrap_err("Feature row is not contiguous").this_is_a_bug()?;
+        ensure!(
+            row.len() == self.n_features,
+            "Feature row has {} values, model expects {}",
+            row.len(),
+            self.n_features
+        );
+        self.features.extend_from_slice(row);
         self.pending.push(item);
+        Ok(())
     }
 
-    /// Trim the unfilled tail off `features` and hand both halves over.
-    fn split(self) -> (Array2<f32>, Vec<Pending>) {
-        let filled = self.pending.len();
-        (self.features.slice_move(s![..filled, ..]), self.pending)
+    fn split(self) -> Result<(Array2<f32>, Vec<Pending>)> {
+        let rows = Array2::from_shape_vec((self.pending.len(), self.n_features), self.features)
+            .wrap_err("Feature rows do not match the number of candidates")
+            .this_is_a_bug()?;
+        Ok((rows, self.pending))
     }
 }
 

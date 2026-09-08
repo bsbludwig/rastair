@@ -197,13 +197,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
     // parallel. From there, we send ready-made VCF records to a special writer
     // thread that only deals with writing the VCF file.
     let writer_threads = params.vcf.vcf_threads;
-    let mut worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
-
-    // A worker still blocks while its own region is scored, so the two extra
-    // threads still buy latency hiding; what changed is that they no longer
-    // cost a forked set of GPU buffers each.
-    let bonus_threads = if params.ml.gpu { 2 } else { 0 };
-    worker_threads += bonus_threads;
+    let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
 
     // Needs the worker count to size the inference queue, so it cannot be built
     // before now.
@@ -444,18 +438,19 @@ fn process_collected_pileups(
     }
 
     // Pass 2: ML prediction on the inference thread when there is one, and on
-    // this thread otherwise or if the GPU failed.
+    // this thread otherwise or if the GPU failed. Both score the region as one
+    // batch per model; see `score_on_cpu` for why that matters on the CPU.
     let score_indels = params.indel.needs_ml_scores(ml.enabled());
     match process::score_on_gpu(&mut pileups, ml, score_indels) {
         Some(Ok(())) => {}
         Some(Err(error)) => {
             warn!(
                 error = format!("{error:#}"),
-                "failed to calculate ML score on GPU, falling back to CPU"
+                "failed to calculate ML score on GPU, scoring this region on the CPU"
             );
-            process::add_ml_metrics_vec(&mut pileups, ml, score_indels)?;
+            process::score_on_cpu(&mut pileups, ml, score_indels)?;
         }
-        None => process::add_ml_metrics_vec(&mut pileups, ml, score_indels)?,
+        None => process::score_on_cpu(&mut pileups, ml, score_indels)?,
     }
 
     if params.indel.rescues_hom_ref() {
