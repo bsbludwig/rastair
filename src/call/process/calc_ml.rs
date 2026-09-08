@@ -10,7 +10,7 @@ use crate::{
     vcf::RastairFilter,
 };
 use color_eyre::eyre::{ContextCompat as _, Result};
-use ndarray::{Array2, ArrayView2, s};
+use ndarray::{Array2, s};
 use seqair_types::{Base, Probability};
 use tracing::{debug, instrument};
 
@@ -111,31 +111,6 @@ pub fn add_ml_metrics_vec(
     Ok(())
 }
 
-/// Batch GPU ML prediction over a full chunk of pileups.
-///
-/// Three stages, deliberately separate: [`extract_ml_rows`] needs the region's
-/// pileups and their neighbours, [`submit_and_collect`] needs nothing but `f32`
-/// rows, and [`apply_ml_scores`] needs the region again. Only the middle one
-/// touches the GPU.
-pub fn batch_add_ml_metrics(
-    pileups: &mut [PileupMetrics],
-    ml: &MachineLearning,
-    gpu: &GpuRastairModel,
-    score_indels: bool,
-) -> Result<()> {
-    let Some(model) = ml.model.as_ref() else {
-        return Ok(());
-    };
-    if pileups.is_empty() {
-        return Ok(());
-    }
-
-    let batch = extract_ml_rows(pileups, ml, model, score_indels);
-    let scores = submit_and_collect(&batch, gpu)?;
-    apply_ml_scores(pileups, &batch, &scores, ml.threshold);
-    Ok(())
-}
-
 /// Build one feature row per ML candidate, and tag the alts not worth scoring.
 ///
 /// Reads `pileups[i - 1]` and `pileups[i + 1]`, so this has to run where the
@@ -223,15 +198,15 @@ fn usable_features(features: Result<Array2<f32>>, kind: &'static str) -> Option<
 ///
 /// Every model is submitted before any is collected. The five forests sit on
 /// five separate devices, so this is what lets their GPU work overlap.
-pub fn submit_and_collect(batch: &MlBatch, gpu: &GpuRastairModel) -> Result<MlScores> {
-    let mut scores = MlScores::from_fn(|m| Vec::with_capacity(batch[m].len()));
-    let longest = MlModel::ALL.into_iter().map(|m| batch[m].len()).max().unwrap_or(0);
+pub fn submit_and_collect(rows: &MlRows, gpu: &GpuRastairModel) -> Result<MlScores> {
+    let mut scores = MlScores::from_fn(|m| Vec::with_capacity(rows[m].nrows()));
+    let longest = MlModel::ALL.into_iter().map(|m| rows[m].nrows()).max().unwrap_or(0);
 
     for start in (0..longest).step_by(GPU_BATCH_BUFFER_SIZE) {
         let mut handles = ByModel::from_fn(|_| None);
 
         for model in MlModel::ALL {
-            let rows = batch[model].rows();
+            let rows = rows[model].view();
             if start >= rows.nrows() {
                 continue;
             }
@@ -256,12 +231,12 @@ pub fn submit_and_collect(batch: &MlBatch, gpu: &GpuRastairModel) -> Result<MlSc
 /// stops at the shorter side.
 pub fn apply_ml_scores(
     pileups: &mut [PileupMetrics],
-    batch: &MlBatch,
+    targets: &MlTargets,
     scores: &MlScores,
     threshold: Probability,
 ) {
     for model in MlModel::ALL {
-        for (p, &raw) in batch[model].pending.iter().zip(scores[model].iter()) {
+        for (p, &raw) in targets[model].iter().zip(scores[model].iter()) {
             let Some(pileup) = pileups.get_mut(p.pileup_idx) else { continue };
             let calibrated: Probability = p.platt.calibrate_score(f64::from(raw));
 
@@ -288,6 +263,28 @@ pub type MlBatch = ByModel<ModelBatch>;
 /// Raw, uncalibrated forest scores for an [`MlBatch`], in the same row order.
 pub type MlScores = ByModel<Vec<f32>>;
 
+/// The half of an [`MlBatch`] the GPU needs: a filled feature matrix per model.
+pub type MlRows = ByModel<Array2<f32>>;
+
+/// The half of an [`MlBatch`] the GPU does not need: where each row's score
+/// goes. Row `i` of `MlRows[m]` scores `MlTargets[m][i]`.
+pub type MlTargets = ByModel<Vec<Pending>>;
+
+impl MlBatch {
+    /// Split off the rows, so they can be scored somewhere the region is not.
+    ///
+    /// The row-to-target alignment [`ModelBatch`] maintains is what survives
+    /// the split, so this is the only place allowed to take the two apart.
+    pub fn split(self) -> (MlRows, MlTargets) {
+        let mut rows = MlRows::from_fn(|_| Array2::zeros((0, 0)));
+        let mut targets = MlTargets::from_fn(|_| Vec::new());
+        for (model, batch) in self {
+            (rows[model], targets[model]) = batch.split();
+        }
+        (rows, targets)
+    }
+}
+
 /// Feature rows for one model, and where each row's score has to be written back.
 ///
 /// `features` is allocated to an upper bound; `pending.len()` is how many of its
@@ -307,16 +304,14 @@ impl ModelBatch {
         self.pending.push(item);
     }
 
-    fn len(&self) -> usize {
-        self.pending.len()
-    }
-
-    fn rows(&self) -> ArrayView2<'_, f32> {
-        self.features.slice(s![..self.pending.len(), ..])
+    /// Trim the unfilled tail off `features` and hand both halves over.
+    fn split(self) -> (Array2<f32>, Vec<Pending>) {
+        let filled = self.pending.len();
+        (self.features.slice_move(s![..filled, ..]), self.pending)
     }
 }
 
-struct Pending {
+pub struct Pending {
     pileup_idx: usize,
     /// For SNPs: the alt base. For indels: unused.
     alt_base: Base,

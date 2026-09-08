@@ -88,7 +88,7 @@ fn set_filters() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let ml = MachineLearningParams::default().init()?;
+    let ml = MachineLearningParams::default().init(1)?;
 
     let mut pileups = build_test_pileups(pileups, &segment, &threshold_filters);
     map_surrounding(

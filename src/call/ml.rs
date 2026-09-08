@@ -18,7 +18,7 @@
 //! for input to a random forest classifier.
 
 use crate::{
-    call::process::GPU_BATCH_BUFFER_SIZE,
+    call::process::{GPU_BATCH_BUFFER_SIZE, InferenceStage},
     metrics::ml::types::{GpuRastairModel, MachineLearning, RastairFlatModel},
     utils::cli,
 };
@@ -75,7 +75,7 @@ pub struct MachineLearningParams {
 
 impl MachineLearningParams {
     #[instrument(name = "init_ml", skip(self))]
-    pub fn init(&self) -> Result<MachineLearning> {
+    pub fn init(&self, workers: usize) -> Result<MachineLearning> {
         if self.no_ml {
             return Ok(MachineLearning::disabled());
         };
@@ -87,7 +87,7 @@ impl MachineLearningParams {
         .wrap_err("Failed to load combined RF model")?;
 
         let max_samples = GPU_BATCH_BUFFER_SIZE;
-        let gpu_prototype = if self.gpu {
+        let gpu = if self.gpu {
             let gpu_forest = |forest| {
                 GpuForest::from_flat_forest(forest, max_samples)
                     .wrap_err("Failed to initialise GPU context")
@@ -104,12 +104,17 @@ impl MachineLearningParams {
             None
         };
 
+        let inference = gpu
+            .map(|gpu| InferenceStage::spawn(gpu, workers))
+            .transpose()
+            .wrap_err("Failed to start the GPU inference thread")?;
+
         Ok(MachineLearning {
             threshold: self.ml,
             feature_set: model.feature_set,
             feature_calculator: model.feature_set.get_calculator(),
             model: Some(Box::new(model)),
-            gpu_prototype,
+            inference,
         })
     }
 

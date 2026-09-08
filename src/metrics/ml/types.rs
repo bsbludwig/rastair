@@ -66,6 +66,22 @@ impl<T> ByModel<T> {
     pub fn from_fn(f: impl FnMut(MlModel) -> T) -> Self {
         Self(MlModel::ALL.map(f))
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (MlModel, &T)> {
+        MlModel::ALL.into_iter().zip(self.0.iter())
+    }
+}
+
+impl<T> IntoIterator for ByModel<T> {
+    type Item = (MlModel, T);
+    type IntoIter = std::iter::Zip<
+        std::array::IntoIter<MlModel, { MlModel::COUNT }>,
+        std::array::IntoIter<T, { MlModel::COUNT }>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        MlModel::ALL.into_iter().zip(self.0)
+    }
 }
 
 // `MlModel::index` is a total map onto `0..COUNT` and the array has exactly
@@ -178,9 +194,9 @@ pub struct MachineLearning {
     pub model: Option<Box<RastairFlatModel>>,
     pub feature_set: MlFeatureSet,
     pub feature_calculator: FeatureCalculatorBox,
-    /// Prototype GPU forests. Worker threads call [`GpuRastairModel::fork`] on
-    /// first use to obtain thread-local handles without recompiling shaders.
-    pub gpu_prototype: Option<GpuRastairModel>,
+    /// The thread that owns the GPU forests, when `--gpu` is on. Workers hand
+    /// it feature rows rather than each forking a copy of the forests.
+    pub inference: Option<crate::call::process::InferenceStage>,
 }
 
 impl MachineLearning {
@@ -192,7 +208,7 @@ impl MachineLearning {
             model: None,
             feature_set,
             feature_calculator: feature_set.get_calculator(),
-            gpu_prototype: None,
+            inference: None,
         }
     }
 
