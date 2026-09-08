@@ -1303,3 +1303,141 @@ fn write_bam_with_zero_mapq_overlapping(
 // - max depth is set
 // - min bq is set
 // - min mapq is set
+
+/// Reads carrying one shared deletion, far enough into a contig that the
+/// enclosing segment cannot start at 0.
+///
+/// `tests/data/test.bam` has 86 indel-carrying reads but no two of them agree
+/// on an allele, so it produces no indel call at any threshold — which is why
+/// nothing here exercised the indel path.
+fn write_deletion_bam(
+    output: &std::path::Path,
+    contig: &str,
+    del_pos: u64,
+    del_len: usize,
+    reads: usize,
+) -> Result<()> {
+    use rust_htslib::bam::record::{Cigar, CigarString};
+    use rust_htslib::bam::{self, Record, header::HeaderRecord};
+    use rust_htslib::faidx;
+
+    const READ_LEN: usize = 80;
+    // Every read spans the deletion but starts at a different offset, so the
+    // anchor is reached from a different query position each time.
+    let first_start = del_pos - 40;
+
+    let fasta = faidx::Reader::from_path("tests/data/test.fasta.gz")?;
+    let fetch = |from: u64, to: u64| -> Result<Vec<u8>> {
+        Ok(fasta.fetch_seq(contig, from as usize, to as usize - 1)?.to_ascii_uppercase())
+    };
+
+    let mut header = bam::Header::new();
+    let contig_len =
+        fasta.fetch_seq_len(contig).ok_or_else(|| eyre!("contig {contig} not in the FASTA"))?;
+    let mut sq = HeaderRecord::new(b"SQ");
+    sq.push_tag(b"SN", contig);
+    sq.push_tag(b"LN", contig_len);
+    header.push_record(&sq);
+    let mut writer = bam::Writer::from_path(output, &header, bam::Format::Bam)?;
+
+    for i in 0..reads {
+        let start = first_start + i as u64;
+        let left = (del_pos - start) as usize;
+        let right = READ_LEN - left;
+        // The read skips the deleted bases, so its sequence is the reference
+        // either side of them.
+        let mut seq = fetch(start, del_pos + 1)?;
+        let after = del_pos + 1 + del_len as u64;
+        seq.extend_from_slice(&fetch(after, after + right as u64 - 1)?);
+        seq.truncate(READ_LEN);
+
+        let cigar = CigarString(
+            vec![
+                Cigar::Match(left as u32 + 1),
+                Cigar::Del(del_len as u32),
+                Cigar::Match(READ_LEN as u32 - left as u32 - 1),
+            ]
+            .into(),
+        );
+        let mut record = Record::new();
+        record.set(format!("del_{i}").as_bytes(), Some(&cigar), &seq, &vec![40u8; seq.len()]);
+        record.set_tid(0);
+        record.set_pos(start as i64);
+        record.set_mapq(60);
+        record.set_flags(if i % 2 == 0 { 0 } else { 16 });
+        record.set_mtid(-1);
+        record.set_mpos(-1);
+        writer.write(&record)?;
+    }
+    drop(writer);
+
+    bam::index::build(output, None, bam::index::Type::Bai, 1)?;
+    Ok(())
+}
+
+/// A deletion's REF allele must be the reference *at the deletion*.
+///
+/// The seqair backend read it from the start of the enclosing segment instead,
+/// so 82.6% of multi-base REF alleles on chr12 were real-looking sequence from
+/// the wrong locus and `bcftools norm` refused the file. Nothing caught it: no
+/// CLI test enabled indel calling, and no snapshot held a multi-base REF.
+///
+/// The contig position is load-bearing. At a segment starting at 0 the wrong
+/// index and the right one coincide, which is also why the `from_seqair` unit
+/// fixtures could not see this.
+#[test]
+fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
+    use rust_htslib::faidx;
+
+    const CONTIG: &str = "bacteriophage_lambda_CpG";
+    const DEL_POS: u64 = 24_137; // 0-based anchor, well past a segment boundary
+    const DEL_LEN: usize = 4;
+
+    let temp_dir = TempDir::new()?;
+    let bam = temp_dir.path().join("deletion.bam");
+    write_deletion_bam(&bam, CONTIG, DEL_POS, DEL_LEN, 12)?;
+
+    let vcf = temp_dir.path().join("out.vcf");
+    rastair()
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+        .arg(&bam)
+        .args([
+            &format!("--region={CONTIG}:{}-{}", DEL_POS - 200, DEL_POS + 200),
+            "--unpaired",
+            "--experimental-indels=no-ml",
+            NO_ML,
+            "--vcf",
+        ])
+        .arg(&vcf)
+        .succeeds()?;
+
+    let fasta = faidx::Reader::from_path("tests/data/test.fasta.gz")?;
+    let text = std::fs::read_to_string(&vcf)?;
+    let mut multi_base_refs = 0;
+    for line in text.lines().filter(|line| !line.starts_with('#')) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let (Some(&contig), Some(&pos), Some(&reference)) =
+            (fields.first(), fields.get(1), fields.get(3))
+        else {
+            continue;
+        };
+        if reference.len() < 2 {
+            continue;
+        }
+        multi_base_refs += 1;
+        // VCF POS is 1-based; fetch_seq takes a 0-based inclusive range.
+        let start = pos.parse::<usize>()? - 1;
+        let expected = fasta.fetch_seq(contig, start, start + reference.len() - 1)?;
+        assert_eq!(
+            reference,
+            String::from_utf8_lossy(&expected.to_ascii_uppercase()),
+            "REF at {contig}:{pos} does not match the reference"
+        );
+    }
+
+    assert!(
+        multi_base_refs > 0,
+        "no multi-base REF was emitted, so this test proved nothing:\n{text}"
+    );
+    Ok(())
+}
