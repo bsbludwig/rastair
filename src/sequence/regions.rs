@@ -28,12 +28,23 @@ impl Region {
         self.range().contains(&pos)
     }
 
+    /// How many positions this region covers.
+    ///
+    /// Both ends are inclusive, so a region whose start and end are the same
+    /// base is one base long. This used to return `end - start`, which is one
+    /// short of what [`contains`](Self::contains) accepts — enough to make a
+    /// caller that sizes a buffer from it grow that buffer exactly once, at
+    /// the end, having already filled it.
     pub fn len(&self) -> u64 {
-        self.end - self.start
+        self.end.checked_sub(self.start).map_or(0, |span| span.saturating_add(1))
     }
 
+    /// True only for a malformed region whose end precedes its start. A
+    /// well-formed one covers at least its own start, so it is never empty —
+    /// this used to report `start >= end`, calling every single-base region
+    /// empty while `contains` accepted its one position.
     pub fn is_empty(&self) -> bool {
-        self.start >= self.end
+        self.end < self.start
     }
 }
 
@@ -187,6 +198,23 @@ impl ChunkRegion {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// `len` must count the positions `contains` accepts. Both ends are
+    /// inclusive, so a region that starts and ends at the same base is one
+    /// base long — not zero, and not empty.
+    #[test]
+    fn len_counts_the_positions_contains_accepts() {
+        for (start, end) in [(100u64, 100u64), (100, 101), (100, 200), (0, 0)] {
+            let region = Region { contig: "chr1".into(), start, end };
+            let counted = (start..=end).filter(|&pos| region.contains(pos)).count() as u64;
+            assert_eq!(region.len(), counted, "[{start}, {end}]");
+            assert!(!region.is_empty(), "[{start}, {end}] contains {counted} positions");
+        }
+
+        let backwards = Region { contig: "chr1".into(), start: 200, end: 100 };
+        assert!(backwards.is_empty());
+        assert_eq!(backwards.len(), 0);
+    }
 
     #[test]
     fn test_region_contains() {

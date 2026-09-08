@@ -196,12 +196,17 @@ pub fn get_pileups(
         .collect();
 
     let segment = Rc::new(segment);
-    // Deliberately not `with_capacity(region.len())`: a `PileupMetrics` is
-    // ~944 bytes, so reserving the 100 kb default up front costs ~94 MB per
-    // worker. Measured on chr12:20–30 Mb it bought 2.8 % of user CPU for 28 %
-    // more peak RSS (2.30 → 2.94 GB) — mimalloc grows a block this size in
-    // place, so the doubling is not the copy it looks like.
-    let mut pileup_metrics: Vec<PileupMetrics> = Vec::new();
+    // One entry per covered position, and on WGS a region has essentially all
+    // of them (measured on chr12: len/region.len() = 1.000). Growing into that
+    // by doubling both copies and overshoots — a `PileupMetrics` is 928 bytes,
+    // so the last doubling lands on 131 072 slots for the 100 401 a 100 kb
+    // region needs, 122 MiB where 93 MiB would do.
+    //
+    // `region.len()` has to be the *inclusive* count for this to land exactly;
+    // when it was one short, this reservation was the worst of both worlds —
+    // it filled the buffer and then doubled it anyway, to 200 800 slots.
+    let mut pileup_metrics: Vec<PileupMetrics> =
+        Vec::with_capacity(usize::try_from(region.len()).unwrap_or(0));
     // Reused across every column of every sub-segment; see `from_seqair`.
     let mut mate_drops: Vec<u32> = Vec::new();
 
