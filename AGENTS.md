@@ -374,6 +374,41 @@ included, sees nothing. `.` states the same cardinality in a way every reader
 accepts. Revisit when noodles implements the 4.5 cardinalities; the two tests in
 `src/vcf/schema.rs` pin both halves of this.
 
+## VCF FILTER is a set (`RastairFilter` / `Filters`)
+
+`Filters` (`src/metrics/pileup_metrics.rs`) is an `EnumSet<RastairFilter>` — a
+`u16` bitset, pinned by `#[enumset(repr = "u16")]` on the enum — plus the
+`other_pos_in_denovo_passes` override, which is *not* a FILTER code and so does
+not live in the set. `add`/`merge` are `insert`/`|=`; there is no dedup to do by
+hand and no `Deref` to a list any more.
+
+**The enum's declaration order is load-bearing twice.** `RastairFilter as usize`
+indexes `Schema::filter`'s `[FilterId; COUNT]` table (so the discriminants must
+stay `0..COUNT` — this is why `enumset` fits and `enumflags2`, which wants
+power-of-two discriminants, does not), and a set iterates in discriminant order,
+which is the order the FILTER column prints. Reordering variants is an output
+change.
+
+**Nothing snapshots a non-PASS FILTER column.** Rejected records are only
+emitted under `--all` (`emit_rejected_record`, gated by `RecordFilters`), and
+every committed VCF snapshot is 100 % `PASS`. To see FILTER output at all:
+
+```bash
+cargo build && ./target/debug/rastair call --fasta-file=tests/data/test.fasta.gz \
+  tests/data/test.bam --all | grep -v '^#' | awk -F'\t' '$7!="PASS"{print $7}' \
+  | sort | uniq -c | sort -rn
+```
+
+That blind spot hid a real defect until 2026-09-08: FILTER used to be built by
+appending three lists, so a code could land twice — *every* non-PASS record on
+`tests/data/test.bam` carried `low_ml_score;low_ml_score`. Use the command above
+when touching filter emission.
+
+Still open, found while fixing that: `emit_rejected_record` adds `low_ml_score`
+when `alt.filters.ml < ml_threshold`, and `None < Some(_)` in Rust — so a record
+whose ML was *skipped* (`pre_ml`) is also labelled `low_ml_score`. Fixing it
+changes `--all` output beyond a reordering, so it was left alone.
+
 ## Release version bump checklist
 
 When bumping Rastair's release version, update all user-facing version strings together:
