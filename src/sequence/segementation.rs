@@ -11,10 +11,14 @@ pub struct SegmentationParams {
     /// Maximum length of a segment in bases
     ///
     /// Used for splitting work between threads. Tweak this to adjust memory
-    /// usage.
-    #[arg(long, default_value_t = 10_000)]
+    /// usage: peak memory scales with this times `--threads`, and so does the
+    /// batch each ML dispatch gets, which is why smaller is not free. On
+    /// NA12878 chr12 at 26x, dropping this to 10 000 costs ~1.45x wall time —
+    /// the same reads, but a tenth of the rows per GPU round trip and ten
+    /// times as many BAM index queries.
+    #[arg(long, default_value_t = 100_000)]
     #[arg(help_heading = cli::sections::PROCESSING)]
-    #[default(10_000)]
+    #[default(100_000)]
     pub segment_max_length: u64,
 
     /// Number of bases to overlap between segments
