@@ -176,6 +176,32 @@ Current scope: this new evidence-based OT/OB assignment only affects the main pi
 
 For BAM-backed regression tests that compare strand-assignment modes, `tests/call_cli.rs` can write plain BED output with `call --cpgs-only --bed <path>` and compare per-CpG `(start, strand)` records via the BED columns `beta_est`, `unmod`, and `mod`. This is a convenient way to inspect differences before choosing hard thresholds.
 
+## Driving seqair's pileup engine
+
+`PileupEngine::new` takes a `PileupInput`, and the only way to make one is
+`store.prepare_for_pileup()` — which returns `Prepared { input, stats }`, sorts
+the store by position and links its mates. So a test that builds a store by hand
+no longer has to remember either step, and can list its reads in any order.
+
+That type exists because both preconditions used to fail silently and badly.
+Measured on a three-read fixture: pushing them out of position order produced
+columns for **one** of the three — the engine never reached the other two and no
+column reported a gap. And on an unlinked store every alignment reports
+`mate_idx() == None` *and* `in_mate_overlap() == false`, which is exactly what a
+read with no mate looks like, so overlap dedup quietly does nothing and a test
+asserting it passes while proving nothing.
+
+Two related API notes:
+
+- **`PileupColumn::mate_of(&view)`** gives the view's linked mate when it is also
+  in this column — the whole of what `counted_mate` needs. It replaced
+  `pair_indel`, a query that folded in the precedence "the view's own indel wins,
+  the mate is never consulted"; that cannot serve a caller whose own filters may
+  reject the view's indel. Keep pairwise rules on this side of the boundary.
+- **`PileupEngine::reclaim_allocation`** (was `take_store`) returns an *empty*
+  store keeping its slab capacity, for the next region. It is not a way to read
+  the pileup's input back.
+
 ## Indel parity between the two pileup backends
 
 `from_hts.rs` and `from_seqair.rs` build the same `PileupMetrics` from two

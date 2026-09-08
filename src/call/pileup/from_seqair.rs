@@ -350,10 +350,7 @@ fn counted_mate<'a, 'eng>(
     reference_base: Base,
     context: &SequenceContext,
 ) -> Option<AlignmentView<'a, 'eng, RastairReadExtras>> {
-    if !view.in_mate_overlap() {
-        return None;
-    }
-    let mate = column.find_record(view.alignment().mate_idx()?)?;
+    let mate = column.mate_of(view)?;
     observed(&mate, params, reference_base, context).is_some().then_some(mate)
 }
 
@@ -606,7 +603,9 @@ mod tests {
                 )
                 .unwrap();
         }
-        let _stats = store.link_mates();
+        // Linking (and sorting) is `prepare_for_pileup`'s job at the point the
+        // engine is built, so this fixture no longer has to remember either —
+        // reads may be listed in any order.
         store
     }
 
@@ -667,7 +666,11 @@ mod tests {
         let seg = segment(seq);
         let store = store_of(reads, &params.read_masking);
         let last = seq.len().saturating_sub(1) as u32;
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(last).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(last).unwrap(),
+        );
         if params.rescue_soft_clip_cpg {
             engine.set_soft_clip_overhang(1);
         }
@@ -798,7 +801,11 @@ mod tests {
 
         let alleles_at_anchor = |params: &PileupMappingParams| {
             let store = store_of(&reads, &params.read_masking);
-            let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(9).unwrap());
+            let mut engine = PileupEngine::new(
+                store.prepare_for_pileup().input,
+                Pos0::new(0).unwrap(),
+                Pos0::new(9).unwrap(),
+            );
             let mut scratch = Vec::new();
             let mut out = Vec::new();
             while let Some(col) = engine.pileups() {
@@ -892,7 +899,11 @@ mod tests {
         ];
 
         let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(9).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(9).unwrap(),
+        );
         let mut scratch = Vec::new();
         let mut alleles: Vec<IndelAllele> = Vec::new();
         while let Some(col) = engine.pileups() {
@@ -964,7 +975,7 @@ mod tests {
             .unwrap();
 
         let mut engine = PileupEngine::new(
-            store,
+            store.prepare_for_pileup().input,
             Pos0::new(START as u32).unwrap(),
             Pos0::new(START as u32 + 9).unwrap(),
         );
@@ -1026,8 +1037,11 @@ mod tests {
         };
 
         let mut metrics_at = |overhang: u32| -> Option<PileupMetrics> {
-            let mut engine =
-                PileupEngine::new(build_store(), Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+            let mut engine = PileupEngine::new(
+                build_store().prepare_for_pileup().input,
+                Pos0::new(0).unwrap(),
+                Pos0::new(5).unwrap(),
+            );
             engine.set_soft_clip_overhang(overhang);
             let mut out = None;
             while let Some(col) = engine.pileups() {
@@ -1087,8 +1101,11 @@ mod tests {
         };
 
         let mut metrics_at = |overhang: u32| -> Option<PileupMetrics> {
-            let mut engine =
-                PileupEngine::new(build_store(), Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+            let mut engine = PileupEngine::new(
+                build_store().prepare_for_pileup().input,
+                Pos0::new(0).unwrap(),
+                Pos0::new(5).unwrap(),
+            );
             engine.set_soft_clip_overhang(overhang);
             let mut out = None;
             while let Some(col) = engine.pileups() {
@@ -1144,7 +1161,11 @@ mod tests {
             )
             .unwrap();
 
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(5).unwrap(),
+        );
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(3).unwrap() {
@@ -1187,7 +1208,11 @@ mod tests {
             )
             .unwrap();
 
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(5).unwrap(),
+        );
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
@@ -1235,7 +1260,11 @@ mod tests {
             )
             .unwrap();
 
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(5).unwrap(),
+        );
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
@@ -1309,7 +1338,11 @@ mod tests {
         // engine directly, so it links by hand.
         let stats = store.link_mates();
         assert_eq!(stats.pairs, 1, "the fixture's mates must link");
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(5).unwrap(),
+        );
         engine.set_soft_clip_overhang(1);
 
         let mut checked = false;
@@ -1395,7 +1428,11 @@ mod tests {
         // engine directly, so it links by hand.
         let stats = store.link_mates();
         assert_eq!(stats.pairs, 1, "the fixture's mates must link");
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(5).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(5).unwrap(),
+        );
         engine.set_soft_clip_overhang(1);
 
         let mut checked = false;
@@ -1571,7 +1608,11 @@ mod tests {
         // widened interval both mates would be counted at the CpG-C.
         let seg = segment(REF);
         let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(19).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(19).unwrap(),
+        );
         engine.set_soft_clip_overhang(1);
         let mut scratch = Vec::new();
         let mut depth_at_cpg = None;
@@ -1613,7 +1654,11 @@ mod tests {
         params.variant_calling.keep_overlapping_reads = true;
         let seg = segment(REF);
         let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(store, Pos0::new(0).unwrap(), Pos0::new(19).unwrap());
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(19).unwrap(),
+        );
         let mut scratch = Vec::new();
         let mut overlap_depth = None;
         while let Some(col) = engine.pileups() {
