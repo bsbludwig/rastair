@@ -176,6 +176,115 @@ Current scope: this new evidence-based OT/OB assignment only affects the main pi
 
 For BAM-backed regression tests that compare strand-assignment modes, `tests/call_cli.rs` can write plain BED output with `call --cpgs-only --bed <path>` and compare per-CpG `(start, strand)` records via the BED columns `beta_est`, `unmod`, and `mod`. This is a convenient way to inspect differences before choosing hard thresholds.
 
+## Indel parity between the two pileup backends
+
+`from_hts.rs` and `from_seqair.rs` build the same `PileupMetrics` from two
+different readers. **SNVs are byte-identical across them** — F1, recall,
+precision and both aardvark genotype-error counts — which is the control that
+makes any remaining difference attributable to indel-specific code rather than
+to read handling. Indels were *not*: on chr12 the seqair backend scored 4-5 F1
+points below htslib, from five separate divergences, all now fixed.
+
+**How the divergence is measured.** Two numbers, and the second is the more
+useful one:
+
+```bash
+CARGO_TARGET_DIR=target-hts cargo build --release          # htslib
+cargo build --release --features experimental-seqair       # seqair
+# ...call chr12 with --experimental-indels=ml --vcf-all-fields on each, then:
+bcftools view -f PASS -i 'GT="alt"' calls.bcf -Ou \
+  | bcftools norm -f hg38.fa.gz -m -any -Oz -o q.vcf.gz
+aardvark compare --reference hg38.fa.gz --truth-vcf truth.vcf.gz \
+  --truth-sample NA12878 --query-vcf q.vcf.gz --query-sample sample \
+  --regions PG_ConfidentRegions_hg38.bed.gz --output-dir out/
+# and, far more sensitive than F1, the site-level disagreement:
+bcftools isec -p isec <(bcftools view -v indels hts.vcf.gz) <(bcftools view -v indels sq.vcf.gz)
+```
+
+The `isec` counts move ~100x over the fixes where F1 moves 5 points, so use them
+to tell "this changed something" from "this changed the right thing". Aardvark
+needs `Number=.` in the header (see above) or it refuses the file outright.
+
+**The five divergences, in the order they were found.** Each is worth knowing
+because each is a *class* of mistake, not a typo:
+
+1. **A read-local offset used as a genomic position.** `view.qpos()` shadowed
+   the column's `pos`, so deletion REF alleles were read from the segment's
+   opening bases. Guarded now by seqair's `QPos` newtype, which is why the pin
+   carries it.
+2. **The tract anchor.** `homopolymer_run_at`/`dinucleotide_run_at` must be
+   measured one base past the pileup anchor, where a left-aligned indel starts.
+   The convention now lives only inside `ref_features::indel_tract_runs_at`.
+3. **Overlap dedup dropping the fragment's only indel.** The rule keeps one
+   read per fragment by base agreement and template order, which can keep the
+   mate that does *not* span the indel. `from_hts` never had this because it
+   votes per fragment *before* deduplicating — every mate gets a turn and the
+   first surviving observation is the fragment's. **The single largest one:
+   +2.3 insertion / +1.5 deletion F1.**
+
+   **The fallback is keyed on the observation, not on the indel.**
+   `build_indel_observation` rejects an indel too close to a read end or on a
+   read with too many non-TAPS mismatches, so a kept read can carry an indel
+   and still contribute nothing, and the mate must then stand in.
+   `PileupColumn::pair_indel` (seqair) cannot express that — its rule is "own
+   indel wins, the mate is never consulted", which is correct for a query that
+   only sees CIGARs but silently drops those fragments. **rastair therefore
+   does not use `pair_indel`**; `counted_mate` plus `Option::or_else` is the
+   whole mechanism, and it needs no seqair query.
+4. **Two implementations of one predicate.** `has_repeat` used a 4-base window
+   for the period-2 arm on one side and 6 on the other, so it fired ~8x more
+   often on the seqair path. There is now one `has_terminal_repeat`.
+5. **Per-read where the semantics are per-fragment.** `soft_clip_count` and the
+   noisy-reference count describe a fragment; `from_hts` ORs them over both
+   mates. Reading them off the surviving read alone loses what only the dropped
+   mate showed. The noisy-reference count also has to exclude a fragment that
+   contributed an observation — `IndelCounts::clean_depth` subtracts a fragment
+   counted on both sides twice — and `AlignmentShape::noisy()` is
+   `terminal_repeat || soft_clipped`, not the repeat alone.
+
+**Result on chr12 (~26x, bundled model, `--experimental-indels=ml`), against
+Platinum Genomes in `PG_ConfidentRegions`:**
+
+| | seqair before | seqair after | htslib |
+| --- | --- | --- | --- |
+| SNV F1 | 0.9706 | 0.9706 | 0.9706 |
+| Insertion F1 | 0.7775 | **0.8273** | 0.8274 |
+| Deletion F1 | 0.8099 | **0.8506** | 0.8506 |
+| disagreeing indel sites | 29,420 | **5** | — (32,326 shared) |
+
+Deletions come out numerically identical to htslib on every column — recall,
+precision, F1, `truth_fn_gt` and `query_fp_gt`. Insertions differ by two sites
+in `truth_fn_gt` and nothing else.
+
+**Judge a parity fix by convergence in every column, not by F1.** The last fix
+moved deletion F1 *down* 0.0010 while moving recall, precision and both
+genotype-error counts onto htslib — which is what says the semantics matched
+rather than a threshold moving. A change that improves F1 while moving
+`query_fp_gt` away from the reference has not fixed parity.
+
+The residual is 5 sites of 32,331 (4 htslib-only, 1 seqair-only), all
+multi-allelic columns in homopolymer or short-tandem-repeat tracts where the two
+readers group one read's allele differently (`G>GTT` alongside `G>GTTT` at one
+position, `GTTTT>G`, `CAAA>C`). Not worth chasing without a reason to.
+
+### Why none of this was caught
+
+Worth internalising, because the same blind spots are still easy to reproduce:
+
+- **No CLI test enabled indel calling.** `grep experimental.indels
+  tests/call_cli.rs` was empty and every snapshot header recorded
+  `"experimental_indels":null`, so no snapshot ever held a multi-base REF.
+  `indel_ref_alleles_come_from_the_deletion_site` now closes that.
+- **`tests/data/test.bam` cannot produce an indel call.** It has 86
+  indel-carrying reads, but no two agree on an allele, so nothing passes
+  `--min-indel-ao` at any threshold. An indel test has to build its own BAM.
+- **A fixture segment starting at 0 hides every position bug**, because
+  `pos - segment_start` and the clamped wrong answer coincide there. Use
+  `segment_at(start, seq)` with a non-zero start; the CLI fixture puts its
+  deletion at 24,137 for the same reason.
+- **The `from_seqair` unit tests never set `params.call_indels`**, so the whole
+  indel branch was unreachable from them.
+
 ## ML feature layout (`src/metrics/ml/features/`)
 
 Each model's feature vector is defined by a `#[repr(C)]` struct of `f32` / `[f32; N]`
