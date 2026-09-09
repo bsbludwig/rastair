@@ -564,17 +564,30 @@ impl SumOfSquares {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AlleleAccumulator {
     depth: u32,
-    ot_count: u32,
-    ob_count: u32,
+    /// `[OT, OB]`; kept out of `by_strand` so neither array needs padding.
+    strand_depth: [u32; 2],
+    // Field order is load-bearing. rustc keeps declaration order among equally
+    // aligned fields, and LLVM pairs two sums into one 128-bit `fadd.2d` only
+    // when they are adjacent *and* reached at a constant offset. `baseq`/`mapq`
+    // and `aligned`/`indels` satisfy both and vectorise; the strand-split pair
+    // is `[[f64; 2]; 2]` rather than four named fields for the same reason —
+    // see `add_fields`.
     baseq: SumOfSquares,
     mapq: SumOfSquares,
-    baseq_ot: SumOfSquares,
-    baseq_ob: SumOfSquares,
-    mapq_ot: SumOfSquares,
-    mapq_ob: SumOfSquares,
+    /// `[OT, OB]`, each `[baseq, mapq]`.
+    by_strand: [[f64; 2]; 2],
     aligned: SumOfSquares,
     indels: SumOfSquares,
     pos_in_read: SumOfSquares,
+}
+
+/// The `[OT, OB]` slot a known strand accumulates into.
+const fn strand_slot(strand: Strand) -> Option<usize> {
+    match strand {
+        Strand::OT => Some(0),
+        Strand::OB => Some(1),
+        Strand::Unknown => None,
+    }
 }
 
 impl AlleleAccumulator {
@@ -603,18 +616,18 @@ impl AlleleAccumulator {
         self.depth += 1;
         self.baseq.add_squared(qual_sq);
         self.mapq.add_squared(mapq_sq);
-        match strand {
-            Strand::OT => {
-                self.ot_count += 1;
-                self.baseq_ot.add_squared(qual_sq);
-                self.mapq_ot.add_squared(mapq_sq);
-            }
-            Strand::OB => {
-                self.ob_count += 1;
-                self.baseq_ob.add_squared(qual_sq);
-                self.mapq_ob.add_squared(mapq_sq);
-            }
-            Strand::Unknown => {}
+        // Indexed, not matched. Whether consecutive reads are OT or OB is close
+        // to a coin flip, so the `match` this replaces mispredicted once per
+        // read per column; and LLVM merged its two arms into a common tail
+        // addressed by a register, which is what stopped it pairing the two
+        // sums into one `fadd.2d`. One in-range slot fixes both.
+        if let Some(slot) = strand_slot(strand)
+            && let Some(strand_depth) = self.strand_depth.get_mut(slot)
+            && let Some([baseq, mapq]) = self.by_strand.get_mut(slot)
+        {
+            *strand_depth += 1;
+            *baseq = baseq.algebraic_add(qual_sq);
+            *mapq = mapq.algebraic_add(mapq_sq);
         }
         self.aligned.add(f64::from(matching_bases));
         self.indels.add(f64::from(indels));
@@ -650,19 +663,22 @@ impl AlleleAccumulator {
             FormsDenovo::No
         };
 
+        let [ot_depth, ob_depth] = self.strand_depth;
+        let [[ot_baseq, ot_mapq], [ob_baseq, ob_mapq]] = self.by_strand;
+
         Ok(AlleleMetrics {
             base,
             depth: self.depth,
             baseq: self.baseq.finish(self.depth),
             mapq: self.mapq.finish(self.depth),
-            strand_count: ByStrand { ot: self.ot_count, ob: self.ob_count },
+            strand_count: ByStrand { ot: ot_depth, ob: ob_depth },
             baseq_s: ByStrand {
-                ot: self.baseq_ot.finish(self.ot_count),
-                ob: self.baseq_ob.finish(self.ob_count),
+                ot: SumOfSquares(ot_baseq).finish(ot_depth),
+                ob: SumOfSquares(ob_baseq).finish(ob_depth),
             },
             mapq_s: ByStrand {
-                ot: self.mapq_ot.finish(self.ot_count),
-                ob: self.mapq_ob.finish(self.ob_count),
+                ot: SumOfSquares(ot_mapq).finish(ot_depth),
+                ob: SumOfSquares(ob_mapq).finish(ob_depth),
             },
             num_aligned_bases: self.aligned.finish(self.depth),
             num_indels: self.indels.finish(self.depth),
