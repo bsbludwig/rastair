@@ -521,20 +521,60 @@ impl Filters {
     }
 }
 
+/// Sum of squared values whose count is kept by the owner.
+///
+/// [`RmsAccumulator`] carries its own `count`, and [`AlleleAccumulator`] holds
+/// nine of them whose counts are all `depth`, `ot_count` or `ob_count` — three
+/// numbers it already maintains three lines away. It is updated once per read
+/// per column, so those nine redundant increments were the hottest single line
+/// in `call` (5.2 % of worker CPU), and the padding they carry made the struct
+/// 160 bytes where 88 does — which matters again because
+/// `PerBaseAccumulators::default()` re-zeroes four of them at every column.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SumOfSquares(f64);
+
+impl SumOfSquares {
+    #[inline]
+    fn add_squared(&mut self, x_sq: f64) {
+        self.0 = self.0.algebraic_add(x_sq);
+    }
+
+    #[inline]
+    fn add(&mut self, x: f64) {
+        self.add_squared(x.algebraic_mul(x));
+    }
+
+    /// The RMS of the `count` values added.
+    ///
+    /// Deliberately routed through a one-element [`RmsAccumulator`] rather than
+    /// taking the square root here: that accumulator divides by its own count of
+    /// 1, which is exact, so `finish` evaluates the very same
+    /// `sum.algebraic_div(count).sqrt()` the nine accumulators used to, bit for
+    /// bit — including `RootMeanSquare(0.0)` for an empty one.
+    fn finish(self, count: u32) -> RootMeanSquare {
+        if count == 0 {
+            return RootMeanSquare::default();
+        }
+        let mut acc = RmsAccumulator::new();
+        acc.add_squared(self.0.algebraic_div(f64::from(count)));
+        acc.finish()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AlleleAccumulator {
     depth: u32,
-    baseq: RmsAccumulator,
-    mapq: RmsAccumulator,
-    baseq_ot: RmsAccumulator,
-    baseq_ob: RmsAccumulator,
-    mapq_ot: RmsAccumulator,
-    mapq_ob: RmsAccumulator,
-    aligned: RmsAccumulator,
-    indels: RmsAccumulator,
-    pos_in_read: RmsAccumulator,
     ot_count: u32,
     ob_count: u32,
+    baseq: SumOfSquares,
+    mapq: SumOfSquares,
+    baseq_ot: SumOfSquares,
+    baseq_ob: SumOfSquares,
+    mapq_ot: SumOfSquares,
+    mapq_ob: SumOfSquares,
+    aligned: SumOfSquares,
+    indels: SumOfSquares,
+    pos_in_read: SumOfSquares,
 }
 
 impl AlleleAccumulator {
@@ -613,14 +653,20 @@ impl AlleleAccumulator {
         Ok(AlleleMetrics {
             base,
             depth: self.depth,
-            baseq: self.baseq.finish(),
-            mapq: self.mapq.finish(),
+            baseq: self.baseq.finish(self.depth),
+            mapq: self.mapq.finish(self.depth),
             strand_count: ByStrand { ot: self.ot_count, ob: self.ob_count },
-            baseq_s: ByStrand { ot: self.baseq_ot.finish(), ob: self.baseq_ob.finish() },
-            mapq_s: ByStrand { ot: self.mapq_ot.finish(), ob: self.mapq_ob.finish() },
-            num_aligned_bases: self.aligned.finish(),
-            num_indels: self.indels.finish(),
-            position_in_read: self.pos_in_read.finish(),
+            baseq_s: ByStrand {
+                ot: self.baseq_ot.finish(self.ot_count),
+                ob: self.baseq_ob.finish(self.ob_count),
+            },
+            mapq_s: ByStrand {
+                ot: self.mapq_ot.finish(self.ot_count),
+                ob: self.mapq_ob.finish(self.ob_count),
+            },
+            num_aligned_bases: self.aligned.finish(self.depth),
+            num_indels: self.indels.finish(self.depth),
+            position_in_read: self.pos_in_read.finish(self.depth),
             allele_frequency: Probability::new(self.depth.f() / total_reads.f())
                 .wrap_err("allele frequency not in [0,1]")
                 .this_is_a_bug()?,
@@ -765,6 +811,47 @@ mod size_tests {
             "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
              (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
         );
+    }
+
+    /// The nine per-allele sums gave up their own counts, so what says this was
+    /// a refactor and not a numerical change is that `finish` returns *exactly*
+    /// what `RmsAccumulator` returns for the same values — the same bits, not
+    /// "close enough", because these reach the VCF as printed floats.
+    #[test]
+    fn sum_of_squares_is_bit_identical_to_rms_accumulator() {
+        let cases: &[&[f64]] = &[
+            &[],
+            &[0.0],
+            &[37.0],
+            &[37.0, 41.0, 12.0],
+            &[60.0; 1000],
+            &[1e-8, 1e8, 3.5, 0.25],
+            &[0.0, 0.0, 40.0],
+        ];
+        for values in cases {
+            let mut reference = RmsAccumulator::new();
+            let mut ours = SumOfSquares::default();
+            for &v in *values {
+                reference.add(v);
+                ours.add(v);
+            }
+            let count = u32::try_from(values.len()).expect("test case fits in u32");
+            assert_eq!(
+                reference.finish().to_bits(),
+                ours.finish(count).to_bits(),
+                "diverged on {values:?}"
+            );
+        }
+    }
+
+    /// Four of these are built and zeroed at *every* column, and one is updated
+    /// once per read per column, so this size is per-position memory traffic in
+    /// the hottest loop `call` has. It was 160 when each of the nine sums
+    /// carried a count that `depth`/`ot_count`/`ob_count` already held.
+    #[test]
+    fn allele_accumulator_stays_small() {
+        assert_eq!(size_of::<AlleleAccumulator>(), 88);
+        assert_eq!(size_of::<PerBaseAccumulators>(), 352);
     }
 
     // A `Filters` is copied into every `Alt`, so it is one of the few places
