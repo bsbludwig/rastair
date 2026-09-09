@@ -433,6 +433,23 @@ pub struct AlleleMetrics {
     pub denovo: FormsDenovo,
 }
 
+/// Would observing `base` where the reference has `ref_base` create a CpG?
+///
+/// The seqair backend answers this from a column's alt bases alone, before any
+/// allele metrics exist, so it has to be one definition and not two.
+pub fn alt_forms_denovo(base: Base, ref_base: Base, context: &SequenceContext) -> FormsDenovo {
+    use Base::*;
+    if base == ref_base {
+        FormsDenovo::No
+    } else if context.before_1 == Some(C) && base == G {
+        FormsDenovo::ThisBecomesG
+    } else if context.after_1 == Some(G) && base == C {
+        FormsDenovo::ThisBecomesC
+    } else {
+        FormsDenovo::No
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FormsDenovo {
     #[default]
@@ -642,8 +659,6 @@ impl AlleleAccumulator {
         ref_base: Base,
         context: &SequenceContext,
     ) -> Result<AlleleMetrics> {
-        use Base::*;
-
         if self.depth == 0 {
             trace!(pos, ref_base = ?ref_base, ?base, pileup_reads = total_reads, "No reads for allele");
             return Ok(AlleleMetrics { base, ..default() });
@@ -653,15 +668,7 @@ impl AlleleAccumulator {
             bail!("allele has depth {} but pileup has 0 total reads — this is a bug", self.depth);
         }
 
-        let denovo = if base == ref_base {
-            FormsDenovo::No
-        } else if context.before_1 == Some(C) && base == G {
-            FormsDenovo::ThisBecomesG
-        } else if context.after_1 == Some(G) && base == C {
-            FormsDenovo::ThisBecomesC
-        } else {
-            FormsDenovo::No
-        };
+        let denovo = alt_forms_denovo(base, ref_base, context);
 
         let [ot_depth, ob_depth] = self.strand_depth;
         let [[ot_baseq, ot_mapq], [ob_baseq, ob_mapq]] = self.by_strand;
