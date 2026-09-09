@@ -20,7 +20,7 @@ use tracing::{Level, debug, instrument, trace, warn};
 
 #[cfg(feature = "experimental-seqair")]
 use crate::{
-    call::pileup::from_seqair::{ColumnDraft, DenovoNeighbour},
+    call::pileup::from_seqair::{ColumnDraft, ColumnScratch, DenovoNeighbour},
     metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{PileupReaders, ReferenceWindow},
 };
@@ -221,7 +221,7 @@ pub fn get_pileups(
     let mut pileup_metrics: Vec<PileupMetrics> =
         Vec::with_capacity(usize::try_from(region.len() / 4).unwrap_or(0));
     // Reused across every column of every sub-segment; see `ColumnDraft::accumulate`.
-    let mut mate_drops: Vec<u32> = Vec::new();
+    let mut scratch = ColumnScratch::default();
 
     // The one-column delay that lets a column be rejected before it is
     // finished. `set_denovo_adj` lets the *next* emitted column rescue a
@@ -259,14 +259,13 @@ pub fn get_pileups(
             if !region.contains(pos) {
                 continue;
             }
-            let draft =
-                match ColumnDraft::accumulate(&col, segment.clone(), params, &mut mate_drops) {
-                    Ok(draft) => draft,
-                    Err(error) => {
-                        warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");
-                        continue;
-                    }
-                };
+            let draft = match ColumnDraft::accumulate(&col, segment.clone(), params, &mut scratch) {
+                Ok(draft) => draft,
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");
+                    continue;
+                }
+            };
             let neighbour = draft.denovo_neighbour();
 
             // The deferred column comes first: output stays in ascending

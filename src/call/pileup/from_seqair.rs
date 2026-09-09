@@ -58,15 +58,14 @@ pub(crate) struct DenovoNeighbour {
 }
 
 impl ColumnDraft {
-    /// `mate_drops` is scratch: a reusable buffer for the right mates this
-    /// column drops. It is cleared here, and lives across columns only so a
-    /// deep pileup does not allocate one per position.
+    /// `scratch` is reset here; it lives across columns only so a deep pileup
+    /// does not allocate once per position.
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn accumulate(
         column: &PileupColumn<'_, RastairReadExtras>,
         segment: Rc<Segment>,
         params: &PileupMappingParams,
-        mate_drops: &mut Vec<u32>,
+        scratch: &mut ColumnScratch,
     ) -> Result<ColumnDraft> {
         let pos = column.pos().as_u64();
         let pos_u32 = u32::try_from(pos).wrap_err("pileup position exceeds u32")?;
@@ -84,12 +83,7 @@ impl ColumnDraft {
             SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
 
         let dedup_overlaps = !params.keep_overlapping_reads;
-        // Right mates whose left mate won the overlap at this column, in
-        // ascending record index so membership is a binary search. Only the
-        // reads inside a mate overlap ever touch it; at high coverage there can
-        // be hundreds, which is why the buffer is the caller's and not an
-        // inline `SmallVec` that would spill to the heap once per column.
-        mate_drops.clear();
+        scratch.begin(depth);
 
         let mut accumulators = PerBaseAccumulators::default();
         let mut pos_baseq = RmsAccumulator::new();
@@ -103,13 +97,17 @@ impl ColumnDraft {
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
 
-        for view in column.alignments() {
+        for (slot, view) in column.alignments().enumerate() {
             if total_depth >= max_reads {
                 break;
             }
-            let Some(Observed { base, baseq, qpos }) =
-                observed(&view, params, reference_base, &context)
-            else {
+            // Already resolved if the overlap rule reached forward for this
+            // read while deciding its mate; otherwise this is its first ask.
+            let resolved = match scratch.mates.resolved(slot) {
+                Some(known) => known.observed,
+                None => observed(&view, params, reference_base, &context),
+            };
+            let Some(Observed { base, baseq, qpos }) = resolved else {
                 continue;
             };
             let strand = view.extra().strand;
@@ -121,7 +119,7 @@ impl ColumnDraft {
                     params,
                     reference_base,
                     &context,
-                    mate_drops,
+                    scratch,
                 )
             {
                 continue;
@@ -172,7 +170,16 @@ impl ColumnDraft {
                 // be OR'd in — `from_hts` accumulates these over both mates
                 // before it deduplicates.
                 let mate = dedup_overlaps
-                    .then(|| counted_mate(column, &view, params, reference_base, &context))
+                    .then(|| {
+                        counted_mate(
+                            column,
+                            &view,
+                            params,
+                            reference_base,
+                            &context,
+                            &mut scratch.mates,
+                        )
+                    })
                     .flatten();
                 let mate_extras = mate.as_ref().map(|mate| mate.extra());
                 let has_soft_clip =
@@ -394,9 +401,9 @@ impl PileupMetrics {
         column: &PileupColumn<'_, RastairReadExtras>,
         segment: Rc<Segment>,
         params: &PileupMappingParams,
-        mate_drops: &mut Vec<u32>,
+        scratch: &mut ColumnScratch,
     ) -> Result<PileupMetrics> {
-        ColumnDraft::accumulate(column, segment, params, mate_drops)?.finish()
+        ColumnDraft::accumulate(column, segment, params, scratch)?.finish()
     }
 }
 
@@ -417,7 +424,7 @@ fn drops_overlapping_mate(
     params: &PileupMappingParams,
     reference_base: Base,
     context: &SequenceContext,
-    mate_drops: &mut Vec<u32>,
+    scratch: &mut ColumnScratch,
 ) -> bool {
     if !view.in_mate_overlap() {
         return false;
@@ -426,25 +433,27 @@ fn drops_overlapping_mate(
     let Some(mate_idx) = view.alignment().mate_idx() else { return false };
 
     if this_idx > mate_idx {
-        return mate_drops.binary_search(&this_idx).is_ok();
+        return scratch.mate_drops.binary_search(&this_idx).is_ok();
     }
 
     // A mate that is absent from this column, or that fails a filter here,
     // never formed a pair — this read stands on its own.
-    let Some(mate) = column.find_record(mate_idx) else { return false };
-    let Some(Observed { base: mate_base, .. }) = observed(&mate, params, reference_base, context)
-    else {
+    let Some(slot) = column.position_of(mate_idx) else { return false };
+    let Some(mate) = scratch.mates.resolve(column, slot, params, reference_base, context) else {
+        return false;
+    };
+    let Some(Observed { base: mate_base, .. }) = mate.observed else {
         return false;
     };
 
     // The name-based collector resolved the pair when it reached the *later*
     // read: it dropped that read if the bases agreed or it was read 2, and
     // otherwise dropped the earlier one.
-    if base != mate_base && !mate.flags.is_second_in_template() {
+    if base != mate_base && !mate.second_in_template {
         return true;
     }
-    if let Err(slot) = mate_drops.binary_search(&mate_idx) {
-        mate_drops.insert(slot, mate_idx);
+    if let Err(slot) = scratch.mate_drops.binary_search(&mate_idx) {
+        scratch.mate_drops.insert(slot, mate_idx);
     }
     false
 }
@@ -475,10 +484,104 @@ fn observed(
 }
 
 /// What a read contributes at one column, once it has passed [`observed`].
+#[derive(Clone, Copy)]
 struct Observed {
     base: Base,
     baseq: u8,
     qpos: QPos,
+}
+
+/// Reusable buffers for one column, owned by the caller of
+/// [`ColumnDraft::accumulate`] and reset there.
+#[derive(Default)]
+pub(crate) struct ColumnScratch {
+    /// Right mates whose left mate won the overlap at this column, in ascending
+    /// record index so membership is a binary search. Only the reads inside a
+    /// mate overlap ever touch it; at high coverage there can be hundreds,
+    /// which is why the buffer is the caller's and not an inline `SmallVec`
+    /// that would spill to the heap once per column.
+    mate_drops: Vec<u32>,
+    mates: MateObservations,
+}
+
+impl ColumnScratch {
+    fn begin(&mut self, depth: usize) {
+        self.mate_drops.clear();
+        self.mates.begin(depth);
+    }
+}
+
+/// [`observed`] verdicts for reads the column was asked about before its walk
+/// reached them, so no read is asked twice.
+///
+/// Three sites want the same answer for the same read: the read itself, the
+/// *left* mate of an overlapping pair — which has to know what the column will
+/// make of a read it has not reached yet — and, on the indel path, whichever
+/// mate `counted_mate` reaches for. Measured over chr12, that is 1.19 asks per
+/// read without indel calling and 1.38 with it, for ~90 instructions of
+/// quality filtering, read-end masking and, for a rescued clip, a CpG-partner
+/// test each time.
+///
+/// One slot per alignment, addressed by the read's position in the column
+/// rather than by its record index, so both storing and claiming a verdict are
+/// a single indexed access. `generation` is what makes that affordable: slots
+/// are stale rather than cleared between columns, which is why the buffer is
+/// only ever grown.
+#[derive(Default)]
+struct MateObservations {
+    slots: Vec<MateObservation>,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct MateObservation {
+    /// The column this slot was written for; anything else means "empty".
+    generation: u64,
+    second_in_template: bool,
+    observed: Option<Observed>,
+}
+
+impl MateObservations {
+    fn begin(&mut self, depth: usize) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.slots.len() < depth {
+            self.slots.resize(depth, MateObservation::default());
+        }
+    }
+
+    /// The verdict for the read at `slot`, resolving it against the column and
+    /// remembering it when this is the first ask.
+    ///
+    /// `None` means the column has no entry at that position; a read that
+    /// merely failed a filter is `Some` with `observed: None`.
+    fn resolve(
+        &mut self,
+        column: &PileupColumn<'_, RastairReadExtras>,
+        slot: usize,
+        params: &PileupMappingParams,
+        reference_base: Base,
+        context: &SequenceContext,
+    ) -> Option<MateObservation> {
+        if let Some(known) = self.slots.get(slot).filter(|s| s.generation == self.generation) {
+            return Some(*known);
+        }
+        let mate = column.alignment_at(slot)?;
+        let entry = MateObservation {
+            generation: self.generation,
+            second_in_template: mate.flags.is_second_in_template(),
+            observed: observed(&mate, params, reference_base, context),
+        };
+        *self.slots.get_mut(slot)? = entry;
+        Some(entry)
+    }
+
+    /// The verdict already resolved for the read at `slot`, for the column walk.
+    ///
+    /// Slots are left in place: `counted_mate` can reach back to a read the
+    /// walk has passed.
+    fn resolved(&self, slot: usize) -> Option<&MateObservation> {
+        self.slots.get(slot).filter(|s| s.generation == self.generation)
+    }
 }
 
 /// The linked mate of `view` in this column, when it would count in its own
@@ -498,9 +601,16 @@ fn counted_mate<'a, 'eng>(
     params: &PileupMappingParams,
     reference_base: Base,
     context: &SequenceContext,
+    mates: &mut MateObservations,
 ) -> Option<AlignmentView<'a, 'eng, RastairReadExtras>> {
-    let mate = column.mate_of(view)?;
-    observed(&mate, params, reference_base, context).is_some().then_some(mate)
+    // Same reject `mate_of` applies before its search: outside the pair's
+    // overlap the mate cannot be in this column.
+    if !view.in_mate_overlap() {
+        return None;
+    }
+    let slot = column.position_of(view.mate_idx()?)?;
+    let entry = mates.resolve(column, slot, params, reference_base, context)?;
+    entry.observed.is_some().then(|| column.alignment_at(slot)).flatten()
 }
 
 fn passes_read_masking(
@@ -827,7 +937,7 @@ mod tests {
             engine.set_max_depth(cap);
         }
 
-        let mut scratch = Vec::new();
+        let mut scratch = ColumnScratch::default();
         let mut columns = 0;
         while let Some(col) = engine.pileups() {
             let pos = col.pos().as_u64() as usize;
@@ -957,7 +1067,7 @@ mod tests {
                 Pos0::new(0).unwrap(),
                 Pos0::new(9).unwrap(),
             );
-            let mut scratch = Vec::new();
+            let mut scratch = ColumnScratch::default();
             let mut out = Vec::new();
             while let Some(col) = engine.pileups() {
                 if col.pos().as_u64() != 3 {
@@ -1055,7 +1165,7 @@ mod tests {
             Pos0::new(0).unwrap(),
             Pos0::new(9).unwrap(),
         );
-        let mut scratch = Vec::new();
+        let mut scratch = ColumnScratch::default();
         let mut alleles: Vec<IndelAllele> = Vec::new();
         while let Some(col) = engine.pileups() {
             if col.pos().as_u64() != 3 {
@@ -1135,8 +1245,13 @@ mod tests {
             if col.pos().as_u64() != START + 3 {
                 continue;
             }
-            let metrics =
-                PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new()).unwrap();
+            let metrics = PileupMetrics::from_seqair(
+                &col,
+                seg.clone(),
+                &params,
+                &mut ColumnScratch::default(),
+            )
+            .unwrap();
             let data = metrics.indel_data.expect("the anchor column carries the deletion");
             let obs = data.observations.first().expect("one deletion observation").clone();
             allele = Some(obs.allele);
@@ -1198,8 +1313,13 @@ mod tests {
             while let Some(col) = engine.pileups() {
                 if col.pos() == Pos0::new(2).unwrap() {
                     out = Some(
-                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
-                            .unwrap(),
+                        PileupMetrics::from_seqair(
+                            &col,
+                            seg.clone(),
+                            &params,
+                            &mut ColumnScratch::default(),
+                        )
+                        .unwrap(),
                     );
                 }
             }
@@ -1262,8 +1382,13 @@ mod tests {
             while let Some(col) = engine.pileups() {
                 if col.pos() == Pos0::new(3).unwrap() {
                     out = Some(
-                        PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
-                            .unwrap(),
+                        PileupMetrics::from_seqair(
+                            &col,
+                            seg.clone(),
+                            &params,
+                            &mut ColumnScratch::default(),
+                        )
+                        .unwrap(),
                     );
                 }
             }
@@ -1320,8 +1445,13 @@ mod tests {
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(3).unwrap() {
-                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
-                    .unwrap();
+                let pm = PileupMetrics::from_seqair(
+                    &col,
+                    seg.clone(),
+                    &params,
+                    &mut ColumnScratch::default(),
+                )
+                .unwrap();
                 assert!(pm.alt(Base::A).is_none(), "OT clip over ref G must not be rescued");
                 assert_eq!(pm.pos_metrics.depth, 0);
             }
@@ -1367,8 +1497,13 @@ mod tests {
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
-                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
-                    .unwrap();
+                let pm = PileupMetrics::from_seqair(
+                    &col,
+                    seg.clone(),
+                    &params,
+                    &mut ColumnScratch::default(),
+                )
+                .unwrap();
                 // The soft-clip view exists but is gated out: no T alt, no depth.
                 assert!(pm.alt(Base::T).is_none(), "non-CpG clip must not be rescued");
                 assert_eq!(pm.pos_metrics.depth, 0);
@@ -1419,8 +1554,13 @@ mod tests {
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
-                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
-                    .unwrap();
+                let pm = PileupMetrics::from_seqair(
+                    &col,
+                    seg.clone(),
+                    &params,
+                    &mut ColumnScratch::default(),
+                )
+                .unwrap();
                 assert!(pm.alt(Base::G).is_none(), "non-bisulfite fringe clip must not be rescued");
                 assert_eq!(pm.pos_metrics.depth, 0);
             }
@@ -1501,8 +1641,13 @@ mod tests {
             if col.pos() == Pos0::new(2).unwrap() {
                 // The engine presents both the aligned mate and the rescued clip.
                 assert_eq!(col.depth(), 2, "both mates present at the CpG-C before dedup");
-                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
-                    .unwrap();
+                let pm = PileupMetrics::from_seqair(
+                    &col,
+                    seg.clone(),
+                    &params,
+                    &mut ColumnScratch::default(),
+                )
+                .unwrap();
                 assert_eq!(pm.pos_metrics.depth, 1, "rescued partner deduped against its mate");
                 checked = true;
             }
@@ -1589,8 +1734,13 @@ mod tests {
         let mut checked = false;
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
-                let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut Vec::new())
-                    .unwrap();
+                let pm = PileupMetrics::from_seqair(
+                    &col,
+                    seg.clone(),
+                    &params,
+                    &mut ColumnScratch::default(),
+                )
+                .unwrap();
                 assert_eq!(
                     pm.pos_metrics.depth, 1,
                     "rescued partner deduped against its mate even with read-end masking active"
@@ -1765,7 +1915,7 @@ mod tests {
             Pos0::new(19).unwrap(),
         );
         engine.set_soft_clip_overhang(1);
-        let mut scratch = Vec::new();
+        let mut scratch = ColumnScratch::default();
         let mut depth_at_cpg = None;
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(5).unwrap() {
@@ -1810,7 +1960,7 @@ mod tests {
             Pos0::new(0).unwrap(),
             Pos0::new(19).unwrap(),
         );
-        let mut scratch = Vec::new();
+        let mut scratch = ColumnScratch::default();
         let mut overlap_depth = None;
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(7).unwrap() {
