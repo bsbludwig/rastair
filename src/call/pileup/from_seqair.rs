@@ -5,13 +5,14 @@ use super::{
     ref_features::{indel_ref_window_at, indel_tract_runs_at},
 };
 use crate::{
-    call::process::PileupMappingParams,
+    call::{PreFilterInputs, process::PileupMappingParams},
     metrics::{
-        Alt, AltFilters, Filters, PairedCounts, PerBaseAccumulators, PileupMetrics, ReadKey,
-        RecordTags, aggregate_indels,
+        Alt, AltFilters, Filters, FormsDenovo, PairedCounts, PerBaseAccumulators, PileupMetrics,
+        ReadKey, RecordTags, aggregate_indels, alt_forms_denovo,
     },
     sequence::{RastairReadExtras, Segment},
     utils::SequenceContext,
+    vcf::InCpG,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use seqair::bam::pileup::{AlignmentView, Indel, PileupColumn};
@@ -19,17 +20,54 @@ use seqair_types::{Base, QPos, RmsAccumulator, SmallVec, Strand};
 use std::rc::Rc;
 use tracing::{debug, instrument, trace};
 
-impl PileupMetrics {
-    #[instrument(level = "trace", skip_all)]
+/// One column's reads, accumulated but not yet reduced to a [`PileupMetrics`].
+///
+/// The split exists so a column can be rejected before the expensive half runs:
+/// [`ColumnDraft::finish`] pays nine divisions and square roots per allele, a
+/// `PositionMetrics`, and a ~900-byte struct write, and roughly seven columns in
+/// eight are then dropped by [`RecordFilters::pre_filter`]. Everything that
+/// filter reads is already known here — see [`ColumnDraft::pre_filter_inputs`].
+pub(crate) struct ColumnDraft {
+    segment: Rc<Segment>,
+    pos: u64,
+    pos_u32: u32,
+    idx: usize,
+    reference_base: Base,
+    context: SequenceContext,
+    accumulators: PerBaseAccumulators,
+    pos_baseq: RmsAccumulator,
+    pos_mapq: RmsAccumulator,
+    mapq0: u32,
+    total_depth: usize,
+    alt_bases: SmallVec<Base, 4>,
+    indel_observations: SmallVec<IndelObservation, 3>,
+    depth_offset: u32,
+    soft_clip_count: u32,
+    before_counts: PairedCounts,
+    after_counts: PairedCounts,
+}
+
+/// What a column contributes to its neighbours' de-novo adjacency, and nothing
+/// else: [`crate::call::process::set_denovo_adj`] asks only whether the column
+/// on one side carries an alt that would create the other half of a CpG.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DenovoNeighbour {
+    pos: u32,
+    becomes_c: bool,
+    becomes_g: bool,
+}
+
+impl ColumnDraft {
     /// `mate_drops` is scratch: a reusable buffer for the right mates this
     /// column drops. It is cleared here, and lives across columns only so a
     /// deep pileup does not allocate one per position.
-    pub(crate) fn from_seqair(
+    #[instrument(level = "trace", skip_all)]
+    pub(crate) fn accumulate(
         column: &PileupColumn<'_, RastairReadExtras>,
         segment: Rc<Segment>,
         params: &PileupMappingParams,
         mate_drops: &mut Vec<u32>,
-    ) -> Result<PileupMetrics> {
+    ) -> Result<ColumnDraft> {
         let pos = column.pos().as_u64();
         let pos_u32 = u32::try_from(pos).wrap_err("pileup position exceeds u32")?;
         let idx = segment.pos_to_idx(pos_u32)?;
@@ -189,6 +227,101 @@ impl PileupMetrics {
             }
         }
 
+        Ok(ColumnDraft {
+            segment,
+            pos,
+            pos_u32,
+            idx,
+            reference_base,
+            context,
+            accumulators,
+            pos_baseq,
+            pos_mapq,
+            mapq0,
+            total_depth,
+            alt_bases,
+            indel_observations,
+            depth_offset,
+            soft_clip_count,
+            before_counts,
+            after_counts,
+        })
+    }
+
+    /// The sequence index of this column, for the caller's sliding entropy.
+    pub(crate) fn idx(&self) -> usize {
+        self.idx
+    }
+
+    pub(crate) fn denovo_neighbour(&self) -> DenovoNeighbour {
+        let mut becomes_c = false;
+        let mut becomes_g = false;
+        for &base in self.alt_bases.iter() {
+            match alt_forms_denovo(base, self.reference_base, &self.context) {
+                FormsDenovo::ThisBecomesC => becomes_c = true,
+                FormsDenovo::ThisBecomesG => becomes_g = true,
+                FormsDenovo::No => {}
+            }
+        }
+        DenovoNeighbour { pos: self.pos_u32, becomes_c, becomes_g }
+    }
+
+    /// Only a reference `C` can still be rescued by the column after it, so
+    /// every other draft's fate is settled the moment it is accumulated.
+    pub(crate) fn awaits_successor(&self) -> bool {
+        self.reference_base == Base::C
+    }
+
+    /// The three questions [`RecordFilters::pre_filter`] asks of a finished
+    /// `PileupMetrics`, answered from the draft.
+    ///
+    /// `before`/`after` are the neighbouring *emitted* columns, exactly what
+    /// `map_surrounding` would hand `set_denovo_adj`; each contributes only
+    /// when it is genomically adjacent.
+    pub(crate) fn pre_filter_inputs(
+        &self,
+        before: Option<DenovoNeighbour>,
+        after: Option<DenovoNeighbour>,
+    ) -> PreFilterInputs {
+        let denovo_adj = (self.reference_base == Base::G
+            && before.is_some_and(|b| b.becomes_c && b.pos.checked_add(1) == Some(self.pos_u32)))
+            || (self.reference_base == Base::C
+                && after
+                    .is_some_and(|a| self.pos_u32.checked_add(1) == Some(a.pos) && a.becomes_g));
+        let neighbour = self.denovo_neighbour();
+        PreFilterInputs {
+            has_alts: !self.alt_bases.is_empty(),
+            cpg: *InCpG::new(self.reference_base, self.context.before_1, self.context.after_1)
+                || denovo_adj
+                || neighbour.becomes_c
+                || neighbour.becomes_g,
+            has_indels: !self.indel_observations.is_empty(),
+        }
+    }
+
+    /// Reduce the accumulated column to the metrics the rest of the pipeline
+    /// consumes.
+    pub(crate) fn finish(self) -> Result<PileupMetrics> {
+        let ColumnDraft {
+            segment,
+            pos,
+            pos_u32,
+            idx,
+            reference_base,
+            context,
+            mut accumulators,
+            pos_baseq,
+            pos_mapq,
+            mapq0,
+            total_depth,
+            alt_bases,
+            indel_observations,
+            depth_offset,
+            soft_clip_count,
+            before_counts,
+            after_counts,
+        } = self;
+
         let pos_metrics = crate::metrics::PositionMetrics::new(
             total_depth,
             reference_base,
@@ -248,6 +381,22 @@ impl PileupMetrics {
             tags: RecordTags::default(),
             indel_data,
         })
+    }
+}
+
+impl PileupMetrics {
+    /// Accumulate and finish one column in one go.
+    ///
+    /// Production splits these two halves so a column can be rejected between
+    /// them; the tests want every column, and this is the form they ask for.
+    #[cfg(test)]
+    pub(crate) fn from_seqair(
+        column: &PileupColumn<'_, RastairReadExtras>,
+        segment: Rc<Segment>,
+        params: &PileupMappingParams,
+        mate_drops: &mut Vec<u32>,
+    ) -> Result<PileupMetrics> {
+        ColumnDraft::accumulate(column, segment, params, mate_drops)?.finish()
     }
 }
 

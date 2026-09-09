@@ -54,7 +54,7 @@ pub(crate) mod require_tags;
 pub mod variant_calling;
 mod writer;
 
-pub use record_filters::RecordFilters;
+pub use record_filters::{PreFilterInputs, RecordFilters};
 pub use writer::writer_thread;
 
 // Jump in here if you want to know how the processing of regions works
@@ -345,6 +345,7 @@ fn process_region_wrapper(
             indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
             segment_max_bytes: params.segmentation.segment_max_bytes,
             rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
+            early_reject: Some(params.record_filters.clone()),
             ..Default::default()
         };
 

@@ -1,5 +1,5 @@
 use crate::{
-    call::{require_tags::TagRequirement, variant_calling::VariantCallingParams},
+    call::{RecordFilters, require_tags::TagRequirement, variant_calling::VariantCallingParams},
     sequence::{ChunkRegion, Segment},
 };
 use color_eyre::eyre::Result;
@@ -20,6 +20,7 @@ use tracing::{Level, debug, instrument, trace, warn};
 
 #[cfg(feature = "experimental-seqair")]
 use crate::{
+    call::pileup::from_seqair::{ColumnDraft, DenovoNeighbour},
     metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{PileupReaders, ReferenceWindow},
 };
@@ -55,6 +56,12 @@ pub struct PileupMappingParams {
     /// Rescue the soft-clipped CpG-partner base adjacent to each alignment
     /// (seqair backend only). See `MethylationCallingParams::rescue_soft_clip_cpg`.
     pub rescue_soft_clip_cpg: bool,
+    /// Which columns are worth finishing (seqair backend only).
+    ///
+    /// `None` finishes every column the reader emits, for a caller that wants
+    /// the raw pileup. Production passes the record filters, so the seven
+    /// columns in eight they drop never become a `PileupMetrics` at all.
+    pub early_reject: Option<RecordFilters>,
 }
 
 impl Deref for PileupMappingParams {
@@ -200,19 +207,36 @@ pub fn get_pileups(
         .collect();
 
     let segment = Rc::new(segment);
-    // One entry per covered position, and on WGS a region has essentially all
-    // of them (measured on chr12: len/region.len() = 1.000). Growing into that
-    // by doubling both copies and overshoots — a `PileupMetrics` is 928 bytes,
-    // so the last doubling lands on 131 072 slots for the 100 401 a 100 kb
-    // region needs, 122 MiB where 93 MiB would do.
+    // `early_reject` drops seven covered columns in eight before anything
+    // downstream sees them, so this holds the survivors and not one entry per
+    // covered position. A quarter of the region is a deliberate
+    // over-reservation — a `PileupMetrics` is 928 bytes and doubling into it
+    // both copies and overshoots — against a chr12 keep rate of ~12 % without
+    // `--cpgs-only` and far below that with it. A caller that asked for every
+    // column doubles up into the rest, which costs it two copies of a vector
+    // that was going to be that size anyway.
     //
-    // `region.len()` has to be the *inclusive* count for this to land exactly;
-    // when it was one short, this reservation was the worst of both worlds —
-    // it filled the buffer and then doubled it anyway, to 200 800 slots.
+    // `region.len()` has to be the *inclusive* count for this to land where it
+    // is meant to.
     let mut pileup_metrics: Vec<PileupMetrics> =
-        Vec::with_capacity(usize::try_from(region.len()).unwrap_or(0));
-    // Reused across every column of every sub-segment; see `from_seqair`.
+        Vec::with_capacity(usize::try_from(region.len() / 4).unwrap_or(0));
+    // Reused across every column of every sub-segment; see `ColumnDraft::accumulate`.
     let mut mate_drops: Vec<u32> = Vec::new();
+
+    // The one-column delay that lets a column be rejected before it is
+    // finished. `set_denovo_adj` lets the *next* emitted column rescue a
+    // reference C, so such a draft waits here until that column is known;
+    // every other verdict is settled by what precedes it. The draft carries
+    // the `before` it was judged against, because by the time its successor
+    // arrives `previous` has moved on to the draft itself.
+    //
+    // Both live outside the sub-segment loop because the sequence they
+    // describe — this region's emitted columns, in ascending position — spans
+    // sub-segments, just as the vector this replaces did.
+    let mut deferred: Option<(ColumnDraft, Option<DenovoNeighbour>)> = None;
+    let mut previous: Option<DenovoNeighbour> = None;
+    let keeps = |inputs| params.early_reject.as_ref().is_none_or(|f| f.keeps(inputs));
+    let mut sliding_entropy = SlidingEntropy::new(&segment);
 
     for seqair_seg in &seqair_segments {
         // Fetch BAM records + FASTA into PileupEngine (compute() runs here).
@@ -235,21 +259,66 @@ pub fn get_pileups(
             if !region.contains(pos) {
                 continue;
             }
-            match PileupMetrics::from_seqair(&col, segment.clone(), params, &mut mate_drops) {
-                Ok(p) => pileup_metrics.push(p),
-                Err(error) => {
-                    warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");
-                }
+            let draft =
+                match ColumnDraft::accumulate(&col, segment.clone(), params, &mut mate_drops) {
+                    Ok(draft) => draft,
+                    Err(error) => {
+                        warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");
+                        continue;
+                    }
+                };
+            let neighbour = draft.denovo_neighbour();
+
+            // The deferred column comes first: output stays in ascending
+            // position order.
+            if let Some((waiting, before)) = deferred.take()
+                && keeps(waiting.pre_filter_inputs(before, Some(neighbour)))
+            {
+                keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
             }
+
+            if keeps(draft.pre_filter_inputs(previous, None)) {
+                keep(&mut pileup_metrics, &mut sliding_entropy, draft);
+            } else if draft.awaits_successor() {
+                deferred = Some((draft, previous));
+            }
+            previous = Some(neighbour);
         }
     }
 
-    let mut sliding_entropy = SlidingEntropy::new(&segment);
-    for pm in &mut pileup_metrics {
-        pm.pos_metrics.extended.region_entropy = sliding_entropy.entropy_at(pm.idx());
+    // Nothing follows the last column, so a still-deferred draft was only ever
+    // waiting for a rescue that cannot come.
+    if let Some((waiting, before)) = deferred.take()
+        && keeps(waiting.pre_filter_inputs(before, None))
+    {
+        keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
     }
 
     Ok((segment, pileup_metrics.into_iter()))
+}
+
+/// Finish a surviving column and give it its region entropy.
+///
+/// The entropy is only read by the ML feature extractor, so it is computed
+/// here and not for every covered position; the sliding window is still fed
+/// ascending indices and its counts are integers, so the values are the ones
+/// the whole-region pass produced.
+#[cfg(feature = "experimental-seqair")]
+fn keep(
+    pileup_metrics: &mut Vec<PileupMetrics>,
+    sliding_entropy: &mut SlidingEntropy<'_>,
+    draft: ColumnDraft,
+) {
+    let idx = draft.idx();
+    match draft.finish() {
+        Ok(mut metrics) => {
+            metrics.pos_metrics.extended.region_entropy = sliding_entropy.entropy_at(idx);
+            pileup_metrics.push(metrics);
+        }
+        Err(error) => {
+            warn!(error = format!("{error:#}"), "Failed to finish pileup, skipping");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -277,6 +346,62 @@ mod tests {
         assert_eq!(pileups.first().unwrap().pos, 6_105_700);
         assert_eq!(pileups.last().unwrap().pos, 6_105_800);
 
+        Ok(())
+    }
+
+    /// The early rejection is exactly [`RecordFilters::pre_filter`] moved in
+    /// front of the work it saves. Both halves of that claim are checked: the
+    /// surviving positions are the ones the downstream `retain` would have
+    /// kept, in the same order, and their region entropy is what the
+    /// whole-region sliding pass produced — the window only ever sees the kept
+    /// columns now.
+    ///
+    /// `set_denovo_adj` is the reason this is not obvious: a column with no
+    /// evidence of its own is kept when its genomic neighbour carries an alt
+    /// that would create the other half of a CpG, so the reference run has to
+    /// go through `map_surrounding` before it filters.
+    #[cfg(feature = "experimental-seqair")]
+    #[test]
+    fn early_rejection_keeps_exactly_what_the_pre_filter_would() -> Result<()> {
+        use crate::{call::RecordFilters, utils::map_surrounding};
+
+        let params = ReaderParams {
+            regions: Some("chr19:6105700-6106500".parse()?),
+            ..ReaderParams::test_data()
+        };
+        let mut readers = params.pileup_readers()?;
+        let segments: Vec<_> = readers.segments(10_000, 100)?.collect();
+
+        let mut compared = 0usize;
+        for filters in [
+            RecordFilters { vcf_all: false, cpgs_only: false },
+            RecordFilters { vcf_all: true, cpgs_only: false },
+            RecordFilters { vcf_all: false, cpgs_only: true },
+        ] {
+            let unfiltered = PileupMappingParams::default();
+            for chunk in &segments {
+                let (_s, everything) = get_pileups(&mut readers, chunk, &unfiltered)?;
+                let mut everything: Vec<_> = everything.collect();
+                map_surrounding(&mut everything, super::super::set_denovo_adj, "test mapper");
+                everything.retain(|p| filters.pre_filter(p));
+                let expected: Vec<_> = everything
+                    .iter()
+                    .map(|p| (p.pos, p.pos_metrics.extended.region_entropy))
+                    .collect();
+
+                let early = PileupMappingParams {
+                    early_reject: Some(filters.clone()),
+                    ..Default::default()
+                };
+                let (_s, kept) = get_pileups(&mut readers, chunk, &early)?;
+                let actual: Vec<_> =
+                    kept.map(|p| (p.pos, p.pos_metrics.extended.region_entropy)).collect();
+
+                assert_eq!(expected, actual, "early rejection diverged for {filters:?}");
+                compared += expected.len();
+            }
+        }
+        assert!(compared > 0, "the fixture produced nothing to compare");
         Ok(())
     }
 
