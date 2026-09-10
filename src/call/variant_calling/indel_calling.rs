@@ -3,6 +3,7 @@ use crate::call::pileup::indels::{IndelAllele, IndelCounts};
 use better_default::Default;
 use probability::prelude::{Binomial, Discrete as _};
 use seqair_types::{Phred, Probability};
+use seqair_types::SmallVec;
 use std::num::NonZeroU8;
 use tracing::{instrument, trace};
 
@@ -282,13 +283,22 @@ pub fn rescue_hom_ref(calls: &mut Vec<IndelCall>, ml_threshold: Option<Probabili
 /// and no reference chromosome, or one allele carrying the locus. Each allele must
 /// also stand on its own, because a compound het's pooled fraction is close to a
 /// het carrying a trace second allele.
+fn allele_order(allele: &IndelAllele) -> (u8, SmallVec<u8, 4>) {
+    match allele {
+        IndelAllele::Insertion(bases) => (0, bases.iter().map(|b| *b as u8).collect()),
+        IndelAllele::Deletion(bases) => (1, bases.iter().map(|b| *b as u8).collect()),
+    }
+}
+
 fn resolve_compound_het(calls: &mut Vec<IndelCall>, depth: u32, error_rate: f64, tract: u32) {
     if calls.len() < 2 || depth == 0 {
         return;
     }
     // A one-sided allele is emitted for visibility but is not evidence, so it must
     // not consume one of the two compound-het slots.
-    calls.sort_by_key(|c| (c.one_sided, std::cmp::Reverse(c.alt_count)));
+    // Equal counts are broken by the allele itself, so the record order does not
+    // depend on which supporting read the pileup engine happened to yield first.
+    calls.sort_by_key(|c| (c.one_sided, std::cmp::Reverse(c.alt_count), allele_order(&c.allele)));
     let (Some(first), Some(second)) = (calls.first(), calls.get(1)) else { return };
     if first.one_sided || second.one_sided {
         return;
