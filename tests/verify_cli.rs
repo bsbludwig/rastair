@@ -87,3 +87,40 @@ fn verify_html_output_is_written() -> Result<()> {
 
     Ok(())
 }
+
+/// A whole-genome comparison names chrX and chrY, and a truth set like GIAB
+/// HG001 declares neither. Such a region is skipped with a warning; it used
+/// to abort the whole run.
+#[test]
+fn verify_skips_regions_on_chromosomes_the_vcf_lacks() -> Result<()> {
+    let dir = TempDir::new()?;
+    let vcf_path = create_minimal_bcf(&dir, "test.bcf")?;
+    rust_htslib::bcf::index::build(&vcf_path, None, 1, rust_htslib::bcf::index::Type::Csi(14))
+        .wrap_err("failed to index BCF")?;
+    let json_path = dir.path().join("report.json");
+
+    let output = rastair()
+        .args([
+            "verify",
+            vcf_path.to_str().unwrap(),
+            "--competitor",
+            vcf_path.to_str().unwrap(),
+            "-l",
+            "chr1",
+            "-l",
+            "chrX",
+            "--output-json",
+            json_path.to_str().unwrap(),
+        ])
+        .output()?;
+
+    let stderr = output.stderr();
+    assert!(output.status.success(), "verify failed: {stderr}");
+    assert!(
+        stderr.contains("chrX") && stderr.contains("skipping"),
+        "expected a skip warning for chrX, got: {stderr}"
+    );
+    let json = std::fs::read_to_string(&json_path)?;
+    assert!(json.contains("\"n_compared\": 3"), "chr1 records must still be compared: {json}");
+    Ok(())
+}

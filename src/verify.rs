@@ -352,32 +352,54 @@ fn load_variants(
             }
         }
     } else {
-        ensure_index_exists(path)?;
-        let mut reader = bcf::IndexedReader::from_path(path)
-            .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
-        reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
-        for region in regions {
-            let header = reader.header().clone();
-            let rid = header
-                .name2rid(region.chromosome.as_bytes())
-                .wrap_err_with(|| format!("Chromosome `{}` not found in VCF", region.chromosome))?;
-            reader
-                .fetch(
-                    rid,
-                    region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
-                    region.end.map(|x: seqair_types::Pos1| x.as_u64()),
-                )
-                .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
-            for rec in reader.records() {
-                match rec {
-                    Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
-                    Err(e) => warn!(error = %e, "Failed to read VCF record"),
-                }
-            }
-        }
+        for_each_record_in_regions(path, regions, threads, |r, header| {
+            extract_variants(r, header, &mut result, experimental_indels);
+        })?;
     }
 
     Ok(result)
+}
+
+/// Visit every record of the indexed VCF at `path` inside `regions`, in order.
+///
+/// A region on a chromosome the file does not declare is skipped with a
+/// warning rather than an error: a truth set such as GIAB HG001 has no chrX
+/// or chrY, and a whole-genome comparison must not fail on that account.
+fn for_each_record_in_regions(
+    path: &Path,
+    regions: &[RegionString],
+    threads: usize,
+    mut visit: impl FnMut(&bcf::Record, &HeaderView),
+) -> Result<()> {
+    ensure_index_exists(path)?;
+    let mut reader = bcf::IndexedReader::from_path(path)
+        .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
+    reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
+    let header = reader.header().clone();
+    for region in regions {
+        let Ok(rid) = header.name2rid(region.chromosome.as_bytes()) else {
+            warn!(
+                chromosome = %region.chromosome,
+                path = %path.display(),
+                "Chromosome not in VCF, skipping region"
+            );
+            continue;
+        };
+        reader
+            .fetch(
+                rid,
+                region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
+                region.end.map(|x: seqair_types::Pos1| x.as_u64()),
+            )
+            .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
+        for rec in reader.records() {
+            match rec {
+                Ok(r) => visit(&r, &header),
+                Err(e) => warn!(error = %e, "Failed to read VCF record"),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn extract_variants(
@@ -494,29 +516,9 @@ fn load_betas(path: &Path, regions: &[RegionString], threads: usize) -> Result<V
             }
         }
     } else {
-        ensure_index_exists(path)?;
-        let mut reader = bcf::IndexedReader::from_path(path)
-            .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
-        reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
-        for region in regions {
-            let header = reader.header().clone();
-            let rid = header
-                .name2rid(region.chromosome.as_bytes())
-                .wrap_err_with(|| format!("Chromosome `{}` not found in VCF", region.chromosome))?;
-            reader
-                .fetch(
-                    rid,
-                    region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
-                    region.end.map(|x: seqair_types::Pos1| x.as_u64()),
-                )
-                .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
-            for rec in reader.records() {
-                match rec {
-                    Ok(r) => extract_beta(&r, &header, &mut result),
-                    Err(e) => warn!(error = %e, "Failed to read VCF record"),
-                }
-            }
-        }
+        for_each_record_in_regions(path, regions, threads, |r, header| {
+            extract_beta(r, header, &mut result);
+        })?;
     }
 
     Ok(result)
