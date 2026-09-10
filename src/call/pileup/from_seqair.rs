@@ -163,7 +163,6 @@ impl ColumnDraft {
             }
 
             if params.call_indels {
-                let aln = view.alignment();
                 let extras = view.extra();
                 // Every count below describes the *fragment*, not the read that
                 // happened to survive dedup, so the dropped mate's shape has to
@@ -184,8 +183,6 @@ impl ColumnDraft {
                 let mate_extras = mate.as_ref().map(|mate| mate.extra());
                 let has_soft_clip =
                     extras.has_soft_clip || mate_extras.is_some_and(|extras| extras.has_soft_clip);
-                let has_repeat =
-                    extras.has_repeat || mate_extras.is_some_and(|extras| extras.has_repeat);
 
                 if has_soft_clip {
                     soft_clip_count += 1;
@@ -216,14 +213,22 @@ impl ColumnDraft {
                 // The noisy-reference count and the alternate side are two
                 // sides of one split, and `IndelCounts::clean_depth` subtracts
                 // a fragment counted on both twice. So a fragment is
-                // noisy-reference only when *this* read shows no indel (the
-                // alignment shape it slipped from is this read's) and the
-                // fragment contributed no observation at all — the pair's
-                // verdict, not the kept read's. `from_hts` reaches the same
-                // rule through per-fragment votes.
-                if matches!(aln.indel_after(), Indel::None)
-                    && (has_repeat || has_soft_clip)
-                    && evidence.is_none()
+                // noisy-reference only when it contributed no observation at
+                // all — the pair's verdict, not the kept read's — and some mate
+                // supports the reference from an alignment of the kind that
+                // slips. That mate's shape is judged on its own: a mate whose
+                // indel was rejected is not a reference alignment, and the
+                // soft clip or repeat it carries says nothing about the mate
+                // that is. `from_hts` reaches the same rule through
+                // per-fragment votes, where `saw_reference` only ever sees
+                // indel-free mates.
+                let slipped = |view: &AlignmentView<'_, '_, RastairReadExtras>| {
+                    let extras = view.extra();
+                    matches!(view.alignment().indel_after(), Indel::None)
+                        && (extras.has_repeat || extras.has_soft_clip)
+                };
+                if evidence.is_none()
+                    && (slipped(&view) || mate.as_ref().is_some_and(slipped))
                 {
                     depth_offset += 1;
                 }
@@ -736,6 +741,7 @@ fn build_indel_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::call::pileup::indels::IndelCounts;
     use crate::call::process::PileupMappingParams;
     use crate::call::variant_calling::{ReadMaskParams, ReadMaskSetting};
     use crate::sequence::{ChunkRegion, Region, Segment};
@@ -1183,6 +1189,122 @@ mod tests {
             vec![IndelAllele::Deletion([Base::C, Base::G].into_iter().collect())],
             "the dropped mate's surviving observation must stand in for the kept read's"
         );
+    }
+
+    /// Reads for the noisy-reference tests: `solo` casts one accepted deletion
+    /// vote so the column has indel data at all; `pair` is a fragment that casts
+    /// none, whose kept mate is at `pos` with the deletion (or without it) and
+    /// whose dropped mate is an indel-free alignment soft-clipped at its start.
+    fn noisy_reference_fixture(kept_carries_indel: bool) -> (Vec<TestRead>, PileupMappingParams) {
+        // Segment offsets:  0123456789
+        //                   AAAACGTTGG   anchor at 3, deletion of CG at 4-5
+        let params =
+            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 2, ..default() };
+        let deletion = vec![
+            CigarOp::new(CigarOpType::Match, 2),
+            CigarOp::new(CigarOpType::Deletion, 2),
+            CigarOp::new(CigarOpType::Match, 4),
+        ];
+        let kept = TestRead {
+            qname: b"pair".to_vec(),
+            pos: 2,
+            flags: 99,
+            bases: vec![Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
+            quals: vec![40; 6],
+            mapq: 60,
+            cigar: if kept_carries_indel {
+                deletion
+            } else {
+                vec![CigarOp::new(CigarOpType::Match, 6)]
+            },
+            mate_pos: 3,
+        };
+        let dropped = TestRead {
+            qname: b"pair".to_vec(),
+            pos: 3,
+            flags: 147,
+            bases: vec![Base::A, Base::A, Base::C, Base::G, Base::T, Base::T],
+            quals: vec![40; 6],
+            mapq: 60,
+            cigar: if kept_carries_indel {
+                vec![CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 5)]
+            } else {
+                vec![
+                    CigarOp::new(CigarOpType::SoftClip, 1),
+                    CigarOp::new(CigarOpType::Match, 1),
+                    CigarOp::new(CigarOpType::Deletion, 2),
+                    CigarOp::new(CigarOpType::Match, 4),
+                ]
+            },
+            mate_pos: 2,
+        };
+        let solo = TestRead {
+            qname: b"solo".to_vec(),
+            pos: 0,
+            flags: 0,
+            bases: vec![Base::A, Base::A, Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
+            quals: vec![40; 8],
+            mapq: 60,
+            cigar: vec![
+                CigarOp::new(CigarOpType::Match, 4),
+                CigarOp::new(CigarOpType::Deletion, 2),
+                CigarOp::new(CigarOpType::Match, 4),
+            ],
+            mate_pos: -1,
+        };
+        (vec![solo, kept, dropped], params)
+    }
+
+    fn indel_counts_at_anchor(reads: &[TestRead], params: &PileupMappingParams) -> IndelCounts {
+        let seg = segment(b"AAAACGTTGG");
+        let store = store_of(reads, &params.read_masking);
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(9).unwrap(),
+        );
+        let mut scratch = ColumnScratch::default();
+        let mut counts = None;
+        while let Some(col) = engine.pileups() {
+            if col.pos().as_u64() != 3 {
+                continue;
+            }
+            let pm = PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap();
+            counts = pm.indel_data.map(|d| d.counts.clone());
+        }
+        counts.expect("the solo read's deletion must reach the column")
+    }
+
+    /// The noisy-reference verdict is the fragment's, judged on the mate that
+    /// is actually a reference alignment. Here the kept mate carries the
+    /// deletion 1 bp into itself — rejected by the end-of-read cutoff, so the
+    /// fragment casts no vote — and the dropped mate is an indel-free alignment
+    /// that was soft-clipped. `from_hts` counts that fragment as noisy
+    /// reference; judging the kept read's own indel status instead counted it
+    /// as clean reference, one read more in every such indel's depth.
+    #[test]
+    fn a_soft_clipped_mate_makes_a_voteless_fragment_noisy_reference() {
+        let (reads, params) = noisy_reference_fixture(true);
+        let counts = indel_counts_at_anchor(&reads, &params);
+        assert_eq!(counts.total_indel_reads(), 1, "only `solo` votes");
+        assert_eq!(counts.ref_count, 1, "the pair is one reference fragment");
+        assert_eq!(counts.noisy_ref_count, 1, "its soft-clipped mate makes it noisy");
+        assert_eq!(counts.clean_depth(), 1);
+    }
+
+    /// The mirror image: the kept mate is a clean reference alignment and the
+    /// dropped mate carries the rejected deletion behind its soft clip. A mate
+    /// with an indel is not a reference alignment, so its clip says nothing
+    /// about the fragment's reference support — OR-ing the shapes over both
+    /// mates counted this fragment as noisy, one read fewer than `from_hts`.
+    #[test]
+    fn a_soft_clipped_indel_mate_does_not_make_a_clean_fragment_noisy() {
+        let (reads, params) = noisy_reference_fixture(false);
+        let counts = indel_counts_at_anchor(&reads, &params);
+        assert_eq!(counts.total_indel_reads(), 1, "only `solo` votes");
+        assert_eq!(counts.ref_count, 1, "the pair is one reference fragment");
+        assert_eq!(counts.noisy_ref_count, 0, "the clean kept mate speaks for it");
+        assert_eq!(counts.clean_depth(), 2);
     }
 
     /// A deletion's REF bases must come from the reference *at the deletion*,
