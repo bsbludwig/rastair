@@ -99,8 +99,11 @@ impl ColumnDraft {
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
 
+        // Counted where `from_hts` counts: reads that passed the filters,
+        // before an overlapping mate is collapsed into its fragment.
+        let mut passed: usize = 0;
         for (slot, view) in column.alignments().enumerate() {
-            if total_depth >= max_reads {
+            if passed >= max_reads {
                 break;
             }
             // Already resolved if the overlap rule reached forward for this
@@ -112,6 +115,7 @@ impl ColumnDraft {
             let Some(Observed { base, baseq, qpos }) = resolved else {
                 continue;
             };
+            passed += 1;
             let strand = view.extra().strand;
             if dedup_overlaps
                 && drops_overlapping_mate(
