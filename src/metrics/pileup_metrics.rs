@@ -16,7 +16,7 @@ use color_eyre::{
 use enumset::EnumSet;
 use seqair_types::SmallVec;
 use seqair_types::SmolStr;
-use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand};
+use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand, SumOfSquares};
 use std::ops::Deref;
 use std::sync::Arc;
 use tracing::{trace, warn};
@@ -538,46 +538,6 @@ impl Filters {
     }
 }
 
-/// Sum of squared values whose count is kept by the owner.
-///
-/// [`RmsAccumulator`] carries its own `count`, and [`AlleleAccumulator`] holds
-/// nine of them whose counts are all `depth`, `ot_count` or `ob_count` — three
-/// numbers it already maintains three lines away. It is updated once per read
-/// per column, so those nine redundant increments were the hottest single line
-/// in `call` (5.2 % of worker CPU), and the padding they carry made the struct
-/// 160 bytes where 88 does — which matters again because
-/// `PerBaseAccumulators::default()` re-zeroes four of them at every column.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct SumOfSquares(f64);
-
-impl SumOfSquares {
-    #[inline]
-    fn add_squared(&mut self, x_sq: f64) {
-        self.0 = self.0.algebraic_add(x_sq);
-    }
-
-    #[inline]
-    fn add(&mut self, x: f64) {
-        self.add_squared(x.algebraic_mul(x));
-    }
-
-    /// The RMS of the `count` values added.
-    ///
-    /// Deliberately routed through a one-element [`RmsAccumulator`] rather than
-    /// taking the square root here: that accumulator divides by its own count of
-    /// 1, which is exact, so `finish` evaluates the very same
-    /// `sum.algebraic_div(count).sqrt()` the nine accumulators used to, bit for
-    /// bit — including `RootMeanSquare(0.0)` for an empty one.
-    fn finish(self, count: u32) -> RootMeanSquare {
-        if count == 0 {
-            return RootMeanSquare::default();
-        }
-        let mut acc = RmsAccumulator::new();
-        acc.add_squared(self.0.algebraic_div(f64::from(count)));
-        acc.finish()
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AlleleAccumulator {
     depth: u32,
@@ -680,12 +640,12 @@ impl AlleleAccumulator {
             mapq: self.mapq.finish(self.depth),
             strand_count: ByStrand { ot: ot_depth, ob: ob_depth },
             baseq_s: ByStrand {
-                ot: SumOfSquares(ot_baseq).finish(ot_depth),
-                ob: SumOfSquares(ob_baseq).finish(ob_depth),
+                ot: SumOfSquares::from(ot_baseq).finish(ot_depth),
+                ob: SumOfSquares::from(ob_baseq).finish(ob_depth),
             },
             mapq_s: ByStrand {
-                ot: SumOfSquares(ot_mapq).finish(ot_depth),
-                ob: SumOfSquares(ob_mapq).finish(ob_depth),
+                ot: SumOfSquares::from(ot_mapq).finish(ot_depth),
+                ob: SumOfSquares::from(ob_mapq).finish(ob_depth),
             },
             num_aligned_bases: self.aligned.finish(self.depth),
             num_indels: self.indels.finish(self.depth),

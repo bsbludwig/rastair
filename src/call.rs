@@ -22,11 +22,8 @@ use crate::call::process::calculate_pileup_metrics;
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams,
-        pileup::SimpleRead,
-        process::get_pileups,
-        require_tags::RequireTagsParams,
-        variant_calling::VariantCallingParams,
+        methylation::params::MethylationCallingParams, pileup::SimpleRead, process::get_pileups,
+        require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
     metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},

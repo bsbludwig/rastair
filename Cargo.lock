@@ -2727,7 +2727,7 @@ checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 [[package]]
 name = "seqair"
 version = "0.2.0"
-source = "git+https://github.com/Softleif/seqair.git?branch=main#2f618edabc80c3a1c4da3001be807344a54e3f26"
+source = "git+https://github.com/Softleif/seqair.git?branch=main#ecf1a6d560cdb2c274afef1daf6d6f1424aa8f32"
 dependencies = [
  "bytemuck",
  "bzip2",
@@ -2748,7 +2748,7 @@ dependencies = [
 [[package]]
 name = "seqair-types"
 version = "0.2.0"
-source = "git+https://github.com/Softleif/seqair.git?branch=main#2f618edabc80c3a1c4da3001be807344a54e3f26"
+source = "git+https://github.com/Softleif/seqair.git?branch=main#ecf1a6d560cdb2c274afef1daf6d6f1424aa8f32"
 dependencies = [
  "bytemuck",
  "rust-htslib",

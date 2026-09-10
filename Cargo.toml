@@ -7,7 +7,7 @@ edition = "2024"
 # source of truth for the Rust version; .github/scripts/check-toolchain-pins.sh
 # enforces that. A lower value here would be unenforceable anyway, since
 # rust-toolchain.toml pins the toolchain for anyone building from source.
-rust-version = "1.97.1"
+rust-version = "1.98.1"
 license-file = "LICENSE.txt"
 authors = ["Benjamin Schuster-Boeckler", "Pascal Hertleif <pascal@softleif.se>"]
 readme = "README.md"
