@@ -80,7 +80,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   Default value: `3`
 * `--max-coverage <MAX_COVERAGE>` — Maximum number of reads to consider at one position
 
-   A cap on how deep a pileup is allowed to get, for performance. `0` means no limit.
+   Counts reads that pass the mapping- and base-quality filters, so a pileup of MAPQ 0 reads cannot crowd out the usable ones. To bound memory, at most ten times this many reads are loaded per position at all. `0` means no limit.
 
   Default value: `1000`
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read

@@ -171,17 +171,20 @@ impl Pileup {
         let idx = segment.pos_to_idx(pos)?;
         let depth = pile.depth();
         let depth = usize::try_from(depth).wrap_err("pileup depth exceeds usize")?;
-        let max_reads = params.max_coverage.clamp(depth);
+        // The cap counts reads that pass the filters below, so a MAPQ 0 pileup
+        // cannot crowd out the usable reads; `clamp` only sizes the buffers.
+        let capacity = params.max_coverage.clamp(depth);
+        let max_reads = params.max_coverage.kept();
         if depth > max_reads {
-            debug!(pos, depth, "Capping number of reads in pileup to {max_reads}");
+            debug!(pos, depth, "Capping number of counted reads in pileup to {max_reads}");
         }
 
-        let mut raw_reads = Vec::with_capacity(max_reads);
+        let mut raw_reads = Vec::with_capacity(capacity);
         let mut to_remove = SmallVec::<usize, 16>::new();
         let mut indel_observations = SmallVec::new();
 
-        scratch.fragments.prepare(max_reads);
-        scratch.names.prepare(max_reads);
+        scratch.fragments.prepare(capacity);
+        scratch.names.prepare(capacity);
 
         // Both sides of `VAF = alt / depth` have to be drawn from the same reads,
         // so indel observations are collected in the same pass, behind the same

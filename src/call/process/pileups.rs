@@ -105,16 +105,17 @@ pub fn get_pileups(
 
     // Go over each column in the pileup from htslib and build our own pileup
     let mut pileup = readers.bam.pileup();
-    // htslib's own cap; `0` there means "use the default", not "unlimited", so
-    // an unlimited run asks for the largest cap htslib can take instead.
-    // `set_max_depth` panics above `i32::MAX` (it hands the value to
-    // `bam_plp_set_maxcnt`, which takes a C `int`), so both the unlimited
-    // sentinel and any user-supplied `--max-coverage` above that bound have
-    // to be clamped down to it rather than passed through.
+    // htslib's own cap only bounds memory (the real cap is applied to filtered
+    // reads per column, see `MaxCoverage::load_ceiling`); `0` there means "use
+    // the default", not "unlimited", so an unlimited run asks for the largest
+    // cap htslib can take instead. `set_max_depth` panics above `i32::MAX`
+    // (it hands the value to `bam_plp_set_maxcnt`, which takes a C `int`), so
+    // both the unlimited sentinel and a huge `--max-coverage` have to be
+    // clamped down to it rather than passed through.
     pileup.set_max_depth(
         params
             .max_coverage
-            .per_column()
+            .load_ceiling()
             .map_or(i32::MAX as u32, std::num::NonZeroU32::get)
             .min(i32::MAX as u32),
     );
@@ -178,8 +179,10 @@ pub fn get_pileups(
     readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
     readers.inner_mut().customize_mut().read_masking = params.read_masking.clone();
 
-    let depth_limit = match params.max_coverage.per_column() {
-        Some(cap) => DepthLimit::PerColumn(cap),
+    // Loading and the engine are bounded by the memory ceiling only; the
+    // user's cap counts filtered reads, inside `ColumnDraft::accumulate`.
+    let depth_limit = match params.max_coverage.load_ceiling() {
+        Some(ceiling) => DepthLimit::PerColumn(ceiling),
         None => DepthLimit::Unlimited,
     };
 
@@ -254,8 +257,8 @@ pub fn get_pileups(
             .inner_mut()
             .pileup(seqair_seg, depth_limit)
             .wrap_err("Failed to start seqair pileup")?;
-        if let Some(cap) = params.max_coverage.per_column() {
-            guard.set_max_depth(cap);
+        if let Some(ceiling) = params.max_coverage.load_ceiling() {
+            guard.set_max_depth(ceiling);
         }
         if params.rescue_soft_clip_cpg {
             // Recover exactly the single CpG-partner base the aligner clipped.

@@ -70,8 +70,10 @@ pub struct VariantCallingParams {
 
     /// Maximum number of reads to consider at one position
     ///
-    /// A cap on how deep a pileup is allowed to get, for performance. `0`
-    /// means no limit.
+    /// Counts reads that pass the mapping- and base-quality filters, so a
+    /// pileup of MAPQ 0 reads cannot crowd out the usable ones. To bound
+    /// memory, at most ten times this many reads are loaded per position at
+    /// all. `0` means no limit.
     #[arg(long, default_value_t = MaxCoverage::DEFAULT)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(MaxCoverage::DEFAULT)]
@@ -134,6 +136,26 @@ impl MaxCoverage {
             Some(cap) => depth.min(cap.get() as usize),
             None => depth,
         }
+    }
+
+    /// How many reads a column may *count*: those that pass the read filters,
+    /// up to the cap. Unlimited is `usize::MAX`.
+    #[must_use]
+    pub fn kept(self) -> usize {
+        self.0.map_or(usize::MAX, |cap| cap.get() as usize)
+    }
+
+    /// How many reads a column may *load*, before any filter: ten times the
+    /// cap. The cap itself is applied to filtered reads, so it must not be
+    /// the engine's truncation limit — a pileup that is 85 % MAPQ 0 would
+    /// otherwise have its usable reads evicted by the useless ones, and
+    /// which ones survive would depend on the engine's truncation order.
+    /// The ceiling only bounds memory on collapsed repeats; the two engines
+    /// still truncate differently above it, which is why it is generous.
+    #[must_use]
+    pub fn load_ceiling(self) -> Option<NonZeroU32> {
+        const LOAD_FACTOR: NonZeroU32 = NonZeroU32::new(10).unwrap();
+        self.0.map(|cap| cap.saturating_mul(LOAD_FACTOR))
     }
 }
 

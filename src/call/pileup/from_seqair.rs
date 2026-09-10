@@ -71,9 +71,11 @@ impl ColumnDraft {
         let pos_u32 = u32::try_from(pos).wrap_err("pileup position exceeds u32")?;
         let idx = segment.pos_to_idx(pos_u32)?;
         let depth = column.depth();
-        let max_reads = params.max_coverage.clamp(depth);
+        // The cap counts reads that pass `observed`, so a MAPQ 0 pileup cannot
+        // crowd out the usable reads.
+        let max_reads = params.max_coverage.kept();
         if depth > max_reads {
-            debug!(pos, depth, "Capping number of reads in pileup to {max_reads}");
+            debug!(pos, depth, "Capping number of counted reads in pileup to {max_reads}");
         }
 
         let reference_base: Base =
@@ -2064,6 +2066,42 @@ mod tests {
         let mut capped = dedup_params();
         capped.variant_calling.max_coverage = crate::call::variant_calling::MaxCoverage::new(3);
         assert_same_as_name_collector(&reads, REF, &capped);
+    }
+
+    /// `--max-coverage` counts reads that pass the filters. Two MAPQ 0 reads
+    /// arrive first at the column; with a cap of 2 they used to be the two the
+    /// engine kept, and the column came out empty.
+    #[test]
+    fn coverage_cap_counts_filtered_reads_only() {
+        let reads = vec![
+            TestRead::matching(b"junk1", 2, 8, Base::A, 0).with_mapq(0),
+            TestRead::matching(b"junk2", 2, 8, Base::A, 0).with_mapq(0),
+            TestRead::matching(b"good1", 2, 8, Base::A, 0),
+            TestRead::matching(b"good2", 2, 8, Base::A, 0),
+            TestRead::matching(b"good3", 2, 8, Base::A, 0),
+        ];
+        let mut params = dedup_params();
+        params.variant_calling.max_coverage = crate::call::variant_calling::MaxCoverage::new(2);
+        let seg = segment(REF);
+        let store = store_of(&reads, &params.read_masking);
+        let mut engine = PileupEngine::new(
+            store.prepare_for_pileup().input,
+            Pos0::new(0).unwrap(),
+            Pos0::new(9).unwrap(),
+        );
+        if let Some(ceiling) = params.max_coverage.load_ceiling() {
+            engine.set_max_depth(ceiling);
+        }
+        let mut scratch = ColumnScratch::default();
+        let mut depth = None;
+        while let Some(col) = engine.pileups() {
+            if col.pos().as_u64() != 5 {
+                continue;
+            }
+            let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut scratch).unwrap();
+            depth = Some(pm.pos_metrics.depth);
+        }
+        assert_eq!(depth, Some(2), "the cap applies to reads that pass the MAPQ filter");
     }
 
     /// With `--keep-overlapping-reads` no dedup happens at all, so every
