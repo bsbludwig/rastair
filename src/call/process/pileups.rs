@@ -107,8 +107,16 @@ pub fn get_pileups(
     let mut pileup = readers.bam.pileup();
     // htslib's own cap; `0` there means "use the default", not "unlimited", so
     // an unlimited run asks for the largest cap htslib can take instead.
+    // `set_max_depth` panics above `i32::MAX` (it hands the value to
+    // `bam_plp_set_maxcnt`, which takes a C `int`), so both the unlimited
+    // sentinel and any user-supplied `--max-coverage` above that bound have
+    // to be clamped down to it rather than passed through.
     pileup.set_max_depth(
-        params.max_coverage.per_column().map_or(u32::MAX, std::num::NonZeroU32::get),
+        params
+            .max_coverage
+            .per_column()
+            .map_or(i32::MAX as u32, std::num::NonZeroU32::get)
+            .min(i32::MAX as u32),
     );
     let mut scratch = PileupScratch::new(params);
     let piles = pileup

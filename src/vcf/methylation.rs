@@ -1,4 +1,4 @@
-use seqair_types::{Probability, SmallVec, smallvec::smallvec};
+use seqair_types::{Probability, SmallVec};
 use std::fmt;
 
 /// Whether a CpG is from the reference sequence or created by a de-novo variant.
@@ -87,7 +87,7 @@ impl Methylated {
     /// Extract values in canonical order (Original first, then de-novo) for VCF output.
     pub(crate) fn ordered_values<T>(&self, f: impl Fn(&CpgBeta) -> T) -> SmallVec<Option<T>, 2> {
         if self.is_empty() {
-            return smallvec![None];
+            return SmallVec::from([None]);
         }
         let mut out = SmallVec::new();
         if let Some(b) = self.original() {

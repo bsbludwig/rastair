@@ -84,7 +84,7 @@ mod tests {
     use seqair_types::Base;
     use seqair_types::SmolStr;
     use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::rc::Rc;
 
     /// One shared region per contig, as production has it: every pileup of a
