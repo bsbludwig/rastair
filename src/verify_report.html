@@ -394,9 +394,30 @@
 
     let html = '<h2>Variant Verification</h2>';
 
+    const matching = data.matching;
+    if (matching) {
+      const note = matching.mode === 'genotype'
+        ? 'Genotype-aware matching (like hap.py): alleles are compared in minimal representation, ' +
+          'and a call is a true positive only when its zygosity agrees with truth.'
+        : 'Allele matching: alleles are compared in minimal representation, zygosity is ignored.';
+      const parts = [note];
+      if (matching.predictions_not_carried > 0) {
+        parts.push(`${fmt(matching.predictions_not_carried)} predicted alt allele(s) the genotype ` +
+                   'does not carry (GT 0/0) were ignored.');
+      }
+      const noGt = (matching.predictions_without_genotype || 0) +
+                   (matching.truth_without_genotype || 0) +
+                   (matching.competitor_without_genotype || 0);
+      if (noGt > 0) {
+        parts.push(`${fmt(noGt)} record(s) carry no FORMAT/GT and were matched on alleles alone.`);
+      }
+      html += '<p style="font-size:0.82rem;color:#666;margin:-8px 0 16px;font-style:italic">' +
+              parts.join(' ') + '</p>';
+    }
+
     // Venn diagram
     if (v.overlap) {
-      html += '<h3>Set overlap</h3>';
+      html += '<h3>Set overlap</h3><p style="font-size:0.8rem;color:#888;margin:0 0 8px">Alleles only — zygosity is ignored here.</p>';
       html += '<div class="venn-wrap">' + vennSVG(v.overlap) + '</div>';
     }
 
@@ -433,6 +454,10 @@
       html += countRow('TP', m => m.tp);
       html += countRow('FP', m => m.fp);
       html += countRow('FN', m => m.fn_count);
+      if (pm.genotype_errors) {
+        html += countRow('FP: wrong zygosity', m => m.genotype_errors ? m.genotype_errors.fp_gt : 0);
+        html += countRow('FP: wrong allele',   m => m.genotype_errors ? m.genotype_errors.fp_al : 0);
+      }
       html += '</tbody></table>';
 
       // By-category breakdown — mini Venn per category
