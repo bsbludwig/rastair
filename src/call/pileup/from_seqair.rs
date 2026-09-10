@@ -8,7 +8,7 @@ use crate::{
     call::{PreFilterInputs, process::PileupMappingParams},
     metrics::{
         Alt, AltFilters, Filters, FormsDenovo, PairedCounts, PerBaseAccumulators, PileupMetrics,
-        ReadKey, RecordTags, aggregate_indels, alt_forms_denovo,
+        ReadKey, RecordTags, aggregate_indels, alt_forms_denovo, order_alts,
     },
     sequence::{RastairReadExtras, Segment},
     utils::SequenceContext,
@@ -350,7 +350,7 @@ impl ColumnDraft {
             crate::metrics::AlleleMetrics { base: reference_base, ..Default::default() }
         };
 
-        let alts = alt_bases
+        let mut alts: SmallVec<Alt, 1> = alt_bases
             .iter()
             .map(|&base| {
                 let acc = accumulators
@@ -360,6 +360,7 @@ impl ColumnDraft {
                 Ok(Alt { base, metrics, filters: AltFilters::default(), call: Default::default() })
             })
             .collect::<Result<_>>()?;
+        order_alts(&mut alts);
 
         let indel_data = if indel_observations.is_empty() {
             None

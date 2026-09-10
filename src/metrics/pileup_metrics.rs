@@ -178,7 +178,7 @@ impl PileupMetrics {
             AlleleMetrics { base: reference_base, ..default() }
         };
 
-        let alts = alt_bases
+        let mut alts: SmallVec<Alt, 1> = alt_bases
             .iter()
             .map(|&base| {
                 let acc = accumulators
@@ -190,6 +190,7 @@ impl PileupMetrics {
                 Ok(Alt { base, metrics, filters: AltFilters::default(), call: default() })
             })
             .collect::<Result<_>>()?;
+        order_alts(&mut alts);
 
         let indel_data = if indel_observations.is_empty() {
             None
@@ -322,6 +323,19 @@ impl PileupMetrics {
         }
         self.pos_filters.pass() && self.alts.iter().any(|a| a.filters.pass(ml_threshold))
     }
+}
+
+/// Alternate alleles are listed by support, deepest first; equal support
+/// keeps the order they were observed in.
+///
+/// Observation order is the pileup engine's read order, which differs between
+/// engines at equal start positions — and the ALT column, `AD`, `ML` and the
+/// genotype indices all follow this order, so leaving it to the engine made
+/// `T G,A 0/1` on one backend `T A,G 0/2` on the other. Ties are left alone
+/// on purpose: genotyping and methylation break their own ties by this order,
+/// and the sort must not decide those differently from before.
+pub fn order_alts(alts: &mut [Alt]) {
+    alts.sort_by_key(|alt| std::cmp::Reverse(alt.metrics.depth));
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
