@@ -1,7 +1,7 @@
 use crate::{call::tests::utils::*, pileups, vcf_assert};
 use seqair_types::Base::*;
 
-/// A non-CpG variant emits a record with no methylation context. The M5mC
+/// A non-CpG variant emits a record with no methylation context. The `M5mC`
 /// FORMAT field for such a record must round-trip through BCF without making
 /// htslib-based float readers panic: previously it was encoded as a zero-length
 /// value (`n == 0`), which makes `rust_htslib`'s `Format::float()` panic on

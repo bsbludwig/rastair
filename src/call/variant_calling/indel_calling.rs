@@ -2,8 +2,8 @@ use super::GenotypeTag;
 use crate::call::pileup::indels::{IndelAllele, IndelCounts};
 use better_default::Default;
 use probability::prelude::{Binomial, Discrete as _};
-use seqair_types::{Phred, Probability};
 use seqair_types::SmallVec;
+use seqair_types::{Phred, Probability};
 use std::num::NonZeroU8;
 use tracing::{instrument, trace};
 

@@ -687,10 +687,10 @@ mod tests {
     /// 4.5 pairs them with.
     ///
     /// `M` is correct per the spec — "one value for each possible base
-    /// modification for the corresponding ChEBI ID" — but noodles rejects it,
+    /// modification for the corresponding `ChEBI` ID" — but noodles rejects it,
     /// and *declaring 4.5 does not help*: measured, a 4.5 header with
     /// `Number=M` is still refused with `invalid FORMAT: ID=M5mC: invalid
-    /// number`. Since noodles is what PacBio's aardvark and much of the
+    /// number`. Since noodles is what `PacBio`'s aardvark and much of the
     /// ecosystem parse with, `M` would make rastair's output unreadable to
     /// them. `.` says the same thing in a way every reader accepts. Revisit
     /// when noodles implements the 4.5 cardinalities.

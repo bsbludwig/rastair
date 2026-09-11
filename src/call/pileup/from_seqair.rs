@@ -233,9 +233,7 @@ impl ColumnDraft {
                     matches!(view.alignment().indel_after(), Indel::None)
                         && (extras.has_repeat || extras.has_soft_clip)
                 };
-                if evidence.is_none()
-                    && (slipped(&view) || mate.as_ref().is_some_and(slipped))
-                {
+                if evidence.is_none() && (slipped(&view) || mate.as_ref().is_some_and(slipped)) {
                     depth_offset += 1;
                 }
 
@@ -983,7 +981,7 @@ mod tests {
 
             let pm = PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap();
             assert_eq!(
-                pm.pos_metrics.depth as u32, expected_depth,
+                pm.pos_metrics.depth, expected_depth,
                 "pos {pos}: depth differs from the name-collector rule"
             );
             for (base, ot, ob) in expected_by_base {
