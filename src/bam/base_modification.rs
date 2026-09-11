@@ -1,5 +1,5 @@
 use color_eyre::eyre::{Context, Result};
-use rust_htslib::bam::{Record, record::Aux};
+use rust_htslib::bam::{BamError, Record, record::Aux};
 use rustc_hash::FxHashMap;
 use seqair_types::SmallVec;
 use seqair_types::{Base, Strand};
@@ -141,16 +141,17 @@ impl MethylatedPositions {
     /// simply contribute no data to modkit's per-position counts.
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
         if self.positions.is_empty() {
+            remove_aux_if_present(record, b"MM")?;
+            remove_aux_if_present(record, b"ML")?;
             return Ok(());
         }
 
-        record
-            .push_aux(b"MM", Aux::String(&self.to_mod_string()))
-            .wrap_err("could not apply modification to record")?;
-
-        record
-            .push_aux(b"ML", Aux::ArrayU8(vec![255_u8; self.positions.len()].as_slice().into()))
-            .wrap_err("could not apply ML tag to record")?;
+        replace_aux(record, b"MM", Aux::String(&self.to_mod_string()))?;
+        replace_aux(
+            record,
+            b"ML",
+            Aux::ArrayU8(vec![255_u8; self.positions.len()].as_slice().into()),
+        )?;
 
         Ok(())
     }
@@ -319,13 +320,26 @@ impl XrTags {
 
     /// Apply XR/XG/XM tags to a BAM record
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
-        record.push_aux(b"XR", Aux::String(self.xr.as_str())).wrap_err("could not add XR tag")?;
-
-        record.push_aux(b"XG", Aux::String(self.xg.as_str())).wrap_err("could not add XG tag")?;
-
-        record.push_aux(b"XM", Aux::String(&self.xm)).wrap_err("could not add XM tag")?;
+        replace_aux(record, b"XR", Aux::String(self.xr.as_str()))?;
+        replace_aux(record, b"XG", Aux::String(self.xg.as_str()))?;
+        replace_aux(record, b"XM", Aux::String(&self.xm))?;
 
         Ok(())
+    }
+}
+
+fn replace_aux(record: &mut Record, tag: &[u8; 2], value: Aux<'_>) -> Result<()> {
+    remove_aux_if_present(record, tag)?;
+    record
+        .push_aux(tag, value)
+        .wrap_err_with(|| format!("could not add {} tag", tag.escape_ascii()))
+}
+
+fn remove_aux_if_present(record: &mut Record, tag: &[u8; 2]) -> Result<()> {
+    match record.remove_aux(tag) {
+        Ok(()) | Err(BamError::AuxTagNotFound) => Ok(()),
+        Err(error) => Err(error)
+            .wrap_err_with(|| format!("could not remove existing {} tag", tag.escape_ascii())),
     }
 }
 
@@ -348,6 +362,55 @@ mod tests {
     use insta::{assert_compact_debug_snapshot, assert_snapshot};
     use rustc_hash::FxHashSet;
     use std::iter::repeat_n;
+
+    fn string_tag(record: &Record, tag: &[u8; 2]) -> Result<String> {
+        match record.aux(tag).wrap_err_with(|| format!("missing {} tag", tag.escape_ascii()))? {
+            Aux::String(value) => Ok(value.to_owned()),
+            other => {
+                color_eyre::eyre::bail!("{} is not a string tag: {other:?}", tag.escape_ascii())
+            }
+        }
+    }
+
+    /// Regression test for issue #15: an aligner (or an earlier rastair run) may
+    /// already have written XR/XG/XM, and re-annotating must overwrite them rather
+    /// than fail on the read.
+    #[test]
+    fn legacy_tags_overwrite_existing_ones() -> Result<()> {
+        let mut record = Record::new();
+        record.set(b"read", None, b"ACGT", b"IIII");
+        record.push_aux(b"XR", Aux::String("GA"))?;
+        record.push_aux(b"XG", Aux::String("GA"))?;
+        record.push_aux(b"XM", Aux::String("ZZZZ"))?;
+        record.push_aux(b"NM", Aux::I32(3))?;
+
+        let tags = XrTags::new_legacy(4, Strand::OT, true, &FxHashMap::default());
+        tags.apply_to_record(&mut record)?;
+
+        assert_eq!(string_tag(&record, b"XR")?, "CT");
+        assert_eq!(string_tag(&record, b"XG")?, "CT");
+        assert_eq!(string_tag(&record, b"XM")?, "....");
+        assert!(matches!(record.aux(b"NM")?, Aux::I32(3)), "unrelated tags must survive");
+        Ok(())
+    }
+
+    #[test]
+    fn standard_tags_overwrite_or_drop_existing_ones() -> Result<()> {
+        let mut record = Record::new();
+        record.set(b"read", None, b"ACGT", b"IIII");
+        record.push_aux(b"MM", Aux::String("C+m,0,1;"))?;
+        record.push_aux(b"ML", Aux::ArrayU8([1_u8, 2].as_slice().into()))?;
+
+        MethylatedPositions::new(Strand::OT, b"ACGT", &[1]).apply_to_record(&mut record)?;
+        assert_eq!(string_tag(&record, b"MM")?, "C+m,0;");
+        let Aux::ArrayU8(ml) = record.aux(b"ML")? else { color_eyre::eyre::bail!("ML") };
+        assert_eq!(ml.iter().collect::<Vec<_>>(), [255]);
+
+        MethylatedPositions::new(Strand::OT, b"ACGT", &[]).apply_to_record(&mut record)?;
+        assert!(record.aux(b"MM").is_err(), "stale MM must be dropped when nothing is methylated");
+        assert!(record.aux(b"ML").is_err(), "stale ML must be dropped when nothing is methylated");
+        Ok(())
+    }
 
     #[test]
     fn skip_list() {
