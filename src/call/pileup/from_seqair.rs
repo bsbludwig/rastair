@@ -15,7 +15,10 @@ use crate::{
     vcf::InCpG,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
-use seqair::bam::pileup::{AlignmentView, Indel, PileupColumn};
+use seqair::bam::{
+    RecordIdx,
+    pileup::{AlignmentView, Indel, PileupColumn},
+};
 use seqair_types::{Base, QPos, RmsAccumulator, SmallVec, Strand};
 use std::rc::Rc;
 use tracing::{debug, instrument, trace};
@@ -510,7 +513,7 @@ pub(crate) struct ColumnScratch {
     /// mate overlap ever touch it; at high coverage there can be hundreds,
     /// which is why the buffer is the caller's and not an inline `SmallVec`
     /// that would spill to the heap once per column.
-    mate_drops: Vec<u32>,
+    mate_drops: Vec<RecordIdx>,
     mates: MateObservations,
 }
 

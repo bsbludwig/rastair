@@ -256,6 +256,7 @@ pub fn get_pileups(
         let mut guard = readers
             .inner_mut()
             .pileup(seqair_seg, depth_limit)
+            .run()
             .wrap_err("Failed to start seqair pileup")?;
         if let Some(ceiling) = params.max_coverage.load_ceiling() {
             guard.set_max_depth(ceiling);
