@@ -3,7 +3,7 @@ use crate::{
         per_read::{BedReadsParams, PerRead},
         reader::{RastairBedReader, RastairCall},
     },
-    call::{pileup::from_hts::infer_strand_from_mismatch_motifs, variant_calling::ReadFlags},
+    call::{pileup::hts_utils::infer_strand_from_mismatch_motifs, variant_calling::ReadFlags},
     progress::ProgressTracker,
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
     utils::{cli, logging::ThisIsABug},
@@ -526,12 +526,12 @@ mod tests {
         let start = 100u64;
         let end = start + u64::try_from(sequence.len()).expect("sequence length fits") - 1;
         Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: "chrTest".into(), start, end },
                 last_position: end,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence: sequence.to_vec(),
             overlap_start: 0,
             overlap_end: 0,

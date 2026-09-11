@@ -1,49 +1,83 @@
 use crate::{
     call::{
-        pileup::{
-            Pileup, SimpleRead,
-            indels::{IndelAlleleCounts, IndelCounts},
-        },
-        variant_calling::{EstimatedGenotype, indel_calling::IndelCall},
+        pileup::{Pileup, SimpleRead, indels},
+        variant_calling::EstimatedGenotype,
     },
     metrics::{MethylationEvidenceStrandInfo, PairedCounts, ReadKey},
-    utils::{ByStrand, IntoF64, default, logging::ThisIsABug},
-    vcf::{InCpG, Methylated},
+    sequence::ChunkRegion,
+    utils::{ByStrand, IntoF64, SequenceContext, default, logging::ThisIsABug},
+    vcf::{InCpG, Methylated, RastairFilter},
 };
 use better_default::Default;
 use color_eyre::{
     Result,
     eyre::{Context, bail},
 };
-use rastair_vcf::VcfFilter;
-use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, SmallVec, SmolStr, Strand};
+use enumset::EnumSet;
+use seqair_types::SmallVec;
+use seqair_types::SmolStr;
+use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand, SumOfSquares};
 use std::ops::Deref;
+use std::sync::Arc;
 use tracing::{trace, warn};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PileupMetrics {
-    /// The underlying pileup
-    pub pileup: Pileup,
-    /// Metrics about the position itself
+    /// The region this position came from, shared by every `PileupMetrics` in
+    /// it. Inline it is 64 bytes — a `SmolStr` contig plus five `u64` — copied
+    /// once per covered base and identical every time; behind an `Arc` it is 8.
+    pub region: Arc<ChunkRegion>,
+    pub pos: u32,
+    pub reference_base: Base,
+    pub context: SequenceContext,
     pub pos_metrics: PositionMetrics,
-    /// Filters that apply to the entire pileup
     pub pos_filters: Filters,
-    /// Metrics for the reference allele
     pub ref_metrics: AlleleMetrics,
-    /// Metrics and filters for each alternative allele
-    pub alts: SmallVec<Alt, 2>,
+    /// Alternate alleles at this position.
+    ///
+    /// Inline capacity **one**, not two. An `Alt` is 152 bytes, so each inline
+    /// slot is charged to every position in the genome, and almost no position
+    /// uses the second one. Measured over 10,035,867 positions of chr12
+    /// (NA12878, ~26x):
+    ///
+    /// | alts | positions | share |
+    /// | ---: | ---: | ---: |
+    /// | 0 | 9,573,352 | 95.39 % |
+    /// | 1 | 454,755 | 4.53 % |
+    /// | 2 | 7,564 | 0.08 % |
+    /// | 3+ | 196 | 0.002 % |
+    ///
+    /// So the second inline slot cost 152 bytes at every position to save
+    /// 7,760 heap allocations per 10 Mb — about one allocation per 1,300
+    /// positions, against 1.5 GB of extra memory traffic over the same span.
+    ///
+    /// To re-measure after any change to alt calling, drop this into
+    /// `get_pileups` in `src/call/process/pileups.rs`, just before
+    /// `SlidingEntropy::new`:
+    ///
+    /// ```ignore
+    /// let mut hist = [0u64; 8];
+    /// for pm in &pileup_metrics {
+    ///     hist[pm.alts.len().min(7)] += 1;
+    /// }
+    /// eprintln!("ALTSTAT {hist:?}");
+    /// ```
+    ///
+    /// then sum the arrays over a run:
+    ///
+    /// ```text
+    /// rastair call --gpu -f hg38.fa.gz in.bam -@ 8 -l chr12:20000000-30000000 --vcf /dev/null \
+    ///   2>&1 | grep ALTSTAT | ...
+    /// ```
+    pub alts: SmallVec<Alt, 1>,
     /// Counts of (`my_base`, `before_base`) pairs by strand
     pub before_counts: PairedCounts,
     /// Counts of (`my_base`, `after_base`) pairs by strand
     pub after_counts: PairedCounts,
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
-    /// Aggregated indel counts at this position.
     #[serde(default)]
-    pub indels: IndelCounts,
-    /// Called indel variants at this position (populated during `process_region`).
-    #[serde(default)]
-    pub indel_calls: Vec<IndelCall>,
+    pub indel_data: Option<Box<indels::IndelData>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -87,16 +121,28 @@ impl PileupMetrics {
     /// NOTE: The extended metrics in `PositionMetrics` are not set here and
     /// need to be set later using `set_extended_metrics`.
     pub fn new(pileup: Pileup) -> Result<Self> {
-        let ref_base = pileup.reference_base;
-        let total_reads = pileup.reads.len();
-
-        // Single pass: accumulate per-base metrics, position-level RMS, and discover alleles
+        let Pileup {
+            region,
+            pos,
+            reference_base,
+            context,
+            indel_observations,
+            homopolymer_run,
+            dinucleotide_run,
+            soft_clip_count,
+            reads,
+            noisy_ref_count,
+            indel_ref_window,
+            indel_ref_anchor,
+        } = pileup;
         let mut accumulators = PerBaseAccumulators::default();
         let mut pos_baseq = RmsAccumulator::new();
         let mut pos_mapq = RmsAccumulator::new();
         let mut mapq0: u32 = 0;
         let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
-        for read in pileup.reads.iter() {
+        let mut total_reads: usize = 0;
+        for read in reads.iter() {
+            total_reads += 1;
             let qual_sq = f64::from(read.qual).powi(2);
             let mapq_sq = f64::from(read.mapq).powi(2);
             accumulators.accumulate(read, qual_sq, mapq_sq);
@@ -106,51 +152,65 @@ impl PileupMetrics {
                 mapq0 += 1;
             }
             if read.base.known_index().is_some()
-                && read.base != ref_base
+                && read.base != reference_base
                 && !alt_bases.contains(&read.base)
             {
                 alt_bases.push(read.base);
             }
         }
 
-        trace!(pos = pileup.pos, ?ref_base, ?alt_bases, "New pileup");
+        trace!(pos, ?reference_base, ?alt_bases, "New pileup");
 
-        let pos_metrics = PositionMetrics::from_pileup(
-            &pileup,
-            PositionMetricsExt::default(),
+        let pos_metrics = PositionMetrics::new(
+            total_reads,
+            reference_base,
+            context.before_1,
+            context.after_1,
             pos_baseq.finish(),
             pos_mapq.finish(),
             mapq0,
         );
 
-        // Reference base can be Unknown (N in FASTA) — no accumulator slot exists for it,
-        // and no reads will ever match it, so just use default metrics.
-        let ref_metrics = if let Some(acc) = accumulators.take(ref_base) {
-            acc.finish(ref_base, total_reads, &pileup)
+        let ref_metrics = if let Some(acc) = accumulators.take(reference_base) {
+            acc.finish(reference_base, total_reads, pos, reference_base, &context)
                 .wrap_err("Failed to compute allele metrics for reference")?
         } else {
-            AlleleMetrics { base: ref_base, ..default() }
+            AlleleMetrics { base: reference_base, ..default() }
         };
 
-        let alts = alt_bases
+        let mut alts: SmallVec<Alt, 1> = alt_bases
             .iter()
             .map(|&base| {
-                // alt_bases only contains known bases (filtered above), so take always succeeds
                 let acc = accumulators
                     .take(base)
                     .ok_or_else(|| color_eyre::eyre::eyre!("unknown base {base} in alt_bases"))?;
                 let metrics = acc
-                    .finish(base, total_reads, &pileup)
+                    .finish(base, total_reads, pos, reference_base, &context)
                     .wrap_err("Failed to compute allele metrics for alt")?;
                 Ok(Alt { base, metrics, filters: AltFilters::default(), call: default() })
             })
             .collect::<Result<_>>()?;
+        order_alts(&mut alts);
 
-        let indels = aggregate_indels(&pileup);
+        let indel_data = if indel_observations.is_empty() {
+            None
+        } else {
+            let counts = aggregate_indels(&indel_observations, total_reads, noisy_ref_count, pos);
+            Some(Box::new(indels::IndelData {
+                observations: indel_observations,
+                ref_window: indel_ref_window,
+                ref_anchor: indel_ref_anchor,
+                homopolymer_run,
+                dinucleotide_run,
+                soft_clip_count,
+                counts,
+                calls: Vec::new(),
+            }))
+        };
 
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
-        for read in pileup.reads.iter() {
+        for read in reads.iter() {
             if read.strand == Strand::Unknown {
                 continue;
             }
@@ -171,7 +231,10 @@ impl PileupMetrics {
         }
 
         Ok(PileupMetrics {
-            pileup,
+            region,
+            pos,
+            reference_base,
+            context,
             pos_metrics,
             pos_filters: Filters::default(),
             ref_metrics,
@@ -179,22 +242,28 @@ impl PileupMetrics {
             before_counts,
             after_counts,
             tags: RecordTags::default(),
-            indels,
-            indel_calls: Vec::new(),
+            indel_data,
         })
     }
 
-    /// Get reference base
     pub fn ref_base(&self) -> Base {
-        self.pileup.reference_base
+        self.reference_base
     }
 
     pub fn contig(&self) -> SmolStr {
-        self.pileup.region.contig.clone()
+        self.region.contig.clone()
+    }
+
+    pub fn contig_name(&self) -> &str {
+        &self.region.contig
     }
 
     pub fn pos(&self) -> u32 {
-        self.pileup.pos
+        self.pos
+    }
+
+    pub fn idx(&self) -> usize {
+        self.region.pos_to_idx(self.pos).expect("valid position")
     }
 
     pub fn contig_pos(&self) -> SmolStr {
@@ -256,6 +325,19 @@ impl PileupMetrics {
     }
 }
 
+/// Alternate alleles are listed by support, deepest first; equal support
+/// keeps the order they were observed in.
+///
+/// Observation order is the pileup engine's read order, which differs between
+/// engines at equal start positions — and the ALT column, `AD`, `ML` and the
+/// genotype indices all follow this order, so leaving it to the engine made
+/// `T G,A 0/1` on one backend `T A,G 0/2` on the other. Ties are left alone
+/// on purpose: genotyping and methylation break their own ties by this order,
+/// and the sort must not decide those differently from before.
+pub fn order_alts(alts: &mut [Alt]) {
+    alts.sort_by_key(|alt| std::cmp::Reverse(alt.metrics.depth));
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(Default))]
 pub struct PositionMetrics {
@@ -310,22 +392,22 @@ impl Deref for DenovoAdjecent {
 }
 
 impl PositionMetrics {
-    pub fn from_pileup(
-        pileup: &Pileup,
-        extended: PositionMetricsExt,
+    pub fn new(
+        total_reads: usize,
+        reference_base: Base,
+        before_1: Option<Base>,
+        after_1: Option<Base>,
         baseq: RootMeanSquare,
         mapq: RootMeanSquare,
         mapq0: u32,
     ) -> Self {
         PositionMetrics {
-            depth: u32::try_from(pileup.reads.len()).expect("depth fits into u32"),
+            depth: u32::try_from(total_reads).expect("depth fits into u32"),
             baseq,
             mapq,
             mapq0,
-            cpg: InCpG::from(pileup),
-
-            // These fields are given by all
-            extended,
+            cpg: InCpG::new(reference_base, before_1, after_1),
+            extended: PositionMetricsExt::default(),
         }
     }
 }
@@ -363,6 +445,23 @@ pub struct AlleleMetrics {
     pub allele_frequency: Probability,
     /// does this alt form a de-novo cpg?
     pub denovo: FormsDenovo,
+}
+
+/// Would observing `base` where the reference has `ref_base` create a CpG?
+///
+/// The seqair backend answers this from a column's alt bases alone, before any
+/// allele metrics exist, so it has to be one definition and not two.
+pub fn alt_forms_denovo(base: Base, ref_base: Base, context: &SequenceContext) -> FormsDenovo {
+    use Base::*;
+    if base == ref_base {
+        FormsDenovo::No
+    } else if context.before_1 == Some(C) && base == G {
+        FormsDenovo::ThisBecomesG
+    } else if context.after_1 == Some(G) && base == C {
+        FormsDenovo::ThisBecomesC
+    } else {
+        FormsDenovo::No
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -415,122 +514,156 @@ impl AltFilters {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+/// The set of FILTER codes a position or an alt allele has earned.
+///
+/// FILTER is a set, so this is a bitset: 13 variants fit in the `u16` that
+/// `RastairFilter`'s `#[enumset(repr)]` pins down. Iteration is therefore in
+/// discriminant order, which is also header registration order.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct Filters {
     pub other_pos_in_denovo_passes: bool,
-    filters: SmallVec<SmolStr, 6>,
+    filters: EnumSet<RastairFilter>,
 }
 
 impl Filters {
-    pub fn add(&mut self, filter: impl VcfFilter, condition: impl FnOnce() -> bool) {
+    pub fn add(&mut self, filter: RastairFilter, condition: impl FnOnce() -> bool) {
         if condition() {
-            self.filters.push(filter.filter());
+            self.filters.insert(filter);
         }
     }
 
     pub fn merge(&mut self, other: Filters) {
-        for filter in other.filters {
-            if !self.filters.contains(&filter) {
-                self.filters.push(filter);
-            }
-        }
+        self.filters |= other.filters;
     }
 
     pub fn pass(&self) -> bool {
         self.other_pos_in_denovo_passes || self.filters.is_empty()
     }
-}
 
-impl Deref for Filters {
-    type Target = SmallVec<SmolStr, 6>;
+    pub fn is_empty(&self) -> bool {
+        self.filters.is_empty()
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.filters
+    /// The codes themselves, for a caller that has to union or emit them.
+    /// Iterating an [`EnumSet`] yields discriminant order, which is the order
+    /// the filters are registered in the VCF header.
+    pub fn as_set(&self) -> EnumSet<RastairFilter> {
+        self.filters
     }
 }
 
 #[derive(Debug, Clone, Default)]
-struct AlleleAccumulator {
+pub(crate) struct AlleleAccumulator {
     depth: u32,
-    baseq: RmsAccumulator,
-    mapq: RmsAccumulator,
-    baseq_ot: RmsAccumulator,
-    baseq_ob: RmsAccumulator,
-    mapq_ot: RmsAccumulator,
-    mapq_ob: RmsAccumulator,
-    aligned: RmsAccumulator,
-    indels: RmsAccumulator,
-    pos_in_read: RmsAccumulator,
-    ot_count: u32,
-    ob_count: u32,
+    /// `[OT, OB]`; kept out of `by_strand` so neither array needs padding.
+    strand_depth: [u32; 2],
+    // Field order is load-bearing. rustc keeps declaration order among equally
+    // aligned fields, and LLVM pairs two sums into one 128-bit `fadd.2d` only
+    // when they are adjacent *and* reached at a constant offset. `baseq`/`mapq`
+    // and `aligned`/`indels` satisfy both and vectorise; the strand-split pair
+    // is `[[f64; 2]; 2]` rather than four named fields for the same reason —
+    // see `add_fields`.
+    baseq: SumOfSquares,
+    mapq: SumOfSquares,
+    /// `[OT, OB]`, each `[baseq, mapq]`.
+    by_strand: [[f64; 2]; 2],
+    aligned: SumOfSquares,
+    indels: SumOfSquares,
+    pos_in_read: SumOfSquares,
+}
+
+/// The `[OT, OB]` slot a known strand accumulates into.
+const fn strand_slot(strand: Strand) -> Option<usize> {
+    match strand {
+        Strand::OT => Some(0),
+        Strand::OB => Some(1),
+        Strand::Unknown => None,
+    }
 }
 
 impl AlleleAccumulator {
-    fn add(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
+    pub(crate) fn add(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
+        self.add_fields(
+            qual_sq,
+            mapq_sq,
+            read.strand,
+            read.matching_bases,
+            read.indels,
+            read.position.pos,
+            read.position.read_length,
+        );
+    }
+
+    pub(crate) fn add_fields(
+        &mut self,
+        qual_sq: f64,
+        mapq_sq: f64,
+        strand: Strand,
+        matching_bases: u32,
+        indels: u32,
+        pos_in_read: u32,
+        read_length: u32,
+    ) {
         self.depth += 1;
         self.baseq.add_squared(qual_sq);
         self.mapq.add_squared(mapq_sq);
-        match read.strand {
-            Strand::OT => {
-                self.ot_count += 1;
-                self.baseq_ot.add_squared(qual_sq);
-                self.mapq_ot.add_squared(mapq_sq);
-            }
-            Strand::OB => {
-                self.ob_count += 1;
-                self.baseq_ob.add_squared(qual_sq);
-                self.mapq_ob.add_squared(mapq_sq);
-            }
-            Strand::Unknown => {}
+        // Indexed, not matched. Whether consecutive reads are OT or OB is close
+        // to a coin flip, so the `match` this replaces mispredicted once per
+        // read per column; and LLVM merged its two arms into a common tail
+        // addressed by a register, which is what stopped it pairing the two
+        // sums into one `fadd.2d`. One in-range slot fixes both.
+        if let Some(slot) = strand_slot(strand)
+            && let Some(strand_depth) = self.strand_depth.get_mut(slot)
+            && let Some([baseq, mapq]) = self.by_strand.get_mut(slot)
+        {
+            *strand_depth += 1;
+            *baseq = baseq.algebraic_add(qual_sq);
+            *mapq = mapq.algebraic_add(mapq_sq);
         }
-        self.aligned.add(f64::from(read.matching_bases));
-        self.indels.add(f64::from(read.indels));
-        self.pos_in_read.add(f64::from(read.position.pos) / f64::from(read.position.read_length));
+        self.aligned.add(f64::from(matching_bases));
+        self.indels.add(f64::from(indels));
+        self.pos_in_read.add(f64::from(pos_in_read) / f64::from(read_length));
     }
 
-    fn finish(self, base: Base, total_reads: usize, pileup: &Pileup) -> Result<AlleleMetrics> {
-        use Base::*;
-
+    pub(crate) fn finish(
+        self,
+        base: Base,
+        total_reads: usize,
+        pos: u32,
+        ref_base: Base,
+        context: &SequenceContext,
+    ) -> Result<AlleleMetrics> {
         if self.depth == 0 {
-            // Can happen at canonical CpG sites with no evidence for a particular allele
-            trace!(
-                pos = pileup.pos,
-                ref_base = ?pileup.reference_base,
-                ?base,
-                pileup_reads = pileup.reads.len(),
-                "No reads for allele"
-            );
+            trace!(pos, ref_base = ?ref_base, ?base, pileup_reads = total_reads, "No reads for allele");
             return Ok(AlleleMetrics { base, ..default() });
         }
 
-        // Should be impossible: depth > 0 implies total_reads > 0 since reads were counted
-        // from the same pileup. Guard defensively since a division by zero here would produce
-        // NaN/Inf which Probability::new rejects anyway, but better to fail with a clear message.
         if total_reads == 0 {
             bail!("allele has depth {} but pileup has 0 total reads — this is a bug", self.depth);
         }
 
-        let denovo = if base == pileup.reference_base {
-            FormsDenovo::No
-        } else if pileup.ref_before() == C && base == G {
-            FormsDenovo::ThisBecomesG
-        } else if pileup.ref_after() == G && base == C {
-            FormsDenovo::ThisBecomesC
-        } else {
-            FormsDenovo::No
-        };
+        let denovo = alt_forms_denovo(base, ref_base, context);
+
+        let [ot_depth, ob_depth] = self.strand_depth;
+        let [[ot_baseq, ot_mapq], [ob_baseq, ob_mapq]] = self.by_strand;
 
         Ok(AlleleMetrics {
             base,
             depth: self.depth,
-            baseq: self.baseq.finish(),
-            mapq: self.mapq.finish(),
-            strand_count: ByStrand { base, ot: self.ot_count, ob: self.ob_count },
-            baseq_s: ByStrand { base, ot: self.baseq_ot.finish(), ob: self.baseq_ob.finish() },
-            mapq_s: ByStrand { base, ot: self.mapq_ot.finish(), ob: self.mapq_ob.finish() },
-            num_aligned_bases: self.aligned.finish(),
-            num_indels: self.indels.finish(),
-            position_in_read: self.pos_in_read.finish(),
+            baseq: self.baseq.finish(self.depth),
+            mapq: self.mapq.finish(self.depth),
+            strand_count: ByStrand { ot: ot_depth, ob: ob_depth },
+            baseq_s: ByStrand {
+                ot: SumOfSquares::from(ot_baseq).finish(ot_depth),
+                ob: SumOfSquares::from(ob_baseq).finish(ob_depth),
+            },
+            mapq_s: ByStrand {
+                ot: SumOfSquares::from(ot_mapq).finish(ot_depth),
+                ob: SumOfSquares::from(ob_mapq).finish(ob_depth),
+            },
+            num_aligned_bases: self.aligned.finish(self.depth),
+            num_indels: self.indels.finish(self.depth),
+            position_in_read: self.pos_in_read.finish(self.depth),
             allele_frequency: Probability::new(self.depth.f() / total_reads.f())
                 .wrap_err("allele frequency not in [0,1]")
                 .this_is_a_bug()?,
@@ -541,15 +674,39 @@ impl AlleleAccumulator {
 
 /// Per-base accumulators indexed by [`Base::known_index`], one slot per `Base::KNOWN`.
 #[derive(Debug, Default)]
-struct PerBaseAccumulators([AlleleAccumulator; 4]);
+pub(crate) struct PerBaseAccumulators([AlleleAccumulator; 4]);
 
 impl PerBaseAccumulators {
-    fn accumulate(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
+    pub(crate) fn accumulate(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
         let Some(idx) = read.base.known_index() else { return };
         self.0[idx].add(read, qual_sq, mapq_sq);
     }
 
-    fn take(&mut self, base: Base) -> Option<AlleleAccumulator> {
+    #[cfg(feature = "experimental-seqair")]
+    pub(crate) fn accumulate_fields(
+        &mut self,
+        base: Base,
+        qual_sq: f64,
+        mapq_sq: f64,
+        strand: Strand,
+        matching_bases: u32,
+        indels: u32,
+        pos_in_read: u32,
+        read_length: u32,
+    ) {
+        let Some(idx) = base.known_index() else { return };
+        self.0[idx].add_fields(
+            qual_sq,
+            mapq_sq,
+            strand,
+            matching_bases,
+            indels,
+            pos_in_read,
+            read_length,
+        );
+    }
+
+    pub(crate) fn take(&mut self, base: Base) -> Option<AlleleAccumulator> {
         let idx = base.known_index()?;
         Some(std::mem::take(&mut self.0[idx]))
     }
@@ -569,25 +726,30 @@ impl MetricsForAlt<'_> {
 
 pub struct MetricsForIndel<'p> {
     pub metrics: &'p PileupMetrics,
-    pub indel: &'p IndelCall,
+    pub indel: &'p crate::call::variant_calling::indel_calling::IndelCall,
 }
 
-fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
-    if pileup.indel_observations.is_empty() {
-        return IndelCounts {
-            ref_count: pileup.reads.len() as u32,
-            noisy_ref_count: pileup.noisy_ref_count,
+pub(crate) fn aggregate_indels(
+    indel_observations: &[indels::IndelObservation],
+    total_reads: usize,
+    noisy_ref_count: u32,
+    pos: u32,
+) -> indels::IndelCounts {
+    if indel_observations.is_empty() {
+        return indels::IndelCounts {
+            ref_count: total_reads as u32,
+            noisy_ref_count,
             ..Default::default()
         };
     }
 
-    let mut alleles: SmallVec<IndelAlleleCounts, 2> = SmallVec::new();
+    let mut alleles: SmallVec<indels::IndelAlleleCounts, 2> = SmallVec::new();
 
-    for obs in &pileup.indel_observations {
+    for obs in indel_observations {
         let entry = match alleles.iter_mut().find(|e| e.allele == obs.allele) {
             Some(entry) => entry,
             None => {
-                alleles.push(IndelAlleleCounts {
+                alleles.push(indels::IndelAlleleCounts {
                     allele: obs.allele.clone(),
                     ot: 0,
                     ob: 0,
@@ -608,13 +770,13 @@ fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     }
 
     let total_indel_reads: u32 = alleles.iter().map(|a| a.total()).sum();
-    let depth = pileup.reads.len() as u32;
-    // `from_hts` draws both counts from one pass over the same alignments, so
-    // every indel-carrying fragment is also part of the depth. If that stops
-    // holding, `ref_count` floors to zero and every VAF here silently reads 1.0.
+    let depth = total_reads as u32;
+    // Both counts are drawn from one pass over the same alignments, so every
+    // indel-carrying fragment is also part of the depth. If that stops holding,
+    // `ref_count` floors to zero and every VAF here silently reads 1.0.
     if total_indel_reads > depth {
         warn!(
-            pos = pileup.pos,
+            pos,
             total_indel_reads,
             depth,
             "More indel-supporting fragments than reads at this position; the VAF \
@@ -623,5 +785,139 @@ fn aggregate_indels(pileup: &Pileup) -> IndelCounts {
     }
     let ref_count = depth.saturating_sub(total_indel_reads);
 
-    IndelCounts { alleles, ref_count, noisy_ref_count: pileup.noisy_ref_count }
+    indels::IndelCounts { alleles, ref_count, noisy_ref_count }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    /// A region holds one of these per covered base — 100,401 at the default
+    /// `--segment-max-length` — and the pipeline walks that vec six or seven
+    /// times, so this number is the memory traffic of the whole back half of
+    /// `call`. It came down from 928 by sizing three fields for the common
+    /// case rather than the tail (see `alts`, `PairedCounts`, and `region`),
+    /// and from 568 by making `Filters` a bitset instead of a list; pinning it
+    /// exactly means growing it again is a decision someone makes on purpose,
+    /// with a measurement, rather than a field that slipped in.
+    #[test]
+    fn pileup_metrics_stays_small() {
+        let size = std::mem::size_of::<PileupMetrics>();
+        assert_eq!(
+            size, 520,
+            "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
+             (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
+        );
+    }
+
+    /// The nine per-allele sums gave up their own counts, so what says this was
+    /// a refactor and not a numerical change is that `finish` returns *exactly*
+    /// what `RmsAccumulator` returns for the same values — the same bits, not
+    /// "close enough", because these reach the VCF as printed floats.
+    #[test]
+    fn sum_of_squares_is_bit_identical_to_rms_accumulator() {
+        let cases: &[&[f64]] = &[
+            &[],
+            &[0.0],
+            &[37.0],
+            &[37.0, 41.0, 12.0],
+            &[60.0; 1000],
+            &[1e-8, 1e8, 3.5, 0.25],
+            &[0.0, 0.0, 40.0],
+        ];
+        for values in cases {
+            let mut reference = RmsAccumulator::new();
+            let mut ours = SumOfSquares::default();
+            for &v in *values {
+                reference.add(v);
+                ours.add(v);
+            }
+            let count = u32::try_from(values.len()).expect("test case fits in u32");
+            assert_eq!(
+                reference.finish().to_bits(),
+                ours.finish(count).to_bits(),
+                "diverged on {values:?}"
+            );
+        }
+    }
+
+    /// Four of these are built and zeroed at *every* column, and one is updated
+    /// once per read per column, so this size is per-position memory traffic in
+    /// the hottest loop `call` has. It was 160 when each of the nine sums
+    /// carried a count that `depth`/`ot_count`/`ob_count` already held.
+    #[test]
+    fn allele_accumulator_stays_small() {
+        assert_eq!(size_of::<AlleleAccumulator>(), 88);
+        assert_eq!(size_of::<PerBaseAccumulators>(), 352);
+    }
+
+    // A `Filters` is copied into every `Alt`, so it is one of the few places
+    // where a byte or two is worth pinning down.
+    #[test]
+    fn filters_are_a_bitset() {
+        assert_eq!(size_of::<Filters>(), 4);
+    }
+}
+
+#[cfg(test)]
+mod filter_set_tests {
+    use super::*;
+    use crate::vcf::RastairFilter::{DnCpgBq, LowDp, LowMlScore, MVaf};
+
+    #[test]
+    fn a_filter_added_twice_is_present_once() {
+        let mut filters = Filters::default();
+        filters.add(LowDp, || true);
+        filters.add(LowDp, || true);
+
+        assert_eq!(filters.as_set().iter().collect::<Vec<_>>(), [LowDp]);
+    }
+
+    #[test]
+    fn a_filter_is_only_added_when_its_condition_holds() {
+        let mut filters = Filters::default();
+        filters.add(LowDp, || false);
+
+        assert!(filters.is_empty());
+        assert!(filters.pass());
+    }
+
+    #[test]
+    fn merging_unions_the_two_sets() {
+        let mut filters = Filters::default();
+        filters.add(MVaf, || true);
+        filters.add(LowDp, || true);
+
+        let mut other = Filters::default();
+        other.add(DnCpgBq, || true);
+        other.add(LowDp, || true);
+        filters.merge(other);
+
+        assert_eq!(filters.as_set().iter().collect::<Vec<_>>(), [LowDp, DnCpgBq, MVaf]);
+    }
+
+    // The FILTER column prints in this order, and `Schema::filter` indexes its
+    // `FilterId` table by the same discriminant, so both follow the enum.
+    #[test]
+    fn iteration_follows_header_registration_order() {
+        let mut filters = Filters::default();
+        for filter in [LowMlScore, MVaf, DnCpgBq, LowDp] {
+            filters.add(filter, || true);
+        }
+
+        assert_eq!(filters.as_set().iter().collect::<Vec<_>>(), [LowDp, DnCpgBq, MVaf, LowMlScore]);
+    }
+
+    // `other_pos_in_denovo_passes` overrides the set rather than living in it:
+    // it is not a VCF FILTER code.
+    #[test]
+    fn the_denovo_override_passes_a_non_empty_set() {
+        let mut filters = Filters::default();
+        filters.add(LowDp, || true);
+        assert!(!filters.pass());
+
+        filters.other_pos_in_denovo_passes = true;
+        assert!(filters.pass());
+        assert!(!filters.is_empty());
+    }
 }

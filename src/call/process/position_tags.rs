@@ -15,7 +15,7 @@ pub fn add_position_tags(current: &mut PileupMetrics) {
         denovo_cpg_partner: *current.pos_metrics.denovo_adj
             && current.pos_filters.other_pos_in_denovo_passes,
         variant: current.alts.iter().any(|a| a.call == AltCall::RealVariant && !*a.metrics.denovo)
-            || !current.indel_calls.is_empty(),
+            || current.indel_data.as_ref().is_some_and(|d| !d.calls.is_empty()),
     };
 
     current.tags = tags;

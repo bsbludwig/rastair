@@ -6,7 +6,10 @@
       "initialization_options": {
         "checkOnSave": true,
         "check": {
-          "command": "clippy"
+          "command": "clippy",
+          "features": [
+            "experimental-seqair"
+          ]
         }
       }
     }

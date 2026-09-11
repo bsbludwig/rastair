@@ -202,11 +202,14 @@ impl MethylationScenario {
             GenotypeScenario::None => return None,
             GenotypeScenario::HomRef => GenotypeTag::HomRef,
             GenotypeScenario::HetConfounded => {
-                // For denovo where ref == confounding base, any het triggers
-                // confounding via ref_base() check. Use RefHet(1) pointing at
-                // the first alt (the CpG-forming base for denovo, or the
-                // confounding base for original).
-                GenotypeTag::RefHet(NonZeroU8::new(1).unwrap())
+                // Point the het at the confounding base where it is an alt.
+                // For denovo where ref == confounding base it is not, and any
+                // het triggers confounding via the ref_base() check, so the
+                // first alt will do. Alts are ordered by depth, not by the
+                // order the reads were pushed, so the index has to be looked up.
+                let confounding = self.side.mod_base();
+                let idx = metrics.alts.iter().position(|a| a.base == confounding).unwrap_or(0);
+                GenotypeTag::RefHet(NonZeroU8::new(idx as u8 + 1).unwrap())
             }
             GenotypeScenario::HetNonConfounding => self.build_het_non_confounding(metrics),
             GenotypeScenario::HomAlt => GenotypeTag::HomAlt(NonZeroU8::new(1).unwrap()),
@@ -267,13 +270,13 @@ impl MethylationScenario {
 // Helpers for building minimal Pileup / PileupMetrics by hand
 // ---------------------------------------------------------------------------
 
-fn dummy_region() -> ChunkRegion {
-    ChunkRegion {
+fn dummy_region() -> std::sync::Arc<ChunkRegion> {
+    std::sync::Arc::new(ChunkRegion {
         region: Region { contig: "chr_test".into(), start: 1000, end: 1002 },
         last_position: 1002,
         overlap_start: 0,
         overlap_end: 0,
-    }
+    })
 }
 
 fn ctx_after_g(me: Base) -> SequenceContext {

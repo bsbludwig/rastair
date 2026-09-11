@@ -10,7 +10,7 @@ use crate::{
         mpk::{MessagePackReader, MpkEntry},
         vcf_writer,
     },
-    utils::{cli, logging::ThisIsABug},
+    utils::cli,
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -251,9 +251,8 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         vcf_all_fields: false,
     };
 
-    let (format, compression) = format.into();
     let mut writer = vcf_params
-        .vcf_writer(&meta.contigs, &meta.samples, &meta.metadata, format, compression)
+        .seqair_writer(&meta.contigs, &meta.samples, &meta.metadata, format.into())
         .wrap_err_with(|| {
             format!("Failed to create VCF writer for output file `{}`", params.output)
         })?
@@ -262,14 +261,14 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
     for entry in r.entries {
         match entry {
             Ok(MpkEntry::Record(record)) => {
-                for vcf_record in record
-                    .to_vcf_records(Some(params.ml_threshold), &params.error_model)
-                    .wrap_err("Failed to convert record to VCF format")
-                    .this_is_a_bug()?
-                    .to_vec(&params.vcf_filter)
-                {
-                    writer.add(vcf_record).wrap_err("Failed to write record")?;
-                }
+                writer
+                    .emit(
+                        &record,
+                        Some(params.ml_threshold),
+                        &params.error_model,
+                        &params.vcf_filter,
+                    )
+                    .wrap_err("Failed to write record")?;
             }
             Ok(x) => {
                 warn!(?x, "Skipping unsupported entry type in MessagePack file");
@@ -279,6 +278,7 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
         }
     }
 
+    writer.finish().wrap_err("Failed to finish VCF output")?;
     Ok(())
 }
 

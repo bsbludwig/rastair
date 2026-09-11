@@ -10,6 +10,18 @@ pub struct TagValue {
     value: SmolStr,
 }
 
+impl TagValue {
+    #[cfg(feature = "experimental-seqair")]
+    pub(crate) fn tag(&self) -> [u8; 2] {
+        self.tag
+    }
+
+    #[cfg(feature = "experimental-seqair")]
+    pub(crate) fn value_bytes(&self) -> &[u8] {
+        self.value.as_bytes()
+    }
+}
+
 impl FromStr for TagValue {
     type Err = String;
 

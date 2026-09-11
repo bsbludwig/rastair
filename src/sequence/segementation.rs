@@ -11,7 +11,11 @@ pub struct SegmentationParams {
     /// Maximum length of a segment in bases
     ///
     /// Used for splitting work between threads. Tweak this to adjust memory
-    /// usage.
+    /// usage: peak memory scales with this times `--threads`, and so does the
+    /// batch each ML dispatch gets, which is why smaller is not free. On
+    /// NA12878 chr12 at 26x, dropping this to 10 000 costs ~1.45x wall time —
+    /// the same reads, but a tenth of the rows per GPU round trip and ten
+    /// times as many BAM index queries.
     #[arg(long, default_value_t = 100_000)]
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[default(100_000)]
@@ -24,6 +28,17 @@ pub struct SegmentationParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[default(200)]
     pub segment_overlap: u64,
+
+    /// Maximum estimated compressed bytes to load per segment (memory budget)
+    ///
+    /// seqair backend only. A segment whose index-estimated compressed size
+    /// exceeds this is subdivided into smaller sub-segments, so peak memory
+    /// per worker stays bounded regardless of local coverage. The decoded
+    /// in-memory size is a few times larger than this compressed budget.
+    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    #[default(256 * 1024 * 1024)]
+    pub segment_max_bytes: u64,
 }
 
 impl SegmentationParams {
@@ -77,12 +92,22 @@ impl SegmentationParams {
                 "Segment overlap is more than half of segment max length. This may lead to inefficient processing."
             );
         };
+
+        // `0` intentionally disables the budget; only warn for a tiny non-zero
+        // value, which would subdivide regions far more than necessary.
+        let low_max_bytes = 1024 * 1024;
+        if self.segment_max_bytes != 0 && self.segment_max_bytes < low_max_bytes {
+            warn!(
+                max_bytes = self.segment_max_bytes,
+                "Segment max bytes is set very low (<1 MiB); this may subdivide regions excessively."
+            );
+        };
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Segment {
-    pub range: ChunkRegion,
+    pub range: std::sync::Arc<ChunkRegion>,
     pub sequence: Vec<u8>,
     /// Number of bases of overlap at the start of this segment
     pub overlap_start: u64,

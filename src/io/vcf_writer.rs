@@ -1,23 +1,22 @@
 use crate::{
+    call::{RecordFilters, variant_calling::ErrorModel},
     io::{
         formats::FromFileExtension,
         mpk::{MessagePackWriter, format::MpkVcfHeader},
     },
+    metrics::PileupMetrics,
     sequence::ChunkRegion,
     utils::{cli, logging::ThisIsABug as _},
-    vcf::Record,
+    vcf::{Contig, FieldConfig, Schema, emit_pileup, register},
 };
 use better_default::Default;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
-use rastair_vcf::{Compression, Contig, VcfBuilder, VcfFile, VcfFormat as HtsVcfFormat};
-use seqair_types::SmolStr;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
-    num::NonZeroUsize,
-};
+use rustc_hash::FxHashSet;
+use seqair::vcf::{CoordinateIndex, OutputFormat, Ready, Writer as SeqWriter};
+use seqair_types::{Probability, SmolStr};
+use std::{ffi::OsStr, io::Write, num::NonZeroUsize};
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Default, clap::Parser)]
@@ -109,12 +108,12 @@ pub enum VcfFormat {
     Bcf,
 }
 
-impl From<VcfFormat> for (HtsVcfFormat, Compression) {
+impl From<VcfFormat> for OutputFormat {
     fn from(format: VcfFormat) -> Self {
         match format {
-            VcfFormat::Vcf => (HtsVcfFormat::Vcf, Compression::Off),
-            VcfFormat::VcfCompressed => (HtsVcfFormat::Vcf, Compression::On),
-            VcfFormat::Bcf => (HtsVcfFormat::Bcf, Compression::On),
+            VcfFormat::Vcf => OutputFormat::Vcf,
+            VcfFormat::VcfCompressed => OutputFormat::VcfGz,
+            VcfFormat::Bcf => OutputFormat::Bcf,
         }
     }
 }
@@ -150,22 +149,25 @@ impl VcfParams {
         format
     }
 
+    /// Build the field configuration from the CLI flags.
+    pub fn field_config(&self) -> FieldConfig {
+        let config = FieldConfig::default();
+        if self.vcf_all_fields {
+            config.with_all_fields()
+        } else {
+            config.with_field_ids(&self.vcf_info_fields, &self.vcf_format_fields)
+        }
+    }
+
     pub fn writer(&self, regions: &[ChunkRegion], metadata: &[String]) -> Result<Option<Writer>> {
         let Some(_) = &self.vcf else {
             return Ok(None);
         };
 
-        let contigs: BTreeSet<Contig> = {
-            let mut contig_lengths: BTreeMap<SmolStr, u64> = BTreeMap::new();
-            for region in regions {
-                *contig_lengths.entry(region.contig.clone()).or_insert(0) += region.len();
-            }
-            contig_lengths.into_iter().map(|(name, length)| Contig { name, length }).collect()
-        };
-        let contigs: Vec<Contig> = contigs.into_iter().collect();
+        let contigs = header_contigs(regions);
         let samples = vec![SmolStr::new("sample")]; // Note: we only deal with one sample for now
 
-        let (format, compression) = match self.guess_format() {
+        let format = match self.guess_format() {
             Format::MessagePack => {
                 let writer = self
                     .create_mpk_writer(contigs, samples, metadata)
@@ -177,49 +179,60 @@ impl VcfParams {
             Format::Vcf(f) => f.into(),
         };
 
-        // Build field configuration from CLI flags
-        let field_config = {
-            let config = crate::vcf::FieldConfig::default();
-            if self.vcf_all_fields {
-                config.with_all_fields()
-            } else {
-                config.with_field_ids(&self.vcf_info_fields, &self.vcf_format_fields)
-            }
-        };
-
         Ok(Some(Writer::Vcf(
-            self.vcf_writer(&contigs, &samples, metadata, format, compression)
+            self.seqair_writer(&contigs, &samples, metadata, format)
                 .wrap_err("Failed to create VCF writer")?
                 .wrap_err("No VCF output path present")
-                .this_is_a_bug()?
-                .with_config(field_config),
+                .this_is_a_bug()?,
         )))
     }
 
-    pub fn vcf_writer(
+    /// Build a seqair-backed VCF/BCF writer for the configured output path.
+    pub fn seqair_writer(
         &self,
         contigs: &[Contig],
         samples: &[SmolStr],
         metadata: &[String],
-        format: HtsVcfFormat,
-        compression: Compression,
-    ) -> Result<Option<VcfFile<Record>>> {
+        format: OutputFormat,
+    ) -> Result<Option<SeqairVcfWriter>> {
         let Some(vcf_output) = &self.vcf else {
             return Ok(None);
         };
 
-        debug!(
-            target=?vcf_output.display(), ?format, ?compression,
-            "Creating VCF writer",
+        debug!(target=?vcf_output.display(), ?format, "Creating VCF writer");
+
+        let (header, schema) =
+            register(contigs, samples, metadata).wrap_err("Failed to build VCF header")?;
+
+        let inner: Box<dyn Write + Send> = Box::new(
+            vcf_output
+                .clone()
+                .create()
+                .wrap_err_with(|| format!("Failed to create output {vcf_output}"))?,
         );
-        let mut writer = VcfBuilder::new(vcf_output, format, compression, self.vcf_threads.get())
-            .wrap_err("Failed to create VCF writer")?;
 
-        for line in metadata {
-            writer.add_header_line(format!("##{line}"));
-        }
+        let writer = SeqWriter::new(inner, format)
+            .write_header(&header)
+            .wrap_err("Failed to write VCF header")?;
 
-        Some(writer.build(contigs, samples).wrap_err("Failed to build VCF writer")).transpose()
+        // Where to write the coordinate index, if `finish()` produces one. Only
+        // compressed formats are indexed (plain VCF yields `None` from finish),
+        // and stdout/pipes have nowhere to put a sidecar file.
+        let index_path = (!vcf_output.is_std()).then(|| {
+            std::path::PathBuf::from(format!(
+                "{}.{}",
+                vcf_output.path().display(),
+                CoordinateIndex::SUFFIX
+            ))
+        });
+
+        Ok(Some(SeqairVcfWriter {
+            writer: Some(writer),
+            schema,
+            config: self.field_config(),
+            last_contig: None,
+            index_path,
+        }))
     }
 
     pub fn create_mpk_writer(
@@ -244,7 +257,145 @@ impl VcfParams {
     }
 }
 
+/// A seqair-backed VCF/BCF writer plus the resolved schema and field selection.
+pub struct SeqairVcfWriter {
+    writer: Option<SeqWriter<Box<dyn Write + Send>, Ready>>,
+    schema: Schema,
+    config: FieldConfig,
+    last_contig: Option<seqair::vcf::ContigId>,
+    /// Sidecar `.csi` path for compressed file output; `None` for stdout/pipes.
+    index_path: Option<std::path::PathBuf>,
+}
+
+impl SeqairVcfWriter {
+    /// Encode every VCF record this pileup produces.
+    pub fn emit(
+        &mut self,
+        pileup: &PileupMetrics,
+        ml_threshold: Option<Probability>,
+        error_model: &ErrorModel,
+        record_filter: &RecordFilters,
+    ) -> Result<()> {
+        let name = pileup.contig_name();
+        if self.last_contig.as_ref().is_none_or(|c| c.name() != name) {
+            self.last_contig = Some(
+                self.schema
+                    .contig(name)
+                    .wrap_err_with(|| format!("Contig {name} not in header"))?
+                    .clone(),
+            );
+        }
+        let contig = self.last_contig.as_ref().wrap_err("contig cache unset").this_is_a_bug()?;
+
+        let writer =
+            self.writer.as_mut().wrap_err("VCF writer already finished").this_is_a_bug()?;
+        emit_pileup(
+            pileup,
+            &self.schema,
+            contig,
+            &self.config,
+            ml_threshold,
+            error_model,
+            record_filter,
+            writer,
+        )
+    }
+
+    /// Flush the BGZF EOF block / finalize the stream, then write the `.csi`
+    /// coordinate index for compressed file output. Must be called once.
+    pub fn finish(&mut self) -> Result<()> {
+        if let Some(writer) = self.writer.take() {
+            let (_, index) = writer.finish().wrap_err("Failed to finish VCF output")?;
+            if let (Some(index), Some(path)) = (index, &self.index_path) {
+                index.write_to_path(path).wrap_err("Failed to write coordinate index")?;
+                debug!(path = %path.display(), "Wrote coordinate index");
+            }
+        }
+        Ok(())
+    }
+}
+
 pub enum Writer {
-    Vcf(VcfFile<Record>),
+    Vcf(SeqairVcfWriter),
     MessagePack(MessagePackWriter),
+}
+
+/// Build the VCF header contig list: one entry per distinct contig touched by
+/// `regions`, carrying the *true* contig length, in first-appearance order.
+///
+/// Only the processed contigs are emitted (a `--region chr7` run lists just the
+/// contigs it covers), so for a whole-file run this is the full reference
+/// dictionary and for a subset run it is the subset's contigs.
+///
+/// Two invariants the callers uphold for this to be correct:
+/// * `regions` arrive in coordinate (tid) order — segmentation sorts them — so
+///   first-appearance order equals tid order. The header tid assignment must
+///   match the order records are emitted, or seqair's single-pass index builder
+///   rejects the stream as unsorted. (Lexical order, e.g. via `BTreeSet`, would
+///   put `chr10` before `chr2` and break this on GRCh38-style references.)
+/// * Every `ChunkRegion` carries the true contig length in `last_position`
+///   (the contig end for a whole contig, the BAM header length for a
+///   user-defined subset), so we take it directly rather than summing chunk
+///   lengths — chunks overlap, and a subset chunk is shorter than its contig.
+fn header_contigs(regions: &[ChunkRegion]) -> Vec<Contig> {
+    let mut contigs: Vec<Contig> = Vec::new();
+    let mut seen: FxHashSet<SmolStr> = FxHashSet::default();
+    for region in regions {
+        if seen.insert(region.contig.clone()) {
+            contigs.push(Contig { name: region.contig.clone(), length: region.last_position });
+        }
+    }
+    contigs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sequence::{ChunkRegion, Region};
+
+    /// `contig_len` is the true contig length carried by every chunk in its
+    /// `last_position`; `start`/`end` are the (possibly partial) chunk bounds.
+    fn chunk(contig: &str, start: u64, end: u64, contig_len: u64) -> ChunkRegion {
+        ChunkRegion {
+            region: Region { contig: SmolStr::from(contig), start, end },
+            last_position: contig_len,
+            overlap_start: 0,
+            overlap_end: 0,
+        }
+    }
+
+    /// The header keeps the order contigs appear in `regions` (which segmentation
+    /// has sorted into tid order) rather than lexical order: `chr10` appears
+    /// before `chr2`, and emitting against a lexically-sorted header is exactly
+    /// what tripped seqair's "input not sorted" index check.
+    #[test]
+    fn header_contigs_preserve_reference_order_not_lexical() {
+        let regions = [
+            chunk("chr1", 1, 100, 100),
+            chunk("chr2", 1, 100, 100),
+            chunk("chr10", 1, 100, 100),
+            chunk("chrUn_decoy", 1, 100, 100),
+        ];
+
+        let contigs = header_contigs(&regions);
+        let names: Vec<&str> = contigs.iter().map(|c| c.name.as_str()).collect();
+
+        assert_eq!(names, ["chr1", "chr2", "chr10", "chrUn_decoy"]);
+    }
+
+    /// Multiple (overlapping) chunks of one contig collapse to a single header
+    /// entry whose length is the true contig length from `last_position`, not the
+    /// sum of chunk lengths — summing would overcount because chunks overlap and a
+    /// subset chunk is shorter than its contig.
+    #[test]
+    fn header_contigs_use_true_contig_length_not_chunk_sum() {
+        let regions =
+            [chunk("chr1", 1, 100, 250), chunk("chr1", 90, 250, 250), chunk("chr2", 1, 50, 50)];
+
+        let contigs = header_contigs(&regions);
+
+        assert_eq!(contigs.len(), 2);
+        assert_eq!(contigs[0], Contig { name: SmolStr::from("chr1"), length: 250 });
+        assert_eq!(contigs[1], Contig { name: SmolStr::from("chr2"), length: 50 });
+    }
 }

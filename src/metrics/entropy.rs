@@ -181,12 +181,12 @@ mod tests {
     fn test_segment(sequence: Vec<u8>) -> Segment {
         let len = sequence.len();
         Segment {
-            range: ChunkRegion {
+            range: std::sync::Arc::new(ChunkRegion {
                 region: Region { contig: SmolStr::new("chr13"), start: 1, end: len as u64 },
                 last_position: len as u64,
                 overlap_start: 0,
                 overlap_end: 0,
-            },
+            }),
             sequence,
             overlap_start: 0,
             overlap_end: 0,

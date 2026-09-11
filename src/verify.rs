@@ -1,12 +1,8 @@
 #![allow(clippy::print_stdout, reason = "verify prints its results to stdout")]
 
-use crate::{
-    utils::cli,
-    vcf::{DeNovoCpGCandidate, InCpG, Methylated},
-};
+use crate::utils::cli;
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr, ensure, eyre};
-use rastair_vcf::VcfField as _;
 use rust_htslib::bcf::{self, Read as _, header::HeaderView};
 use rustc_hash::{FxHashMap, FxHashSet};
 use seqair_types::{RegionString, SmolStr};
@@ -356,32 +352,54 @@ fn load_variants(
             }
         }
     } else {
-        ensure_index_exists(path)?;
-        let mut reader = bcf::IndexedReader::from_path(path)
-            .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
-        reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
-        for region in regions {
-            let header = reader.header().clone();
-            let rid = header
-                .name2rid(region.chromosome.as_bytes())
-                .wrap_err_with(|| format!("Chromosome `{}` not found in VCF", region.chromosome))?;
-            reader
-                .fetch(
-                    rid,
-                    region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
-                    region.end.map(|x: seqair_types::Pos1| x.as_u64()),
-                )
-                .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
-            for rec in reader.records() {
-                match rec {
-                    Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
-                    Err(e) => warn!(error = %e, "Failed to read VCF record"),
-                }
-            }
-        }
+        for_each_record_in_regions(path, regions, threads, |r, header| {
+            extract_variants(r, header, &mut result, experimental_indels);
+        })?;
     }
 
     Ok(result)
+}
+
+/// Visit every record of the indexed VCF at `path` inside `regions`, in order.
+///
+/// A region on a chromosome the file does not declare is skipped with a
+/// warning rather than an error: a truth set such as GIAB HG001 has no chrX
+/// or chrY, and a whole-genome comparison must not fail on that account.
+fn for_each_record_in_regions(
+    path: &Path,
+    regions: &[RegionString],
+    threads: usize,
+    mut visit: impl FnMut(&bcf::Record, &HeaderView),
+) -> Result<()> {
+    ensure_index_exists(path)?;
+    let mut reader = bcf::IndexedReader::from_path(path)
+        .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
+    reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
+    let header = reader.header().clone();
+    for region in regions {
+        let Ok(rid) = header.name2rid(region.chromosome.as_bytes()) else {
+            warn!(
+                chromosome = %region.chromosome,
+                path = %path.display(),
+                "Chromosome not in VCF, skipping region"
+            );
+            continue;
+        };
+        reader
+            .fetch(
+                rid,
+                region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
+                region.end.map(|x: seqair_types::Pos1| x.as_u64()),
+            )
+            .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
+        for rec in reader.records() {
+            match rec {
+                Ok(r) => visit(&r, &header),
+                Err(e) => warn!(error = %e, "Failed to read VCF record"),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn extract_variants(
@@ -419,8 +437,8 @@ fn extract_variants(
     };
 
     let pos = record.pos() as u64;
-    let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
-    let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
+    let is_cpg = record.info(b"CPG").flag().unwrap_or(false);
+    let is_denovo = record.info(b"CPGnovo").flag().unwrap_or(false);
 
     let snv_category = if is_denovo {
         VariantCategory::DeNovo
@@ -498,36 +516,16 @@ fn load_betas(path: &Path, regions: &[RegionString], threads: usize) -> Result<V
             }
         }
     } else {
-        ensure_index_exists(path)?;
-        let mut reader = bcf::IndexedReader::from_path(path)
-            .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
-        reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
-        for region in regions {
-            let header = reader.header().clone();
-            let rid = header
-                .name2rid(region.chromosome.as_bytes())
-                .wrap_err_with(|| format!("Chromosome `{}` not found in VCF", region.chromosome))?;
-            reader
-                .fetch(
-                    rid,
-                    region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
-                    region.end.map(|x: seqair_types::Pos1| x.as_u64()),
-                )
-                .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
-            for rec in reader.records() {
-                match rec {
-                    Ok(r) => extract_beta(&r, &header, &mut result),
-                    Err(e) => warn!(error = %e, "Failed to read VCF record"),
-                }
-            }
-        }
+        for_each_record_in_regions(path, regions, threads, |r, header| {
+            extract_beta(r, header, &mut result);
+        })?;
     }
 
     Ok(result)
 }
 
 fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<BetaRecord>) {
-    let beta = match record.format(Methylated::ID.as_bytes()).float() {
+    let beta = match record.format(b"M5mC").float() {
         Ok(v) => match v.first().and_then(|s| s.first().copied()) {
             Some(b) if !b.is_nan() => f64::from(b),
             _ => return,
@@ -541,8 +539,8 @@ fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<Beta
     };
 
     let pos = record.pos() as u64;
-    let is_cpg = record.info(InCpG::ID.as_bytes()).flag().unwrap_or(false);
-    let is_denovo = record.info(DeNovoCpGCandidate::ID.as_bytes()).flag().unwrap_or(false);
+    let is_cpg = record.info(b"CPG").flag().unwrap_or(false);
+    let is_denovo = record.info(b"CPGnovo").flag().unwrap_or(false);
     let has_variant =
         record.has_filter("PASS".as_bytes()) && record.alleles().iter().skip(1).any(|a| *a != b".");
     result.push(BetaRecord {

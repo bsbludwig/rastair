@@ -2,10 +2,6 @@ use crate::{
     call::pileup::Pileup,
     utils::{Base, Base::*},
 };
-use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
-use rastair_vcf::VcfField as _;
-use rust_htslib::bcf::Record;
 use std::fmt;
 use std::ops::Deref;
 
@@ -61,28 +57,12 @@ impl From<&Pileup> for InCpG {
     }
 }
 
-impl rastair_vcf::VcfField for InCpG {
-    const ID: &'static cstr8::CStr8 = cstr8::cstr8!("CPG");
-}
-
-impl rastair_vcf::HeaderField for InCpG {
-    const DESCRIPTION: &'static str = "Is this a CpG site?";
-}
-
-impl rastair_vcf::InfoField for InCpG {
-    type Type = bool;
-    const NUMBER: rastair_vcf::InfoFieldNumber = rastair_vcf::InfoFieldNumber::Flag;
-
-    fn write(&self, record: &mut Record) -> Result<()> {
-        <bool as rastair_vcf::InfoFieldValue>::write(record, Self::ID, &[*self != InCpG::No])
-            .wrap_err("Failed to write info flag CPG")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "experimental-seqair"))]
     use crate::call::test_helpers::variant_pileup;
+    #[cfg(not(feature = "experimental-seqair"))]
     use color_eyre::Result;
 
     #[test]
@@ -99,6 +79,7 @@ mod tests {
         assert_eq!(InCpG::new(C, Some(T), Some(A)), InCpG::No);
     }
 
+    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn test_cpg_detection() -> Result<()> {
         let (_, pileup) = variant_pileup("chr19", 6105711)?;

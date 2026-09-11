@@ -4,7 +4,7 @@
 //! Different implementations can be swapped to support various feature sets and
 //! model variants.
 
-use super::types::MlFeatureSet;
+use super::types::{MlFeatureSet, MlModel};
 use crate::metrics::{MetricsForAlt, MetricsForIndel, PileupMetrics};
 use color_eyre::{Result, eyre::Context as _};
 use ndarray::Array2;
@@ -137,6 +137,18 @@ pub struct FeatureNum {
     pub others: usize,
     pub insertion: usize,
     pub deletion: usize,
+}
+
+impl FeatureNum {
+    pub fn get(&self, model: MlModel) -> usize {
+        match model {
+            MlModel::Others => self.others,
+            MlModel::Cpg => self.cpg,
+            MlModel::DenovoCpg => self.denovo_cpg,
+            MlModel::Insertion => self.insertion,
+            MlModel::Deletion => self.deletion,
+        }
+    }
 }
 
 /// Feature names per model, in the same layout order as the feature vectors.

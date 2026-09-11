@@ -1,5 +1,5 @@
 use crate::metrics::PileupMetrics;
-use rastair_vcf::Contig;
+use crate::vcf::Contig;
 use seqair_types::SmolStr;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

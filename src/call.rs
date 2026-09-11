@@ -15,22 +15,20 @@
 //!   3. Convert to the output format
 //!   4. Write to file in order
 
+#[cfg(any(not(feature = "experimental-seqair"), test))]
+use crate::call::pileup::Pileup;
+#[cfg(any(not(feature = "experimental-seqair"), test))]
+use crate::call::process::calculate_pileup_metrics;
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams,
-        pileup::{Pileup, SimpleRead},
-        process::{GPU_BATCH_BUFFER_SIZE, calculate_pileup_metrics, get_pileups},
-        require_tags::RequireTagsParams,
-        variant_calling::VariantCallingParams,
+        methylation::params::MethylationCallingParams, pileup::SimpleRead, process::get_pileups,
+        require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{
-        self, MethylationEvidenceStrandInfo, PileupMetrics,
-        ml::types::{GpuRastairModel, MachineLearning},
-    },
-    sequence::{ChunkRegion, ReaderParams, Readers, Segment, SegmentationParams},
-    utils::{PileupMetricsIteratorExt, cli, logging::ThisIsABug as _},
+    metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
+    sequence::{ChunkRegion, PileupReaders, ReaderParams, Segment, SegmentationParams},
+    utils::{cli, logging::ThisIsABug as _, map_surrounding},
 };
 use clio::ClioPath;
 use color_eyre::{
@@ -46,11 +44,11 @@ pub mod methylation;
 pub mod ml;
 pub mod pileup;
 mod record_filters;
-mod require_tags;
+pub(crate) mod require_tags;
 pub mod variant_calling;
 mod writer;
 
-pub use record_filters::RecordFilters;
+pub use record_filters::{PreFilterInputs, RecordFilters};
 pub use writer::writer_thread;
 
 // Jump in here if you want to know how the processing of regions works
@@ -159,10 +157,19 @@ impl CallParams {
 pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     params.segmentation.sanitize();
+
+    #[cfg(not(feature = "experimental-seqair"))]
+    if params.methylation.rescue_soft_clip_cpg {
+        warn!(
+            "--rescue-soft-clip-cpg has no effect on the default (htslib) backend; \
+             build with the `experimental-seqair` feature to use it"
+        );
+    }
+
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
-    let readers = params.segments.readers().wrap_err("Failed to read BAM/FASTA files")?;
+    let readers = params.segments.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
 
     // Get segments that are small enough to process in RAM
     let regions: Vec<ChunkRegion> = readers
@@ -175,9 +182,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
     } else if regions[0].region.len() < 2 {
         warn!(region=%regions[0].region, "Given range is one base long, this will not yield any results for context-specific methylation calling.");
     }
-
-    // Init ML model if requested
-    let ml = params.ml.init().wrap_err("Failed to initialize machine learning model")?;
 
     debug!("Going to process {} segments", regions.len());
 
@@ -193,14 +197,12 @@ pub fn call(mut params: CallParams) -> Result<()> {
     // parallel. From there, we send ready-made VCF records to a special writer
     // thread that only deals with writing the VCF file.
     let writer_threads = params.vcf.vcf_threads;
-    let mut worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
+    let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
 
-    // If the user is using GPU-accelerated ML, we'll add in some more threads
-    // since there is gonna be some time spent waiting for the GPU and we can do
-    // some CPU processing in the meantime. This is a bit of a heuristic, which
-    // we might want to tweak later.
-    let bonus_threads = if params.ml.gpu { 2 } else { 0 };
-    worker_threads += bonus_threads;
+    // Needs the worker count to size the inference queue, so it cannot be built
+    // before now.
+    let ml =
+        params.ml.init(worker_threads).wrap_err("Failed to initialize machine learning model")?;
 
     debug!(
         "Gonna use {} threads: {} for processing, {} for writing VCF",
@@ -232,16 +234,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
         .thread_name(|idx| format!("worker-{idx}"))
         .num_threads(worker_threads)
         .start_handler(|idx| trace!(idx, "Starting worker thread"))
-        .exit_handler(|idx| {
-            trace!(idx, "Closing worker thread");
-            // Explicitly drop GPU resources *before* the thread's TLS destructors
-            // fire. This avoids "TLS value accessed during/after destruction" panics
-            // on Metal/wgpu, where the OS autorelease pool is torn down during
-            // thread exit before Rust TLS destructors run.
-            GPU_FORESTS.with(|gf| {
-                gf.borrow_mut().take();
-            });
-        })
+        .exit_handler(|idx| trace!(idx, "Closing worker thread"))
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {
@@ -265,15 +258,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
     Ok(())
 }
 
-thread_local! {
-    /// Per-thread GPU forest handles forked from the prototype in [`MachineLearning`].
-    /// Initialized lazily on the first call to [`process_region_wrapper`] in each
-    /// rayon worker thread. Each handle owns its own pre-allocated GPU buffers and
-    /// shares compiled pipelines with the prototype via `Arc`.
-    static GPU_FORESTS: std::cell::RefCell<Option<GpuRastairModel>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 /// Wrapper function for processing a region in a thread-safe manner.
 ///
 /// Calls [`process_region`] with thread-local readers and ships the result to
@@ -289,18 +273,7 @@ fn process_region_wrapper(
     thread_local! {
         /// Readers for the BAM and FASTA files, initialized per thread to avoid
         /// re-opening files or having a lock
-        static READERS: std::cell::RefCell<Option<Readers>> = const { std::cell::RefCell::new(None) };
-    }
-
-    // Lazily fork the GPU forests for this thread on its first chunk.
-    if let Some(proto) = ml.gpu_prototype.as_ref() {
-        GPU_FORESTS.with(|gf| {
-            if gf.borrow().is_none() {
-                // 10_000 positions × 4 alts max — matches the buffer size allocated
-                // in MachineLearningParams::init for the prototype forests.
-                *gf.borrow_mut() = Some(proto.fork(GPU_BATCH_BUFFER_SIZE));
-            }
-        });
+        static READERS: std::cell::RefCell<Option<PileupReaders>> = const { std::cell::RefCell::new(None) };
     }
 
     // Use thread-local readers to avoid re-opening files in each thread
@@ -311,7 +284,7 @@ fn process_region_wrapper(
             if local_readers.is_none() {
                 let readers = params
                     .segments
-                    .readers()
+                    .pileup_readers()
                     .wrap_err("Failed to open readers in worker thread")?;
                 *local_readers = Some(readers);
             }
@@ -327,13 +300,25 @@ fn process_region_wrapper(
         let pileup_mapping_params = process::PileupMappingParams {
             variant_calling: params.variant_calling.clone(),
             require_tags: params.require_tags.filter(),
+            call_indels: params.indel.enabled(),
             indel_max_mismatches: params.indel.indel_max_mismatches,
             indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
+            segment_max_bytes: params.segmentation.segment_max_bytes,
+            rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
+            early_reject: Some(params.record_filters.clone()),
             ..Default::default()
         };
-        let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
 
-        let res = process_region(segment, pileups, params, ml);
+        #[cfg(not(feature = "experimental-seqair"))]
+        let res = {
+            let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
+            process_region(segment, pileups, params, ml)
+        };
+        #[cfg(feature = "experimental-seqair")]
+        let res = {
+            let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
+            process_pre_built_metrics(segment, metrics, params, ml)
+        };
 
         // Handle processing errors gracefully to not crash the whole processing
         match res {
@@ -358,103 +343,143 @@ fn process_region_wrapper(
     Ok(())
 }
 
+macro_rules! log_failed_and_skip {
+    ($msg:expr) => {
+        |x: Result<PileupMetrics>| match x {
+            Err(e) => {
+                warn!(error = format!("{e:#}"), $msg);
+                None
+            }
+            Ok(x) => Some(x),
+        }
+    };
+}
+
+#[cfg(any(not(feature = "experimental-seqair"), test))]
 /// Analyse pileups in a region
 fn process_region(
     segment: Rc<Segment>,
-    pileups: impl Iterator<Item = Pileup>,
+    pileups_iter: impl Iterator<Item = Pileup>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    // Calculate metrics for each pileup.
+    // One per covered position, as on the seqair path — see the note in
+    // `process::pileups::get_pileups`. Doubling into a vec of 592-byte entries
+    // both copies and overshoots.
+    let mut pileups: Vec<PileupMetrics> =
+        Vec::with_capacity(usize::try_from(segment.range.len()).unwrap_or(0));
+    pileups.extend(
+        calculate_pileup_metrics(pileups_iter, &segment)
+            .filter_map(log_failed_and_skip!("failed to calculate metric, skipping")),
+    );
+    map_surrounding(
+        &mut pileups,
+        process::set_denovo_adj,
+        "failed to set denovo adjacency, skipping",
+    );
+    set_strand_info_and_prefilter(&mut pileups, params);
+
+    process_collected_pileups(segment, pileups, params, ml)
+}
+
+#[cfg(feature = "experimental-seqair")]
+fn process_pre_built_metrics(
+    segment: Rc<Segment>,
+    pileups: impl Iterator<Item = PileupMetrics>,
+    params: &CallParams,
+    ml: &MachineLearning,
+) -> Result<Vec<PileupMetrics>> {
+    let mut pileups: Vec<PileupMetrics> = pileups.collect();
+    map_surrounding(
+        &mut pileups,
+        process::set_denovo_adj,
+        "failed to set denovo adjacency, skipping",
+    );
+    set_strand_info_and_prefilter(&mut pileups, params);
+    process_collected_pileups(segment, pileups, params, ml)
+}
+
+/// The step both backends run between de-novo adjacency and the shared
+/// pipeline: strand info depends on the adjacency flags just set, and the
+/// pre-filter on the alts, so the order matters.
+fn set_strand_info_and_prefilter(pileups: &mut Vec<PileupMetrics>, params: &CallParams) {
+    for pileup in pileups.iter_mut() {
+        pileup.pos_metrics.extended.methylation_strand_info =
+            MethylationEvidenceStrandInfo::from_pileup(pileup);
+    }
+    pileups.retain(|p| params.record_filters.pre_filter(p));
+}
+
+fn process_collected_pileups(
+    segment: Rc<Segment>,
+    mut pileups: Vec<PileupMetrics>,
+    params: &CallParams,
+    ml: &MachineLearning,
+) -> Result<Vec<PileupMetrics>> {
     let threshold_filters = process::ThresholdFilterParams {
         variant_calling: params.variant_calling.clone(),
         methylation: params.methylation.thresholds.clone(),
         denovo_cpg: params.denovo_cpg.clone(),
     };
 
-    macro_rules! log_failed_and_skip {
-        ($msg:expr) => {
-            |x: Result<PileupMetrics>| match x {
-                Err(e) => {
-                    warn!(error = format!("{e:#}"), $msg);
-                    None
-                }
-                Ok(x) => Some(x),
-            }
-        };
-    }
-
-    // Pass 1: collect all pre-ML pileups for the chunk.
-    let mut pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups, &segment)
-        .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
-        .map_surrounding(process::set_denovo_adj)
-        .filter_map(log_failed_and_skip!("failed to set denovo adjacency, skipping"))
-        .map(|mut current| {
-            current.pos_metrics.extended.methylation_strand_info =
-                MethylationEvidenceStrandInfo::from_pileup(&current);
-            current
-        })
-        .filter(|p| params.record_filters.pre_filter(p))
-        .collect();
-
     if params.indel.enabled() {
         for p in &mut pileups {
-            let tract = u32::from(p.pileup.homopolymer_run.max(p.pileup.dinucleotide_run));
-            p.indel_calls = variant_calling::indel_calling::call_indels(
-                &p.indels,
-                &params.indel,
-                params.indel.use_ml(ml.enabled()),
-                tract,
-                params.indel.rescues_hom_ref(),
-            );
+            if let Some(ref mut d) = p.indel_data {
+                let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
+                d.calls = variant_calling::indel_calling::call_indels(
+                    &d.counts,
+                    &params.indel,
+                    params.indel.use_ml(ml.enabled()),
+                    tract,
+                    params.indel.rescues_hom_ref(),
+                );
+            }
         }
     }
 
-    // Pass 2: ML prediction — GPU batch if available, otherwise or on error,
-    // use sequential CPU fallback.
-    GPU_FORESTS.with(|gf| -> Result<()> {
-        let score_indels = params.indel.needs_ml_scores(ml.enabled());
-        match gf
-            .borrow()
-            .as_ref()
-            .map(|gpu| process::batch_add_ml_metrics(&mut pileups, ml, gpu, score_indels))
-        {
-            Some(Ok(_)) => return Ok(()),
-            Some(Err(error)) => {
-                warn!(
-                    error = format!("{error:#}"),
-                    "failed to calculate ML score on GPU, falling back to CPU"
-                )
-            }
-            None => {}
+    // Pass 2: ML prediction on the inference thread when there is one, and on
+    // this thread otherwise or if the GPU failed. Both score the region as one
+    // batch per model; see `score_on_cpu` for why that matters on the CPU.
+    let score_indels = params.indel.needs_ml_scores(ml.enabled());
+    match process::score_on_gpu(&mut pileups, ml, score_indels) {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            warn!(
+                error = format!("{error:#}"),
+                "failed to calculate ML score on GPU, scoring this region on the CPU"
+            );
+            process::score_on_cpu(&mut pileups, ml, score_indels)?;
         }
-        process::add_ml_metrics_vec(&mut pileups, ml, score_indels)
-    })?;
+        None => process::score_on_cpu(&mut pileups, ml, score_indels)?,
+    }
 
     if params.indel.rescues_hom_ref() {
         for p in &mut pileups {
-            variant_calling::indel_calling::rescue_hom_ref(
-                &mut p.indel_calls,
-                params.ml.threshold(),
-            );
+            if let Some(ref mut d) = p.indel_data {
+                variant_calling::indel_calling::rescue_hom_ref(&mut d.calls, params.ml.threshold());
+            }
         }
     }
 
-    let pileups: Vec<PileupMetrics> = pileups
+    let mut pileups: Vec<PileupMetrics> = pileups
         .into_iter()
         .map(|mut pileup| {
-            // Add 'simple' filters based on the collected metrics
             process::apply_threshold_filters(&mut pileup, &threshold_filters)
                 .wrap_err("Failed to apply threshold filters")?;
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to add threshold filters, skipping"))
-        .map_surrounding(|b, c, a| {
-            // For CpG sites and de-novo CpG sites, if one position is pass, mark
-            // corresponding as pass as well
-            process::propagate_denovo_pass_flags(b, c, a, params.ml.threshold())
-        })
-        .filter_map(log_failed_and_skip!("failed to propagate CpG pass flags, skipping"))
+        .collect();
+    // For CpG sites and de-novo CpG sites, if one position is pass, mark
+    // corresponding as pass as well
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::propagate_denovo_pass_flags(b, c, a, params.ml.threshold()),
+        "failed to propagate CpG pass flags, skipping",
+    );
+
+    let pileups: Vec<PileupMetrics> = pileups
+        .into_iter()
         .map(|mut pileup| {
             // Finally, set the actual variant calls based on all metrics and filters
             process::set_alt_calls(&mut pileup, params.ml.threshold())?;
@@ -488,7 +513,7 @@ fn process_region(
         } else {
             let count_piles = readable::num::Unsigned::from(pileups.len());
             let pile_size = pileups.len() * std::mem::size_of::<PileupMetrics>();
-            let read_size = pileups.iter().map(|p| p.pileup.reads.len()).sum::<usize>()
+            let read_size = pileups.iter().map(|p| p.pos_metrics.depth as usize).sum::<usize>()
                 * std::mem::size_of::<SimpleRead>();
             let bytes = readable::byte::Byte::from(pile_size + read_size);
             debug!(%count_piles, %bytes, "Collected pileup metrics");

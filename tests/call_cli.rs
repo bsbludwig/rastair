@@ -171,6 +171,29 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
     Ok(())
 }
 
+/// `--max-coverage 0` means "no limit", and used to mean two opposite things
+/// two lines apart: the seqair depth cap read it as `Unlimited` and loaded
+/// every read, while the per-column code read it as a cap of zero and counted
+/// none of them. The run produced an empty VCF at unbounded memory.
+#[test]
+fn max_coverage_zero_means_no_limit() -> Result<()> {
+    let unlimited =
+        rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML, "--max-coverage=0"]).output()?;
+    let huge = rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--max-coverage=4000000000"])
+        .output()?;
+
+    let body = |out: &str| {
+        out.lines().filter(|l| !l.starts_with("##")).map(str::to_owned).collect::<Vec<_>>()
+    };
+    let unlimited_body = body(&unlimited.stdout());
+    assert!(unlimited_body.len() > 1, "--max-coverage=0 produced no records at all");
+    assert_eq!(unlimited_body, body(&huge.stdout()), "a cap of 0 must not cap anything");
+
+    Ok(())
+}
+
 #[test]
 fn vcf_with_ml() -> Result<()> {
     apply_common_filters!();
@@ -268,7 +291,120 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
     //     summary.unmod_diff_positions,
     //     summary.shared_calls,
     // );
+    // The `--guess-read-orientation` motif heuristic is mildly engine-sensitive
+    // (seqair walks aligned pairs via `matches_only()`, htslib via
+    // `aligned_pairs_full()`), so a handful of low-coverage unmod counts differ.
+    // Both stay within the closeness assertions above; snapshot each engine
+    // separately so both builds pass.
+    #[cfg(feature = "experimental-seqair")]
+    insta::with_settings!({snapshot_suffix => "seqair"}, {
+        assert_compact_debug_snapshot!(summary);
+    });
+    #[cfg(not(feature = "experimental-seqair"))]
     assert_compact_debug_snapshot!(summary);
+
+    Ok(())
+}
+
+/// Overlapping-mate dedup, end to end on a real BAM: linking happens inside
+/// `Readers::pileup`, the column loop acts on it, and the counts land in the
+/// BED. The synthetic differential tests in `from_seqair.rs` pin the *rule*;
+/// this pins that the rule is reached at all — a mate link that silently never
+/// formed (stale mate coordinates, a reader that stopped linking) would leave
+/// both runs identical.
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
+    const REGION: &str = "--region=chr19:6103000-6106000";
+
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let deduped = temp_dir.path().join("deduped.bed");
+    let kept = temp_dir.path().join("kept.bed");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--bed"])
+        .arg(&deduped)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--keep-overlapping-reads", "--bed"])
+        .arg(&kept)
+        .succeeds()?;
+
+    let deduped = parse_cpg_bed(&deduped)?;
+    let kept = parse_cpg_bed(&kept)?;
+    assert!(!deduped.is_empty(), "no CpG calls to compare");
+
+    let total = |calls: &BTreeMap<(u32, char), CpgBedCall>| -> u32 {
+        calls.values().map(|c| c.mod_count + c.unmod_count).sum()
+    };
+    let (deduped_total, kept_total) = (total(&deduped), total(&kept));
+    assert!(
+        deduped_total < kept_total,
+        "dedup removed nothing: {deduped_total} observations with it, {kept_total} without"
+    );
+
+    // Every position must lose observations, never gain them: dedup only ever
+    // drops one half of a pair.
+    for (key, kept_call) in &kept {
+        let Some(deduped_call) = deduped.get(key) else { continue };
+        let before = kept_call.mod_count + kept_call.unmod_count;
+        let after = deduped_call.mod_count + deduped_call.unmod_count;
+        assert!(after <= before, "{key:?}: dedup increased coverage from {before} to {after}");
+    }
+
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
+    // A region wide enough to contain soft-clips that land on CpG partners.
+    const REGION: &str = "--region=chr19:6100000-6120000";
+
+    apply_common_filters!();
+
+    let temp_dir = TempDir::new()?;
+    let off_bed = temp_dir.path().join("rescue-off.bed");
+    let on_bed = temp_dir.path().join("rescue-on.bed");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--bed"])
+        .arg(&off_bed)
+        .succeeds()?;
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, NO_ML, "--cpgs-only", "--rescue-soft-clip-cpg", "--bed"])
+        .arg(&on_bed)
+        .succeeds()?;
+
+    let off = parse_cpg_bed(&off_bed)?;
+    let on = parse_cpg_bed(&on_bed)?;
+
+    // Rescue only adds evidence, so every position called without it is still
+    // called with it (it may add new ones, never drop them).
+    let off_keys: BTreeSet<_> = off.keys().copied().collect();
+    let on_keys: BTreeSet<_> = on.keys().copied().collect();
+    assert!(off_keys.is_subset(&on_keys), "rescue dropped a CpG call");
+
+    let evidence = |calls: &BTreeMap<(u32, char), CpgBedCall>| -> u64 {
+        calls.values().map(|c| u64::from(c.mod_count) + u64::from(c.unmod_count)).sum()
+    };
+    let changed = off.iter().filter(|(key, off_call)| on.get(key) != Some(off_call)).count();
+
+    assert!(changed > 0, "rescue should change at least one CpG on the seqair backend");
+    assert!(
+        evidence(&on) > evidence(&off),
+        "rescue should add net methylation observations ({} -> {})",
+        evidence(&off),
+        evidence(&on),
+    );
 
     Ok(())
 }
@@ -390,6 +526,56 @@ fn write_bcf_to_file_and_bed_to_stdout() -> Result<()> {
     Ok(())
 }
 
+/// Compressed file output is coordinate-indexed automatically: a `.csi` is
+/// written next to the `.bcf`, and it can be used for region queries. Regions
+/// given out of tid order on the CLI must still produce a valid sorted index.
+#[test]
+fn compressed_output_gets_a_csi_index() -> Result<()> {
+    use rust_htslib::bcf::{IndexedReader, Read};
+
+    let temp_dir = TempDir::new()?;
+    let bcf = temp_dir.path().join("out.bcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        // Out of tid order: bacteriophage is tid 2, chr19 is tid 0.
+        .args(["--region", "bacteriophage_lambda_CpG chr19", NO_ML, "--vcf"])
+        .arg(&bcf)
+        .output()?
+        .succeeds()?;
+
+    let csi = temp_dir.path().join("out.bcf.csi");
+    assert!(csi.exists(), "expected a .csi index next to the .bcf");
+
+    // Opening via IndexedReader + fetch only works with a valid index.
+    let mut reader = IndexedReader::from_path(&bcf).wrap_err("open indexed bcf")?;
+    let rid = reader.header().name2rid(b"chr19").wrap_err("chr19 in header")?;
+    reader.fetch(rid, 0, None).wrap_err("fetch chr19 via index")?;
+    let chr19_records = reader.records().count();
+    assert!(chr19_records > 0, "index region query for chr19 returned no records");
+
+    Ok(())
+}
+
+/// Plain (uncompressed) VCF has no coordinate index, so no `.csi` is written.
+#[test]
+fn plain_vcf_output_has_no_index() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("out.vcf");
+
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([CHR19_SMALL, NO_ML, "--vcf"])
+        .arg(&vcf)
+        .output()?
+        .succeeds()?;
+
+    assert!(vcf.exists());
+    assert!(!temp_dir.path().join("out.vcf.csi").exists(), "plain VCF must not be indexed");
+
+    Ok(())
+}
+
 #[test]
 fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
     apply_common_filters!();
@@ -503,19 +689,13 @@ fn vcf_with_nOT_nOB() -> Result<()> {
     assert_compact_debug_snapshot!(get_depths(&b), @"Ok([11, 13, 13])");
 
     fn get_depths(path: &std::path::Path) -> Result<Vec<i32>> {
-        use rastair_vcf::VcfField as _;
         use rust_htslib::bcf::Read;
 
         let mut bcf = read_bcf(path).wrap_err("invalid bcf file")?;
         let depths = bcf
             .records()
             .map(|r| {
-                let field = r
-                    .unwrap()
-                    .info(rastair_vcf::standard_fields::ReadDepth::ID.as_bytes())
-                    .integer()
-                    .unwrap()
-                    .unwrap();
+                let field = r.unwrap().info(b"DP").integer().unwrap().unwrap();
                 *field.first().unwrap()
             })
             .collect::<Vec<_>>();
@@ -1143,3 +1323,141 @@ fn write_bam_with_zero_mapq_overlapping(
 // - max depth is set
 // - min bq is set
 // - min mapq is set
+
+/// Reads carrying one shared deletion, far enough into a contig that the
+/// enclosing segment cannot start at 0.
+///
+/// `tests/data/test.bam` has 86 indel-carrying reads but no two of them agree
+/// on an allele, so it produces no indel call at any threshold — which is why
+/// nothing here exercised the indel path.
+fn write_deletion_bam(
+    output: &std::path::Path,
+    contig: &str,
+    del_pos: u64,
+    del_len: usize,
+    reads: usize,
+) -> Result<()> {
+    use rust_htslib::bam::record::{Cigar, CigarString};
+    use rust_htslib::bam::{self, Record, header::HeaderRecord};
+    use rust_htslib::faidx;
+
+    const READ_LEN: usize = 80;
+    // Every read spans the deletion but starts at a different offset, so the
+    // anchor is reached from a different query position each time.
+    let first_start = del_pos - 40;
+
+    let fasta = faidx::Reader::from_path("tests/data/test.fasta.gz")?;
+    let fetch = |from: u64, to: u64| -> Result<Vec<u8>> {
+        Ok(fasta.fetch_seq(contig, from as usize, to as usize - 1)?.to_ascii_uppercase())
+    };
+
+    let mut header = bam::Header::new();
+    let contig_len =
+        fasta.fetch_seq_len(contig).ok_or_else(|| eyre!("contig {contig} not in the FASTA"))?;
+    let mut sq = HeaderRecord::new(b"SQ");
+    sq.push_tag(b"SN", contig);
+    sq.push_tag(b"LN", contig_len);
+    header.push_record(&sq);
+    let mut writer = bam::Writer::from_path(output, &header, bam::Format::Bam)?;
+
+    for i in 0..reads {
+        let start = first_start + i as u64;
+        let left = (del_pos - start) as usize;
+        let right = READ_LEN - left;
+        // The read skips the deleted bases, so its sequence is the reference
+        // either side of them.
+        let mut seq = fetch(start, del_pos + 1)?;
+        let after = del_pos + 1 + del_len as u64;
+        seq.extend_from_slice(&fetch(after, after + right as u64 - 1)?);
+        seq.truncate(READ_LEN);
+
+        let cigar = CigarString(
+            vec![
+                Cigar::Match(left as u32 + 1),
+                Cigar::Del(del_len as u32),
+                Cigar::Match(READ_LEN as u32 - left as u32 - 1),
+            ]
+            .into(),
+        );
+        let mut record = Record::new();
+        record.set(format!("del_{i}").as_bytes(), Some(&cigar), &seq, &vec![40u8; seq.len()]);
+        record.set_tid(0);
+        record.set_pos(start as i64);
+        record.set_mapq(60);
+        record.set_flags(if i % 2 == 0 { 0 } else { 16 });
+        record.set_mtid(-1);
+        record.set_mpos(-1);
+        writer.write(&record)?;
+    }
+    drop(writer);
+
+    bam::index::build(output, None, bam::index::Type::Bai, 1)?;
+    Ok(())
+}
+
+/// A deletion's REF allele must be the reference *at the deletion*.
+///
+/// The seqair backend read it from the start of the enclosing segment instead,
+/// so 82.6% of multi-base REF alleles on chr12 were real-looking sequence from
+/// the wrong locus and `bcftools norm` refused the file. Nothing caught it: no
+/// CLI test enabled indel calling, and no snapshot held a multi-base REF.
+///
+/// The contig position is load-bearing. At a segment starting at 0 the wrong
+/// index and the right one coincide, which is also why the `from_seqair` unit
+/// fixtures could not see this.
+#[test]
+fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
+    use rust_htslib::faidx;
+
+    const CONTIG: &str = "bacteriophage_lambda_CpG";
+    const DEL_POS: u64 = 24_137; // 0-based anchor, well past a segment boundary
+    const DEL_LEN: usize = 4;
+
+    let temp_dir = TempDir::new()?;
+    let bam = temp_dir.path().join("deletion.bam");
+    write_deletion_bam(&bam, CONTIG, DEL_POS, DEL_LEN, 12)?;
+
+    let vcf = temp_dir.path().join("out.vcf");
+    rastair()
+        .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+        .arg(&bam)
+        .args([
+            &format!("--region={CONTIG}:{}-{}", DEL_POS - 200, DEL_POS + 200),
+            "--unpaired",
+            "--experimental-indels=no-ml",
+            NO_ML,
+            "--vcf",
+        ])
+        .arg(&vcf)
+        .succeeds()?;
+
+    let fasta = faidx::Reader::from_path("tests/data/test.fasta.gz")?;
+    let text = std::fs::read_to_string(&vcf)?;
+    let mut multi_base_refs = 0;
+    for line in text.lines().filter(|line| !line.starts_with('#')) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let (Some(&contig), Some(&pos), Some(&reference)) =
+            (fields.first(), fields.get(1), fields.get(3))
+        else {
+            continue;
+        };
+        if reference.len() < 2 {
+            continue;
+        }
+        multi_base_refs += 1;
+        // VCF POS is 1-based; fetch_seq takes a 0-based inclusive range.
+        let start = pos.parse::<usize>()? - 1;
+        let expected = fasta.fetch_seq(contig, start, start + reference.len() - 1)?;
+        assert_eq!(
+            reference,
+            String::from_utf8_lossy(&expected.to_ascii_uppercase()),
+            "REF at {contig}:{pos} does not match the reference"
+        );
+    }
+
+    assert!(
+        multi_base_refs > 0,
+        "no multi-base REF was emitted, so this test proved nothing:\n{text}"
+    );
+    Ok(())
+}

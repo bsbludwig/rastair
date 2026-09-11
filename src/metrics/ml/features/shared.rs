@@ -34,14 +34,15 @@ pub struct CommonFeatures {
 impl CommonFeatures {
     pub fn extract(current: &MetricsForAlt) -> Self {
         let alt = current.alt;
-        let PileupMetrics { pileup, pos_metrics: pos, ref_metrics: r, .. } = &current.metrics;
+        let PileupMetrics { reference_base, context, pos_metrics: pos, ref_metrics: r, .. } =
+            &current.metrics;
 
-        let ref_base = pileup.reference_base;
+        let ref_base = *reference_base;
         let depth = pos.depth.f();
         // Prevent division by zero resulting in NaN values
         let depth = if depth > 0.0 { depth } else { 1.0 };
 
-        let seq_ctx = &pileup.context;
+        let seq_ctx = context;
         let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
         let (p2a, p2c, p2g, p2t) = one_hot_encode_base(seq_ctx.before_1);
         let (p4a, p4c, p4g, p4t) = one_hot_encode_base(seq_ctx.after_1);

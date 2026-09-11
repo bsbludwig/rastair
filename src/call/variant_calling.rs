@@ -1,5 +1,5 @@
 mod params;
-pub use params::VariantCallingParams;
+pub use params::{MaxCoverage, VariantCallingParams};
 mod error_model;
 pub use error_model::ErrorModel;
 mod genotype;
@@ -11,3 +11,4 @@ pub use read_flags::ReadFlags;
 mod quality_filters;
 mod read_masking;
 pub use quality_filters::QualityFilterParams;
+pub use read_masking::{ReadMaskParams, ReadMaskSetting};

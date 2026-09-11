@@ -176,6 +176,141 @@ Current scope: this new evidence-based OT/OB assignment only affects the main pi
 
 For BAM-backed regression tests that compare strand-assignment modes, `tests/call_cli.rs` can write plain BED output with `call --cpgs-only --bed <path>` and compare per-CpG `(start, strand)` records via the BED columns `beta_est`, `unmod`, and `mod`. This is a convenient way to inspect differences before choosing hard thresholds.
 
+## Driving seqair's pileup engine
+
+`PileupEngine::new` takes a `PileupInput`, and the only way to make one is
+`store.prepare_for_pileup()` — which returns `Prepared { input, stats }`, sorts
+the store by position and links its mates. So a test that builds a store by hand
+no longer has to remember either step, and can list its reads in any order.
+
+That type exists because both preconditions used to fail silently and badly.
+Measured on a three-read fixture: pushing them out of position order produced
+columns for **one** of the three — the engine never reached the other two and no
+column reported a gap. And on an unlinked store every alignment reports
+`mate_idx() == None` *and* `in_mate_overlap() == false`, which is exactly what a
+read with no mate looks like, so overlap dedup quietly does nothing and a test
+asserting it passes while proving nothing.
+
+Two related API notes:
+
+- **`PileupColumn::mate_of(&view)`** gives the view's linked mate when it is also
+  in this column — the whole of what `counted_mate` needs. It replaced
+  `pair_indel`, a query that folded in the precedence "the view's own indel wins,
+  the mate is never consulted"; that cannot serve a caller whose own filters may
+  reject the view's indel. Keep pairwise rules on this side of the boundary.
+- **`PileupEngine::reclaim_allocation`** (was `take_store`) returns an *empty*
+  store keeping its slab capacity, for the next region. It is not a way to read
+  the pileup's input back.
+
+## Indel parity between the two pileup backends
+
+`from_hts.rs` and `from_seqair.rs` build the same `PileupMetrics` from two
+different readers. **SNVs are byte-identical across them** — F1, recall,
+precision and both aardvark genotype-error counts — which is the control that
+makes any remaining difference attributable to indel-specific code rather than
+to read handling. Indels were *not*: on chr12 the seqair backend scored 4-5 F1
+points below htslib, from five separate divergences, all now fixed.
+
+**How the divergence is measured.** Two numbers, and the second is the more
+useful one:
+
+```bash
+CARGO_TARGET_DIR=target-hts cargo build --release          # htslib
+cargo build --release --features experimental-seqair       # seqair
+# ...call chr12 with --experimental-indels=ml --vcf-all-fields on each, then:
+bcftools view -f PASS -i 'GT="alt"' calls.bcf -Ou \
+  | bcftools norm -f hg38.fa.gz -m -any -Oz -o q.vcf.gz
+aardvark compare --reference hg38.fa.gz --truth-vcf truth.vcf.gz \
+  --truth-sample NA12878 --query-vcf q.vcf.gz --query-sample sample \
+  --regions PG_ConfidentRegions_hg38.bed.gz --output-dir out/
+# and, far more sensitive than F1, the site-level disagreement:
+bcftools isec -p isec <(bcftools view -v indels hts.vcf.gz) <(bcftools view -v indels sq.vcf.gz)
+```
+
+The `isec` counts move ~100x over the fixes where F1 moves 5 points, so use them
+to tell "this changed something" from "this changed the right thing". Aardvark
+needs `Number=.` in the header (see above) or it refuses the file outright.
+
+**The five divergences, in the order they were found.** Each is worth knowing
+because each is a *class* of mistake, not a typo:
+
+1. **A read-local offset used as a genomic position.** `view.qpos()` shadowed
+   the column's `pos`, so deletion REF alleles were read from the segment's
+   opening bases. Guarded now by seqair's `QPos` newtype, which is why the pin
+   carries it.
+2. **The tract anchor.** `homopolymer_run_at`/`dinucleotide_run_at` must be
+   measured one base past the pileup anchor, where a left-aligned indel starts.
+   The convention now lives only inside `ref_features::indel_tract_runs_at`.
+3. **Overlap dedup dropping the fragment's only indel.** The rule keeps one
+   read per fragment by base agreement and template order, which can keep the
+   mate that does *not* span the indel. `from_hts` never had this because it
+   votes per fragment *before* deduplicating — every mate gets a turn and the
+   first surviving observation is the fragment's. **The single largest one:
+   +2.3 insertion / +1.5 deletion F1.**
+
+   **The fallback is keyed on the observation, not on the indel.**
+   `build_indel_observation` rejects an indel too close to a read end or on a
+   read with too many non-TAPS mismatches, so a kept read can carry an indel
+   and still contribute nothing, and the mate must then stand in.
+   `PileupColumn::pair_indel` (seqair) cannot express that — its rule is "own
+   indel wins, the mate is never consulted", which is correct for a query that
+   only sees CIGARs but silently drops those fragments. **rastair therefore
+   does not use `pair_indel`**; `counted_mate` plus `Option::or_else` is the
+   whole mechanism, and it needs no seqair query.
+4. **Two implementations of one predicate.** `has_repeat` used a 4-base window
+   for the period-2 arm on one side and 6 on the other, so it fired ~8x more
+   often on the seqair path. There is now one `has_terminal_repeat`.
+5. **Per-read where the semantics are per-fragment.** `soft_clip_count` and the
+   noisy-reference count describe a fragment; `from_hts` ORs them over both
+   mates. Reading them off the surviving read alone loses what only the dropped
+   mate showed. The noisy-reference count also has to exclude a fragment that
+   contributed an observation — `IndelCounts::clean_depth` subtracts a fragment
+   counted on both sides twice — and `AlignmentShape::noisy()` is
+   `terminal_repeat || soft_clipped`, not the repeat alone.
+
+**Result on chr12 (~26x, bundled model, `--experimental-indels=ml`), against
+Platinum Genomes in `PG_ConfidentRegions`:**
+
+| | seqair before | seqair after | htslib |
+| --- | --- | --- | --- |
+| SNV F1 | 0.9706 | 0.9706 | 0.9706 |
+| Insertion F1 | 0.7775 | **0.8273** | 0.8274 |
+| Deletion F1 | 0.8099 | **0.8506** | 0.8506 |
+| disagreeing indel sites | 29,420 | **5** | — (32,326 shared) |
+
+Deletions come out numerically identical to htslib on every column — recall,
+precision, F1, `truth_fn_gt` and `query_fp_gt`. Insertions differ by two sites
+in `truth_fn_gt` and nothing else.
+
+**Judge a parity fix by convergence in every column, not by F1.** The last fix
+moved deletion F1 *down* 0.0010 while moving recall, precision and both
+genotype-error counts onto htslib — which is what says the semantics matched
+rather than a threshold moving. A change that improves F1 while moving
+`query_fp_gt` away from the reference has not fixed parity.
+
+The residual is 5 sites of 32,331 (4 htslib-only, 1 seqair-only), all
+multi-allelic columns in homopolymer or short-tandem-repeat tracts where the two
+readers group one read's allele differently (`G>GTT` alongside `G>GTTT` at one
+position, `GTTTT>G`, `CAAA>C`). Not worth chasing without a reason to.
+
+### Why none of this was caught
+
+Worth internalising, because the same blind spots are still easy to reproduce:
+
+- **No CLI test enabled indel calling.** `grep experimental.indels
+  tests/call_cli.rs` was empty and every snapshot header recorded
+  `"experimental_indels":null`, so no snapshot ever held a multi-base REF.
+  `indel_ref_alleles_come_from_the_deletion_site` now closes that.
+- **`tests/data/test.bam` cannot produce an indel call.** It has 86
+  indel-carrying reads, but no two agree on an allele, so nothing passes
+  `--min-indel-ao` at any threshold. An indel test has to build its own BAM.
+- **A fixture segment starting at 0 hides every position bug**, because
+  `pos - segment_start` and the clamped wrong answer coincide there. Use
+  `segment_at(start, seq)` with a non-zero start; the CLI fixture puts its
+  deletion at 24,137 for the same reason.
+- **The `from_seqair` unit tests never set `params.call_indels`**, so the whole
+  indel branch was unreachable from them.
+
 ## ML feature layout (`src/metrics/ml/features/`)
 
 Each model's feature vector is defined by a `#[repr(C)]` struct of `f32` / `[f32; N]`
@@ -206,6 +341,73 @@ only after verifying a layout change is intentional).
 Feature names flow to training output via `FeatureCalculator::feature_names() -> FeatureNames`.
 `train.rs` uses them for the `--feature-analytics` importance CSVs (`index\tfeature\timportance`)
 and the `--export-features` TSV headers, so both exports agree by construction.
+
+## VCF header version and cardinality
+
+Output is **`##fileformat=VCFv4.5`**, and seqair writes that unconditionally —
+`VcfHeader::FILE_FORMAT`, with no setter — so rastair does not ask for it. That
+is the version defining the fields we emit: `M5mC`, `DPM5mC` and `ADM5mC` are
+VCF 4.5 reserved FORMAT keys, aliases for the ChEBI-numbered `M27551C` family,
+and 4.3 defines none of them.
+
+Declaring 4.5 is not cosmetic. From VCF 4.4 the **first allele's `GT` phase bit
+is read** rather than ignored, so an encoder that leaves it unset makes htslib
+render a phased `0|1` as `/0|1`. seqair sets it now (spec rule
+`vcf_record.gt_first_phase`); if phased output ever comes back looking like
+that, this is why.
+
+**Keep those three at `Number=.` anyway.** VCF 4.5 pairs them with `Number=M`
+("one value for each possible base modification for the corresponding ChEBI
+ID"), and seqair still has a `Number::BaseModification` variant that emits it —
+but noodles rejects `M`, and **declaring 4.5 does not help.** Measured on one of
+our own files with only the header rewritten:
+
+| `##fileformat` | `Number` on M5mC | aardvark |
+| --- | --- | --- |
+| VCFv4.3 | `M` | rejects the whole file |
+| VCFv4.5 | `M` | **still rejects** |
+| VCFv4.5 | `.` | reads it |
+
+The rejection is `invalid FORMAT: ID=M5mC: invalid number`, and it kills the
+*file*, not the line — so every noodles-based tool, PacBio's `aardvark`
+included, sees nothing. `.` states the same cardinality in a way every reader
+accepts. Revisit when noodles implements the 4.5 cardinalities; the two tests in
+`src/vcf/schema.rs` pin both halves of this.
+
+## VCF FILTER is a set (`RastairFilter` / `Filters`)
+
+`Filters` (`src/metrics/pileup_metrics.rs`) is an `EnumSet<RastairFilter>` — a
+`u16` bitset, pinned by `#[enumset(repr = "u16")]` on the enum — plus the
+`other_pos_in_denovo_passes` override, which is *not* a FILTER code and so does
+not live in the set. `add`/`merge` are `insert`/`|=`; there is no dedup to do by
+hand and no `Deref` to a list any more.
+
+**The enum's declaration order is load-bearing twice.** `RastairFilter as usize`
+indexes `Schema::filter`'s `[FilterId; COUNT]` table (so the discriminants must
+stay `0..COUNT` — this is why `enumset` fits and `enumflags2`, which wants
+power-of-two discriminants, does not), and a set iterates in discriminant order,
+which is the order the FILTER column prints. Reordering variants is an output
+change.
+
+**Nothing snapshots a non-PASS FILTER column.** Rejected records are only
+emitted under `--all` (`emit_rejected_record`, gated by `RecordFilters`), and
+every committed VCF snapshot is 100 % `PASS`. To see FILTER output at all:
+
+```bash
+cargo build && ./target/debug/rastair call --fasta-file=tests/data/test.fasta.gz \
+  tests/data/test.bam --all | grep -v '^#' | awk -F'\t' '$7!="PASS"{print $7}' \
+  | sort | uniq -c | sort -rn
+```
+
+That blind spot hid a real defect until 2026-09-08: FILTER used to be built by
+appending three lists, so a code could land twice — *every* non-PASS record on
+`tests/data/test.bam` carried `low_ml_score;low_ml_score`. Use the command above
+when touching filter emission.
+
+Still open, found while fixing that: `emit_rejected_record` adds `low_ml_score`
+when `alt.filters.ml < ml_threshold`, and `None < Some(_)` in Rust — so a record
+whose ML was *skipped* (`pre_ml`) is also labelled `low_ml_score`. Fixing it
+changes `--all` output beyond a reordering, so it was left alone.
 
 ## Release version bump checklist
 

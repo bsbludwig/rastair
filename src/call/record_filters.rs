@@ -12,7 +12,7 @@ use crate::{metrics::PileupMetrics, utils::cli};
 /// | `--all`   | `-c`        | All reference CpGs (incl. uncovered) and called de-novo CpGs |
 ///
 /// Note: We alwasy report both positions of a CpG.
-#[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct RecordFilters {
     /// Output all variants, even if they do not pass filters.
     ///
@@ -40,22 +40,39 @@ pub struct RecordFilters {
     pub cpgs_only: bool,
 }
 
+/// Everything [`RecordFilters::keeps`] asks about a position.
+///
+/// A column is answerable before it becomes a [`PileupMetrics`] — which is how
+/// the seqair backend rejects one before finishing it — so the question is
+/// asked of these three bits and not of the finished record.
+#[derive(Debug, Clone, Copy)]
+pub struct PreFilterInputs {
+    pub has_alts: bool,
+    pub cpg: bool,
+    pub has_indels: bool,
+}
+
 impl RecordFilters {
+    /// Is a position with this evidence worth processing at all?
+    pub fn keeps(&self, inputs: PreFilterInputs) -> bool {
+        if self.cpgs_only {
+            // Filter out pileups that are not CpG if requested
+            inputs.cpg
+        } else {
+            // Otherwise, keep all variant evidence + methylation evidence + indel evidence
+            inputs.has_alts || inputs.cpg || inputs.has_indels
+        }
+    }
+
     /// Filter out pileups that are not relevant based on caller parameters
     ///
     /// Only to speed up processing.
     pub fn pre_filter(&self, pileup: &PileupMetrics) -> bool {
-        let has_alts = !pileup.alts.is_empty();
-        let cpg = *pileup.pos_metrics.cpg || pileup.forms_denovo();
-        let has_indels = !pileup.indels.is_empty();
-
-        if self.cpgs_only {
-            // Filter out pileups that are not CpG if requested
-            cpg
-        } else {
-            // Otherwise, keep all variant evidence + methylation evidence + indel evidence
-            has_alts || cpg || has_indels
-        }
+        self.keeps(PreFilterInputs {
+            has_alts: !pileup.alts.is_empty(),
+            cpg: *pileup.pos_metrics.cpg || pileup.forms_denovo(),
+            has_indels: pileup.indel_data.is_some(),
+        })
     }
 
     /// Check if a pileup matches the filter criteria

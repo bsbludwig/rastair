@@ -20,8 +20,7 @@ pub fn calculate_pileup_metrics(
         let mut current =
             PileupMetrics::new(pileup).wrap_err("Failed to calculate pileup metrics")?;
 
-        current.pos_metrics.extended.region_entropy =
-            sliding_entropy.entropy_at(current.pileup.idx());
+        current.pos_metrics.extended.region_entropy = sliding_entropy.entropy_at(current.idx());
 
         Ok(current)
     })

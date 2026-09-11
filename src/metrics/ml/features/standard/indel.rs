@@ -88,24 +88,21 @@ define_features! {
 impl CommonIndelFeatures {
     fn extract(current: &MetricsForIndel) -> CommonIndelFeatures {
         let indel = &current.indel;
-        let pileup = &current.metrics.pileup;
-        let observations = &pileup.indel_observations;
+        let metrics = &current.metrics;
+        let d = metrics.indel_data.as_ref().expect("indel data present for indel call position");
+        let observations = &d.observations;
         let allele = &indel.allele;
 
         let agg = compute_aggregates(observations, allele);
-        let dominance = compute_dominance(&current.metrics.indels.alleles, allele);
+        let dominance = compute_dominance(&d.counts.alleles, allele);
 
-        let total_reads = pileup.reads.len().max(1).f();
-        let soft_clip_rate = pileup.soft_clip_count.f() / total_reads;
+        let total_reads = metrics.pos_metrics.depth.max(1).f();
+        let soft_clip_rate = d.soft_clip_count.f() / total_reads;
 
-        let pos_depth = current.metrics.pos_metrics.depth;
-        let pos_mapq = current.metrics.pos_metrics.mapq.f();
+        let pos_depth = metrics.pos_metrics.depth;
+        let pos_mapq = metrics.pos_metrics.mapq.f();
 
-        let repeat = RepeatContext::detect(
-            allele,
-            &pileup.indel_ref_window,
-            pileup.indel_ref_anchor as usize,
-        );
+        let repeat = RepeatContext::detect(allele, &d.ref_window, d.ref_anchor as usize);
 
         CommonIndelFeatures {
             indel_len: allele.len().f(),
@@ -119,9 +116,9 @@ impl CommonIndelFeatures {
             strand_bias: strand_bias(agg.ot_count, agg.ob_count),
             indel_in_repeat: if repeat.in_repeat { 1.0 } else { 0.0 },
             repeat_tract_length: repeat.tract_length.f(),
-            homopolymer_run: pileup.homopolymer_run.f(),
+            homopolymer_run: d.homopolymer_run.f(),
             soft_clip_rate,
-            dinucleotide_run: pileup.dinucleotide_run.f(),
+            dinucleotide_run: d.dinucleotide_run.f(),
             repeat_fraction: if agg.total > 0 { agg.repeat_count.f() / agg.total.f() } else { 0.0 },
         }
     }
@@ -130,7 +127,12 @@ impl CommonIndelFeatures {
 impl InsertionFeatures {
     pub fn extract(current: &MetricsForIndel) -> InsertionFeatures {
         let common = CommonIndelFeatures::extract(current);
-        let observations = &current.metrics.pileup.indel_observations;
+        let d = current
+            .metrics
+            .indel_data
+            .as_ref()
+            .expect("indel data present for indel call position");
+        let observations = &d.observations;
         let allele = &current.indel.allele;
         let insertion_baseq_rms = insertion_baseq_rms(observations, allele);
         let pos_baseq = current.metrics.pos_metrics.baseq.f();
@@ -143,7 +145,12 @@ impl InsertionFeatures {
 impl DeletionFeatures {
     pub fn extract(current: &MetricsForIndel) -> DeletionFeatures {
         let common = CommonIndelFeatures::extract(current);
-        let observations = &current.metrics.pileup.indel_observations;
+        let d = current
+            .metrics
+            .indel_data
+            .as_ref()
+            .expect("indel data present for indel call position");
+        let observations = &d.observations;
         let allele = &current.indel.allele;
         let post_del_baseq_rms = post_del_baseq_rms(observations, allele);
         let pos_baseq = current.metrics.pos_metrics.baseq.f();

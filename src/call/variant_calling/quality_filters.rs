@@ -17,7 +17,11 @@ pub struct QualityFilterParams {
 
 impl QualityFilterParams {
     /// Check if the read and base pass the quality filters
+    pub fn filter_fields(&self, mapq: u8, baseq: u8) -> bool {
+        mapq >= self.min_mapq && baseq >= self.min_baseq
+    }
+
     pub fn filter(&self, read: &SimpleRead) -> bool {
-        read.mapq >= self.min_mapq && read.qual >= self.min_baseq
+        self.filter_fields(read.mapq, read.qual)
     }
 }

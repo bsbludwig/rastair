@@ -8,7 +8,7 @@
 use crate::{
     metrics::{Filters, MetricsForAlt},
     utils::{IntoF64 as _, cli},
-    vcf,
+    vcf::RastairFilter,
 };
 use better_default::Default;
 use color_eyre::Result;
@@ -47,10 +47,10 @@ pub fn add_filters(config: &DenovoParams, current: &MetricsForAlt) -> Result<Fil
         return Ok(filters);
     }
 
-    filters.add(vcf::dnCpG_lowDp, || alt.depth < config.cpg_novo_min_depth);
-    filters.add(vcf::dnCpG_bq, || alt.baseq.f() < config.cpg_novo_min_baseq);
-    filters.add(vcf::dnCpG_mapq, || alt.mapq.f() < config.cpg_novo_min_mapq);
-    filters.add(vcf::dnCpG_vaf, || alt.allele_frequency.f() < config.cpg_novo_min_vaf);
+    filters.add(RastairFilter::DnCpgLowDp, || alt.depth < config.cpg_novo_min_depth);
+    filters.add(RastairFilter::DnCpgBq, || alt.baseq.f() < config.cpg_novo_min_baseq);
+    filters.add(RastairFilter::DnCpgMapq, || alt.mapq.f() < config.cpg_novo_min_mapq);
+    filters.add(RastairFilter::DnCpgVaf, || alt.allele_frequency.f() < config.cpg_novo_min_vaf);
 
     Ok(filters)
 }

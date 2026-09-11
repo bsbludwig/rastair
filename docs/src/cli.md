@@ -78,7 +78,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--v-min-depth <V_MIN_DEPTH>`
 
   Default value: `3`
-* `--max-coverage <MAX_COVERAGE>`
+* `--max-coverage <MAX_COVERAGE>` — Maximum number of reads to consider at one position
+
+   Counts reads that pass the mapping- and base-quality filters, so a pileup of MAPQ 0 reads cannot crowd out the usable ones. To bound memory, at most ten times this many reads are loaded per position at all. `0` means no limit.
 
   Default value: `1000`
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read
@@ -119,6 +121,13 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--cpg-novo-min-vaf <CPG_NOVO_MIN_VAF>` — Minimum variant allele frequency for de-novo CpGs
 
   Default value: `0.2`
+* `--rescue-soft-clip-cpg` — Rescue soft-clipped CpG-partner bases
+
+   Aligners often soft-clip a read's fringe base(s) when that mismatches the reference. But in TAPS, a methylated C reads as T, so a leading C→T mismatch might get soft-clipped, discarding real methylation evidence (and same for a trailing G->A). With this flag, a single soft-clipped base immediately next to an aligned base is "rescued" when it is the missing partner of a reference CpG (ref C on OT, ref G on OB) and counted as a normal observation.
+
+   Recovered bases bypass read-end masking (`--nOT`/`--nOB`) since they are fringe bases by definition, but still go through base-quality, mapping-quality and methylation read-position filters.
+
+   (Only takes effect on the seqair backend.)
 * `--no-ml` — Only use hard thresholds to call variants and methylation events.
 
    This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
@@ -247,7 +256,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
 
-   Used for splitting work between threads. Tweak this to adjust memory usage.
+   Used for splitting work between threads. Tweak this to adjust memory usage: peak memory scales with this times `--threads`, and so does the batch each ML dispatch gets, which is why smaller is not free. On NA12878 chr12 at 26x, dropping this to 10 000 costs ~1.45x wall time — the same reads, but a tenth of the rows per GPU round trip and ten times as many BAM index queries.
 
   Default value: `100000`
 * `--segment-overlap <SEGMENT_OVERLAP>` — Number of bases to overlap between segments
@@ -255,6 +264,11 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Helpful to avoid missing variants at the edges of segments.
 
   Default value: `200`
+* `--segment-max-bytes <SEGMENT_MAX_BYTES>` — Maximum estimated compressed bytes to load per segment (memory budget)
+
+   seqair backend only. A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
+
+  Default value: `268435456`
 * `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
 
    Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the htslib/reference-oriented read sequence. `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
@@ -290,6 +304,8 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an `FxHashMap`. Set to 0 to always use the hashmap.
 
+   Only affects the htslib pileup path. The seqair path deduplicates overlapping mates from seqair's per-store mate links and never matches read names, so it ignores this.
+
   Default value: `30`
 * `--indel-error-rate <INDEL_ERROR_RATE>` — Error rate for indel genotyping (higher than SNV due to alignment uncertainty)
 
@@ -306,7 +322,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `10`
+  Default value: `14`
   [env: `RASTAIR_THREADS`]
 
 
@@ -395,7 +411,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
 
-  Default value: `10`
+  Default value: `14`
 
 
 
@@ -444,10 +460,10 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 
    Used for splitting work between threads. Tweak this to adjust memory usage.
 
-  Default value: `100000`
+  Default value: `10000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
-  Default value: `10`
+  Default value: `14`
 
 
 
@@ -481,10 +497,10 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 
    Used for splitting work between threads. Tweak this to adjust memory usage.
 
-  Default value: `100000`
+  Default value: `10000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
-  Default value: `10`
+  Default value: `14`
 
 
 
@@ -579,7 +595,7 @@ Convert between different file formats
 
 * `-@`, `--threads <TOTAL_THREADS>` — Total number of threads to use (e.g. for parallel compression)
 
-  Default value: `10`
+  Default value: `14`
   [env: `RASTAIR_THREADS`]
 
 

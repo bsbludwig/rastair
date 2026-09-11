@@ -1,8 +1,8 @@
 use crate::{
     call::{ml::MachineLearningParams, process},
     metrics::PileupMetrics,
-    sequence::ReaderParams,
-    utils::{PileupMetricsIteratorExt, default},
+    sequence::{ReaderParams, Segment},
+    utils::{default, map_surrounding},
 };
 use color_eyre::{
     Result,
@@ -10,10 +10,39 @@ use color_eyre::{
 };
 use seqair_types::Probability;
 
+#[cfg(not(feature = "experimental-seqair"))]
+fn build_test_pileups(
+    pileups: impl Iterator<Item = crate::call::pileup::Pileup>,
+    segment: &Segment,
+    threshold_filters: &process::ThresholdFilterParams,
+) -> Vec<PileupMetrics> {
+    process::calculate_pileup_metrics(pileups, segment)
+        .map(|x| {
+            let mut x = x.unwrap();
+            process::apply_threshold_filters(&mut x, threshold_filters).unwrap();
+            x
+        })
+        .collect()
+}
+
+#[cfg(feature = "experimental-seqair")]
+fn build_test_pileups(
+    pileups: impl Iterator<Item = PileupMetrics>,
+    _segment: &Segment,
+    threshold_filters: &process::ThresholdFilterParams,
+) -> Vec<PileupMetrics> {
+    pileups
+        .map(|mut x| {
+            process::apply_threshold_filters(&mut x, threshold_filters).unwrap();
+            x
+        })
+        .collect()
+}
+
 #[test]
 fn test_cpg_detection() -> Result<()> {
     let ml_threshold = Some(Probability::new_panicky(0.5));
-    let mut readers = ReaderParams::test_data().around("chr19", 6105711).readers()?;
+    let mut readers = ReaderParams::test_data().around("chr19", 6105711).pileup_readers()?;
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
     let pileup_mapping_params = process::PileupMappingParams::default();
@@ -26,22 +55,16 @@ fn test_cpg_detection() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let pileups = process::calculate_pileup_metrics(pileups, &segment)
-        .map(|x: Result<PileupMetrics>| -> PileupMetrics {
-            let mut x = x.unwrap();
-            process::apply_threshold_filters(&mut x, &threshold_filters)
-                .wrap_err("Failed to apply threshold filters")
-                .unwrap();
-            x
-        })
-        .map_surrounding(|b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold))
-        .collect::<Result<Vec<_>>>()?;
+    let mut pileups = build_test_pileups(pileups, &segment, &threshold_filters);
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold),
+        "failed to propagate CpG pass flags",
+    );
 
     // get pileups for a CpG site
-    let ref_c =
-        pileups.iter().find(|p| p.pileup.pos == 6105711).wrap_err("Could not find C pileup")?;
-    let ref_g =
-        pileups.iter().find(|p| p.pileup.pos == 6105712).wrap_err("Could not find G pileup")?;
+    let ref_c = pileups.iter().find(|p| p.pos == 6105711).wrap_err("Could not find C pileup")?;
+    let ref_g = pileups.iter().find(|p| p.pos == 6105712).wrap_err("Could not find G pileup")?;
 
     assert!(*ref_c.pos_metrics.cpg);
     assert!(*ref_g.pos_metrics.cpg);
@@ -52,7 +75,7 @@ fn test_cpg_detection() -> Result<()> {
 #[test]
 fn set_filters() -> Result<()> {
     let ml_threshold = Some(Probability::new_panicky(0.5));
-    let mut readers = ReaderParams::test_data().around("chr19", 6105742).readers()?;
+    let mut readers = ReaderParams::test_data().around("chr19", 6105742).pileup_readers()?;
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
     let pileup_mapping_params = process::PileupMappingParams::default();
@@ -65,27 +88,24 @@ fn set_filters() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let ml = MachineLearningParams::default().init()?;
+    let ml = MachineLearningParams::default().init(1)?;
 
-    let pileups = process::calculate_pileup_metrics(pileups, &segment)
-        .map(|x: Result<PileupMetrics>| -> PileupMetrics {
-            let mut x = x.unwrap();
-            process::apply_threshold_filters(&mut x, &threshold_filters)
-                .wrap_err("Failed to apply threshold filters")
-                .unwrap();
-            x
-        })
-        .map_surrounding(|b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold))
-        .collect::<Result<Vec<_>>>()?;
+    let mut pileups = build_test_pileups(pileups, &segment, &threshold_filters);
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold),
+        "failed to propagate CpG pass flags",
+    );
 
-    let pileups = pileups
-        .into_iter()
-        .map_surrounding(|b, c, a| process::add_ml_metrics(b, c, a, &ml, true))
-        .collect::<Result<Vec<_>>>()?;
+    map_surrounding(
+        &mut pileups,
+        |b, c, a| process::add_ml_metrics(b, c, a, &ml, true),
+        "failed to add ML metrics",
+    );
 
     // get pileups for a CpG site
     let low_dp_on_a =
-        pileups.iter().find(|p| p.pileup.pos == 6105742).wrap_err("Could not find C pileup")?;
+        pileups.iter().find(|p| p.pos == 6105742).wrap_err("Could not find C pileup")?;
 
     // dbg!(&low_dp_on_a.pos_filters);
     // dbg!(low_dp_on_a.alts.iter().map(|alt| &alt.filters.filters).collect::<Vec<_>>());
