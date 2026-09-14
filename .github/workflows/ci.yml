@@ -89,6 +89,10 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --locked --workspace --all-targets
 
+      - name: cargo clippy
+        if: always()
+        run: cargo clippy --locked --workspace --all-targets --features experimental-seqair
+
       - name: Remove problem matcher
         if: always()
         run: echo "::remove-matcher owner=rust::"
@@ -166,6 +170,64 @@ jobs:
           detailed_summary: true
           include_passed: false
           fail_on_failure: false # the nextest step already failed the job
+
+  seqair:
+    name: Test (seqair backend)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+    env:
+      CARGO_TERM_COLOR: never
+      INSTA_UPDATE: auto
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libclang-dev cmake samtools tabix
+
+      - uses: ./.github/actions/setup-rust
+
+      # A distinct `shared-key` from `test`: the feature changes the enabled
+      # cfgs, so these artifacts would otherwise thrash that job's cache.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-seqair
+          cache-all-crates: true
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        with:
+          tool: cargo-nextest@0.9.114
+
+      - name: Register rustc problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/rust.json"
+
+      - name: cargo nextest
+        run: |
+          cargo-nextest nextest run --profile ci --workspace --locked \
+            --features experimental-seqair
+
+      - name: Remove problem matcher
+        if: always()
+        run: echo "::remove-matcher owner=rust::"
+
+      - name: Annotate test failures
+        uses: mikepenz/action-junit-report@d9f48fc87bc235f7e214acf696ca5abc0a986f16 # v6.4.2
+        if: always()
+        continue-on-error: true
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Test results (seqair backend)
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false
 
   external-tools:
     name: External tool tests

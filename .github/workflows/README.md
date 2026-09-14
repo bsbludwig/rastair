@@ -2,7 +2,7 @@
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| [`ci.yml`](workflows/ci.yml) | push to `main`, any pull request | `toolchain-pins`, `fmt`, `clippy`, `test`, `external-tools` (all parallel) |
+| [`ci.yml`](workflows/ci.yml) | push to `main`, any pull request | `toolchain-pins`, `fmt`, `clippy`, `test`, `seqair`, `external-tools` (all parallel) |
 | [`release.yml`](workflows/release.yml) | push of a `v*` tag | runs CI, builds+signs Linux/macOS binaries, uploads to S3 + GitHub Releases, rebuilds and deploys the docs site |
 
 `release.yml` can also be started manually from the Actions tab (**Run workflow**)
@@ -32,6 +32,13 @@ rather than as finished archives.
   cargo-run-bin, which would recompile nextest from source on every run.
   Without `--features external-tool-tests`, the two test targets that shell
   out to third-party tools are not built here.
+* **seqair** — the whole suite again with `--features experimental-seqair`,
+  which swaps the pileup *reading* backend; the two backends are expected to
+  produce identical results, so every snapshot has to hold under both. It also
+  reruns clippy with the feature, since the gated code is invisible to the
+  `clippy` job's default build. Own cache (`shared-key: ci-seqair`) rather than
+  the `test` job's: a different feature set means different artifacts, which
+  would otherwise thrash that entry.
 * **external-tools** — the same runner (no Docker), running only
   `tests/bam_external_tools.rs` and `tests/mbias_report.rs`, which cross-check
   rastair against samtools, bismark, modkit, modbedtools and the R QC report.
