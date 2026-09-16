@@ -217,3 +217,40 @@ fn can_tabix_files() -> Result<()> {
 
     Ok(())
 }
+
+/// Reads starting exactly at a segment boundary used to be reported twice: the
+/// BAM fetch is one base wider than the segment, and only the lower bound was
+/// checked. Small segments put many reads on a boundary, so the output must
+/// still match a run that processes everything in one segment.
+#[test]
+fn reads_at_segment_boundaries_are_reported_once() -> Result<()> {
+    let run = |segment_max_length: &str| -> Result<Vec<String>> {
+        let output = rastair()
+            .args([
+                "per-read",
+                "--fasta-file=tests/data/test.fasta.gz",
+                "tests/data/test.bam",
+                "--all-reads",
+                "--region=chr19:6105000-6205000",
+                "--segment-max-length",
+                segment_max_length,
+            ])
+            .output()
+            .wrap_err("Failed to run per-read")?;
+        output.clone().succeeds()?;
+        Ok(output.stdout().lines().map(str::to_owned).collect())
+    };
+
+    let chunked = run("1000")?;
+    let single = run("1000000")?;
+
+    let duplicates: Vec<_> = {
+        let mut seen = BTreeSet::new();
+        chunked.iter().filter(|line| !seen.insert((*line).clone())).collect()
+    };
+    ensure!(duplicates.is_empty(), "duplicated read rows: {duplicates:#?}");
+    ensure!(chunked.len() > 100, "expected a non-trivial number of reads, got {}", chunked.len());
+    ensure!(chunked == single, "segmentation changed the reported reads");
+
+    Ok(())
+}

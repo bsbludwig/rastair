@@ -285,6 +285,7 @@ fn process_region(
     let fetch_before = 1;
     // but also make sure we don't go before the actual start of the region
     let start = region.region.start;
+    let end = region.region.end;
     let region = &{
         let mut region = region.clone();
         region.region.start = region.region.start.saturating_sub(fetch_before);
@@ -330,8 +331,10 @@ fn process_region(
         if let Err(e) = result {
             return Err(e).wrap_err("Failed to read BAM record");
         }
-        // Ignore reads before the start of the region
-        if (record.pos() as u64) < start {
+        // Ignore reads that another segment owns
+        let record_start =
+            u64::try_from(record.pos()).wrap_err("read start does not fit in u64")?;
+        if record_start < start || record_start >= end {
             continue;
         }
         if !params.read_flags.filter_with_unpaired_mode(&record, params.unpaired) {
