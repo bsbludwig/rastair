@@ -33,28 +33,68 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
-position_counts <- function(data, columns, count_name) {
-  counts <- data[, {
-    encoded <- unlist(.SD, use.names=FALSE)
-    encoded <- encoded[!is.na(encoded) & nzchar(encoded)]
-    positions <- if (length(encoded) > 0L) {
-      scan(
-        text=paste(encoded, collapse=","),
-        what=integer(),
-        sep=",",
-        quiet=TRUE
+parse_position_counts <- function(data, columns) {
+  encoded <- unlist(
+    lapply(columns, function(column) data[[column]]),
+    use.names=FALSE
+  )
+  encoded <- encoded[!is.na(encoded) & nzchar(encoded)]
+  if (length(encoded) == 0L) {
+    return(integer())
+  }
+
+  positions <- scan(
+    text=encoded,
+    what=integer(),
+    sep=",",
+    quiet=TRUE
+  )
+  tabulate(positions + 1L)
+}
+
+position_counts <- function(data, chunk_size=250000L) {
+  mod_columns <- c("mod_cpgs", "mod_denovos")
+  unmod_columns <- c("unmod_cpgs", "unmod_denovos")
+  position_columns <- c(mod_columns, unmod_columns)
+  chunk_starts <- seq.int(1L, nrow(data), by=chunk_size)
+
+  chunks <- lapply(chunk_starts, function(first) {
+    last <- min(first + chunk_size - 1L, nrow(data))
+    chunk <- data[first:last, c("chr", "flag", position_columns), with=FALSE]
+    chunk[, `:=`(
+      read_pair=factor(
+        fifelse(bitwAnd(flag, 64) > 0, "First", "Second"),
+        levels=c("First", "Second")
+      ),
+      strand=factor(
+        fifelse(
+          bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144,
+          "OT",
+          "OB"
+        ),
+        levels=c("OB", "OT")
       )
-    } else {
-      integer()
-    }
+    )]
 
-    frequencies <- tabulate(positions + 1L)
-    observed <- which(frequencies > 0L)
-    .(pos=observed - 1L, count=frequencies[observed])
-  }, by=.(chr, read_pair, strand), .SDcols=columns]
+    chunk[, {
+      mod <- parse_position_counts(.SD, mod_columns)
+      unmod <- parse_position_counts(.SD, unmod_columns)
+      num_positions <- max(length(mod), length(unmod))
+      mod <- c(mod, integer(num_positions - length(mod)))
+      unmod <- c(unmod, integer(num_positions - length(unmod)))
+      observed <- which(mod > 0L | unmod > 0L)
+      .(
+        pos=observed - 1L,
+        mod=as.double(mod[observed]),
+        unmod=as.double(unmod[observed])
+      )
+    }, by=.(chr, read_pair, strand), .SDcols=position_columns]
+  })
 
-  setnames(counts, "count", count_name)
-  counts
+  rbindlist(chunks)[
+    , .(mod=sum(mod), unmod=sum(unmod)),
+    by=.(chr, read_pair, strand, pos)
+  ]
 }
 
 expand_positions <- function(data) {
@@ -70,18 +110,22 @@ expand_positions <- function(data) {
     encoded <- data[[column]]
     present <- !is.na(encoded) & nzchar(encoded)
     if (!any(present)) {
-      return(data[0L, .(
-        alignment_id, chr, start, end, read_id, orientation, insert_size, flag,
-        pos_in_read=integer(), type=character()
-      )])
+      result <- data[0L, .(
+        chr, start, end, read_id, orientation, insert_size, flag
+      )]
+      result[, `:=`(
+        alignment_id=integer(), pos_in_read=integer(), type=character()
+      )]
+      return(result)
     }
 
     positions <- strsplit(as.character(encoded[present]), ",", fixed=TRUE)
     rows <- rep.int(which(present), lengths(positions))
     result <- data[rows, .(
-      alignment_id, chr, start, end, read_id, orientation, insert_size, flag
+      chr, start, end, read_id, orientation, insert_size, flag
     )]
     result[, `:=`(
+      alignment_id=rows,
       pos_in_read=as.integer(unlist(positions, use.names=FALSE)),
       type=unname(position_types[[column]])
     )]
@@ -238,12 +282,11 @@ if (!is.null(params$is_WGBS) && params$is_WGBS == TRUE) {
   setnames(data, c("mod_cpgs", "unmod_cpgs", "mod_denovos", "unmod_denovos"), c("unmod_cpgs", "mod_cpgs", "unmod_denovos", "mod_denovos"))
 }
 
-# remove reads without CpGs
-data <- data[num_cpg > 0]
-
-# filter by flags
-data <- data[bitwAnd(flag, params$include_flags) == params$include_flags]
-data <- data[bitwAnd(flag, params$exclude_flags) == 0]
+data <- data[
+  num_cpg > 0 &
+    bitwAnd(flag, params$include_flags) == params$include_flags &
+    bitwAnd(flag, params$exclude_flags) == 0
+]
 
 if (is.null(params$read_len) || is.na(params$read_len) || !is.numeric(params$read_len)) {
   read_len <- max(data$read_length, na.rm=TRUE)
@@ -257,26 +300,10 @@ dedup_columns <- c(
   "mod_denovos", "unmod_denovos"
 )
 data <- unique(data, by=dedup_columns)
+data[, c("mapq", "read_length", "num_cpg", "num_mod") := NULL]
+invisible(gc())
 
-data[, `:=`(
-  read_pair=as.factor(fifelse(bitwAnd(flag, 64) > 0, "First", "Second")),
-  strand=as.factor(fifelse(
-    bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144,
-    "OT",
-    "OB"
-  ))
-)]
-
-mod_counts <- position_counts(data, c("mod_cpgs", "mod_denovos"), "mod")
-unmod_counts <- position_counts(data, c("unmod_cpgs", "unmod_denovos"), "unmod")
-mbias_table <- merge(
-  mod_counts,
-  unmod_counts,
-  by=c("chr", "read_pair", "strand", "pos"),
-  all=TRUE
-)
-setnafill(mbias_table, type="const", fill=0L, cols=c("mod", "unmod"))
-rm(mod_counts, unmod_counts)
+mbias_table <- position_counts(data)
 
 # Flip the OB reads so that mbias is always reported 5' -> 3'
 mbias_table[(strand=="OT" & read_pair == "Second") | (strand=="OB" & read_pair == "First"), pos := read_len-pos]
@@ -287,8 +314,6 @@ setkey(mbias_table, chr, pos)
 if (!isTRUE(params$plot_vbias)) {
   rm(data)
   invisible(gc())
-} else {
-  data[, alignment_id := .GRP, by=.(read_id, chr, start, end, orientation)]
 }
 ```
 
