@@ -33,19 +33,60 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
-parse_positions <- function(mod_pos, unmod_pos, snp_pos, moddn_pos, unmoddn_pos) {
-  m_pos <- as.integer(strsplit(as.character(mod_pos), ",", fixed=TRUE)[[1]])
-  u_pos <- as.integer(strsplit(as.character(unmod_pos), ",", fixed=TRUE)[[1]])
-  s_pos <- as.integer(strsplit(as.character(snp_pos), ",", fixed=TRUE)[[1]])
-  dm_pos <- as.integer(strsplit(as.character(moddn_pos), ",", fixed=TRUE)[[1]])
-  du_pos <- as.integer(strsplit(as.character(unmoddn_pos), ",", fixed=TRUE)[[1]])
+position_counts <- function(data, columns, count_name) {
+  counts <- data[, {
+    encoded <- unlist(.SD, use.names=FALSE)
+    encoded <- encoded[!is.na(encoded) & nzchar(encoded)]
+    positions <- if (length(encoded) > 0L) {
+      scan(
+        text=paste(encoded, collapse=","),
+        what=integer(),
+        sep=",",
+        quiet=TRUE
+      )
+    } else {
+      integer()
+    }
 
-  nm <- ifelse(any(is.na(m_pos)), 0, length(m_pos))
-  nu <- ifelse(any(is.na(u_pos)), 0, length(u_pos))
-  ns <- ifelse(any(is.na(s_pos)), 0, length(s_pos))
-  ndm <- ifelse(any(is.na(dm_pos)), 0, length(dm_pos))
-  ndu <- ifelse(any(is.na(du_pos)), 0, length(du_pos))
-  return(data.table(pos_in_read=na.omit(c(m_pos, u_pos, s_pos, dm_pos, du_pos)), type=c(rep("M", nm), rep("U", nu), rep("S", ns), rep("m", ndm), rep("u", ndu))))
+    frequencies <- tabulate(positions + 1L)
+    observed <- which(frequencies > 0L)
+    .(pos=observed - 1L, count=frequencies[observed])
+  }, by=.(chr, read_pair, strand), .SDcols=columns]
+
+  setnames(counts, "count", count_name)
+  counts
+}
+
+expand_positions <- function(data) {
+  position_types <- c(
+    mod_cpgs="M",
+    unmod_cpgs="U",
+    snp_cpgs="S",
+    mod_denovos="m",
+    unmod_denovos="u"
+  )
+
+  expanded <- lapply(names(position_types), function(column) {
+    encoded <- data[[column]]
+    present <- !is.na(encoded) & nzchar(encoded)
+    if (!any(present)) {
+      return(data[0L, .(
+        chr, start, end, read_id, orientation, insert_size, flag,
+        pos_in_read=integer(), type=character()
+      )])
+    }
+
+    positions <- strsplit(as.character(encoded[present]), ",", fixed=TRUE)
+    rows <- rep.int(which(present), lengths(positions))
+    result <- data[rows, .(chr, start, end, read_id, orientation, insert_size, flag)]
+    result[, `:=`(
+      pos_in_read=as.integer(unlist(positions, use.names=FALSE)),
+      type=unname(position_types[[column]])
+    )]
+    result
+  })
+
+  rbindlist(expanded, use.names=TRUE)
 }
 
 
@@ -150,26 +191,43 @@ if (is.null(params$read_len) || is.na(params$read_len) || !is.numeric(params$rea
   read_len = params$read_len
 }
 
-data <- data[, .N, by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag, mod_cpgs, unmod_cpgs, snp_cpgs, mod_denovos, unmod_denovos)] # unify duplicate reads
+dedup_columns <- c(
+  "chr", "start", "end", "read_id", "mapq", "orientation", "insert_size",
+  "read_length", "flag", "mod_cpgs", "unmod_cpgs", "snp_cpgs",
+  "mod_denovos", "unmod_denovos"
+)
+data <- unique(data, by=dedup_columns)
 
-# Break comma-separated pos_in_read into a list
-data <- data[, parse_positions(mod_cpgs, unmod_cpgs, snp_cpgs, mod_denovos, unmod_denovos), by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag)]
-
-mbias_table <- data[, .(
-  mod = sum(type %in% c("M", "m")),
-  unmod = sum(type %in% c("U", "u"))
-), by = .(
-  chr,
-  pos = pos_in_read,
-  read_pair = as.factor(fifelse(bitwAnd(flag, 64) > 0, "First", "Second")),
-  strand = as.factor(fifelse(bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144, "OT", "OB"))
+data[, `:=`(
+  read_pair=as.factor(fifelse(bitwAnd(flag, 64) > 0, "First", "Second")),
+  strand=as.factor(fifelse(
+    bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144,
+    "OT",
+    "OB"
+  ))
 )]
+
+mod_counts <- position_counts(data, c("mod_cpgs", "mod_denovos"), "mod")
+unmod_counts <- position_counts(data, c("unmod_cpgs", "unmod_denovos"), "unmod")
+mbias_table <- merge(
+  mod_counts,
+  unmod_counts,
+  by=c("chr", "read_pair", "strand", "pos"),
+  all=TRUE
+)
+setnafill(mbias_table, type="const", fill=0L, cols=c("mod", "unmod"))
+rm(mod_counts, unmod_counts)
 
 # Flip the OB reads so that mbias is always reported 5' -> 3'
 mbias_table[(strand=="OT" & read_pair == "Second") | (strand=="OB" & read_pair == "First"), pos := read_len-pos]
 mbias_table <- mbias_table[, .(beta=mod/(mod+unmod), lower_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[1], 0.0), upper_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[2], 0.0)), by=.(chr, pos, read_pair, strand)]
 mbias_table <- mbias_table[!is.na(beta)]
 setkey(mbias_table, chr, pos)
+
+if (!isTRUE(params$plot_vbias)) {
+  rm(data)
+  invisible(gc())
+}
 ```
 
 
@@ -335,7 +393,7 @@ if (params$plot_vbias) {
   rm(readPositions)
 
   # annotate with ordinals for all reads per sample, too
-  vdata <- data
+  vdata <- expand_positions(data)
   vdata[, ordinal := order(pos_in_read), by=.(read_id, chr, start, end, orientation)]
 
   setkey(vdata, chr, start, end, orientation, ordinal)

@@ -7,12 +7,7 @@ use std::process::{Command, Stdio};
 use utils::*;
 
 fn tool_is_available(name: &str) -> bool {
-    Command::new(name)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    Command::new(name).arg("--help").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok()
 }
 
 /// The QC report only renders if R plus the packages the M-bias path loads are
