@@ -24,10 +24,35 @@ fn r_report_toolchain_available() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+fn r_vbias_toolchain_available() -> bool {
+    r_report_toolchain_available()
+        && tool_is_available("samtools")
+        && Command::new("Rscript")
+            .args([
+                "-e",
+                "suppressMessages({library(Rsamtools); library(GenomicRanges); library(Biostrings); library(ggside)})",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
 macro_rules! require_r_report_toolchain {
     () => {
         if !r_report_toolchain_available() {
             eprintln!("Skipping test: Rscript (with rmarkdown/data.table/ggplot2), tabix or bgzip not available");
+            return Ok(());
+        }
+    };
+}
+
+macro_rules! require_r_vbias_toolchain {
+    () => {
+        if !r_vbias_toolchain_available() {
+            eprintln!(
+                "Skipping test: V-bias requires samtools and Rscript with Rsamtools/GenomicRanges/Biostrings/ggside"
+            );
             return Ok(());
         }
     };
@@ -47,7 +72,9 @@ fn fixture_bed() -> String {
         // chr_ok: positions {10,20,30,40,50,60} in the First/OT group
         "chr_ok\t100\t200\tok1\t60\t+\t150\t100\t99\t3\t3\t10,30,50\t\t\t\t",
         "chr_ok\t200\t300\tok2\t60\t+\t150\t100\t99\t3\t0\t\t10,30,50\t\t\t",
-        "chr_ok\t300\t400\tok3\t60\t+\t150\t100\t99\t3\t1\t20\t40,60\t\t\t",
+        // The type-wise expansion is {50,10,30}; its position ranks are
+        // {3,1,2}, while the old `order(pos_in_read)` assignment was {2,3,1}.
+        "chr_ok\t300\t400\tok3\t60\t+\t150\t100\t99\t3\t1\t50\t10\t30\t\t",
         // chr_sparse: a single read with one CpG -> one position -> skipped
         "chr_sparse\t100\t200\tsp1\t60\t+\t150\t100\t99\t1\t1\t10\t\t\t\t",
     ];
@@ -66,6 +93,11 @@ fn bgzip(bed_path: &Path) -> Result<std::path::PathBuf> {
     ensure!(output.status.success(), "bgzip failed with status: {}", output.status);
     std::fs::write(&gz_path, output.stdout).wrap_err("write bgzipped BED")?;
     Ok(gz_path)
+}
+
+fn fixture_fasta() -> String {
+    let sequence = "CG".repeat(250);
+    format!(">chr_ok\n{sequence}\n>chr_sparse\n{sequence}\n")
 }
 
 /// A sparse contig must not abort the whole report: it is skipped (no plot, no
@@ -137,6 +169,44 @@ fn mbias_report_errors_when_explicit_region_is_sparse() -> Result<()> {
         !out_dir.join("chr_sparse_cutoffs.txt").exists(),
         "no cutoffs file should be written for the failed sparse contig"
     );
+
+    Ok(())
+}
+
+#[test]
+fn mbias_report_renders_vbias_with_ranked_read_positions() -> Result<()> {
+    require_r_vbias_toolchain!();
+
+    let temp_dir = TempDir::new()?;
+    let bed_path = temp_dir.path().join("reads.bed");
+    std::fs::write(&bed_path, fixture_bed())?;
+    let bed_gz = bgzip(&bed_path)?;
+
+    let fasta_path = temp_dir.path().join("reference.fa");
+    std::fs::write(&fasta_path, fixture_fasta())?;
+    let faidx_status = Command::new("samtools")
+        .arg("faidx")
+        .arg(&fasta_path)
+        .status()
+        .wrap_err("index V-bias fixture FASTA")?;
+    ensure!(faidx_status.success(), "samtools faidx failed with status: {faidx_status}");
+
+    let out_dir = temp_dir.path().join("out");
+    std::fs::create_dir(&out_dir)?;
+
+    rastair()
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["mbias", "--no-gc"])
+        .arg("--bed")
+        .arg(&bed_gz)
+        .arg("--reference")
+        .arg(&fasta_path)
+        .arg("--output-prefix")
+        .arg(&out_dir)
+        .succeeds()
+        .wrap_err("V-bias report should render with ranked read positions")?;
+
+    ensure!(out_dir.join("qc_report.html").exists(), "V-bias report was not produced");
 
     Ok(())
 }

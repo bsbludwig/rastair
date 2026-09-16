@@ -71,14 +71,16 @@ expand_positions <- function(data) {
     present <- !is.na(encoded) & nzchar(encoded)
     if (!any(present)) {
       return(data[0L, .(
-        chr, start, end, read_id, orientation, insert_size, flag,
+        alignment_id, chr, start, end, read_id, orientation, insert_size, flag,
         pos_in_read=integer(), type=character()
       )])
     }
 
     positions <- strsplit(as.character(encoded[present]), ",", fixed=TRUE)
     rows <- rep.int(which(present), lengths(positions))
-    result <- data[rows, .(chr, start, end, read_id, orientation, insert_size, flag)]
+    result <- data[rows, .(
+      alignment_id, chr, start, end, read_id, orientation, insert_size, flag
+    )]
     result[, `:=`(
       pos_in_read=as.integer(unlist(positions, use.names=FALSE)),
       type=unname(position_types[[column]])
@@ -87,6 +89,64 @@ expand_positions <- function(data) {
   })
 
   rbindlist(expanded, use.names=TRUE)
+}
+
+assign_position_ordinals <- function(data) {
+  setorder(data, alignment_id, pos_in_read)
+  data[, ordinal := rowid(alignment_id)]
+  data
+}
+
+collapse_fragment_cpgs <- function(data) {
+  data[, Orientation := fifelse(
+    bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144,
+    "OT",
+    "OB"
+  )]
+
+  group_columns <- c("chr", "read_id", "cpg_id", "insert_size", "Orientation")
+  setorderv(data, group_columns)
+  repeated <- duplicated(data, by=group_columns) |
+    duplicated(data, by=group_columns, fromLast=TRUE)
+
+  singletons <- data[!repeated, .(
+    chr,
+    read_id,
+    cpg_id,
+    insert_size,
+    Orientation,
+    start,
+    end,
+    pos_in_fragment=start + pos_in_read,
+    type=fcase(
+      type == "S", "S",
+      type %chin% c("U", "u"), "U",
+      default="M"
+    )
+  )]
+  multiples <- data[repeated, .(
+    start=min(start),
+    end=max(end),
+    pos_in_fragment=min(start + pos_in_read),
+    type=fifelse(
+      any(type == "S"),
+      "S",
+      fifelse(all(type %chin% c("U", "u")), "U", "M")
+    )
+  ), by=group_columns]
+
+  result <- rbindlist(list(singletons, multiples), use.names=TRUE)
+  result[
+    Orientation == "OT",
+    pos_in_fragment := pos_in_fragment - min(start),
+    by=.(chr, read_id)
+  ]
+  result[
+    Orientation == "OB",
+    pos_in_fragment := max(end) - pos_in_fragment,
+    by=.(chr, read_id)
+  ]
+  result
 }
 
 
@@ -162,7 +222,7 @@ if ((is.na(params$input_bgz) || is.null(params$input_bgz) || nchar(params$input_
   if (!is.na(params$region) && nchar(params$region) > 0) {
     command=paste(params$tabix, "-h", params$input_bgz, params$region)
   } else {
-    command=paste("zcat", params$input_bgz)
+    command=paste("bgzip -cd", params$input_bgz)
   }
 }  else {
   stop("Neither per-read bgz nor bam file given, cannot proceed")
@@ -227,6 +287,8 @@ setkey(mbias_table, chr, pos)
 if (!isTRUE(params$plot_vbias)) {
   rm(data)
   invisible(gc())
+} else {
+  data[, alignment_id := .GRP, by=.(read_id, chr, start, end, orientation)]
 }
 ```
 
@@ -357,19 +419,17 @@ if (params$plot_vbias) {
 
     cg_rel <- start(matchPattern("CG", dna, fixed = TRUE))
     if (length(cg_rel) == 0L) {
-      return(data.table(chr = character(), pos = integer(), base = character(), cpg_id = integer()))
+      return(data.table(chr=character(), cpg_pos=integer(), cpg_id=integer()))
     }
 
     c_pos <- start_pos + cg_rel - 1L
     out <- data.table(
-      chr = chr,
-      pos = as.vector(rbind(c_pos, c_pos + 1L)),     # C then G
-      base = rep(c("C", "G"), times = length(c_pos)),
-      cpg_id = rep(seq_along(c_pos), each = 2L)
+      chr=chr,
+      cpg_pos=c_pos,
+      cpg_id=seq_along(c_pos)
     )
 
     out[, chr := as.factor(chr)]
-    out[, base := as.factor(base)]
     return(out)
   }
 
@@ -381,30 +441,34 @@ if (params$plot_vbias) {
     res <- cpg_table_from_fasta(region = as.character(chrom), fasta = params$reference)
   })
   cpgsInRegion <- rbindlist(cpgsInRegion)
-  cpgsInRegion[, end:=pos]
-  setkey(cpgsInRegion, chr, pos, end)
+  cpg_positions <- split(cpgsInRegion$cpg_pos, as.character(cpgsInRegion$chr))
 
-  readPositions <- data[, .N, by=.(chr, start, end, orientation)]
-  readPositions[, N:=NULL]
-  setkey(readPositions, chr, start, end)
-  cpgsPerRead <- foverlaps(cpgsInRegion, readPositions, nomatch=NULL)
-  cpgsPerRead <- cpgsPerRead[, .N, by=.(chr, start, end, orientation, cpg_id)][, .(ordinal = order(cpg_id), cpg_id), by=.(chr, start, end, orientation)]
+  readPositions <- unique(data[, .(chr, start, end, orientation)])
+  readPositions[, c("first_cpg_id", "last_cpg_id") := {
+    positions <- cpg_positions[[as.character(chr[[1L]])]]
+    if (is.null(positions) || length(positions) == 0L) {
+      list(rep.int(1L, .N), rep.int(0L, .N))
+    } else {
+      # A CpG overlaps [start, end] when its C lies in [start - 1, end].
+      list(
+        findInterval(start - 2L, positions) + 1L,
+        findInterval(end, positions)
+      )
+    }
+  }, by=chr]
 
-  rm(readPositions)
-
-  # annotate with ordinals for all reads per sample, too
   vdata <- expand_positions(data)
-  vdata[, ordinal := order(pos_in_read), by=.(read_id, chr, start, end, orientation)]
+  vdata <- assign_position_ordinals(vdata)
+  vdata[readPositions, on=.(chr, start, end, orientation), `:=`(
+    first_cpg_id=i.first_cpg_id,
+    last_cpg_id=i.last_cpg_id
+  )]
+  vdata[, cpg_id := first_cpg_id + ordinal - 1L]
+  vdata <- vdata[!is.na(first_cpg_id) & cpg_id <= last_cpg_id]
+  vdata[, c("first_cpg_id", "last_cpg_id") := NULL]
 
-  setkey(vdata, chr, start, end, orientation, ordinal)
-  setkey(cpgsPerRead, chr, start, end, orientation, ordinal)
-  vdata <- vdata[cpgsPerRead[, .(chr, start, end, orientation, ordinal, cpg_id)], nomatch=NULL]
-  rm(cpgsInRegion, cpgsPerRead)
-
-  # merge reads into fragments
-  vdata <- vdata[, .(start=min(start), end=max(end), pos_in_fragment=min(start+pos_in_read), type=fifelse(any(type=="S"), "S", fifelse(all(type %in% c("U","u")), "U", "M"))), by=.(chr, read_id, cpg_id, insert_size, Orientation=fifelse(bitwAnd(flag, 96)==96 | bitwAnd(flag, 144)==144, "OT", "OB"))]
-  vdata[Orientation=="OT", pos_in_fragment := pos_in_fragment - min(start), by=.(chr, read_id)]
-  vdata[Orientation=="OB", pos_in_fragment := max(end)-pos_in_fragment, by=.(chr, read_id)]
+  rm(data, cpgsInRegion, cpg_positions, readPositions)
+  vdata <- collapse_fragment_cpgs(vdata)
 }
 ```
 ```{r plot_vbias, echo=FALSE, fig.height=4, fig.width=7, warning=FALSE}
@@ -467,7 +531,7 @@ if (params$plot_vbias) {
 
     print(p)
   }
-  rm(vdata, data)
+  rm(vdata)
   invisible({gc()})
 }
 ```
