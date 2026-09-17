@@ -2,7 +2,7 @@ use color_eyre::{Section as _, eyre::Report};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 pub static LOG_VAR: &str = "RASTAIR_LOG";
-pub static BUG_MESSAGE: &str = "This is a bug in Rastair, please report it at <https://bitbucket.org/bsblabludwig/rastair/issues/new>";
+pub static BUG_MESSAGE: &str = "This is a bug in Rastair, please report it at <https://github.com/bsbludwig/rastair/issues/new>";
 
 /// Setup logging and error handling
 ///
