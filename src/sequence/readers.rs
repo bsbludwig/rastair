@@ -352,17 +352,28 @@ mod seqair_readers {
                 region.end.wrapping_add(overfetch).min(region.last_position);
             let start = Pos0::try_from(region.start)
                 .wrap_err_with(|| format!("region start {} is out of range", region.start))?;
-            let end = Pos0::try_from(last_position_to_fetch).wrap_err_with(|| {
-                format!("region end {} is out of range", last_position_to_fetch)
-            })?;
-
-            let bases =
-                self.inner.fetch_base_seq(&region.contig, start, end).wrap_err_with(|| {
-                    format!("Failed to get region {} from FASTA file", region.region)
-                })?;
-
-            // Base is #[repr(u8)] with ASCII discriminants, so `*b as u8` is safe.
-            let sequence: Vec<u8> = bases.iter().map(|b| *b as u8).collect();
+            // `last_position_to_fetch` is an exclusive bound here, as it is in the
+            // htslib arm (`FastaReader::fetch_seq` takes `[start, stop)`), while
+            // seqair's span is closed on both ends — hence the `- 1`. A region
+            // whose bound coincides with its start names no base at all, and a
+            // closed span cannot say that, so it short-circuits to an empty
+            // sequence rather than asking the reader for a reversed span.
+            let sequence = match last_position_to_fetch.checked_sub(1) {
+                Some(last) if last >= region.start => {
+                    let last = Pos0::try_from(last).wrap_err_with(|| {
+                        format!("region end {last_position_to_fetch} is out of range")
+                    })?;
+                    let bases = self
+                        .inner
+                        .fetch_base_seq(&region.contig, (start..=last).into())
+                        .wrap_err_with(|| {
+                            format!("Failed to get region {} from FASTA file", region.region)
+                        })?;
+                    // Base is #[repr(u8)] with ASCII discriminants, so `*b as u8` is safe.
+                    bases.iter().map(|b| *b as u8).collect()
+                }
+                _ => Vec::new(),
+            };
 
             Ok(Segment {
                 range: std::sync::Arc::new(region.clone()),
