@@ -939,11 +939,7 @@ mod tests {
         let seg = segment(seq);
         let store = store_of(reads, &params.read_masking);
         let last = seq.len().saturating_sub(1) as u32;
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(last).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, last));
         if params.rescue_soft_clip_cpg {
             engine.set_soft_clip_overhang(1);
         }
@@ -1004,6 +1000,11 @@ mod tests {
             columns += 1;
         }
         assert!(columns > 0, "no columns produced");
+    }
+
+    /// The closed position span seqair's pileup engine and readers take.
+    fn span(first: u32, last: u32) -> core::range::RangeInclusive<Pos0> {
+        (Pos0::new(first).unwrap()..=Pos0::new(last).unwrap()).into()
     }
 
     fn segment(seq: &[u8]) -> Rc<Segment> {
@@ -1076,11 +1077,7 @@ mod tests {
 
         let alleles_at_anchor = |params: &PileupMappingParams| {
             let store = store_of(&reads, &params.read_masking);
-            let mut engine = PileupEngine::new(
-                store.prepare_for_pileup().input,
-                Pos0::new(0).unwrap(),
-                Pos0::new(9).unwrap(),
-            );
+            let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
             let mut scratch = ColumnScratch::default();
             let mut out = Vec::new();
             while let Some(col) = engine.pileups() {
@@ -1174,11 +1171,7 @@ mod tests {
         ];
 
         let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(9).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
         let mut scratch = ColumnScratch::default();
         let mut alleles: Vec<IndelAllele> = Vec::new();
         while let Some(col) = engine.pileups() {
@@ -1266,11 +1259,7 @@ mod tests {
     fn indel_counts_at_anchor(reads: &[TestRead], params: &PileupMappingParams) -> IndelCounts {
         let seg = segment(b"AAAACGTTGG");
         let store = store_of(reads, &params.read_masking);
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(9).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
         let mut scratch = ColumnScratch::default();
         let mut counts = None;
         while let Some(col) = engine.pileups() {
@@ -1367,8 +1356,7 @@ mod tests {
 
         let mut engine = PileupEngine::new(
             store.prepare_for_pileup().input,
-            Pos0::new(START as u32).unwrap(),
-            Pos0::new(START as u32 + 9).unwrap(),
+            span(START as u32, START as u32 + 9),
         );
         let mut allele = None;
         while let Some(col) = engine.pileups() {
@@ -1433,11 +1421,8 @@ mod tests {
         };
 
         let mut metrics_at = |overhang: u32| -> Option<PileupMetrics> {
-            let mut engine = PileupEngine::new(
-                build_store().prepare_for_pileup().input,
-                Pos0::new(0).unwrap(),
-                Pos0::new(5).unwrap(),
-            );
+            let mut engine =
+                PileupEngine::new(build_store().prepare_for_pileup().input, span(0, 5));
             engine.set_soft_clip_overhang(overhang);
             let mut out = None;
             while let Some(col) = engine.pileups() {
@@ -1502,11 +1487,8 @@ mod tests {
         };
 
         let mut metrics_at = |overhang: u32| -> Option<PileupMetrics> {
-            let mut engine = PileupEngine::new(
-                build_store().prepare_for_pileup().input,
-                Pos0::new(0).unwrap(),
-                Pos0::new(5).unwrap(),
-            );
+            let mut engine =
+                PileupEngine::new(build_store().prepare_for_pileup().input, span(0, 5));
             engine.set_soft_clip_overhang(overhang);
             let mut out = None;
             while let Some(col) = engine.pileups() {
@@ -1567,11 +1549,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(5).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 5));
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(3).unwrap() {
@@ -1619,11 +1597,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(5).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 5));
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
@@ -1676,11 +1650,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(5).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 5));
         engine.set_soft_clip_overhang(1);
         while let Some(col) = engine.pileups() {
             if col.pos() == Pos0::new(2).unwrap() {
@@ -1759,11 +1729,7 @@ mod tests {
         // engine directly, so it links by hand.
         let stats = store.link_mates();
         assert_eq!(stats.pairs, 1, "the fixture's mates must link");
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(5).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 5));
         engine.set_soft_clip_overhang(1);
 
         let mut checked = false;
@@ -1854,11 +1820,7 @@ mod tests {
         // engine directly, so it links by hand.
         let stats = store.link_mates();
         assert_eq!(stats.pairs, 1, "the fixture's mates must link");
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(5).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 5));
         engine.set_soft_clip_overhang(1);
 
         let mut checked = false;
@@ -2039,11 +2001,7 @@ mod tests {
         // widened interval both mates would be counted at the CpG-C.
         let seg = segment(REF);
         let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(19).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 19));
         engine.set_soft_clip_overhang(1);
         let mut scratch = ColumnScratch::default();
         let mut depth_at_cpg = None;
@@ -2089,11 +2047,7 @@ mod tests {
         params.variant_calling.max_coverage = crate::call::variant_calling::MaxCoverage::new(2);
         let seg = segment(REF);
         let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(9).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
         if let Some(ceiling) = params.max_coverage.load_ceiling() {
             engine.set_max_depth(ceiling);
         }
@@ -2121,11 +2075,7 @@ mod tests {
         params.variant_calling.keep_overlapping_reads = true;
         let seg = segment(REF);
         let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(
-            store.prepare_for_pileup().input,
-            Pos0::new(0).unwrap(),
-            Pos0::new(19).unwrap(),
-        );
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 19));
         let mut scratch = ColumnScratch::default();
         let mut overlap_depth = None;
         while let Some(col) = engine.pileups() {

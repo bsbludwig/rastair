@@ -213,7 +213,7 @@ pub fn get_pileups(
     // emitted twice.
     let seqair_segments: Vec<_> = readers
         .inner_mut()
-        .segments((region.contig.as_str(), start, end), opts)
+        .segments((region.contig.as_str(), (start..=end).into()), opts)
         .wrap_err("Failed to plan seqair segments")?
         .collect();
 
