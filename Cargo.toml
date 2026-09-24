@@ -35,8 +35,8 @@ cstr8 = "0.1.4"
 # `serde` is a default feature of seqair-types 0.3, but named explicitly: rastair
 # serializes `Pos0` (e.g. `ChunkRegion`), and a later `default-features = false`
 # here would silently drop the impls rather than fail to resolve.
-seqair-types = { version = "0.3.0", features = ["hts-compat", "serde"] }
-seqair = "0.3.0"
+seqair-types = { version = "0.3.1", features = ["hts-compat", "serde"] }
+seqair = "0.3.1"
 rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git", default-features = false, features = [
     "libdeflate",
     "bzip2",
