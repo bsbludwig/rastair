@@ -19,7 +19,7 @@ use seqair::bam::{
     RecordIdx,
     pileup::{AlignmentView, Indel, PileupColumn},
 };
-use seqair_types::{Base, QPos, RmsAccumulator, SmallVec, Strand};
+use seqair_types::{Base, QPos, SmallVec, Strand, SumOfSquares};
 use std::rc::Rc;
 use tracing::{debug, instrument, trace};
 
@@ -38,8 +38,9 @@ pub(crate) struct ColumnDraft {
     reference_base: Base,
     context: SequenceContext,
     accumulators: PerBaseAccumulators,
-    pos_baseq: RmsAccumulator,
-    pos_mapq: RmsAccumulator,
+    /// Over `total_depth` reads, which is their count.
+    pos_baseq: SumOfSquares,
+    pos_mapq: SumOfSquares,
     mapq0: u32,
     total_depth: usize,
     alt_bases: SmallVec<Base, 4>,
@@ -91,8 +92,8 @@ impl ColumnDraft {
         scratch.begin(depth);
 
         let mut accumulators = PerBaseAccumulators::default();
-        let mut pos_baseq = RmsAccumulator::new();
-        let mut pos_mapq = RmsAccumulator::new();
+        let mut pos_baseq = SumOfSquares::new();
+        let mut pos_mapq = SumOfSquares::new();
         let mut mapq0: u32 = 0;
         let mut total_depth: usize = 0;
         let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
@@ -341,13 +342,14 @@ impl ColumnDraft {
             after_counts,
         } = self;
 
+        let depth = u32::try_from(total_depth).wrap_err("column depth exceeds u32")?;
         let pos_metrics = crate::metrics::PositionMetrics::new(
             total_depth,
             reference_base,
             context.before_1,
             context.after_1,
-            pos_baseq.finish(),
-            pos_mapq.finish(),
+            pos_baseq.finish(depth),
+            pos_mapq.finish(depth),
             mapq0,
         );
 
