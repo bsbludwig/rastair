@@ -296,6 +296,14 @@ mod seqair_readers {
             Self { inner, regions }
         }
 
+        /// A handle for another thread that shares this one's parsed index and
+        /// header, and for CRAM its cache of decoded slices, so neighbouring
+        /// segments on different threads decode each slice once.
+        pub fn fork(&self) -> Result<Self> {
+            let inner = self.inner.fork().wrap_err("Failed to fork seqair readers")?;
+            Ok(Self { inner, regions: self.regions.clone() })
+        }
+
         /// Produces the same `ChunkRegion` iterator as the htslib `Readers::segments()`.
         #[instrument(level = "debug", skip_all)]
         pub fn segments(
@@ -500,12 +508,27 @@ impl ReaderParams {
     pub fn pileup_readers(&self) -> Result<Readers> {
         self.readers()
     }
+
+    /// Opens a worker thread's readers, named after `SeqairReaders::fork` so
+    /// the two backends' [`ReaderSource`](crate::sequence::ReaderSource) read alike.
+    #[cfg(not(feature = "experimental-seqair"))]
+    pub fn fork(&self) -> Result<Readers> {
+        self.readers()
+    }
 }
 
 pub struct Readers {
     pub fasta: FastaReader,
     pub bam: bam::IndexedReader,
     params: ReaderParams,
+}
+
+/// htslib readers cannot be shared between threads, so workers keep only what
+/// opened them.
+impl From<Readers> for ReaderParams {
+    fn from(readers: Readers) -> Self {
+        readers.params
+    }
 }
 
 impl Readers {

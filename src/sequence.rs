@@ -24,3 +24,8 @@ pub use readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
 pub type PileupReaders = SeqairReaders;
 #[cfg(not(feature = "experimental-seqair"))]
 pub type PileupReaders = Readers;
+
+#[cfg(feature = "experimental-seqair")]
+pub type ReaderSource = SeqairReaders;
+#[cfg(not(feature = "experimental-seqair"))]
+pub type ReaderSource = ReaderParams;
