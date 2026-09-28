@@ -27,13 +27,15 @@ use crate::{
     },
     io::vcf_writer,
     metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
-    sequence::{ChunkRegion, PileupReaders, ReaderParams, Segment, SegmentationParams},
+    sequence::{
+        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Segment, SegmentationParams,
+    },
     utils::{cli, logging::ThisIsABug as _, map_surrounding},
 };
 use clio::ClioPath;
 use color_eyre::{
     Section,
-    eyre::{ContextCompat as _, Result, WrapErr, ensure, eyre},
+    eyre::{Result, WrapErr, ensure, eyre},
 };
 use rayon::prelude::*;
 use std::{ops::Mul as _, rc::Rc, thread::available_parallelism};
@@ -185,6 +187,9 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     debug!("Going to process {} segments", regions.len());
 
+    let readers = ReaderSource::from(readers);
+    let readers = &readers;
+
     crate::progress::register_signal_handler();
 
     // Process each region and write results to the VCF
@@ -238,11 +243,14 @@ pub fn call(mut params: CallParams) -> Result<()> {
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {
-            regions_iter.par_bridge().try_for_each_with(
-                (vcf_sender, params),
-                |(vcf_sender, params), (index, region)| {
+            regions_iter.par_bridge().try_for_each_init(
+                || (vcf_sender.clone(), readers.fork()),
+                |(vcf_sender, readers), (index, region)| {
+                    let readers = readers
+                        .as_mut()
+                        .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
                     // This is where the actual processing happens!
-                    process_region_wrapper(index, region, vcf_sender, params, &ml)
+                    process_region_wrapper(index, region, vcf_sender, params, readers, &ml)
                 },
             )
         })
@@ -260,7 +268,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
 /// Wrapper function for processing a region in a thread-safe manner.
 ///
-/// Calls [`process_region`] with thread-local readers and ships the result to
+/// Calls [`process_region`] with the worker's readers and ships the result to
 /// the VCF writer.
 #[instrument(level = "info", skip_all, fields(region=%region.region))]
 fn process_region_wrapper(
@@ -268,68 +276,42 @@ fn process_region_wrapper(
     region: &ChunkRegion,
     vcf_sender: &mut ordered_channel::Sender<Vec<PileupMetrics>>,
     params: &CallParams,
+    readers: &mut PileupReaders,
     ml: &MachineLearning,
 ) -> Result<()> {
-    thread_local! {
-        /// Readers for the BAM and FASTA files, initialized per thread to avoid
-        /// re-opening files or having a lock
-        static READERS: std::cell::RefCell<Option<PileupReaders>> = const { std::cell::RefCell::new(None) };
-    }
+    // NOTE: There are some filters applied here to ignore certain reads.
+    let pileup_mapping_params = process::PileupMappingParams {
+        variant_calling: params.variant_calling.clone(),
+        require_tags: params.require_tags.filter(),
+        call_indels: params.indel.enabled(),
+        indel_max_mismatches: params.indel.indel_max_mismatches,
+        indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
+        segment_max_bytes: params.segmentation.segment_max_bytes,
+        rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
+        early_reject: Some(params.record_filters.clone()),
+        ..Default::default()
+    };
 
-    // Use thread-local readers to avoid re-opening files in each thread
-    let records = READERS.with(|local_readers| -> Result<Vec<PileupMetrics>> {
-        let mut local_readers = local_readers.borrow_mut();
-        let readers = {
-            // Initialize thread-local readers first time the thread accesses them
-            if local_readers.is_none() {
-                let readers = params
-                    .segments
-                    .pileup_readers()
-                    .wrap_err("Failed to open readers in worker thread")?;
-                *local_readers = Some(readers);
-            }
-            local_readers
-                .as_mut()
-                .wrap_err("Failed to access thread-local resources")
-                .this_is_a_bug()?
-        };
+    #[cfg(not(feature = "experimental-seqair"))]
+    let res = {
+        let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
+        process_region(segment, pileups, params, ml)
+    };
+    #[cfg(feature = "experimental-seqair")]
+    let res = {
+        let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
+        process_pre_built_metrics(segment, metrics, params, ml)
+    };
 
-        // This is the actual processing of the region
-
-        // NOTE: There are some filters applied here to ignore certain reads.
-        let pileup_mapping_params = process::PileupMappingParams {
-            variant_calling: params.variant_calling.clone(),
-            require_tags: params.require_tags.filter(),
-            call_indels: params.indel.enabled(),
-            indel_max_mismatches: params.indel.indel_max_mismatches,
-            indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
-            segment_max_bytes: params.segmentation.segment_max_bytes,
-            rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
-            early_reject: Some(params.record_filters.clone()),
-            ..Default::default()
-        };
-
-        #[cfg(not(feature = "experimental-seqair"))]
-        let res = {
-            let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
-            process_region(segment, pileups, params, ml)
-        };
-        #[cfg(feature = "experimental-seqair")]
-        let res = {
-            let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
-            process_pre_built_metrics(segment, metrics, params, ml)
-        };
-
-        // Handle processing errors gracefully to not crash the whole processing
-        match res {
-            Ok(records) => Ok(records),
-            Err(e) => {
-                error!(error = format!("{e:#}"), "Failed to process region");
-                // We still send an empty vector to the channel to increment the index
-                Ok(Vec::new())
-            }
+    // Handle processing errors gracefully to not crash the whole processing
+    let records = match res {
+        Ok(records) => records,
+        Err(e) => {
+            error!(error = format!("{e:#}"), "Failed to process region");
+            // We still send an empty vector to the channel to increment the index
+            Vec::new()
         }
-    })?;
+    };
 
     if let Err(err) =
         vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")

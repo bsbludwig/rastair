@@ -28,7 +28,7 @@ use crate::{
     },
     rayon_all,
     regions::ConfidentRegions,
-    sequence::{ChunkRegion, PileupReaders, ReaderParams, SegmentationParams},
+    sequence::{ChunkRegion, PileupReaders, ReaderParams, ReaderSource, SegmentationParams},
     utils::{cli, map_surrounding},
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
@@ -258,13 +258,13 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     // Get segments to process
     let segmentation = SegmentationParams::default();
-    let regions: Vec<ChunkRegion> = params
-        .reader
-        .pileup_readers()
-        .wrap_err("Failed to read BAM/FASTA files")?
+    let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
+    let regions: Vec<ChunkRegion> = readers
         .segments(segmentation.segment_max_length, segmentation.segment_overlap)
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
+    let readers = ReaderSource::from(readers);
+    let readers = &readers;
 
     if regions.is_empty() {
         bail!("No segments found in BAM file");
@@ -300,42 +300,23 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
         .install(move || {
-            thread_local! {
-                /// Readers for the BAM and FASTA files, initialized per thread to avoid
-                /// re-opening files or having a lock
-                static READERS: std::cell::RefCell<Option<PileupReaders>> = const { std::cell::RefCell::new(None) };
-            }
-
             regions
                 .par_iter()
-                .map(|chunk_region| {
-                    let _span = tracing::info_span!("collect_segment", region = %chunk_region.region).entered();
+                .map_init(
+                    || readers.fork(),
+                    |readers, chunk_region| {
+                        let _span =
+                            tracing::info_span!("collect_segment", region = %chunk_region.region)
+                                .entered();
 
-                    // Use thread-local readers to avoid re-opening files in each thread
-                    READERS.with(|local_readers| -> SegmentResult {
-                        let mut local_readers = local_readers.borrow_mut();
-                        let readers = {
-                            // Initialize thread-local readers first time the thread accesses them
-                            if local_readers.is_none() {
-                                match params.reader.pileup_readers() {
-                                    Ok(readers) => {
-                                        *local_readers = Some(readers);
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            error = format!("{e:#}"),
-                                            "Failed to open readers in worker thread"
-                                        );
-                                        return empty_segment_result();
-                                    }
-                                }
-                            }
-                            match local_readers.as_mut() {
-                                Some(readers) => readers,
-                                None => {
-                                    warn!("Failed to access thread-local readers");
-                                    return empty_segment_result();
-                                }
+                        let readers = match readers {
+                            Ok(readers) => readers,
+                            Err(e) => {
+                                warn!(
+                                    error = format!("{e:#}"),
+                                    "Failed to open readers in worker thread"
+                                );
+                                return empty_segment_result();
                             }
                         };
 
@@ -358,8 +339,8 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
                                 empty_segment_result()
                             }
                         }
-                    })
-                })
+                    },
+                )
                 .collect()
         });
 
