@@ -2825,9 +2825,9 @@ checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 
 [[package]]
 name = "seqair"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "237eedf2ea5783048c11b0857c6cc337c55a02f6b1f7d69992cdfaf85f910d30"
+checksum = "b95904b7ad417b19202f58933c3f656d6c06f1a2a74eaee29219d871575cccbb"
 dependencies = [
  "bytemuck",
  "bzip2",
@@ -2840,7 +2840,6 @@ dependencies = [
  "libdeflater",
  "md5",
  "rustc-hash 2.1.3",
- "ryu",
  "seqair-types",
  "thiserror 2.0.21",
  "tracing",

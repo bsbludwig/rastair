@@ -212,7 +212,7 @@ fn emit_compound_het_record<W: Write>(
     };
 
     if config.info.dp {
-        schema.info.dp.encode(&mut enc, i32::try_from(depth).unwrap_or(i32::MAX));
+        schema.info.dp.encode(&mut enc, i32::try_from(depth).unwrap_or(i32::MAX))?;
     }
     if config.info.ad {
         let ref_count = depth.saturating_sub(first.alt_count + second.alt_count);
@@ -221,7 +221,7 @@ fn emit_compound_het_record<W: Write>(
             i32::try_from(first.alt_count).unwrap_or(i32::MAX),
             i32::try_from(second.alt_count).unwrap_or(i32::MAX),
         ];
-        schema.info.ad.encode(&mut enc, &ad);
+        schema.info.ad.encode(&mut enc, &ad)?;
     }
 
     let mut enc = enc.begin_samples();
@@ -367,14 +367,14 @@ fn emit_indel_record<W: Write>(
 
     // Minimal INFO: combined depth + per-allele depth.
     if config.info.dp {
-        schema.info.dp.encode(&mut enc, i32::try_from(call.depth).unwrap_or(i32::MAX));
+        schema.info.dp.encode(&mut enc, i32::try_from(call.depth).unwrap_or(i32::MAX))?;
     }
     if config.info.ad {
         let ad = [
             i32::try_from(call.depth.saturating_sub(call.alt_count)).unwrap_or(i32::MAX),
             i32::try_from(call.alt_count).unwrap_or(i32::MAX),
         ];
-        schema.info.ad.encode(&mut enc, &ad);
+        schema.info.ad.encode(&mut enc, &ad)?;
     }
 
     let mut enc = enc.begin_samples();
@@ -433,30 +433,30 @@ fn encode_info(
     if c.ad {
         let v: SmallVec<i32, 3> =
             ra.iter().map(|m| i32::try_from(m.depth).unwrap_or(i32::MAX)).collect();
-        i.ad.encode(enc, &v);
+        i.ad.encode(enc, &v)?;
     }
     if c.bq {
-        i.bq.encode(enc, pm.baseq.f() as f32);
+        i.bq.encode(enc, pm.baseq.f() as f32)?;
     }
     if c.dp {
-        i.dp.encode(enc, i32::try_from(pm.depth).unwrap_or(i32::MAX));
+        i.dp.encode(enc, i32::try_from(pm.depth).unwrap_or(i32::MAX))?;
     }
     if c.mq {
-        i.mq.encode(enc, pm.mapq.f() as f32);
+        i.mq.encode(enc, pm.mapq.f() as f32)?;
     }
     if c.mq0 {
-        i.mq0.encode(enc, i32::try_from(pm.mapq0).unwrap_or(i32::MAX));
+        i.mq0.encode(enc, i32::try_from(pm.mapq0).unwrap_or(i32::MAX))?;
     }
     if c.ns {
-        i.ns.encode(enc, 1);
+        i.ns.encode(enc, 1)?;
     }
     if c.as_sb {
         let ot: SmallVec<i32, 3> =
             ra.iter().map(|m| i32::try_from(m.strand_count.ot).unwrap_or(i32::MAX)).collect();
         let ob: SmallVec<i32, 3> =
             ra.iter().map(|m| i32::try_from(m.strand_count.ob).unwrap_or(i32::MAX)).collect();
-        i.as_sb_ot.encode(enc, &ot);
-        i.as_sb_ob.encode(enc, &ob);
+        i.as_sb_ot.encode(enc, &ot)?;
+        i.as_sb_ob.encode(enc, &ob)?;
     }
     if c.sc5 {
         i.sc5.encode(enc, pileup.context.as_vcf_str().as_str());
@@ -465,43 +465,43 @@ fn encode_info(
         let v: SmallVec<f32, 2> = only_alts.iter().map(|m| m.allele_frequency.f() as f32).collect();
         // Number=A: omit entirely for reference-only sites (no ALT alleles).
         if !v.is_empty() {
-            i.af.encode(enc, &v);
+            i.af.encode(enc, &v)?;
         }
     }
     if c.abq {
         let v: SmallVec<f32, 3> = ra.iter().map(|m| m.baseq.f() as f32).collect();
-        i.abq.encode(enc, &v);
+        i.abq.encode(enc, &v)?;
     }
     if c.amq {
         let v: SmallVec<f32, 3> = ra.iter().map(|m| m.mapq.f() as f32).collect();
-        i.amq.encode(enc, &v);
+        i.amq.encode(enc, &v)?;
     }
     if c.as_ss_bq {
         let ot: SmallVec<f32, 3> = ra.iter().map(|m| *m.baseq_s.ot as f32).collect();
         let ob: SmallVec<f32, 3> = ra.iter().map(|m| *m.baseq_s.ob as f32).collect();
-        i.as_ss_bq_ot.encode(enc, &ot);
-        i.as_ss_bq_ob.encode(enc, &ob);
+        i.as_ss_bq_ot.encode(enc, &ot)?;
+        i.as_ss_bq_ob.encode(enc, &ob)?;
     }
     if c.as_ss_mq {
         let ot: SmallVec<f32, 3> = ra.iter().map(|m| *m.mapq_s.ot as f32).collect();
         let ob: SmallVec<f32, 3> = ra.iter().map(|m| *m.mapq_s.ob as f32).collect();
-        i.as_ss_mq_ot.encode(enc, &ot);
-        i.as_ss_mq_ob.encode(enc, &ob);
+        i.as_ss_mq_ot.encode(enc, &ot)?;
+        i.as_ss_mq_ob.encode(enc, &ob)?;
     }
     if c.pir {
         let v: SmallVec<f32, 3> = ra.iter().map(|m| m.position_in_read.f() as f32).collect();
-        i.pir.encode(enc, &v);
+        i.pir.encode(enc, &v)?;
     }
     if c.ent100 {
-        i.ent100.encode(enc, pm.region_entropy as f32);
+        i.ent100.encode(enc, pm.region_entropy as f32)?;
     }
     if c.nab {
         let v: SmallVec<f32, 3> = ra.iter().map(|m| m.num_aligned_bases.f() as f32).collect();
-        i.nab.encode(enc, &v);
+        i.nab.encode(enc, &v)?;
     }
     if c.noi {
         let v: SmallVec<f32, 3> = ra.iter().map(|m| m.num_indels.f() as f32).collect();
-        i.noi.encode(enc, &v);
+        i.noi.encode(enc, &v)?;
     }
     if c.m5mc_strands {
         let s = pm.extended.methylation_strand_info;
@@ -511,7 +511,7 @@ fn encode_info(
             i32::try_from(s.no_snp).unwrap_or(i32::MAX),
             i32::try_from(s.snp).unwrap_or(i32::MAX),
         ];
-        i.m5mc_strands.encode(enc, &v);
+        i.m5mc_strands.encode(enc, &v)?;
     }
     if c.cpg && pm.cpg != InCpG::No {
         i.cpg.encode(enc);
