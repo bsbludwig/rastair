@@ -570,86 +570,70 @@ pub fn load_truth_vcf(
     Ok((snp_variants, indel_variants))
 }
 
-/// Process a truth VCF record and extract variant information.
-///
-/// Returns SNP [`PositionKey`]s for single-base substitutions and
-/// [`IndelKey`]s for insertions/deletions.
-/// Multi-allelic sites produce multiple keys (one per alt).
+/// The SNP and indel keys of one PASS truth record.
 fn process_truth_record(record: &bcf::Record) -> (SmallVec<PositionKey, 2>, SmallVec<IndelKey, 2>) {
-    // Filter: only PASS variants
+    let mut keys = (SmallVec::new(), SmallVec::new());
     if !record.has_filter("PASS".as_bytes()) {
-        return (SmallVec::new(), SmallVec::new());
+        return keys;
     }
-
+    let Ok(pos) = u64::try_from(record.pos()) else { return keys };
     let alleles = record.alleles();
-    if alleles.is_empty() {
-        return (SmallVec::new(), SmallVec::new());
+    let Some((&ref_allele, alts)) = alleles.split_first() else { return keys };
+    for &alt_allele in alts {
+        match TruthKey::of(pos, ref_allele, alt_allele) {
+            Some(TruthKey::Snv(key)) => keys.0.push(key),
+            Some(TruthKey::Indel(key)) => keys.1.push(key),
+            None => {}
+        }
     }
+    keys
+}
 
-    let ref_allele = alleles.first().expect("alleles is not empty");
-    let pos = record.pos() as u64;
+/// What one ALT allele of a truth record labels.
+#[derive(Debug, PartialEq, Eq)]
+enum TruthKey {
+    Snv(PositionKey),
+    Indel(IndelKey),
+}
 
-    let mut snps = SmallVec::new();
-    let mut indels = SmallVec::new();
-
-    let ref_base = if ref_allele.is_empty() { Base::Unknown } else { Base::from(ref_allele[0]) };
-
-    for alt_allele in alleles.iter().skip(1) {
-        if alt_allele.is_empty() {
-            continue;
-        }
-
-        // Both ref and alt are single base → SNP
-        if ref_allele.len() == 1 && alt_allele.len() == 1 {
-            let alt_base = Base::from(alt_allele[0]);
-            if ref_base != Base::Unknown && alt_base != Base::Unknown {
-                snps.push(PositionKey { pos, ref_base, alt_base });
-            }
-            continue;
-        }
-
-        // Multi-base allele → indel
-        // The first base of REF and ALT must match (VCF anchor base).
-        // The remainder determines whether it's an insertion or deletion.
-        if ref_allele.len() < 2 && alt_allele.len() < 2 {
-            // One of them is empty or just the anchor — can't determine
-            continue;
-        }
-
-        // Parse the first base from each
-        let ref_first = ref_allele.first().copied().unwrap_or(b'N');
-        let alt_first = alt_allele.first().copied().unwrap_or(b'N');
-        if ref_first != alt_first {
-            // Anchor base mismatch — skip (complex variant, not a simple indel)
-            continue;
-        }
-
-        let ref_rest = &ref_allele[1..];
-        let alt_rest = &alt_allele[1..];
-
-        let allele = if ref_rest.len() > alt_rest.len() {
-            // Deletion: REF has extra bases
-            let del_bases: SmallVec<Base, 4> = ref_rest.iter().map(|&b| Base::from(b)).collect();
-            if del_bases.contains(&Base::Unknown) {
-                continue;
-            }
-            IndelAllele::Deletion(del_bases)
-        } else if alt_rest.len() > ref_rest.len() {
-            // Insertion: ALT has extra bases
-            let ins_bases: SmallVec<Base, 4> = alt_rest.iter().map(|&b| Base::from(b)).collect();
-            if ins_bases.contains(&Base::Unknown) {
-                continue;
-            }
-            IndelAllele::Insertion(ins_bases)
-        } else {
-            // Same length but multi-base (e.g. MNP) — skip for now
-            continue;
+impl TruthKey {
+    /// The allele's key once the suffix it shares with REF past the anchor
+    /// base is stripped, which is how a multi-allelic record pads its shorter
+    /// alleles.
+    ///
+    /// A single-base substitution or an insertion or deletion after the shared
+    /// anchor base has one; MNPs, complex and symbolic alleles do not.
+    fn of(pos: u64, ref_allele: &[u8], alt_allele: &[u8]) -> Option<Self> {
+        let (&ref_anchor, ref_rest) = ref_allele.split_first()?;
+        let (&alt_anchor, alt_rest) = alt_allele.split_first()?;
+        let (ref_rest, alt_rest) = strip_common_suffix(ref_rest, alt_rest);
+        let known = |bases: &[u8]| -> Option<SmallVec<Base, 4>> {
+            bases.iter().map(|&b| Some(Base::from(b)).filter(|&b| b != Base::Unknown)).collect()
         };
-
-        indels.push(IndelKey { pos, allele });
+        match (ref_rest.is_empty(), alt_rest.is_empty()) {
+            (true, true) if ref_anchor != alt_anchor => {
+                let (ref_base, alt_base) = (Base::from(ref_anchor), Base::from(alt_anchor));
+                (ref_base != Base::Unknown && alt_base != Base::Unknown)
+                    .then_some(Self::Snv(PositionKey { pos, ref_base, alt_base }))
+            }
+            (false, true) if ref_anchor == alt_anchor => known(ref_rest)
+                .map(|bases| Self::Indel(IndelKey { pos, allele: IndelAllele::Deletion(bases) })),
+            (true, false) if ref_anchor == alt_anchor => known(alt_rest)
+                .map(|bases| Self::Indel(IndelKey { pos, allele: IndelAllele::Insertion(bases) })),
+            _ => None,
+        }
     }
+}
 
-    (snps, indels)
+/// Both alleles without the longest suffix they share.
+fn strip_common_suffix<'a>(mut left: &'a [u8], mut right: &'a [u8]) -> (&'a [u8], &'a [u8]) {
+    while let (Some((l, left_rest)), Some((r, right_rest))) =
+        (left.split_last(), right.split_last())
+        && l == r
+    {
+        (left, right) = (left_rest, right_rest);
+    }
+    (left, right)
 }
 
 /// Collect training data from a single segment
@@ -1119,4 +1103,57 @@ fn export_feature_importances(model: &RandomForest, names: &[&str], path: &Path)
     info!(path = %path.display(), "Exported feature importances");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn truth_key(ref_allele: &str, alt_allele: &str) -> Option<TruthKey> {
+        TruthKey::of(10, ref_allele.as_bytes(), alt_allele.as_bytes())
+    }
+
+    fn deletion(bases: &[Base]) -> Option<TruthKey> {
+        Some(TruthKey::Indel(IndelKey { pos: 10, allele: IndelAllele::Deletion(bases.into()) }))
+    }
+
+    /// `REF=ATT ALT=A,AT` deletes two bases and one; the second allele is
+    /// padded with the T it shares with REF.
+    #[test]
+    fn a_padded_allele_of_a_multi_allelic_record_keys_its_own_indel() {
+        assert_eq!(truth_key("ATT", "A"), deletion(&[Base::T, Base::T]));
+        assert_eq!(truth_key("ATT", "AT"), deletion(&[Base::T]));
+        assert_eq!(truth_key("AA", "A"), deletion(&[Base::A]));
+        assert_eq!(
+            truth_key("A", "ATG"),
+            Some(TruthKey::Indel(IndelKey {
+                pos: 10,
+                allele: IndelAllele::Insertion([Base::T, Base::G].as_slice().into()),
+            }))
+        );
+    }
+
+    /// `REF=AT ALT=GT` is an A>G substitution padded to the record's REF.
+    #[test]
+    fn a_padded_substitution_keys_an_snv() {
+        let snv =
+            |ref_base, alt_base| Some(TruthKey::Snv(PositionKey { pos: 10, ref_base, alt_base }));
+        assert_eq!(truth_key("AT", "GT"), snv(Base::A, Base::G));
+        assert_eq!(truth_key("C", "T"), snv(Base::C, Base::T));
+    }
+
+    #[test]
+    fn complex_and_symbolic_alleles_key_nothing() {
+        for (ref_allele, alt_allele) in [
+            ("ATG", "AC"),
+            ("AT", "GC"),
+            ("AT", "AT"),
+            ("A", "<DEL>"),
+            ("A", "*"),
+            ("TA", "A"),
+            ("A", "N"),
+        ] {
+            assert_eq!(truth_key(ref_allele, alt_allele), None, "{ref_allele}>{alt_allele}");
+        }
+    }
 }
