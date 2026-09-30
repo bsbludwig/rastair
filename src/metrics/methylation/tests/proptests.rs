@@ -621,10 +621,10 @@ proptest! {
         );
     }
 
-    /// mod_count and total_count in the result should match the raw read counts
-    /// (noise reads must NOT be included).
+    /// `mod_count`/`total_count` are the genotype-adjusted numerator and denominator
+    /// of `beta`, with noise reads excluded.
     #[test]
-    fn counts_match_reads(scenario in scenario_with_evidence()) {
+    fn counts_reproduce_beta(scenario in scenario_with_evidence()) {
         let metrics = scenario.build();
         let result = call(&metrics).unwrap();
 
@@ -637,14 +637,26 @@ proptest! {
                 scenario.origin, methylated, scenario
             );
             let cpg = cpg.unwrap();
+
+            let raw_mod = u32::from(scenario.mod_reads);
+            let raw_unmod = u32::from(scenario.unmod_reads);
+            let (expected_mod, expected_total) =
+                adjusted_counts(raw_mod, raw_unmod, scenario.effective_adjustment());
             prop_assert_eq!(
-                cpg.mod_count, u32::from(scenario.mod_reads),
+                cpg.mod_count, expected_mod,
                 "mod_count mismatch for {:?}", scenario
             );
             prop_assert_eq!(
-                cpg.total_count,
-                u32::from(scenario.mod_reads) + u32::from(scenario.unmod_reads),
+                cpg.total_count, expected_total,
                 "total_count mismatch for {:?}", scenario
+            );
+
+            let recomputed = beta_from_counts(cpg.mod_count, cpg.total_count);
+            let expected = scenario.expected_beta().unwrap_or(0.0);
+            prop_assert!(
+                (recomputed - expected).abs() < 1e-9,
+                "mod_count/total_count ({}/{} = {}) does not reproduce the expected beta {} for {:?}",
+                cpg.mod_count, cpg.total_count, recomputed, expected, scenario
             );
         }
     }
@@ -1070,54 +1082,71 @@ fn both_sides_independent() {
 // Formula verification: domain-derived analytical values, NOT copied from code
 // ---------------------------------------------------------------------------
 //
-// These test adjusted_beta against values derived from first principles:
+// These test adjusted_counts/beta_from_counts against values derived from
+// first principles:
 // - In TAPS, methylated C reads as T, unmethylated C reads as C
 // - At a het C/T site, ~half of T reads come from the SNP chromosome
 // - HomAlt means the reference base is gone on both chromosomes
+//
+// `mod_count`/`total_count` are asserted alongside beta because they are the
+// contract: `ADM5mC`/`DPM5mC` and the BED `unmod`/`mod` columns must
+// reproduce these exact values.
+
+fn beta(mod_count: u32, unmod_count: u32, adjustment: GenotypeAdjustment) -> f64 {
+    let (m, t) = adjusted_counts(mod_count, unmod_count, adjustment);
+    beta_from_counts(m, t)
+}
 
 #[test]
 fn formula_no_adjustment_basic_ratios() {
     // All methylated → beta = 1.0
-    assert_eq!(adjusted_beta(10.0, 0.0, GenotypeAdjustment::None), 1.0);
+    assert_eq!(beta(10, 0, GenotypeAdjustment::None), 1.0);
+    assert_eq!(adjusted_counts(10, 0, GenotypeAdjustment::None), (10, 10));
     // All unmethylated → beta = 0.0
-    assert_eq!(adjusted_beta(0.0, 10.0, GenotypeAdjustment::None), 0.0);
+    assert_eq!(beta(0, 10, GenotypeAdjustment::None), 0.0);
+    assert_eq!(adjusted_counts(0, 10, GenotypeAdjustment::None), (0, 10));
     // Equal → beta = 0.5
-    assert_eq!(adjusted_beta(5.0, 5.0, GenotypeAdjustment::None), 0.5);
+    assert_eq!(beta(5, 5, GenotypeAdjustment::None), 0.5);
     // 3:1 ratio
-    assert!((adjusted_beta(3.0, 1.0, GenotypeAdjustment::None) - 0.75).abs() < 1e-9);
+    assert!((beta(3, 1, GenotypeAdjustment::None) - 0.75).abs() < 1e-9);
 }
 
 #[test]
 fn formula_hom_alt_always_zero() {
-    // Regardless of read counts, HomAlt = 0.0
-    assert_eq!(adjusted_beta(100.0, 0.0, GenotypeAdjustment::HomAlt), 0.0);
-    assert_eq!(adjusted_beta(0.0, 100.0, GenotypeAdjustment::HomAlt), 0.0);
-    assert_eq!(adjusted_beta(50.0, 50.0, GenotypeAdjustment::HomAlt), 0.0);
+    // The CpG is gone: beta 0 from no evidence at all.
+    for (m, u) in [(100, 0), (0, 100), (50, 50)] {
+        assert_eq!(beta(m, u, GenotypeAdjustment::HomAlt), 0.0);
+        assert_eq!(adjusted_counts(m, u, GenotypeAdjustment::HomAlt), (0, 0));
+    }
 }
 
 #[test]
 fn formula_het_confounded_known_values() {
     // 50/50 split: all "mod" reads could come from the SNP → beta = 0
-    assert_eq!(adjusted_beta(5.0, 5.0, GenotypeAdjustment::HetConfounded), 0.0);
+    assert_eq!(beta(5, 5, GenotypeAdjustment::HetConfounded), 0.0);
+    assert_eq!(adjusted_counts(5, 5, GenotypeAdjustment::HetConfounded), (0, 10));
 
-    // 6 mod, 4 unmod (total=10): SNP contributes ~5, excess = 1
-    // beta = 1 / (4 + 1) = 0.2
-    let b = adjusted_beta(6.0, 4.0, GenotypeAdjustment::HetConfounded);
+    // 6 mod, 4 unmod (total=10): SNP contributes ~5, excess = mod-unmod = 2
+    // beta = 2 / 10 = 0.2
+    assert_eq!(adjusted_counts(6, 4, GenotypeAdjustment::HetConfounded), (2, 10));
+    let b = beta(6, 4, GenotypeAdjustment::HetConfounded);
     assert!((b - 0.2).abs() < 1e-9, "got {b}");
 
-    // All mod reads (10 mod, 0 unmod): SNP contributes ~5, excess = 5
-    // beta = 5 / (0 + 5) = 1.0
-    let b = adjusted_beta(10.0, 0.0, GenotypeAdjustment::HetConfounded);
+    // All mod reads (10 mod, 0 unmod): excess = 10
+    // beta = 10 / 10 = 1.0
+    let b = beta(10, 0, GenotypeAdjustment::HetConfounded);
     assert!((b - 1.0).abs() < 1e-9, "got {b}");
 
-    // 7 mod, 3 unmod (total=10): SNP contributes ~5, excess = 2
-    // beta = 2 / (3 + 2) = 0.4
-    let b = adjusted_beta(7.0, 3.0, GenotypeAdjustment::HetConfounded);
+    // 7 mod, 3 unmod (total=10): excess = 4
+    // beta = 4 / 10 = 0.4
+    assert_eq!(adjusted_counts(7, 3, GenotypeAdjustment::HetConfounded), (4, 10));
+    let b = beta(7, 3, GenotypeAdjustment::HetConfounded);
     assert!((b - 0.4).abs() < 1e-9, "got {b}");
 
-    // Fewer mod than half (3 mod, 7 unmod): excess = max(3-5, 0) = 0
-    // beta = 0 / (7 + 0) = 0
-    let b = adjusted_beta(3.0, 7.0, GenotypeAdjustment::HetConfounded);
+    // Fewer mod than half (3 mod, 7 unmod): excess = max(3-7, 0) = 0
+    // beta = 0 / 10 = 0
+    assert_eq!(adjusted_counts(3, 7, GenotypeAdjustment::HetConfounded), (0, 10));
+    let b = beta(3, 7, GenotypeAdjustment::HetConfounded);
     assert!(b < 1e-9, "got {b}");
 }
 
@@ -1125,9 +1154,46 @@ fn formula_het_confounded_known_values() {
 fn formula_het_confounded_never_exceeds_unadjusted() {
     for m in 0..=20 {
         for u in 1..=20 {
-            let plain = adjusted_beta(f64::from(m), f64::from(u), GenotypeAdjustment::None);
-            let het = adjusted_beta(f64::from(m), f64::from(u), GenotypeAdjustment::HetConfounded);
+            let plain = beta(m, u, GenotypeAdjustment::None);
+            let het = beta(m, u, GenotypeAdjustment::HetConfounded);
             assert!(het <= plain + 1e-9, "het ({het}) > plain ({plain}) for m={m}, u={u}");
         }
     }
+}
+
+#[test]
+fn adjusted_mod_never_exceeds_total() {
+    for adjustment in
+        [GenotypeAdjustment::None, GenotypeAdjustment::HetConfounded, GenotypeAdjustment::HomAlt]
+    {
+        for m in 0..=20u32 {
+            for u in 0..=20u32 {
+                let (mod_count, total_count) = adjusted_counts(m, u, adjustment);
+                assert!(
+                    mod_count <= total_count,
+                    "adjustment={adjustment:?} m={m} u={u}: {mod_count} of {total_count}"
+                );
+            }
+        }
+    }
+}
+
+/// At a het-confounded CpG the BED `unmod` is twice the unconverted reads, so that
+/// `mod / (mod + unmod)` still reproduces the beta.
+#[test]
+fn a_confounded_het_reports_twice_its_unconverted_reads() {
+    let (mod_count, total_count) = adjusted_counts(9, 3, GenotypeAdjustment::HetConfounded);
+    let cpg = crate::vcf::CpgBeta {
+        origin: crate::vcf::CpgOrigin::Original,
+        beta: seqair_types::Probability::new_panicky(0.5),
+        mod_count,
+        total_count,
+    };
+    assert_eq!(cpg.unmod_count(), 6, "3 unconverted reads come out doubled");
+    assert_eq!(cpg.mod_count, 6);
+    // The excess over the het's expected half, (9 - 12 / 2) / (3 + 3).
+    assert!(
+        (beta_from_counts(mod_count, total_count) - *cpg.beta).abs() < 1e-9,
+        "and the ratio is still the beta"
+    );
 }

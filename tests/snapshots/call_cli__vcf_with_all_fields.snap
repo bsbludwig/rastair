@@ -54,7 +54,7 @@ exit_code: 0
 ##INFO=<ID=ENT100,Number=1,Type=Float,Description="Shannon entropy of 100bp sequence context around variant position. Value range (0..2)">
 ##INFO=<ID=NAB,Number=R,Type=Float,Description="RMS of number of aligned bases">
 ##INFO=<ID=NOI,Number=R,Type=Float,Description="RMS of number of indels">
-##INFO=<ID=M5mC_Strands,Number=4,Type=Integer,Description="Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset.">
+##INFO=<ID=M5mC_Strands,Number=4,Type=Integer,Description="Number of reads that are evidence for unmodified, modified, no SNP, SNP. Raw read counts, not genotype-adjusted like DPM5mC and ADM5mC. Always reported, can be non-zero while CPG and CPGnovo are unset.">
 ##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
 ##INFO=<ID=CPGnovo,Number=0,Type=Flag,Description="De-novo CPG candidate: Could the alt alleles create a new CpG site?">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
@@ -62,8 +62,8 @@ exit_code: 0
 ##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence, Phred-scaled">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
 ##FORMAT=<ID=M5mC,Number=.,Type=Float,Description="Methylation level at CpG sites, one value per CpG context">
-##FORMAT=<ID=DPM5mC,Number=.,Type=Integer,Description="Total read depth for 5-methylcytosine detection, one value per CpG context">
-##FORMAT=<ID=ADM5mC,Number=.,Type=Integer,Description="Read depth supporting 5-methylcytosine modification, one value per CpG context">
+##FORMAT=<ID=DPM5mC,Number=.,Type=Integer,Description="Total read depth for 5-methylcytosine detection, genotype-adjusted like M5mC, one value per CpG context">
+##FORMAT=<ID=ADM5mC,Number=.,Type=Integer,Description="Read depth supporting 5-methylcytosine modification, genotype-adjusted like M5mC, one value per CpG context">
 ##FORMAT=<ID=ML,Number=A,Type=Float,Description="Prediction of methylation/variant likelihood by rastair's machine learning model">
 ##contig=<ID=chr19,length=61431566>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample

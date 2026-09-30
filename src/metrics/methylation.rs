@@ -36,21 +36,19 @@ fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<CpgBeta>
     let Some(origin) = cpg_origin(record, side) else { return Ok(None) };
 
     let (raw_mod, raw_unmod) = read_counts(record, side);
-    let mod_count = raw_mod.f();
-    let unmod_count = raw_unmod.f();
-
-    if mod_count + unmod_count == 0. {
+    if raw_mod + raw_unmod == 0 {
         return Ok(None);
     }
 
     let adjustment = genotype_adjustment(record, side, origin);
-    let beta = adjusted_beta(mod_count, unmod_count, adjustment);
+    let (mod_count, total_count) = adjusted_counts(raw_mod, raw_unmod, adjustment);
+    let beta = beta_from_counts(mod_count, total_count);
 
     Ok(Some(CpgBeta {
         origin,
         beta: Probability::new(beta).this_is_a_bug()?,
-        mod_count: raw_mod,
-        total_count: raw_mod + raw_unmod,
+        mod_count,
+        total_count,
     }))
 }
 
@@ -221,14 +219,24 @@ fn het_alt_is_base(record: &PileupMetrics, gt: &GenotypeTag, base: Base) -> bool
     }
 }
 
-fn adjusted_beta(mod_count: f64, unmod_count: f64, adjustment: GenotypeAdjustment) -> f64 {
+/// The numerator and denominator the beta is computed from, which `ADM5mC`/`DPM5mC`
+/// and the BED `mod`/`unmod` columns report, so they always reproduce the beta.
+///
+/// A het-confounded CpG attributes as many converted reads to the SNP chromosome as
+/// there are unconverted ones: `max(mod - unmod, 0)` over the full depth. That is
+/// the excess-over-half correction with both sides scaled by two, so the implied
+/// `unmod` is twice the unconverted reads. A hom-alt CpG no longer exists and has
+/// no evidence at all.
+fn adjusted_counts(mod_count: u32, unmod_count: u32, adjustment: GenotypeAdjustment) -> (u32, u32) {
     match adjustment {
-        GenotypeAdjustment::HomAlt => 0.0,
+        GenotypeAdjustment::HomAlt => (0, 0),
         GenotypeAdjustment::HetConfounded => {
-            let total = mod_count + unmod_count;
-            let excess_mod = (mod_count - total / 2.).max(0.0);
-            excess_mod / (unmod_count + excess_mod)
+            (mod_count.saturating_sub(unmod_count), mod_count + unmod_count)
         }
-        GenotypeAdjustment::None => mod_count / (mod_count + unmod_count),
+        GenotypeAdjustment::None => (mod_count, mod_count + unmod_count),
     }
+}
+
+fn beta_from_counts(mod_count: u32, total_count: u32) -> f64 {
+    if total_count == 0 { 0.0 } else { mod_count.f() / total_count.f() }
 }

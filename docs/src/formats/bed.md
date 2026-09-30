@@ -25,10 +25,10 @@ The BED file for CpG sites contains the following columns:
 | `name`          | Name of the CpG site (e.g., "CpG1")                                         |
 | `beta_est`      | Estimated beta value for methylation (empty string if not present)          |
 | `strand`        | Strand information (e.g., "+", "-")                                         |
-| `unmod`         | Number of unmethylated reads                                                |
-| `mod`           | Number of methylated reads                                                  |
-| `no_snp`        | Number of reads not counting as @SNP:pl                                     |
-| `snp`           | Number of reads counting as @SNP:pl                                         |
+| `unmod`         | Number of unmethylated reads, genotype-adjusted: `mod / (unmod + mod)` equals `beta_est` exactly wherever `unmod + mod > 0` (both are 0 at a homozygous-alt destroyed CpG; corrected for the confound at a heterozygous variant), never the raw read count |
+| `mod`           | Number of methylated reads, genotype-adjusted — see `unmod`                 |
+| `no_snp`        | Number of reads not counting as @SNP:pl (raw, opposite-strand tally, unrelated to `beta_est`) |
+| `snp`           | Number of reads counting as @SNP:pl (raw, opposite-strand tally, unrelated to `beta_est`) |
 | `coverage`      | Total coverage at the CpG site                                              |
 | `genotype`      | `C/C`, `C/T`, `G/G`, `G/A`, `T/T`, or `A/A`                                 |
 | `gt_p_score`    | P-value for the genotype call                                               |

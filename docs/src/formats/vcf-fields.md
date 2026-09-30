@@ -43,7 +43,7 @@
 | ENT100 | 1 | Float | Shannon entropy of 100bp sequence context around variant position. Value range (0..2) |
 | NAB | R | Float | RMS of number of aligned bases |
 | NOI | R | Float | RMS of number of indels |
-| M5mC_Strands | 4 | Integer | Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset. |
+| M5mC_Strands | 4 | Integer | Number of reads that are evidence for unmodified, modified, no SNP, SNP. Raw read counts, not genotype-adjusted like `DPM5mC` and `ADM5mC`. Always reported, can be non-zero while CPG and CPGnovo are unset. |
 | CPG | 0 | Flag | Is this a CpG site? |
 | CPGnovo | 0 | Flag | De-novo CPG candidate: Could the alt alleles create a new CpG site? |
 
@@ -55,7 +55,7 @@
 | GL | G | Float | Genotype likelihoods, Phred-scaled |
 | GC | G | Float | Genotype confidence, Phred-scaled |
 | DP | 1 | Integer | Read depth |
-| M5mC | . | Float | Methylation level at CpG sites, one value per CpG context |
-| DPM5mC | . | Integer | Total read depth for 5-methylcytosine detection, one value per CpG context |
-| ADM5mC | . | Integer | Read depth supporting 5-methylcytosine modification, one value per CpG context |
+| M5mC | . | Float | Methylation level at CpG sites, one value per CpG context. Genotype-adjusted: 0.0 at a homozygous-alt destroyed CpG, corrected for the confound at a heterozygous variant that overlaps the informative strand |
+| DPM5mC | . | Integer | Total read depth for 5-methylcytosine detection, one value per CpG context. Genotype-adjusted like `M5mC`, so `ADM5mC / DPM5mC == M5mC` exactly wherever `DPM5mC > 0`; not the raw read count |
+| ADM5mC | . | Integer | Read depth supporting 5-methylcytosine modification, one value per CpG context. See `DPM5mC`: genotype-adjusted, not raw |
 | ML | A | Float | Prediction of methylation/variant likelihood by rastair's machine learning model |

@@ -96,6 +96,14 @@ pub struct RecordTags {
     pub variant: bool,
 }
 
+impl RecordTags {
+    /// Whether this position is part of any CpG: reference, de-novo, or a de-novo partner.
+    #[must_use]
+    pub const fn in_cpg(&self) -> bool {
+        self.cpg || self.denovo_cpg || self.denovo_cpg_partner
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Alt {
     pub base: Base,

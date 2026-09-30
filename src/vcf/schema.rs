@@ -131,7 +131,7 @@ const M5MC_STRANDS_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::new(
     "M5mC_Strands",
     Number::Count(4),
     ValueType::Integer,
-    "Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset.",
+    "Number of reads that are evidence for unmodified, modified, no SNP, SNP. Raw read counts, not genotype-adjusted like DPM5mC and ADM5mC. Always reported, can be non-zero while CPG and CPGnovo are unset.",
 );
 const CPG_DEF: InfoFieldDef<seqair::vcf::Flag> =
     InfoFieldDef::new("CPG", Number::Count(0), ValueType::Flag, "Is this a CpG site?");
@@ -175,13 +175,13 @@ const DPM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
     "DPM5mC",
     Number::Unknown,
     ValueType::Integer,
-    "Total read depth for 5-methylcytosine detection, one value per CpG context",
+    "Total read depth for 5-methylcytosine detection, genotype-adjusted like M5mC, one value per CpG context",
 );
 const ADM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
     "ADM5mC",
     Number::Unknown,
     ValueType::Integer,
-    "Read depth supporting 5-methylcytosine modification, one value per CpG context",
+    "Read depth supporting 5-methylcytosine modification, genotype-adjusted like M5mC, one value per CpG context",
 );
 const ML_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(
     "ML",

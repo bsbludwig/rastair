@@ -21,6 +21,12 @@ impl CpgBeta {
     pub fn has_evidence(&self) -> bool {
         self.total_count > 0
     }
+
+    /// `total_count - mod_count`: the unmodified side of the beta's ratio, which at a
+    /// genotype-adjusted CpG is not a read count.
+    pub fn unmod_count(&self) -> u32 {
+        self.total_count.saturating_sub(self.mod_count)
+    }
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -100,7 +106,7 @@ impl Methylated {
     }
 }
 
-/// Total read depth for 5-methylcytosine detection (`mod_count` + `unmod_count`), before het adjustment.
+/// The denominator of `M5mC`, genotype-adjusted like it.
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MethylationDepth(pub SmallVec<Option<u32>, 2>);
 
@@ -110,7 +116,7 @@ impl From<&Methylated> for MethylationDepth {
     }
 }
 
-/// Read depth supporting 5-methylcytosine modification (`mod_count` only), before het adjustment.
+/// The numerator of `M5mC`, genotype-adjusted like it.
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MethylationAltDepth(pub SmallVec<Option<u32>, 2>);
 

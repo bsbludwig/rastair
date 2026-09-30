@@ -107,9 +107,12 @@ fn homalt_on_original_cpg() -> Result<()> {
     let records = reprocess(records)?;
 
     // Genotype should be HomAlt(T/T)
-    // Beta should be 0.0 because there's no C allele to methylate
+    // Beta should be 0.0 because there's no C allele to methylate — and the
+    // count fields must agree: raw reads are 6 T / 0 C (a 1.0 ratio), but
+    // ADM5mC/DPM5mC must be 0/0, not the raw counts, or a consumer
+    // recomputing beta as ADM5mC/DPM5mC would get 1.0 instead of 0.0.
     let expected_vcf = vcf_assert![
-        (C T) PASS M5mC=0.0 GT="1/1",
+        (C T) PASS M5mC=0.0 GT="1/1" DPM5mC=0. ADM5mC=0.,
         (G .) PASS,
     ];
 
@@ -407,6 +410,50 @@ fn methylated_cph_without_cpg_context_is_not_emitted_under_all() -> Result<()> {
         vcf_records.is_empty(),
         "non-CpG reference-only position must not emit under the default filter, got: {vcf_records:?}"
     );
+
+    Ok(())
+}
+
+/// Edge case 6: at a het C/T CpG (7 T / 3 C on the informative OT strand, a clean
+/// 5/5 split on OB) the beta is `max(7 - 3, 0) / 10 = 0.4`, and `ADM5mC`/`DPM5mC`
+/// report that 4 of 10 rather than the raw 7 of 10.
+#[test]
+fn het_confounded_original_cpg_counts_reproduce_beta() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OT, // mod (informative strand): 7x
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C G ] OT, // unmod (informative strand): 3x
+        [ C G ] OT,
+        [ C G ] OT,
+        [ T G ] OB, // alt reads, genotyping only (not the informative strand): 5x
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ C G ] OB, // ref reads, genotyping only: 5x
+        [ C G ] OB,
+        [ C G ] OB,
+        [ C G ] OB,
+        [ C G ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], T); // T is a real variant — a het C/T SNP
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (C T) PASS M5mC=0.4 GT="0/1" DPM5mC=10. ADM5mC=4.,
+        (G .) PASS,
+    ];
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
 
     Ok(())
 }

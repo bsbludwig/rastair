@@ -1277,6 +1277,36 @@ fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Res
     Ok(())
 }
 
+/// `convert` turns a VCF into the BED `call --bed` writes: the genotype-adjusted
+/// counts, and a called C>T CpG's measured beta.
+#[test]
+fn converting_the_vcf_gives_the_bed_call_writes() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("calls.vcf");
+    let called = temp_dir.path().join("called.bed");
+    let converted = temp_dir.path().join("converted.bed");
+
+    rastair().args(CALL_TEST_BAM).arg(NO_ML).arg("--vcf").arg(&vcf).succeeds()?;
+    rastair().args(CALL_TEST_BAM).arg(NO_ML).arg("--bed").arg(&called).succeeds()?;
+    rastair().args(["convert", "--input"]).arg(&vcf).arg("--output").arg(&converted).succeeds()?;
+
+    let het_c_to_t_cpgs = std::fs::read_to_string(&vcf)?
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .filter(|f| {
+            let substitution = (f.get(3), f.get(4));
+            matches!(substitution, (Some(&"C"), Some(&"T")) | (Some(&"G"), Some(&"A")))
+                && f.get(7).is_some_and(|info| info.split(';').any(|i| i == "CPG"))
+                && f.get(9).is_some_and(|sample| sample.starts_with("0/1"))
+        })
+        .count();
+    assert!(het_c_to_t_cpgs > 0, "the fixture must call a heterozygous C>T at a CpG");
+
+    assert_eq!(std::fs::read_to_string(&converted)?, std::fs::read_to_string(&called)?);
+    Ok(())
+}
+
 /// Copy `tests/data/test.bam`, setting MAPQ 0 on all reads whose alignment
 /// overlaps the 0-based half-open window `[win_start, win_end)` on `chrom`.
 fn write_bam_with_zero_mapq_overlapping(

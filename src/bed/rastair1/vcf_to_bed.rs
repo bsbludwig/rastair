@@ -70,6 +70,9 @@ impl Rastair1BedFormat {
             return Ok(None);
         }
 
+        // The first `DPM5mC`/`ADM5mC` value belongs to the same CpG as the first `M5mC`.
+        let total = first_format_count(r, b"DPM5mC");
+        let r#mod = first_format_count(r, b"ADM5mC");
         let count = MethylationEvidenceStrandInfo::from_vcf(r)
             .wrap_err("Failed to read methylation evidence strand info")?;
 
@@ -106,22 +109,6 @@ impl Rastair1BedFormat {
             Phred::from_phred(0_u8)
         };
 
-        // If this is a CpG position with a called CpG-relevant variant, set beta to 0.
-        // We check both:
-        // 1. The CpG-relevant alt allele (T for C, A for G) exists with PASS filter
-        // 2. The genotype actually calls the variant (not hom ref 0/0)
-        // Without the genotype check, methylation evidence (which shows as T/A reads
-        // at CpG sites) would incorrectly set beta=0 when using --no-ml.
-        let is_called_variant = genotype_tag.is_some_and(|gt| !gt.is_hom_ref());
-        let has_cpg_snp = in_cpg && is_pass && is_called_variant && {
-            // Determine which alt base would be the CpG-relevant SNP (T for C, A for G)
-            let cpg_snp_base = if r#ref == "C" { "T" } else { "A" };
-            // Check if this alt exists in the alleles list
-            alleles.iter().skip(1).any(|a| a.as_str() == cpg_snp_base)
-        };
-
-        // Set beta to 0 if there's a called CpG-relevant SNP, otherwise use beta from VCF
-        let beta = if has_cpg_snp { Some(0.0) } else { beta };
         let beta = if let Some(beta) = beta {
             Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
         } else {
@@ -170,8 +157,8 @@ impl Rastair1BedFormat {
             r#ref,
             beta,
             strand,
-            unmod: count.unmod,
-            r#mod: count.modified,
+            unmod: total.saturating_sub(r#mod),
+            r#mod,
             no_snp: count.no_snp,
             snp: count.snp,
             coverage: read_depth as usize,
@@ -193,6 +180,16 @@ impl Rastair1BedFormat {
 
         Ok(Some(bed))
     }
+}
+
+/// The first value of an integer FORMAT field, or 0 where the record does not carry one.
+fn first_format_count(r: &HtslibRecord, tag: &[u8]) -> u32 {
+    r.format(tag)
+        .integer()
+        .ok()
+        .and_then(|buffer| buffer.first().and_then(|values| values.first()).copied())
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
 }
 
 impl MethylationEvidenceStrandInfo {

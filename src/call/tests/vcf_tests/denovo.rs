@@ -271,3 +271,42 @@ fn test_accepted_denovo_candidate_reports_methylation() -> Result<()> {
 
     Ok(())
 }
+
+/// A hom-alt C>G inside a reference CpG destroys the original CpG, whose stray
+/// reference read then counts for nothing (0 of 0). The column's strand tally follows
+/// the de-novo CpG the G forms with the C before it: G against A on OB, and on OT
+/// instead of the original C side's C against T.
+#[test]
+fn a_hom_alt_original_cpg_tallies_strands_for_its_denovo_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C C G ] Ref,
+        [ C G G ] OT, [ C G G ] OT, [ C G G ] OT, [ C G G ] OT,
+        [ C G G ] OT, [ C G G ] OT, [ T G G ] OT, [ C C G ] OT,
+        [ C G G ] OB, [ C G G ] OB, [ C G G ] OB, [ C G G ] OB,
+        [ C G G ] OB, [ C A G ] OB, [ C A G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (C .) PASS,
+        (C T) FAIL,
+        (C G) PASS GT="1/1" M5mC=vec![0.0, 2. / 7.] DPM5mC=vec![0., 7.] ADM5mC=vec![0., 2.],
+        (C A) FAIL,
+        (G .) PASS,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[1], G);
+    set_fail(&mut records[1], A);
+    let records = reprocess(records)?;
+
+    let strands = records[1].pos_metrics.extended.methylation_strand_info;
+    assert_eq!(
+        [strands.unmod, strands.modified, strands.no_snp, strands.snp],
+        [5, 2, 7, 0],
+        "G/A on OB, G/A on OT"
+    );
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}

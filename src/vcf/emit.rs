@@ -66,7 +66,7 @@ pub fn emit_pileup<W: Write>(
 
     // Line selection, ported from `VcfRecordSet::to_vec`.
     let t = &pileup.tags;
-    let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
+    let cpg = t.in_cpg();
     // A reference-only record (no real variants) is only emitted when it is a
     // CpG/de-novo-CpG; otherwise a covered non-CpG would carry M5mC values
     // without the CPG/CPGnovo tags set.

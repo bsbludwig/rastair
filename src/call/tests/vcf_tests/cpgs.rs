@@ -19,10 +19,11 @@ fn test_cpg_context() -> Result<()> {
         [ C G ] OB,
     );
 
+    // Plain CpG: the counts are the raw read counts.
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=2./3.,
+        (C .) PASS M5mC=2./3. DPM5mC=3. ADM5mC=2.,
         (C T) FAIL,
-        (G .) PASS M5mC=1./2.,
+        (G .) PASS M5mC=1./2. DPM5mC=2. ADM5mC=1.,
         (G A) FAIL,
     ];
 

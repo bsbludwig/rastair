@@ -13,7 +13,7 @@ impl Rastair1BedFormat {
     #[instrument(level = "trace", skip_all, fields(pos=%pileup.contig_pos()))]
     pub fn from_metrics(pileup: &PileupMetrics) -> Result<Option<Self>> {
         let t = &pileup.tags;
-        if !(t.cpg || t.denovo_cpg || t.denovo_cpg_partner) {
+        if !t.in_cpg() {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }
@@ -35,18 +35,19 @@ impl Rastair1BedFormat {
             }
         };
 
-        let counts = pileup.pos_metrics.extended.methylation_strand_info;
+        // `no_snp`/`snp` are the opposite-strand genotyping tally, not methylation counts.
+        let strand_info = pileup.pos_metrics.extended.methylation_strand_info;
 
         let methylated = &pileup.pos_metrics.methylated;
-        let beta = if methylated.is_empty() {
-            Some(Probability::ZERO)
-        } else {
-            let preferred_origin = if de_novo { CpgOrigin::DeNovo } else { CpgOrigin::Original };
-            let cpg = methylated
-                .iter()
-                .find(|b| b.origin == preferred_origin)
-                .or_else(|| methylated.iter().next());
-            cpg.map(|b| b.beta)
+        let preferred_origin = if de_novo { CpgOrigin::DeNovo } else { CpgOrigin::Original };
+        let cpg = methylated
+            .iter()
+            .find(|b| b.origin == preferred_origin)
+            .or_else(|| methylated.iter().next());
+        // `unmod`/`mod` are the beta's own ratio, so `mod / (mod + unmod)` is `beta_est`.
+        let (beta, unmod, r#mod) = match cpg {
+            Some(b) => (Some(b.beta), b.unmod_count(), b.mod_count),
+            None => (Some(Probability::ZERO), 0, 0),
         };
 
         let strand = guess_strand_from_pileup(pileup);
@@ -59,10 +60,10 @@ impl Rastair1BedFormat {
             r#ref: ref_base.into(),
             beta,
             strand,
-            unmod: counts.unmod,
-            r#mod: counts.modified,
-            no_snp: counts.no_snp,
-            snp: counts.snp,
+            unmod,
+            r#mod,
+            no_snp: strand_info.no_snp,
+            snp: strand_info.snp,
             // Coverage is total read depth at this position, including all bases/alts
             coverage: pileup.pos_metrics.depth as usize,
             genotype: GenotypeString::from_genotype_tag(gt.genotype, ref_base, &alt_bases),
