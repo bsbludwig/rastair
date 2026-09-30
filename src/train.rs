@@ -1,14 +1,11 @@
-//! Train random forest classifiers for variant filtering.
+//! Train the five random forests a model file carries: CpG, de-novo CpG,
+//! other SNVs, insertion and deletion.
 //!
-//! Rastair uses five separate RF models: CpG, de-novo CpG, "other" (SNVs),
-//! insertion, and deletion.
-//! Training works like this:
-//!
-//! 1. Collect: iterate pileups, compute ML for alts & indels, put into model buckets
-//! 2. Sample: pick `n_positive` and `n_negative` examples
-//! 3. Train a `RandomForest` (params from CLI) on the samples
-//! 4. Scaling: do Platt scaling on everything but the sampled data
-//! 5. Export: Build `RastairFlatModel` and write to file
+//! 1. Collect: run the column pipeline over every segment, label each SNV and
+//!    indel candidate against the truth set, and file it under its model.
+//! 2. Sample: draw `--n-positive`/`--n-negative` examples per model.
+//! 3. Fit: a random forest per model, Platt-scaled on examples it did not see.
+//! 4. Export: write the `RastairFlatModel`.
 
 #[cfg(not(feature = "experimental-seqair"))]
 use crate::call::process::calculate_pileup_metrics;
@@ -23,17 +20,16 @@ use crate::{
         MetricsForIndel, PileupMetrics,
         ml::{
             features::FeatureCalculator,
-            types::{MlFeatureSet, PlattScaling, RastairFlatModel},
+            types::{ByModel, MlFeatureSet, MlModel, PlattScaling, RastairFlatModel},
         },
     },
-    rayon_all,
     regions::ConfidentRegions,
     sequence::{ChunkRegion, PileupReaders, ReaderParams, ReaderSource, SegmentationParams},
     utils::{cli, map_surrounding},
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
 use clio::ClioPath;
-use color_eyre::eyre::{Context as _, ContextCompat, Result, bail, ensure};
+use color_eyre::eyre::{Context as _, ContextCompat as _, Result, ensure, eyre};
 use lz4::EncoderBuilder;
 use ndarray::{Array1, Array2, Axis};
 use rand::prelude::*;
@@ -41,13 +37,13 @@ use rayon::prelude::*;
 use rust_htslib::bcf::{self, Read as _};
 use seqair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
     thread::available_parallelism,
 };
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
 pub struct TrainModelParams {
@@ -150,22 +146,70 @@ struct ModelParameters {
     pub seed: Option<u64>,
 }
 
+/// The order the models' forest seeds are drawn from the run seed in.
+const SEED_ORDER: [MlModel; MlModel::COUNT] =
+    [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others, MlModel::Insertion, MlModel::Deletion];
+
 /// Key for indexing positions in truth set
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct PositionKey {
-    pub pos: u64,
-    pub ref_base: Base,
-    pub alt_base: Base,
+struct PositionKey {
+    pos: u64,
+    ref_base: Base,
+    alt_base: Base,
 }
 
 /// Key for indexing indel positions in truth set
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct IndelKey {
-    pub pos: u64,
-    pub allele: IndelAllele,
+struct IndelKey {
+    pos: u64,
+    allele: IndelAllele,
+}
+
+/// The labels a candidate is checked against.
+struct Truth {
+    snps: HashSet<PositionKey>,
+    indels: HashSet<IndelKey>,
+    /// Outside these intervals the truth set makes no claim, so candidates
+    /// there are dropped rather than labelled negative.
+    confident: Option<ConfidentRegions>,
+}
+
+impl Truth {
+    fn load(params: &TrainModelParams, regions: &[RegionString]) -> Result<Self> {
+        let mut snps = HashSet::new();
+        let mut indels = HashSet::new();
+        for region in regions {
+            let (region_snps, region_indels) =
+                load_truth_vcf(&params.truth, region, params.threads)
+                    .wrap_err_with(|| format!("Failed to load truth VCF for region {region}"))?;
+            snps.extend(region_snps);
+            indels.extend(region_indels);
+        }
+
+        let confident = params
+            .regions_file
+            .as_ref()
+            .map(|p| ConfidentRegions::load(p.path()))
+            .transpose()
+            .wrap_err("Failed to load training regions")?;
+        if confident.is_none() {
+            warn!(
+                "Training without --regions-file: candidates outside the truth set's \
+                 high-confidence regions will be labelled negative even though the truth set \
+                 makes no claim there, which is most severe for indels."
+            );
+        }
+
+        Ok(Self { snps, indels, confident })
+    }
+
+    fn claims(&self, contig: &str, pos: u64) -> bool {
+        self.confident.as_ref().is_none_or(|r| r.contains(contig, pos))
+    }
 }
 
 /// Training data for a specific model type
+#[derive(Default)]
 struct TrainingData {
     features: Vec<Array2<f64>>,
     labels: Vec<f64>,
@@ -173,10 +217,6 @@ struct TrainingData {
 }
 
 impl TrainingData {
-    fn new() -> Self {
-        Self { features: Vec::new(), labels: Vec::new(), positions: Vec::new() }
-    }
-
     fn add_example(&mut self, features: Array2<f32>, label: f64, chrom: SmolStr, pos: u64) {
         // Features are computed in f32 (matching the f32 inference forests);
         // biosphere's RandomForest fits on f64, so widen at this boundary only.
@@ -204,16 +244,13 @@ impl TrainingData {
     }
 }
 
-type SegmentResult = (TrainingData, TrainingData, TrainingData, TrainingData, TrainingData);
+type Collected = ByModel<TrainingData>;
 
-fn empty_segment_result() -> SegmentResult {
-    (
-        TrainingData::new(),
-        TrainingData::new(),
-        TrainingData::new(),
-        TrainingData::new(),
-        TrainingData::new(),
-    )
+fn merge_collected(mut acc: Collected, other: Collected) -> Collected {
+    for (model, data) in other {
+        acc[model].merge(data);
+    }
+    acc
 }
 
 #[instrument(level = "debug", skip_all)]
@@ -228,297 +265,254 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         "Training parameters",
     );
 
-    // Create output directory if it doesn't exist
-    params
-        .output
-        .parent()
-        .wrap_err("output path invalid")
-        .and_then(|p| {
-            std::fs::create_dir_all(p).wrap_err("Failed to create output parent directory")
-        })
-        .wrap_err_with(|| {
-            format!("Failed to create output directory: {}", params.output.display())
-        })?;
+    create_output_dirs(params)?;
 
-    // Load truth VCF and index variants across all requested regions.
-    // If no regions are specified, default to the entire chr12 (common for training).
+    let collected = collect(params)?;
+    for (model, data) in collected.iter() {
+        info!(
+            model = model.name(),
+            examples = data.len(),
+            positives = data.positives(),
+            "Collected training examples"
+        );
+    }
+
+    if let Some(dir) = params.export_features.as_ref() {
+        info!(dir = %dir.display(), "Exporting features as TSV");
+        let names = params.ml_features.get_calculator().feature_names();
+        for (model, data) in collected.iter() {
+            export_features_tsv(data, model.name(), names.get(model), dir.path())?;
+        }
+    }
+
+    let model = fit(params, seed, collected)?;
+    serialize_model(&model, params.output.clone())
+        .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
+    info!(path=%params.output, "Saved model");
+
+    Ok(())
+}
+
+/// Every directory a run writes into, created before any work: failing here
+/// costs seconds, failing after fitting costs the whole run.
+fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
+    let model_dir = params.output.parent().wrap_err("output path invalid")?;
+    std::fs::create_dir_all(model_dir).wrap_err_with(|| {
+        format!("Failed to create output directory: {}", params.output.display())
+    })?;
+    for dir in [&params.feature_analytics, &params.export_features].into_iter().flatten() {
+        std::fs::create_dir_all(dir.path())
+            .wrap_err_with(|| format!("Failed to create directory: {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Label every candidate in the requested regions and file it under its model.
+fn collect(params: &TrainModelParams) -> Result<Collected> {
+    // Without explicit regions the truth set is read for chr12 only.
     let regions =
         params.reader.regions.as_ref().map(|input| input.regions().to_vec()).unwrap_or_else(|| {
             vec![RegionString { chromosome: "chr12".into(), start: None, end: None }]
         });
+    let truth = Truth::load(params, &regions)?;
 
-    let mut snp_variants = HashSet::new();
-    let mut indel_variants = HashSet::new();
-    for region in &regions {
-        let (snps, indels) = load_truth_vcf(&params.truth, region, params.threads)
-            .wrap_err_with(|| format!("Failed to load truth VCF for region {region}"))?;
-        snp_variants.extend(snps);
-        indel_variants.extend(indels);
-    }
-
-    // Get segments to process
     let segmentation = SegmentationParams::default();
     let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
-    let regions: Vec<ChunkRegion> = readers
+    let segments: Vec<ChunkRegion> = readers
         .segments(segmentation.segment_max_length, segmentation.segment_overlap)
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
+    ensure!(!segments.is_empty(), "No segments found in BAM file");
+    info!("Processing {} segments to collect training data", segments.len());
+
+    let collector = SegmentCollector {
+        truth: &truth,
+        calculator: &*params.ml_features.get_calculator(),
+        // Training examples come from the ML pathway, not the hard-filter chain.
+        indel_params: IndelParams {
+            experimental_indels: Some(IndelPathway::Ml),
+            ..IndelParams::default()
+        },
+    };
     let readers = ReaderSource::from(readers);
-    let readers = &readers;
-
-    if regions.is_empty() {
-        bail!("No segments found in BAM file");
-    }
-
-    info!("Processing {} segments to collect training data", regions.len());
-
-    // Training examples come from the ML pathway, so select it explicitly rather
-    // than the hard-filter chain.
-    let indel_params =
-        IndelParams { experimental_indels: Some(IndelPathway::Ml), ..IndelParams::default() };
-    let calculator = params.ml_features.get_calculator();
-    let confident = params
-        .regions_file
-        .as_ref()
-        .map(|p| ConfidentRegions::load(p.path()))
-        .transpose()
-        .wrap_err("Failed to load training regions")?;
-    if confident.is_none() {
-        warn!(
-            "Training without --regions-file: candidates outside the truth set's \
-             high-confidence regions will be labelled negative even though the truth set \
-             makes no claim there, which is most severe for indels."
-        );
-    }
-
-    // Process segments in parallel to collect training data
-    let results: Vec<SegmentResult> = rayon::ThreadPoolBuilder::new()
+    let collected = rayon::ThreadPoolBuilder::new()
         .thread_name(|idx| format!("training-worker-{idx}"))
         .num_threads(params.threads)
         .start_handler(|idx| trace!(idx, "Starting training worker thread"))
         .exit_handler(|idx| trace!(idx, "Closing training worker thread"))
         .build()
         .wrap_err("Failed to create thread pool for rayon")?
-        .install(move || {
-            regions
+        .install(|| {
+            segments
                 .par_iter()
                 .map_init(
                     || readers.fork(),
-                    |readers, chunk_region| {
+                    |readers, segment| {
                         let _span =
-                            tracing::info_span!("collect_segment", region = %chunk_region.region)
+                            tracing::info_span!("collect_segment", region = %segment.region)
                                 .entered();
-
-                        let readers = match readers {
-                            Ok(readers) => readers,
-                            Err(e) => {
-                                warn!(
-                                    error = format!("{e:#}"),
-                                    "Failed to open readers in worker thread"
-                                );
-                                return empty_segment_result();
-                            }
-                        };
-
-                        // Collect training data from this segment
-                        match collect_training_data_from_segment(
-                            chunk_region,
-                            readers,
-                            &snp_variants,
-                            &indel_variants,
-                            &indel_params,
-                            &*calculator,
-                            confident.as_ref(),
-                        ) {
-                            Ok(data) => data,
-                            Err(e) => {
-                                warn!(
-                                    error = format!("{e:#}"),
-                                    "Failed to collect training data from segment"
-                                );
-                                empty_segment_result()
-                            }
-                        }
+                        let readers = readers
+                            .as_mut()
+                            .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
+                        collector.segment(readers, segment)
                     },
                 )
-                .collect()
+                .filter_map(|result| {
+                    result
+                        .inspect_err(|e| {
+                            warn!(
+                                error = format!("{e:#}"),
+                                "Failed to collect training data from segment"
+                            );
+                        })
+                        .ok()
+                })
+                .collect::<Vec<_>>()
         });
 
-    // Merge all results from parallel processing
-    let mut cpg_data = TrainingData::new();
-    let mut denovo_data = TrainingData::new();
-    let mut other_data = TrainingData::new();
-    let mut insertion_data = TrainingData::new();
-    let mut deletion_data = TrainingData::new();
+    Ok(collected.into_iter().fold(ByModel::from_fn(|_| TrainingData::default()), merge_collected))
+}
 
-    for (cpg, denovo, other, insertion, deletion) in results {
-        cpg_data.merge(cpg);
-        denovo_data.merge(denovo);
-        other_data.merge(other);
-        insertion_data.merge(insertion);
-        deletion_data.merge(deletion);
-    }
+/// The columns of one segment, as the feature extractors read them.
+fn segment_columns(
+    readers: &mut PileupReaders,
+    segment: &ChunkRegion,
+) -> Result<Vec<PileupMetrics>> {
+    let mapping = PileupMappingParams { call_indels: true, ..Default::default() };
 
-    info!(
-        cpg = cpg_data.len(),
-        cpg_pos = cpg_data.positives(),
-        denovo = denovo_data.len(),
-        denovo_pos = denovo_data.positives(),
-        other = other_data.len(),
-        other_pos = other_data.positives(),
-        insertion = insertion_data.len(),
-        insertion_pos = insertion_data.positives(),
-        deletion = deletion_data.len(),
-        deletion_pos = deletion_data.positives(),
-        "Collected training examples",
-    );
-
-    let features = params.ml_features.get_calculator().feature_num();
-    let feature_names = params.ml_features.get_calculator().feature_names();
-
-    // Created before fitting: failing here costs seconds, failing after costs
-    // the whole run.
-    if let Some(path) = params.feature_analytics.as_ref() {
-        std::fs::create_dir_all(path.path()).wrap_err_with(|| {
-            format!("Failed to create feature analytics directory: {}", path.display())
-        })?;
-    }
-
-    if let Some(ref export_dir) = params.export_features {
-        std::fs::create_dir_all(export_dir.path()).wrap_err_with(|| {
-            format!("Failed to create export directory: {}", export_dir.display())
-        })?;
-        info!(dir = %export_dir.display(), "Exporting features as TSV");
-        export_features_tsv(&cpg_data, "cpg", &feature_names.cpg, export_dir.path())?;
-        export_features_tsv(&denovo_data, "denovo", &feature_names.denovo_cpg, export_dir.path())?;
-        export_features_tsv(&other_data, "other", &feature_names.others, export_dir.path())?;
-        export_features_tsv(
-            &insertion_data,
-            "insertion",
-            &feature_names.insertion,
-            export_dir.path(),
-        )?;
-        export_features_tsv(
-            &deletion_data,
-            "deletion",
-            &feature_names.deletion,
-            export_dir.path(),
-        )?;
-    }
-
-    // Derive independent seeds for each model from the base seed
-    let mut seed_rng = rand::rngs::StdRng::seed_from_u64(seed);
-    let cpg_seed: u64 = seed_rng.random();
-    let denovo_seed: u64 = seed_rng.random();
-    let others_seed: u64 = seed_rng.random();
-    let insertion_seed: u64 = seed_rng.random();
-    let deletion_seed: u64 = seed_rng.random();
-
-    info!("Training all 5 models in parallel");
-    let (cpg_result, denovo_result, others_result, insertion_result, deletion_result) = rayon_all!(
-        train_and_save("cpg", cpg_data, params, cpg_seed),
-        train_and_save("denovo", denovo_data, params, denovo_seed),
-        train_and_save("other", other_data, params, others_seed),
-        train_and_save("insertion", insertion_data, params, insertion_seed),
-        train_and_save("deletion", deletion_data, params, deletion_seed),
-    );
-
-    let (cpg, cpg_platt) = cpg_result.wrap_err("Failed to train CpG model")?;
-    if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(
-            &cpg,
-            &feature_names.cpg,
-            &path.path().join("cpg_feature_importances.csv"),
-        )
-        .wrap_err("Failed to export CpG feature importances")?;
-    }
-    let cpg = FlatForest::from_forest(&cpg, features.cpg);
-
-    let (denovo, denovo_platt) = denovo_result.wrap_err("Failed to train de-novo CpG model")?;
-    if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(
-            &denovo,
-            &feature_names.denovo_cpg,
-            &path.path().join("denovo_feature_importances.csv"),
-        )
-        .wrap_err("Failed to export de-novo CpG feature importances")?;
-    }
-    let denovo = FlatForest::from_forest(&denovo, features.denovo_cpg);
-
-    let (others, others_platt) = others_result.wrap_err("Failed to train other model")?;
-    if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(
-            &others,
-            &feature_names.others,
-            &path.path().join("other_feature_importances.csv"),
-        )
-        .wrap_err("Failed to export other feature importances")?;
-    }
-    let others = FlatForest::from_forest(&others, features.others);
-
-    let (insertion, insertion_platt) =
-        insertion_result.wrap_err("Failed to train insertion model")?;
-    if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(
-            &insertion,
-            &feature_names.insertion,
-            &path.path().join("insertion_feature_importances.csv"),
-        )
-        .wrap_err("Failed to export insertion feature importances")?;
-    }
-    let insertion = FlatForest::from_forest(&insertion, features.insertion);
-
-    let (deletion, deletion_platt) = deletion_result.wrap_err("Failed to train deletion model")?;
-    if let Some(path) = params.feature_analytics.as_ref() {
-        export_feature_importances(
-            &deletion,
-            &feature_names.deletion,
-            &path.path().join("deletion_feature_importances.csv"),
-        )
-        .wrap_err("Failed to export deletion feature importances")?;
-    }
-    let deletion = FlatForest::from_forest(&deletion, features.deletion);
-
-    #[derive(Debug, serde::Serialize)]
-    struct ModelReport<'a> {
-        forest: &'a biosphere::ForestMeta,
-        scaling: PlattScaling,
-    }
-
-    let report = std::collections::BTreeMap::from([
-        ("cpg", ModelReport { forest: &cpg.meta, scaling: cpg_platt }),
-        ("denovo", ModelReport { forest: &denovo.meta, scaling: denovo_platt }),
-        ("others", ModelReport { forest: &others.meta, scaling: others_platt }),
-        ("insertion", ModelReport { forest: &insertion.meta, scaling: insertion_platt }),
-        ("deletion", ModelReport { forest: &deletion.meta, scaling: deletion_platt }),
-    ]);
-    info!(report = ?report, "Trained models");
-
-    let model = RastairFlatModel {
-        feature_set: params.ml_features,
-        cpg,
-        cpg_platt,
-        denovo,
-        denovo_platt,
-        others,
-        others_platt,
-        insertion,
-        insertion_platt,
-        deletion,
-        deletion_platt,
+    #[cfg(feature = "experimental-seqair")]
+    let columns = {
+        let (_segment, columns) =
+            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
+        columns.collect()
+    };
+    #[cfg(not(feature = "experimental-seqair"))]
+    let columns = {
+        let (segment, pileups) =
+            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
+        calculate_pileup_metrics(pileups, &segment)
+            .filter_map(|metrics| {
+                metrics
+                    .inspect_err(|e| {
+                        warn!(error = format!("{e:#}"), "Failed to calculate pileup metrics");
+                    })
+                    .ok()
+            })
+            .collect()
     };
 
-    serialize_model(&model, params.output.clone())
-        .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
+    Ok(columns)
+}
 
-    info!(path=%params.output, "Saved model");
+/// Turns one segment's candidates into labelled examples.
+struct SegmentCollector<'a> {
+    truth: &'a Truth,
+    calculator: &'a dyn FeatureCalculator,
+    indel_params: IndelParams,
+}
 
-    Ok(())
+impl SegmentCollector<'_> {
+    fn segment(&self, readers: &mut PileupReaders, segment: &ChunkRegion) -> Result<Collected> {
+        let mut columns = segment_columns(readers, segment)?;
+        let mut collected = ByModel::from_fn(|_| TrainingData::default());
+        map_surrounding(
+            &mut columns,
+            |before, column, after| {
+                let pos = u64::from(column.pos);
+                if !self.truth.claims(&segment.contig, pos) {
+                    return Ok(());
+                }
+                self.snvs(&mut collected, &segment.contig, before, column, after);
+                self.indels(&mut collected, &segment.contig, column);
+                Ok(())
+            },
+            "failed to extract training features, skipping",
+        );
+        Ok(collected)
+    }
+
+    fn snvs(
+        &self,
+        collected: &mut Collected,
+        contig: &SmolStr,
+        before: Option<&PileupMetrics>,
+        column: &PileupMetrics,
+        after: Option<&PileupMetrics>,
+    ) {
+        let pos = u64::from(column.pos);
+        let ref_base = column.reference_base;
+        for alt in &column.alts {
+            let alt_base = alt.base;
+            if ref_base == Base::Unknown || alt_base == Base::Unknown {
+                continue;
+            }
+            let Some(candidate) = column.alt_metrics(alt_base) else { continue };
+            let label = self.truth.snps.contains(&PositionKey { pos, ref_base, alt_base });
+
+            let (model, features) = if candidate.is_evidence_for_methylation() {
+                (MlModel::Cpg, self.calculator.calculate_cpg(&candidate, before, after))
+            } else if *alt.metrics.denovo {
+                (
+                    MlModel::DenovoCpg,
+                    self.calculator.calculate_denovo_cpg(&candidate, before, after),
+                )
+            } else {
+                (MlModel::Others, self.calculator.calculate_others(&candidate, before, after))
+            };
+            add_candidate(&mut collected[model], model, features, label, contig, pos);
+        }
+    }
+
+    fn indels(&self, collected: &mut Collected, contig: &SmolStr, column: &PileupMetrics) {
+        let Some(indel_data) = column.indel_data.as_ref() else { return };
+        let pos = u64::from(column.pos);
+        let tract = u32::from(indel_data.homopolymer_run.max(indel_data.dinucleotide_run));
+        let calls =
+            indel_calling::call_indels(&indel_data.counts, &self.indel_params, true, tract, false);
+        for call in &calls {
+            let label = self.truth.indels.contains(&IndelKey { pos, allele: call.allele.clone() });
+            let candidate = MetricsForIndel { metrics: column, indel: call };
+            let (model, features) = match call.allele {
+                IndelAllele::Insertion(_) => {
+                    (MlModel::Insertion, self.calculator.calculate_insertion(&candidate))
+                }
+                IndelAllele::Deletion(_) => {
+                    (MlModel::Deletion, self.calculator.calculate_deletion(&candidate))
+                }
+            };
+            add_candidate(&mut collected[model], model, features, label, contig, pos);
+        }
+    }
+}
+
+/// Keep a candidate whose features could be computed and are all finite.
+fn add_candidate(
+    data: &mut TrainingData,
+    model: MlModel,
+    features: Result<Array2<f32>>,
+    in_truth: bool,
+    contig: &SmolStr,
+    pos: u64,
+) {
+    match features {
+        Ok(features) if !features.is_any_nan() => {
+            let label = if in_truth { 1.0 } else { 0.0 };
+            data.add_example(features, label, contig.clone(), pos);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            debug!(
+                model = model.name(),
+                error = format!("{error:#}"),
+                "No features for training candidate"
+            );
+        }
+    }
 }
 
 /// Load truth VCF and create an index of variant positions (SNPs and indels).
 #[instrument(level = "info", skip_all)]
-pub fn load_truth_vcf(
+fn load_truth_vcf(
     vcf_path: &ClioPath,
     region: &RegionString,
     threads: usize,
@@ -550,7 +544,6 @@ pub fn load_truth_vcf(
         )
         .wrap_err("Failed to fetch region from truth VCF")?;
 
-    // Read records
     for result in reader.records() {
         let record = match result {
             Ok(record) => record,
@@ -636,168 +629,69 @@ fn strip_common_suffix<'a>(mut left: &'a [u8], mut right: &'a [u8]) -> (&'a [u8]
     (left, right)
 }
 
-/// Collect training data from a single segment
-fn collect_training_data_from_segment(
-    chunk_region: &ChunkRegion,
-    readers: &mut PileupReaders,
-    snp_truth: &HashSet<PositionKey>,
-    indel_truth: &HashSet<IndelKey>,
-    indel_params: &IndelParams,
-    calculator: &dyn FeatureCalculator,
-    confident: Option<&ConfidentRegions>,
-) -> Result<SegmentResult> {
-    // Create local training data for this segment
-    let mut cpg_data = TrainingData::new();
-    let mut denovo_data = TrainingData::new();
-    let mut other_data = TrainingData::new();
-    let mut insertion_data = TrainingData::new();
-    let mut deletion_data = TrainingData::new();
+/// Fit every model's forest, one after the other: biosphere parallelises
+/// each fit over `--threads` in a pool of its own.
+fn fit(params: &TrainModelParams, seed: u64, collected: Collected) -> Result<RastairFlatModel> {
+    let seeds = forest_seeds(seed);
+    let calculator = params.ml_features.get_calculator();
+    let (counts, names) = (calculator.feature_num(), calculator.feature_names());
 
-    // Indel observations are off by default; without them every insertion and
-    // deletion bucket stays empty and no model file can be written.
-    let mapping_params = PileupMappingParams { call_indels: true, ..Default::default() };
-    let (segment, pileup_iter) =
-        get_pileups(readers, chunk_region, &mapping_params).wrap_err("Failed to build pileups")?;
+    let trained = collected.try_map(|model, data| -> Result<_> {
+        let (forest, platt) = fit_model(model, &data, params, seeds[model])
+            .wrap_err_with(|| format!("Failed to train the {} model", model.name()))?;
+        if let Some(dir) = params.feature_analytics.as_ref() {
+            let path = dir.path().join(format!("{}_feature_importances.csv", model.name()));
+            export_feature_importances(&forest, names.get(model), &path).wrap_err_with(|| {
+                format!("Failed to export {} feature importances", model.name())
+            })?;
+        }
+        Ok((FlatForest::from_forest(&forest, counts.get(model)), platt))
+    })?;
 
-    #[cfg(not(feature = "experimental-seqair"))]
-    let metrics: Box<dyn Iterator<Item = Result<PileupMetrics>>> =
-        Box::new(calculate_pileup_metrics(pileup_iter, &segment));
-    #[cfg(feature = "experimental-seqair")]
-    let metrics: Box<dyn Iterator<Item = Result<PileupMetrics>>> = {
-        let _ = segment;
-        Box::new(pileup_iter.map(Ok))
-    };
-
-    // Process each position with metrics. The pileups are only read here — the
-    // features go into the accumulators — so this collects rather than
-    // streaming, which is what lets the walk borrow neighbours instead of
-    // cloning every one of them.
-    let mut pileups: Vec<PileupMetrics> = metrics
-        .filter_map(|x: Result<PileupMetrics>| match x {
-            Err(e) => {
-                warn!(error = format!("{e:#}"), "Failed to calculate pileup metrics");
-                None
-            }
-            Ok(x) => Some(x),
+    #[derive(Debug, serde::Serialize)]
+    struct ModelReport<'a> {
+        forest: &'a biosphere::ForestMeta,
+        scaling: PlattScaling,
+    }
+    let report: BTreeMap<_, _> = trained
+        .iter()
+        .map(|(model, (forest, scaling))| {
+            (model.name(), ModelReport { forest: &forest.meta, scaling: *scaling })
         })
         .collect();
-    map_surrounding(
-        &mut pileups,
-        |before, current, after| {
-            let pos = u64::from(current.pos);
+    info!(report = ?report, "Trained models");
 
-            // Outside the confident regions the truth set makes no claim, so a
-            // candidate there cannot be labelled either way — drop it rather than
-            // teach the model a negative we cannot support.
-            if confident.is_some_and(|r| !r.contains(&chunk_region.contig, pos)) {
-                return Ok(());
-            }
-
-            // -- SNP alt alleles --
-            for alt in &current.alts {
-                let ref_base = current.reference_base;
-                let alt_base = alt.base;
-
-                // Skip Unknown bases
-                if ref_base == Base::Unknown || alt_base == Base::Unknown {
-                    continue;
-                }
-
-                // Determine label: is this position in truth set?
-                let key = PositionKey { pos, ref_base, alt_base };
-                let label = if snp_truth.contains(&key) { 1.0 } else { 0.0 };
-
-                // Create MetricsForAlt for this alternative allele
-                let alt_metrics_for_ml = current.alt_metrics(alt_base);
-
-                if let Some(alt_m) = alt_metrics_for_ml {
-                    let chrom = chunk_region.contig.clone();
-                    // Generate features based on position type
-                    if alt_m.is_evidence_for_methylation() {
-                        if let Ok(features) = calculator.calculate_cpg(&alt_m, before, after)
-                            && !features.is_any_nan()
-                        {
-                            cpg_data.add_example(features, label, chrom.clone(), pos);
-                        }
-                    } else if *alt.metrics.denovo {
-                        if let Ok(features) = calculator.calculate_denovo_cpg(&alt_m, before, after)
-                            && !features.is_any_nan()
-                        {
-                            denovo_data.add_example(features, label, chrom.clone(), pos);
-                        }
-                    } else if let Ok(features) = calculator.calculate_others(&alt_m, before, after)
-                        && !features.is_any_nan()
-                    {
-                        other_data.add_example(features, label, chrom.clone(), pos);
-                    }
-                }
-            }
-
-            // -- Indel alleles --
-            if let Some(ref d) = current.indel_data {
-                let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
-                let indel_calls =
-                    indel_calling::call_indels(&d.counts, indel_params, true, tract, false);
-                for call in &indel_calls {
-                    let indel_key = IndelKey { pos, allele: call.allele.clone() };
-                    let label = if indel_truth.contains(&indel_key) { 1.0 } else { 0.0 };
-
-                    let indel_m = MetricsForIndel { metrics: current, indel: call };
-
-                    match &call.allele {
-                        IndelAllele::Insertion(_) => {
-                            if let Ok(features) = calculator.calculate_insertion(&indel_m)
-                                && !features.is_any_nan()
-                            {
-                                insertion_data.add_example(
-                                    features,
-                                    label,
-                                    chunk_region.contig.clone(),
-                                    pos,
-                                );
-                            }
-                        }
-                        IndelAllele::Deletion(_) => {
-                            if let Ok(features) = calculator.calculate_deletion(&indel_m)
-                                && !features.is_any_nan()
-                            {
-                                deletion_data.add_example(
-                                    features,
-                                    label,
-                                    chunk_region.contig.clone(),
-                                    pos,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            Ok(())
-        },
-        "failed to extract training features, skipping",
-    );
-
-    Ok((cpg_data, denovo_data, other_data, insertion_data, deletion_data))
+    Ok(RastairFlatModel::from_trained(params.ml_features, trained))
 }
 
-#[instrument(level = "info", skip_all, fields(model=%model_name))]
-fn train_and_save(
-    model_name: &str,
-    data: TrainingData,
+/// One forest seed per model, drawn from the run seed in [`SEED_ORDER`].
+fn forest_seeds(seed: u64) -> ByModel<u64> {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let mut seeds = ByModel::from_fn(|_| 0);
+    for model in SEED_ORDER {
+        seeds[model] = rng.random();
+    }
+    seeds
+}
+
+#[instrument(level = "info", skip_all, fields(model = model.name()))]
+fn fit_model(
+    model: MlModel,
+    data: &TrainingData,
     params: &TrainModelParams,
     seed: u64,
 ) -> Result<(RandomForest, PlattScaling)> {
     ensure!(
         !data.is_empty(),
-        "No training data collected for the {model_name} model, so no model file can be written"
+        "No training data collected for the {} model, so no model file can be written",
+        model.name()
     );
 
     info!(seed, examples = data.len(), "Training model");
 
     // Subsample for training, keep held-out data for Platt calibration
     let (train_features, train_labels, holdout_features, holdout_labels) = subsample_training_data(
-        &data,
+        data,
         params.model_params.n_positive,
         params.model_params.n_negative,
         seed,
@@ -811,7 +705,7 @@ fn train_and_save(
         "Subsampled"
     );
 
-    // Train model. `max_depth == 0` means unbounded (grow until pure).
+    // `max_depth == 0` means unbounded (grow until pure).
     let max_depth = (params.model_params.max_depth != 0).then_some(params.model_params.max_depth);
     let rf_params = RandomForestParameters::default()
         .with_max_features(MaxFeatures::Value(params.model_params.max_features))
@@ -821,14 +715,13 @@ fn train_and_save(
         .with_n_jobs(i32::try_from(params.threads).ok())
         .with_seed(seed);
 
-    let mut model = RandomForest::new(rf_params);
-    model.fit(&train_features.view(), &train_labels.view());
+    let mut forest = RandomForest::new(rf_params);
+    forest.fit(&train_features.view(), &train_labels.view());
 
-    // Fit Platt scaling on held-out predictions
-    let raw_scores = model.predict(&holdout_features.view());
+    let raw_scores = forest.predict(&holdout_features.view());
     let platt = fit_platt_scaling(
-        raw_scores.as_slice().unwrap_or(&[]),
-        holdout_labels.as_slice().unwrap_or(&[]),
+        raw_scores.as_slice().wrap_err("Holdout scores are not contiguous")?,
+        holdout_labels.as_slice().wrap_err("Holdout labels are not contiguous")?,
     );
 
     if platt.a == 1.0 && platt.b == 0.0 {
@@ -838,7 +731,7 @@ fn train_and_save(
         );
     }
 
-    Ok((model, platt))
+    Ok((forest, platt))
 }
 
 /// Subsample training data to balance positive and negative examples.
@@ -931,14 +824,15 @@ fn build_matrix(data: &TrainingData, indices: &mut [usize]) -> Result<(Array2<f6
 /// Uses Newton's method with backtracking line search and Bayesian-smoothed
 /// targets, following Lin, Lin, and Weng (2007).
 fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
-    let n = scores.len();
-    if n == 0 {
-        return PlattScaling::default();
-    }
+    const MAX_ITER: usize = 100;
+    const MIN_STEP: f64 = 1e-10;
+    const SIGMA: f64 = 1e-12;
 
-    let n_pos = labels.iter().filter(|&&y| y > 0.5).count() as f64;
-    let n_neg = n as f64 - n_pos;
-
+    let samples = || scores.iter().copied().zip(labels.iter().map(|&y| y > 0.5));
+    let (n_pos, n) = samples().fold((0.0_f64, 0.0_f64), |(pos, all), (_, y)| {
+        (if y { pos + 1.0 } else { pos }, all + 1.0)
+    });
+    let n_neg = n - n_pos;
     if n_pos == 0.0 || n_neg == 0.0 {
         return PlattScaling::default();
     }
@@ -946,25 +840,22 @@ fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
     // Bayesian-smoothed targets avoid log(0)
     let hi_target = (n_pos + 1.0) / (n_pos + 2.0);
     let lo_target = 1.0 / (n_neg + 2.0);
+    let target = |positive: bool| if positive { hi_target } else { lo_target };
+    let objective = |a: f64, b: f64| {
+        samples().fold(0.0, |sum, (score, y)| {
+            let t = target(y);
+            let z = score * a + b;
+            sum + if z >= 0.0 {
+                t * z + (1.0 + (-z).exp()).ln()
+            } else {
+                (t - 1.0) * z + (1.0 + z.exp()).ln()
+            }
+        })
+    };
 
     let mut a = 0.0_f64;
     let mut b = ((n_neg + 1.0) / (n_pos + 1.0)).ln();
-
-    // Initial objective value
-    let mut fval = 0.0;
-    for i in 0..n {
-        let t = if labels[i] > 0.5 { hi_target } else { lo_target };
-        let z = scores[i] * a + b;
-        fval += if z >= 0.0 {
-            t * z + (1.0 + (-z).exp()).ln()
-        } else {
-            (t - 1.0) * z + (1.0 + z.exp()).ln()
-        };
-    }
-
-    const MAX_ITER: usize = 100;
-    const MIN_STEP: f64 = 1e-10;
-    const SIGMA: f64 = 1e-12;
+    let mut fval = objective(a, b);
 
     for _ in 0..MAX_ITER {
         let mut h11 = SIGMA;
@@ -973,9 +864,8 @@ fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
         let mut g1 = 0.0_f64;
         let mut g2 = 0.0_f64;
 
-        for i in 0..n {
-            let t = if labels[i] > 0.5 { hi_target } else { lo_target };
-            let z = scores[i] * a + b;
+        for (score, y) in samples() {
+            let z = score * a + b;
             let (p, q) = if z >= 0.0 {
                 let ez = (-z).exp();
                 (ez / (1.0 + ez), 1.0 / (1.0 + ez))
@@ -984,11 +874,11 @@ fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
                 (1.0 / (1.0 + ez), ez / (1.0 + ez))
             };
             let d2 = p * q;
-            h11 += scores[i] * scores[i] * d2;
+            h11 += score * score * d2;
             h22 += d2;
-            h12 += scores[i] * d2;
-            let d1 = t - p;
-            g1 += scores[i] * d1;
+            h12 += score * d2;
+            let d1 = target(y) - p;
+            g1 += score * d1;
             g2 += d1;
         }
 
@@ -1001,24 +891,10 @@ fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
         // Backtracking line search with Armijo condition
         let mut stepsize = 1.0_f64;
         while stepsize >= MIN_STEP {
-            let new_a = a + stepsize * da;
-            let new_b = b + stepsize * db;
-
-            let mut newf = 0.0;
-            for i in 0..n {
-                let t = if labels[i] > 0.5 { hi_target } else { lo_target };
-                let z = scores[i] * new_a + new_b;
-                newf += if z >= 0.0 {
-                    t * z + (1.0 + (-z).exp()).ln()
-                } else {
-                    (t - 1.0) * z + (1.0 + z.exp()).ln()
-                };
-            }
-
+            let (new_a, new_b) = (a + stepsize * da, b + stepsize * db);
+            let newf = objective(new_a, new_b);
             if newf < fval + 0.0001 * stepsize * gd {
-                a = new_a;
-                b = new_b;
-                fval = newf;
+                (a, b, fval) = (new_a, new_b, newf);
                 break;
             }
             stepsize /= 2.0;
@@ -1051,7 +927,7 @@ fn export_features_tsv(
     data: &TrainingData,
     model_name: &str,
     feature_names: &[&str],
-    dir: &std::path::Path,
+    dir: &Path,
 ) -> Result<()> {
     if data.is_empty() {
         warn!("No examples to export — skipping TSV");
@@ -1108,6 +984,23 @@ fn export_feature_importances(model: &RandomForest, names: &[&str], path: &Path)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A retrain reproduces a model only if every forest gets the seed it got
+    /// before, so the draw order is pinned.
+    #[test]
+    fn forest_seeds_are_drawn_in_training_order() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let expected: Vec<u64> = (0..MlModel::COUNT).map(|_| rng.random()).collect();
+        let seeds = forest_seeds(7);
+        let order = [
+            MlModel::Cpg,
+            MlModel::DenovoCpg,
+            MlModel::Others,
+            MlModel::Insertion,
+            MlModel::Deletion,
+        ];
+        assert_eq!(order.map(|model| seeds[model]).to_vec(), expected);
+    }
 
     fn truth_key(ref_allele: &str, alt_allele: &str) -> Option<TruthKey> {
         TruthKey::of(10, ref_allele.as_bytes(), alt_allele.as_bytes())

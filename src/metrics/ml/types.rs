@@ -70,6 +70,16 @@ impl<T> ByModel<T> {
     pub fn iter(&self) -> impl Iterator<Item = (MlModel, &T)> {
         MlModel::ALL.into_iter().zip(self.0.iter())
     }
+
+    /// Map every entry in [`MlModel::ALL`] order, stopping at the first error.
+    pub(crate) fn try_map<U, E>(
+        self,
+        mut f: impl FnMut(MlModel, T) -> Result<U, E>,
+    ) -> Result<ByModel<U>, E> {
+        let [a, b, c, d, e] = self.0;
+        let [ma, mb, mc, md, me] = MlModel::ALL;
+        Ok(ByModel([f(ma, a)?, f(mb, b)?, f(mc, c)?, f(md, d)?, f(me, e)?]))
+    }
 }
 
 impl<T> IntoIterator for ByModel<T> {
@@ -103,6 +113,44 @@ impl<T> IndexMut<MlModel> for ByModel<T> {
 }
 
 impl RastairFlatModel {
+    pub(crate) fn from_trained(
+        feature_set: MlFeatureSet,
+        trained: ByModel<(FlatForest, PlattScaling)>,
+    ) -> Self {
+        const {
+            assert!(matches!(
+                MlModel::ALL,
+                [
+                    MlModel::Others,
+                    MlModel::Cpg,
+                    MlModel::DenovoCpg,
+                    MlModel::Insertion,
+                    MlModel::Deletion
+                ]
+            ));
+        }
+        let [
+            (others, others_platt),
+            (cpg, cpg_platt),
+            (denovo, denovo_platt),
+            (insertion, insertion_platt),
+            (deletion, deletion_platt),
+        ] = trained.0;
+        Self {
+            cpg,
+            cpg_platt,
+            denovo,
+            denovo_platt,
+            others,
+            others_platt,
+            insertion,
+            insertion_platt,
+            deletion,
+            deletion_platt,
+            feature_set,
+        }
+    }
+
     pub fn forest(&self, model: MlModel) -> &FlatForest {
         match model {
             MlModel::Others => &self.others,
@@ -256,6 +304,17 @@ impl MlModel {
             Self::DenovoCpg => 2,
             Self::Insertion => 3,
             Self::Deletion => 4,
+        }
+    }
+
+    /// What the model's exports and messages call it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Others => "other",
+            Self::Cpg => "cpg",
+            Self::DenovoCpg => "denovo",
+            Self::Insertion => "insertion",
+            Self::Deletion => "deletion",
         }
     }
 }

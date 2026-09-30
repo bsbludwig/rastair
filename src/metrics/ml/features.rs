@@ -161,6 +161,18 @@ pub struct FeatureNames {
     pub deletion: Vec<&'static str>,
 }
 
+impl FeatureNames {
+    pub fn get(&self, model: MlModel) -> &[&'static str] {
+        match model {
+            MlModel::Others => &self.others,
+            MlModel::Cpg => &self.cpg,
+            MlModel::DenovoCpg => &self.denovo_cpg,
+            MlModel::Insertion => &self.insertion,
+            MlModel::Deletion => &self.deletion,
+        }
+    }
+}
+
 pub type FeatureCalculatorBox = Box<dyn FeatureCalculator>;
 
 /// Calculate ML features from variant metrics
