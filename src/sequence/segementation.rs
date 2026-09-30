@@ -124,6 +124,14 @@ impl Deref for Segment {
 }
 
 impl Segment {
+    /// Whether `pos` is one this segment emits, rather than one of the overlap
+    /// positions a neighbouring segment owns.
+    pub(crate) fn is_core(&self, pos: u64) -> bool {
+        let core_start = self.region.start + self.overlap_start;
+        let core_end = self.region.end.saturating_sub(self.overlap_end);
+        pos >= core_start && pos < core_end
+    }
+
     /// Get a slice of the sequence
     pub fn sequence_slice<const N: usize>(
         &self,
