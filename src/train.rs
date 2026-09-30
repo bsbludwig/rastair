@@ -661,8 +661,9 @@ fn collect_training_data_from_segment(
     let mut insertion_data = TrainingData::new();
     let mut deletion_data = TrainingData::new();
 
-    // Build pileups
-    let mapping_params = PileupMappingParams::default();
+    // Indel observations are off by default; without them every insertion and
+    // deletion bucket stays empty and no model file can be written.
+    let mapping_params = PileupMappingParams { call_indels: true, ..Default::default() };
     let (segment, pileup_iter) =
         get_pileups(readers, chunk_region, &mapping_params).wrap_err("Failed to build pileups")?;
 
@@ -795,7 +796,10 @@ fn train_and_save(
     params: &TrainModelParams,
     seed: u64,
 ) -> Result<(RandomForest, PlattScaling)> {
-    ensure!(!data.is_empty(), "No training data for {model_name} model, skipping");
+    ensure!(
+        !data.is_empty(),
+        "No training data collected for the {model_name} model, so no model file can be written"
+    );
 
     info!(seed, examples = data.len(), "Training model");
 
