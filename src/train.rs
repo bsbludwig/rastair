@@ -982,7 +982,8 @@ fn export_features_tsv(
 
     for example in data.examples() {
         let row = data.row_of(example).wrap_err("Training example has no feature row")?;
-        write!(writer, "{}\t{}\t{}", example.chrom, example.pos, example.label.weight())?;
+        let pos = example.pos.saturating_add(1);
+        write!(writer, "{}\t{pos}\t{}", example.chrom, example.label.weight())?;
         for v in row {
             write!(writer, "\t{v}")?;
         }
@@ -1171,6 +1172,19 @@ mod tests {
         assert_eq!(collected[MlModel::Cpg].len(), 1);
         assert_eq!(collected[MlModel::Cpg].rejected(), 3);
         assert_eq!(collected[MlModel::Others].rejected(), 0);
+        Ok(())
+    }
+
+    /// `--export-features` is joined against VCFs, whose positions are 1-based.
+    #[test]
+    fn exported_features_carry_1_based_positions() -> Result<()> {
+        let mut data = TrainingData::for_request(2, SamplingRequest { positive: 1, negative: 1 });
+        let mut keys = KeySource::for_segment(0, 0, MlModel::Cpg);
+        data.add_example(&[0.5, 1.5], Label::Positive, "chr1".into(), 99, &mut keys)?;
+        let dir = tempfile::tempdir()?;
+        export_features_tsv(&data, "cpg", &["a", "b"], dir.path())?;
+        let tsv = std::fs::read_to_string(dir.path().join("cpg_features.tsv"))?;
+        assert_eq!(tsv, "chrom\tpos\tlabel\ta\tb\nchr1\t100\t1\t0.5\t1.5\n");
         Ok(())
     }
 
