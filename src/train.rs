@@ -376,6 +376,14 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let features = params.ml_features.get_calculator().feature_num();
     let feature_names = params.ml_features.get_calculator().feature_names();
 
+    // Created before fitting: failing here costs seconds, failing after costs
+    // the whole run.
+    if let Some(path) = params.feature_analytics.as_ref() {
+        std::fs::create_dir_all(path.path()).wrap_err_with(|| {
+            format!("Failed to create feature analytics directory: {}", path.display())
+        })?;
+    }
+
     if let Some(ref export_dir) = params.export_features {
         std::fs::create_dir_all(export_dir.path()).wrap_err_with(|| {
             format!("Failed to create export directory: {}", export_dir.display())
