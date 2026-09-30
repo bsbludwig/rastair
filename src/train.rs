@@ -28,7 +28,7 @@ use crate::{
     },
     regions::ConfidentRegions,
     sequence::{
-        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Region, SegmentationParams,
+        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Region, Segment, SegmentationParams,
     },
     utils::{cli, map_surrounding},
     verify::for_each_record_in_regions,
@@ -48,6 +48,7 @@ use std::{
     fs::File,
     io::{BufWriter, Write},
     path::Path,
+    rc::Rc,
     thread::available_parallelism,
 };
 use tracing::{debug, info, instrument, trace, warn};
@@ -435,24 +436,25 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
     Ok((collected, failed_segments))
 }
 
-/// The columns of one segment, as the feature extractors read them.
+/// The columns of one segment, overlaps included, as the feature extractors
+/// read them.
 fn segment_columns(
     readers: &mut PileupReaders,
     segment: &ChunkRegion,
-) -> Result<Vec<PileupMetrics>> {
+) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
     let mapping = PileupMappingParams { call_indels: true, ..Default::default() };
 
     #[cfg(feature = "experimental-seqair")]
-    let columns = {
-        let (_segment, columns) =
+    let (segment, columns) = {
+        let (segment, columns) =
             get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        columns.collect()
+        (segment, columns.collect())
     };
     #[cfg(not(feature = "experimental-seqair"))]
-    let columns = {
+    let (segment, columns) = {
         let (segment, pileups) =
             get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        calculate_pileup_metrics(pileups, &segment)
+        let columns = calculate_pileup_metrics(pileups, &segment)
             .filter_map(|metrics| {
                 metrics
                     .inspect_err(|e| {
@@ -460,10 +462,11 @@ fn segment_columns(
                     })
                     .ok()
             })
-            .collect()
+            .collect();
+        (segment, columns)
     };
 
-    Ok(columns)
+    Ok((segment, columns))
 }
 
 /// Turns one segment's candidates into labelled examples.
@@ -493,13 +496,16 @@ impl SegmentCollector<'_> {
         let Some(truth) = self.truth.contigs.get(&segment.contig) else {
             return Ok(self.empty());
         };
-        let mut columns = segment_columns(readers, segment)?;
+        let (segment, mut columns) = segment_columns(readers, segment)?;
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
+        // The overlap columns stay in as neighbours, as in `call`, but only
+        // the core offers candidates: the neighbouring segment offers the rest.
         map_surrounding(
             &mut columns,
             |before, column, after| {
-                if !self.truth.claims(&segment.contig, u64::from(column.pos)) {
+                let pos = u64::from(column.pos);
+                if !segment.is_core(pos) || !self.truth.claims(&segment.contig, pos) {
                     return Ok(());
                 }
                 self.snvs(truth, &mut examples, before, column, after)?;
@@ -1167,6 +1173,52 @@ mod tests {
         assert_eq!(collected[MlModel::Others].rejected(), 0);
         Ok(())
     }
+
+    /// Neighbouring segments share their overlap, and each of its candidates
+    /// must be offered once, by the segment whose core holds it.
+    #[cfg(feature = "experimental-seqair")]
+    #[test]
+    fn overlapping_segments_offer_every_candidate_once() -> Result<()> {
+        let truth = Truth {
+            contigs: HashMap::from([("bacteriophage_lambda_CpG".into(), ContigTruth::default())]),
+            confident: None,
+        };
+        let calculator = MlFeatureSet::Standard.get_calculator();
+        let collector = SegmentCollector {
+            truth: &truth,
+            calculator: &*calculator,
+            feature_num: calculator.feature_num(),
+            plan: model_parameters(&[]).sampling_plan(),
+            indel_params: IndelParams {
+                experimental_indels: Some(IndelPathway::Ml),
+                ..IndelParams::default()
+            },
+        };
+        let mut params = ReaderParams::test_data();
+        params.regions = Some(crate::utils::CliRegionInput::from_region(
+            "bacteriophage_lambda_CpG:1001-4000".parse()?,
+        ));
+        let offered = |max_length: u64, overlap: u64| -> Result<u64> {
+            let mut readers = params.pileup_readers()?;
+            let segments: Vec<ChunkRegion> = readers.segments(max_length, overlap)?.collect();
+            let mut offered = 0;
+            for (index, segment) in segments.iter().enumerate() {
+                let collected = collector.segment(
+                    &mut readers,
+                    segment,
+                    &mut ByModel::from_fn(|model| KeySource::for_segment(0, index, model)),
+                )?;
+                offered += collected.iter().map(|(_, data)| data.seen().negative).sum::<u64>();
+            }
+            Ok(offered)
+        };
+
+        let whole = offered(10_000, 0)?;
+        assert!(whole > 0);
+        assert_eq!(offered(1_000, 200)?, whole);
+        Ok(())
+    }
+
     fn chunk(contig: &str, start: u64, end: u64) -> ChunkRegion {
         ChunkRegion {
             region: Region { contig: contig.into(), start, end },
