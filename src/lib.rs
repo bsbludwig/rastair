@@ -50,8 +50,6 @@ pub(crate) mod utils {
     mod sequence_context;
     pub use sequence_context::SequenceContext;
 
-    mod rayon;
-
     pub mod regions;
     pub use regions::CliRegionInput;
 }
