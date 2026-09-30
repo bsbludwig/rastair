@@ -14,7 +14,7 @@ use tabled::{
     builder::Builder,
     settings::{Alignment, Modify, Style, object::Columns},
 };
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 // ─── CLI params ────────────────────────────────────────────────────────────
 
@@ -360,12 +360,21 @@ fn load_variants(
     Ok(result)
 }
 
+/// htslib's `fetch` takes 0-based inclusive bounds; a region string is 1-based inclusive.
+fn fetch_bounds(region: &RegionString) -> (u64, Option<u64>) {
+    (
+        region.start.map_or(0, |start| start.to_zero_based().as_u64()),
+        region.end.map(|end| end.to_zero_based().as_u64()),
+    )
+}
+
 /// Visit every record of the indexed VCF at `path` inside `regions`, in order.
 ///
 /// A region on a chromosome the file does not declare is skipped with a
 /// warning rather than an error: a truth set such as GIAB HG001 has no chrX
-/// or chrY, and a whole-genome comparison must not fail on that account.
-fn for_each_record_in_regions(
+/// or chrY, and a whole-genome comparison must not fail on that account. A
+/// declared chromosome without records is simply empty.
+pub(crate) fn for_each_record_in_regions(
     path: &Path,
     regions: &[RegionString],
     threads: usize,
@@ -385,13 +394,19 @@ fn for_each_record_in_regions(
             );
             continue;
         };
-        reader
-            .fetch(
-                rid,
-                region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or(0),
-                region.end.map(|x: seqair_types::Pos1| x.as_u64()),
-            )
-            .wrap_err_with(|| format!("Failed to fetch region {region}"))?;
+        let (start, end) = fetch_bounds(region);
+        match reader.fetch(rid, start, end) {
+            Ok(()) => {}
+            // The index lists only contigs that hold records, so a declared
+            // contig without any cannot be sought.
+            Err(bcf::BcfError::GenomicSeek { .. }) => {
+                debug!(chromosome = %region.chromosome, "No records on this chromosome");
+                continue;
+            }
+            Err(error) => {
+                return Err(error).wrap_err_with(|| format!("Failed to fetch region {region}"));
+            }
+        }
         for rec in reader.records() {
             match rec {
                 Ok(r) => visit(&r, &header),
@@ -1093,6 +1108,35 @@ fn write_html_report(report: &Report, writer: &mut impl std::io::Write) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_region_is_fetched_from_its_first_to_its_last_base() -> Result<()> {
+        assert_eq!(fetch_bounds(&"chr1:100-200".parse()?), (99, Some(199)));
+        assert_eq!(fetch_bounds(&"chr1".parse()?), (0, None));
+        Ok(())
+    }
+
+    #[test]
+    fn a_declared_chromosome_without_records_is_empty() -> Result<()> {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("truth.vcf.gz");
+        let mut vcf = rust_htslib::bgzf::Writer::from_path(&path)?;
+        vcf.write_all(
+            b"##fileformat=VCFv4.2\n##contig=<ID=chr1,length=1000>\n\
+              ##contig=<ID=chr2,length=1000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+              chr1\t100\t.\tA\tG\t.\tPASS\t.\n",
+        )?;
+        drop(vcf);
+        bcf::index::build(&path, None, 1, bcf::index::Type::Csi(14))?;
+
+        let mut visited = Vec::new();
+        for_each_record_in_regions(&path, &["chr2".parse()?, "chr1".parse()?], 1, |record, _| {
+            visited.push(record.pos());
+        })?;
+        assert_eq!(visited, [99]);
+        Ok(())
+    }
 
     fn key(chrom: &str, pos: u64, ref_allele: &str, alt_allele: &str) -> FullPositionKey {
         FullPositionKey {
