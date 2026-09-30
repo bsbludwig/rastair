@@ -14,7 +14,6 @@ mod reservoir;
 use crate::call::process::calculate_pileup_metrics;
 use crate::{
     call::{
-        ml::DEFAULT_ML_THRESHOLD,
         pileup::indels::IndelAllele,
         process::{PileupMappingParams, get_pileups},
         variant_calling::indel_calling::{self, IndelParams, IndelPathway},
@@ -39,7 +38,7 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use reservoir::{ByLabel, KeySource, Label, SamplingRequest, TrainingData};
 use rust_htslib::bcf::{self, Read as _};
-use seqair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
+use seqair_types::{Base, RegionString, SmallVec, SmolStr};
 use std::{
     collections::{BTreeMap, HashSet},
     fs::File,
@@ -73,8 +72,8 @@ pub struct TrainModelParams {
     #[arg(long = "regions-file", short = 'R', help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
     regions_file: Option<ClioPath>,
 
-    /// Output directory for trained models
-    #[arg(short = 'o', long = "output", default_value = "./models")]
+    /// Model file to write
+    #[arg(short = 'o', long = "output", default_value = "models/rastair.rff.mpk.lz4")]
     #[arg(help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::FilePath)]
     output: ClioPath,
 
@@ -90,11 +89,6 @@ pub struct TrainModelParams {
 
     #[command(flatten)]
     model_params: ModelParameters,
-
-    /// ML threshold for model evaluation (used for reporting metrics)
-    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.8", num_args = 0..=1)]
-    #[arg(help_heading = cli::sections::TRAINING)]
-    ml: Probability,
 
     #[arg(long, default_value_t = MlFeatureSet::Standard)]
     ml_features: MlFeatureSet,
@@ -287,6 +281,12 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 /// Every directory a run writes into, created before any work: failing here
 /// costs seconds, failing after fitting costs the whole run.
 fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
+    ensure!(
+        !params.output.is_dir(),
+        "--output {} is a directory; name the model file to write, e.g. {}",
+        params.output.display(),
+        params.output.path().join("rastair.rff.mpk.lz4").display(),
+    );
     let model_dir = params.output.parent().wrap_err("output path invalid")?;
     std::fs::create_dir_all(model_dir).wrap_err_with(|| {
         format!("Failed to create output directory: {}", params.output.display())
@@ -932,6 +932,33 @@ fn export_feature_importances(model: &RandomForest, names: &[&str], path: &Path)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
+
+    #[derive(clap::Parser)]
+    struct TrainCli {
+        #[command(flatten)]
+        train: TrainModelParams,
+    }
+
+    /// The model is written after collecting and fitting everything, so a
+    /// path that cannot take it must fail before any of that.
+    #[test]
+    fn an_output_directory_is_refused_before_any_work() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().to_str().wrap_err("temporary path is not UTF-8")?;
+        let params = TrainCli::try_parse_from([
+            "train",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "truth.vcf.gz",
+            "--output",
+            output,
+        ])?
+        .train;
+        let error = create_output_dirs(&params).expect_err("a directory is not a model file");
+        assert!(error.to_string().contains("is a directory"), "{error}");
+        Ok(())
+    }
 
     /// A retrain reproduces a model only if every forest gets the seed it got
     /// before, so the draw order is pinned.
