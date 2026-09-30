@@ -27,8 +27,11 @@ use crate::{
         },
     },
     regions::ConfidentRegions,
-    sequence::{ChunkRegion, PileupReaders, ReaderParams, ReaderSource, SegmentationParams},
+    sequence::{
+        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Region, SegmentationParams,
+    },
     utils::{cli, map_surrounding},
+    verify::for_each_record_in_regions,
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
 use clio::ClioPath;
@@ -39,12 +42,12 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use reservoir::{ByLabel, KeySource, Label, SamplingRequest, TrainingData};
 use rust_htslib::bcf::{self, Read as _};
-use seqair_types::{Base, RegionString, SmallVec, SmolStr};
+use seqair_types::{Base, Pos0, RegionString, SmallVec, SmolStr};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
     io::{BufWriter, Write},
-    path::{Path, PathBuf},
+    path::Path,
     thread::available_parallelism,
 };
 use tracing::{debug, info, instrument, trace, warn};
@@ -212,24 +215,25 @@ struct IndelKey {
 
 /// The labels a candidate is checked against.
 struct Truth {
-    snps: HashSet<PositionKey>,
-    indels: HashSet<IndelKey>,
+    /// Only the contigs the truth VCF declares: it makes no claim about any
+    /// other, so candidates there are not trained on.
+    contigs: HashMap<SmolStr, ContigTruth>,
     /// Outside these intervals the truth set makes no claim, so candidates
     /// there are dropped rather than labelled negative.
     confident: Option<ConfidentRegions>,
 }
 
+/// The true variants of one contig.
+#[derive(Debug, Default)]
+struct ContigTruth {
+    snps: HashSet<PositionKey>,
+    indels: HashSet<IndelKey>,
+}
+
 impl Truth {
     fn load(params: &TrainModelParams, regions: &[RegionString]) -> Result<Self> {
-        let mut snps = HashSet::new();
-        let mut indels = HashSet::new();
-        for region in regions {
-            let (region_snps, region_indels) =
-                load_truth_vcf(&params.truth, region, params.threads)
-                    .wrap_err_with(|| format!("Failed to load truth VCF for region {region}"))?;
-            snps.extend(region_snps);
-            indels.extend(region_indels);
-        }
+        let contigs = truth_keys(params.truth.path(), regions, params.threads)
+            .wrap_err_with(|| format!("Failed to load truth VCF {}", params.truth.display()))?;
 
         let confident = params
             .regions_file
@@ -245,7 +249,7 @@ impl Truth {
             );
         }
 
-        Ok(Self { snps, indels, confident })
+        Ok(Self { contigs, confident })
     }
 
     fn claims(&self, contig: &str, pos: u64) -> bool {
@@ -349,13 +353,6 @@ fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
 /// Label every candidate in the requested regions and file it under its model,
 /// and count the segments that failed.
 fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(Collected, usize)> {
-    // Without explicit regions the truth set is read for chr12 only.
-    let regions =
-        params.reader.regions.as_ref().map(|input| input.regions().to_vec()).unwrap_or_else(|| {
-            vec![RegionString { chromosome: "chr12".into(), start: None, end: None }]
-        });
-    let truth = Truth::load(params, &regions)?;
-
     let segmentation = SegmentationParams::default();
     let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
     let segments: Vec<ChunkRegion> = readers
@@ -364,6 +361,7 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
         .collect();
     ensure!(!segments.is_empty(), "No segments found in BAM file");
     info!("Processing {} segments to collect training data", segments.len());
+    let truth = Truth::load(params, &covered_regions(&segments)?)?;
 
     let calculator = params.ml_features.get_calculator();
     let collector = SegmentCollector {
@@ -492,6 +490,9 @@ impl SegmentCollector<'_> {
         segment: &ChunkRegion,
         keys: &mut ByModel<KeySource>,
     ) -> Result<Collected> {
+        let Some(truth) = self.truth.contigs.get(&segment.contig) else {
+            return Ok(self.empty());
+        };
         let mut columns = segment_columns(readers, segment)?;
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
@@ -501,8 +502,8 @@ impl SegmentCollector<'_> {
                 if !self.truth.claims(&segment.contig, u64::from(column.pos)) {
                     return Ok(());
                 }
-                self.snvs(&mut examples, before, column, after)?;
-                self.indels(&mut examples, column)
+                self.snvs(truth, &mut examples, before, column, after)?;
+                self.indels(truth, &mut examples, column)
             },
             "failed to extract training features, skipping",
         );
@@ -511,6 +512,7 @@ impl SegmentCollector<'_> {
 
     fn snvs(
         &self,
+        truth: &ContigTruth,
         examples: &mut Examples<'_>,
         before: Option<&PileupMetrics>,
         column: &PileupMetrics,
@@ -524,7 +526,7 @@ impl SegmentCollector<'_> {
                 continue;
             }
             let Some(candidate) = column.alt_metrics(alt_base) else { continue };
-            let label = self.truth.snps.contains(&PositionKey { pos, ref_base, alt_base });
+            let label = truth.snps.contains(&PositionKey { pos, ref_base, alt_base });
 
             let (model, features) = if candidate.is_evidence_for_methylation() {
                 (MlModel::Cpg, self.calculator.calculate_cpg(&candidate, before, after))
@@ -541,14 +543,19 @@ impl SegmentCollector<'_> {
         Ok(())
     }
 
-    fn indels(&self, examples: &mut Examples<'_>, column: &PileupMetrics) -> Result<()> {
+    fn indels(
+        &self,
+        truth: &ContigTruth,
+        examples: &mut Examples<'_>,
+        column: &PileupMetrics,
+    ) -> Result<()> {
         let Some(indel_data) = column.indel_data.as_ref() else { return Ok(()) };
         let pos = u64::from(column.pos);
         let tract = u32::from(indel_data.homopolymer_run.max(indel_data.dinucleotide_run));
         let calls =
             indel_calling::call_indels(&indel_data.counts, &self.indel_params, true, tract, false);
         for call in &calls {
-            let label = self.truth.indels.contains(&IndelKey { pos, allele: call.allele.clone() });
+            let label = truth.indels.contains(&IndelKey { pos, allele: call.allele.clone() });
             let candidate = MetricsForIndel { metrics: column, indel: call };
             let (model, features) = match call.allele {
                 IndelAllele::Insertion(_) => {
@@ -608,76 +615,95 @@ impl Examples<'_> {
     }
 }
 
-/// Load truth VCF and create an index of variant positions (SNPs and indels).
-#[instrument(level = "info", skip_all)]
-fn load_truth_vcf(
-    vcf_path: &ClioPath,
-    region: &RegionString,
-    threads: usize,
-) -> Result<(HashSet<PositionKey>, HashSet<IndelKey>)> {
-    info!(path=%vcf_path, %region, "Loading truth vcf");
-
-    ensure!(vcf_path.exists(), "Predictions VCF file `{vcf_path:?}` not found.");
-    let index_path = PathBuf::from(format!("{}.csi", vcf_path.path().display()));
-    ensure!(
-        index_path.exists(),
-        "Predictions VCF index `{index_path:?}` not found. Please create an index with `bcftools index {vcf_path}`",
-    );
-
-    let mut reader = bcf::IndexedReader::from_path(vcf_path.path())
-        .wrap_err_with(|| format!("Failed to open truth VCF file: {}", vcf_path.display()))?;
-    reader.set_threads(threads.max(2)).wrap_err("Failed to set threads for truth VCF reader")?;
-
-    let mut snp_variants = HashSet::new();
-    let mut indel_variants = HashSet::new();
-    let header = reader.header();
-
-    reader
-        .fetch(
-            header.name2rid(region.chromosome.as_bytes()).wrap_err_with(|| {
-                format!("Failed to get rid for chromosome {} in truth VCF", region.chromosome)
-            })?,
-            region.start.map(|x: seqair_types::Pos1| x.as_u64()).unwrap_or_default(),
-            region.end.map(|x: seqair_types::Pos1| x.as_u64()),
-        )
-        .wrap_err("Failed to fetch region from truth VCF")?;
-
-    for result in reader.records() {
-        let record = match result {
-            Ok(record) => record,
-            Err(error) => {
-                warn!(error=%error, "Failed to read record from truth VCF");
-                continue;
+/// The stretches of genome the segments cover, merged across their overlaps.
+fn covered_regions(segments: &[ChunkRegion]) -> Result<Vec<RegionString>> {
+    let mut spans: Vec<Region> = Vec::new();
+    for segment in segments {
+        match spans.last_mut() {
+            Some(span)
+                if span.contig == segment.contig && segment.start <= span.end.saturating_add(1) =>
+            {
+                span.end = span.end.max(segment.end);
             }
-        };
-
-        let (snps, indels) = process_truth_record(&record);
-        snp_variants.extend(snps);
-        indel_variants.extend(indels);
-    }
-
-    info!(snps = snp_variants.len(), indels = indel_variants.len(), "Loaded true variants");
-
-    Ok((snp_variants, indel_variants))
-}
-
-/// The SNP and indel keys of one PASS truth record.
-fn process_truth_record(record: &bcf::Record) -> (SmallVec<PositionKey, 2>, SmallVec<IndelKey, 2>) {
-    let mut keys = (SmallVec::new(), SmallVec::new());
-    if !record.has_filter("PASS".as_bytes()) {
-        return keys;
-    }
-    let Ok(pos) = u64::try_from(record.pos()) else { return keys };
-    let alleles = record.alleles();
-    let Some((&ref_allele, alts)) = alleles.split_first() else { return keys };
-    for &alt_allele in alts {
-        match TruthKey::of(pos, ref_allele, alt_allele) {
-            Some(TruthKey::Snv(key)) => keys.0.push(key),
-            Some(TruthKey::Indel(key)) => keys.1.push(key),
-            None => {}
+            _ => spans.push(segment.region.clone()),
         }
     }
-    keys
+    spans
+        .iter()
+        .map(|span| {
+            let one_based = |pos: u64| {
+                Pos0::try_from(pos)
+                    .ok()
+                    .and_then(|pos| pos.to_one_based().ok())
+                    .wrap_err_with(|| format!("Segment {span} lies outside the addressable range"))
+            };
+            Ok(RegionString {
+                chromosome: span.contig.clone(),
+                start: Some(one_based(span.start)?),
+                end: Some(one_based(span.end)?),
+            })
+        })
+        .collect()
+}
+
+/// The SNP and indel keys of every PASS record of the truth VCF in `regions`,
+/// for each contig of `regions` the VCF declares.
+#[instrument(level = "info", skip_all, fields(path = %path.display()))]
+fn truth_keys(
+    path: &Path,
+    regions: &[RegionString],
+    threads: usize,
+) -> Result<HashMap<SmolStr, ContigTruth>> {
+    let header =
+        bcf::Reader::from_path(path).wrap_err("Failed to read the header")?.header().clone();
+    let (declared, undeclared): (Vec<RegionString>, Vec<RegionString>) = regions
+        .iter()
+        .cloned()
+        .partition(|region| header.name2rid(region.chromosome.as_bytes()).is_ok());
+    let undeclared: BTreeSet<&str> = undeclared.iter().map(|r| r.chromosome.as_str()).collect();
+    if !undeclared.is_empty() {
+        warn!(
+            contigs = ?undeclared,
+            "The truth set does not declare these contigs; their candidates are not trained on"
+        );
+    }
+
+    let mut contigs: HashMap<SmolStr, ContigTruth> =
+        declared.iter().map(|r| (r.chromosome.clone(), ContigTruth::default())).collect();
+    for_each_record_in_regions(path, &declared, threads, |record, header| {
+        let Some(truth) = record
+            .rid()
+            .and_then(|rid| header.rid2name(rid).ok())
+            .and_then(|name| std::str::from_utf8(name).ok())
+            .and_then(|name| contigs.get_mut(name))
+        else {
+            return;
+        };
+        if !record.has_filter("PASS".as_bytes()) {
+            return;
+        }
+        let Ok(pos) = u64::try_from(record.pos()) else { return };
+        let alleles = record.alleles();
+        let Some((&ref_allele, alts)) = alleles.split_first() else { return };
+        for &alt_allele in alts {
+            match TruthKey::of(pos, ref_allele, alt_allele) {
+                Some(TruthKey::Snv(key)) => {
+                    truth.snps.insert(key);
+                }
+                Some(TruthKey::Indel(key)) => {
+                    truth.indels.insert(key);
+                }
+                None => {}
+            }
+        }
+    })?;
+    let count = |of: fn(&ContigTruth) -> usize| contigs.values().map(of).sum::<usize>();
+    info!(
+        snps = count(|t| t.snps.len()),
+        indels = count(|t| t.indels.len()),
+        "Loaded true variants"
+    );
+    Ok(contigs)
 }
 
 /// What one ALT allele of a truth record labels.
@@ -1139,6 +1165,92 @@ mod tests {
         assert_eq!(collected[MlModel::Cpg].len(), 1);
         assert_eq!(collected[MlModel::Cpg].rejected(), 3);
         assert_eq!(collected[MlModel::Others].rejected(), 0);
+        Ok(())
+    }
+    fn chunk(contig: &str, start: u64, end: u64) -> ChunkRegion {
+        ChunkRegion {
+            region: Region { contig: contig.into(), start, end },
+            last_position: 1_000_000,
+            overlap_start: 0,
+            overlap_end: 0,
+        }
+    }
+
+    /// Without `-l` the segments cover the whole BAM, and every contig they
+    /// reach must be labelled against its own truth.
+    #[test]
+    fn truth_is_read_for_every_stretch_the_segments_cover() -> Result<()> {
+        let segments = [chunk("chr1", 99, 299), chunk("chr1", 200, 499), chunk("chr2", 0, 99)];
+        assert_eq!(
+            covered_regions(&segments)?,
+            vec!["chr1:100-500".parse::<RegionString>()?, "chr2:1-100".parse()?]
+        );
+        Ok(())
+    }
+
+    /// Write a bgzipped, indexed truth VCF declaring `chr1` and `chr2`.
+    fn truth_vcf(dir: &Path, records: &[u8]) -> Result<std::path::PathBuf> {
+        use std::io::Write as _;
+        let path = dir.join("truth.vcf.gz");
+        let mut vcf = rust_htslib::bgzf::Writer::from_path(&path)?;
+        vcf.write_all(
+            b"##fileformat=VCFv4.2\n##FILTER=<ID=PASS,Description=\"All filters passed\">\n\
+              ##contig=<ID=chr1,length=1000>\n##contig=<ID=chr2,length=1000>\n\
+              #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+        )?;
+        vcf.write_all(records)?;
+        drop(vcf);
+        bcf::index::build(&path, None, 1, bcf::index::Type::Csi(14))?;
+        Ok(path)
+    }
+
+    /// A truth variant on a region's first base labels its candidate positive.
+    #[test]
+    fn a_truth_variant_on_the_first_base_of_a_region_is_loaded() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = truth_vcf(
+            dir.path(),
+            b"chr1\t100\t.\tA\tG\t.\tPASS\t.\nchr1\t301\t.\tC\tT\t.\tPASS\t.\n",
+        )?;
+
+        let contigs = truth_keys(&path, &covered_regions(&[chunk("chr1", 99, 299)])?, 1)?;
+        let first = PositionKey { pos: 99, ref_base: Base::A, alt_base: Base::G };
+        let chr1 = contigs.get("chr1").wrap_err("chr1 is declared")?;
+        assert_eq!(chr1.snps, HashSet::from([first]));
+        Ok(())
+    }
+
+    /// Positions repeat across contigs, so a truth variant must label only
+    /// the contig it is on.
+    #[test]
+    fn a_truth_variant_labels_only_its_own_contig() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = truth_vcf(
+            dir.path(),
+            b"chr1\t100\t.\tA\tG\t.\tPASS\t.\nchr1\t200\t.\tA\tAT\t.\tPASS\t.\n",
+        )?;
+
+        let segments = [chunk("chr1", 0, 999), chunk("chr2", 0, 999)];
+        let contigs = truth_keys(&path, &covered_regions(&segments)?, 1)?;
+        let chr1 = contigs.get("chr1").wrap_err("chr1 is declared")?;
+        let chr2 = contigs.get("chr2").wrap_err("chr2 is declared")?;
+        assert!(chr1.snps.contains(&PositionKey { pos: 99, ref_base: Base::A, alt_base: Base::G }));
+        assert_eq!(chr1.indels.len(), 1);
+        assert!(chr2.snps.is_empty() && chr2.indels.is_empty());
+        Ok(())
+    }
+
+    /// A contig the truth VCF does not declare is one it makes no claim
+    /// about, so its candidates must not all become negatives.
+    #[test]
+    fn a_contig_the_truth_does_not_declare_is_not_trained_on() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = truth_vcf(dir.path(), b"chr1\t100\t.\tA\tG\t.\tPASS\t.\n")?;
+
+        let segments = [chunk("chr1", 0, 999), chunk("chrM", 0, 999)];
+        let contigs = truth_keys(&path, &covered_regions(&segments)?, 1)?;
+        assert!(contigs.contains_key("chr1"));
+        assert!(!contigs.contains_key("chrM"));
         Ok(())
     }
 }
