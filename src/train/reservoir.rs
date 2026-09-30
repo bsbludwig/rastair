@@ -482,6 +482,14 @@ mod tests {
         assert_eq!(row(&data, 3), None);
     }
 
+    /// A reservoir capped below the draw would discard the very examples the
+    /// draw asks for, and one without holdout headroom would starve Platt.
+    #[test]
+    fn a_reservoir_has_room_for_its_draw_and_a_full_holdout() {
+        let data = TrainingData::for_request(3, caps(8_000, 20_000));
+        assert_eq!(data.caps, caps(8_000 + MAX_HOLDOUT, 20_000 + MAX_HOLDOUT));
+    }
+
     #[test]
     fn a_row_of_the_wrong_width_is_rejected() {
         let mut data = TrainingData::bounded(3, UNBOUNDED);

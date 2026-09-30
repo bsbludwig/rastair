@@ -4,7 +4,8 @@
 //! 1. Collect: run the column pipeline over every segment, label each SNV and
 //!    indel candidate against the truth set, and file it under its model.
 //!    Each model keeps a bounded uniform sample of what it is offered.
-//! 2. Sample: draw `--n-positive`/`--n-negative` examples per model.
+//! 2. Sample: draw `--n-positive`/`--n-negative` examples per SNV model and
+//!    `--indel-n-positive`/`--indel-n-negative` per indel model.
 //! 3. Fit: a random forest per model, Platt-scaled on examples it did not see.
 //! 4. Export: write the `RastairFlatModel`.
 
@@ -96,7 +97,7 @@ pub struct TrainModelParams {
     /// Number of threads to use
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
     #[arg(help_heading = cli::sections::PROCESSING)]
-    pub threads: usize,
+    threads: usize,
 }
 
 #[derive(Debug, clap::Args)]
@@ -104,49 +105,89 @@ struct ModelParameters {
     /// Number of trees in the random forest
     #[arg(long = "n-trees", default_value_t = 800)]
     #[arg(help_heading = cli::sections::TRAINING)]
-    pub n_trees: usize,
+    n_trees: usize,
 
     /// Number of features to consider at each split (mtry parameter)
-    #[arg(long = "max-features", default_value_t = 2)]
+    #[arg(long = "max-features", default_value_t = 4)]
     #[arg(help_heading = cli::sections::TRAINING)]
-    pub max_features: usize,
+    max_features: usize,
 
     /// Maximum tree depth. `0` grows trees until pure (unbounded), which can
     /// produce very large models on noisy/poorly-separable data such as indels.
-    /// A cap of ~20 typically removes the noise-memorising depth at negligible
-    /// accuracy cost. See <https://scikit-learn.org/stable/modules/tree.html>.
-    #[arg(long = "max-depth", default_value_t = 20)]
+    /// See <https://scikit-learn.org/stable/modules/tree.html>.
+    #[arg(long = "max-depth", default_value_t = 40)]
     #[arg(help_heading = cli::sections::TRAINING)]
-    pub max_depth: usize,
+    max_depth: usize,
 
     /// Minimum number of samples required at each leaf. Larger values prevent
     /// the forest from memorising individual samples, regularising noisy data
-    /// and shrinking the model. scikit-learn suggests 5 as a starting value;
-    /// use 1 for fully-grown leaves (best for clean, well-separated classes).
-    #[arg(long = "min-samples-leaf", default_value_t = 5)]
+    /// and shrinking the model; use 1 for fully-grown leaves.
+    #[arg(long = "min-samples-leaf", default_value_t = 10)]
     #[arg(help_heading = cli::sections::TRAINING)]
-    pub min_samples_leaf: usize,
+    min_samples_leaf: usize,
 
-    /// Number of positive examples (SNPs) to sample for training
+    /// Number of positive examples to draw for each SNV model (CpG, de-novo
+    /// CpG, other).
     #[arg(long = "n-positive", default_value_t = 8_000)]
     #[arg(help_heading = cli::sections::TRAINING)]
-    pub n_positive: usize,
+    n_positive: usize,
 
-    /// Number of negative examples (REF positions) to sample for training
-    #[arg(long = "n-negative", default_value_t = 20_000)]
+    /// Number of negative examples to draw for each SNV model.
+    ///
+    /// Almost every SNV candidate is a sequencing or conversion artefact, and
+    /// the draw should be about as negative-heavy as the candidates a call
+    /// meets.
+    #[arg(long = "n-negative", default_value_t = 200_000)]
     #[arg(help_heading = cli::sections::TRAINING)]
-    pub n_negative: usize,
+    n_negative: usize,
+
+    /// Number of positive examples to draw for the insertion and deletion
+    /// models.
+    #[arg(long = "indel-n-positive", default_value_t = 8_000)]
+    #[arg(help_heading = cli::sections::TRAINING)]
+    indel_n_positive: usize,
+
+    /// Number of negative examples to draw for the insertion and deletion
+    /// models.
+    ///
+    /// Separate from `--n-negative` because indel candidates arrive already
+    /// filtered and are mostly true: the SNV draw would take nearly every
+    /// indel negative and train the indel models far more negative-heavy
+    /// than the candidates they judge.
+    #[arg(long = "indel-n-negative", default_value_t = 20_000)]
+    #[arg(help_heading = cli::sections::TRAINING)]
+    indel_n_negative: usize,
 
     /// Random seed for reproducibility (subsampling and forest training).
     /// Omit for a random seed.
     #[arg(long)]
     #[arg(help_heading = cli::sections::TRAINING)]
-    pub seed: Option<u64>,
+    seed: Option<u64>,
 }
 
 impl ModelParameters {
-    fn sampling_request(&self) -> SamplingRequest {
-        ByLabel { positive: self.n_positive, negative: self.n_negative }
+    fn sampling_plan(&self) -> SamplingPlan {
+        SamplingPlan {
+            snv: ByLabel { positive: self.n_positive, negative: self.n_negative },
+            indel: ByLabel { positive: self.indel_n_positive, negative: self.indel_n_negative },
+        }
+    }
+}
+
+/// The draw each model asks for: SNV and indel candidates have opposite
+/// class balance, so they are sampled separately.
+#[derive(Debug, Clone, Copy)]
+struct SamplingPlan {
+    snv: SamplingRequest,
+    indel: SamplingRequest,
+}
+
+impl SamplingPlan {
+    const fn request(self, model: MlModel) -> SamplingRequest {
+        match model {
+            MlModel::Cpg | MlModel::DenovoCpg | MlModel::Others => self.snv,
+            MlModel::Insertion | MlModel::Deletion => self.indel,
+        }
     }
 }
 
@@ -224,21 +265,26 @@ fn merge_collected(mut acc: Collected, other: Collected) -> Result<Collected> {
 #[instrument(level = "debug", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let seed = params.model_params.seed.unwrap_or_else(rand::random);
+    let plan = params.model_params.sampling_plan();
     info!(
         seed,
         n_trees = params.model_params.n_trees,
         max_features = params.model_params.max_features,
-        n_positive = params.model_params.n_positive,
-        n_negative = params.model_params.n_negative,
+        max_depth = params.model_params.max_depth,
+        min_samples_leaf = params.model_params.min_samples_leaf,
+        n_positive = plan.snv.positive,
+        n_negative = plan.snv.negative,
+        indel_n_positive = plan.indel.positive,
+        indel_n_negative = plan.indel.negative,
         "Training parameters",
     );
 
     create_output_dirs(params)?;
 
-    let (collected, failed_segments) = collect(params, seed)?;
-    let request = params.model_params.sampling_request();
+    let (collected, failed_segments) = collect(params, plan, seed)?;
     for (model, data) in collected.iter() {
         let (seen, kept) = (data.seen(), data.kept());
+        let request = plan.request(model);
         let draw = request.draw_from(kept);
         info!(
             model = model.name(),
@@ -246,6 +292,8 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
             pool_negative = seen.negative,
             kept_positive = kept.positive,
             kept_negative = kept.negative,
+            requested_positive = request.positive,
+            requested_negative = request.negative,
             draw_positive = draw.positive,
             draw_negative = draw.negative,
             rejected = data.rejected(),
@@ -270,7 +318,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         }
     }
 
-    let model = fit(params, seed, collected)?;
+    let model = fit(params, plan, seed, collected)?;
     serialize_model(&model, params.output.clone())
         .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
     info!(path=%params.output, "Saved model");
@@ -300,7 +348,7 @@ fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
 
 /// Label every candidate in the requested regions and file it under its model,
 /// and count the segments that failed.
-fn collect(params: &TrainModelParams, seed: u64) -> Result<(Collected, usize)> {
+fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(Collected, usize)> {
     // Without explicit regions the truth set is read for chr12 only.
     let regions =
         params.reader.regions.as_ref().map(|input| input.regions().to_vec()).unwrap_or_else(|| {
@@ -322,7 +370,7 @@ fn collect(params: &TrainModelParams, seed: u64) -> Result<(Collected, usize)> {
         truth: &truth,
         calculator: &*calculator,
         feature_num: calculator.feature_num(),
-        request: params.model_params.sampling_request(),
+        plan,
         // Training examples come from the ML pathway, not the hard-filter chain.
         indel_params: IndelParams {
             experimental_indels: Some(IndelPathway::Ml),
@@ -425,14 +473,14 @@ struct SegmentCollector<'a> {
     truth: &'a Truth,
     calculator: &'a dyn FeatureCalculator,
     feature_num: FeatureNum,
-    request: SamplingRequest,
+    plan: SamplingPlan,
     indel_params: IndelParams,
 }
 
 impl SegmentCollector<'_> {
     fn empty(&self) -> Collected {
         ByModel::from_fn(|model| {
-            TrainingData::for_request(self.feature_num.get(model), self.request)
+            TrainingData::for_request(self.feature_num.get(model), self.plan.request(model))
         })
     }
 
@@ -681,13 +729,18 @@ fn strip_common_suffix<'a>(mut left: &'a [u8], mut right: &'a [u8]) -> (&'a [u8]
 
 /// Fit every model's forest, one after the other: biosphere parallelises
 /// each fit over `--threads` in a pool of its own.
-fn fit(params: &TrainModelParams, seed: u64, collected: Collected) -> Result<RastairFlatModel> {
+fn fit(
+    params: &TrainModelParams,
+    plan: SamplingPlan,
+    seed: u64,
+    collected: Collected,
+) -> Result<RastairFlatModel> {
     let seeds = forest_seeds(seed);
     let calculator = params.ml_features.get_calculator();
     let (counts, names) = (calculator.feature_num(), calculator.feature_names());
 
     let trained = collected.try_map(|model, data| -> Result<_> {
-        let (forest, platt) = fit_model(model, &data, params, seeds[model])
+        let (forest, platt) = fit_model(model, &data, params, plan.request(model), seeds[model])
             .wrap_err_with(|| format!("Failed to train the {} model", model.name()))?;
         if let Some(dir) = params.feature_analytics.as_ref() {
             let path = dir.path().join(format!("{}_feature_importances.csv", model.name()));
@@ -729,12 +782,12 @@ fn fit_model(
     model: MlModel,
     data: &TrainingData,
     params: &TrainModelParams,
+    request: SamplingRequest,
     seed: u64,
 ) -> Result<(RandomForest, PlattScaling)> {
     info!(seed, examples = data.len(), "Training model");
 
-    let reservoir::Split { train, holdout } =
-        reservoir::split(data, params.model_params.sampling_request(), seed)?;
+    let reservoir::Split { train, holdout } = reservoir::split(data, request, seed)?;
     let train_positives = train.labels.iter().filter(|&&l| l == Label::Positive.weight()).count();
     info!(
         training = train.labels.len(),
@@ -935,6 +988,16 @@ mod tests {
     use clap::Parser as _;
 
     #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        model: ModelParameters,
+    }
+
+    fn model_parameters(args: &[&str]) -> ModelParameters {
+        Cli::try_parse_from(std::iter::once("train").chain(args.iter().copied())).unwrap().model
+    }
+
+    #[derive(clap::Parser)]
     struct TrainCli {
         #[command(flatten)]
         train: TrainModelParams,
@@ -958,6 +1021,29 @@ mod tests {
         let error = create_output_dirs(&params).expect_err("a directory is not a model file");
         assert!(error.to_string().contains("is a directory"), "{error}");
         Ok(())
+    }
+
+    /// A bare command line trains the bundled model's recipe.
+    #[test]
+    fn the_defaults_are_the_bundled_recipe() {
+        let params = model_parameters(&[]);
+        assert_eq!((params.max_features, params.max_depth, params.min_samples_leaf), (4, 40, 10));
+        let plan = params.sampling_plan();
+        assert_eq!(plan.snv, ByLabel { positive: 8_000, negative: 200_000 });
+        assert_eq!(plan.indel, ByLabel { positive: 8_000, negative: 20_000 });
+    }
+
+    /// Raising the SNV draw must not drag the indel models along.
+    #[test]
+    fn indel_models_draw_their_own_numbers() {
+        let plan = model_parameters(&["--n-negative", "500000", "--indel-n-negative", "7"])
+            .sampling_plan();
+        for model in [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others] {
+            assert_eq!(plan.request(model).negative, 500_000, "{}", model.name());
+        }
+        for model in [MlModel::Insertion, MlModel::Deletion] {
+            assert_eq!(plan.request(model).negative, 7, "{}", model.name());
+        }
     }
 
     /// A retrain reproduces a model only if every forest gets the seed it got
