@@ -3,9 +3,12 @@
 //!
 //! 1. Collect: run the column pipeline over every segment, label each SNV and
 //!    indel candidate against the truth set, and file it under its model.
+//!    Each model keeps a bounded uniform sample of what it is offered.
 //! 2. Sample: draw `--n-positive`/`--n-negative` examples per model.
 //! 3. Fit: a random forest per model, Platt-scaled on examples it did not see.
 //! 4. Export: write the `RastairFlatModel`.
+
+mod reservoir;
 
 #[cfg(not(feature = "experimental-seqair"))]
 use crate::call::process::calculate_pileup_metrics;
@@ -19,7 +22,7 @@ use crate::{
     metrics::{
         MetricsForIndel, PileupMetrics,
         ml::{
-            features::FeatureCalculator,
+            features::{FeatureCalculator, FeatureNum},
             types::{ByModel, MlFeatureSet, MlModel, PlattScaling, RastairFlatModel},
         },
     },
@@ -31,9 +34,10 @@ use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, ContextCompat as _, Result, ensure, eyre};
 use lz4::EncoderBuilder;
-use ndarray::{Array1, Array2, Axis};
+use ndarray::Array2;
 use rand::prelude::*;
 use rayon::prelude::*;
+use reservoir::{ByLabel, KeySource, Label, SamplingRequest, TrainingData};
 use rust_htslib::bcf::{self, Read as _};
 use seqair_types::{Base, Probability, RegionString, SmallVec, SmolStr};
 use std::{
@@ -43,7 +47,7 @@ use std::{
     path::{Path, PathBuf},
     thread::available_parallelism,
 };
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
 pub struct TrainModelParams {
@@ -146,6 +150,12 @@ struct ModelParameters {
     pub seed: Option<u64>,
 }
 
+impl ModelParameters {
+    fn sampling_request(&self) -> SamplingRequest {
+        ByLabel { positive: self.n_positive, negative: self.n_negative }
+    }
+}
+
 /// The order the models' forest seeds are drawn from the run seed in.
 const SEED_ORDER: [MlModel; MlModel::COUNT] =
     [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others, MlModel::Insertion, MlModel::Deletion];
@@ -208,49 +218,13 @@ impl Truth {
     }
 }
 
-/// Training data for a specific model type
-#[derive(Default)]
-struct TrainingData {
-    features: Vec<Array2<f64>>,
-    labels: Vec<f64>,
-    positions: Vec<(SmolStr, u64)>,
-}
-
-impl TrainingData {
-    fn add_example(&mut self, features: Array2<f32>, label: f64, chrom: SmolStr, pos: u64) {
-        // Features are computed in f32 (matching the f32 inference forests);
-        // biosphere's RandomForest fits on f64, so widen at this boundary only.
-        self.features.push(features.mapv(f64::from));
-        self.labels.push(label);
-        self.positions.push((chrom, pos));
-    }
-
-    fn merge(&mut self, other: TrainingData) {
-        self.features.extend(other.features);
-        self.labels.extend(other.labels);
-        self.positions.extend(other.positions);
-    }
-
-    fn len(&self) -> usize {
-        self.labels.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.labels.is_empty()
-    }
-
-    fn positives(&self) -> usize {
-        self.labels.iter().filter(|&&l| l == 1.0).count()
-    }
-}
-
 type Collected = ByModel<TrainingData>;
 
-fn merge_collected(mut acc: Collected, other: Collected) -> Collected {
+fn merge_collected(mut acc: Collected, other: Collected) -> Result<Collected> {
     for (model, data) in other {
-        acc[model].merge(data);
+        acc[model].merge(data)?;
     }
-    acc
+    Ok(acc)
 }
 
 #[instrument(level = "debug", skip_all)]
@@ -267,13 +241,30 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     create_output_dirs(params)?;
 
-    let collected = collect(params)?;
+    let (collected, failed_segments) = collect(params, seed)?;
+    let request = params.model_params.sampling_request();
     for (model, data) in collected.iter() {
+        let (seen, kept) = (data.seen(), data.kept());
+        let draw = request.draw_from(kept);
         info!(
             model = model.name(),
-            examples = data.len(),
-            positives = data.positives(),
+            pool_positive = seen.positive,
+            pool_negative = seen.negative,
+            kept_positive = kept.positive,
+            kept_negative = kept.negative,
+            draw_positive = draw.positive,
+            draw_negative = draw.negative,
+            rejected = data.rejected(),
             "Collected training examples"
+        );
+        ensure!(
+            kept.positive >= 2 && kept.negative >= 2,
+            "The {} model collected {} positive and {} negative examples ({failed_segments} \
+             segments failed); it needs at least two of each, one to fit on and one to \
+             calibrate with",
+            model.name(),
+            kept.positive,
+            kept.negative,
         );
     }
 
@@ -307,8 +298,9 @@ fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
     Ok(())
 }
 
-/// Label every candidate in the requested regions and file it under its model.
-fn collect(params: &TrainModelParams) -> Result<Collected> {
+/// Label every candidate in the requested regions and file it under its model,
+/// and count the segments that failed.
+fn collect(params: &TrainModelParams, seed: u64) -> Result<(Collected, usize)> {
     // Without explicit regions the truth set is read for chr12 only.
     let regions =
         params.reader.regions.as_ref().map(|input| input.regions().to_vec()).unwrap_or_else(|| {
@@ -325,9 +317,12 @@ fn collect(params: &TrainModelParams) -> Result<Collected> {
     ensure!(!segments.is_empty(), "No segments found in BAM file");
     info!("Processing {} segments to collect training data", segments.len());
 
+    let calculator = params.ml_features.get_calculator();
     let collector = SegmentCollector {
         truth: &truth,
-        calculator: &*params.ml_features.get_calculator(),
+        calculator: &*calculator,
+        feature_num: calculator.feature_num(),
+        request: params.model_params.sampling_request(),
         // Training examples come from the ML pathway, not the hard-filter chain.
         indel_params: IndelParams {
             experimental_indels: Some(IndelPathway::Ml),
@@ -335,7 +330,9 @@ fn collect(params: &TrainModelParams) -> Result<Collected> {
         },
     };
     let readers = ReaderSource::from(readers);
-    let collected = rayon::ThreadPoolBuilder::new()
+    // Reduced rather than collected: holding every segment's sample until a
+    // final merge would keep `segments x cap` examples alive.
+    let (mut collected, failed_segments) = rayon::ThreadPoolBuilder::new()
         .thread_name(|idx| format!("training-worker-{idx}"))
         .num_threads(params.threads)
         .start_handler(|idx| trace!(idx, "Starting training worker thread"))
@@ -345,32 +342,51 @@ fn collect(params: &TrainModelParams) -> Result<Collected> {
         .install(|| {
             segments
                 .par_iter()
+                .enumerate()
                 .map_init(
                     || readers.fork(),
-                    |readers, segment| {
+                    |readers, (index, segment)| {
                         let _span =
                             tracing::info_span!("collect_segment", region = %segment.region)
                                 .entered();
                         let readers = readers
                             .as_mut()
                             .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
-                        collector.segment(readers, segment)
+                        collector.segment(
+                            readers,
+                            segment,
+                            &mut ByModel::from_fn(|model| {
+                                KeySource::for_segment(seed, index, model)
+                            }),
+                        )
                     },
                 )
-                .filter_map(|result| {
-                    result
-                        .inspect_err(|e| {
+                .map(|result| -> Result<(Collected, usize)> {
+                    Ok(result.map_or_else(
+                        |e| {
                             warn!(
                                 error = format!("{e:#}"),
                                 "Failed to collect training data from segment"
                             );
-                        })
-                        .ok()
+                            (collector.empty(), 1)
+                        },
+                        |collected| (collected, 0),
+                    ))
                 })
-                .collect::<Vec<_>>()
-        });
+                .try_reduce(
+                    || (collector.empty(), 0),
+                    |(left, left_failed), (right, right_failed)| {
+                        Ok((merge_collected(left, right)?, left_failed + right_failed))
+                    },
+                )
+        })?;
 
-    Ok(collected.into_iter().fold(ByModel::from_fn(|_| TrainingData::default()), merge_collected))
+    // The reduce merged in completion order; finishing makes the sample a
+    // function of the seed alone.
+    for model in MlModel::ALL {
+        collected[model].finish();
+    }
+    Ok((collected, failed_segments))
 }
 
 /// The columns of one segment, as the feature extractors read them.
@@ -408,23 +424,37 @@ fn segment_columns(
 struct SegmentCollector<'a> {
     truth: &'a Truth,
     calculator: &'a dyn FeatureCalculator,
+    feature_num: FeatureNum,
+    request: SamplingRequest,
     indel_params: IndelParams,
 }
 
 impl SegmentCollector<'_> {
-    fn segment(&self, readers: &mut PileupReaders, segment: &ChunkRegion) -> Result<Collected> {
+    fn empty(&self) -> Collected {
+        ByModel::from_fn(|model| {
+            TrainingData::for_request(self.feature_num.get(model), self.request)
+        })
+    }
+
+    /// Candidates are offered in column order, SNVs before indels, which
+    /// together with `keys` fixes which of them the reservoirs keep.
+    fn segment(
+        &self,
+        readers: &mut PileupReaders,
+        segment: &ChunkRegion,
+        keys: &mut ByModel<KeySource>,
+    ) -> Result<Collected> {
         let mut columns = segment_columns(readers, segment)?;
-        let mut collected = ByModel::from_fn(|_| TrainingData::default());
+        let mut collected = self.empty();
+        let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
         map_surrounding(
             &mut columns,
             |before, column, after| {
-                let pos = u64::from(column.pos);
-                if !self.truth.claims(&segment.contig, pos) {
+                if !self.truth.claims(&segment.contig, u64::from(column.pos)) {
                     return Ok(());
                 }
-                self.snvs(&mut collected, &segment.contig, before, column, after);
-                self.indels(&mut collected, &segment.contig, column);
-                Ok(())
+                self.snvs(&mut examples, before, column, after)?;
+                self.indels(&mut examples, column)
             },
             "failed to extract training features, skipping",
         );
@@ -433,12 +463,11 @@ impl SegmentCollector<'_> {
 
     fn snvs(
         &self,
-        collected: &mut Collected,
-        contig: &SmolStr,
+        examples: &mut Examples<'_>,
         before: Option<&PileupMetrics>,
         column: &PileupMetrics,
         after: Option<&PileupMetrics>,
-    ) {
+    ) -> Result<()> {
         let pos = u64::from(column.pos);
         let ref_base = column.reference_base;
         for alt in &column.alts {
@@ -459,12 +488,13 @@ impl SegmentCollector<'_> {
             } else {
                 (MlModel::Others, self.calculator.calculate_others(&candidate, before, after))
             };
-            add_candidate(&mut collected[model], model, features, label, contig, pos);
+            examples.add(model, features, label, pos)?;
         }
+        Ok(())
     }
 
-    fn indels(&self, collected: &mut Collected, contig: &SmolStr, column: &PileupMetrics) {
-        let Some(indel_data) = column.indel_data.as_ref() else { return };
+    fn indels(&self, examples: &mut Examples<'_>, column: &PileupMetrics) -> Result<()> {
+        let Some(indel_data) = column.indel_data.as_ref() else { return Ok(()) };
         let pos = u64::from(column.pos);
         let tract = u32::from(indel_data.homopolymer_run.max(indel_data.dinucleotide_run));
         let calls =
@@ -480,33 +510,53 @@ impl SegmentCollector<'_> {
                     (MlModel::Deletion, self.calculator.calculate_deletion(&candidate))
                 }
             };
-            add_candidate(&mut collected[model], model, features, label, contig, pos);
+            examples.add(model, features, label, pos)?;
         }
+        Ok(())
     }
 }
 
-/// Keep a candidate whose features could be computed and are all finite.
-fn add_candidate(
-    data: &mut TrainingData,
-    model: MlModel,
-    features: Result<Array2<f32>>,
-    in_truth: bool,
-    contig: &SmolStr,
-    pos: u64,
-) {
-    match features {
-        Ok(features) if !features.is_any_nan() => {
-            let label = if in_truth { 1.0 } else { 0.0 };
-            data.add_example(features, label, contig.clone(), pos);
-        }
-        Ok(_) => {}
-        Err(error) => {
-            debug!(
-                model = model.name(),
-                error = format!("{error:#}"),
-                "No features for training candidate"
-            );
-        }
+/// Where one segment's examples go.
+struct Examples<'a> {
+    collected: &'a mut Collected,
+    contig: &'a SmolStr,
+    keys: &'a mut ByModel<KeySource>,
+}
+
+impl Examples<'_> {
+    /// Offer a candidate whose features could be computed and are all finite,
+    /// and count any other as rejected.
+    fn add(
+        &mut self,
+        model: MlModel,
+        features: Result<Array2<f32>>,
+        in_truth: bool,
+        pos: u64,
+    ) -> Result<()> {
+        let features = match features {
+            Ok(features) if features.iter().all(|value| value.is_finite()) => features,
+            Ok(_) => {
+                self.collected[model].reject();
+                return Ok(());
+            }
+            Err(error) => {
+                debug!(
+                    model = model.name(),
+                    error = format!("{error:#}"),
+                    "No features for training candidate"
+                );
+                self.collected[model].reject();
+                return Ok(());
+            }
+        };
+        let row = features.as_slice().wrap_err("Feature row is not contiguous")?;
+        self.collected[model].add_example(
+            row,
+            Label::of(in_truth),
+            self.contig.clone(),
+            pos,
+            &mut self.keys[model],
+        )
     }
 }
 
@@ -681,27 +731,16 @@ fn fit_model(
     params: &TrainModelParams,
     seed: u64,
 ) -> Result<(RandomForest, PlattScaling)> {
-    ensure!(
-        !data.is_empty(),
-        "No training data collected for the {} model, so no model file can be written",
-        model.name()
-    );
-
     info!(seed, examples = data.len(), "Training model");
 
-    // Subsample for training, keep held-out data for Platt calibration
-    let (train_features, train_labels, holdout_features, holdout_labels) = subsample_training_data(
-        data,
-        params.model_params.n_positive,
-        params.model_params.n_negative,
-        seed,
-    )?;
-
+    let reservoir::Split { train, holdout } =
+        reservoir::split(data, params.model_params.sampling_request(), seed)?;
+    let train_positives = train.labels.iter().filter(|&&l| l == Label::Positive.weight()).count();
     info!(
-        training = train_labels.len(),
-        positive = train_labels.iter().filter(|&&l| l == 1.0).count(),
-        negative = train_labels.iter().filter(|&&l| l == 0.0).count(),
-        holdout = holdout_labels.len(),
+        training = train.labels.len(),
+        positive = train_positives,
+        negative = train.labels.len().saturating_sub(train_positives),
+        holdout = holdout.labels.len(),
         "Subsampled"
     );
 
@@ -716,106 +755,15 @@ fn fit_model(
         .with_seed(seed);
 
     let mut forest = RandomForest::new(rf_params);
-    forest.fit(&train_features.view(), &train_labels.view());
+    forest.fit(&train.features.view(), &train.labels.view());
 
-    let raw_scores = forest.predict(&holdout_features.view());
+    let raw_scores = forest.predict(&holdout.features.view());
     let platt = fit_platt_scaling(
         raw_scores.as_slice().wrap_err("Holdout scores are not contiguous")?,
-        holdout_labels.as_slice().wrap_err("Holdout labels are not contiguous")?,
-    );
-
-    if platt.a == 1.0 && platt.b == 0.0 {
-        error!(
-            "Platt scaling is identity (a=1.0, b=0.0) — model likely failed to learn. \
-             Check class balance, feature quality, and consider reducing n-negative."
-        );
-    }
+        holdout.labels.as_slice().wrap_err("Holdout labels are not contiguous")?,
+    )?;
 
     Ok((forest, platt))
-}
-
-/// Subsample training data to balance positive and negative examples.
-///
-/// Returns `(train_features, train_labels, holdout_features, holdout_labels)`.
-/// The held-out set is capped at `MAX_HOLDOUT` to keep memory bounded while
-/// still providing enough data for a stable Platt scaling fit.
-fn subsample_training_data(
-    data: &TrainingData,
-    n_positive: usize,
-    n_negative: usize,
-    seed: u64,
-) -> Result<(Array2<f64>, Array1<f64>, Array2<f64>, Array1<f64>)> {
-    const MAX_HOLDOUT: usize = 100_000;
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-
-    // Separate positive and negative indices
-    let mut positive_indices = Vec::new();
-    let mut negative_indices = Vec::new();
-
-    for (i, &label) in data.labels.iter().enumerate() {
-        if label == 1.0 {
-            positive_indices.push(i);
-        } else {
-            negative_indices.push(i);
-        }
-    }
-
-    // Sample indices for training
-    let n_pos_actual = positive_indices.len().min(n_positive);
-    let n_neg_actual = negative_indices.len().min(n_negative);
-
-    ensure!(n_pos_actual > 0, "No positive examples available for training");
-    ensure!(n_neg_actual > 0, "No negative examples available for training");
-
-    positive_indices.shuffle(&mut rng);
-    negative_indices.shuffle(&mut rng);
-
-    let selected_pos = &positive_indices[..n_pos_actual];
-    let selected_neg = &negative_indices[..n_neg_actual];
-
-    let train_indices: HashSet<usize> =
-        selected_pos.iter().chain(selected_neg.iter()).copied().collect();
-
-    // Build training matrix
-    let train_matrix = build_matrix(data, &mut train_indices.iter().copied().collect::<Vec<_>>())?;
-
-    // Build held-out matrix from remaining indices, capped for memory
-    let mut holdout_indices: Vec<usize> =
-        (0..data.len()).filter(|i| !train_indices.contains(i)).collect();
-    holdout_indices.shuffle(&mut rng);
-    holdout_indices.truncate(MAX_HOLDOUT);
-
-    let holdout_matrix = build_matrix(data, &mut holdout_indices)?;
-
-    Ok((train_matrix.0, train_matrix.1, holdout_matrix.0, holdout_matrix.1))
-}
-
-fn build_matrix(data: &TrainingData, indices: &mut [usize]) -> Result<(Array2<f64>, Array1<f64>)> {
-    ensure!(
-        !indices.is_empty(),
-        "Cannot build matrix from empty indices — no holdout examples available. \
-         This happens when all training examples are consumed for the training set, \
-         leaving none for Platt calibration. Consider reducing --n-positive / --n-negative \
-         or providing more training data."
-    );
-
-    indices.sort_unstable();
-
-    let mut feature_rows = Vec::with_capacity(indices.len());
-    let mut label_vec = Vec::with_capacity(indices.len());
-
-    for &idx in indices.iter() {
-        feature_rows.push(data.features[idx].row(0).to_owned());
-        label_vec.push(data.labels[idx]);
-    }
-
-    let feature_views: Vec<_> = feature_rows.iter().map(|r| r.view()).collect();
-    let features = ndarray::stack(Axis(0), &feature_views)
-        .wrap_err_with(|| format!("Failed to stack feature arrays: {}", feature_rows.len()))?;
-
-    let labels = Array1::from_vec(label_vec);
-
-    Ok((features, labels))
 }
 
 /// Fit Platt scaling parameters A and B so that
@@ -823,7 +771,7 @@ fn build_matrix(data: &TrainingData, indices: &mut [usize]) -> Result<(Array2<f6
 ///
 /// Uses Newton's method with backtracking line search and Bayesian-smoothed
 /// targets, following Lin, Lin, and Weng (2007).
-fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
+fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> Result<PlattScaling> {
     const MAX_ITER: usize = 100;
     const MIN_STEP: f64 = 1e-10;
     const SIGMA: f64 = 1e-12;
@@ -833,9 +781,11 @@ fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
         (if y { pos + 1.0 } else { pos }, all + 1.0)
     });
     let n_neg = n - n_pos;
-    if n_pos == 0.0 || n_neg == 0.0 {
-        return PlattScaling::default();
-    }
+    ensure!(
+        n_pos > 0.0 && n_neg > 0.0,
+        "Platt calibration needs both classes, but the holdout has {n_pos} positive and \
+         {n_neg} negative examples"
+    );
 
     // Bayesian-smoothed targets avoid log(0)
     let hi_target = (n_pos + 1.0) / (n_pos + 2.0);
@@ -905,7 +855,7 @@ fn fit_platt_scaling(scores: &[f64], labels: &[f64]) -> PlattScaling {
         }
     }
 
-    PlattScaling { a, b }
+    Ok(PlattScaling { a, b })
 }
 
 /// Serialize a model to disk with LZ4 compression
@@ -945,12 +895,10 @@ fn export_features_tsv(
     }
     writeln!(writer)?;
 
-    for ((chrom, pos), (features, &label)) in
-        data.positions.iter().zip(data.features.iter().zip(data.labels.iter()))
-    {
-        write!(writer, "{chrom}\t{pos}\t{label}")?;
-        let row = features.row(0);
-        for &v in row.iter() {
+    for example in data.examples() {
+        let row = data.row_of(example).wrap_err("Training example has no feature row")?;
+        write!(writer, "{}\t{}\t{}", example.chrom, example.pos, example.label.weight())?;
+        for v in row {
             write!(writer, "\t{v}")?;
         }
         writeln!(writer)?;
@@ -1048,5 +996,36 @@ mod tests {
         ] {
             assert_eq!(truth_key(ref_allele, alt_allele), None, "{ref_allele}>{alt_allele}");
         }
+    }
+
+    /// A calibration fit on one class would be the identity, which inverts
+    /// the forest's scores; no model may be written with it.
+    #[test]
+    fn a_holdout_of_one_class_cannot_be_calibrated() {
+        assert!(fit_platt_scaling(&[0.9, 0.1], &[0.0, 0.0]).is_err());
+        assert!(fit_platt_scaling(&[0.9, 0.1], &[1.0, 1.0]).is_err());
+        let platt = fit_platt_scaling(&[0.9, 0.8, 0.2, 0.1], &[1.0, 1.0, 0.0, 0.0]).unwrap();
+        assert!(platt.a < 0.0, "higher scores must mean higher probability: {platt:?}");
+    }
+
+    /// A row biosphere cannot fit on is counted, not collected.
+    #[test]
+    fn a_non_finite_or_missing_row_is_rejected_and_counted() -> Result<()> {
+        let request = SamplingRequest { positive: 10, negative: 10 };
+        let mut collected = ByModel::from_fn(|_| TrainingData::for_request(2, request));
+        let mut keys = ByModel::from_fn(|model| KeySource::for_segment(0, 0, model));
+        let contig = SmolStr::from("chr1");
+        let mut examples = Examples { collected: &mut collected, contig: &contig, keys: &mut keys };
+        let row = |values: [f32; 2]| Ok(Array2::from_shape_vec((1, 2), values.to_vec())?);
+
+        examples.add(MlModel::Cpg, row([1.0, 2.0]), true, 1)?;
+        examples.add(MlModel::Cpg, row([1.0, f32::INFINITY]), true, 2)?;
+        examples.add(MlModel::Cpg, row([f32::NAN, 2.0]), false, 3)?;
+        examples.add(MlModel::Cpg, Err(eyre!("no neighbour")), false, 4)?;
+
+        assert_eq!(collected[MlModel::Cpg].len(), 1);
+        assert_eq!(collected[MlModel::Cpg].rejected(), 3);
+        assert_eq!(collected[MlModel::Others].rejected(), 0);
+        Ok(())
     }
 }
