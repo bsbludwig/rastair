@@ -342,6 +342,34 @@ Feature names flow to training output via `FeatureCalculator::feature_names() ->
 `train.rs` uses them for the `--feature-analytics` importance CSVs (`index\tfeature\timportance`)
 and the `--export-features` TSV headers, so both exports agree by construction.
 
+## Training a model (`rastair ml train`)
+
+```bash
+rastair ml train -r hg38.fa.gz taps.bam HG001_benchmark.vcf.gz \
+  -R HG001_benchmark.bed -l "chr1 chr6 chr11" --seed <n> -o models/mymodel.rff.mpk.lz4 -@ 8
+```
+
+- Positionals are **BAM first, then the truth VCF**. The CLI defaults are
+  the recipe of the bundled model (`models/rastair_with_indels.rff.mpk.lz4`, `include_bytes!`'d
+  by `src/call/ml.rs`), so a bare command line retrains it.
+- The truth VCF needs a **`.csi`** (a `.tbi` alone is refused), and `-R` must be a plain-text
+  BED, not bgzipped. Without `-R`, candidates outside the truth set's confident regions are
+  labelled negative.
+- Train on GIAB HG001 and evaluate against Platinum Genomes, holding out the evaluation
+  chromosome. **Give it enough genome**: all five forests must train or no model is written.
+- Collection is bounded: rows are `f32` in one flat buffer, each model keeps per class the
+  examples with the smallest uniform keys (a keyed reservoir, capped at the draw plus a
+  holdout), and segments are folded with `reduce`, not collected. `KeySource` seeds one stream
+  per segment *and* model from `--seed`, so the sample does not depend on scheduling, and one
+  model's pool does not move another's draw.
+- The draw takes at most four fifths of a class, so small models keep a holdout; the holdout
+  keeps the **population's** class ratio, not the reservoir's near-balanced one, or Platt
+  scaling would shift what an ML threshold means.
+- SNV and indel models are drawn separately (`--n-*` vs `--indel-n-*`): SNV candidates are
+  almost all negative, indel candidates arrive filtered and mostly positive. The log line
+  `Collected training examples` reports pool, kept, requested and drawn per model.
+- `--export-features` writes a 1-based `pos`, like a VCF, and no allele column.
+
 ## VCF header version and cardinality
 
 Output is **`##fileformat=VCFv4.5`**, and seqair writes that unconditionally —
