@@ -311,6 +311,14 @@ Worth internalising, because the same blind spots are still easy to reproduce:
 - **The `from_seqair` unit tests never set `params.call_indels`**, so the whole
   indel branch was unreachable from them.
 
+## Methylation counts follow the adjusted beta
+
+The methylation counts follow the genotype-adjusted beta: `CpgBeta` carries the numerator and
+denominator (`mod_count`, `total_count`), so `ADM5mC / DPM5mC == M5mC` and BED `mod / (unmod +
+mod) == beta_est` wherever the denominator is non-zero. Do not recompute counts from reads:
+`convert` builds BED rows from `DPM5mC`/`ADM5mC`, and `M5mC_Strands` stays the raw tally.
+`converting_the_vcf_gives_the_bed_call_writes` pins `call --bed` against `call --vcf` + `convert`.
+
 ## ML feature layout (`src/metrics/ml/features/`)
 
 Each model's feature vector is defined by a `#[repr(C)]` struct of `f32` / `[f32; N]`
