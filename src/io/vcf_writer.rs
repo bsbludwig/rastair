@@ -159,46 +159,40 @@ impl VcfParams {
         }
     }
 
-    pub fn writer(&self, regions: &[ChunkRegion], metadata: &[String]) -> Result<Option<Writer>> {
-        let Some(_) = &self.vcf else {
-            return Ok(None);
-        };
-
+    /// Writer for the configured output, in its format, writing to `path`.
+    pub fn writer(
+        &self,
+        path: &ClioPath,
+        regions: &[ChunkRegion],
+        metadata: &[String],
+    ) -> Result<Writer> {
         let contigs = header_contigs(regions);
         let samples = vec![SmolStr::new("sample")]; // Note: we only deal with one sample for now
 
         let format = match self.guess_format() {
             Format::MessagePack => {
-                let writer = self
-                    .create_mpk_writer(contigs, samples, metadata)
+                let writer = Self::create_mpk_writer(path, contigs, samples, metadata)
                     .wrap_err("Failed to create MessagePack writer")?;
-                return Ok(Some(Writer::MessagePack(
-                    writer.wrap_err("No VCF output path present").this_is_a_bug()?,
-                )));
+                return Ok(Writer::MessagePack(writer));
             }
             Format::Vcf(f) => f.into(),
         };
 
-        Ok(Some(Writer::Vcf(
-            self.seqair_writer(&contigs, &samples, metadata, format)
-                .wrap_err("Failed to create VCF writer")?
-                .wrap_err("No VCF output path present")
-                .this_is_a_bug()?,
-        )))
+        let writer = self
+            .seqair_writer(path, &contigs, &samples, metadata, format)
+            .wrap_err("Failed to create VCF writer")?;
+        Ok(Writer::Vcf(writer))
     }
 
-    /// Build a seqair-backed VCF/BCF writer for the configured output path.
+    /// Build a seqair-backed VCF/BCF writer.
     pub fn seqair_writer(
         &self,
+        vcf_output: &ClioPath,
         contigs: &[Contig],
         samples: &[SmolStr],
         metadata: &[String],
         format: OutputFormat,
-    ) -> Result<Option<SeqairVcfWriter>> {
-        let Some(vcf_output) = &self.vcf else {
-            return Ok(None);
-        };
-
+    ) -> Result<SeqairVcfWriter> {
         debug!(target=?vcf_output.display(), ?format, "Creating VCF writer");
 
         let (header, schema) =
@@ -226,24 +220,21 @@ impl VcfParams {
             ))
         });
 
-        Ok(Some(SeqairVcfWriter {
+        Ok(SeqairVcfWriter {
             writer: Some(writer),
             schema,
             config: self.field_config(),
             last_contig: None,
             index_path,
-        }))
+        })
     }
 
-    pub fn create_mpk_writer(
-        &self,
+    fn create_mpk_writer(
+        path: &ClioPath,
         contigs: Vec<Contig>,
         samples: Vec<SmolStr>,
         metadata: &[String],
-    ) -> Result<Option<MessagePackWriter>> {
-        let Some(path) = &self.vcf else {
-            return Ok(None);
-        };
+    ) -> Result<MessagePackWriter> {
         warn!(
             %path,
             "MessagePack format only for internal use, no stability guarantees",
@@ -253,7 +244,7 @@ impl VcfParams {
 
         w.add_metadata(MpkVcfHeader { contigs, samples, metadata: metadata.to_owned() })?;
 
-        Ok(Some(w))
+        Ok(w)
     }
 }
 

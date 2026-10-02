@@ -55,5 +55,5 @@ pub(crate) mod utils {
     pub mod regions;
     pub use regions::CliRegionInput;
 }
-mod progress;
+pub mod runtime;
 pub(crate) mod sequence;

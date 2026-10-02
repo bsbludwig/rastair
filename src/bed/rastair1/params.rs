@@ -41,16 +41,11 @@ impl BedParams {
         }
     }
 
+    /// Writer for the configured output, in its format, writing to `path`.
     #[instrument(level = "debug", skip(self))]
-    pub fn writer(&self) -> Result<Option<BedWriter<super::Rastair1BedFormat>>> {
-        let Some(path) = &self.bed else {
-            return Ok(None);
-        };
-
-        let format = self.bed_format();
-        let writer = BedWriter::new(path, format)
-            .wrap_err_with(|| format!("Failed to create BED writer for {path}"))?;
-        Ok(Some(writer))
+    pub fn writer(&self, path: &ClioPath) -> Result<BedWriter<super::Rastair1BedFormat>> {
+        BedWriter::new(path, self.bed_format())
+            .wrap_err_with(|| format!("Failed to create BED writer for {path}"))
     }
 }
 

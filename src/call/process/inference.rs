@@ -16,7 +16,8 @@ use crate::metrics::{
     PileupMetrics,
     ml::types::{ByModel, GpuRastairModel, MachineLearning},
 };
-use color_eyre::eyre::{Report, Result, eyre};
+use crate::runtime::{fault_injection, threads};
+use color_eyre::eyre::{Report, Result, WrapErr as _, eyre};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ndarray::{Array2, s};
 use seqair_types::Probability;
@@ -25,10 +26,9 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
     time::{Duration, Instant},
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 /// A dispatch failed for a whole round, so every job in it hears about it. A
 /// [`Report`] is not `Clone`, and this is only ever read to log and fall back.
@@ -38,7 +38,7 @@ type Scored = Result<MlScores, Arc<Report>>;
 pub struct InferenceStage {
     /// `None` only while [`Drop`] closes the channel to stop the thread.
     jobs: Option<Sender<Job>>,
-    thread: Option<thread::JoinHandle<()>>,
+    thread: Option<threads::Thread<()>>,
     /// Set by the first region the GPU fails to score. From then on every
     /// region goes straight to the CPU: a GPU that has failed once tends to
     /// keep failing, and each retry costs a full collect timeout serialised
@@ -67,10 +67,11 @@ impl InferenceStage {
     /// outstanding even once callers pipeline.
     pub fn spawn(gpu: GpuRastairModel, workers: usize) -> Result<Self> {
         let (jobs, incoming) = bounded(workers.saturating_mul(2).max(1));
-        let thread = thread::Builder::new()
-            .name("inference".into())
-            .spawn(move || run(&gpu, &incoming))
-            .map_err(|error| eyre!("Failed to start the GPU inference thread: {error}"))?;
+        let server = Server { gpu, incoming, tally: Tally::default(), started: Instant::now() };
+        // The run can do without the GPU: after a crash, regions fall back to
+        // the CPU, like after any other GPU failure.
+        let thread = threads::spawn_recovering("inference", server, Server::run, Server::recover)
+            .wrap_err("Failed to start the GPU inference thread")?;
 
         Ok(Self { jobs: Some(jobs), thread: Some(thread), failed: AtomicBool::new(false) })
     }
@@ -150,22 +151,47 @@ impl Ticket {
 
 impl Drop for InferenceStage {
     fn drop(&mut self) {
-        // Closing the channel is what ends `run`'s loop; the forests are then
+        // Closing the channel is what ends `serve`'s loop (or the drain after a
+        // crash); the forests are then
         // dropped on the inference thread rather than on a rayon worker during
         // TLS teardown, which is what used to upset Metal.
         self.jobs = None;
         if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
+            && let Err(error) = thread.join()
         {
-            tracing::error!("The GPU inference thread panicked");
+            error!(error = format!("{error:#}"), "The GPU inference thread failed");
         }
     }
 }
 
-fn run(gpu: &GpuRastairModel, incoming: &Receiver<Job>) {
-    let mut tally = Tally::default();
-    let started = Instant::now();
+/// What the inference thread owns.
+struct Server {
+    gpu: GpuRastairModel,
+    incoming: Receiver<Job>,
+    tally: Tally,
+    started: Instant,
+}
 
+impl Server {
+    fn run(&mut self) {
+        serve(&self.gpu, &self.incoming, &mut self.tally);
+        self.tally.report(self.started.elapsed());
+    }
+
+    /// After a panic, `gpu` is not used again.
+    fn recover(self) {
+        warn!("The GPU inference thread crashed; scoring the rest of the run on the CPU");
+        // Jobs still queued are only dropped once both channel ends are gone,
+        // and the sending end lives as long as the stage. Without draining,
+        // every worker waiting on a queued job would wait forever. Dropping a
+        // job drops its reply sender, so its worker gets an error and falls
+        // back to the CPU like after any other GPU failure.
+        self.incoming.iter().for_each(drop);
+        self.tally.report(self.started.elapsed());
+    }
+}
+
+fn serve(gpu: &GpuRastairModel, incoming: &Receiver<Job>, tally: &mut Tally) {
     loop {
         let waiting = Instant::now();
         let Ok(first) = incoming.recv() else { break };
@@ -185,13 +211,16 @@ fn run(gpu: &GpuRastairModel, incoming: &Receiver<Job>) {
         trace!(jobs = round.replies.len(), "Scoring a round");
 
         let scoring = Instant::now();
-        let scored = submit_and_collect(&round.rows, gpu).map_err(Arc::new);
+        let scored = submit_and_collect(&round.rows, gpu)
+            .and_then(|scores| {
+                fault_injection::fault_point(fault_injection::FaultPoint::GpuDispatch)?;
+                Ok(scores)
+            })
+            .map_err(Arc::new);
         tally.busy += scoring.elapsed();
 
         round.reply(scored);
     }
-
-    tally.report(started.elapsed());
 }
 
 /// What the stage did, so the next question — is it the bottleneck, and is a

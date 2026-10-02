@@ -26,7 +26,7 @@ pub struct ConfidentRegions {
 }
 
 impl ConfidentRegions {
-    #[instrument(level = "info", skip_all, fields(path = %path.display()))]
+    #[instrument(level = "info", skip_all)]
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .wrap_err_with(|| format!("Failed to read BED file: {}", path.display()))?;

@@ -173,6 +173,12 @@ pub struct ChunkRegion {
     pub overlap_end: u64,
 }
 
+impl std::fmt::Display for ChunkRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.region.fmt(f)
+    }
+}
+
 impl std::ops::Deref for ChunkRegion {
     type Target = Region;
 

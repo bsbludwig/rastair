@@ -17,7 +17,7 @@ pub struct RastairBedReader {
 }
 
 impl RastairBedReader {
-    #[instrument(level = "debug")]
+    #[instrument(level = "debug", skip_all)]
     pub fn new(bed_path: &Path) -> Result<Self> {
         let reader = tabix::io::indexed_reader::Builder::default()
             .build_from_path(bed_path)

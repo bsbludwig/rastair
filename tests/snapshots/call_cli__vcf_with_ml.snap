@@ -73,5 +73,5 @@ chr19	6105744	.	C	.	99	PASS	AD=8;BQ=35.7631;DP=16;MQ=60;M5mC_Strands=2,8,6,0;CPG
 chr19	6105745	.	G	.	99	PASS	AD=13;BQ=34.0367;DP=16;MQ=60;M5mC_Strands=3,3,10,0;CPG	GT:GL:GC:DP:M5mC:DPM5mC:ADM5mC	0/0:99:30:16:0.5:6:3
 
 ----- stderr -----
-[TIME] INFO rastair::call::writer: Wrote VCF output file="-"
+[TIME] INFO rastair::runtime::partial_output: Wrote VCF output file="-"
 [TIME] INFO rastair: Call finished [DURATION]

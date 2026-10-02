@@ -2,22 +2,19 @@ use crate::{
     io::mpk::format::{MpkEntry, MpkHeader, MpkVcfHeader},
     metrics::PileupMetrics,
 };
-use clio::ClioPath;
+use clio::{ClioPath, Output};
 use color_eyre::eyre::{Context as _, Result};
-use std::{
-    borrow::Cow,
-    io::{BufWriter, Write},
-};
+use std::{borrow::Cow, io::BufWriter};
 use tracing::instrument;
 
 pub struct MessagePackWriter {
     pub path: ClioPath,
-    writer: Box<dyn Write + Send>,
+    writer: BufWriter<lz4::Encoder<Output>>,
 }
 
 impl MessagePackWriter {
     /// Create a new `MessagePackWriter` with the specified output path.
-    #[instrument(level = "debug")]
+    #[instrument(level = "debug", skip_all)]
     pub fn new(path: &ClioPath) -> Result<Self> {
         let file =
             path.clone().create().wrap_err_with(|| format!("Failed to create output {path}"))?;
@@ -28,8 +25,7 @@ impl MessagePackWriter {
             .build(file)
             .wrap_err("Failed to create LZ4 encoder")?;
         let one_mb = 1024 * 1024;
-        let mut me =
-            Self { path: path.clone(), writer: Box::new(BufWriter::with_capacity(one_mb, writer)) };
+        let mut me = Self { path: path.clone(), writer: BufWriter::with_capacity(one_mb, writer) };
         me.write(&MpkEntry::Header(MpkHeader {
             rastair_version: env!("CARGO_PKG_VERSION").into(),
         }))?;
@@ -50,10 +46,16 @@ impl MessagePackWriter {
         rmp_serde::encode::write(&mut self.writer, entry)
             .wrap_err("Failed to write entry to MessagePack file")
     }
-}
 
-impl Drop for MessagePackWriter {
-    fn drop(&mut self) {
-        let _ = self.writer.flush();
+    /// Flush and close the file. Without this, the output is truncated.
+    pub fn finish(self) -> Result<()> {
+        let encoder = self
+            .writer
+            .into_inner()
+            .map_err(std::io::IntoInnerError::into_error)
+            .wrap_err("Failed to flush MessagePack output")?;
+        let (output, ended) = encoder.finish();
+        ended.wrap_err("Failed to end the LZ4 stream")?;
+        output.finish().wrap_err("Failed to close MessagePack output")
     }
 }

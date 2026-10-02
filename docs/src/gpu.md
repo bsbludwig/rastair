@@ -1,7 +1,7 @@
 # GPU acceleration
 
 Rastair 2.1 and newer support running its @ML inference on @GPU:pl.
-This can speed up the `call` subcommand significantly.
+This can speed up the `call` subcommand by about 2x.
 
 ## Usage
 

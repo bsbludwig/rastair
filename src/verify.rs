@@ -329,7 +329,7 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 /// Load PASS variants from a VCF, returning position key → category.
 /// With regions: uses `IndexedReader` (requires `.csi` index).
 /// Without regions: streams sequentially (no index required).
-#[instrument(level = "info", skip_all, fields(path = %path.display()))]
+#[instrument(level = "info", skip_all)]
 fn load_variants(
     path: &Path,
     regions: &[RegionString],
@@ -498,7 +498,7 @@ fn extract_variants(
 }
 
 /// Load `M5mC` beta values from a VCF.
-#[instrument(level = "info", skip_all, fields(path = %path.display()))]
+#[instrument(level = "info", skip_all)]
 fn load_betas(path: &Path, regions: &[RegionString], threads: usize) -> Result<Vec<BetaRecord>> {
     ensure!(path.exists(), "VCF file `{}` not found", path.display());
 
