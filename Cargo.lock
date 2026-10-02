@@ -78,6 +78,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anstyle-progress"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082ebe8b7607a68881fbcccc7b3a3e784aa58593ed4261df0679a803fdb80853"
+
+[[package]]
 name = "anstyle-query"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2533,6 +2539,7 @@ checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 name = "rastair"
 version = "2.2.0"
 dependencies = [
+ "anstyle-progress",
  "better_default",
  "bgzf",
  "bio-types",

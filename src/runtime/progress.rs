@@ -1,13 +1,17 @@
+use super::threads::Thread;
+use anstyle_progress::TermProgress;
 use jiff::Timestamp;
 use std::{
+    io::{IsTerminal as _, Write as _},
     ops::Add,
     sync::{
-        Once,
-        atomic::{AtomicBool, Ordering},
+        Arc, Once,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
-use tracing::info;
+use tracing::{info, warn};
 
 /// Flag set by the SIGINFO (ctrl+t on macOS) / SIGUSR1 (Linux) signal handler
 /// to request a progress report from the writer thread.
@@ -55,18 +59,21 @@ pub struct ProgressTracker {
     completed: usize,
     calibrated: bool,
     start: Instant,
+    terminal: Option<TerminalProgress>,
 }
 
 impl ProgressTracker {
     /// Create a progress tracker, disabled if the "CI" environment variable is set (to avoid spamming CI logs).
     pub fn new(total_segments: usize) -> Self {
         let enabled = std::env::var("CI").err() == Some(std::env::VarError::NotPresent);
+        let terminal = TerminalProgress::detect(enabled);
         Self {
             total: total_segments,
             completed: 0,
             calibrated: false,
             start: Instant::now(),
             enabled,
+            terminal,
         }
     }
 
@@ -77,6 +84,10 @@ impl ProgressTracker {
         }
 
         self.completed += 1;
+
+        if let Some(terminal) = &self.terminal {
+            terminal.update(percent_complete(self.completed, self.total));
+        }
 
         let signal_requested = PRINT_REQUESTED
             .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
@@ -128,6 +139,102 @@ impl ProgressTracker {
     }
 }
 
+/// Whole percent, clamped to `0..=100` as required by the OSC 9;4 protocol.
+fn percent_complete(completed: usize, total: usize) -> u8 {
+    let percent = completed.saturating_mul(100).checked_div(total).unwrap_or(100);
+    u8::try_from(percent.min(100)).unwrap_or(100)
+}
+
+/// Progress indicator in the terminal tab/taskbar via the `ConEmu` OSC 9;4 escape
+/// sequence (e.g. Windows Terminal, Ghostty, `WezTerm`, iTerm2, Konsole).
+///
+/// Only used when stderr is a terminal known to support it: other terminals
+/// interpret bare OSC 9 as a desktop notification, and in batch jobs (Slurm,
+/// Nextflow) the sequence would only end up as noise in log files.
+///
+/// The state is re-sent from a background thread every [`KEEPALIVE_INTERVAL`]
+/// because some terminals (Ghostty) reset it after ~15 s without an update, and
+/// segments can take longer than that to arrive at the in-order writer. This also
+/// means a killed process (e.g. ctrl+c, which skips `Drop`) doesn't leave a stale
+/// indicator behind in those terminals.
+struct TerminalProgress {
+    percent: Arc<AtomicU8>,
+    stop: Option<mpsc::Sender<()>>,
+    keepalive: Option<Thread<bool>>,
+}
+
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+
+impl TerminalProgress {
+    fn detect(enabled: bool) -> Option<Self> {
+        if !enabled || !anstyle_progress::supports_term_progress(std::io::stderr().is_terminal()) {
+            return None;
+        }
+
+        let percent = Arc::new(AtomicU8::new(0));
+        let (stop, stop_requested) = mpsc::channel::<()>();
+        // The indicator is cosmetic, so losing it must not stop the run. The
+        // thread's result says whether stderr is still writable, which a panic
+        // doesn't rule out, so still try to remove the indicator afterwards.
+        let keepalive = super::threads::spawn_recovering(
+            "term-progress",
+            (Arc::clone(&percent), stop_requested),
+            |(percent, stop_requested)| loop {
+                let current = percent.load(Ordering::Relaxed);
+                if !write_to_stderr(TermProgress::start().percent(current)) {
+                    return false;
+                }
+                match stop_requested.recv_timeout(KEEPALIVE_INTERVAL) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return true,
+                }
+            },
+            |_| true,
+        );
+
+        match keepalive {
+            Ok(keepalive) => Some(Self { percent, stop: Some(stop), keepalive: Some(keepalive) }),
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "Terminal progress indicator disabled");
+                None
+            }
+        }
+    }
+
+    fn update(&self, percent: u8) {
+        self.percent.store(percent, Ordering::Relaxed);
+    }
+}
+
+impl Drop for TerminalProgress {
+    fn drop(&mut self) {
+        // Dropping the sender wakes the keepalive thread immediately
+        drop(self.stop.take());
+        let still_writable = match self.keepalive.take().map(Thread::join) {
+            Some(Ok(writable)) => writable,
+            Some(Err(error)) => {
+                warn!(error = format!("{error:#}"), "Terminal progress indicator failed");
+                false
+            }
+            None => false,
+        };
+        if still_writable {
+            write_to_stderr(TermProgress::remove());
+        }
+    }
+}
+
+fn write_to_stderr(progress: TermProgress) -> bool {
+    let mut stderr = std::io::stderr().lock();
+    match write!(stderr, "{progress}").and_then(|()| stderr.flush()) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(?error, "Failed to write terminal progress indicator, disabling it");
+            false
+        }
+    }
+}
+
 struct Estimate {
     percent: f64,
     eta: Duration,
@@ -145,5 +252,27 @@ fn format_duration(d: Duration) -> String {
         format!("{mins}m {secs:02}s")
     } else {
         format!("{secs}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_is_clamped_and_handles_empty_totals() {
+        assert_eq!(percent_complete(0, 200), 0);
+        assert_eq!(percent_complete(1, 200), 0);
+        assert_eq!(percent_complete(2, 200), 1);
+        assert_eq!(percent_complete(200, 200), 100);
+        assert_eq!(percent_complete(201, 200), 100);
+        assert_eq!(percent_complete(0, 0), 100);
+        assert_eq!(percent_complete(usize::MAX, 3), 100);
+    }
+
+    #[test]
+    fn osc_sequences() {
+        assert_eq!(TermProgress::start().percent(42).to_string(), "\x1b]9;4;1;42\x1b\\");
+        assert_eq!(TermProgress::remove().to_string(), "\x1b]9;4;0;\x1b\\");
     }
 }
