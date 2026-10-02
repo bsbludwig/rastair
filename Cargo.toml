@@ -29,7 +29,7 @@ mdbook-yapp = { version = "1.2.4" }
 members = ["tools/*"]
 
 [workspace.dependencies]
-color-eyre = "0.6.5"
+color-eyre = { version = "0.6.5", features = ["issue-url"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 cstr8 = "0.1.4"
 # `serde` is a default feature of seqair-types 0.3, but named explicitly: rastair

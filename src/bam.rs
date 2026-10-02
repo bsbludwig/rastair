@@ -74,7 +74,6 @@ pub struct BamRewriteArgs {
 }
 
 #[tracing::instrument(level = "info", skip_all, fields(
-    output = %params.output.path().display(),
     ?mode,
 ))]
 pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {

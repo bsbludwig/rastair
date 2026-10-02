@@ -43,7 +43,7 @@ impl Write for Writer {
 }
 
 impl<R: BedRecord> BedWriter<R> {
-    #[instrument(level = "info", name = "BedWriter", skip(path), fields(path = %path))]
+    #[instrument(level = "info", name = "BedWriter", skip(path))]
     pub fn new(path: &ClioPath, format: BedFormat) -> Result<Self> {
         let writer = path.clone().create().wrap_err("Failed to create output")?;
         let writer: Box<dyn Write + Send + Sync> = Box::new(BufWriter::new(writer));
