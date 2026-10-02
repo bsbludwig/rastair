@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 89e759f0ffb9a1b22ccbf27c71b7035195f43f4a5a835db62df5c3d0bb366222 # shrinks to Scenario { pipeline: CallVcfGz, kind: Panic, point: Writer, nth: 1, threads: 1, second_signal: false }

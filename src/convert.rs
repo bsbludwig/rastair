@@ -15,7 +15,7 @@ use crate::{
 use clio::ClioPath;
 use color_eyre::{
     Section as _,
-    eyre::{ContextCompat, Result, WrapErr, bail, eyre},
+    eyre::{Result, WrapErr, bail, eyre},
 };
 use rust_htslib::bcf::{self, Read as _};
 use seqair_types::Probability;
@@ -252,11 +252,10 @@ fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<(
     };
 
     let mut writer = vcf_params
-        .seqair_writer(&meta.contigs, &meta.samples, &meta.metadata, format.into())
+        .seqair_writer(&params.output, &meta.contigs, &meta.samples, &meta.metadata, format.into())
         .wrap_err_with(|| {
             format!("Failed to create VCF writer for output file `{}`", params.output)
-        })?
-        .wrap_err("No writer requested")?;
+        })?;
 
     for entry in r.entries {
         match entry {

@@ -7,6 +7,10 @@ pub use insta_cmd::assert_cmd_snapshot;
 pub use std::{collections::BTreeSet, path::Path, process::Command};
 pub use tempfile::TempDir;
 
+#[cfg(unix)]
+#[path = "utils/faults.rs"]
+pub mod faults;
+
 pub const CALL_TEST_BAM: [&str; 3] =
     ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
 pub const CHR19_SMALL: &str = "--region=chr19:6105700-6105800";

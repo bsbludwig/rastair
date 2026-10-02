@@ -22,7 +22,7 @@ fn count_bed_lines() -> Result<()> {
     let call = rastair().args(CALL_TEST_BAM).args([CHR19, NO_ML, "-c"]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
-    [TIME] INFO rastair::call::writer: Wrote BED output file="-"
+    [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
@@ -50,7 +50,7 @@ fn count_vcf_lines() -> Result<()> {
     let call = rastair().args(CALL_TEST_BAM).args([CHR19, NO_ML, "-c", "--vcf"]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
-    [TIME] INFO rastair::call::writer: Wrote VCF output file="-"
+    [TIME] INFO rastair::runtime::partial_output: Wrote VCF output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 

@@ -160,7 +160,7 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
     let call = rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
-    [TIME] INFO rastair::call::writer: Wrote VCF output file="-"
+    [TIME] INFO rastair::runtime::partial_output: Wrote VCF output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
@@ -416,7 +416,7 @@ fn asking_for_cpgs_defaults_to_bed_output() -> Result<()> {
     let call = rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).arg("-c").output()?;
 
     assert_snapshot!(call.stderr(), @r#"
-    [TIME] INFO rastair::call::writer: Wrote BED output file="-"
+    [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
@@ -452,7 +452,7 @@ fn writing_vcf_to_file() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    [TIME] INFO rastair::call::writer: Wrote VCF output file=[PATH]"
+    [TIME] INFO rastair::runtime::partial_output: Wrote VCF output file=[PATH]"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
@@ -491,7 +491,7 @@ fn ask_for_cpgs_and_vcf() -> Result<()> {
         rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML]).args(["-c", "--vcf"]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
-    [TIME] INFO rastair::call::writer: Wrote VCF output file="-"
+    [TIME] INFO rastair::runtime::partial_output: Wrote VCF output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
@@ -592,7 +592,7 @@ fn when_asked_for_bed_file_in_vcf_param_we_are_nice() -> Result<()> {
 
     ----- stderr -----
     [TIME] WARN rastair::call: VCF output file name ends with `.bed`/`.bed.gz`, did you mean to use `--bed` instead of `-o`/`--vcf`? Assuming you meant `--bed` and switching the output accordingly. file=[PATH]"
-    [TIME] INFO rastair::call::writer: Wrote BED output file=[PATH]"
+    [TIME] INFO rastair::runtime::partial_output: Wrote BED output file=[PATH]"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
 
