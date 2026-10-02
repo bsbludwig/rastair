@@ -44,10 +44,8 @@ fn worker_panic_stops_the_run_and_leaves_a_valid_prefix() -> Result<()> {
     let output = call(&crashed, &[NO_ML], &[(INJECT_PANIC, "worker@6")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a worker panic");
-    ensure!(stderr.contains("Failed to process region"), "{stderr}");
-    ensure!(stderr.contains("Thread `worker-"), "{stderr}");
-    ensure!(stderr.contains("panicked at src/call.rs"), "{stderr}");
-    ensure_reported_once(&stderr)?;
+    ensure!(stderr.contains("A worker panicked: Injected panic at worker"), "{stderr}");
+    ensure_crash_reported(&stderr, "src/call.rs")?;
     ensure!(stderr.contains("Output is incomplete"), "{stderr}");
     ensure!(stderr.contains("VCF output left behind under its partial name"), "{stderr}");
     // URL-encoded: the version, and the span of the segment that panicked
@@ -67,9 +65,8 @@ fn writer_panic_stops_the_run() -> Result<()> {
     let output = call(&out, &[NO_ML], &[(INJECT_PANIC, "writer@3")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a writer panic");
-    ensure!(stderr.contains("Failed to write the output"), "{stderr}");
-    ensure!(stderr.contains("Thread `main` panicked at src/call/writer.rs"), "{stderr}");
-    ensure_reported_once(&stderr)?;
+    ensure!(stderr.contains("The consumer panicked: Injected panic at writer"), "{stderr}");
+    ensure_crash_reported(&stderr, "src/call/writer.rs")?;
     only_partial_output(&out)?;
     Ok(())
 }
@@ -140,7 +137,7 @@ fn gpu_thread_panic_falls_back_to_the_cpu() -> Result<()> {
     ensure!(output.status.success(), "should recover from a GPU thread panic: {stderr}");
     ensure!(stderr.contains("A thread panicked and recovered"), "{stderr}");
     ensure!(stderr.contains("scoring the rest of the run on the CPU"), "{stderr}");
-    ensure_reported_once(&stderr)?;
+    ensure!(!stderr.contains("The application panicked"), "no crash report: {stderr}");
 
     // GPU and CPU scores may differ in the last digits, so compare record count
     ensure_success(&call(&cpu, &threads, &[])?)?;
@@ -186,8 +183,7 @@ fn per_read_worker_panic_leaves_a_valid_prefix() -> Result<()> {
     let output = per_read(&crashed, &["--threads=2"], &[(INJECT_PANIC, "worker@6")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a worker panic");
-    ensure!(stderr.contains("panicked at src/call_reads.rs"), "{stderr}");
-    ensure_reported_once(&stderr)?;
+    ensure_crash_reported(&stderr, "src/call_reads.rs")?;
 
     let crashed = only_partial_output(&crashed)?;
     ensure_truncated_prefix(&records(&full)?, &records(&crashed)?)
@@ -236,8 +232,7 @@ fn bam_worker_panic_leaves_a_valid_prefix() -> Result<()> {
     let output = bam(&calls, &crashed, &["--threads=2"], &[(INJECT_PANIC, "worker@6")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a worker panic");
-    ensure!(stderr.contains("panicked at src/bam.rs"), "{stderr}");
-    ensure_reported_once(&stderr)?;
+    ensure_crash_reported(&stderr, "src/bam.rs")?;
 
     let crashed = only_partial_output(&crashed)?;
     ensure_truncated_prefix(&bam_records(&full)?, &bam_records(&crashed)?)

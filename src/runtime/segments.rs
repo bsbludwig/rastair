@@ -1,8 +1,7 @@
 //! Handing segments from the workers to the writer, in order.
 
-use super::threads::catch_panic;
-use crate::utils::logging::{Bug, ThisIsABug as _};
-use color_eyre::eyre::{Report, Result, WrapErr as _};
+use crate::utils::logging::Bug;
+use color_eyre::eyre::{Report, Result, WrapErr as _, eyre};
 use std::{
     fmt,
     sync::{
@@ -78,7 +77,8 @@ pub fn first_error(first: Result<()>, then: Result<()>) -> Result<()> {
 /// An error stops the run: no new segment is started, so the output is a
 /// contiguous prefix. To skip a segment that failed in `work` instead, count
 /// it in [`FailedSegments`] and return no records. A panic in `init`, `work`
-/// or `write` becomes an error with its span trace and issue link.
+/// or `write` stops the run like an error, after the panic hook printed its
+/// report.
 pub fn process_in_order<T: Sync + fmt::Display, S, R: Send>(
     pool: &rayon::ThreadPool,
     segments: &[T],
@@ -93,22 +93,15 @@ pub fn process_in_order<T: Sync + fmt::Display, S, R: Send>(
     // behind it piling up in memory.
     let result = ordair::in_order(segments)
         .pool(pool)
-        .map_init(
-            || catch_panic(&init),
-            |state, segment| {
-                catch_panic(|| work(state, segment))
-                    .wrap_err_with(|| format!("Failed to process region `{segment}`"))
-            },
-        )
+        .map_init(init, |state, segment| {
+            work(state, segment).wrap_err_with(|| format!("Failed to process region `{segment}`"))
+        })
         .try_for_each(|processed| {
-            let processed = processed?;
-            catch_panic(|| write(processed)).wrap_err("Failed to write the output")?;
+            write(processed?).wrap_err("Failed to write the output")?;
             written += 1;
             Ok(())
         })
-        // `init` and `work` catch their own panics, so this one came from the
-        // segment iterator
-        .this_is_a_bug()
+        .map_err(|panic| eyre!("{panic} (see the report above)"))
         .flatten();
 
     if written < total {

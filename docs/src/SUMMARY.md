@@ -3,6 +3,7 @@
 [Introduction](./index.md)
 
 - [Installation](./installation.md)
+- [Compute resources](./compute-resources.md)
 
 # Usage
 - [Getting started](./examples.md)

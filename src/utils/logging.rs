@@ -1,5 +1,9 @@
 use color_eyre::{ErrorKind, Section as _, SectionExt as _, eyre::Report};
-use std::{error::Error as StdError, fmt};
+use std::{
+    error::Error as StdError,
+    fmt,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 pub static LOG_VAR: &str = "RASTAIR_LOG";
@@ -51,20 +55,29 @@ fn setup_tracing(verbose: bool) {
 }
 
 fn setup_eyre(verbose: bool) {
-    if verbose {
-        // SAFETY: This is set at the very start of the program
-        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
-    }
-    // color-eyre puts an error's backtrace into the issue link, which is then
-    // ~30 kB, far over the ~8 kB GitHub accepts. `bug` shows our own instead.
+    // color-eyre puts a backtrace into the issue link, which is then ~30 kB,
+    // far over the ~8 kB GitHub accepts. So color-eyre must capture none, and
+    // only `backtrace()` decides, from what the user asked for at startup.
+    let wants_backtrace =
+        verbose || std::env::var_os("RUST_BACKTRACE").is_some_and(|value| value != "0");
+    WANTS_BACKTRACE.store(wants_backtrace, Ordering::Relaxed);
+    // SAFETY: This is set at the very start of the program
+    unsafe { std::env::set_var("RUST_BACKTRACE", "0") };
     if std::env::var_os("RUST_LIB_BACKTRACE").is_none() {
         // SAFETY: as above
         unsafe { std::env::set_var("RUST_LIB_BACKTRACE", "0") };
     }
-    let hook = hook_builder(verbose)
-        .install()
-        .note("Seeing this error message is somewhat ironic, we know");
-    if let Err(error) = hook {
+    let hooks = hook_builder(verbose).try_into_hooks().and_then(|(panic_hook, eyre_hook)| {
+        eyre_hook.install()?;
+        std::panic::set_hook(Box::new(move |info| {
+            eprintln!("{}", panic_hook.panic_report(info));
+            if let Some(backtrace) = backtrace() {
+                eprintln!("\nBacktrace:\n{backtrace}");
+            }
+        }));
+        Ok(())
+    });
+    if let Err(error) = hooks.note("Seeing this error message is somewhat ironic, we know") {
         eprintln!("Failed to register panic handler: {error:#}");
     }
 }
@@ -114,7 +127,7 @@ where
 
 /// See [`ThisIsABug`]. The backtrace is shown in the report but, unlike
 /// color-eyre's own, not put into the issue link.
-pub(crate) fn bug(error: impl Into<Report>, backtrace: Option<String>) -> Report {
+fn bug(error: impl Into<Report>, backtrace: Option<String>) -> Report {
     let report = error.into();
     if Bug::marks(report.as_ref()) {
         // Wrapping it again would lose its spans and sections
@@ -127,13 +140,13 @@ pub(crate) fn bug(error: impl Into<Report>, backtrace: Option<String>) -> Report
     }
 }
 
-/// The current backtrace if `RUST_BACKTRACE` (or `--verbose`) asks for one.
-///
-/// Not `Backtrace::capture`, which `RUST_LIB_BACKTRACE` turns off: see
-/// `setup_eyre`.
-pub(crate) fn backtrace() -> Option<String> {
-    std::env::var_os("RUST_BACKTRACE")
-        .is_some_and(|value| value != "0")
+/// Whether `RUST_BACKTRACE` (or `--verbose`) asked for a backtrace before
+/// `setup_eyre` turned the variable off.
+static WANTS_BACKTRACE: AtomicBool = AtomicBool::new(false);
+
+fn backtrace() -> Option<String> {
+    WANTS_BACKTRACE
+        .load(Ordering::Relaxed)
         .then(|| std::backtrace::Backtrace::force_capture().to_string())
 }
 

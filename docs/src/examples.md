@@ -149,3 +149,13 @@ rastair bam standard -r reference.fa.gz --bam test_mm.bam test.bam test.bed.gz
 ```admonish warn
 Be aware that `rastair bam standard` will produce bam files where any T that was deemed a "conversion" in a read is converted back to C, so the sequence information in the source and `MM` annotated files will differ!
 ```
+
+## Interrupted and failed runs
+
+`call`, `per-read` and `bam` write their output files as `<name>.partial` (for example `calls.vcf.gz.partial`, with its index next to it) and only rename them to their final name once the run has succeeded.
+If a file exists under its final name, it is complete.
+
+When Rastair fails, it still closes the `.partial` files properly: they are valid, just incomplete, and hold everything up to the point where it stopped.
+When it is killed, e.g. by ctrl+c, `scancel` or a Slurm time limit, the `.partial` files are cut off wherever Rastair was.
+
+If a single segment fails to process, Rastair still processes all others, but reports the failure at the end and exits with an error; the output then stays at `<name>.partial` and lacks that segment's records.
