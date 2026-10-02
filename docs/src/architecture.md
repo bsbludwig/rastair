@@ -19,9 +19,10 @@ After processing, only core positions are emitted, preventing duplicates.
 Each worker thread maintains its own @BAM and @FASTA file handles, avoiding lock contention and serialize I/O.
 Using index files (FAI, CSI, or TBI) enables efficient parallel random access.
 
-**Ordered Channel**:
-An ordered channel buffers worker results and reorders them by segment index before forwarding to the writer thread.
-A buffer size of 10 times the worker count accommodates work imbalance while preventing unbounded memory growth.
+**In-Order Results**:
+When a worker takes a segment, it also queues a one-shot channel for that segment's result, so the writer receives results in segment order without reordering them.
+The queue holds at most 4 segments per worker: once it is full, workers wait for the writer before starting another segment.
+One slow segment (deep coverage, a repeat) therefore holds back at most that many finished results, not every segment after it.
 This preserves the strict genomic coordinate ordering required by @VCF format.
 
 **Iterator Pipeline**:
@@ -45,7 +46,7 @@ This enables @CpG pair coordination and @denovo detection without breaking the l
 <!--
 Diagram ideas:
 - Flowchart showing iterator stages with data flow
-- Architecture diagram showing threads + ordered channel
+- Architecture diagram showing threads + in-order result queue
 - Sequence diagram showing data transformation through pipeline
 -->
 

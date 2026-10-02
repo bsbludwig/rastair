@@ -6,6 +6,13 @@ This is the changelog for Rastair 2.
 
 - `M5mC` (and `DPM5mC`, `ADM5mC`) are now written exactly where `CPG` or `CPGnovo` is set ([#12](https://github.com/bsbludwig/rastair/issues/12)).
 - Reference-only records (`ALT=.`) are only written at CpG and de-novo CpG positions.
+- Progress is shown in the terminal tab/taskbar (OSC 9;4) in terminals that support it, e.g. Windows Terminal, Ghostty, WezTerm, iTerm2 and Konsole.
+- `call`, `per-read` and `bam` write their outputs (and indices) as `<name>.partial` and rename them only when the run succeeded, so a file under its final name is always complete.
+- A crash (panic) in any thread, or an error writing the output, now stops the run instead of processing the remaining segments; output files are still closed properly, also when the writer itself crashed.
+- `call` and `per-read` used to skip a segment that failed to process and exit successfully, leaving a gap in the output. They still process all other segments, but now exit with an error that says how many segments failed.
+- `call`, `per-read` and `bam` no longer accumulate finished segments without limit behind a slow one (deep coverage, a repeat); at most four segments per thread wait to be written.
+- Crashes and internal errors end with a link to open a pre-filled GitHub issue, with the error, Rastair's version and the region being processed. With `--verbose`, only crashes and internal errors show a backtrace.
+- Fixed a hang when the GPU inference thread crashes: queued regions now fall back to CPU scoring, like after any other GPU failure.
 
 ## Version 2.2.0 (2026-08-24)
 

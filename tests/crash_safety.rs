@@ -7,7 +7,7 @@
 //!   file is a properly closed prefix of the complete output;
 //! - a killed run never leaves a file at the final path either;
 //! - a segment that failed on its own is the only thing missing;
-//! - a crash is reported once, as an error.
+//! - a crash is reported once.
 //!
 //! Fault injection is compiled out of release builds, so this only runs in
 //! debug builds. Set `PROPTEST_CASES` to run more cases.
@@ -203,7 +203,7 @@ fn check(references: &References, scenario: &Scenario) -> Result<()> {
     let stderr = output.stderr();
     let full = references.records.get(&scenario.pipeline).ok_or_else(|| eyre!("no reference"))?;
 
-    ensure!(!stderr.contains("The application panicked"), "crash not caught: {stderr}");
+    ensure!(stderr.matches("The application panicked").count() <= 1, "reported twice: {stderr}");
     let expected = scenario.expected();
     match expected {
         Expected::Complete => {

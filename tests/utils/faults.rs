@@ -180,8 +180,12 @@ pub fn ensure_killed_by(output: &Output, signal: i32) -> Result<()> {
     Ok(())
 }
 
-pub fn ensure_reported_once(stderr: &str) -> Result<()> {
-    ensure!(!stderr.contains("The application panicked"), "reported once, as an error: {stderr}");
+/// The panic hook printed one crash report for a panic at `location`, and
+/// nothing reported it again.
+pub fn ensure_crash_reported(stderr: &str, location: &str) -> Result<()> {
+    ensure!(stderr.matches("The application panicked").count() == 1, "one report: {stderr}");
+    ensure!(stderr.matches("Consider reporting").count() == 1, "one issue link: {stderr}");
+    ensure!(stderr.contains(&format!("Location: {location}")), "{stderr}");
     Ok(())
 }
 
