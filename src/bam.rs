@@ -9,8 +9,7 @@ use crate::{
 };
 use clap::{Parser, value_parser};
 use clio::ClioPath;
-use color_eyre::eyre::{Context, ContextCompat, Result, eyre};
-use rayon::prelude::*;
+use color_eyre::eyre::{Context, Result};
 use rust_htslib::bam::{
     self, FetchDefinition, Header, Read, Record, Writer, ext::BamRecordExtensions as _,
     header::HeaderRecord,
@@ -21,11 +20,14 @@ use seqair_types::{Base, Strand, StrandFromRecord};
 use std::thread::available_parallelism;
 
 mod base_modification;
-use crate::progress::ProgressTracker;
+use crate::runtime::{
+    fault_injection, partial_output::PartialOutput, progress, progress::ProgressTracker, segments,
+    threads,
+};
 pub use base_modification::{
     MethylatedPositions, MethylationContext, XmAnnotation, XrTags, determine_context,
 };
-use tracing::{instrument, trace, warn};
+use tracing::{instrument, warn};
 
 /// Subcommands for `rastair bam`
 #[derive(Debug, clap::Subcommand)]
@@ -77,7 +79,8 @@ pub struct BamRewriteArgs {
     ?mode,
 ))]
 pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
-    crate::progress::register_signal_handler();
+    progress::register_signal_handler();
+    let panics = threads::PanicCheck::start();
 
     // Open BAM on the main thread to get header and compute regions
     let (header, regions) = {
@@ -95,131 +98,75 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
     };
 
     let worker_threads = params.threads.saturating_sub(1).max(1);
-    let (bam_sender, bam_receiver) = ordered_channel::bounded::<Vec<Record>>(worker_threads * 10);
-
-    let total_segments = regions.len();
-    let output_file = params.output.clone();
-    let writer_thread = std::thread::Builder::new()
-        .name("bam-writer".to_string())
-        .spawn(move || -> Result<()> {
-            let mut writer = if output_file.is_std() {
-                Writer::from_stdout(&header, bam::Format::Bam)
-            } else {
-                Writer::from_path(output_file.path(), &header, bam::Format::Bam)
-            }
-            .wrap_err("failed to create writer")?;
-            writer
-                .set_compression_level(bam::CompressionLevel::Fastest)
-                .wrap_err("failed to set compression level")?;
-            writer.set_threads(3).wrap_err("failed to set threads")?;
-
-            let mut progress = ProgressTracker::new(total_segments);
-            for records in bam_receiver {
-                for record in records {
-                    writer.write(&record).wrap_err("failed to write record to new BAM file")?;
-                }
-                progress.segment_done();
-            }
-            Ok(())
-        })
-        .wrap_err("failed to spawn BAM writer thread")?;
-
-    let n_regions = regions.len();
-    rayon::ThreadPoolBuilder::new()
+    let pool = rayon::ThreadPoolBuilder::new()
         .thread_name(|idx| format!("bam-worker-{idx}"))
         .num_threads(worker_threads)
         .build()
-        .wrap_err("Failed to create thread pool for BAM rewrite")?
-        .install(move || {
-            regions.iter().enumerate().par_bridge().try_for_each_with(
-                bam_sender,
-                |sender, (index, segment)| -> Result<()> {
-                    let is_last = index == n_regions - 1;
-                    rewrite_region_parallel(index, segment, is_last, sender, params, mode)
-                        .wrap_err_with(|| format!("Failed to process region `{}`", segment.region))
-                },
-            )
-        })
-        .wrap_err("Failed to process BAM regions in parallel")?;
+        .wrap_err("Failed to create thread pool for BAM rewrite")?;
 
-    writer_thread
-        .join()
-        .map_err(|_| eyre!("BAM writer thread panicked"))
-        .this_is_a_bug()?
-        .wrap_err("Error in BAM writer thread")?;
+    let output = PartialOutput::new("BAM output", &params.output);
+    let output_file = output.write_path()?;
+    let mut writer = if output_file.is_std() {
+        Writer::from_stdout(&header, bam::Format::Bam)
+    } else {
+        Writer::from_path(output_file.path(), &header, bam::Format::Bam)
+    }
+    .wrap_err("failed to create writer")?;
+    writer
+        .set_compression_level(bam::CompressionLevel::Fastest)
+        .wrap_err("failed to set compression level")?;
+    writer.set_threads(3).wrap_err("failed to set threads")?;
+
+    let mut progress = ProgressTracker::new(regions.len());
+    let last = regions.last();
+    let processed = segments::process_in_order(
+        &pool,
+        &regions,
+        || WorkerReaders::open(params),
+        |WorkerReaders { bam, calls, fasta }, segment| {
+            fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
+            let is_last = last.is_some_and(|last| std::ptr::eq(segment, last));
+            rewrite_region(bam, calls, fasta, segment, mode, is_last)
+        },
+        |records| {
+            for record in records {
+                writer.write(&record).wrap_err("failed to write record to new BAM file")?;
+            }
+            progress.segment_done();
+            fault_injection::fault_point(fault_injection::FaultPoint::Writer)
+        },
+    )
+    .wrap_err("Failed to process BAM regions in parallel");
+
+    // Close the output even if processing failed, so it holds a valid prefix
+    drop(writer);
+    let closed = if output_file.is_std() { Ok(()) } else { ensure_closed(output_file.path()) };
+    segments::first_error(processed, closed)?;
+    panics.finish()?;
+    output.commit()?;
 
     Ok(())
 }
 
-/// Wrapper for parallel BAM region processing with thread-local readers.
-fn rewrite_region_parallel(
-    index: usize,
-    segment: &ChunkRegion,
-    is_last: bool,
-    sender: &mut ordered_channel::Sender<Vec<Record>>,
-    params: &BamRewriteArgs,
-    mode: BamMode,
-) -> Result<()> {
-    thread_local! {
-        static BAM_READER: std::cell::RefCell<Option<bam::IndexedReader>> =
-            const { std::cell::RefCell::new(None) };
-        static BED_READER: std::cell::RefCell<Option<RastairBedReader>> =
-            const { std::cell::RefCell::new(None) };
-        static FASTA_READER: std::cell::RefCell<Option<FastaReader>> =
-            const { std::cell::RefCell::new(None) };
+/// What each worker reads from, opened once on its own thread.
+struct WorkerReaders {
+    bam: bam::IndexedReader,
+    calls: RastairBedReader,
+    fasta: FastaReader,
+}
+
+impl WorkerReaders {
+    fn open(params: &BamRewriteArgs) -> Result<Self> {
+        let mut bam = bam::IndexedReader::from_path(params.segments.bam_file.path())
+            .wrap_err("Failed to open BAM/CRAM in worker thread")?;
+        bam.set_reference(params.segments.fasta_file.path())
+            .wrap_err("Failed to set FASTA reference for BAM/CRAM reader in worker thread")?;
+        let calls = RastairBedReader::new(params.calls_file.path())
+            .wrap_err("Failed to open calls file in worker thread")?;
+        let fasta = open_fasta(params.segments.fasta_file.path())
+            .wrap_err("Failed to open FASTA in worker thread")?;
+        Ok(Self { bam, calls, fasta })
     }
-
-    let records = BAM_READER.with(|bam_cell| {
-        BED_READER.with(|bed_cell| {
-            FASTA_READER.with(|fasta_cell| -> Result<Vec<Record>> {
-                let mut bam_opt = bam_cell.borrow_mut();
-                let mut bed_opt = bed_cell.borrow_mut();
-                let mut fasta_opt = fasta_cell.borrow_mut();
-
-                if bam_opt.is_none() {
-                    let mut reader = bam::IndexedReader::from_path(params.segments.bam_file.path())
-                        .wrap_err("Failed to open BAM/CRAM in worker thread")?;
-                    reader.set_reference(params.segments.fasta_file.path()).wrap_err(
-                        "Failed to set FASTA reference for BAM/CRAM reader in worker thread",
-                    )?;
-                    *bam_opt = Some(reader);
-                }
-                if bed_opt.is_none() {
-                    *bed_opt = Some(
-                        RastairBedReader::new(params.calls_file.path())
-                            .wrap_err("Failed to open calls file in worker thread")?,
-                    );
-                }
-                if fasta_opt.is_none() {
-                    *fasta_opt = Some(
-                        open_fasta(params.segments.fasta_file.path())
-                            .wrap_err("Failed to open FASTA in worker thread")?,
-                    );
-                }
-
-                let bam = bam_opt
-                    .as_mut()
-                    .wrap_err("thread-local BAM reader not initialized")
-                    .this_is_a_bug()?;
-                let bed = bed_opt
-                    .as_mut()
-                    .wrap_err("thread-local BED reader not initialized")
-                    .this_is_a_bug()?;
-                let fasta = fasta_opt
-                    .as_mut()
-                    .wrap_err("thread-local FASTA reader not initialized")
-                    .this_is_a_bug()?;
-
-                rewrite_region(bam, bed, fasta, segment, mode, is_last)
-            })
-        })
-    })?;
-
-    if let Err(err) = sender.send(index, records) {
-        trace!(error = format!("{err:#}"), "Failed to send BAM records, channel probably closed");
-    }
-
-    Ok(())
 }
 
 #[instrument(level = "debug", skip_all, fields(region = %region.region))]
@@ -499,6 +446,30 @@ fn add_rastair_header(header: &mut Header) {
     );
 }
 
+/// rust-htslib closes a BAM writer in `Drop` and ignores whether that worked,
+/// and with writer threads, a full disk may only show then. htslib writes the
+/// BGZF EOF block last, after flushing everything else, so check for it.
+// ponytail: misses a failure after the EOF block (the final close(2)); use an
+// explicit close once rust-htslib has one.
+fn ensure_closed(path: &std::path::Path) -> Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    const BGZF_EOF: [u8; 28] = [
+        0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02,
+        0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let mut end = [0; 28];
+    let read = std::fs::File::open(path).and_then(|mut file| {
+        file.seek(SeekFrom::End(-28))?;
+        file.read_exact(&mut end)
+    });
+    color_eyre::eyre::ensure!(
+        read.is_ok() && end == BGZF_EOF,
+        "Failed to write the BAM file `{}`: it does not end in a BGZF EOF block, the disk may be full",
+        path.display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation, reason = "lots of noise otherwise for small numbers")]
 mod tests {
@@ -507,6 +478,23 @@ mod tests {
     use rust_htslib::bam::record::Aux;
 
     use super::*;
+    use color_eyre::eyre::ContextCompat as _;
+
+    #[test]
+    fn a_bam_without_eof_block_was_not_closed() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let path = dir.path().join("out.bam");
+        let header = Header::new();
+        drop(Writer::from_path(&path, &header, bam::Format::Bam)?);
+        ensure_closed(&path)?;
+
+        let bytes = std::fs::read(&path)?;
+        std::fs::write(&path, bytes.get(..bytes.len() - 1).unwrap_or_default())?;
+        ensure!(ensure_closed(&path).is_err());
+        std::fs::write(&path, b"")?;
+        ensure!(ensure_closed(&path).is_err());
+        Ok(())
+    }
 
     /// No-op reference lookup for tests that don't involve de-novo CpGs
     fn no_ref(_pos: u32) -> Option<Base> {

@@ -12,7 +12,7 @@ fn simple_per_read_call() -> Result<()> {
         "--fasta-file=tests/data/test.fasta.gz",
         "tests/data/test.bam",
         "--region=chr19:6105900-6105950",
-    ]), @"
+    ]), @r#"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -34,8 +34,9 @@ fn simple_per_read_call() -> Result<()> {
     chr19	6105947	6106027	NB502094:69:HN2H2BGX5:2:12207:14946:2414	60	-	241	80	83	3	3	6,37,49				
 
     ----- stderr -----
+    [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
     [TIME] INFO rastair: Calling reads finished [DURATION]
-    ");
+    "#);
 
     Ok(())
 }
@@ -51,7 +52,7 @@ fn per_read_with_guess_read_orientation() -> Result<()> {
             "tests/data/test.bam",
             "--region=chr19:6105900-6105950",
             "--guess-read-orientation",
-        ]), @"
+        ]), @r#"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -73,8 +74,9 @@ fn per_read_with_guess_read_orientation() -> Result<()> {
     chr19	6105947	6106027	NB502094:69:HN2H2BGX5:2:12207:14946:2414	60	-	241	80	83	3	3	6,37,49				
 
     ----- stderr -----
+    [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
     [TIME] INFO rastair: Calling reads finished [DURATION]
-    ");
+    "#);
 
     Ok(())
 }

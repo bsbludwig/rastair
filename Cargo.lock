@@ -2170,12 +2170,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "ordered-channel"
-version = "1.2.0"
+name = "ordair"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95be4d57809897b5a7539fc15a7dfe0e84141bc3dfaa2e9b1b27caa90acf61ab"
+checksum = "758c0fb8faf123adc1e399ed06b74e7c03c2703fd0439eec638131c12b5affe8"
 dependencies = [
- "crossbeam-channel",
+ "rayon-core",
 ]
 
 [[package]]
@@ -2557,7 +2557,7 @@ dependencies = [
  "ndarray",
  "noodles",
  "noodles-bgzf",
- "ordered-channel",
+ "ordair",
  "pastey",
  "probability",
  "proptest",

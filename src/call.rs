@@ -10,7 +10,7 @@
 //!   4. Pre-filter positions (e.g. only keep CpG sites)
 //!   5. Call variants based on the metrics
 //! - Output: Write variants to output file in specified format (VCF/BCF)
-//!   1. One output thread collects records for each segment
+//!   1. The calling thread receives the records of each segment, in order
 //!   2. Filter be given criteria
 //!   3. Convert to the output format
 //!   4. Write to file in order
@@ -19,6 +19,7 @@
 use crate::call::pileup::Pileup;
 #[cfg(any(not(feature = "experimental-seqair"), test))]
 use crate::call::process::calculate_pileup_metrics;
+use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
     call::{
@@ -30,16 +31,15 @@ use crate::{
     sequence::{
         ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Segment, SegmentationParams,
     },
-    utils::{cli, logging::ThisIsABug as _, map_surrounding},
+    utils::{cli, map_surrounding},
 };
 use clio::ClioPath;
 use color_eyre::{
     Section,
-    eyre::{Result, WrapErr, ensure, eyre},
+    eyre::{Result, WrapErr, ensure},
 };
-use rayon::prelude::*;
-use std::{ops::Mul as _, rc::Rc, thread::available_parallelism};
-use tracing::{Level, debug, error, instrument, trace, warn};
+use std::{rc::Rc, thread::available_parallelism};
+use tracing::{Level, debug, instrument, trace, warn};
 
 pub mod denovo_cpg;
 pub mod methylation;
@@ -51,7 +51,7 @@ pub mod variant_calling;
 mod writer;
 
 pub use record_filters::{PreFilterInputs, RecordFilters};
-pub use writer::writer_thread;
+use writer::SegmentWriter;
 
 // Jump in here if you want to know how the processing of regions works
 pub mod process;
@@ -190,7 +190,8 @@ pub fn call(mut params: CallParams) -> Result<()> {
     let readers = ReaderSource::from(readers);
     let readers = &readers;
 
-    crate::progress::register_signal_handler();
+    progress::register_signal_handler();
+    let panics = threads::PanicCheck::start();
 
     // Process each region and write results to the VCF
     //
@@ -199,8 +200,8 @@ pub fn call(mut params: CallParams) -> Result<()> {
     // variant candidates and writing them to the VCF.
     //
     // To use all CPU available, we use rayon to process the regions in
-    // parallel. From there, we send ready-made VCF records to a special writer
-    // thread that only deals with writing the VCF file.
+    // parallel. The ready-made records come back to this thread in segment
+    // order, which writes them.
     let writer_threads = params.vcf.vcf_threads;
     let worker_threads = params.total_threads.saturating_sub(writer_threads.get()).max(1);
 
@@ -216,69 +217,70 @@ pub fn call(mut params: CallParams) -> Result<()> {
         writer_threads.get()
     );
 
-    // The connection between the processing threads and the VCF writer is this
-    // ordered channel. It buffers `Vec<vcf::Record>`s, alongside the index from
-    // the parallel iterator.
-    let (vcf_sender, vcf_receiver) = {
-        // At least 10x buffer for VCF records to account for reordering and processing time
-        let buffer_size = worker_threads.mul(10);
-        ordered_channel::bounded(buffer_size)
-    };
-
-    // We're going to go over the regions in parallel, and add the index of the
-    // region here for the ordered channel.
-    let regions_iter = regions.iter().enumerate();
-
-    // Create a VCF writer for the output
-    let writer_thread =
-        writer_thread(params, &regions, vcf_receiver).wrap_err("VCF writer error")?;
+    let mut writer = SegmentWriter::new(params, &regions).wrap_err("VCF writer error")?;
+    let failed_segments = &segments::FailedSegments::default();
 
     // Run this in a custom rayon thread pool to control the number of threads
     // and be able to tweak parameters when profiling
-    rayon::ThreadPoolBuilder::new()
+    let pool = rayon::ThreadPoolBuilder::new()
         .thread_name(|idx| format!("worker-{idx}"))
         .num_threads(worker_threads)
         .start_handler(|idx| trace!(idx, "Starting worker thread"))
         .exit_handler(|idx| trace!(idx, "Closing worker thread"))
         .build()
-        .wrap_err("Failed to create thread pool for rayon")?
-        .install(move || {
-            regions_iter.par_bridge().try_for_each_init(
-                || (vcf_sender.clone(), readers.fork()),
-                |(vcf_sender, readers), (index, region)| {
-                    let readers = readers
-                        .as_mut()
-                        .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
-                    // This is where the actual processing happens!
-                    process_region_wrapper(index, region, vcf_sender, params, readers, &ml)
-                },
-            )
-        })
-        .wrap_err("Failed to process regions in parallel")
-        .note("Rastair might have still written an (incomplete) output file")?;
+        .wrap_err("Failed to create thread pool for rayon")?;
+    let processed = segments::process_in_order(
+        &pool,
+        &regions,
+        || readers.fork().wrap_err("Failed to open readers in worker thread"),
+        |readers, region| Ok(process_region_wrapper(region, readers, params, &ml, failed_segments)),
+        |records| writer.write(records),
+    )
+    .wrap_err("Failed to process regions in parallel")
+    .note("Rastair has written an incomplete output file");
 
-    writer_thread
-        .join()
-        .map_err(|_| eyre!("Writer thread crashed"))
-        .this_is_a_bug()? // this error is a panic in the thread
-        .wrap_err("Error in writer thread")?; // this error is from actual result returned by the thread
+    // Close the outputs even if processing failed, so they hold a valid prefix
+    let (closed, outputs) = writer.close();
+    segments::first_error(processed, closed)?;
+    panics.finish()?;
+    failed_segments.check(regions.len())?;
+    for output in outputs {
+        output.commit()?;
+    }
 
     Ok(())
 }
 
-/// Wrapper function for processing a region in a thread-safe manner.
-///
-/// Calls [`process_region`] with the worker's readers and ships the result to
-/// the VCF writer.
+/// Processes one segment with the worker's readers. A segment that fails to
+/// process is counted and yields no records; the run goes on.
 #[instrument(level = "info", skip_all, fields(region=%region.region))]
 fn process_region_wrapper(
-    index: usize,
     region: &ChunkRegion,
-    vcf_sender: &mut ordered_channel::Sender<Vec<PileupMetrics>>,
-    params: &CallParams,
     readers: &mut PileupReaders,
+    params: &CallParams,
     ml: &MachineLearning,
-) -> Result<()> {
+    failed_segments: &segments::FailedSegments,
+) -> Vec<PileupMetrics> {
+    let mut records = process_segment(readers, region, params, ml).unwrap_or_else(|error| {
+        failed_segments.record(&region.region, error);
+        Vec::new()
+    });
+    // The pipeline's in-place collects keep the capacity sized for every
+    // covered base, about five times what survives the filters, and this vec
+    // may wait behind a slow segment before the writer frees it.
+    records.shrink_to_fit();
+    records
+}
+
+/// The actual processing of a segment
+fn process_segment(
+    readers: &mut PileupReaders,
+    region: &ChunkRegion,
+    params: &CallParams,
+    ml: &MachineLearning,
+) -> Result<Vec<PileupMetrics>> {
+    fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
+
     // NOTE: There are some filters applied here to ignore certain reads.
     let pileup_mapping_params = process::PileupMappingParams {
         variant_calling: params.variant_calling.clone(),
@@ -293,36 +295,15 @@ fn process_region_wrapper(
     };
 
     #[cfg(not(feature = "experimental-seqair"))]
-    let res = {
+    {
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
         process_region(segment, pileups, params, ml)
-    };
+    }
     #[cfg(feature = "experimental-seqair")]
-    let res = {
+    {
         let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
         process_pre_built_metrics(segment, metrics, params, ml)
-    };
-
-    // Handle processing errors gracefully to not crash the whole processing
-    let records = match res {
-        Ok(records) => records,
-        Err(e) => {
-            error!(error = format!("{e:#}"), "Failed to process region");
-            // We still send an empty vector to the channel to increment the index
-            Vec::new()
-        }
-    };
-
-    if let Err(err) =
-        vcf_sender.send(index, records).wrap_err("Failed to send records to VCF writer")
-    {
-        trace!(
-            error = format!("{err:#}"),
-            "Failed to send records to VCF writer, probably because the channel is closed"
-        );
     }
-
-    Ok(())
 }
 
 macro_rules! log_failed_and_skip {

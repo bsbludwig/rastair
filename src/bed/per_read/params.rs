@@ -38,13 +38,10 @@ impl BedReadsParams {
         }
     }
 
+    /// Writer for the configured output, in its format, writing to `path`.
     #[instrument(level = "debug", skip(self))]
-    pub fn writer(&self) -> Result<BedWriter<super::format::PerRead>> {
-        let path = &self.bed;
-
-        let format = self.bed_format();
-        let writer = BedWriter::new(path, format)
-            .wrap_err_with(|| format!("Failed to create BED writer for {path}"))?;
-        Ok(writer)
+    pub fn writer(&self, path: &ClioPath) -> Result<BedWriter<super::format::PerRead>> {
+        BedWriter::new(path, self.bed_format())
+            .wrap_err_with(|| format!("Failed to create BED writer for {path}"))
     }
 }

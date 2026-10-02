@@ -24,9 +24,6 @@ extern "C" fn on_progress_signal(_: libc::c_int) {
 pub fn register_signal_handler() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        // Clear any stale flag left over from a previous call() invocation.
-        PRINT_REQUESTED.store(false, Ordering::Relaxed);
-
         #[cfg(target_os = "macos")]
         let sig = libc::SIGINFO;
         #[cfg(target_os = "linux")]
@@ -39,7 +36,9 @@ pub fn register_signal_handler() {
             sa.sa_sigaction = on_progress_signal as *const () as libc::sighandler_t;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = libc::SA_RESTART;
-            libc::sigaction(sig, &sa, std::ptr::null_mut());
+            if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
+                tracing::warn!(error = ?std::io::Error::last_os_error(), "Failed to register the progress signal handler");
+            }
         }
     });
 }

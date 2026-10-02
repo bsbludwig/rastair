@@ -4,7 +4,10 @@ use crate::{
         reader::{RastairBedReader, RastairCall},
     },
     call::{pileup::hts_utils::infer_strand_from_mismatch_motifs, variant_calling::ReadFlags},
-    progress::ProgressTracker,
+    runtime::{
+        fault_injection, partial_output::PartialOutput, progress, progress::ProgressTracker,
+        segments, threads,
+    },
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
     utils::{cli, logging::ThisIsABug},
 };
@@ -12,15 +15,14 @@ use bio_types::sequence::SequenceReadPairOrientation;
 use clio::ClioPath;
 use color_eyre::{
     Result, Section,
-    eyre::{Context as _, ContextCompat, eyre},
+    eyre::{Context as _, ContextCompat},
 };
-use rayon::iter::{ParallelBridge as _, ParallelIterator as _};
 use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use rustc_hash::FxHashMap;
 use seqair_types::Strand;
 use seqair_types::{Base, SmallVec};
-use std::thread::{self, available_parallelism};
-use tracing::{debug, error, instrument, trace, warn};
+use std::thread::available_parallelism;
+use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct PerReadParams {
@@ -126,7 +128,8 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
 
-    crate::progress::register_signal_handler();
+    progress::register_signal_handler();
+    let panics = threads::PanicCheck::start();
 
     if let Some(bed_path) = &params.calls {
         // if we're gonna try to read a calls file, make sure we can open it
@@ -150,128 +153,81 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
         params.total_threads, worker_threads, writer_threads,
     );
 
-    // The connection between the processing threads and the writer is this
-    // ordered channel. It buffers `Vec<PerReads>`s, alongside the index from
-    // the parallel iterator.
-    let (sender, receiver) = {
-        // At least 10x buffer for records to account for reordering and processing time
-        let buffer_size = worker_threads * 10;
-        ordered_channel::bounded(buffer_size)
-    };
-
-    // Create a writer for the output
     let total_segments = regions.len();
-    let writer_thread = thread::Builder::new()
-        .name("writer".to_string())
-        .spawn({
-            let params = params.clone();
-            move || -> Result<()> {
-                let mut bed_writer =
-                    params.bed_reads.writer().wrap_err("Failed to open BED file")?;
-                let mut progress = ProgressTracker::new(total_segments);
-
-                for records in receiver {
-                    for row in records {
-                        bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
-                    }
-                    progress.segment_done();
-                }
-
-                bed_writer.close().wrap_err("Failed to close BED writer")?;
-                Ok(())
-            }
-        })
-        .wrap_err("Failed to spawn writer thread")?;
+    let output = PartialOutput::new("BED output", &params.bed_reads.bed);
+    let mut bed_writer =
+        params.bed_reads.writer(&output.write_path()?).wrap_err("Failed to open BED file")?;
+    let mut progress = ProgressTracker::new(total_segments);
+    let failed_segments = &segments::FailedSegments::default();
 
     // Run this in a custom rayon thread pool to control the number of threads
     // and be able to tweak parameters when profiling
-    rayon::ThreadPoolBuilder::new()
+    let pool = rayon::ThreadPoolBuilder::new()
         .thread_name(|idx| format!("worker-{idx}"))
         .num_threads(worker_threads)
         .build()
-        .wrap_err("Failed to create thread pool for rayon")?
-        .install(move || {
-            regions.iter().enumerate().par_bridge().try_for_each_with(
-                (sender, params),
-                |(vcf_sender, params), (index, region)| {
-                    process_region_wrapper(index, region, vcf_sender, params)
-                },
-            )
-        })?;
+        .wrap_err("Failed to create thread pool for rayon")?;
+    let processed = segments::process_in_order(
+        &pool,
+        &regions,
+        || WorkerReaders::open(params),
+        |WorkerReaders { bam, calls }, region| {
+            Ok(process_region_wrapper(bam, calls.as_mut(), region, params, failed_segments))
+        },
+        |records| {
+            for row in records {
+                bed_writer.write_record(&row).wrap_err("Failed to write BED record")?;
+            }
+            progress.segment_done();
+            fault_injection::fault_point(fault_injection::FaultPoint::Writer)
+        },
+    );
 
-    writer_thread
-        .join()
-        .map_err(|e| eyre!("{e:?}"))
-        .wrap_err("Failed to join writer thread")?
-        .wrap_err("writer thread error")?;
+    // Close the output even if processing failed, so it holds a valid prefix
+    let closed = bed_writer.close().wrap_err("Failed to close BED writer");
+    segments::first_error(processed, closed)?;
+    panics.finish()?;
+    failed_segments.check(total_segments)?;
+    output.commit()?;
 
     Ok(())
 }
 
-/// Wrapper function for processing a region in a thread-safe manner.
-#[instrument(level = "debug", skip_all, fields(region=%region.region))]
+/// What each worker reads from, opened once on its own thread. Failing to
+/// open the BAM fails the run; the calls file is optional.
+struct WorkerReaders {
+    bam: Readers,
+    calls: Option<RastairBedReader>,
+}
+
+impl WorkerReaders {
+    fn open(params: &PerReadParams) -> Result<Self> {
+        let bam = params.segments.readers().wrap_err("Failed to open readers in worker thread")?;
+        let calls = params.calls.as_ref().and_then(|bed_path| {
+            RastairBedReader::new(bed_path)
+                .wrap_err("Failed to open calls BED file")
+                .inspect_err(|error| warn!(error = format!("{error:#}"), "Failed to read calls"))
+                .ok()
+        });
+        Ok(Self { bam, calls })
+    }
+}
+
+/// A segment that fails to process is counted and yields no records; the run
+/// goes on.
 fn process_region_wrapper(
-    index: usize,
+    bam: &mut Readers,
+    calls: Option<&mut RastairBedReader>,
     region: &ChunkRegion,
-    sender: &mut ordered_channel::Sender<Vec<PerRead>>,
     params: &PerReadParams,
-) -> Result<()> {
-    struct LocalReaders {
-        bam: Readers,
-        calls: Option<RastairBedReader>,
-    }
-
-    thread_local! {
-        /// Readers for the BAM and FASTA files, initialized per thread to avoid
-        /// re-opening files or having a lock
-        static READERS: std::cell::RefCell<Option<LocalReaders>> = const { std::cell::RefCell::new(None) };
-    }
-
-    // Use thread-local readers to avoid re-opening files in each thread
-    let res = READERS.with(|local_readers| -> Result<Vec<PerRead>> {
-        let mut local_readers = local_readers.borrow_mut();
-        let readers = {
-            // Initialize thread-local readers first time the thread accesses them
-            if local_readers.is_none() {
-                let readers = params
-                    .segments
-                    .readers()
-                    .wrap_err("Failed to open readers in worker thread")?;
-                let calls_reader = if let Some(bed_path) = &params.calls {
-                    match RastairBedReader::new(bed_path).wrap_err("Failed to open calls BED file")
-                    {
-                        Ok(r) => Some(r),
-                        Err(error) => {
-                            let error = format!("{error:#}");
-                            warn!(%error, "Failed to read calls");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                *local_readers = Some(LocalReaders { bam: readers, calls: calls_reader });
-            }
-            local_readers.as_mut().wrap_err("Failed to access thread-local resources")?
-        };
-
-        process_region(&mut readers.bam, readers.calls.as_mut(), region, params)
-    });
-
-    let records = match res {
-        Ok(records) => records,
-        Err(e) => {
-            error!(error = format!("{e:#}"), "Failed to process region");
-            // We still send an empty vector to the channel to increment the index
+    failed_segments: &segments::FailedSegments,
+) -> Vec<PerRead> {
+    fault_injection::fault_point(fault_injection::FaultPoint::Worker)
+        .and_then(|()| process_region(bam, calls, region, params))
+        .unwrap_or_else(|error| {
+            failed_segments.record(&region.region, error);
             Vec::new()
-        }
-    };
-
-    if let Err(_err) = sender.send(index, records).wrap_err("Failed to send records to writer") {
-        // the channel is closed, because the writer thread has finished
-    }
-
-    Ok(())
+        })
 }
 
 #[instrument(level = "debug", skip_all, fields(region=%region.region))]
