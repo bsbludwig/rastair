@@ -1,8 +1,10 @@
-use color_eyre::{Section as _, eyre::Report};
+use color_eyre::{ErrorKind, Section as _, SectionExt as _, eyre::Report};
+use std::{error::Error as StdError, fmt};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 pub static LOG_VAR: &str = "RASTAIR_LOG";
 pub static BUG_MESSAGE: &str = "This is a bug in Rastair, please report it at <https://github.com/bsbludwig/rastair/issues/new>";
+const ISSUE_URL: &str = "https://github.com/bsbludwig/rastair/issues/new";
 
 /// Setup logging and error handling
 ///
@@ -53,15 +55,13 @@ fn setup_eyre(verbose: bool) {
         // SAFETY: This is set at the very start of the program
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
-    let hook = color_eyre::config::HookBuilder::default()
-        .panic_section(BUG_MESSAGE)
-        .display_env_section(verbose)
-        .display_location_section(verbose)
-        .theme(if std::env::var("NO_COLOR").is_ok() {
-            color_eyre::config::Theme::new()
-        } else {
-            color_eyre::config::Theme::dark()
-        })
+    // color-eyre puts an error's backtrace into the issue link, which is then
+    // ~30 kB, far over the ~8 kB GitHub accepts. `bug` shows our own instead.
+    if std::env::var_os("RUST_LIB_BACKTRACE").is_none() {
+        // SAFETY: as above
+        unsafe { std::env::set_var("RUST_LIB_BACKTRACE", "0") };
+    }
+    let hook = hook_builder(verbose)
         .install()
         .note("Seeing this error message is somewhat ironic, we know");
     if let Err(error) = hook {
@@ -69,8 +69,37 @@ fn setup_eyre(verbose: bool) {
     }
 }
 
+fn hook_builder(verbose: bool) -> color_eyre::config::HookBuilder {
+    color_eyre::config::HookBuilder::default()
+        .panic_section(BUG_MESSAGE)
+        .issue_url(ISSUE_URL)
+        .add_issue_metadata("version", env!("CARGO_PKG_VERSION"))
+        .add_issue_metadata(
+            "pileup backend",
+            if cfg!(feature = "experimental-seqair") { "seqair" } else { "htslib" },
+        )
+        // Only defects get a link: a user error like "BAM not found" is not
+        // worth an issue, and its message is full of the user's paths.
+        .issue_filter(|kind| match kind {
+            ErrorKind::NonRecoverable(_) => true,
+            ErrorKind::Recoverable(error) => Bug::marks(error),
+        })
+        .capture_span_trace_by_default(true)
+        .display_env_section(verbose)
+        .display_location_section(verbose)
+        .theme(if std::env::var("NO_COLOR").is_ok() {
+            color_eyre::config::Theme::new()
+        } else {
+            color_eyre::config::Theme::dark()
+        })
+}
+
 pub trait ThisIsABug<T> {
-    /// Note to user that this is a bug in the program not an expected error
+    /// Note to user that this is a bug in the program not an expected error,
+    /// and offer a pre-filled issue link for it.
+    ///
+    /// The link shows the spans entered when the report is created here, and
+    /// sections added before this call are lost, so call it early.
     fn this_is_a_bug(self) -> Result<T, Report>;
 }
 
@@ -79,8 +108,55 @@ where
     E: Into<Report>,
 {
     fn this_is_a_bug(self) -> Result<T, Report> {
-        use color_eyre::Help;
+        self.map_err(|error| bug(error, backtrace()))
+    }
+}
 
-        self.map_err(|error| error.into()).map_err(|report| report.note(BUG_MESSAGE))
+/// See [`ThisIsABug`]. The backtrace is shown in the report but, unlike
+/// color-eyre's own, not put into the issue link.
+pub(crate) fn bug(error: impl Into<Report>, backtrace: Option<String>) -> Report {
+    let report = error.into();
+    if Bug::marks(report.as_ref()) {
+        // Wrapping it again would lose its spans and sections
+        return report;
+    }
+    let report = Report::new(Bug(report.into())).note(BUG_MESSAGE);
+    match backtrace {
+        Some(backtrace) => report.section(backtrace.header("Backtrace:")),
+        None => report,
+    }
+}
+
+/// The current backtrace if `RUST_BACKTRACE` (or `--verbose`) asks for one.
+///
+/// Not `Backtrace::capture`, which `RUST_LIB_BACKTRACE` turns off: see
+/// `setup_eyre`.
+pub(crate) fn backtrace() -> Option<String> {
+    std::env::var_os("RUST_BACKTRACE")
+        .is_some_and(|value| value != "0")
+        .then(|| std::backtrace::Backtrace::force_capture().to_string())
+}
+
+/// Marks an error as a defect in Rastair, see [`ThisIsABug`]. Transparent:
+/// the error chain reads the same with it as without it.
+#[derive(Debug)]
+pub(crate) struct Bug(Box<dyn StdError + Send + Sync + 'static>);
+
+impl fmt::Display for Bug {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl StdError for Bug {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.0.source()
+    }
+}
+
+impl Bug {
+    /// Whether `error`, or anything it wraps, went through [`ThisIsABug`].
+    pub(crate) fn marks(error: &(dyn StdError + 'static)) -> bool {
+        std::iter::successors(Some(error), |&error| error.source()).any(|error| error.is::<Self>())
     }
 }

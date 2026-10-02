@@ -55,7 +55,7 @@ impl FastaReader {
 /// Open a FASTA file with a FAI index via htslib's faidx.
 ///
 /// htslib handles both plain and bgzip-compressed FASTA files natively.
-#[instrument(level = "debug")]
+#[instrument(level = "debug", skip_all)]
 pub fn open_fasta(fasta_path: &Path) -> Result<FastaReader> {
     let reader = faidx::Reader::from_path(fasta_path)
         .map_err(|e| eyre!(e))

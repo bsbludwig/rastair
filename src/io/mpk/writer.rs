@@ -17,7 +17,7 @@ pub struct MessagePackWriter {
 
 impl MessagePackWriter {
     /// Create a new `MessagePackWriter` with the specified output path.
-    #[instrument(level = "debug")]
+    #[instrument(level = "debug", skip_all)]
     pub fn new(path: &ClioPath) -> Result<Self> {
         let file =
             path.clone().create().wrap_err_with(|| format!("Failed to create output {path}"))?;

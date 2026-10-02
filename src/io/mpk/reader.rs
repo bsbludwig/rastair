@@ -20,7 +20,7 @@ pub struct MpkFile {
 
 impl MessagePackReader {
     /// Create a new `MessagePackReader` with the specified input path.
-    #[instrument(level = "debug")]
+    #[instrument(level = "debug", skip_all)]
     pub fn new(path: &ClioPath) -> Result<Self> {
         let file = path.clone().open().wrap_err_with(|| format!("Failed to open {path}"))?;
         let reader =
