@@ -17,7 +17,7 @@ use crate::{
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use seqair::bam::{
     RecordIdx,
-    pileup::{AlignmentView, Indel, PileupColumn},
+    pileup::{AlignmentView, Indel, PileupColumn, PileupOp},
 };
 use seqair_types::{Base, QPos, SmallVec, Strand, SumOfSquares};
 use std::rc::Rc;
@@ -59,6 +59,51 @@ pub(crate) struct DenovoNeighbour {
     pos: u32,
     becomes_c: bool,
     becomes_g: bool,
+}
+
+/// The de-novo neighbour of a column that [`ColumnDraft::accumulate`] would
+/// reject without a trace, or `None` when the column needs the full walk.
+///
+/// That is a column where every read shows the reference base with nothing
+/// inserted or deleted after it, so it has no alt and no indel, and whose
+/// reference is an `A`, a `T`, or a `G` that neither the reference (a `C`
+/// before it) nor `previous` (an adjacent alt `C`) makes a CpG. A `C` always
+/// takes the walk: the column after it may still rescue it. Every read, not only the ones the
+/// filters keep, so this never claims a column the walk would keep.
+pub(crate) fn plain_reference_column(
+    column: &PileupColumn<'_, RastairReadExtras>,
+    segment: &Segment,
+    params: &PileupMappingParams,
+    previous: Option<DenovoNeighbour>,
+) -> Option<DenovoNeighbour> {
+    // Without an early rejection every column is kept, so none is plain.
+    if params.early_reject.is_none() {
+        return None;
+    }
+    let pos = u32::try_from(column.pos().as_u64()).ok()?;
+    let idx = segment.pos_to_idx(pos).ok()?;
+    let reference = Base::from(*segment.sequence.get(idx)?);
+    let settled = match reference {
+        Base::A | Base::T => true,
+        Base::G => {
+            let after_c = idx
+                .checked_sub(1)
+                .and_then(|i| segment.sequence.get(i))
+                .is_some_and(|&b| Base::from(b) == Base::C);
+            let rescued =
+                previous.is_some_and(|p| p.becomes_c && p.pos.checked_add(1) == Some(pos));
+            !after_c && !rescued
+        }
+        _ => false,
+    };
+    if !settled {
+        return None;
+    }
+    let plain = column.raw_alignments().all(|aln| {
+        matches!(aln.op, PileupOp::Match { base, .. } if base == reference)
+            && matches!(aln.indel_after(), Indel::None)
+    });
+    plain.then_some(DenovoNeighbour { pos, becomes_c: false, becomes_g: false })
 }
 
 impl ColumnDraft {

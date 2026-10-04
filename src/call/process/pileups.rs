@@ -20,7 +20,9 @@ use tracing::{Level, debug, instrument, trace, warn};
 
 #[cfg(feature = "experimental-seqair")]
 use crate::{
-    call::pileup::from_seqair::{ColumnDraft, ColumnScratch, DenovoNeighbour},
+    call::pileup::from_seqair::{
+        ColumnDraft, ColumnScratch, DenovoNeighbour, plain_reference_column,
+    },
     metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{PileupReaders, ReferenceWindow},
 };
@@ -269,6 +271,15 @@ pub fn get_pileups(
         while let Some(col) = guard.pileups() {
             let pos = col.pos().as_u64();
             if !region.contains(pos) {
+                continue;
+            }
+            if let Some(neighbour) = plain_reference_column(&col, &segment, params, previous) {
+                if let Some((waiting, before)) = deferred.take()
+                    && keeps(waiting.pre_filter_inputs(before, Some(neighbour)))
+                {
+                    keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
+                }
+                previous = Some(neighbour);
                 continue;
             }
             let draft = match ColumnDraft::accumulate(&col, segment.clone(), params, &mut scratch) {
