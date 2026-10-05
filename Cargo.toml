@@ -83,7 +83,7 @@ clio = { version = "0.3.5", features = ["clap", "clap-parse", "pipe"] }
 # multithreading
 rayon = "1.10.0"
 crossbeam-channel = "0.5.15"
-ordair = "0.3.0"
+ordair = "0.3.1"
 mimalloc = { version = "0.1.52", features = ["override"] }
 
 # I/O

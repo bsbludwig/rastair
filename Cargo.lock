@@ -2177,9 +2177,9 @@ dependencies = [
 
 [[package]]
 name = "ordair"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84429adc021c29376ef46477a4d225753b4a9a9121456d2b17ef1d8d916f1b2e"
+checksum = "d9721ddb65358a0bca43b5198ac38cac80e358a2c645985c76eac8799ef04ca0"
 dependencies = [
  "rayon-core",
 ]

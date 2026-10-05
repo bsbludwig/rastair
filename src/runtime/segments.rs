@@ -101,7 +101,14 @@ pub fn process_in_order<T: Sync + fmt::Display, S, R: Send>(
             written += 1;
             Ok(())
         })
-        .map_err(|panic| eyre!("{panic} (see the report above)"))
+        .map_err(|panic| match panic.origin() {
+            // The panic hook printed the message already
+            ordair::PanicOrigin::Worker => eyre!("A worker panicked (see the crash report above)"),
+            ordair::PanicOrigin::Consumer => {
+                eyre!("Writing the output panicked (see the crash report above)")
+            }
+            _ => Report::new(panic),
+        })
         .flatten();
 
     if written < total {
