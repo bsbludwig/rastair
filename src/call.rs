@@ -237,7 +237,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
         |records| writer.write(records),
     )
     .wrap_err("Failed to process regions in parallel")
-    .note("Rastair has written an incomplete output file");
+    .note("Output files are incomplete and were left under their `.partial` names");
 
     // Close the outputs even if processing failed, so they hold a valid prefix
     let (closed, outputs) = writer.close();
@@ -404,16 +404,8 @@ fn process_collected_pileups(
     // this thread otherwise or if the GPU failed. Both score the region as one
     // batch per model; see `score_on_cpu` for why that matters on the CPU.
     let score_indels = params.indel.needs_ml_scores(ml.enabled());
-    match process::score_on_gpu(&mut pileups, ml, score_indels) {
-        Some(Ok(())) => {}
-        Some(Err(error)) => {
-            warn!(
-                error = format!("{error:#}"),
-                "failed to calculate ML score on GPU, scoring this region on the CPU"
-            );
-            process::score_on_cpu(&mut pileups, ml, score_indels)?;
-        }
-        None => process::score_on_cpu(&mut pileups, ml, score_indels)?,
+    if !process::score_on_gpu(&mut pileups, ml, score_indels) {
+        process::score_on_cpu(&mut pileups, ml, score_indels)?;
     }
 
     if params.indel.rescues_hom_ref() {

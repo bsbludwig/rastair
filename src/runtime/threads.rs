@@ -1,20 +1,21 @@
 //! Panics: who reports them, and which ones fail a run.
 //!
-//! A panic prints color-eyre's crash report from the panic hook, while the
-//! panicking thread's spans are still entered, so the report and its issue
-//! link show the region it happened in. Whoever handles it afterwards only
-//! has to stop the run: ordair returns a panic in a worker or in the writer
+//! A panic's crash report is made in the panic hook, while the panicking
+//! thread's spans are still entered, so the report and its issue link show the
+//! region it happened in. During a run, it is printed when the run ends, after
+//! the warnings about the outputs it left behind. Whoever handles the panic
+//! only has to stop the run: ordair returns a panic in a worker or in the writer
 //! as an error, and [`PanicCheck`] fails a run in which any other thread
 //! panicked. The one exception is a thread started by [`spawn_recovering`],
 //! which the run can do without: its panic is logged, and a recovery runs.
 
-use crate::utils::logging::{BUG_MESSAGE, ThisIsABug as _};
+use crate::utils::logging::{BUG_MESSAGE, ThisIsABug as _, panic_report};
 use color_eyre::eyre::{Context as _, Result, ensure, eyre};
 use std::{
     cell::Cell,
     panic::{self, AssertUnwindSafe},
     sync::{
-        Once,
+        Mutex, Once, PoisonError,
         atomic::{AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
@@ -29,16 +30,44 @@ thread_local! {
 /// Panics on threads that don't recover, see [`PanicCheck`].
 static PANICS: AtomicUsize = AtomicUsize::new(0);
 
+/// Crash reports held back while a [`PanicCheck`] is alive; `None` otherwise.
+static DEFERRED: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+fn deferred() -> std::sync::MutexGuard<'static, Option<Vec<String>>> {
+    DEFERRED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn register_panic_hook() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let previous = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             if RECOVERS.with(Cell::get) {
-                error!(panic = %info, note = BUG_MESSAGE, "A thread panicked and recovered");
+                error!(
+                    panic = info.payload_as_str(),
+                    location = info.location().map(tracing::field::display),
+                    note = BUG_MESSAGE,
+                    "A thread panicked and recovered"
+                );
             } else {
                 PANICS.fetch_add(1, Ordering::Relaxed);
-                previous(info);
+                if deferred().is_none() {
+                    return previous(info);
+                }
+                // Rendered outside the lock: a run that ends meanwhile gets the
+                // report printed right away instead.
+                let report = panic_report(info);
+                match deferred().as_mut() {
+                    Some(reports) => reports.push(report),
+                    None => return eprintln!("{report}"),
+                }
+                // The report waits for the run to end, which can take a while
+                // when a thread nobody joins panicked and the run carries on.
+                error!(
+                    panic = info.payload_as_str(),
+                    location = info.location().map(tracing::field::display),
+                    "A thread panicked, its crash report follows when the run ends"
+                );
             }
         }));
     });
@@ -47,6 +76,9 @@ fn register_panic_hook() {
 /// Fails a run in which a thread panicked, e.g. one started by a library (for
 /// compression) whose panic nobody gets as an error. Its output would
 /// otherwise be committed as complete.
+///
+/// While it is alive, crash reports are held back, and printed when it is
+/// dropped. Create it before the outputs, so it is dropped after them.
 #[must_use = "only `finish` reports the panic"]
 pub struct PanicCheck {
     panics_before: usize,
@@ -55,15 +87,25 @@ pub struct PanicCheck {
 impl PanicCheck {
     pub fn start() -> Self {
         register_panic_hook();
+        deferred().get_or_insert_with(Vec::new);
         Self { panics_before: PANICS.load(Ordering::Relaxed) }
     }
 
-    pub fn finish(self) -> Result<()> {
+    pub fn finish(&self) -> Result<()> {
         ensure!(
             PANICS.load(Ordering::Relaxed) == self.panics_before,
             "A thread panicked (see above), output files may be incomplete"
         );
         Ok(())
+    }
+}
+
+impl Drop for PanicCheck {
+    fn drop(&mut self) {
+        // Blank lines set the report apart from the logs and the error around it
+        for report in deferred().take().into_iter().flatten() {
+            eprintln!("\n{report}\n");
+        }
     }
 }
 

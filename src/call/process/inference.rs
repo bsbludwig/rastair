@@ -111,28 +111,36 @@ impl InferenceStage {
     }
 }
 
-/// Score `pileups` on the inference thread, if this run has one that still works.
+/// Score `pileups` on the inference thread, if this run has one that still
+/// works. `false` says the caller has to score them on its own thread.
 ///
-/// `None` says there is no GPU stage, or it has already failed once, so the
-/// caller has to score on its own thread; `Some(Err(_))` says the GPU tried
-/// and failed just now, and the caller should fall back the same way. Only the
-/// first failure is reported this way; after it the stage is retired for the
-/// rest of the run.
+/// The first failure retires the stage for the rest of the run, and is the
+/// only one logged: the regions in flight at the time all fail with it.
+#[must_use = "`false` means the pileups still need scoring"]
 pub fn score_on_gpu(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     score_indels: bool,
-) -> Option<Result<()>> {
-    let stage = ml.inference.as_ref()?;
+) -> bool {
+    let Some(stage) = ml.inference.as_ref() else {
+        return false;
+    };
     if stage.failed.load(Ordering::Relaxed) {
-        return None;
+        return false;
     }
 
-    let result = stage.score(pileups, ml, score_indels);
-    if result.is_err() && !stage.failed.swap(true, Ordering::Relaxed) {
-        warn!("GPU inference failed once; scoring the rest of the run on the CPU");
+    match stage.score(pileups, ml, score_indels) {
+        Ok(()) => true,
+        Err(error) => {
+            if !stage.failed.swap(true, Ordering::Relaxed) {
+                warn!(
+                    error = format!("{error:#}"),
+                    "GPU inference failed, scoring the rest of the run on the CPU"
+                );
+            }
+            false
+        }
     }
-    Some(result)
 }
 
 impl Ticket {
@@ -180,7 +188,6 @@ impl Server {
 
     /// After a panic, `gpu` is not used again.
     fn recover(self) {
-        warn!("The GPU inference thread crashed; scoring the rest of the run on the CPU");
         // Jobs still queued are only dropped once both channel ends are gone,
         // and the sending end lives as long as the stage. Without draining,
         // every worker waiting on a queued job would wait forever. Dropping a

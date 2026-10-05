@@ -44,7 +44,7 @@ fn worker_panic_stops_the_run_and_leaves_a_valid_prefix() -> Result<()> {
     let output = call(&crashed, &[NO_ML], &[(INJECT_PANIC, "worker@6")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a worker panic");
-    ensure!(stderr.contains("A worker panicked: Injected panic at worker"), "{stderr}");
+    ensure!(stderr.contains("A worker panicked (see the crash report above)"), "{stderr}");
     ensure_crash_reported(&stderr, "src/call.rs")?;
     ensure!(stderr.contains("Output is incomplete"), "{stderr}");
     ensure!(stderr.contains("VCF output left behind under its partial name"), "{stderr}");
@@ -65,7 +65,10 @@ fn writer_panic_stops_the_run() -> Result<()> {
     let output = call(&out, &[NO_ML], &[(INJECT_PANIC, "writer@3")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a writer panic");
-    ensure!(stderr.contains("The consumer panicked: Injected panic at writer"), "{stderr}");
+    ensure!(
+        stderr.contains("Writing the output panicked (see the crash report above)"),
+        "{stderr}"
+    );
     ensure_crash_reported(&stderr, "src/call/writer.rs")?;
     only_partial_output(&out)?;
     Ok(())

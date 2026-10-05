@@ -2,12 +2,16 @@ use color_eyre::{ErrorKind, Section as _, SectionExt as _, eyre::Report};
 use std::{
     error::Error as StdError,
     fmt,
-    sync::atomic::{AtomicBool, Ordering},
+    panic::PanicHookInfo,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
 pub static LOG_VAR: &str = "RASTAIR_LOG";
-pub static BUG_MESSAGE: &str = "This is a bug in Rastair, please report it at <https://github.com/bsbludwig/rastair/issues/new>";
+pub static BUG_MESSAGE: &str = "This is a bug in Rastair.";
 const ISSUE_URL: &str = "https://github.com/bsbludwig/rastair/issues/new";
 
 /// Setup logging and error handling
@@ -69,16 +73,31 @@ fn setup_eyre(verbose: bool) {
     }
     let hooks = hook_builder(verbose).try_into_hooks().and_then(|(panic_hook, eyre_hook)| {
         eyre_hook.install()?;
-        std::panic::set_hook(Box::new(move |info| {
-            eprintln!("{}", panic_hook.panic_report(info));
-            if let Some(backtrace) = backtrace() {
-                eprintln!("\nBacktrace:\n{backtrace}");
-            }
-        }));
+        PANIC_HOOK
+            .set(panic_hook)
+            .map_err(|_| color_eyre::eyre::eyre!("The panic hook was already set up"))?;
+        std::panic::set_hook(Box::new(|info| eprintln!("{}", panic_report(info))));
         Ok(())
     });
     if let Err(error) = hooks.note("Seeing this error message is somewhat ironic, we know") {
         eprintln!("Failed to register panic handler: {error:#}");
+    }
+}
+
+static PANIC_HOOK: OnceLock<color_eyre::config::PanicHook> = OnceLock::new();
+
+/// The crash report for a panic, with a backtrace if one was asked for.
+///
+/// Call it from the panic hook: the report's span trace shows the spans
+/// entered on the current thread.
+pub fn panic_report(info: &PanicHookInfo<'_>) -> String {
+    let report = match PANIC_HOOK.get() {
+        Some(hook) => hook.panic_report(info).to_string(),
+        None => info.to_string(),
+    };
+    match backtrace() {
+        Some(backtrace) => format!("{report}\n\nBacktrace:\n{backtrace}"),
+        None => report,
     }
 }
 
@@ -120,13 +139,20 @@ impl<T, E> ThisIsABug<T> for Result<T, E>
 where
     E: Into<Report>,
 {
+    // Not `map_err`: a closure would end the `#[track_caller]` chain, and the
+    // report's location would be in here instead of at the caller.
+    #[track_caller]
     fn this_is_a_bug(self) -> Result<T, Report> {
-        self.map_err(|error| bug(error, backtrace()))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(bug(error, backtrace())),
+        }
     }
 }
 
 /// See [`ThisIsABug`]. The backtrace is shown in the report but, unlike
 /// color-eyre's own, not put into the issue link.
+#[track_caller]
 fn bug(error: impl Into<Report>, backtrace: Option<String>) -> Report {
     let report = error.into();
     if Bug::marks(report.as_ref()) {
@@ -171,5 +197,18 @@ impl Bug {
     /// Whether `error`, or anything it wraps, went through [`ThisIsABug`].
     pub(crate) fn marks(error: &(dyn StdError + 'static)) -> bool {
         std::iter::successors(Some(error), |&error| error.source()).any(|error| error.is::<Self>())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bug_location_is_the_caller() {
+        let line = line!() + 1;
+        let error = Err::<(), _>(color_eyre::eyre::eyre!("boom")).this_is_a_bug();
+        let report = format!("{:?}", error.expect_err("constructed as Err"));
+        assert!(report.contains(&format!("{}:{line}", file!())), "{report}");
     }
 }
