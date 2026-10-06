@@ -115,51 +115,6 @@ fn convert_bcf_to_vcf_stdout() -> Result<()> {
 }
 
 #[test]
-fn convert_from_mpk() -> Result<()> {
-    apply_common_filters!();
-
-    let temp_dir = TempDir::new()?;
-    let mpk = temp_dir.path().join("test.mpk.lz4");
-
-    rastair()
-        .args(CALL_TEST_BAM)
-        .args([NO_ML, CHR19_SMALL, "-o"])
-        .arg(&mpk)
-        .silent()
-        .succeeds()
-        .wrap_err("Failed to run rastair call")?;
-
-    rastair()
-        .args(["convert", "--input"])
-        .arg(&mpk)
-        .arg("--output")
-        .arg(temp_dir.path().join("test.bcf"))
-        .silent()
-        .succeeds()
-        .wrap_err("Failed to convert to bcf")?;
-
-    rastair()
-        .args(["convert", "--input"])
-        .arg(&mpk)
-        .arg("--output")
-        .arg(temp_dir.path().join("test.vcf.gz"))
-        .silent()
-        .succeeds()
-        .wrap_err("Failed to convert to vcf.gz")?;
-
-    rastair()
-        .args(["convert", "--input"])
-        .arg(&mpk)
-        .arg("--output")
-        .arg(temp_dir.path().join("test.bed"))
-        .silent()
-        .succeeds()
-        .wrap_err("Failed to convert to bed")?;
-
-    Ok(())
-}
-
-#[test]
 fn convert_vcf_to_same_bed() -> Result<()> {
     apply_common_filters!();
 

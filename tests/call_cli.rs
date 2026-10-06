@@ -1228,14 +1228,14 @@ fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Res
     write_bam_with_zero_mapq_overlapping(&gapped_bam, "chr19", 6_105_743, 6_105_745)?;
 
     // `call --all --cpgs-only` already reports the uncovered CpG pair with no
-    // extra flag needed (that's the point of this refactor), so the mpk file
+    // extra flag needed (that's the point of this refactor), so the VCF
     // contains both pairs.
-    let mpk = temp_dir.path().join("all.mpk.lz4");
+    let vcf = temp_dir.path().join("all.vcf");
     rastair()
         .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
         .arg(&gapped_bam)
         .args([REGION, NO_ML, "--cpgs-only", "--all", "-o"])
-        .arg(&mpk)
+        .arg(&vcf)
         .succeeds()?;
 
     let without_empty = temp_dir.path().join("without-empty.bed");
@@ -1243,14 +1243,14 @@ fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Res
 
     rastair()
         .args(["convert", "--input"])
-        .arg(&mpk)
+        .arg(&vcf)
         .arg("--output")
         .arg(&without_empty)
         .succeeds()?;
 
     rastair()
         .args(["convert", "--input"])
-        .arg(&mpk)
+        .arg(&vcf)
         .arg("--output")
         .arg(&with_empty)
         .arg("--bed-include-empty")
@@ -1262,7 +1262,7 @@ fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Res
         parse_cpg_bed(&with_empty)?.keys().copied().collect();
 
     // `convert` still has to decide independently whether to carry the
-    // uncovered pair, already present in the mpk, into this BED output.
+    // uncovered pair, already present in the VCF, into this BED output.
     assert_eq!(
         without_empty_positions,
         BTreeSet::from([(6_105_711, '+'), (6_105_712, '-')]),

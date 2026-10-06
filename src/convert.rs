@@ -7,7 +7,6 @@ use crate::{
     call::{RecordFilters, variant_calling::ErrorModel},
     io::{
         formats::{FromFileExtension, InputFormat, OutputFormat},
-        mpk::{MessagePackReader, MpkEntry},
         vcf_writer,
     },
     utils::cli,
@@ -15,11 +14,10 @@ use crate::{
 use clio::ClioPath;
 use color_eyre::{
     Section as _,
-    eyre::{Result, WrapErr, bail, eyre},
+    eyre::{Result, WrapErr, eyre},
 };
 use rust_htslib::bcf::{self, Read as _};
 use seqair_types::Probability;
-use std::num::NonZeroUsize;
 use tracing::{debug, info, warn};
 
 /// Convert between different file formats that rastair supports
@@ -27,7 +25,6 @@ use tracing::{debug, info, warn};
 /// Supported input formats include:
 /// - VCF (Variant Call Format)
 /// - BCF (Binary Call Format)
-/// - Message Pack (rastair's internal format)
 ///
 /// Supported output formats include:
 /// - The same as input formats
@@ -105,7 +102,7 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             Ok(())
         }
         // converting from vcf to bcf or vice versa using htslib directly
-        (InputFormat::VcfLike(vcf_writer::Format::Vcf(input)), OutputFormat::VcfLike(output)) => {
+        (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) => {
             use vcf_writer::*;
 
             // htslib allows setting the number of background compression
@@ -124,12 +121,9 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             let header = bcf::Header::from_template(reader.header());
 
             let (format, uncompressed) = match output {
-                Format::Vcf(VcfFormat::Bcf) => (bcf::Format::Bcf, false),
-                Format::Vcf(VcfFormat::Vcf) => (bcf::Format::Vcf, true),
-                Format::Vcf(VcfFormat::VcfCompressed) => (bcf::Format::Vcf, false),
-                Format::MessagePack => {
-                    bail!("Cannot convert {input:?} to MessagePack format")
-                }
+                VcfFormat::Bcf => (bcf::Format::Bcf, false),
+                VcfFormat::Vcf => (bcf::Format::Vcf, true),
+                VcfFormat::VcfCompressed => (bcf::Format::Vcf, false),
             };
 
             info!(from=?input, to=?output, "Converting using htslib");
@@ -148,18 +142,8 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
 
             Ok(())
         }
-        (InputFormat::VcfLike(vcf_writer::Format::Vcf(_vcf)), OutputFormat::Bed(format)) => {
+        (InputFormat::VcfLike(_), OutputFormat::Bed(format)) => {
             vcf_to_bed(params, format).wrap_err("Failed to convert VCF to BED")
-        }
-        (InputFormat::VcfLike(vcf_writer::Format::MessagePack), OutputFormat::Bed(format)) => {
-            mpk_to_bed(params, format).wrap_err("Failed to convert MessagePack to BED")
-        }
-        (
-            InputFormat::VcfLike(vcf_writer::Format::MessagePack),
-            OutputFormat::VcfLike(vcf_writer::Format::Vcf(format)),
-        ) => mpk_to_vcf(params, format).wrap_err("Failed to convert MessagePack to VCF"),
-        _ => {
-            bail!("Unsupported conversion from {:?} to {:?}", input_format, output_format);
         }
     }
 }
@@ -228,88 +212,6 @@ fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
             continue;
         };
         writer.write_record(&record).wrap_err("Failed to write record")?;
-    }
-
-    Ok(())
-}
-
-fn mpk_to_vcf(params: &ConvertParams, format: vcf_writer::VcfFormat) -> Result<()> {
-    let r = MessagePackReader::new(&params.input)
-        .wrap_err("Failed to create MessagePack reader")
-        .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
-        .wrap_err_with(|| format!("Failed to read MessagePack from `{}`", params.input))?;
-    debug!(header=?r.header, "opened mpk file");
-    let Some(meta) = r.vcf_header else {
-        bail!("MessagePack file does not contain a VCF header");
-    };
-
-    let vcf_params = vcf_writer::VcfParams {
-        vcf: Some(params.output.clone()),
-        vcf_threads: NonZeroUsize::new(4).expect("valid number"),
-        vcf_info_fields: Vec::new(),
-        vcf_format_fields: Vec::new(),
-        vcf_all_fields: false,
-    };
-
-    let mut writer = vcf_params
-        .seqair_writer(&params.output, &meta.contigs, &meta.samples, &meta.metadata, format.into())
-        .wrap_err_with(|| {
-            format!("Failed to create VCF writer for output file `{}`", params.output)
-        })?;
-
-    for entry in r.entries {
-        match entry {
-            Ok(MpkEntry::Record(record)) => {
-                writer
-                    .emit(
-                        &record,
-                        Some(params.ml_threshold),
-                        &params.error_model,
-                        &params.vcf_filter,
-                    )
-                    .wrap_err("Failed to write record")?;
-            }
-            Ok(x) => {
-                warn!(?x, "Skipping unsupported entry type in MessagePack file");
-                continue;
-            }
-            Err(e) => Err(e)?,
-        }
-    }
-
-    writer.finish().wrap_err("Failed to finish VCF output")?;
-    Ok(())
-}
-
-fn mpk_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
-    let r = MessagePackReader::new(&params.input)
-        .wrap_err("Failed to create MessagePack reader")
-        .and_then(|reader| reader.read().wrap_err("Failed to read file header"))
-        .wrap_err_with(|| format!("Failed to read MessagePack file `{}`", params.input))?;
-
-    let mut writer = BedWriter::new(&params.output, format).wrap_err_with(|| {
-        format!("Failed to create BED writer for output file `{}`", params.output)
-    })?;
-
-    for entry in r.entries {
-        match entry {
-            Ok(MpkEntry::Record(record)) => {
-                if !params.bed_params.include_empty && !record.tags.covered {
-                    continue;
-                }
-                let Some(record) = Rastair1BedFormat::from_metrics(&record)
-                    .wrap_err("Failed to convert record to BED format")?
-                else {
-                    continue;
-                };
-                writer.write_record(&record).wrap_err("Failed to write record")?;
-            }
-            Ok(x) => {
-                warn!(?x, "Skipping unsupported entry type in MessagePack file");
-                continue;
-            }
-            Err(e) => Err(e)?,
-        }
     }
 
     Ok(())

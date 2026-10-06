@@ -1,7 +1,7 @@
 use crate::{
     bed::{rastair1::Rastair1BedFormat, writer::BedWriter},
     call::{CallParams, RecordFilters, variant_calling::ErrorModel},
-    io::vcf_writer::Writer,
+    io::vcf_writer::SeqairVcfWriter,
     metrics::PileupMetrics,
     runtime::{
         fault_injection, partial_output::PartialOutput, progress::ProgressTracker, segments,
@@ -15,7 +15,7 @@ use tracing::{instrument, trace};
 /// Writes finished segments, in order, to the VCF and BED outputs.
 pub struct SegmentWriter {
     outputs: Vec<PartialOutput>,
-    vcf_writer: Option<Writer>,
+    vcf_writer: Option<SeqairVcfWriter>,
     bed_writer: Option<BedWriter<Rastair1BedFormat>>,
     record_filter: RecordFilters,
     ml_threshold: Option<Probability>,
@@ -76,16 +76,10 @@ impl SegmentWriter {
                 bed_writer.write_record(&bed_record).wrap_err("Failed to write record to BED")?;
             }
 
-            match self.vcf_writer.as_mut() {
-                Some(Writer::Vcf(writer)) => {
-                    writer
-                        .emit(&record, self.ml_threshold, &self.error_model, &self.record_filter)
-                        .wrap_err("Failed to write VCF record")?;
-                }
-                Some(Writer::MessagePack(writer)) => {
-                    writer.add(&record).wrap_err("Failed to write MessagePack VCF record")?;
-                }
-                None => {}
+            if let Some(writer) = self.vcf_writer.as_mut() {
+                writer
+                    .emit(&record, self.ml_threshold, &self.error_model, &self.record_filter)
+                    .wrap_err("Failed to write VCF record")?;
             }
         }
 
@@ -96,13 +90,9 @@ impl SegmentWriter {
     /// Closes every output, even if one fails to close, so each holds a valid
     /// prefix. Also returns the outputs, to commit once the run succeeded.
     pub fn close(self) -> (Result<()>, Vec<PartialOutput>) {
-        let vcf_closed = match self.vcf_writer {
-            Some(Writer::Vcf(mut writer)) => {
-                writer.finish().wrap_err("Failed to finish VCF output")
-            }
-            Some(Writer::MessagePack(writer)) => writer.finish(),
-            None => Ok(()),
-        };
+        let vcf_closed = self
+            .vcf_writer
+            .map_or(Ok(()), |mut writer| writer.finish().wrap_err("Failed to finish VCF output"));
         let bed_closed = self
             .bed_writer
             .map_or(Ok(()), |writer| writer.close().wrap_err("Failed to close BED writer"));
