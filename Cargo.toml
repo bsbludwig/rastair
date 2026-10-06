@@ -30,11 +30,11 @@ members = ["tools/*"]
 
 [workspace.dependencies]
 color-eyre = { version = "0.6.5", features = ["issue-url"] }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde = { version = "1.0.219", features = ["derive"] }
 cstr8 = "0.1.4"
 # `serde` is a default feature of seqair-types 0.3, but named explicitly: rastair
-# serializes `Pos0` (e.g. `ChunkRegion`), and a later `default-features = false`
-# here would silently drop the impls rather than fail to resolve.
+# serializes `Probability` (CLI params, into `##rastairConfig`), and a later
+# `default-features = false` here would silently drop the impls rather than fail to resolve.
 seqair-types = { version = "0.3.1", features = ["hts-compat", "serde"] }
 seqair = "0.4.0"
 rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git", default-features = false, features = [
@@ -116,7 +116,7 @@ anstyle-progress = "0.1.4"
 bzip2-sys = { version = "0.1.13", features = ["static"] }
 jiff = "0.2.23"
 bgzf = "0.5.0"
-enumset = { version = "1.1.14", features = ["serde"] }
+enumset = "1.1.14"
 
 [dev-dependencies]
 insta = { workspace = true }

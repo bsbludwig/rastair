@@ -1,7 +1,7 @@
 use crate::metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics};
 use seqair_types::Base::*;
 
-#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct MethylationEvidenceStrandInfo {
     /// Number of unmethylated reads
     ///

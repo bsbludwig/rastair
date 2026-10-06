@@ -15,8 +15,8 @@
 
 /// A VCF FILTER code. `PASS` is implicit (an empty filter set), so it is not a
 /// variant here.
-#[derive(Debug, Hash, enumset::EnumSetType, serde::Serialize, serde::Deserialize)]
-#[enumset(repr = "u16", serialize_repr = "list")]
+#[derive(Debug, Hash, enumset::EnumSetType)]
+#[enumset(repr = "u16")]
 #[repr(u8)]
 pub enum RastairFilter {
     /// `lowDp`

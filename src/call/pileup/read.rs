@@ -2,8 +2,7 @@ use crate::utils::{Base, Strand};
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// A collection of bases seen in a pileup
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[derive(Clone)]
 #[repr(transparent)]
 pub struct SimpleReads(pub(crate) Arc<[SimpleRead]>);
 
@@ -23,7 +22,7 @@ impl Deref for SimpleReads {
 }
 
 /// A base seen in a pileup
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(better_default::Default))] // for easier test construction
 pub struct SimpleRead {
     /// The base seen
@@ -65,7 +64,7 @@ impl fmt::Debug for SimpleRead {
     }
 }
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy)]
 pub struct PositionInRead {
     /// Position in the read, 0-based
     pub pos: u32,

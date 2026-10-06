@@ -2,14 +2,14 @@ use seqair_types::{Probability, SmallVec};
 use std::fmt;
 
 /// Whether a CpG is from the reference sequence or created by a de-novo variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpgOrigin {
     Original,
     DeNovo,
 }
 
 /// Methylation measurement for one CpG allele at a position.
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy)]
 pub struct CpgBeta {
     pub origin: CpgOrigin,
     pub beta: Probability,
@@ -59,7 +59,7 @@ impl fmt::Debug for CpgBeta {
 /// `process_collected_pileups`.
 ///
 /// [`PileupMetrics::alts`]: crate::metrics::PileupMetrics::alts
-#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, Debug)]
 #[must_use]
 pub struct Methylated(pub SmallVec<CpgBeta, 1>);
 
@@ -101,7 +101,7 @@ impl Methylated {
 }
 
 /// Total read depth for 5-methylcytosine detection (`mod_count` + `unmod_count`), before het adjustment.
-#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, Debug)]
 pub struct MethylationDepth(pub SmallVec<Option<u32>, 2>);
 
 impl From<&Methylated> for MethylationDepth {
@@ -111,7 +111,7 @@ impl From<&Methylated> for MethylationDepth {
 }
 
 /// Read depth supporting 5-methylcytosine modification (`mod_count` only), before het adjustment.
-#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, Debug)]
 pub struct MethylationAltDepth(pub SmallVec<Option<u32>, 2>);
 
 impl From<&Methylated> for MethylationAltDepth {

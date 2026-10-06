@@ -2,7 +2,7 @@ use crate::utils::Base;
 use std::ops::Deref;
 
 /// De-novo CPG candidate: Could the alt alleles create a new CpG site?
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub enum DeNovoCpGCandidate {
     /// No, the variant cannot create a new CpG site
     #[default]

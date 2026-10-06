@@ -225,7 +225,7 @@ impl PileupMetrics {
 ///
 /// This enum provides a more type-safe and readable representation than raw VCF
 /// genotype indices, while still supporting the full range of diploid genotypes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum GenotypeTag {
     /// Homozygous reference (0/0)
@@ -301,7 +301,7 @@ impl GenotypeTag {
 /// A single genotype allele, mirroring [`rust_htslib::bcf::record::GenotypeAllele`]
 /// with serde support. Used when reading genotypes back from a VCF (e.g. BED
 /// conversion); writing goes through seqair's [`Genotype`](seqair::vcf::Genotype).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenotypeAllele {
     /// Unphased allele with index `i`.
     Unphased(i32),
@@ -573,7 +573,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
 pub struct EstimatedGenotype {
     pub genotype: GenotypeTag,

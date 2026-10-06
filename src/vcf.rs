@@ -31,7 +31,7 @@ pub use crate::metrics::MethylationEvidenceStrandInfo;
 pub use crate::utils::SequenceContext;
 
 /// A contig (chromosome) entry for the VCF header.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Contig {
     /// Name of the contig (chromosome).
     pub name: SmolStr,

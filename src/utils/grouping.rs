@@ -1,5 +1,5 @@
 /// Helper struct to hold values for top and bottom strands
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ByStrand<T> {
     /// Value for the top strand
     pub ot: T,

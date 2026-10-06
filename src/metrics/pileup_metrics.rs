@@ -21,7 +21,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tracing::{trace, warn};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PileupMetrics {
     /// The region this position came from, shared by every `PileupMetrics` in
     /// it. Inline it is 64 bytes — a `SmolStr` contig plus five `u64` — copied
@@ -76,11 +76,10 @@ pub struct PileupMetrics {
     pub after_counts: PairedCounts,
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
-    #[serde(default)]
     pub indel_data: Option<Box<indels::IndelData>>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct RecordTags {
     // The tags have been calculated. Mainly to debug :)
     pub set: bool,
@@ -96,7 +95,7 @@ pub struct RecordTags {
     pub variant: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Alt {
     pub base: Base,
     pub metrics: AlleleMetrics,
@@ -104,7 +103,7 @@ pub struct Alt {
     pub call: AltCall,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AltCall {
     #[default]
     Uncalled,
@@ -338,7 +337,7 @@ pub fn order_alts(alts: &mut [Alt]) {
     alts.sort_by_key(|alt| std::cmp::Reverse(alt.metrics.depth));
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 #[cfg_attr(test, derive(Default))]
 pub struct PositionMetrics {
     /// Read depth, i.e., number of reads covering this position
@@ -354,11 +353,10 @@ pub struct PositionMetrics {
 
     /// Extended metrics
     // set by `call` later since they depend on more context
-    #[serde(flatten)]
     pub extended: PositionMetricsExt,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct PositionMetricsExt {
     /// Entropy of the surrounding region
     pub region_entropy: f64,
@@ -372,7 +370,7 @@ pub struct PositionMetricsExt {
     pub denovo_adj: DenovoAdjecent,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DenovoAdjecent {
     #[default]
     No,
@@ -420,7 +418,7 @@ impl Deref for PositionMetrics {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct AlleleMetrics {
     pub base: Base,
     /// Read depth, i.e. number of reads supporting this allele
@@ -464,7 +462,7 @@ pub fn alt_forms_denovo(base: Base, ref_base: Base, context: &SequenceContext) -
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FormsDenovo {
     #[default]
     No,
@@ -492,7 +490,7 @@ impl FormsDenovo {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct AltFilters {
     /// ML prediction: probability this is a true variant
     pub ml: Option<Probability>,
@@ -519,7 +517,7 @@ impl AltFilters {
 /// FILTER is a set, so this is a bitset: 13 variants fit in the `u16` that
 /// `RastairFilter`'s `#[enumset(repr)]` pins down. Iteration is therefore in
 /// discriminant order, which is also header registration order.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Filters {
     pub other_pos_in_denovo_passes: bool,
     filters: EnumSet<RastairFilter>,

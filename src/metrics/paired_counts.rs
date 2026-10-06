@@ -21,7 +21,7 @@ pub struct ReadKey {
 /// `PileupMetrics`, of which a region holds one per covered base. A cap set
 /// past `u16::MAX` saturates rather than wraps — a wrapped count would read as
 /// a plausible small number and quietly move an ML feature.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct PairedCounts {
     inner: [[[u16; 4]; 4]; 2],
 }
