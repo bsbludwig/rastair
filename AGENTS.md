@@ -28,6 +28,8 @@ calculate pileup metrics → set de-novo adjacency flags → add ML metrics → 
 Methylation calling logic is in `src/metrics/methylation.rs` with separate functions for reference C/G positions (`ref_c`, `ref_g`) and de-novo CpG creation (`ref_t_to_c`, `ref_a_to_g`, etc.).
 Genotype estimation happens before methylation calling in `src/call/variant_calling/genotype.rs`.
 The results are stored in `PileupMetrics.pos_metrics.extended.genotype` and `.methylated`.
+With `--phase`, `phasing::phase_segment` runs *before* the overlap trim, given the segment's core
+predicate so it only writes calls for the sites the segment emits.
 
 # Rust coding guidelines
 
@@ -61,15 +63,20 @@ Specific adn well-named types are the main way to ensure correctness and introdu
 
 - Write comprehensive unit tests for the most critical and complex parts of the codebase when you either add them or encounter bugs in them
 - Write integration tests for critical workflows and components, e.g. like the ones in `tests/call_cli.rs`
-- Run the tests with `cargo test`.
+- Run the tests with `cargo test` **and** `cargo test --features experimental-seqair`. Phasing is seqair-only, so its tests are `#[cfg(feature = "experimental-seqair")]` and a plain `cargo test` never runs them; the htslib build instead tests that `--phase` is refused.
+- Run `cargo clippy --all-targets` under both feature sets too.
 - Use `cargo xtask insta` to run tests and update any snapshot tests. You need to verify the updated content is correct!
 
 ### VCF Tests
 
-VCF tests are in `src/call/tests/vcf_tests/` with separate modules for different scenarios (cpgs.rs, denovo.rs, basic.rs).
+VCF tests are in `src/call/tests/vcf_tests/` with separate modules for different scenarios (cpgs.rs, denovo.rs, basic.rs, phasing.rs).
 Tests use the `pileups!` macro to create synthetic read data with format `[base1 base2 ...] Strand`, and `vcf_assert!` macro to check expected VCF output with format `(Ref Alt...) PASS/FAIL Field=value`.
 Test utilities in `src/call/tests/utils.rs` provide the `pileups!` macro for creating test data, and helper functions like `set_pass`/`set_fail` for modifying alt calls with ML scores.
 The `reprocess()` function recalculates methylation_strand_info, genotypes, alt calls, and methylation values after modifications.
+
+An htslib-shaped `Pileup` has no template identity, so `pileups!` fixtures cannot carry phase
+observations; phasing VCF tests set the phase call by hand. The solver is tested end to end with
+scenarios (see "Testing phasing").
 
 ## BAM rewriting
 
@@ -105,6 +112,7 @@ cargo test --features external-tool-tests
 ```
 
 Each test self-skips when its tool is missing, so this is harmless elsewhere.
+`bcftools_reads_phased_genotypes` additionally needs `experimental-seqair`.
 
 On **macOS** neither modkit nor the Bismark tarball has a build, so use `Dockerfile.ci`:
 
@@ -148,6 +156,11 @@ Important implications:
 - `pileup.reference_base` can be `Base::Unknown` at N-positions in the reference — code must handle this gracefully (return default metrics), not treat it as an error.
 - A pileup can have zero reads after filtering (all reads removed by quality/flag/overlap filters) — the zero-depth allele path is a real code path, not dead code.
 - `Base::known_index()` maps A/C/G/T → `Some(0..3)` and Unknown → `None`. Use it to safely index into per-base arrays without needing an Unknown slot.
+
+`PileupMetrics` is pinned in size (`pileup_metrics_stays_small`): a region holds one per
+covered base and the pipeline walks that vec many times. Per-feature data a run may not use
+lives behind one `Option<Box<_>>` (`phase: Option<Box<ColumnPhase>>`,
+`indel_data: Option<Box<IndelData>>`), so an unphased run pays one pointer.
 
 ## Single-pass accumulator pattern
 
@@ -311,6 +324,90 @@ Worth internalising, because the same blind spots are still easy to reproduce:
 - **The `from_seqair` unit tests never set `params.call_indels`**, so the whole
   indel branch was unreachable from them.
 
+
+## Phasing (`--phase`, seqair only)
+
+`src/call/phasing.rs` and its `problem` and `solver` modules. Per-column data sits
+in `PileupMetrics.phase`; thresholds are constants, there are no `--phase-*` flags. `--phase` is
+an error on htslib builds and under CpG-only output (`--cpgs-only`, or `--bed` alone): the
+pre-filter drops the variant sites before phasing runs.
+
+### Observations
+
+- Captured inside the seqair column loop (`PileupMetrics` keeps no reads). A column keeps its
+  whole observation list when it has `MIN_ALT_READS` mismatches on one base that TAPS cannot
+  explain (`candidate_observations`). An `N` reference or an empty column is
+  excluded, so `phase.is_some()` always means there is something to use.
+- `accepts_read` (MAPQ and base quality ≥ 20) is applied at collection; a read can count for
+  depth and genotype without carrying phase.
+- **`FragmentId` is `NonZeroU64`**: seqair reports "no qname" as a missing hash, and bucketing
+  those reads together would link every het in the region. They are dropped, and
+  `call` warns once per run: a missing qname is a whole-file property (CRAM with `RN=false`),
+  so there is no count worth reporting.
+
+### Two TAPS gates — do not confuse them
+
+- `taps_explains_mismatch` is *mismatch-level* (ref C + OT + T, ref G + OB + A), used when a
+  column is built. It ignores sequence context: de-novo CpGs are not known yet.
+- `PhaseSite::taps_confounds` is *allele-set-level* and **CpG-only**: at a C/T site whose `C`
+  is in a CpG (`methylation::cpg_origin`, reference or de-novo), a `T` is evidence only on OB;
+  at G/A an `A` only on OT. Outside a CpG every strand counts, since mammalian non-CpG
+  methylation is rare (neurons and ES cells are the exception). Both gates use
+  `methylation::CpgSide`; do not add a second copy of its bases and strand.
+- Fixture trap: at a C/T site in a CpG an OT `T` is confounded, at A/G an OB `A` is; a bare
+  `het()` is not in a CpG, so set `pos_metrics.cpg` or `context.after_1`. Tests of something
+  other than the gate should use A/C or T/G sites. Both mates share the OT/OB assignment.
+
+### Problem and solver
+
+- **A site's alleles come from the stored `GenotypeTag`, never from scanning `pileup.alts`.**
+  `GtAllele { Ref, Alt(NonZeroU8) }` is in *genotype space* (index into `pileup.alts`), not
+  `ALT` column order; `compute_genotype` remaps both the genotype and the phase call with one
+  map. Do not phase after remapping.
+- Fragments reaching fewer than two sites are dropped; fragment order is first appearance, so
+  the result does not depend on the hasher.
+- **A zero-weight edge is not an edge**: cancelling cis and trans evidence would otherwise emit
+  a coin toss as a confident phase.
+- `phase_segment` runs **before** the overlap trim, because a site in the overlap links reads
+  reaching into the core, and takes the segment's `is_core` predicate: each block is anchored on
+  its first *emitted* site, so `PS` names a record of this file and is unique across segments,
+  and a block with fewer than two emitted sites is not written. The solver itself returns raw
+  orientations, defined only up to a flip per block; `phase_segment` is the one place that
+  normalises, onto the anchor, so the first record is `0|1`.
+- `solver::refine` is a greedy descent run to convergence, capped at `MAX_FLIPS_PER_SITE` flips
+  per site of the block; hitting the cap is a `warn!`.
+- `PS` is written only where the genotype is phased. Indel records and homozygotes are never
+  phased.
+
+### Testing phasing
+
+- `tests/phasing_cli.rs` runs `call --phase` on a `Scenario` (`tests/utils/scenario.rs`): a
+  pseudo-random reference with no CpG unless the test writes one (`reference_at`), het SNVs per
+  haplotype (`snv`, `het`), per-haplotype methylation (every CpG on that haplotype, de-novo ones
+  included, converted on the read's own strand), and read pairs per haplotype and strand
+  (`pairs`, `balanced`). `check_phasing` reads the VCF back and fails on a switch error, a phased
+  non-het, a `PS` not naming its block's first record, or a block not opening on `0|1`; tests
+  then assert which sites share a block. Read the observations through the real seqair path
+  this way rather than attaching them to a `pileups!` fixture.
+- Make a scenario *decisive*: arrange the reads so the broken code gives a different block
+  structure, not just a weaker edge. The TAPS gate tests do this by having converted reads
+  exactly cancel the honest ones; the boundary test (`a_block_is_solved_across_…`) links two
+  sites only through a third that sits in the other segment's overlap.
+- `phasing_accuracy_on_an_na12878_slice` scores 200 kb of the chr12 NA12878 TAPS BAM against
+  Platinum Genomes and pins phased sites, block pairs, switch errors and phased non-hets just outside what was
+  measured. Its scorer agrees with `whatshap compare` on pairs and switches. It is the only
+  test that sees phasing get *worse*: the pre-CpG gate loses 8 phased sites there, and no gate
+  at all makes 18 switch errors. Refinement and the phase quality gate change nothing on it.
+  The reads are Watchmaker data and stay out of git (Pascal, 2026-10-06): build the fixture
+  with `scripts/make_phasing_slice.py tmp/taps tmp/na12878_phasing` and point
+  `RASTAIR_PHASING_SLICE` at it, or the test skips. Run it before merging phasing changes.
+- Check a new phasing test is not tautological by breaking the code it guards and watching it
+  fail; every test added on 2026-10-06 was checked that way.
+- `tests/data/test.bam` is a poor phasing fixture: its few het calls are C>T on a fully
+  methylated control. Use a `Scenario` for anything that asserts phasing output.
+- A run that reports zero phased sites is usually an htslib binary (see "Know which binary
+  produced a result"), not a regression.
+
 ## ML feature layout (`src/metrics/ml/features/`)
 
 Each model's feature vector is defined by a `#[repr(C)]` struct of `f32` / `[f32; N]`
@@ -402,6 +499,7 @@ included, sees nothing. `.` states the same cardinality in a way every reader
 accepts. Revisit when noodles implements the 4.5 cardinalities; the two tests in
 `src/vcf/schema.rs` pin both halves of this.
 
+
 ## VCF FILTER is a set (`RastairFilter` / `Filters`)
 
 `Filters` (`src/metrics/pileup_metrics.rs`) is an `EnumSet<RastairFilter>` — a
@@ -436,6 +534,45 @@ Still open, found while fixing that: `emit_rejected_record` adds `low_ml_score`
 when `alt.filters.ml < ml_threshold`, and `None < Some(_)` in Rust — so a record
 whose ML was *skipped* (`pre_ml`) is also labelled `low_ml_score`. Fixing it
 changes `--all` output beyond a reordering, so it was left alone.
+
+## Measuring accuracy
+
+Nothing in-tree computes F1 or switch error; use the reference tools, and never judge a change
+on a slice alone for genotype-error counts (they are too rare to resolve on 10 Mb).
+
+```bash
+# Genotype accuracy, haplotype-aware. Normalise the query first.
+bcftools view -f PASS -i 'GT="alt"' calls.bcf -Ou | bcftools norm -f hg38.fa.gz -m -any -Oz -o q.vcf.gz
+aardvark compare --reference hg38.fa.gz --truth-vcf truth.vcf.gz --truth-sample NA12878 \
+  --query-vcf q.vcf.gz --query-sample sample --regions confident.bed.gz --output-dir out/
+# Phasing: phased fraction, blocks, switch/flip errors (sample names must match: bcftools reheader -s)
+uvx --from whatshap whatshap stats --tsv=stats.tsv calls.vcf.gz
+uvx --from whatshap whatshap compare --only-snvs --names truth,rastair --tsv-pairwise p.tsv truth.vcf.gz calls.vcf.gz
+```
+
+- aardvark's `summary.tsv` splits zygosity errors out: `truth_fn_gt` (truth hom-alt, query het)
+  and `query_fp_gt` (query hom, truth het). It ignores query phasing by design.
+- Do not join aardvark's output VCFs on `CHROM:POS:REF:ALT`: it rewrites records. Join the
+  original truth and query, both `bcftools norm -f <ref> -m -any`.
+- Judge a change by every column (recall, precision, both genotype-error counts), not by F1,
+  and check that an indel change leaves the SNV subset identical with `bcftools isec` of
+  normalised SNVs (it compares sites, not genotypes, which also makes it the tool for
+  stratifying errors).
+- Do not mix depth sources when stratifying: `INFO/DP` is after overlap dedup.
+- Truth data for NA12878 (Platinum Genomes phased VCF, its confident regions) lives outside git;
+  GIAB HG001 has no phased records and cannot score phasing.
+- A killed run can leave a smaller BCF that reads cleanly; check the last position or
+  `bcftools index -n` before trusting a whole-chromosome number.
+
+## Know which binary produced a result
+
+`cargo build --release` without `--features experimental-seqair` replaces
+`target/release/rastair` with the htslib build, and a plain `cargo test` rebuilds
+`target/debug/rastair` the same way. Keep one `CARGO_TARGET_DIR` per backend when comparing,
+and check the log: `grep -c "Using experimental seqair backend" run.log` is 1 on seqair.
+The backends differ in mate dedup and soft-clip handling, so arms built on different
+backends are not comparable. Likewise score every arm of a comparison with `--gpu` or every arm
+without it: the two are not bitwise identical.
 
 ## Release version bump checklist
 

@@ -146,6 +146,12 @@ const CPGNOVO_DEF: InfoFieldDef<seqair::vcf::Flag> = InfoFieldDef::new(
 
 const GT_DEF: FormatFieldDef<seqair::vcf::Gt> =
     FormatFieldDef::new("GT", Number::Count(1), ValueType::String, "Genotype");
+const PS_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "PS",
+    Number::Count(1),
+    ValueType::Integer,
+    "Phase set identifier: the position of the first variant in the phase block",
+);
 const GL_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
     "GL",
     Number::Genotypes,
@@ -225,8 +231,17 @@ const INFO_DEFS: &[&dyn FieldDescription] = &[
 ];
 
 /// Every FORMAT field definition, in header order. Drives doc generation.
-const FORMAT_DEFS: &[&dyn FieldDescription] =
-    &[&GT_DEF, &GL_DEF, &GC_DEF, &SAMPLE_DP_DEF, &M5MC_DEF, &DPM5MC_DEF, &ADM5MC_DEF, &ML_DEF];
+const FORMAT_DEFS: &[&dyn FieldDescription] = &[
+    &GT_DEF,
+    &PS_DEF,
+    &GL_DEF,
+    &GC_DEF,
+    &SAMPLE_DP_DEF,
+    &M5MC_DEF,
+    &DPM5MC_DEF,
+    &ADM5MC_DEF,
+    &ML_DEF,
+];
 
 /// Write the VCF field reference documentation as markdown.
 pub fn write_vcf_docs<W: Write>(w: &mut W) -> std::io::Result<()> {
@@ -321,6 +336,8 @@ pub(crate) struct InfoKeys {
 /// All FORMAT keys, resolved against the header.
 pub(crate) struct FormatKeys {
     pub gt: FormatGt,
+    /// Written only where the genotype is phased.
+    pub ps: FormatInt,
     pub gl: FormatFloat,
     pub gc: FormatFloat,
     pub dp: FormatInt,
@@ -423,6 +440,7 @@ pub fn register(
     let mut builder = builder.formats();
     let format = FormatKeys {
         gt: builder.register_format(&GT_DEF)?,
+        ps: builder.register_format(&PS_DEF)?,
         gl: builder.register_format(&GL_DEF)?,
         gc: builder.register_format(&GC_DEF)?,
         dp: builder.register_format(&SAMPLE_DP_DEF)?,

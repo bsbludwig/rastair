@@ -11,6 +11,9 @@ pub use tempfile::TempDir;
 #[path = "utils/faults.rs"]
 pub mod faults;
 
+#[path = "utils/scenario.rs"]
+pub mod scenario;
+
 pub const CALL_TEST_BAM: [&str; 3] =
     ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
 pub const CHR19_SMALL: &str = "--region=chr19:6105700-6105800";
@@ -153,4 +156,40 @@ impl CommandStdioExt for std::process::Command {
     fn silent(&mut self) -> &mut Self {
         self.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
     }
+}
+
+/// Write `scenario` to `dir`, run `call` on it with `--no-ml` and `extra`, and
+/// return the VCF text.
+pub fn call_scenario_in(
+    dir: &Path,
+    scenario: &scenario::Scenario,
+    extra: &[&str],
+) -> Result<String> {
+    let fasta = scenario.write_fasta(dir)?;
+    let bam = dir.join("reads.bam");
+    scenario.write_bam(&bam)?;
+    let vcf = dir.join("out.vcf");
+    rastair()
+        .arg("call")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&bam)
+        .args([scenario.region().as_str(), NO_ML, "--vcf"])
+        .arg(&vcf)
+        .args(extra)
+        .succeeds()?;
+    Ok(std::fs::read_to_string(&vcf)?)
+}
+
+pub fn call_scenario(scenario: &scenario::Scenario, extra: &[&str]) -> Result<String> {
+    call_scenario_in(TempDir::new()?.path(), scenario, extra)
+}
+
+/// A FORMAT value of the first sample on a VCF data line, by key.
+pub fn format_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let mut columns = line.split('\t').skip(8);
+    let keys = columns.next()?;
+    let values = columns.next()?;
+    let index = keys.split(':').position(|candidate| candidate == key)?;
+    values.split(':').nth(index)
 }

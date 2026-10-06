@@ -29,6 +29,7 @@ fn call_default_bed() -> Result<()> {
         denovo_cpg: default(),
         methylation: default(),
         ml: default(),
+        phase: false,
         vcf: default(),
         bed: default(),
         total_threads: 2,

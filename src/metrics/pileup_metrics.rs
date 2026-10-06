@@ -1,5 +1,6 @@
 use crate::{
     call::{
+        phasing::ColumnPhase,
         pileup::{Pileup, SimpleRead, indels},
         variant_calling::EstimatedGenotype,
     },
@@ -77,6 +78,9 @@ pub struct PileupMetrics {
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
     pub indel_data: Option<Box<indels::IndelData>>,
+    /// Phase observations and results, only under `--phase` and only on
+    /// columns that can take part in phasing.
+    pub phase: Option<Box<ColumnPhase>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -242,6 +246,7 @@ impl PileupMetrics {
             after_counts,
             tags: RecordTags::default(),
             indel_data,
+            phase: None,
         })
     }
 
@@ -797,12 +802,13 @@ mod size_tests {
     /// case rather than the tail (see `alts`, `PairedCounts`, and `region`),
     /// and from 568 by making `Filters` a bitset instead of a list; pinning it
     /// exactly means growing it again is a decision someone makes on purpose,
-    /// with a measurement, rather than a field that slipped in.
+    /// with a measurement, rather than a field that slipped in. `--phase` adds
+    /// one pointer, behind which all of its per-column data lives.
     #[test]
     fn pileup_metrics_stays_small() {
         let size = std::mem::size_of::<PileupMetrics>();
         assert_eq!(
-            size, 520,
+            size, 528,
             "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
              (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
         );

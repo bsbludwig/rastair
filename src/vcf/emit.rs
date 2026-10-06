@@ -5,7 +5,10 @@
 //! `Base`s and drive seqair's typestate encoder straight from the metrics — no
 //! intermediate record struct, no string round-trips.
 
-use std::io::Write;
+use std::{
+    io::Write,
+    num::{NonZeroU8, NonZeroU16},
+};
 
 use color_eyre::{Result, eyre::Context as _, eyre::ContextCompat as _, eyre::ensure};
 use enumset::EnumSet;
@@ -15,6 +18,7 @@ use seqair_types::{Base, Phred, Pos1, Probability, SmallVec, SmolStr};
 use crate::{
     call::{
         RecordFilters,
+        phasing::{self, GtAllele},
         pileup::indels::IndelAllele,
         variant_calling::{ErrorModel, GenotypeTag},
     },
@@ -226,7 +230,7 @@ fn emit_compound_het_record<W: Write>(
 
     let mut enc = enc.begin_samples();
     if config.format.gt {
-        schema.format.gt.encode(&mut enc, &[to_seqair_gt(first.genotype)])?;
+        schema.format.gt.encode(&mut enc, &[to_seqair_gt(first.genotype, None)])?;
     }
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
@@ -245,13 +249,20 @@ fn pos1(pileup: &PileupMetrics) -> Result<Pos1> {
         .wrap_err_with(|| format!("Invalid 1-based position from {}", pileup.pos))
 }
 
-fn to_seqair_gt(tag: GenotypeTag) -> SeqGenotype {
-    let allele = |n: std::num::NonZeroU8| u16::from(n.get());
-    match tag {
-        GenotypeTag::HomRef => SeqGenotype::unphased(0, 0),
-        GenotypeTag::RefHet(n) => SeqGenotype::unphased(0, allele(n)),
-        GenotypeTag::AltHet(m, n) => SeqGenotype::unphased(allele(m), allele(n)),
-        GenotypeTag::HomAlt(n) => SeqGenotype::unphased(allele(n), allele(n)),
+/// The genotype, phased around `first` (the VCF allele haplotype 1 carries)
+/// when that names one of a heterozygote's two alleles.
+fn to_seqair_gt(tag: GenotypeTag, first: Option<u16>) -> SeqGenotype {
+    let allele = |n: NonZeroU8| NonZeroU16::from(n).get();
+    let (lower, higher) = match tag {
+        GenotypeTag::HomRef => return SeqGenotype::unphased(0, 0),
+        GenotypeTag::HomAlt(n) => return SeqGenotype::unphased(allele(n), allele(n)),
+        GenotypeTag::RefHet(n) => (0, allele(n)),
+        GenotypeTag::AltHet(m, n) => (allele(m), allele(n)),
+    };
+    match first {
+        Some(hap1) if hap1 == lower => SeqGenotype::phased_diploid(lower, higher),
+        Some(hap1) if hap1 == higher => SeqGenotype::phased_diploid(higher, lower),
+        _ => SeqGenotype::unphased(lower, higher),
     }
 }
 
@@ -379,7 +390,7 @@ fn emit_indel_record<W: Write>(
 
     let mut enc = enc.begin_samples();
     if config.format.gt {
-        schema.format.gt.encode(&mut enc, &[to_seqair_gt(call.genotype)])?;
+        schema.format.gt.encode(&mut enc, &[to_seqair_gt(call.genotype, None)])?;
     }
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(call.depth).unwrap_or(i32::MAX)])?;
@@ -535,16 +546,20 @@ fn encode_format(
     let f = &schema.format;
     let c = &config.format;
 
-    let (genotype, gl, gc) = compute_genotype(pileup, main_alts);
+    let genotype = compute_genotype(pileup, main_alts);
 
     if c.gt {
-        f.gt.encode(enc, &[genotype])?;
+        f.gt.encode(enc, &[genotype.genotype])?;
+        // An unphased record omits `PS` rather than carrying an empty value.
+        if let Some(set) = genotype.phase_set {
+            f.ps.encode(enc, &[set])?;
+        }
     }
     if c.gl {
-        f.gl.encode(enc, &[gl])?;
+        f.gl.encode(enc, &[genotype.likelihood])?;
     }
     if c.gc {
-        f.gc.encode(enc, &[gc])?;
+        f.gc.encode(enc, &[genotype.confidence])?;
     }
     if c.dp {
         f.dp.encode(enc, &[i32::try_from(pileup.pos_metrics.depth).unwrap_or(i32::MAX)])?;
@@ -592,21 +607,29 @@ fn phred_value(p: Probability) -> f32 {
     Phred::from(p).as_int() as f32
 }
 
-/// The genotype plus its GL/GC values, ported from the old `build_format`.
+/// A record's genotype fields.
+struct GenotypeFields {
+    genotype: SeqGenotype,
+    likelihood: f32,
+    confidence: f32,
+    /// Set exactly where `genotype` is phased.
+    phase_set: Option<i32>,
+}
+
+/// The genotype plus its GL/GC values and phase set.
 ///
 /// The estimate is the one the calling pipeline stored, not a fresh one: an
 /// estimate re-derived here would silently ignore `--error-model` and so
 /// contradict the BED output and the methylation calls, which read the stored
-/// value.
-fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> (SeqGenotype, f32, f32) {
-    use std::num::NonZeroU8;
-
+/// value. The phase call names alleles the same way, so one remap serves both.
+fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeFields {
     let Some(estimated) = pileup.pos_metrics.extended.genotype else {
-        return (
-            SeqGenotype::unphased(0, 0),
-            phred_value(Probability::ZERO),
-            phred_value(Probability::ZERO),
-        );
+        return GenotypeFields {
+            genotype: SeqGenotype::unphased(0, 0),
+            likelihood: phred_value(Probability::ZERO),
+            confidence: phred_value(Probability::ZERO),
+            phase_set: None,
+        };
     };
 
     // Remap genotype allele indices from `pileup.alts` positions to the VCF ALT
@@ -640,7 +663,22 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> (SeqGenotype,
         },
     };
 
-    (to_seqair_gt(remapped), phred_value(estimated.likelihood), phred_value(estimated.confidence))
+    // A phase call whose allele does not survive the remap cannot be written
+    // as a genotype either, and the record stays unphased.
+    let phase = phasing::call_of(pileup);
+    let first = phase.and_then(|call| match call.first {
+        GtAllele::Ref => Some(0),
+        GtAllele::Alt(n) => map(n).map(|vcf| NonZeroU16::from(vcf).get()),
+    });
+    let genotype = to_seqair_gt(remapped, first);
+    let phased = genotype.phased.contains(&true);
+
+    GenotypeFields {
+        genotype,
+        likelihood: phred_value(estimated.likelihood),
+        confidence: phred_value(estimated.confidence),
+        phase_set: phase.filter(|_| phased).map(|call| call.set.as_i32()),
+    }
 }
 
 /// Read counts in canonical CpG order, flattened for encoding.
