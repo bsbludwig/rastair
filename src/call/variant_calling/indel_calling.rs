@@ -81,7 +81,7 @@ pub struct IndelParams {
 }
 
 /// Result of indel calling at a single position for one allele.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IndelCall {
     pub allele: IndelAllele,
     pub genotype: GenotypeTag,

@@ -9,7 +9,7 @@ use std::fmt;
 use tracing::warn;
 
 /// A genomic region with chromosome and coordinates
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Region {
     pub contig: SmolStr,
     /// 0-based start position (inclusive)
@@ -162,7 +162,7 @@ pub(crate) fn retain_fasta_regions(
 }
 
 /// A chunk of a larger genomic region used for processing data in segments
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChunkRegion {
     pub region: Region,
     /// The last valid position in the full region this chunk belongs to

@@ -2,7 +2,7 @@ use crate::{call::variant_calling::indel_calling::IndelCall, utils::Base, utils:
 use seqair_types::SmallVec;
 
 /// A specific indel allele observed in reads.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IndelAllele {
     /// Bases inserted after the anchor position (not including the anchor).
     Insertion(SmallVec<Base, 4>),
@@ -33,7 +33,7 @@ impl IndelAllele {
 }
 
 /// A single read's indel observation at a pileup position.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IndelObservation {
     pub allele: IndelAllele,
     pub strand: Strand,
@@ -53,7 +53,7 @@ pub struct IndelObservation {
 }
 
 /// Aggregated indel counts at a position, ready for calling.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct IndelCounts {
     /// Each unique indel allele with its forward and reverse strand counts.
     pub alleles: SmallVec<IndelAlleleCounts, 2>,
@@ -90,7 +90,7 @@ impl IndelCounts {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IndelAlleleCounts {
     pub allele: IndelAllele,
     /// Supporting reads by *bisulfite* strand, not by the alignment reverse flag.
@@ -119,7 +119,7 @@ impl IndelAlleleCounts {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct IndelData {
     pub observations: SmallVec<IndelObservation, 3>,
     pub ref_window: SmallVec<Base, { super::INDEL_REF_WINDOW_LEN }>,

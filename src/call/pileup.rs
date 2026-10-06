@@ -76,7 +76,7 @@ fn periodic_terminus<T: PartialEq>(
 }
 
 /// Rastair's representation of a pileup at a specific position in the genome
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
     pub region: std::sync::Arc<ChunkRegion>,
@@ -94,25 +94,18 @@ pub struct Pileup {
     /// (per-column, htslib-path) temporary; `0` would make it 24 and cost a
     /// heap allocation only where an indel actually is. Unmeasured — histogram
     /// `indel_observations.len()` in `Pileup::from_hts` before changing it.
-    #[serde(default)]
     pub indel_observations: SmallVec<indels::IndelObservation, 3>,
     /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
     /// for indel depth adjustment.
-    #[serde(default)]
     pub noisy_ref_count: u32,
-    #[serde(default)]
     pub homopolymer_run: u8,
-    #[serde(default)]
     pub dinucleotide_run: u8,
-    #[serde(default)]
     pub soft_clip_count: u32,
     /// Reference bases around the anchor (`indel_ref_anchor` is the anchor's
     /// index), used for tandem-repeat / slippage detection of indel alleles.
     /// Only populated when indel observations are present.
-    #[serde(default)]
     pub indel_ref_window: SmallVec<Base, INDEL_REF_WINDOW_LEN>,
     /// Index of the anchor (pileup `pos`) base within [`Pileup::indel_ref_window`].
-    #[serde(default)]
     pub indel_ref_anchor: u8,
 }
 

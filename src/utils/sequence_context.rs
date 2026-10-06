@@ -9,7 +9,7 @@ use seqair_types::smol_str::{SmolStr, SmolStrBuilder};
 /// 5-base sequence context centered on the variant position
 ///
 /// Printed in VCF as string with up to 5 characters.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SequenceContext {
     pub before_2: Option<Base>,
     pub before_1: Option<Base>,
