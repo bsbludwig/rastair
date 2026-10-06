@@ -13,7 +13,6 @@ This document contains the help content for the `rastair` command-line program.
 * [`rastair bam standard`↴](#rastair-bam-standard)
 * [`rastair bam legacy`↴](#rastair-bam-legacy)
 * [`rastair convert`↴](#rastair-convert)
-* [`rastair view`↴](#rastair-view)
 * [`rastair mbias`↴](#rastair-mbias)
 * [`rastair license`↴](#rastair-license)
 
@@ -31,7 +30,6 @@ See <https://docs.rastair.com/> for more information.
 * `per-read` — Call methylation per-read
 * `bam` — Add methylation information to BAM files
 * `convert` — Convert between different file formats
-* `view` — View internal format as JSON lines
 * `mbias` — Calculate conversion per base position in read
 * `license` — Show license -- rastair is licensed under a non-commercial use licence
 
@@ -224,7 +222,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    If combined with `--cpgs-only`, only CpG positions are reported: every reference CpG including those without coverage, plus de-novo CpGs that were actually called. De-novo candidates rejected by filters or ML are not included.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
 
-   Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed) `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
+   Format is guessed based on the file extension: `.vcf` for VCF (uncompressed), `.vcf.gz` for VCF (compressed), `.bcf` for BCF (compressed)
 * `--vcf-info-fields <VCF_INFO_FIELDS>` — Additional INFO fields to include in VCF output (comma-separated VCF field IDs)
 
    By default, only a minimal set is included.
@@ -542,7 +540,6 @@ Convert between different file formats
     Binary VCF format (.bcf)
   - `vcf-compressed`:
     Compressed text-based VCF format (.vcf.gz)
-  - `mpk.lz4`
 
 
 ###### **Output Options:**
@@ -559,7 +556,6 @@ Convert between different file formats
     Binary VCF format (.bcf)
   - `vcf-compressed`:
     Compressed text-based VCF format (.vcf.gz)
-  - `mpk.lz4`
   - `bed`:
     Regular BED file, usually `.bed`
   - `bed-gz`:
@@ -597,24 +593,6 @@ Convert between different file formats
 
   Default value: `14`
   [env: `RASTAIR_THREADS`]
-
-
-
-## `rastair view`
-
-View internal format as JSON lines
-
-**Usage:** `rastair view [OPTIONS] <INPUT>`
-
-###### **Arguments:**
-
-* `<INPUT>` — Message Pack file to view
-
-###### **Output Options:**
-
-* `-o`, `--output <OUTPUT>` — Message Pack file to view
-
-  Default value: `-`
 
 
 

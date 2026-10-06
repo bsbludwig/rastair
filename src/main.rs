@@ -3,7 +3,7 @@ use clio::ClioPath;
 use color_eyre::eyre::{Context, Result};
 use rastair::*;
 use std::io::{Write as _, stdout};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Use mimalloc as the global allocator, which proves to be faster than the
 /// default system allocator in our benchmarks.
@@ -67,8 +67,6 @@ enum Subcommand {
         #[command(subcommand)]
         command: MlSubcommand,
     },
-    /// View internal format as JSON lines
-    View(MpkViewParams),
     /// Calculate conversion per base position in read
     ///
     /// This will produce a `mbias.html` file with information about conversion
@@ -197,10 +195,6 @@ fn main() -> Result<()> {
             rastair::convert(&params)?;
             let duration = start.elapsed();
             info!(?duration, "Convert finished");
-        }
-        Subcommand::View(params) => {
-            warn!("This format is for internal use only and may change without notice.");
-            rastair::mpk_view(&params)?;
         }
         Subcommand::Mbias(params) => {
             debug!(?params, "Running mbias command");

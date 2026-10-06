@@ -1,7 +1,4 @@
-use crate::{
-    bed::BedFormat,
-    io::vcf_writer::{self, VcfFormat},
-};
+use crate::{bed::BedFormat, io::vcf_writer::VcfFormat};
 use clio::ClioPath;
 use color_eyre::{
     Result, Section as _,
@@ -10,22 +7,21 @@ use color_eyre::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFormat {
-    VcfLike(vcf_writer::Format),
+    VcfLike(VcfFormat),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
-    VcfLike(vcf_writer::Format),
+    VcfLike(VcfFormat),
     Bed(BedFormat),
 }
 
 impl clap::ValueEnum for InputFormat {
     fn value_variants<'a>() -> &'a [Self] {
         &[
-            InputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::Vcf)),
-            InputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::Bcf)),
-            InputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::VcfCompressed)),
-            InputFormat::VcfLike(vcf_writer::Format::MessagePack),
+            InputFormat::VcfLike(VcfFormat::Vcf),
+            InputFormat::VcfLike(VcfFormat::Bcf),
+            InputFormat::VcfLike(VcfFormat::VcfCompressed),
         ]
     }
 
@@ -39,10 +35,9 @@ impl clap::ValueEnum for InputFormat {
 impl clap::ValueEnum for OutputFormat {
     fn value_variants<'a>() -> &'a [Self] {
         &[
-            OutputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::Vcf)),
-            OutputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::Bcf)),
-            OutputFormat::VcfLike(vcf_writer::Format::Vcf(VcfFormat::VcfCompressed)),
-            OutputFormat::VcfLike(vcf_writer::Format::MessagePack),
+            OutputFormat::VcfLike(VcfFormat::Vcf),
+            OutputFormat::VcfLike(VcfFormat::Bcf),
+            OutputFormat::VcfLike(VcfFormat::VcfCompressed),
             OutputFormat::Bed(BedFormat::Bed),
             OutputFormat::Bed(BedFormat::BedGz),
         ]
@@ -72,16 +67,14 @@ pub trait FromFileExtension: Sized {
     }
 }
 
-impl FromFileExtension for vcf_writer::Format {
+impl FromFileExtension for VcfFormat {
     fn from_file_extension(p: &str) -> Option<Self> {
         if p.ends_with(".bcf") {
-            Some(vcf_writer::Format::Vcf(VcfFormat::Bcf))
+            Some(VcfFormat::Bcf)
         } else if p.ends_with(".vcf.gz") {
-            Some(vcf_writer::Format::Vcf(VcfFormat::VcfCompressed))
+            Some(VcfFormat::VcfCompressed)
         } else if p.ends_with(".vcf") {
-            Some(vcf_writer::Format::Vcf(VcfFormat::Vcf))
-        } else if p.ends_with("mpk.lz4") {
-            Some(vcf_writer::Format::MessagePack)
+            Some(VcfFormat::Vcf)
         } else {
             None
         }
@@ -102,13 +95,13 @@ impl FromFileExtension for BedFormat {
 
 impl FromFileExtension for InputFormat {
     fn from_file_extension(p: &str) -> Option<Self> {
-        vcf_writer::Format::from_file_extension(p).map(InputFormat::VcfLike)
+        VcfFormat::from_file_extension(p).map(InputFormat::VcfLike)
     }
 }
 
 impl FromFileExtension for OutputFormat {
     fn from_file_extension(p: &str) -> Option<Self> {
-        vcf_writer::Format::from_file_extension(p)
+        VcfFormat::from_file_extension(p)
             .map(OutputFormat::VcfLike)
             .or_else(|| BedFormat::from_file_extension(p).map(OutputFormat::Bed))
     }

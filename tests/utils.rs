@@ -34,7 +34,6 @@ macro_rules! apply_common_filters {
         settings.add_filter(r#"file="/.*/*.vcf"#, "file=[PATH]");
         settings.add_filter(r#"file="/.*/*.vcf.gz"#, "file=[PATH]");
         settings.add_filter(r#"file="/.*/*.bcf"#, "file=[PATH]");
-        settings.add_filter(r#"file="/.*/*.mpk.lz4"#, "file=[PATH]");
         settings.add_filter(r#"file="/.*/*.bed"#, "file=[PATH]");
         settings.add_filter(r#"/var/.*/*.bam"#, "[PATH]");
         settings.add_filter(r#"/tmp/.*/*.bam"#, "[PATH]");

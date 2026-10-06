@@ -1,9 +1,6 @@
 use crate::{
     call::{RecordFilters, variant_calling::ErrorModel},
-    io::{
-        formats::FromFileExtension,
-        mpk::{MessagePackWriter, format::MpkVcfHeader},
-    },
+    io::formats::FromFileExtension,
     metrics::PileupMetrics,
     sequence::ChunkRegion,
     utils::{cli, logging::ThisIsABug as _},
@@ -27,7 +24,6 @@ pub struct VcfParams {
     /// `.vcf` for VCF (uncompressed),
     /// `.vcf.gz` for VCF (compressed),
     /// `.bcf` for BCF (compressed)
-    /// `.mpk.lz4` for internal format (Message Pack, LZ4-compressed)
     #[arg(short = 'o', long, required = false, default_missing_value = "-", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf: Option<ClioPath>,
@@ -73,31 +69,6 @@ pub struct VcfParams {
     pub vcf_all_fields: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    Vcf(VcfFormat),
-    /// Rastair-internal `MessagePack` format, always LZ4-compressed
-    MessagePack,
-}
-
-impl clap::ValueEnum for Format {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[
-            Format::Vcf(VcfFormat::Vcf),
-            Format::Vcf(VcfFormat::VcfCompressed),
-            Format::Vcf(VcfFormat::Bcf),
-            Format::MessagePack,
-        ]
-    }
-
-    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
-        match self {
-            Format::Vcf(format) => format.to_possible_value(),
-            Format::MessagePack => Some(clap::builder::PossibleValue::new("mpk.lz4")),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum VcfFormat {
     /// Text-based VCF format (.vcf)
@@ -120,14 +91,14 @@ impl From<VcfFormat> for OutputFormat {
 
 impl VcfParams {
     /// Create a new instance of `Params` with the specified VCF output path.
-    pub fn guess_format(&self) -> Format {
+    pub fn guess_format(&self) -> VcfFormat {
         let Some(vcf_output) = &self.vcf else {
             // No VCF output, so the format doesn't matter.
-            return Format::Vcf(VcfFormat::Vcf);
+            return VcfFormat::Vcf;
         };
 
         if vcf_output.is_std() {
-            return Format::Vcf(VcfFormat::Vcf);
+            return VcfFormat::Vcf;
         }
 
         let Some(name) = vcf_output.file_name().and_then(OsStr::to_str) else {
@@ -135,15 +106,15 @@ impl VcfParams {
                 filename=%vcf_output,
                 "No file name found in VCF output path, defaulting to VCF format without compression."
             );
-            return Format::Vcf(VcfFormat::Vcf);
+            return VcfFormat::Vcf;
         };
 
-        let Some(format) = Format::from_file_extension(name) else {
+        let Some(format) = VcfFormat::from_file_extension(name) else {
             warn!(
                 filename=%vcf_output,
                 "Could not determine format from file extension, defaulting to VCF format without compression."
             );
-            return Format::Vcf(VcfFormat::Vcf);
+            return VcfFormat::Vcf;
         };
 
         format
@@ -165,23 +136,12 @@ impl VcfParams {
         path: &ClioPath,
         regions: &[ChunkRegion],
         metadata: &[String],
-    ) -> Result<Writer> {
+    ) -> Result<SeqairVcfWriter> {
         let contigs = header_contigs(regions);
         let samples = vec![SmolStr::new("sample")]; // Note: we only deal with one sample for now
 
-        let format = match self.guess_format() {
-            Format::MessagePack => {
-                let writer = Self::create_mpk_writer(path, contigs, samples, metadata)
-                    .wrap_err("Failed to create MessagePack writer")?;
-                return Ok(Writer::MessagePack(writer));
-            }
-            Format::Vcf(f) => f.into(),
-        };
-
-        let writer = self
-            .seqair_writer(path, &contigs, &samples, metadata, format)
-            .wrap_err("Failed to create VCF writer")?;
-        Ok(Writer::Vcf(writer))
+        self.seqair_writer(path, &contigs, &samples, metadata, self.guess_format().into())
+            .wrap_err("Failed to create VCF writer")
     }
 
     /// Build a seqair-backed VCF/BCF writer.
@@ -227,24 +187,6 @@ impl VcfParams {
             last_contig: None,
             index_path,
         })
-    }
-
-    fn create_mpk_writer(
-        path: &ClioPath,
-        contigs: Vec<Contig>,
-        samples: Vec<SmolStr>,
-        metadata: &[String],
-    ) -> Result<MessagePackWriter> {
-        warn!(
-            %path,
-            "MessagePack format only for internal use, no stability guarantees",
-        );
-        let mut w = MessagePackWriter::new(path)
-            .wrap_err_with(|| format!("Failed to create MessagePack writer for {path}"))?;
-
-        w.add_metadata(MpkVcfHeader { contigs, samples, metadata: metadata.to_owned() })?;
-
-        Ok(w)
     }
 }
 
@@ -305,12 +247,6 @@ impl SeqairVcfWriter {
         Ok(())
     }
 }
-
-pub enum Writer {
-    Vcf(SeqairVcfWriter),
-    MessagePack(MessagePackWriter),
-}
-
 /// Build the VCF header contig list: one entry per distinct contig touched by
 /// `regions`, carrying the *true* contig length, in first-appearance order.
 ///

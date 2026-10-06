@@ -9,7 +9,6 @@ mod convert;
 pub use convert::{ConvertParams, convert};
 mod mbias;
 pub use bam::{BamMode, BamRewriteArgs, BamSubcommand, rewrite as rewrite_bam};
-pub use io::mpk::viewer::{MpkViewParams, view as mpk_view};
 pub use mbias::{MBiasParams, mbias};
 
 // utils
@@ -25,7 +24,6 @@ mod verify;
 pub use verify::{VerifyParams, verify};
 pub(crate) mod io {
     pub mod formats;
-    pub mod mpk;
     pub mod vcf_writer;
 }
 pub mod vcf;
