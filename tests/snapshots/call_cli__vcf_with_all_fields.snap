@@ -58,6 +58,7 @@ exit_code: 0
 ##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
 ##INFO=<ID=CPGnovo,Number=0,Type=Flag,Description="De-novo CPG candidate: Could the alt alleles create a new CpG site?">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set identifier: the position of the first variant in the phase block">
 ##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods, Phred-scaled">
 ##FORMAT=<ID=GC,Number=G,Type=Float,Description="Genotype confidence, Phred-scaled">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">

@@ -13,4 +13,5 @@ mod cpgs;
 mod denovo;
 mod edge_cases;
 mod genotyping;
+mod phasing;
 mod real_hg96_examples;

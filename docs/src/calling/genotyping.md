@@ -41,3 +41,33 @@ In most cases:
 
 For `C→T` and `G→A` variants, only one strand is used to avoid confounding with methylation.
 For all other variant types, both strands contribute to genotyping.
+
+## Phasing
+
+`--phase` can be used to group heterozygous @SNV:pl that share a read pair
+into phase blocks and written with a `|` separator and a `PS` field:
+
+```
+chr12  20028875  .  A  G  ...  GT:PS  0|1:20028875
+chr12  20028894  .  C  T  ...  GT:PS  1|0:20028875
+```
+
+Both records carry `PS=20028875`, the position of the block's first heterozygous site, so they belong to one block.
+Within a block, the alleles written first all sit on the same chromosome copy: above, the reference `A` and the alternate `T` are on one copy, the alternate `G` and the reference `C` on the other.
+Each block opens with `0|1`; nothing relates one block to another, and heterozygous sites no read pair links stay `0/1` without `PS`.
+
+Since Rastair operates on @TAPS and @5Base data,
+it has to take methylation artifacts into account.
+In a @CpG site with alleles `C` and `T`,
+the `T` on the converted strand may be a methylated `C`,
+so it says nothing about which copy the read came from
+(same for `G>A`).
+Such reads are not counted.
+Outside a CpG, cytosines are almost never methylated, so these reads count like any other.
+
+```admonish warning
+Phasing only works with the `experimental-seqair` backend.
+It can not be combined with `--cpgs-only` or BED output alone.
+Blocks do not cross the boundary between two processing segments,
+so a block is at most one segment long (`--segment-max-length`, 100 kb by default).
+```

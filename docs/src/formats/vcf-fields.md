@@ -52,6 +52,7 @@
 | ID | Number | Type | Description |
 |----|--------|------|-------------|
 | GT | 1 | String | Genotype |
+| PS | 1 | Integer | Phase set identifier: the position of the first variant in the phase block |
 | GL | G | Float | Genotype likelihoods, Phred-scaled |
 | GC | G | Float | Genotype confidence, Phred-scaled |
 | DP | 1 | Integer | Read depth |
