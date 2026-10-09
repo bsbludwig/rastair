@@ -20,7 +20,8 @@ pub struct IndelParams {
 
     /// Minimum alternate observations for an indel allele to be scored
     ///
-    /// Reads (one per fragment) whose alignment carries the allele. Of the
+    /// Reads (one per fragment) whose alignment carries the allele; at least
+    /// 5% of the column's depth is required in any case. Of the
     /// alleles reaching it in a cluster of neighbouring columns, the three
     /// most reads carry are scored, at most two per column, and a scored
     /// allele is called only if the pair-HMM finds it present.
