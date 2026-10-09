@@ -116,12 +116,10 @@ Best for methylation-focused downstream analyses.
 
 Random Forest models disambiguate true variants from sequencing errors and methylation artifacts.
 
-**Five Separate Models**: Different variant contexts require different discriminatory features:
+**Three Separate Models**: Different variant contexts require different discriminatory features:
 - **CpG model**: C→T or G→A at canonical CpG sites
 - **De-novo CpG model**: Variants creating new CpG sites
 - **Others model**: Non-CpG variants
-- **Insertion model**: Insertion alleles (used when experimental indel calling is enabled)
-- **Deletion model**: Deletion alleles (used when experimental indel calling is enabled)
 
 Models are bundled as one compressed file.
 A default model file is bundled in the Rastair binary and loaded at startup.

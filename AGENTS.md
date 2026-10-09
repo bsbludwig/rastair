@@ -63,7 +63,7 @@ Specific adn well-named types are the main way to ensure correctness and introdu
 
 - Write comprehensive unit tests for the most critical and complex parts of the codebase when you either add them or encounter bugs in them
 - Write integration tests for critical workflows and components, e.g. like the ones in `tests/call_cli.rs`
-- Run the tests with `cargo test` **and** `cargo test --features experimental-seqair`. Phasing is seqair-only, so its tests are `#[cfg(feature = "experimental-seqair")]` and a plain `cargo test` never runs them; the htslib build instead tests that `--phase` is refused.
+- Run the tests with `cargo test` **and** `cargo test --features experimental-seqair`. Phasing and indel calling are seqair-only, so their tests are `#[cfg(feature = "experimental-seqair")]` and a plain `cargo test` never runs them; the htslib build instead tests that `--phase` and `--experimental-indels` are refused.
 - Run `cargo clippy --all-targets` under both feature sets too.
 - Use `cargo xtask insta` to run tests and update any snapshot tests. You need to verify the updated content is correct!
 
@@ -215,115 +215,157 @@ Two related API notes:
   store keeping its slab capacity, for the next region. It is not a way to read
   the pileup's input back.
 
-## Indel parity between the two pileup backends
+## Indel observations (seqair only)
 
-`from_hts.rs` and `from_seqair.rs` build the same `PileupMetrics` from two
-different readers. **SNVs are byte-identical across them** — F1, recall,
-precision and both aardvark genotype-error counts — which is the control that
-makes any remaining difference attributable to indel-specific code rather than
-to read handling. Indels were *not*: on chr12 the seqair backend scored 4-5 F1
-points below htslib, from five separate divergences, all now fixed.
+Only `from_seqair.rs` collects indels; an htslib build refuses `--experimental-indels`. The rules
+below came out of a parity hunt against the htslib backend's indel collection, since deleted (its
+write-up is in this file's history before `feature/pair-hmm-cleanup`). Each guards a *class* of
+mistake:
 
-**How the divergence is measured.** Two numbers, and the second is the more
-useful one:
+- **A deletion's REF comes from the deletion site.** `view.qpos()` once shadowed the column's
+  `pos`, so REF alleles were read from the segment's opening bases; seqair's `QPos` newtype now
+  keeps a read offset from passing as a genomic position.
+- **The mate fallback.** Overlap dedup keeps one read per fragment and can keep the mate that
+  does *not* span the indel (worth +2.3 insertion / +1.5 deletion F1 when fixed), so the mate
+  stands in: `build_indel_observation(view).or_else(mate)`. seqair's old `pair_indel` ("own
+  indel wins, the mate is never consulted") is not used.
+- **The CIGAR counts only pick candidates.** `IndelCounts` holds, per allele, the fragments whose
+  alignment carries it; nothing else reads it for a call. There are no read-level indel filters
+  any more (end-of-read cutoff, non-TAPS mismatch limit, the noisy-fragment split behind "clean"
+  support and depth, `has_terminal_repeat`): they were a second evidence pipeline beside the
+  pair-HMM, which weighs each read's alignment itself. Measured on chr12 when they went: the
+  mismatch filter alone moved nothing past 0.001 F1; ranking candidates by raw rather than clean
+  count was +0.006 ins / +0.004 del at 26x and -0.002 / -0.004 at 73x (more scored alleles in
+  repeats, more deletion FPs).
 
-```bash
-CARGO_TARGET_DIR=target-hts cargo build --release          # htslib
-cargo build --release --features experimental-seqair       # seqair
-# ...call chr12 with --experimental-indels=ml --vcf-all-fields on each, then:
-bcftools view -f PASS -i 'GT="alt"' calls.bcf -Ou \
-  | bcftools norm -f hg38.fa.gz -m -any -Oz -o q.vcf.gz
-aardvark compare --reference hg38.fa.gz --truth-vcf truth.vcf.gz \
-  --truth-sample NA12878 --query-vcf q.vcf.gz --query-sample sample \
-  --regions PG_ConfidentRegions_hg38.bed.gz --output-dir out/
-# and, far more sensitive than F1, the site-level disagreement:
-bcftools isec -p isec <(bcftools view -v indels hts.vcf.gz) <(bcftools view -v indels sq.vcf.gz)
-```
+Testing blind spots, still easy to reproduce:
 
-The `isec` counts move ~100x over the fixes where F1 moves 5 points, so use them
-to tell "this changed something" from "this changed the right thing". Aardvark
-needs `Number=.` in the header (see above) or it refuses the file outright.
+- **`tests/data/test.bam` cannot produce an indel call.** It has 86 indel-carrying reads, but no
+  two agree on an allele, so nothing passes `--min-indel-ao`. An indel test has to build its own
+  BAM (`indel_ref_alleles_come_from_the_deletion_site`) or use a `Scenario`.
+- **A fixture segment starting at 0 hides every position bug**, because `pos - segment_start`
+  and the clamped wrong answer coincide there. Use `segment_at(start, seq)` with a non-zero
+  start; the CLI fixture puts its deletion at 24,137 for the same reason.
+- **A `from_seqair` unit test must set `params.call_indels`**, or the indel branch is
+  unreachable from it.
 
-**The five divergences, in the order they were found.** Each is worth knowing
-because each is a *class* of mistake, not a typo:
+## Pair-HMM indel calling (`--experimental-indels`, seqair only)
 
-1. **A read-local offset used as a genomic position.** `view.qpos()` shadowed
-   the column's `pos`, so deletion REF alleles were read from the segment's
-   opening bases. Guarded now by seqair's `QPos` newtype, which is why the pin
-   carries it.
-2. **The tract anchor.** `homopolymer_run_at`/`dinucleotide_run_at` must be
-   measured one base past the pileup anchor, where a left-aligned indel starts.
-   The convention now lives only inside `ref_features::indel_tract_runs_at`.
-3. **Overlap dedup dropping the fragment's only indel.** The rule keeps one
-   read per fragment by base agreement and template order, which can keep the
-   mate that does *not* span the indel. `from_hts` never had this because it
-   votes per fragment *before* deduplicating — every mate gets a turn and the
-   first surviving observation is the fragment's. **The single largest one:
-   +2.3 insertion / +1.5 deletion F1.**
+`--experimental-indels` calls indels with the pair-HMM and nothing else: no model, no binomial
+genotyper, no strand veto. It is seqair-only (htslib refuses it, like `--phase`) because it needs
+the reads, which only the seqair engine still holds once a sub-segment's columns are drafted.
 
-   **The fallback is keyed on the observation, not on the indel.**
-   `build_indel_observation` rejects an indel too close to a read end or on a
-   read with too many non-TAPS mismatches, so a kept read can carry an indel
-   and still contribute nothing, and the mate must then stand in.
-   `PileupColumn::pair_indel` (seqair) cannot express that — its rule is "own
-   indel wins, the mate is never consulted", which is correct for a query that
-   only sees CIGARs but silently drops those fragments. **rastair therefore
-   does not use `pair_indel`**; `counted_mate` plus `Option::or_else` is the
-   whole mechanism, and it needs no seqair query.
-4. **Two implementations of one predicate.** `has_repeat` used a 4-base window
-   for the period-2 arm on one side and 6 on the other, so it fired ~8x more
-   often on the seqair path. There is now one `has_terminal_repeat`.
-5. **Per-read where the semantics are per-fragment.** `soft_clip_count` and the
-   noisy-reference count describe a fragment; `from_hts` ORs them over both
-   mates. Reading them off the surviving read alone loses what only the dropped
-   mate showed. The noisy-reference count also has to exclude a fragment that
-   contributed an observation — `IndelCounts::clean_depth` subtracts a fragment
-   counted on both sides twice — and `AlignmentShape::noisy()` is
-   `terminal_repeat || soft_clipped`, not the repeat alone.
+**Dependencies.** seqair 0.5 and compair 0.2 (both 2026-10-08) carry what this needs:
+`Haplotype::with_insertion`/`with_deletion`, `qname_hash` as `Option<NonZeroU64>` (adopted
+through `FragmentId::of`), `leading_soft_clip`/`trailing_soft_clip` and `fragment_idx` on
+records (`PlacedRead`). Gaps are scored by compair's `PcrIndelModel` (GATK's PCR indel model,
+via `Read::with_pcr_indel_model`) with the tandem-repeat gap-open floored at Q20. compair also
+has `Haplotype::with_betas`/`Betas::OfHaplotype` and `ScoreMatrix`, not yet used here (see
+`UNKNOWN_BETA` for why the first stays off).
 
-**Result on chr12 (~26x, bundled model, `--experimental-indels=ml`), against
-Platinum Genomes in `PG_ConfidentRegions`:**
+- **Deferred scoring** (`process/pileups.rs`). Indel columns are not scored while they are
+  built: the kept ones are collected, and after the sub-segment's column loop, columns within
+  `CLUSTER_GAP` (20 bp) of the previous one form a cluster (chained, so a cluster can be longer).
+  Each cluster is scored once, `from_seqair::score_indel_cluster`, through the sub-segment's
+  `ClusterContext` (store, segment, params and window mask, built once), over the reads
+  `guard.records_overlapping(first, last)` returns; the engine's store stays valid until it is
+  reclaimed. Each column of the cluster shares the cluster's `Arc<HaplotypeScores>` (`Scored`)
+  and gets its own records. Deferring alone left every record byte-identical; it is what makes
+  the window mask and clusters possible.
+- **`WindowMask`**: positions of the sub-segment's kept columns with at least `MIN_READS` (5)
+  reads of a base TAPS cannot explain are `Base::Unknown` in the haplotype window, which compair
+  matches to any base. A `T` over a `C` counts only on OB and an `A` over a `G` only on OT, so
+  methylation never masks. Without it a nearby SNV absent from every haplotype is charged to the
+  reads of the haplotype that carries it, and a stray indel allele that happens to absorb the
+  mismatch gets the credit: it cut the 73x deletion FPs next to an SNV from 265 to 5 and cost
+  nothing elsewhere. A count, not a fraction, since the FP it guards against is a handful of
+  reads whatever the depth; 2, 3, 5 and 8 were tried, 5 was best at 26x and 73x.
+- **Events** (`cluster_candidates`). A cluster's `Event { anchor, allele }`s are the alleles of
+  its columns with at least `--min-indel-ao` reads, ranked by read count, then anchor, then
+  `allele_order` (insertions first), as many as `Cluster::admits` (which `Cluster::new` enforces
+  too): at most `MAX_EVENTS` (3) and **at most two per anchor**: a third at one anchor could not
+  share a pair with the other two, so it would take a slot from a neighbouring anchor and never
+  be called. That ranking is record order: `Cluster::events`, `EventIdx`, the calls and the
+  `ALT` column all keep it. An allele not ranked in is never scored,
+  so never called.
+- **Haplotypes are subsets of events** (`pair_hmm.rs`). `HapIdx` is a bitmask over `EventIdx`;
+  `Cluster::new` builds them once, `HapIdx::all_valid` keeping the subsets one chromosome can
+  carry (`Event::compatible`: not two at one anchor, no deletion over another event's anchor),
+  so at most eight haplotypes and eight alignments per read. `scoring::score` builds one compair
+  `Haplotype` per subset, applying its events later anchor first so an earlier anchor's window
+  index still holds; an event that does not fit the window is dropped with a `debug!`. Every CpG
+  is scored at a uniform beta 0.5 (`UNKNOWN_BETA`): the columns' own level, raw or shrunk
+  towards 0.5 with 2 to 16 reads of prior, measured worse at both depths. The reads are not the
+  column's counted ones: one per fragment (the mate reaching further), MAPQ >= the column
+  minimum, a known strand, soft clips included where the segment's reference reaches them,
+  thinned evenly to `--max-coverage`.
+  Stored per read on `HaplotypeScores.reads`: fragment, MAPQ, log10 likelihood per `HapIdx`
+  (`-inf` for an invalid subset).
+- **The verdict** is computed once, in `HaplotypeScores::new`, over pairs of valid haplotypes.
+  An account (`Account`) is a pair, or a pair plus one event it lacks drawn as an artefact at
+  `ARTEFACT_FRACTIONS` (10 %) less `ARTEFACT_PRIOR_LOG10` (2, chosen on chr12 26x+73x,
+  docs/plans/data/artefact-sweep-2026-10-08): that is what stops a 7-of-73 allele at 73x being a
+  genotype, while a 4-of-8 het survives. Margins are **per event**: log10 of the best account
+  whose pair carries the event over the best whose pair does not. An event is called at
+  `Margin::PRESENT` (>= 1); QUAL is 10 x the margin. `best` is the pair of the best account; `called_pair` is the
+  likeliest pair carrying exactly the called events and *is* the genotype, so "present but not
+  in GT" cannot happen (such a pair exists while no anchor has more than two events). A `1/2`
+  whose second event is not called becomes `1/1` or `0/1` as the reads have it. `quality`
+  (`GC`) is the called pair's flat-prior quality over the pure pairs, because the phasing gate
+  was set on it, so it is low when the called pair is not the best one.
+- **Calling** (`call_on_pair_hmm(scores, pos)`) writes the records of the events anchored at
+  `pos` and no other: two called events at one anchor make one `IndelRecords::Compound` `1/2`
+  record (always PASS, QUAL the weaker margin's); otherwise one `Separate` biallelic record per
+  event, its genotype from `Verdict::copies_of` (0, 1 or 2 chromosomes of the called pair). A
+  scored event not called stays a `0/0` call, written only under `--all` with `low_indel_qual`
+  (read off the genotype, not the margin). No strand gate and no model: neither beat the margin
+  alone on chr12. Emission and `phasing::problem::indel_site` match on `IndelRecords` rather
+  than re-deriving it from the genotypes.
+- **`AD` and `DP` are the pair-HMM's**, so every field of an indel record comes from one read
+  set: a read is assigned to its likeliest haplotype when that beats the runner-up by
+  `INFORMATIVE_LOG10` (0.2, GATK's informative-read threshold), once, in `HaplotypeScores::new`,
+  which keeps the count per haplotype. `DP` is `HaplotypeScores::depth`, the cluster's assigned
+  reads, and a record's `AD` is
+  `support_over(&events)`: reads on a haplotype carrying none of the record's events (reference
+  first, so a neighbouring event's carriers count there), then on one carrying each. `AD` sums to
+  `DP`. The threshold is far below `Margin::PRESENT` on purpose: the pair-HMM sums a tract gap
+  over every placement, so one read of a 1 bp deletion in a 13-base homopolymer is only ~0.9
+  log10 likelier under the deletion, and a read-level "ten times" assigned no read at exactly
+  those indels (24 % of true het deletions at 73x had `AD` 0 for the allele).
 
-| | seqair before | seqair after | htslib |
-| --- | --- | --- | --- |
-| SNV F1 | 0.9706 | 0.9706 | 0.9706 |
-| Insertion F1 | 0.7775 | **0.8273** | 0.8274 |
-| Deletion F1 | 0.8099 | **0.8506** | 0.8506 |
-| disagreeing indel sites | 29,420 | **5** | — (32,326 shared) |
+Two mechanisms explain most of what clusters changed, and are worth knowing before touching them:
 
-Deletions come out numerically identical to htslib on every column — recall,
-precision, F1, `truth_fn_gt` and `query_fp_gt`. Insertions differ by two sites
-in `truth_fn_gt` and nothing else.
+- **Two-event clusters.** `AT>A` at chr12:50,733,241 and `CTT>C` at 50,733,254, both homozygous,
+  13 bp apart: with one event per haplotype the true haplotype (both deletions) was not in the
+  set, so one of them lost its reads to the other's mismatches; the same for an insertion and a
+  deletion 9 bp apart and for poly-A tracts with three spellings plus a real event. Subsets of
+  events represent these exactly, which won back recall clustering had cost (26x deletion
+  recall .9085 -> .9145; 73x homozygotes written as hets 39 -> 31).
+- **TAPS twin spellings.** A deletion next to a methylated CpG has two spellings whose
+  haplotypes differ by exactly a `C`/`T` at the CpG (`CAT>C` at 1,376,406 against `CCA>C` at
+  1,376,403). Converted OT reads match the wrong spelling for free and the right one at the
+  conversion cost, so at beta 0.5 the wrong one sometimes collects them. Per-column scoring
+  called both (one FP), a cluster picks one. It is TAPS-specific, and why left-aligning the
+  candidates did nothing: the aligner already left-aligns, these are different events. The
+  per-column beta was meant to break the tie and measured worse; open.
 
-**Judge a parity fix by convergence in every column, not by F1.** The last fix
-moved deletion F1 *down* 0.0010 while moving recall, precision and both
-genotype-error counts onto htslib — which is what says the semantics matched
-rather than a threshold moving. A change that improves F1 while moving
-`query_fp_gt` away from the reference has not fixed parity.
+chr12 NA12878 (per-column = one column's two leading alleles, before clusters):
 
-The residual is 5 sites of 32,331 (4 htslib-only, 1 seqair-only), all
-multi-allelic columns in homopolymer or short-tandem-repeat tracts where the two
-readers group one read's allele differently (`G>GTT` alongside `G>GTTT` at one
-position, `GTTTT>G`, `CAAA>C`). Not worth chasing without a reason to.
+| | 26x PG Ins / Del F1 | 73x GIAB Ins / Del F1 |
+| --- | --- | --- |
+| forest (`main`) | .827 / .851 | .946 / .953 |
+| per-column pair-HMM | .8944 / .9102 | .9525 / .9497 |
+| clusters of event subsets | **.9050 / .9230** | **.9705 / .9798** |
 
-### Why none of this was caught
+Hold-out chr17 (26x, 73x) and chr2/chr20 (73x) agree, with 73x deletion precision back at the
+forest's; tables in `docs/plans/indel-cluster-prototype-2026-10-08.md`. SNV records are
+byte-identical across every arm. The constants above were each chosen on chr12 at both depths;
+the reasons sit next to them in the code.
 
-Worth internalising, because the same blind spots are still easy to reproduce:
-
-- **No CLI test enabled indel calling.** `grep experimental.indels
-  tests/call_cli.rs` was empty and every snapshot header recorded
-  `"experimental_indels":null`, so no snapshot ever held a multi-base REF.
-  `indel_ref_alleles_come_from_the_deletion_site` now closes that.
-- **`tests/data/test.bam` cannot produce an indel call.** It has 86
-  indel-carrying reads, but no two agree on an allele, so nothing passes
-  `--min-indel-ao` at any threshold. An indel test has to build its own BAM.
-- **A fixture segment starting at 0 hides every position bug**, because
-  `pos - segment_start` and the clamped wrong answer coincide there. Use
-  `segment_at(start, seq)` with a non-zero start; the CLI fixture puts its
-  deletion at 24,137 for the same reason.
-- **The `from_seqair` unit tests never set `params.call_indels`**, so the whole
-  indel branch was unreachable from them.
-
+Testing: the cluster pieces have unit tests (`cluster_candidates`, `WindowMask`,
+`a_masked_position_matches_any_base`, `two_deletions_on_one_chromosome_are_one_haplotype`,
+`call_on_pair_hmm` with three events) and one CLI scenario,
+`the_pair_hmm_calls_two_events_of_one_cluster`, which fails with one event per haplotype.
 
 ## Phasing (`--phase`, seqair only)
 
@@ -376,8 +418,38 @@ pre-filter drops the variant sites before phasing runs.
   normalises, onto the anchor, so the first record is `0|1`.
 - `solver::refine` is a greedy descent run to convergence, capped at `MAX_FLIPS_PER_SITE` flips
   per site of the block; hitting the cap is a `warn!`.
-- `PS` is written only where the genotype is phased. Indel records and homozygotes are never
-  phased.
+- `PS` is written only where the genotype is phased. Homozygotes are never phased; indel records
+  are phased as the next section says.
+
+### Indel sites
+
+- A column can hold an SNV site and an indel site (`SiteKind`); `ColumnPhase::Phased` holds a
+  `RecordPhases` with one optional phase per kind. At a shared position the SNV record, pushed
+  first, anchors the block. `PhaseCall` carries only the block's `set` and `first`, the allele
+  haplotype 1 carries; the other haplotype's allele is the genotype's other one.
+- `problem::indel_site`: the pair-HMM's called pair must be a het (`0/1` or the compound) and *be*
+  its best pair. The site's two haplotypes are the called pair's own, `HapPair::split(event)`
+  (carrier, other), so a read votes on them with the cluster's other events included: the
+  carrier of a `0/1` may also carry a neighbouring event, and the haplotype of the event alone
+  may explain no read at all.
+  A read votes by the sign of its log10 ratio, cost `round(10 * |ratio|)` capped (inf is the cap,
+  0 no vote); no base quality or TAPS gate, the emission has weighed both.
+- **The gate**: GQ >= 100 (unclamped) and >= 5 *votes* per allele at Phred 10 or more
+  (`Cost::of_margin(Margin::PRESENT)`), counted after `scored_vote` has dropped reads without a
+  fragment or below the phasing MAPQ, so a site is admitted on what it feeds the solver. A
+  wrong indel bridge is an SNV switch error, so judge a gate on SNV-only switches (whatshap
+  `--only-snvs`) and phased non-hets, not on indel counts. Chosen on chr12 NA12878 (~26x) only:
+
+  | gate | phased indels | SNV switches | phased non-hets |
+  | --- | --- | --- | --- |
+  | none (SNV-only phasing) | 0 | 66 | 612 |
+  | **GQ >= 100, >= 5 reads** | 5,431 | 67 | 886 |
+  | GQ >= 100 alone | 6,768 | 71 | 979 |
+  | GQ >= 40 alone | 9,622 | 80 | 1,217 |
+
+  Tried and not worth it: a margin floor, tract-length caps. The remaining bad bridges are
+  tetranucleotide unit expansions and TAPS-converted twin candidates near a CpG, a candidate
+  generation problem.
 
 ### Testing phasing
 
@@ -403,6 +475,9 @@ pre-filter drops the variant sites before phasing runs.
   `RASTAIR_PHASING_SLICE` at it, or the test skips. Run it before merging phasing changes.
 - Check a new phasing test is not tautological by breaking the code it guards and watching it
   fail; every test added on 2026-10-06 was checked that way.
+- A `Scenario` can hold an `insertion` or `deletion` per haplotype (on both for a homozygote,
+  two different ones at one anchor for a `1/2`); reads crossing it carry it in their CIGAR, and
+  `check_phasing` judges indel records too.
 - `tests/data/test.bam` is a poor phasing fixture: its few het calls are C>T on a fully
   methylated control. Use a `Scenario` for anything that asserts phasing output.
 - A run that reports zero phased sites is usually an htslib binary (see "Know which binary
@@ -425,9 +500,9 @@ fields built with the `define_features!` macro in `src/metrics/ml/features.rs`.
   `CommonSectionA` (33) + `CommonSectionB` (18) because the alt-based models interleave
   model-specific scalars (e.g. `alt_score`) _between_ the two halves. Build them via
   `CommonSectionA::from_common(&common)`.
-- Model structs: `CpgFeatures` (55), `DenovoCpgFeatures` (56), `OthersFeatures` (54),
-  `InsertionFeatures` (34), `DeletionFeatures` (38). Each has an `extract()` returning the
-  struct; `FeatureCalculator::calculate_*` wraps `as_row()` into an `Array2`.
+- Model structs: `CpgFeatures` (55), `DenovoCpgFeatures` (56), `OthersFeatures` (54). Each has
+  an `extract()` returning the struct; `FeatureCalculator::calculate_*` wraps `as_row()` into an
+  `Array2`. Indels have no model: the pair-HMM calls them.
 
 **Feature order is frozen by every trained model.** Reordering a field silently corrupts
 predictions. Two tests guard this in `features.rs`: `feature_counts_are_stable` (pins the
@@ -447,13 +522,14 @@ rastair ml train -r hg38.fa.gz taps.bam HG001_benchmark.vcf.gz \
 ```
 
 - Positionals are **BAM first, then the truth VCF**. The CLI defaults are
-  the recipe of the bundled model (`models/rastair_with_indels.rff.mpk.lz4`, `include_bytes!`'d
-  by `src/call/ml.rs`), so a bare command line retrains it.
+  the recipe of the bundled model (`models/rastair_default.rff.mpk.lz4`, `include_bytes!`'d
+  by `src/call/ml.rs`), so a bare command line retrains it. msgpack writes `RastairFlatModel` as
+  an array, so its field order is the file layout.
 - The truth VCF needs a **`.csi`** (a `.tbi` alone is refused), and `-R` must be a plain-text
   BED, not bgzipped. Without `-R`, candidates outside the truth set's confident regions are
   labelled negative.
 - Train on GIAB HG001 and evaluate against Platinum Genomes, holding out the evaluation
-  chromosome. **Give it enough genome**: all five forests must train or no model is written.
+  chromosome. **Give it enough genome**: all three forests must train or no model is written.
 - Collection is bounded: rows are `f32` in one flat buffer, each model keeps per class the
   examples with the smallest uniform keys (a keyed reservoir, capped at the draw plus a
   holdout), and segments are folded with `reduce`, not collected. `KeySource` seeds one stream
@@ -462,9 +538,8 @@ rastair ml train -r hg38.fa.gz taps.bam HG001_benchmark.vcf.gz \
 - The draw takes at most four fifths of a class, so small models keep a holdout; the holdout
   keeps the **population's** class ratio, not the reservoir's near-balanced one, or Platt
   scaling would shift what an ML threshold means.
-- SNV and indel models are drawn separately (`--n-*` vs `--indel-n-*`): SNV candidates are
-  almost all negative, indel candidates arrive filtered and mostly positive. The log line
-  `Collected training examples` reports pool, kept, requested and drawn per model.
+- Every model draws `--n-positive`/`--n-negative`. The log line `Collected training examples`
+  reports pool, kept, requested and drawn per model.
 - `--export-features` writes a 1-based `pos`, like a VCF, and no allele column.
 
 ## VCF header version and cardinality

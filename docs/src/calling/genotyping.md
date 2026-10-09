@@ -44,7 +44,7 @@ For all other variant types, both strands contribute to genotyping.
 
 ## Phasing
 
-`--phase` can be used to group heterozygous @SNV:pl that share a read pair
+`--phase` can be used to group heterozygous variants that share a read pair
 into phase blocks and written with a `|` separator and a `PS` field:
 
 ```
@@ -64,6 +64,10 @@ so it says nothing about which copy the read came from
 (same for `G>A`).
 Such reads are not counted.
 Outside a CpG, cytosines are almost never methylated, so these reads count like any other.
+
+Heterozygous indels called by the pair-HMM (`--experimental-indels`, see [indels](indels.md)) take part too.
+At an indel a read has no single base to vote with, so it votes for the allele whose local haplotype explains it better, weighted by how much better.
+An indel only becomes part of a block when the pair-HMM is confident of its heterozygous genotype: a doubtful one would mostly join two blocks the wrong way round.
 
 ```admonish warning
 Phasing only works with the `experimental-seqair` backend.
