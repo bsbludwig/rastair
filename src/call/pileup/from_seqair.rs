@@ -1,18 +1,18 @@
 #![cfg(feature = "experimental-seqair")]
 
-use super::{
-    indels::{IndelAllele, IndelObservation},
-    ref_features::{indel_ref_window_at, indel_tract_runs_at},
-};
+use super::indels::{IndelAllele, IndelAlleleCounts, IndelCounts, Scored};
 use crate::{
     call::{
         PreFilterInputs,
+        pair_hmm::{
+            self, Cluster, Event, HaplotypeRead, HaplotypeScores, HaplotypeScratch, MAX_EVENTS,
+        },
         phasing::{self, ColumnPhase, FragmentId, PhaseObservation},
         process::PileupMappingParams,
     },
     metrics::{
         Alt, AltFilters, Filters, FormsDenovo, PairedCounts, PerBaseAccumulators, PileupMetrics,
-        ReadKey, RecordTags, aggregate_indels, alt_forms_denovo, order_alts,
+        ReadKey, RecordTags, alt_forms_denovo, order_alts,
     },
     sequence::{RastairReadExtras, Segment},
     utils::SequenceContext,
@@ -20,12 +20,13 @@ use crate::{
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use seqair::bam::{
-    RecordIdx,
+    RecordIdx, RecordRef,
     pileup::{AlignmentView, Indel, PileupColumn, PileupOp},
+    record_store::RecordStore,
 };
 use seqair_types::{Base, QPos, SmallVec, Strand, SumOfSquares};
-use std::rc::Rc;
-use tracing::{debug, instrument, trace};
+use std::{cmp::Reverse, ops::Range, rc::Rc, sync::Arc};
+use tracing::{debug, instrument, trace, warn};
 
 /// One column's reads, accumulated but not yet reduced to a [`PileupMetrics`].
 ///
@@ -36,7 +37,6 @@ use tracing::{debug, instrument, trace};
 /// filter reads is already known here — see [`ColumnDraft::pre_filter_inputs`].
 pub(crate) struct ColumnDraft {
     segment: Rc<Segment>,
-    pos: u64,
     pos_u32: u32,
     idx: usize,
     reference_base: Base,
@@ -48,9 +48,7 @@ pub(crate) struct ColumnDraft {
     mapq0: u32,
     total_depth: usize,
     alt_bases: SmallVec<Base, 4>,
-    indel_observations: SmallVec<IndelObservation, 3>,
-    depth_offset: u32,
-    soft_clip_count: u32,
+    indel_observations: SmallVec<IndelAllele, 3>,
     before_counts: PairedCounts,
     after_counts: PairedCounts,
     /// Gathered here because the buffer the observations come from is reset at
@@ -150,8 +148,6 @@ impl ColumnDraft {
         let mut total_depth: usize = 0;
         let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
         let mut indel_observations = SmallVec::new();
-        let mut depth_offset: u32 = 0;
-        let mut soft_clip_count: u32 = 0;
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
 
@@ -190,7 +186,7 @@ impl ColumnDraft {
 
             let qual = seqair_types::BaseQuality::from_byte(baseq);
             if params.phase && phasing::accepts_read(view.mapq, qual) {
-                match view.qname_hash().and_then(FragmentId::new) {
+                match view.qname_hash().map(FragmentId::of) {
                     Some(fragment) => scratch.phase_observations.push(PhaseObservation {
                         fragment,
                         base,
@@ -238,11 +234,6 @@ impl ColumnDraft {
             }
 
             if params.call_indels {
-                let extras = view.extra();
-                // Every count below describes the *fragment*, not the read that
-                // happened to survive dedup, so the dropped mate's shape has to
-                // be OR'd in — `from_hts` accumulates these over both mates
-                // before it deduplicates.
                 let mate = dedup_overlaps
                     .then(|| {
                         counted_mate(
@@ -255,57 +246,13 @@ impl ColumnDraft {
                         )
                     })
                     .flatten();
-                let mate_extras = mate.as_ref().map(|mate| mate.extra());
-                let has_soft_clip =
-                    extras.has_soft_clip || mate_extras.is_some_and(|extras| extras.has_soft_clip);
-
-                if has_soft_clip {
-                    soft_clip_count += 1;
-                }
-
                 // A deduplicated column keeps one read per fragment, and that
                 // read is not necessarily the one carrying the fragment's
                 // indel: when the mates disagree the rule can drop exactly the
                 // mate that spans it, and the fragment's only indel observation
-                // would go with it. `from_hts` never had this problem because
-                // it votes per fragment *before* deduplicating — every mate
-                // gets a turn, and the first surviving observation is the
-                // fragment's.
-                //
-                // So the fallback is on the *observation*, not on the indel:
-                // this read's own indel may exist and still be rejected by
-                // `build_indel_observation`'s end-of-read and mismatch filters,
-                // and the mate then still speaks for the fragment. Testing the
-                // indel instead (seqair's `PileupColumn::pair_indel`, whose
-                // rule is "own indel wins, mate never consulted") silently
-                // drops those fragments — it cannot know about filters the
-                // caller owns.
-                let evidence = build_indel_observation(&view, pos, segment.as_ref(), params)
-                    .or_else(|| {
-                        let mate = mate.as_ref()?;
-                        build_indel_observation(mate, pos, segment.as_ref(), params)
-                    });
-                // The noisy-reference count and the alternate side are two
-                // sides of one split, and `IndelCounts::clean_depth` subtracts
-                // a fragment counted on both twice. So a fragment is
-                // noisy-reference only when it contributed no observation at
-                // all — the pair's verdict, not the kept read's — and some mate
-                // supports the reference from an alignment of the kind that
-                // slips. That mate's shape is judged on its own: a mate whose
-                // indel was rejected is not a reference alignment, and the
-                // soft clip or repeat it carries says nothing about the mate
-                // that is. `from_hts` reaches the same rule through
-                // per-fragment votes, where `saw_reference` only ever sees
-                // indel-free mates.
-                let slipped = |view: &AlignmentView<'_, '_, RastairReadExtras>| {
-                    let extras = view.extra();
-                    matches!(view.alignment().indel_after(), Indel::None)
-                        && (extras.has_repeat || extras.has_soft_clip)
-                };
-                if evidence.is_none() && (slipped(&view) || mate.as_ref().is_some_and(slipped)) {
-                    depth_offset += 1;
-                }
-
+                // would go with it. The mate then speaks for the fragment.
+                let evidence = build_indel_observation(&view, pos, segment.as_ref())
+                    .or_else(|| build_indel_observation(mate.as_ref()?, pos, segment.as_ref()));
                 if let Some(obs) = evidence {
                     indel_observations.push(obs);
                 }
@@ -318,7 +265,6 @@ impl ColumnDraft {
 
         Ok(ColumnDraft {
             segment,
-            pos,
             pos_u32,
             idx,
             reference_base,
@@ -330,8 +276,6 @@ impl ColumnDraft {
             total_depth,
             alt_bases,
             indel_observations,
-            depth_offset,
-            soft_clip_count,
             before_counts,
             after_counts,
             phase,
@@ -394,9 +338,8 @@ impl ColumnDraft {
     pub(crate) fn finish(self) -> Result<PileupMetrics> {
         let ColumnDraft {
             segment,
-            pos,
             pos_u32,
-            idx,
+            idx: _,
             reference_base,
             context,
             mut accumulators,
@@ -406,8 +349,6 @@ impl ColumnDraft {
             total_depth,
             alt_bases,
             indel_observations,
-            depth_offset,
-            soft_clip_count,
             before_counts,
             after_counts,
             phase,
@@ -445,19 +386,8 @@ impl ColumnDraft {
         let indel_data = if indel_observations.is_empty() {
             None
         } else {
-            let counts = aggregate_indels(&indel_observations, total_depth, depth_offset, pos_u32);
-            let (indel_ref_window, indel_ref_anchor) = indel_ref_window_at(idx, &segment);
-            let runs = indel_tract_runs_at(pos, &segment);
-            Some(Box::new(crate::call::pileup::indels::IndelData {
-                observations: indel_observations,
-                ref_window: indel_ref_window,
-                ref_anchor: indel_ref_anchor,
-                homopolymer_run: runs.homopolymer,
-                dinucleotide_run: runs.dinucleotide,
-                soft_clip_count,
-                counts,
-                calls: Vec::new(),
-            }))
+            let counts = IndelCounts::aggregate(&indel_observations);
+            Some(Box::new(crate::call::pileup::indels::IndelData { counts, scored: None }))
         };
 
         Ok(PileupMetrics {
@@ -490,8 +420,255 @@ impl PileupMetrics {
         params: &PileupMappingParams,
         scratch: &mut ColumnScratch,
     ) -> Result<PileupMetrics> {
-        ColumnDraft::accumulate(column, segment, params, scratch)?.finish()
+        let draft = ColumnDraft::accumulate(column, Rc::clone(&segment), params, scratch)?;
+        let mut metrics = draft.finish()?;
+        let pos = column.pos();
+        let spanning = column.records_overlapping(pos, pos);
+        let context = ClusterContext::new(column.store(), &segment, params, &[]);
+        score_indel_cluster(std::slice::from_mut(&mut metrics), &[0], spanning, &context, scratch);
+        Ok(metrics)
     }
+}
+
+/// Score the indel alleles of a cluster of neighbouring columns (`indices`
+/// into `pileups`) together, against the reads `spanning` the cluster, and
+/// give each column its records. One set of haplotypes for the cluster: a
+/// column's allele that is only the aligner's other spelling of a
+/// neighbour's event then loses to that event's haplotype instead of
+/// collecting its reads.
+pub(crate) fn score_indel_cluster(
+    pileups: &mut [PileupMetrics],
+    indices: &[usize],
+    spanning: impl Iterator<Item = RecordIdx>,
+    context: &ClusterContext<'_>,
+    scratch: &mut ColumnScratch,
+) {
+    let columns = indices.iter().filter_map(|&i| pileups.get(i));
+    let events = cluster_candidates(columns, context.params.min_indel_ao);
+    let scores = haplotype_scores(context, spanning, events, &mut scratch.haplotypes).map(Arc::new);
+    for &index in indices {
+        let Some(column) = pileups.get_mut(index) else { continue };
+        let pos = column.pos;
+        if let Some(indels) = column.indel_data.as_deref_mut() {
+            indels.scored = scores
+                .as_ref()
+                .filter(|scores| scores.events_at(pos).next().is_some())
+                .map(|scores| Scored::new(Arc::clone(scores), pos));
+        }
+    }
+}
+
+/// What every indel cluster of one sub-segment is scored against.
+pub(crate) struct ClusterContext<'a> {
+    store: &'a RecordStore<RastairReadExtras>,
+    segment: &'a Segment,
+    params: &'a PileupMappingParams,
+    mask: WindowMask,
+}
+
+impl<'a> ClusterContext<'a> {
+    /// `columns` are the sub-segment's drafted columns, which the mask is built from.
+    pub(crate) fn new(
+        store: &'a RecordStore<RastairReadExtras>,
+        segment: &'a Segment,
+        params: &'a PileupMappingParams,
+        columns: &[PileupMetrics],
+    ) -> Self {
+        Self { store, segment, params, mask: WindowMask::new(columns) }
+    }
+}
+
+/// Positions in a sub-segment where the drafted columns show a base other
+/// than the reference on enough reads to be more than sequencing error. A
+/// haplotype window scores such a position as unknown, matching any base: a
+/// variant missing from every haplotype would otherwise be charged to the
+/// reads of the haplotype that carries it, and the indel allele a stray read
+/// suggests next to it gets the credit.
+#[derive(Debug, Default)]
+pub(crate) struct WindowMask(Vec<u32>);
+
+impl WindowMask {
+    /// Reads of an unexplained base a column needs to be masked. Chosen on
+    /// chr12 at 26x and 73x over 2, 3, 5 and 8: it is a count rather than a
+    /// fraction because the FP it guards against is a handful of reads from
+    /// a neighbouring variant, whatever the depth.
+    const MIN_READS: u32 = 5;
+
+    /// The masked positions of `columns`, ascending.
+    fn new(columns: &[PileupMetrics]) -> Self {
+        // A `T` over a `C` on the top strand, or an `A` over a `G` on the
+        // bottom, is what TAPS makes of a methylated base, not a variant.
+        let unexplained = |reference: Base, alt: &crate::metrics::Alt| match (reference, alt.base) {
+            (Base::C, Base::T) => alt.metrics.strand_count.ob,
+            (Base::G, Base::A) => alt.metrics.strand_count.ot,
+            _ => alt.metrics.depth,
+        };
+        Self(
+            columns
+                .iter()
+                .filter(|p| {
+                    p.alts.iter().any(|alt| unexplained(p.reference_base, alt) >= Self::MIN_READS)
+                })
+                .map(|p| p.pos)
+                .collect(),
+        )
+    }
+
+    fn contains(&self, pos: u32) -> bool {
+        self.0.binary_search(&pos).is_ok()
+    }
+}
+
+/// The cluster's events: the alleles the most reads carry, of those with
+/// enough to be called, as many as [`Cluster::admits`], in record order. Ties
+/// go by the allele itself, so neither the choice nor the order depends on
+/// which read the engine yielded first.
+fn cluster_candidates<'a>(
+    columns: impl Iterator<Item = &'a PileupMetrics>,
+    min_ao: u32,
+) -> SmallVec<Event, MAX_EVENTS> {
+    let mut alleles: SmallVec<(u32, &IndelAlleleCounts), 8> = columns
+        .filter_map(|column| Some((column.pos, &column.indel_data.as_deref()?.counts)))
+        .flat_map(|(pos, counts)| counts.alleles.iter().map(move |a| (pos, a)))
+        .filter(|(_, a)| a.total >= min_ao)
+        .collect();
+    alleles.sort_by_key(|(pos, a)| (Reverse(a.total), *pos, allele_order(&a.allele)));
+    let mut events: SmallVec<Event, MAX_EVENTS> = SmallVec::new();
+    for (anchor, counted) in alleles {
+        let event = Event { anchor, allele: counted.allele.clone() };
+        if Cluster::admits(&events, &event) {
+            events.push(event);
+        }
+    }
+    events
+}
+
+fn allele_order(allele: &IndelAllele) -> (u8, SmallVec<u8, 4>) {
+    match allele {
+        IndelAllele::Insertion(bases) => (0, bases.iter().map(|b| *b as u8).collect()),
+        IndelAllele::Deletion(bases) => (1, bases.iter().map(|b| *b as u8).collect()),
+    }
+}
+
+/// `events`, each at its anchor, scored against the reads spanning the cluster.
+/// The window is the reference under those reads, with the masked positions
+/// unknown.
+fn haplotype_scores(
+    context: &ClusterContext<'_>,
+    spanning: impl Iterator<Item = RecordIdx>,
+    events: SmallVec<Event, MAX_EVENTS>,
+    scratch: &mut HaplotypeScratch,
+) -> Option<HaplotypeScores> {
+    if events.is_empty() {
+        return None;
+    }
+    let ClusterContext { store, segment, params, mask } = context;
+    let reads = spanning_reads(store, spanning, segment, params);
+    let window_start = reads.iter().map(|r| r.start).min()?;
+    let window_end = reads.iter().map(|r| r.end).max()?;
+    let segment_start = segment.range.region.start;
+    let offset = |genomic: u64| usize::try_from(genomic.checked_sub(segment_start)?).ok();
+    let reference = segment.sequence.get(offset(window_start)?..=offset(window_end)?)?;
+    let genomic =
+        |i: usize| u32::try_from(window_start.saturating_add(i as u64)).unwrap_or(u32::MAX);
+    let window: Vec<Base> = reference
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| if mask.contains(genomic(i)) { Base::Unknown } else { Base::from(b) })
+        .collect();
+    let reads: Vec<_> = reads.iter().filter_map(|read| read.haplotype_read(window_start)).collect();
+    pair_hmm::score(&window, window_start, events, &reads, scratch)
+}
+
+/// A read spanning the column, placed on the genome: where its first and last
+/// scored bases sit, and which of its stored bases are scored.
+struct PlacedRead<'store> {
+    rec: RecordRef<'store, RastairReadExtras>,
+    start: u64,
+    end: u64,
+    bases: Range<usize>,
+}
+
+impl PlacedRead<'_> {
+    /// Soft clips are scored when the segment's reference reaches them, since
+    /// a read clipped at a tract is exactly the slipped alignment the pair-HMM
+    /// can recover; otherwise the aligned bases alone, if those fit.
+    fn place<'store>(
+        rec: RecordRef<'store, RastairReadExtras>,
+        segment: &Segment,
+    ) -> Option<PlacedRead<'store>> {
+        let (lead, trail) = (u64::from(rec.leading_soft_clip), u64::from(rec.trailing_soft_clip));
+        let segment_start = segment.range.region.start;
+        let segment_end = segment_start.saturating_add(u64::try_from(segment.sequence.len()).ok()?);
+        let inside = |start: u64, end: u64| start >= segment_start && end < segment_end;
+        let (start, end) = (rec.pos.as_u64(), rec.end_pos.as_u64());
+        let seq_len = u64::from(rec.seq_len);
+        let clipped = start.checked_sub(lead).zip(end.checked_add(trail));
+        let (start, end, bases) =
+            if let Some((start, end)) = clipped.filter(|&(start, end)| inside(start, end)) {
+                (start, end, 0..seq_len)
+            } else if inside(start, end) {
+                (start, end, lead..seq_len.saturating_sub(trail))
+            } else {
+                trace!(pos = start, "Haplotype read skipped: it leaves the segment");
+                return None;
+            };
+        let bases = usize::try_from(bases.start).ok()?..usize::try_from(bases.end).ok()?;
+        Some(PlacedRead { rec, start, end, bases })
+    }
+
+    fn haplotype_read(&self, window_start: u64) -> Option<HaplotypeRead> {
+        HaplotypeRead::new(
+            self.rec.seq().get(self.bases.clone())?,
+            self.rec.qual().get(self.bases.clone())?,
+            i32::try_from(self.start.checked_sub(window_start)?).ok()?,
+            self.rec.extra().strand,
+            self.rec.qname_hash().map(FragmentId::of),
+            self.rec.mapq,
+        )
+        .inspect_err(|error| warn!(%error, pos = self.start, "Read not scored by the pair-HMM"))
+        .ok()
+    }
+}
+
+/// The reads covering the column with a bisulfite strand and the mapping
+/// quality the column asks for, one per fragment: the mate reaching further
+/// past the column, which says more about what follows an indel.
+fn spanning_reads<'store>(
+    store: &'store RecordStore<RastairReadExtras>,
+    spanning: impl Iterator<Item = RecordIdx>,
+    segment: &Segment,
+    params: &PileupMappingParams,
+) -> Vec<PlacedRead<'store>> {
+    let mut reads: Vec<PlacedRead<'store>> = spanning
+        .filter_map(|idx| store.record(idx))
+        .filter(|rec| rec.mapq >= params.quality.min_mapq && rec.extra().strand != Strand::Unknown)
+        .filter_map(|rec| PlacedRead::place(rec, segment))
+        .collect();
+    reads.sort_by_key(|read| (read.rec.fragment_idx(), Reverse(read.end)));
+    reads.dedup_by_key(|read| read.rec.fragment_idx());
+    thin_evenly(&mut reads, params.max_coverage.kept());
+    reads
+}
+
+/// Keep `cap` of `items`, spread evenly over them.
+///
+/// Fragments come in position order, so this keeps reads starting early and
+/// late in the proportion all of them do. Truncating would keep only the
+/// leftmost, the ones reaching least past the column and so least able to
+/// show an indel after it.
+fn thin_evenly<T>(items: &mut Vec<T>, cap: usize) {
+    let n = items.len();
+    if n <= cap {
+        return;
+    }
+    let mut i = 0usize;
+    items.retain(|_| {
+        // Item `i` is kept where the running share `i * cap / n` steps up.
+        let keep = (i + 1).saturating_mul(cap) / n > i.saturating_mul(cap) / n;
+        i += 1;
+        keep
+    });
 }
 
 /// Decide the fate of a read that shares a mate overlap with another read in
@@ -594,6 +771,7 @@ pub(crate) struct ColumnScratch {
     phase_observations: Vec<PhaseObservation>,
     /// Whether a phase observation was dropped because its read has no qname.
     pub(crate) saw_nameless_read: bool,
+    haplotypes: HaplotypeScratch,
 }
 
 impl ColumnScratch {
@@ -680,11 +858,9 @@ impl MateObservations {
 /// The linked mate of `view` in this column, when it would count in its own
 /// right.
 ///
-/// Deduplication keeps one read per fragment, but the soft-clip and
-/// noisy-reference counts are properties of the *fragment*: `from_hts` votes
-/// per fragment before it deduplicates, so whatever either mate shows counts
-/// once. Reading them off the surviving read alone loses whatever only the
-/// dropped mate showed.
+/// Deduplication keeps one read per fragment, but the indel observation is a
+/// property of the *fragment*. Reading it off the surviving read alone loses
+/// whatever only the dropped mate showed.
 ///
 /// The mate must clear [`observed`], the same bar the kept read cleared, so it
 /// cannot contribute evidence a read in its own right would have been denied.
@@ -747,89 +923,31 @@ fn build_indel_observation(
     view: &AlignmentView<'_, '_, RastairReadExtras>,
     genomic_pos: u64,
     segment: &Segment,
-    params: &PileupMappingParams,
-) -> Option<IndelObservation> {
-    let aln = view.alignment();
-    let extras = view.extra();
-
-    let indel = aln.indel_after();
-    if matches!(indel, Indel::None) {
-        return None;
-    }
-
-    let qpos = aln.qpos()?;
-    let qpos_usize = qpos.as_usize();
-    let read_len = aln.seq_len as usize;
-    let indel_cutoff = params.indel_end_of_read_cutoff;
-
-    if qpos_usize < indel_cutoff || qpos_usize >= read_len.saturating_sub(indel_cutoff) {
-        trace!(qpos = qpos.get(), read_len, "Indel skipped: too close to read end");
-        return None;
-    }
-    if extras.taps_aware_mismatches > params.indel_max_mismatches {
-        trace!(
-            mismatches = extras.taps_aware_mismatches,
-            max = params.indel_max_mismatches,
-            "Indel skipped: too many non-TAPS mismatches"
-        );
-        return None;
-    }
-
-    let segment_start = segment.range.region.start as usize;
-    let (allele, insertion_base_quals, post_del_base_qual) = match indel {
+) -> Option<IndelAllele> {
+    match view.alignment().indel_after() {
+        Indel::None => None,
         Indel::Insertion(_) => {
             let bases: SmallVec<Base, 4> = view.inserted_bases().iter().copied().collect();
-            if bases.is_empty() {
-                return None;
-            }
-            let quals: SmallVec<u8, 4> =
-                view.inserted_quals().iter().filter_map(|q| q.get()).collect();
-            (IndelAllele::Insertion(bases), quals, 0)
+            (!bases.is_empty()).then_some(IndelAllele::Insertion(bases))
         }
         Indel::Deletion(del_len) => {
-            let ref_start = (genomic_pos as usize + 1).saturating_sub(segment_start);
-            let ref_end = ref_start + del_len as usize;
+            let ref_start = genomic_pos.checked_add(1)?.saturating_sub(segment.range.region.start);
+            let ref_start = usize::try_from(ref_start).ok()?;
+            let ref_end = ref_start.checked_add(usize::try_from(del_len).ok()?)?;
             let bases: SmallVec<Base, 4> = segment
                 .sequence
                 .get(ref_start..ref_end)
                 .map(|s| s.iter().map(|&b| Base::from(b)).collect())
                 .unwrap_or_default();
-            if bases.is_empty() {
-                return None;
-            }
-            let post_del = qpos
-                .checked_add(1)
-                .and_then(|i| view.qualities().get(i.as_usize()))
-                .and_then(|q| q.get())
-                .unwrap_or(0);
-            (IndelAllele::Deletion(bases), SmallVec::new(), post_del)
+            (!bases.is_empty()).then_some(IndelAllele::Deletion(bases))
         }
-        Indel::None => unreachable!("matched a non-None indel above"),
-    };
-
-    let base_qual = view.qualities().get(qpos.as_usize()).and_then(|q| q.get()).unwrap_or(0);
-
-    Some(IndelObservation {
-        allele,
-        strand: extras.strand,
-        reverse: aln.flags.is_reverse(),
-        pos_in_read: qpos.get(),
-        read_length: aln.seq_len,
-        mapq: aln.mapq,
-        base_qual,
-        matching_bases: aln.matching_bases,
-        num_indels_in_read: aln.indel_bases,
-        insertion_base_quals,
-        post_del_base_qual,
-        has_repeat: extras.has_repeat,
-        noisy: extras.has_repeat || extras.has_soft_clip,
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::pileup::indels::IndelCounts;
+    use crate::call::pileup::indels::IndelData;
     use crate::call::process::PileupMappingParams;
     use crate::call::variant_calling::{ReadMaskParams, ReadMaskSetting};
     use crate::sequence::{ChunkRegion, Region, Segment};
@@ -840,7 +958,7 @@ mod tests {
     use seqair_types::{BamFlags, Pos0, Strand};
 
     /// The parts of `RastairRecordFilter::compute` these tests need: strand
-    /// from the flags, soft-clip detection, and the read-end mask window.
+    /// from the flags and the read-end mask window.
     #[derive(Default, Clone)]
     struct TestExtras(ReadMaskParams);
 
@@ -850,18 +968,11 @@ mod tests {
         fn compute(
             &mut self,
             rec: &SlimRecord,
-            store: &RecordStore<RastairReadExtras>,
+            _store: &RecordStore<RastairReadExtras>,
         ) -> RastairReadExtras {
-            let has_soft_clip = rec
-                .cigar(store)
-                .map(|ops| ops.iter().any(|op| op.op_type() == CigarOpType::SoftClip))
-                .unwrap_or(false);
             let strand = Strand::from(rec.flags);
             RastairReadExtras {
                 strand,
-                has_soft_clip,
-                has_repeat: false,
-                taps_aware_mismatches: 0,
                 mask: self
                     .0
                     .keep_range(strand, rec.flags.is_reverse(), rec.seq_len)
@@ -1112,9 +1223,7 @@ mod tests {
 
     /// Overlap dedup keeps one read per fragment, and the rule can keep the
     /// mate that does *not* span the indel. The fragment's indel evidence must
-    /// survive that: `from_hts` votes per fragment before deduplicating, so it
-    /// never lost one, and the seqair path has to reach the same answer through
-    /// the column's `pair_indel`.
+    /// survive that, through the mate.
     ///
     /// Fixture: mates agree on the anchor base, so the rule drops the right
     /// mate — which is the one carrying the deletion.
@@ -1123,8 +1232,7 @@ mod tests {
         // Segment offsets:  0123456789
         let seq = b"AAAACGTTGG";
         let seg = segment(seq);
-        let params =
-            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 0, ..default() };
+        let params = PileupMappingParams { call_indels: true, ..default() };
 
         // Left mate, 6M at 0, no indel. Right mate, 2M2D4M at 2: it deletes the
         // segment's C,G at offsets 4-5, anchored at position 3.
@@ -1168,7 +1276,7 @@ mod tests {
                     PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap();
                 out = pm
                     .indel_data
-                    .map(|d| d.observations.iter().map(|o| o.allele.clone()).collect())
+                    .map(|d| d.counts.alleles.iter().map(|a| (a.allele.clone(), a.total)).collect())
                     .unwrap_or_default();
             }
             out
@@ -1177,211 +1285,19 @@ mod tests {
         let deletion = IndelAllele::Deletion([Base::C, Base::G].into_iter().collect());
         assert_eq!(
             alleles_at_anchor(&params),
-            vec![deletion.clone()],
+            vec![(deletion.clone(), 1)],
             "the deduplicated column must still report the dropped mate's deletion"
         );
 
         // With dedup off both mates are their own fragment, and only one of
         // them spans the deletion — so the count is unchanged, not doubled.
-        let mut kept =
-            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 0, ..default() };
+        let mut kept = PileupMappingParams { call_indels: true, ..default() };
         kept.variant_calling.keep_overlapping_reads = true;
         assert_eq!(
             alleles_at_anchor(&kept),
-            vec![deletion],
+            vec![(deletion, 1)],
             "keeping both mates must not turn one fragment's indel into two"
         );
-    }
-
-    /// The mate speaks for the fragment when the kept read's *observation* is
-    /// missing — not only when its indel is.
-    ///
-    /// `build_indel_observation` rejects an indel too close to a read end or on
-    /// a read with too many non-TAPS mismatches, and those are filters the
-    /// caller owns. A rule keyed on the indel alone (seqair's
-    /// `PileupColumn::pair_indel`: "own indel wins, the mate is never
-    /// consulted") therefore short-circuits on a read whose own indel is about
-    /// to be thrown away, and the fragment contributes nothing. `from_hts` gets
-    /// this right by giving every mate a turn and taking the first observation
-    /// that survives.
-    ///
-    /// Fixture: the mates disagree on the anchor base and the *right* mate is
-    /// first-in-template, so the rule drops the left one — and the surviving
-    /// read reaches the deletion 1 bp into itself, inside the cutoff, while the
-    /// dropped mate reaches it 3 bp in.
-    #[test]
-    fn the_mate_speaks_when_the_kept_reads_observation_is_filtered() {
-        // Segment offsets:  0123456789
-        let seq = b"AAAACGTTGG";
-        let seg = segment(seq);
-        let params =
-            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 2, ..default() };
-
-        let reads = [
-            // Dropped by the rule; reaches the anchor at qpos 3, outside the cutoff.
-            TestRead {
-                qname: b"pair".to_vec(),
-                pos: 0,
-                flags: 147,
-                bases: vec![Base::A, Base::A, Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
-                quals: vec![40; 8],
-                mapq: 60,
-                cigar: vec![
-                    CigarOp::new(CigarOpType::Match, 4),
-                    CigarOp::new(CigarOpType::Deletion, 2),
-                    CigarOp::new(CigarOpType::Match, 4),
-                ],
-                mate_pos: 2,
-            },
-            // Kept; reaches the anchor at qpos 1, inside the cutoff.
-            TestRead {
-                qname: b"pair".to_vec(),
-                pos: 2,
-                flags: 99,
-                bases: vec![Base::A, Base::G, Base::T, Base::T, Base::G, Base::G],
-                quals: vec![40; 6],
-                mapq: 60,
-                cigar: vec![
-                    CigarOp::new(CigarOpType::Match, 2),
-                    CigarOp::new(CigarOpType::Deletion, 2),
-                    CigarOp::new(CigarOpType::Match, 4),
-                ],
-                mate_pos: 0,
-            },
-        ];
-
-        let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
-        let mut scratch = ColumnScratch::default();
-        let mut alleles: Vec<IndelAllele> = Vec::new();
-        while let Some(col) = engine.pileups() {
-            if col.pos().as_u64() != 3 {
-                continue;
-            }
-            let pm = PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut scratch).unwrap();
-            alleles = pm
-                .indel_data
-                .map(|d| d.observations.iter().map(|o| o.allele.clone()).collect())
-                .unwrap_or_default();
-        }
-
-        assert_eq!(
-            alleles,
-            vec![IndelAllele::Deletion([Base::C, Base::G].into_iter().collect())],
-            "the dropped mate's surviving observation must stand in for the kept read's"
-        );
-    }
-
-    /// Reads for the noisy-reference tests: `solo` casts one accepted deletion
-    /// vote so the column has indel data at all; `pair` is a fragment that casts
-    /// none, whose kept mate is at `pos` with the deletion (or without it) and
-    /// whose dropped mate is an indel-free alignment soft-clipped at its start.
-    fn noisy_reference_fixture(kept_carries_indel: bool) -> (Vec<TestRead>, PileupMappingParams) {
-        // Segment offsets:  0123456789
-        //                   AAAACGTTGG   anchor at 3, deletion of CG at 4-5
-        let params =
-            PileupMappingParams { call_indels: true, indel_end_of_read_cutoff: 2, ..default() };
-        let deletion = vec![
-            CigarOp::new(CigarOpType::Match, 2),
-            CigarOp::new(CigarOpType::Deletion, 2),
-            CigarOp::new(CigarOpType::Match, 4),
-        ];
-        let kept = TestRead {
-            qname: b"pair".to_vec(),
-            pos: 2,
-            flags: 99,
-            bases: vec![Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
-            quals: vec![40; 6],
-            mapq: 60,
-            cigar: if kept_carries_indel {
-                deletion
-            } else {
-                vec![CigarOp::new(CigarOpType::Match, 6)]
-            },
-            mate_pos: 3,
-        };
-        let dropped = TestRead {
-            qname: b"pair".to_vec(),
-            pos: 3,
-            flags: 147,
-            bases: vec![Base::A, Base::A, Base::C, Base::G, Base::T, Base::T],
-            quals: vec![40; 6],
-            mapq: 60,
-            cigar: if kept_carries_indel {
-                vec![CigarOp::new(CigarOpType::SoftClip, 1), CigarOp::new(CigarOpType::Match, 5)]
-            } else {
-                vec![
-                    CigarOp::new(CigarOpType::SoftClip, 1),
-                    CigarOp::new(CigarOpType::Match, 1),
-                    CigarOp::new(CigarOpType::Deletion, 2),
-                    CigarOp::new(CigarOpType::Match, 4),
-                ]
-            },
-            mate_pos: 2,
-        };
-        let solo = TestRead {
-            qname: b"solo".to_vec(),
-            pos: 0,
-            flags: 0,
-            bases: vec![Base::A, Base::A, Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
-            quals: vec![40; 8],
-            mapq: 60,
-            cigar: vec![
-                CigarOp::new(CigarOpType::Match, 4),
-                CigarOp::new(CigarOpType::Deletion, 2),
-                CigarOp::new(CigarOpType::Match, 4),
-            ],
-            mate_pos: -1,
-        };
-        (vec![solo, kept, dropped], params)
-    }
-
-    fn indel_counts_at_anchor(reads: &[TestRead], params: &PileupMappingParams) -> IndelCounts {
-        let seg = segment(b"AAAACGTTGG");
-        let store = store_of(reads, &params.read_masking);
-        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
-        let mut scratch = ColumnScratch::default();
-        let mut counts = None;
-        while let Some(col) = engine.pileups() {
-            if col.pos().as_u64() != 3 {
-                continue;
-            }
-            let pm = PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap();
-            counts = pm.indel_data.map(|d| d.counts.clone());
-        }
-        counts.expect("the solo read's deletion must reach the column")
-    }
-
-    /// The noisy-reference verdict is the fragment's, judged on the mate that
-    /// is actually a reference alignment. Here the kept mate carries the
-    /// deletion 1 bp into itself — rejected by the end-of-read cutoff, so the
-    /// fragment casts no vote — and the dropped mate is an indel-free alignment
-    /// that was soft-clipped. `from_hts` counts that fragment as noisy
-    /// reference; judging the kept read's own indel status instead counted it
-    /// as clean reference, one read more in every such indel's depth.
-    #[test]
-    fn a_soft_clipped_mate_makes_a_voteless_fragment_noisy_reference() {
-        let (reads, params) = noisy_reference_fixture(true);
-        let counts = indel_counts_at_anchor(&reads, &params);
-        assert_eq!(counts.total_indel_reads(), 1, "only `solo` votes");
-        assert_eq!(counts.ref_count, 1, "the pair is one reference fragment");
-        assert_eq!(counts.noisy_ref_count, 1, "its soft-clipped mate makes it noisy");
-        assert_eq!(counts.clean_depth(), 1);
-    }
-
-    /// The mirror image: the kept mate is a clean reference alignment and the
-    /// dropped mate carries the rejected deletion behind its soft clip. A mate
-    /// with an indel is not a reference alignment, so its clip says nothing
-    /// about the fragment's reference support — OR-ing the shapes over both
-    /// mates counted this fragment as noisy, one read fewer than `from_hts`.
-    #[test]
-    fn a_soft_clipped_indel_mate_does_not_make_a_clean_fragment_noisy() {
-        let (reads, params) = noisy_reference_fixture(false);
-        let counts = indel_counts_at_anchor(&reads, &params);
-        assert_eq!(counts.total_indel_reads(), 1, "only `solo` votes");
-        assert_eq!(counts.ref_count, 1, "the pair is one reference fragment");
-        assert_eq!(counts.noisy_ref_count, 0, "the clean kept mate speaks for it");
-        assert_eq!(counts.clean_depth(), 2);
     }
 
     /// A deletion's REF bases must come from the reference *at the deletion*,
@@ -1403,9 +1319,7 @@ mod tests {
         // opening A,A, which is what the read-offset bug produced.
         let seq = b"AAAACGTTGG";
         let seg = segment_at(START, seq);
-        let mut params = PileupMappingParams::default();
-        params.call_indels = true;
-        params.indel_end_of_read_cutoff = 0;
+        let params = PileupMappingParams { call_indels: true, ..default() };
 
         let mut extras = TestExtras(params.read_masking.clone());
         let mut store = RecordStore::<RastairReadExtras>::new();
@@ -1451,8 +1365,10 @@ mod tests {
             )
             .unwrap();
             let data = metrics.indel_data.expect("the anchor column carries the deletion");
-            let obs = data.observations.first().expect("one deletion observation").clone();
-            allele = Some(obs.allele);
+            let [counts] = data.counts.alleles.as_slice() else {
+                panic!("one deletion allele: {:?}", data.counts.alleles)
+            };
+            allele = Some(counts.allele.clone());
         }
 
         assert_eq!(
@@ -2327,5 +2243,379 @@ mod tests {
         let obs = observations(&pm).expect("candidate");
         assert_eq!(obs.len(), 2, "the pair speaks once");
         assert_ne!(obs.first().map(|o| o.fragment), obs.get(1).map(|o| o.fragment));
+    }
+
+    /// Non-repetitive reference for the pair-HMM tests, placed off zero.
+    const HAPLOTYPE_START: u32 = 1000;
+    const HAPLOTYPE_SEQ: &[u8] = b"ACGTTAGCATCGGATCCATGACTGATCGGCTAGCTTACGGATCCTAGGCTAAGCTTGACT";
+    /// The column the pair-HMM tests' insertions sit at.
+    const HAPLOTYPE_ANCHOR: u32 = HAPLOTYPE_START + 29;
+
+    /// `<len>M` at `pos` copying [`HAPLOTYPE_SEQ`], its own fragment.
+    fn haplotype_read(qname: &[u8], pos: u32, len: usize, flags: u16) -> TestRead {
+        let from = (pos - HAPLOTYPE_START) as usize;
+        let mut read = TestRead::matching(qname, pos, len, Base::A, flags);
+        read.bases = HAPLOTYPE_SEQ[from..from + len].iter().map(|&b| Base::from(b)).collect();
+        read
+    }
+
+    /// A read over offsets 5..55 of [`HAPLOTYPE_SEQ`] with `inserted` after the
+    /// anchor, 25 aligned bases either side.
+    fn inserting_read(qname: &[u8], flags: u16, inserted: &[u8]) -> TestRead {
+        let bases: Vec<Base> = HAPLOTYPE_SEQ[5..30]
+            .iter()
+            .chain(inserted)
+            .chain(&HAPLOTYPE_SEQ[30..55])
+            .map(|&b| Base::from(b))
+            .collect();
+        TestRead {
+            qname: qname.to_vec(),
+            pos: HAPLOTYPE_START + 5,
+            flags,
+            quals: vec![40; bases.len()],
+            bases,
+            mapq: 60,
+            cigar: vec![
+                CigarOp::new(CigarOpType::Match, 25),
+                CigarOp::new(CigarOpType::Insertion, u32::try_from(inserted.len()).unwrap()),
+                CigarOp::new(CigarOpType::Match, 25),
+            ],
+            mate_pos: -1,
+        }
+    }
+
+    /// The column at `pos` over [`HAPLOTYPE_SEQ`].
+    fn haplotype_column(
+        reads: &[TestRead],
+        params: &PileupMappingParams,
+        pos: u32,
+    ) -> PileupMetrics {
+        let seg = segment_at(u64::from(HAPLOTYPE_START), HAPLOTYPE_SEQ);
+        let store = store_of(reads, &params.read_masking);
+        let last = HAPLOTYPE_START + u32::try_from(HAPLOTYPE_SEQ.len()).unwrap() - 1;
+        let mut engine =
+            PileupEngine::new(store.prepare_for_pileup().input, span(HAPLOTYPE_START, last));
+        let mut scratch = ColumnScratch::default();
+        let mut metrics = None;
+        while let Some(col) = engine.pileups() {
+            if col.pos().as_u64() == u64::from(pos) {
+                metrics = Some(
+                    PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap(),
+                );
+            }
+        }
+        metrics.expect("the column")
+    }
+
+    fn fragment_of(qname: &[u8]) -> Option<FragmentId> {
+        FragmentId::new(seqair::bam::record_store::qname_hash(qname))
+    }
+
+    /// Three reads insert `GA`, three do not; all six are scored, each
+    /// under its own fragment.
+    #[test]
+    fn an_indel_column_is_scored_with_fragment_ids() {
+        let mut reads: Vec<TestRead> =
+            (0..3).map(|i| inserting_read(format!("ins{i}").as_bytes(), 0, b"GA")).collect();
+        reads
+            .extend((0..3).map(|i| {
+                haplotype_read(format!("ref{i}").as_bytes(), HAPLOTYPE_START + 5, 50, 16)
+            }));
+        let scoring = PileupMappingParams { call_indels: true, ..default() };
+
+        let pm = haplotype_column(&reads, &scoring, HAPLOTYPE_ANCHOR);
+        let data = pm.indel_data.as_deref().expect("an insertion column");
+        let scores = &data.scored.as_ref().expect("scores").haplotypes;
+        let inserted = IndelAllele::Insertion([Base::G, Base::A].into_iter().collect());
+        assert_eq!(scores.cluster().events().len(), 1);
+        assert_eq!(scores.cluster().events()[0].allele, inserted);
+        let mut ids: Vec<_> = scores.reads.iter().map(|r| r.fragment).collect();
+        ids.sort_unstable();
+        let mut expected: Vec<_> = reads.iter().map(|r| fragment_of(&r.qname)).collect();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        assert!(ids.iter().all(Option::is_some));
+        let (low, high) = scores.verdict.best.haplotypes();
+        assert_eq!((low.index(), high.index()), (0, 1));
+    }
+
+    /// An allele below `--min-indel-ao` is not a candidate, so a column with
+    /// no other has nothing to score.
+    #[test]
+    fn an_allele_below_the_minimum_support_is_not_scored() {
+        let mut reads = vec![inserting_read(b"ins", 0, b"GA")];
+        reads
+            .extend((0..3).map(|i| {
+                haplotype_read(format!("ref{i}").as_bytes(), HAPLOTYPE_START + 5, 50, 16)
+            }));
+        let params = PileupMappingParams { call_indels: true, ..default() };
+        let pm = haplotype_column(&reads, &params, HAPLOTYPE_ANCHOR);
+        assert!(pm.indel_data.expect("an insertion column").scored.is_none());
+    }
+
+    fn deleted(bases: &[u8]) -> IndelAllele {
+        IndelAllele::Deletion(bases.iter().map(|&b| Base::from(b)).collect())
+    }
+
+    /// A column at `pos` whose reads carry `alleles`, each on `total` reads.
+    fn indel_column(pos: u32, alleles: &[(IndelAllele, u32)]) -> PileupMetrics {
+        let mut column = phasing::fixtures::column(pos, Base::A, &[], None, &[]);
+        let alleles = alleles
+            .iter()
+            .map(|(allele, total)| IndelAlleleCounts { allele: allele.clone(), total: *total })
+            .collect();
+        let counts = IndelCounts { alleles };
+        column.indel_data = Some(Box::new(IndelData { counts, scored: None }));
+        column
+    }
+
+    fn events_of(columns: &[PileupMetrics]) -> Vec<(u32, IndelAllele)> {
+        cluster_candidates(columns.iter(), 2).into_iter().map(|e| (e.anchor, e.allele)).collect()
+    }
+
+    /// Most reads first, then the earlier anchor, then insertions before
+    /// deletions; an allele below `--min-indel-ao` is no event, and the
+    /// fourth is left out.
+    #[test]
+    fn a_cluster_takes_its_best_supported_events_in_order() {
+        let insertion = IndelAllele::Insertion([Base::A].into_iter().collect());
+        let columns = [
+            indel_column(100, &[(deleted(b"T"), 5), (insertion.clone(), 5), (deleted(b"TT"), 1)]),
+            indel_column(105, &[(deleted(b"G"), 5)]),
+            indel_column(110, &[(deleted(b"TT"), 8)]),
+        ];
+        assert_eq!(
+            events_of(&columns),
+            [(110, deleted(b"TT")), (100, insertion), (100, deleted(b"T"))]
+        );
+    }
+
+    /// A third allele at one anchor could not share a pair with the other
+    /// two, so the next anchor's event takes its place.
+    #[test]
+    fn a_cluster_takes_at_most_two_events_per_anchor() {
+        let columns = [
+            indel_column(100, &[(deleted(b"T"), 9), (deleted(b"TT"), 8), (deleted(b"TTT"), 7)]),
+            indel_column(120, &[(deleted(b"G"), 3)]),
+        ];
+        assert_eq!(
+            events_of(&columns),
+            [(100, deleted(b"T")), (100, deleted(b"TT")), (120, deleted(b"G"))]
+        );
+    }
+
+    /// A column with `ot` and `ob` reads of `alt` over `reference`.
+    fn mismatch_column(pos: u32, reference: Base, alt: Base, ot: u32, ob: u32) -> PileupMetrics {
+        let mut column = phasing::fixtures::column(
+            pos,
+            reference,
+            &[(alt, crate::metrics::AltCall::Uncalled)],
+            None,
+            &[],
+        );
+        for alt in &mut column.alts {
+            alt.metrics.strand_count.ot = ot;
+            alt.metrics.strand_count.ob = ob;
+            alt.metrics.depth = ot + ob;
+        }
+        column
+    }
+
+    /// Five reads of a base TAPS cannot explain mask a column: a `T` over a
+    /// `C` only on the bottom strand, an `A` over a `G` only on the top, any
+    /// other base on either; the conversions TAPS makes do not.
+    #[test]
+    fn the_window_mask_takes_mismatches_taps_does_not_explain() {
+        use Base::{A, C, G, T};
+        let columns = [
+            mismatch_column(10, C, T, 0, 5),
+            mismatch_column(11, C, T, 5, 0),
+            mismatch_column(12, G, A, 5, 0),
+            mismatch_column(13, G, A, 0, 5),
+            mismatch_column(14, A, C, 3, 2),
+            mismatch_column(15, A, C, 2, 2),
+        ];
+        assert_eq!(WindowMask::new(&columns).0, [10, 12, 14]);
+    }
+
+    /// The scores of a 1 bp deletion at [`HAPLOTYPE_ANCHOR`] under `mask`.
+    fn deletion_scores(reads: &[TestRead], mask: WindowMask) -> Option<HaplotypeScores> {
+        let seg = segment_at(u64::from(HAPLOTYPE_START), HAPLOTYPE_SEQ);
+        let params = PileupMappingParams { call_indels: true, ..default() };
+        let store = store_of(reads, &params.read_masking);
+        let last = HAPLOTYPE_START + u32::try_from(HAPLOTYPE_SEQ.len()).unwrap() - 1;
+        let mut engine =
+            PileupEngine::new(store.prepare_for_pileup().input, span(HAPLOTYPE_START, last));
+        let events: SmallVec<Event, MAX_EVENTS> =
+            [Event { anchor: HAPLOTYPE_ANCHOR, allele: deleted(b"T") }].into_iter().collect();
+        while let Some(col) = engine.pileups() {
+            let here = col.pos();
+            if here.as_u64() == u64::from(HAPLOTYPE_ANCHOR) {
+                let spanning = col.records_overlapping(here, here);
+                let scratch = &mut HaplotypeScratch::default();
+                let context =
+                    ClusterContext { store: col.store(), segment: &seg, params: &params, mask };
+                return haplotype_scores(&context, spanning, events, scratch);
+            }
+        }
+        None
+    }
+
+    /// Reads ending on an SNV after the anchor whose base is the one after it:
+    /// the reference charges them a mismatch, the deletion of the SNV's base
+    /// explains them. Masked, the SNV's position matches any base, and the
+    /// deletion has nothing left to explain.
+    #[test]
+    fn a_masked_position_matches_any_base() {
+        let snv = HAPLOTYPE_ANCHOR + 1;
+        let offset = (snv - HAPLOTYPE_START) as usize;
+        assert_eq!(HAPLOTYPE_SEQ[offset + 1], b'A', "the base after the SNV");
+        let mut reads: Vec<TestRead> = (0..6)
+            .map(|i| {
+                let start = HAPLOTYPE_START + 5 + i;
+                let len = (snv - start + 1) as usize;
+                haplotype_read(format!("snv{i}").as_bytes(), start, len, 0)
+                    .with_base_at(len - 1, Base::A)
+            })
+            .collect();
+        reads
+            .extend((0..4).map(|i| {
+                haplotype_read(format!("ref{i}").as_bytes(), HAPLOTYPE_START + 5, 50, 16)
+            }));
+        let event = pair_hmm::EventIdx::new(0).unwrap();
+
+        let unmasked = deletion_scores(&reads, WindowMask::default()).expect("scores");
+        assert_eq!(unmasked.verdict.copies_of(event), 1, "{:?}", unmasked.verdict);
+        let masked = deletion_scores(&reads, WindowMask(vec![snv])).expect("scores");
+        assert_eq!(masked.verdict.copies_of(event), 0, "{:?}", masked.verdict);
+    }
+
+    /// A read at `pos` of [`HAPLOTYPE_SEQ`]'s bases, clipped `lead` bases
+    /// before and `trail` after `aligned` aligned ones.
+    fn clipped_read(qname: &[u8], pos: u32, lead: u32, aligned: u32, trail: u32) -> TestRead {
+        // The clipped bases are the reference's where it has them; which bases
+        // a clip off the segment carries does not matter to its placement.
+        let from =
+            usize::try_from(pos.saturating_sub(HAPLOTYPE_START).saturating_sub(lead)).unwrap();
+        let len = usize::try_from(lead + aligned + trail).unwrap();
+        let mut cigar = vec![CigarOp::new(CigarOpType::Match, aligned)];
+        if lead > 0 {
+            cigar.insert(0, CigarOp::new(CigarOpType::SoftClip, lead));
+        }
+        if trail > 0 {
+            cigar.push(CigarOp::new(CigarOpType::SoftClip, trail));
+        }
+        let bases: Vec<Base> =
+            HAPLOTYPE_SEQ.iter().cycle().skip(from).take(len).map(|&b| Base::from(b)).collect();
+        TestRead {
+            cigar,
+            quals: vec![40; bases.len()],
+            bases,
+            ..TestRead::matching(qname, pos, len, Base::A, 0)
+        }
+    }
+
+    /// Each read the pair-HMM would score at `pos` of [`HAPLOTYPE_SEQ`] placed
+    /// at `start`: its placed span, the stored bases it scores, and its name.
+    fn placed_reads_at(
+        reads: &[TestRead],
+        start: u32,
+        pos: u32,
+    ) -> Vec<(u64, u64, Range<usize>, Vec<u8>)> {
+        let seg = segment_at(u64::from(start), HAPLOTYPE_SEQ);
+        let params = PileupMappingParams::default();
+        let store = store_of(reads, &params.read_masking);
+        let last = start + u32::try_from(HAPLOTYPE_SEQ.len()).unwrap() - 1;
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(start, last));
+        let mut placed = Vec::new();
+        while let Some(col) = engine.pileups() {
+            if col.pos().as_u64() == u64::from(pos) {
+                let here = col.pos();
+                placed =
+                    spanning_reads(col.store(), col.records_overlapping(here, here), &seg, &params)
+                        .iter()
+                        .map(|r| (r.start, r.end, r.bases.clone(), r.rec.qname().to_vec()))
+                        .collect();
+            }
+        }
+        placed
+    }
+
+    /// A soft clip the segment's reference reaches is scored with the read,
+    /// on either end; the last reference base is inside, `end` being inclusive.
+    #[test]
+    fn a_clip_that_fits_the_segment_is_placed_with_the_read() {
+        let lead = clipped_read(b"lead", HAPLOTYPE_START + 10, 3, 20, 0);
+        assert_eq!(
+            placed_reads_at(&[lead], HAPLOTYPE_START, HAPLOTYPE_START + 15),
+            [(1007, 1029, 0..23, b"lead".to_vec())]
+        );
+        // Aligned to 1037..=1056, the trailing clip ends on the last base, 1059.
+        let trail = clipped_read(b"trail", HAPLOTYPE_START + 37, 0, 20, 3);
+        assert_eq!(
+            placed_reads_at(&[trail], HAPLOTYPE_START, HAPLOTYPE_START + 45),
+            [(1037, 1059, 0..23, b"trail".to_vec())]
+        );
+    }
+
+    /// A clip that would run off the segment is dropped, and the read is
+    /// scored on its aligned bases alone.
+    #[test]
+    fn a_clip_outside_the_segment_leaves_the_aligned_bases() {
+        let lead = clipped_read(b"lead", HAPLOTYPE_START + 1, 3, 20, 0);
+        assert_eq!(
+            placed_reads_at(&[lead], HAPLOTYPE_START, HAPLOTYPE_START + 5),
+            [(1001, 1020, 3..23, b"lead".to_vec())]
+        );
+        let trail = clipped_read(b"trail", HAPLOTYPE_START + 38, 0, 20, 3);
+        assert_eq!(
+            placed_reads_at(&[trail], HAPLOTYPE_START, HAPLOTYPE_START + 45),
+            [(1038, 1057, 0..20, b"trail".to_vec())]
+        );
+    }
+
+    /// At the contig start a clip can reach before position 0; the read is
+    /// then placed on its aligned bases, not shifted onto 0.
+    #[test]
+    fn a_clip_before_the_contig_start_leaves_the_aligned_bases() {
+        let lead = clipped_read(b"lead", 1, 3, 20, 0);
+        assert_eq!(placed_reads_at(&[lead], 0, 5), [(1, 20, 3..23, b"lead".to_vec())]);
+    }
+
+    #[test]
+    fn thinning_keeps_an_even_spread() {
+        let mut items: Vec<u32> = (0..10).collect();
+        thin_evenly(&mut items, 3);
+        assert_eq!(items, [3, 6, 9]);
+        let mut few: Vec<u32> = (0..3).collect();
+        thin_evenly(&mut few, 5);
+        assert_eq!(few, [0, 1, 2], "below the cap nothing goes");
+    }
+
+    /// One read per fragment, whichever mate reaches further, and a read
+    /// without a mate is its own fragment.
+    #[test]
+    fn a_fragment_is_scored_once_from_the_mate_reaching_further() {
+        let mate = |qname: &[u8], pos: u32, len: u32, flags: u16| TestRead {
+            flags,
+            ..clipped_read(qname, pos, 0, len, 0)
+        };
+        let reads = [
+            mate(b"right", HAPLOTYPE_START, 20, 99),
+            mate(b"right", HAPLOTYPE_START + 10, 30, 147),
+            mate(b"left", HAPLOTYPE_START + 2, 40, 99),
+            mate(b"left", HAPLOTYPE_START + 12, 20, 147),
+            mate(b"solo", HAPLOTYPE_START + 5, 20, 0),
+        ];
+        let mut placed = placed_reads_at(&reads, HAPLOTYPE_START, HAPLOTYPE_START + 15);
+        placed.sort_by(|a, b| a.3.cmp(&b.3));
+        assert_eq!(
+            placed,
+            [
+                (1002, 1041, 0..40, b"left".to_vec()),
+                (1010, 1039, 0..30, b"right".to_vec()),
+                (1005, 1024, 0..20, b"solo".to_vec()),
+            ]
+        );
     }
 }

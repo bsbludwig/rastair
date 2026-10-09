@@ -107,13 +107,6 @@ pub(crate) fn create_pileups(
                 pos: pos as u32,
                 reads: SimpleReads(reads.into()),
                 reference_base,
-                indel_observations: Default::default(),
-                noisy_ref_count: 0,
-                homopolymer_run: 0,
-                dinucleotide_run: 0,
-                soft_clip_count: 0,
-                indel_ref_window: Default::default(),
-                indel_ref_anchor: 0,
             }
         })
         .collect();
@@ -268,10 +261,11 @@ pub(crate) struct VcfRecord {
     pub r#ref: String,
     /// ALT alleles; `["."]` for a reference-only site.
     pub alt: Vec<String>,
+    pub qual: String,
     /// FILTER codes; empty or `["PASS"]` means the record passes.
-    filters: Vec<String>,
+    pub filters: Vec<String>,
     /// FORMAT key → first sample's value.
-    format: FxHashMap<String, String>,
+    pub format: FxHashMap<String, String>,
 }
 
 impl VcfRecord {
@@ -288,6 +282,7 @@ fn parse_vcf(text: &str) -> Vec<VcfRecord> {
             let cols: Vec<&str> = line.split('\t').collect();
             let r#ref = cols.get(3).copied().unwrap_or(".").to_string();
             let alt = cols.get(4).copied().unwrap_or(".").split(',').map(String::from).collect();
+            let qual = cols.get(5).copied().unwrap_or(".").to_string();
             let filters = match cols.get(6).copied().unwrap_or(".") {
                 "." => Vec::new(),
                 f => f.split(';').map(String::from).collect(),
@@ -298,7 +293,7 @@ fn parse_vcf(text: &str) -> Vec<VcfRecord> {
                     format.insert(k.to_string(), v.to_string());
                 }
             }
-            VcfRecord { r#ref, alt, filters, format }
+            VcfRecord { r#ref, alt, qual, filters, format }
         })
         .collect()
 }

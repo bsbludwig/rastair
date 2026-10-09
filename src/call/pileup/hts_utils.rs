@@ -88,42 +88,6 @@ fn pseudo_random_strand(record: &Record) -> Strand {
     if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
 }
 
-fn count_taps_aware_mismatches(record: &Record, segment: &Segment, strand: Strand) -> u32 {
-    let seq = record.seq().as_bytes();
-    let mut count = 0u32;
-
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
-        let (Some(pos_in_read), Some(pos_in_ref)) = (pos_in_read, pos_in_ref) else {
-            continue; // insertion or deletion gap — not a mismatch
-        };
-        let Some(read_idx) = usize::try_from(pos_in_read).ok() else { continue };
-        let Some(observed) = seq.get(read_idx).copied().map(Base::from) else { continue };
-        let Some(reference) = reference_base(segment, pos_in_ref) else { continue };
-
-        if observed == Base::Unknown || reference == Base::Unknown || observed == reference {
-            continue;
-        }
-
-        // Skip mismatches that are expected TAPS signal, not sequencing errors.
-        // For Unknown strand, conservatively skip both patterns to avoid penalising
-        // methylated reads whose strand couldn't be determined.
-        let is_taps_signal = match strand {
-            Strand::OT => observed == Base::T && reference == Base::C,
-            Strand::OB => observed == Base::A && reference == Base::G,
-            Strand::Unknown => {
-                (observed == Base::T && reference == Base::C)
-                    || (observed == Base::A && reference == Base::G)
-            }
-        };
-
-        if !is_taps_signal {
-            count += 1;
-        }
-    }
-
-    count
-}
-
 fn reference_base(segment: &Segment, pos_in_ref: i64) -> Option<Base> {
     let pos_in_ref = u32::try_from(pos_in_ref).ok()?;
     let idx = segment.pos_to_idx(pos_in_ref).ok()?;
@@ -176,28 +140,6 @@ impl ReadOrientationCache {
     }
 }
 
-#[derive(Default)]
-pub struct ReadMismatchCache {
-    counts: FxHashMap<ReadOrientationCacheKey, u32>,
-}
-
-impl ReadMismatchCache {
-    pub fn mismatch_count_for_alignment(
-        &mut self,
-        alignment: &Alignment<'_>,
-        segment: &Segment,
-        strand: Strand,
-    ) -> u32 {
-        let key = ReadOrientationCacheKey::from_alignment(alignment);
-        if let Some(&count) = self.counts.get(&key) {
-            return count;
-        }
-        let count = count_taps_aware_mismatches(&alignment.record(), segment, strand);
-        self.counts.insert(key, count);
-        count
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ReadOrientationCacheKey {
     name_hash: u64,
@@ -233,104 +175,4 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = FxHasher::default();
     bytes.hash(&mut hasher);
     hasher.finish()
-}
-
-#[cfg(test)]
-mod tests {
-    use rust_htslib::bam::record::{Cigar, CigarString};
-
-    use super::*;
-    use crate::sequence::{ChunkRegion, Region};
-
-    fn test_segment(sequence: &[u8]) -> Segment {
-        let start = 100u64;
-        let end = start + u64::try_from(sequence.len()).expect("sequence length fits") - 1;
-        Segment {
-            range: std::sync::Arc::new(ChunkRegion {
-                region: Region { contig: "chrTest".into(), start, end },
-                last_position: end,
-                overlap_start: 0,
-                overlap_end: 0,
-            }),
-            sequence: sequence.to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
-        }
-    }
-
-    fn test_record(qname: &[u8], flags: u16, start: i64, sequence: &[u8]) -> Record {
-        let mut record = Record::new();
-        let cigar = CigarString(
-            vec![Cigar::Match(u32::try_from(sequence.len()).expect("sequence length fits in u32"))]
-                .into(),
-        );
-        record.set(qname, Some(&cigar), sequence, &vec![40; sequence.len()]);
-        record.set_flags(flags);
-        record.set_pos(start);
-        record
-    }
-
-    #[test]
-    fn taps_aware_ot_ct_not_counted() {
-        // C→T on OT is TAPS methylation signal — must not count
-        let segment = test_segment(b"ACGT");
-        let record = test_record(b"ot-ct", 99, 100, b"ATGT"); // pos 1: C→T
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 0);
-    }
-
-    #[test]
-    fn taps_aware_ob_ga_not_counted() {
-        // G→A on OB is TAPS methylation signal — must not count
-        let segment = test_segment(b"ACGT");
-        let record = test_record(b"ob-ga", 83, 100, b"ACAT"); // pos 2: G→A
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OB), 0);
-    }
-
-    #[test]
-    fn taps_aware_ot_other_mismatch_counted() {
-        // A→G on OT is a real sequencing error — must count
-        let segment = test_segment(b"ACGT");
-        let record = test_record(b"ot-ag", 99, 100, b"GCGT"); // pos 0: A→G
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 1);
-    }
-
-    #[test]
-    fn taps_aware_ob_ct_counted() {
-        // C→T on OB is not a TAPS signal (wrong strand) — must count
-        let segment = test_segment(b"ACGT");
-        let record = test_record(b"ob-ct", 83, 100, b"ATGT"); // pos 1: C→T on OB
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OB), 1);
-    }
-
-    #[test]
-    fn taps_aware_unknown_strand_excludes_both_patterns() {
-        // Unknown strand: conservatively skip both C→T and G→A to avoid
-        // penalising methylated reads whose strand couldn't be determined
-        let segment = test_segment(b"CGCG");
-        let record = test_record(b"unknown", 99, 100, b"TATA"); // C→T and G→A alternating
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::Unknown), 0);
-    }
-
-    #[test]
-    fn taps_aware_no_mismatches_returns_zero() {
-        let segment = test_segment(b"ACGT");
-        let record = test_record(b"perfect", 99, 100, b"ACGT");
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 0);
-    }
-
-    #[test]
-    fn taps_aware_mixed_counts_only_non_taps() {
-        // A→G (real error, counted) + C→T (TAPS on OT, excluded) = 1
-        let segment = test_segment(b"ACGT");
-        let record = test_record(b"mixed", 99, 100, b"GTGT"); // pos 0: A→G, pos 1: C→T
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 1);
-    }
-
-    #[test]
-    fn taps_aware_multiple_real_mismatches_all_counted() {
-        // Two non-TAPS mismatches on OT — both must count
-        let segment = test_segment(b"ACGT");
-        let record = test_record(b"two-errors", 99, 100, b"GCGG"); // A→G and T→G
-        assert_eq!(count_taps_aware_mismatches(&record, &segment, Strand::OT), 2);
-    }
 }

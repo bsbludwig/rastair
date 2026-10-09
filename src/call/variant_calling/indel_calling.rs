@@ -1,83 +1,33 @@
 use super::GenotypeTag;
-use crate::call::pileup::indels::{IndelAllele, IndelCounts};
+use crate::call::{
+    pair_hmm::{EventIdx, HaplotypeScores, MAX_EVENTS},
+    pileup::indels::IndelAllele,
+};
 use better_default::Default;
-use probability::prelude::{Binomial, Discrete as _};
-use seqair_types::SmallVec;
-use seqair_types::{Phred, Probability};
+use seqair_types::{Phred, SmallVec};
 use std::num::NonZeroU8;
-use tracing::{instrument, trace};
-
-/// Which decision procedure accepts a candidate indel.
-///
-/// Measured on GIAB HG001, the choice is depth-dependent: `ml-rescue` wins on every
-/// library above ~32x and `ml` on every library below ~25x, so neither dominates.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum IndelPathway {
-    /// The model decides: a low score vetoes an allele the hard chain would keep.
-    /// Best precision, worst recall.
-    Ml,
-    /// A fixed filter chain only, with no ML scoring of indels at call time.
-    NoMl,
-    /// The hard chain's calls all stand, and the model reinstates an allele the
-    /// chain dropped as homozygous reference. Best recall.
-    MlRescue,
-}
 
 /// CLI parameters for indel calling.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, Default)]
 pub struct IndelParams {
     /// Enable experimental indel calling
     ///
-    /// Defaults to ML scoring.
-    #[arg(long, value_enum)]
-    #[arg(num_args = 0..=1, require_equals = true, default_missing_value = "ml")]
+    /// Indels are called by a TAPS-aware pair-HMM, which needs the seqair
+    /// backend.
+    #[arg(long)]
     #[arg(help_heading = crate::utils::cli::sections::INDELS)]
-    pub experimental_indels: Option<IndelPathway>,
+    pub experimental_indels: bool,
 
-    /// Minimum alternate observations to call an indel
+    /// Minimum alternate observations for an indel allele to be scored
     ///
-    /// This threshold is evaluated per indel allele after read-level indel
-    /// filters are applied.
+    /// Reads (one per fragment) whose alignment carries the allele. Of the
+    /// alleles reaching it in a cluster of neighbouring columns, the three
+    /// most reads carry are scored, at most two per column, and a scored
+    /// allele is called only if the pair-HMM finds it present.
     #[arg(long, default_value_t = 2)]
     #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     #[default(2)]
     pub min_indel_ao: u32,
-
-    /// Minimum depth to call an indel
-    ///
-    /// Depth is computed at the locus after applying indel-specific read
-    /// filters and depth adjustments.
-    #[arg(long, default_value_t = 2)]
-    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
-    #[default(2)]
-    pub min_indel_depth: u32,
-
-    /// Error rate for indel genotyping (higher than SNV due to alignment uncertainty)
-    #[arg(long, default_value_t = 0.05)]
-    #[arg(help_heading = crate::utils::cli::sections::PROCESSING)]
-    #[default(0.05)]
-    pub indel_error_rate: f64,
-
-    /// Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
-    ///
-    /// C->T mismatches on OT reads and G->A mismatches on OB reads are excluded
-    /// from the count as they are expected TAPS methylation signal.
-    #[arg(long, default_value_t = 5)]
-    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
-    #[default(5)]
-    pub indel_max_mismatches: u32,
-
-    /// Ignore indels within this many bases of either read end.
-    ///
-    /// This stricter end-of-read filter helps suppress alignment artifacts at
-    /// read starts and ends.
-    #[arg(long, default_value_t = 0)]
-    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
-    #[default(0)]
-    pub indel_end_of_read_cutoff: usize,
 }
 
 /// Result of indel calling at a single position for one allele.
@@ -85,482 +35,232 @@ pub struct IndelParams {
 pub struct IndelCall {
     pub allele: IndelAllele,
     pub genotype: GenotypeTag,
+    /// The pair-HMM's margin of presence for the allele; its `QUAL`.
     pub quality: Phred,
-    /// ML score: probability this indel is a true variant.
-    pub ml: Option<Probability>,
-    /// Depth with noisy reads removed from both sides; see [`IndelCounts::clean_depth`].
-    pub depth: u32,
-    /// Reads supporting this indel allele.
-    pub alt_count: u32,
-    /// Supported on only one bisulfite strand. Emitted with an `indel_strand`
-    /// FILTER rather than dropped, so `--all` shows why the allele did not pass.
-    pub one_sided: bool,
+    /// The event the allele is in the cluster's `HaplotypeScores`.
+    pub event: EventIdx,
 }
 
-/// Call indels at a position. Returns empty vec if no indels pass filters.
+impl IndelCall {
+    /// Whether the genotype holds the allele; a call that does not is written
+    /// only under `--all`, filtered.
+    #[must_use]
+    pub fn is_called(&self) -> bool {
+        self.genotype != GenotypeTag::HomRef
+    }
+}
+
+/// A column's indel records.
+#[derive(Debug, Clone)]
+pub enum IndelRecords {
+    /// Both alleles called, `1/2`: one multi-allelic record, as two biallelic
+    /// ones would each carry a genotype referring to an allele they do not
+    /// declare.
+    Compound([IndelCall; 2]),
+    /// One biallelic record per scored allele, in record order.
+    Separate(SmallVec<IndelCall, MAX_EVENTS>),
+}
+
+impl IndelRecords {
+    #[must_use]
+    pub fn calls(&self) -> &[IndelCall] {
+        match self {
+            Self::Compound(calls) => calls,
+            Self::Separate(calls) => calls,
+        }
+    }
+}
+
+/// Call the indels anchored at `pos` on the pair-HMM's scores of their
+/// cluster.
 ///
-/// When `ml_enabled` is true, the binomial genotype test is used only for
-/// informational genotyping — all alleles passing min AO and min depth
-/// are forwarded to the ML model. When ML is off, the binomial test
-/// acts as a hard gate (`hom_ref` alleles are rejected).
-#[instrument(level = "trace", skip_all)]
-pub fn call_indels(
-    indels: &IndelCounts,
-    params: &IndelParams,
-    ml_enabled: bool,
-    tract: u32,
-    rescue: bool,
-) -> Vec<IndelCall> {
-    let mut calls = Vec::new();
+/// An event is called when its margin reaches
+/// [`Margin::PRESENT`](crate::call::pair_hmm::Margin::PRESENT), and its
+/// genotype is how many chromosomes of the cluster's called pair carry it
+/// ([`crate::call::pair_hmm::Verdict::called_pair`]): one makes a het, two a
+/// homozygote, and two called events at one anchor a compound het. A scored
+/// event that is not called stays as a `0/0` call. There is no model and no
+/// strand gate; on chr12 no strand test did better than none. An allele the
+/// pair-HMM did not score, past the cluster's leading events or without a
+/// read to score it on, is not called: nothing speaks for it.
+pub fn call_on_pair_hmm(scores: &HaplotypeScores, pos: u32) -> IndelRecords {
+    const ONE: NonZeroU8 = NonZeroU8::new(1).expect("nonzero");
+    const TWO: NonZeroU8 = NonZeroU8::new(2).expect("nonzero");
+    let verdict = &scores.verdict;
+    let call = |event: EventIdx, genotype: GenotypeTag, quality: Phred| {
+        let allele = scores.event(event)?.allele.clone();
+        Some(IndelCall { allele, genotype, quality, event })
+    };
 
-    if indels.is_empty() {
-        return calls;
-    }
-
-    let filtered_depth = indels.clean_depth();
-
-    if filtered_depth < params.min_indel_depth {
-        return calls;
-    }
-
-    for allele_counts in &indels.alleles {
-        let alt_count = allele_counts.clean_total();
-        if alt_count < params.min_indel_ao {
-            trace!(
-                allele = ?allele_counts.allele,
-                alt_count,
-                min = params.min_indel_ao,
-                "Indel skipped: below min AO"
-            );
-            continue;
+    // Events are in record order, so a compound het's two alleles are ALT 1
+    // and 2 as they stand.
+    let here: SmallVec<EventIdx, MAX_EVENTS> = scores.events_at(pos).collect();
+    let compound = || {
+        let [first, second] = *here.as_slice() else { return None };
+        if verdict.copies_of(first) == 0 || verdict.copies_of(second) == 0 {
+            return None;
         }
-
-        let genotype = binomial_genotype(
-            alt_count as usize,
-            filtered_depth as usize,
-            params.indel_error_rate,
-            tract,
-        );
-
-        if !ml_enabled {
-            let Some(g) = genotype else { continue };
-            // With rescue on, a hom-ref allele is kept so the model can reinstate it
-            // after scoring; `rescue_hom_ref` drops the ones it does not.
-            if matches!(g.tag, GenotypeTag::HomRef) && !rescue {
-                trace!(
-                    allele = ?allele_counts.allele,
-                    alt_count,
-                    depth = filtered_depth,
-                    "Indel skipped: genotyped as hom ref (ML off)"
-                );
-                continue;
-            }
-            calls.push(IndelCall {
-                allele: allele_counts.allele.clone(),
-                genotype: g.tag,
-                quality: g.quality,
-                ml: None,
-                depth: filtered_depth,
-                alt_count,
-                one_sided: !allele_counts.on_both_strands(),
-            });
-        } else {
-            let (tag, quality) = genotype
-                .map(|g| (g.tag, g.quality))
-                .unwrap_or((GenotypeTag::hom_ref(), Phred::from_phred(0_u8)));
-            calls.push(IndelCall {
-                allele: allele_counts.allele.clone(),
-                genotype: tag,
-                quality,
-                ml: None,
-                depth: filtered_depth,
-                alt_count,
-                one_sided: !allele_counts.on_both_strands(),
-            });
-        }
+        // One record standing for both alleles is as sure as the less certain.
+        let quality = verdict.margin(first)?.min(verdict.margin(second)?).qual();
+        let genotype = GenotypeTag::alt_het(ONE, TWO);
+        Some([call(first, genotype, quality)?, call(second, genotype, quality)?])
+    };
+    if let Some(calls) = compound() {
+        return IndelRecords::Compound(calls);
     }
 
-    resolve_compound_het(&mut calls, filtered_depth, params.indel_error_rate, tract);
-    calls
-}
-
-impl IndelParams {
-    pub fn enabled(&self) -> bool {
-        self.experimental_indels.is_some()
-    }
-
-    /// Whether indels need ML scores at all: either the model decides, or it is
-    /// there to rescue what the binomial rejected.
-    pub fn needs_ml_scores(&self, ml_enabled: bool) -> bool {
-        matches!(self.experimental_indels, Some(IndelPathway::Ml | IndelPathway::MlRescue))
-            && ml_enabled
-    }
-
-    /// Whether the ML pathway is selected *and* a model is available.
-    pub fn use_ml(&self, ml_enabled: bool) -> bool {
-        self.experimental_indels == Some(IndelPathway::Ml) && ml_enabled
-    }
-
-    /// Whether the model may reinstate alleles the binomial called homozygous
-    /// reference. Independent of `use_ml`: the two pathways are alternatives.
-    pub fn rescues_hom_ref(&self) -> bool {
-        self.experimental_indels == Some(IndelPathway::MlRescue)
-    }
-}
-
-/// Measured allele fraction of a real indel, by the tandem tract it sits in:
-/// `(tract bases, het, hom-alt)`. Fitted on ~60k GIAB-judged indels across a 5base
-/// and a TAPS sample; interpolated between rows, held outside them.
-///
-/// Reference bias keeps a hom-alt indel near 0.90 even in simple sequence, and past
-/// a tract of ~11 it falls to 0.68 while het only falls to 0.37 — so a fixed
-/// `1 - error_rate` hypothesis rejects almost every real hom-alt call.
-const ALLELE_FRACTION_BY_TRACT: [(f64, f64, f64); 5] = [
-    (6.0, 0.440, 0.900),
-    (9.0, 0.439, 0.883),
-    (12.5, 0.409, 0.779),
-    (17.5, 0.379, 0.683),
-    (25.0, 0.366, 0.683),
-];
-
-/// Measured *pooled* fraction of a compound heterozygote, by tandem tract. A `1/2`
-/// locus has no reference chromosome but still presents at ~0.56 in simple
-/// sequence, nothing like a hom-alt.
-const COMPOUND_FRACTION_BY_TRACT: [(f64, f64); 5] =
-    [(6.0, 0.560), (9.0, 0.780), (12.5, 0.759), (17.5, 0.660), (25.0, 0.619)];
-
-fn interpolate<const N: usize>(table: [(f64, f64); N], tract: u32) -> f64 {
-    let tract = f64::from(tract);
-    if tract <= table[0].0 {
-        return table[0].1;
-    }
-    for pair in table.windows(2) {
-        let [low, high] = pair else { continue };
-        if tract <= high.0 {
-            return low.1 + (tract - low.0) / (high.0 - low.0) * (high.1 - low.1);
-        }
-    }
-    table[N - 1].1
-}
-
-/// Expected `(het, hom_alt)` allele fraction in a tract of `tract` bases.
-fn expected_allele_fractions(tract: u32) -> (f64, f64) {
-    let het = ALLELE_FRACTION_BY_TRACT.map(|(t, h, _)| (t, h));
-    let hom = ALLELE_FRACTION_BY_TRACT.map(|(t, _, h)| (t, h));
-    (interpolate(het, tract), interpolate(hom, tract))
-}
-
-/// Reinstate hom-ref indel calls the model rates as real, and drop the rest.
-///
-/// Runs after ML scoring, which is the first point where both the binomial's
-/// verdict and the model's score are available. A rescued allele becomes a
-/// heterozygote: it is the most conservative genotype that is still a variant, and
-/// the binomial having preferred hom-ref means the evidence is at the low end.
-pub fn rescue_hom_ref(calls: &mut Vec<IndelCall>, ml_threshold: Option<Probability>) {
-    let alt_one = NonZeroU8::new(1).expect("nonzero");
-    calls.retain_mut(|call| {
-        if !matches!(call.genotype, GenotypeTag::HomRef) {
-            // The score is dropped on calls the binomial already accepted: this mode
-            // exists so the model can *add* calls, and leaving a score attached would
-            // let `low_ml_score` veto them, which is the behaviour being replaced.
-            call.ml = None;
-            return true;
-        }
-        match (call.ml, ml_threshold) {
-            (Some(ml), Some(threshold)) if ml >= threshold => {
-                call.genotype = GenotypeTag::ref_het(alt_one);
-                true
-            }
-            _ => false,
-        }
+    let separate = here.iter().filter_map(|&event| {
+        let genotype = match verdict.copies_of(event) {
+            0 => GenotypeTag::hom_ref(),
+            1 => GenotypeTag::ref_het(ONE),
+            _ => GenotypeTag::hom_alt(ONE),
+        };
+        call(event, genotype, verdict.margin(event)?.qual())
     });
-}
-
-/// Promote a locus whose two best alleles account for it together, and where
-/// neither does so alone, to a compound heterozygote.
-///
-/// Weighed against the pooled count: one real allele plus noise, two real alleles
-/// and no reference chromosome, or one allele carrying the locus. Each allele must
-/// also stand on its own, because a compound het's pooled fraction is close to a
-/// het carrying a trace second allele.
-fn allele_order(allele: &IndelAllele) -> (u8, SmallVec<u8, 4>) {
-    match allele {
-        IndelAllele::Insertion(bases) => (0, bases.iter().map(|b| *b as u8).collect()),
-        IndelAllele::Deletion(bases) => (1, bases.iter().map(|b| *b as u8).collect()),
-    }
-}
-
-fn resolve_compound_het(calls: &mut Vec<IndelCall>, depth: u32, error_rate: f64, tract: u32) {
-    if calls.len() < 2 || depth == 0 {
-        return;
-    }
-    // A one-sided allele is emitted for visibility but is not evidence, so it must
-    // not consume one of the two compound-het slots.
-    // Equal counts are broken by the allele itself, so the record order does not
-    // depend on which supporting read the pileup engine happened to yield first.
-    calls.sort_by_key(|c| (c.one_sided, std::cmp::Reverse(c.alt_count), allele_order(&c.allele)));
-    let (Some(first), Some(second)) = (calls.first(), calls.get(1)) else { return };
-    if first.one_sided || second.one_sided {
-        return;
-    }
-    if matches!(first.genotype, GenotypeTag::HomAlt(_)) {
-        return;
-    }
-    let stands_alone = |c: &IndelCall| {
-        binomial_genotype(c.alt_count as usize, depth as usize, error_rate, tract)
-            .is_some_and(|g| !matches!(g.tag, GenotypeTag::HomRef))
-    };
-    if !stands_alone(first) || !stands_alone(second) {
-        return;
-    }
-
-    let pooled = (first.alt_count + second.alt_count) as usize;
-    if pooled > depth as usize {
-        return;
-    }
-    let (het, hom_alt) = expected_allele_fractions(tract);
-    let mass = |p: f64| Binomial::new(depth as usize, clamp_probability(p)).mass(pooled);
-    let (p_het, p_compound, p_hom_alt) =
-        (mass(het), mass(interpolate(COMPOUND_FRACTION_BY_TRACT, tract)), mass(hom_alt));
-    // All three masses can underflow to zero at high depth, and then no `<`
-    // comparison holds and every locus would promote to 1/2 with QUAL 0.
-    let total = p_het + p_compound + p_hom_alt;
-    if total == 0.0 {
-        return;
-    }
-    if p_compound < p_het || p_compound < p_hom_alt {
-        return;
-    }
-
-    let quality = phred_from_confidence(p_compound / total);
-    let (one, two) = (NonZeroU8::new(1).expect("nonzero"), NonZeroU8::new(2).expect("nonzero"));
-    calls.truncate(2);
-    for call in calls.iter_mut() {
-        call.genotype = GenotypeTag::alt_het(one, two);
-        call.quality = quality;
-    }
-}
-
-/// `Binomial::new` panics outside the open unit interval.
-fn clamp_probability(p: f64) -> f64 {
-    const BOUND: f64 = 1e-9;
-    if p.is_finite() { p.clamp(BOUND, 1.0 - BOUND) } else { 0.5 }
-}
-
-fn phred_from_confidence(confidence: f64) -> Phred {
-    let phred = (-10.0 * (1.0 - confidence).max(1e-300).log10()).min(999.0);
-    Phred::from_phred(phred.round().clamp(0.0, 255.0) as u8)
-}
-
-struct BinomialGenotype {
-    tag: GenotypeTag,
-    quality: Phred,
-}
-
-/// Classify a site as hom-ref, het, or hom-alt using three binomial hypotheses.
-///
-/// The het and hom-alt fractions come from [`ALLELE_FRACTION_BY_TRACT`] rather than
-/// from 0.5 and `1 - error_rate`: measured, real indels present nowhere near those.
-///
-/// Returns `None` when depth is zero (no data to genotype).
-fn binomial_genotype(
-    alt_count: usize,
-    total_depth: usize,
-    error_rate: f64,
-    tract: u32,
-) -> Option<BinomialGenotype> {
-    if total_depth == 0 {
-        return None;
-    }
-
-    let alt_one = NonZeroU8::new(1).expect("1 is non-zero");
-    let (het, hom_alt) = expected_allele_fractions(tract);
-
-    let p_hom_ref = Binomial::new(total_depth, clamp_probability(error_rate)).mass(alt_count);
-    let p_het = Binomial::new(total_depth, clamp_probability(het)).mass(alt_count);
-    let p_hom_alt = Binomial::new(total_depth, clamp_probability(hom_alt)).mass(alt_count);
-
-    let total = p_hom_ref + p_het + p_hom_alt;
-    if total == 0.0 {
-        return None;
-    }
-
-    let (best_p, tag) = if p_hom_ref >= p_het && p_hom_ref >= p_hom_alt {
-        (p_hom_ref, GenotypeTag::hom_ref())
-    } else if p_het >= p_hom_alt {
-        (p_het, GenotypeTag::ref_het(alt_one))
-    } else {
-        (p_hom_alt, GenotypeTag::hom_alt(alt_one))
-    };
-
-    let p_best = best_p / total;
-    let phred = (-10.0 * (1.0 - p_best).max(1e-300).log10()).min(999.0);
-
-    Some(BinomialGenotype {
-        tag,
-        quality: Phred::from_phred(phred.round().clamp(0.0, 255.0) as u8),
-    })
+    IndelRecords::Separate(separate.collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::pileup::indels::IndelAlleleCounts;
+    use crate::call::pair_hmm::fixtures::*;
     use seqair_types::Base;
 
     const ALT_1: NonZeroU8 = NonZeroU8::new(1).expect("nonzero");
     const ALT_2: NonZeroU8 = NonZeroU8::new(2).expect("nonzero");
-    const SIMPLE: u32 = 1;
-    const LONG_TRACT: u32 = 18;
 
-    fn tag(alt: usize, depth: usize, tract: u32) -> GenotypeTag {
-        binomial_genotype(alt, depth, 0.05, tract).expect("non-zero depth").tag
+    fn deletion(seq: &str) -> IndelAllele {
+        IndelAllele::Deletion(seq.bytes().map(Base::from).collect())
     }
 
-    fn call(seq: &str, alt_count: u32) -> IndelCall {
-        IndelCall {
-            allele: IndelAllele::Deletion(seq.bytes().map(Base::from).collect()),
-            genotype: GenotypeTag::ref_het(ALT_1),
-            quality: Phred::from_phred(30_u8),
-            ml: None,
-            depth: 30,
-            alt_count,
-            one_sided: false,
+    /// `alleles` scored in record order, haplotype `i + 1` carrying
+    /// `alleles[i]`, over `reads` of each kind.
+    fn scores(alleles: &[&str], reads: &[([f32; 3], usize)]) -> HaplotypeScores {
+        HaplotypeScores::at_column(
+            alleles.iter().map(|a| deletion(a)).collect(),
+            rows(reads).into(),
+        )
+        .expect("a verdict")
+    }
+
+    fn on_pair_hmm(scores: &HaplotypeScores) -> Vec<(IndelAllele, GenotypeTag)> {
+        call_on_pair_hmm(scores, 0).calls().iter().map(|c| (c.allele.clone(), c.genotype)).collect()
+    }
+
+    /// A het, a homozygote and the reference, each as the best pair has it,
+    /// with `QUAL` from the margin; under the reference
+    /// the allele stays as a `0/0` call for `--all` to show.
+    #[test]
+    fn a_called_allele_takes_its_copies_in_the_best_pair() {
+        for (reads, expected) in [
+            (
+                vec![(REF_READ, 4), (ALT1_READ, 4)],
+                vec![(deletion("A"), GenotypeTag::RefHet(ALT_1))],
+            ),
+            (vec![(ALT1_READ, 8)], vec![(deletion("A"), GenotypeTag::HomAlt(ALT_1))]),
+            (vec![(REF_READ, 8)], vec![(deletion("A"), GenotypeTag::HomRef)]),
+        ] {
+            let scores = scores(&["A"], &reads);
+            assert_eq!(on_pair_hmm(&scores), expected);
+            let verdict = &scores.verdict;
+            for call in call_on_pair_hmm(&scores, 0).calls() {
+                assert_eq!(call.event, EventIdx::new(0).expect("event"));
+                let margin = verdict.margin(call.event).expect("a margin");
+                assert_eq!(*call.quality, *margin.qual());
+            }
         }
     }
 
-    fn counts(ot: u32, ob: u32) -> IndelAlleleCounts {
-        IndelAlleleCounts {
-            allele: IndelAllele::Deletion([Base::A].into_iter().collect()),
-            ot,
-            ob,
-            unknown_strand: 0,
-            noisy: 0,
-        }
-    }
-
-    /// The fitted curve falls with tract length, and hom-alt falls faster than het —
-    /// which is what closes the gap between them inside a repeat.
+    /// Two called alleles in the best pair are one compound record: both
+    /// calls `1/2`, in the alleles' order, at the weaker allele's `QUAL`.
     #[test]
-    fn allele_fractions_fall_with_tract_length() {
-        let (het_simple, hom_simple) = expected_allele_fractions(2);
-        let (het_long, hom_long) = expected_allele_fractions(18);
-        assert!((het_simple - 0.440).abs() < 1e-9 && (hom_simple - 0.900).abs() < 1e-9);
-        assert!(het_long < het_simple && hom_long < hom_simple);
-        assert!(hom_simple - hom_long > het_simple - het_long);
-    }
-
-    /// The failure this exists to fix: real hom-alt indels in a long tract present at
-    /// VAF 0.6-0.8, which a hypothesis fixed at `1 - error_rate` calls het.
-    #[test]
-    fn hom_alt_in_a_long_tract_is_not_called_het() {
-        assert_eq!(tag(21, 30, LONG_TRACT), GenotypeTag::HomAlt(ALT_1));
-        assert_eq!(tag(19, 30, LONG_TRACT), GenotypeTag::HomAlt(ALT_1));
-    }
-
-    /// And the correction must not swallow genuine heterozygotes.
-    #[test]
-    fn genuine_hets_stay_het() {
-        assert_eq!(tag(11, 30, LONG_TRACT), GenotypeTag::RefHet(ALT_1));
-        assert_eq!(tag(13, 30, SIMPLE), GenotypeTag::RefHet(ALT_1));
-        assert_eq!(tag(0, 30, SIMPLE), GenotypeTag::HomRef);
-    }
-
-    #[test]
-    fn the_boundary_moves_with_the_tract() {
-        let boundary = |tract| {
-            (0..=30).find(|&a| tag(a, 30, tract) == GenotypeTag::HomAlt(ALT_1)).unwrap_or(30) as f64
-                / 30.0
+    fn two_called_alleles_make_a_compound_het() {
+        let scores = scores(&["AA", "A"], &[(ALT1_READ, 9), (ALT2_READ, 4)]);
+        let IndelRecords::Compound(calls) = call_on_pair_hmm(&scores, 0) else {
+            panic!("a compound record");
         };
-        assert!(boundary(LONG_TRACT) < boundary(SIMPLE));
+        let compound = GenotypeTag::AltHet(ALT_1, ALT_2);
+        let alleles: Vec<_> = calls.iter().map(|c| (c.allele.clone(), c.genotype)).collect();
+        assert_eq!(alleles, [(deletion("AA"), compound), (deletion("A"), compound)]);
+        let [first, second] = [0, 1]
+            .map(|i| scores.verdict.margin(EventIdx::new(i).expect("event")).expect("margin"));
+        assert!(calls.iter().all(|c| *c.quality == *first.min(second).qual()));
     }
 
-    /// Two real alleles at the pooled fraction a 1/2 actually shows (~0.56 in simple
-    /// sequence, not ~1.0 — reference bias hits both alleles).
+    /// The best pair holds the second allele, but too weakly to call it, so
+    /// the second is a `0/0` and the first takes the zygosity the reads give
+    /// it without the second: a homozygote when no read carries the
+    /// reference, a het when one does.
     #[test]
-    fn two_real_alleles_become_compound_het() {
-        let mut calls = vec![call("A", 9), call("AA", 8)];
-        resolve_compound_het(&mut calls, 30, 0.05, SIMPLE);
-        assert!(calls.iter().all(|c| c.genotype == GenotypeTag::AltHet(ALT_1, ALT_2)));
+    fn an_uncalled_half_of_a_compound_leaves_the_other_alone() {
+        let hom = scores(&["A", "AA"], &[([-9.0, -1.0, -9.0], 2), ([-9.0, -1.5, -1.0], 4)]);
+        assert_eq!(
+            on_pair_hmm(&hom),
+            [(deletion("A"), GenotypeTag::HomAlt(ALT_1)), (deletion("AA"), GenotypeTag::HomRef)]
+        );
+        let het = scores(
+            &["A", "AA"],
+            &[([-1.0, -9.0, -2.0], 1), ([-9.0, -1.0, -9.0], 2), ([-9.0, -1.5, -1.0], 2)],
+        );
+        assert_eq!(
+            on_pair_hmm(&het),
+            [(deletion("A"), GenotypeTag::RefHet(ALT_1)), (deletion("AA"), GenotypeTag::HomRef)]
+        );
     }
 
-    /// A het with a trace second allele pools to about the same fraction, so each
-    /// allele has to stand on its own too.
-    #[test]
-    fn a_het_with_a_trace_second_allele_stays_het() {
-        let mut calls = vec![call("A", 14), call("AA", 2)];
-        resolve_compound_het(&mut calls, 30, 0.05, SIMPLE);
-        assert!(!matches!(calls[0].genotype, GenotypeTag::AltHet(..)));
+    const A: u32 = 10;
+    const B: u32 = 20;
+
+    /// Two events at anchor [`A`] and one at [`B`], over `n` reads each that
+    /// only the haplotype carrying the events `haps` lists explains (as bitmasks
+    /// over the three events).
+    fn cluster(haps: &[(usize, usize)]) -> HaplotypeScores {
+        use crate::call::pair_hmm::{Cluster, Event, MAX_HAPLOTYPES, ReadScores};
+        let at = |anchor, seq| Event { anchor, allele: deletion(seq) };
+        let events = [at(A, "A"), at(A, "AA"), at(B, "C")].into_iter().collect();
+        let reads: Vec<ReadScores> = haps
+            .iter()
+            .flat_map(|&(hap, n)| {
+                let mut log10 = [-9.0; MAX_HAPLOTYPES];
+                log10[hap] = -1.0;
+                std::iter::repeat_n(ReadScores { fragment: None, mapq: 60, log10 }, n)
+            })
+            .collect();
+        let cluster = Cluster::new(events).expect("a cluster");
+        HaplotypeScores::new(cluster, reads.into()).expect("a verdict")
     }
 
-    /// At high depth all three pooled masses underflow to zero, and then neither
-    /// `<` comparison holds. Without a total-mass guard the locus promotes to 1/2
-    /// on a hypothesis every model rates as impossible.
-    #[test]
-    fn an_underflowing_pool_is_not_a_compound_het() {
-        let mut calls = vec![call("A", 6927), call("AA", 6927)];
-        resolve_compound_het(&mut calls, 20000, 0.05, SIMPLE);
-        assert!(calls.iter().all(|c| !matches!(c.genotype, GenotypeTag::AltHet(..))));
+    fn calls_at(scores: &HaplotypeScores, pos: u32) -> (bool, Vec<(IndelAllele, GenotypeTag)>) {
+        let records = call_on_pair_hmm(scores, pos);
+        let calls = records.calls().iter().map(|c| (c.allele.clone(), c.genotype)).collect();
+        (matches!(records, IndelRecords::Compound(_)), calls)
     }
 
-    /// The model reinstates a hom-ref allele it rates highly, and its score is
-    /// cleared from calls the binomial already accepted so it cannot veto them.
+    /// A column's records hold the events anchored at it and no other: the
+    /// two at [`A`] on different chromosomes are one compound record, the one
+    /// at [`B`], on the first chromosome with an event at [`A`], is its own
+    /// `0/1`.
     #[test]
-    fn rescue_reinstates_hom_ref_the_model_believes() {
-        let probability = |p: f64| Probability::new(p).expect("valid probability");
-        let threshold = Some(probability(0.5));
-        let mut kept = call("A", 12);
-        kept.ml = Some(probability(0.01));
-        let mut rescued = call("AA", 3);
-        rescued.genotype = GenotypeTag::HomRef;
-        rescued.ml = Some(probability(0.9));
-        let mut dropped = call("AAA", 2);
-        dropped.genotype = GenotypeTag::HomRef;
-        dropped.ml = Some(probability(0.1));
-
-        let mut calls = vec![kept, rescued, dropped];
-        rescue_hom_ref(&mut calls, threshold);
-
-        assert_eq!(calls.len(), 2, "the unconvincing hom-ref allele is dropped");
-        assert_eq!(calls[0].genotype, GenotypeTag::RefHet(ALT_1));
-        assert!(calls[0].ml.is_none(), "a low score must not veto a call the binomial kept");
-        assert_eq!(calls[1].genotype, GenotypeTag::RefHet(ALT_1), "rescued as a het");
+    fn a_column_calls_the_events_of_its_cluster_anchored_at_it() {
+        let scores = cluster(&[(0b101, 6), (0b010, 6)]);
+        let compound = GenotypeTag::AltHet(ALT_1, ALT_2);
+        assert_eq!(
+            calls_at(&scores, A),
+            (true, vec![(deletion("A"), compound), (deletion("AA"), compound)])
+        );
+        assert_eq!(
+            calls_at(&scores, B),
+            (false, vec![(deletion("C"), GenotypeTag::RefHet(ALT_1))])
+        );
+        assert_eq!(calls_at(&scores, B + 1), (false, vec![]));
     }
 
-    /// A one-sided allele is emitted for visibility but is not evidence, so it must
-    /// not consume a compound-het slot.
+    /// An event of the cluster the called pair does not carry is a `0/0`
+    /// call at its own column, for `--all` to show.
     #[test]
-    fn a_one_sided_allele_does_not_make_a_compound_het() {
-        let mut one_sided = call("AA", 8);
-        one_sided.one_sided = true;
-        let mut calls = vec![call("A", 9), one_sided];
-        resolve_compound_het(&mut calls, 30, 0.05, SIMPLE);
-        assert!(calls.iter().all(|c| !matches!(c.genotype, GenotypeTag::AltHet(..))));
-    }
-
-    /// A pool that looks hom-alt is one allele with a slippage shadow beside it.
-    #[test]
-    fn a_hom_alt_pool_is_not_a_compound_het() {
-        let mut calls = vec![call("A", 14), call("AA", 13)];
-        resolve_compound_het(&mut calls, 30, 0.05, SIMPLE);
-        assert!(!matches!(calls[0].genotype, GenotypeTag::AltHet(..)));
-    }
-
-    /// Artefacts are strongly enriched among one-sided alleles; measured on TAPS
-    /// this removes 14-16 false positives per true call lost.
-    #[test]
-    fn one_sided_alleles_are_rejected() {
-        assert!(!counts(8, 0).on_both_strands());
-        assert!(!counts(0, 8).on_both_strands());
-        assert!(counts(1, 7).on_both_strands());
-    }
-
-    /// Noise comes off both sides of the ratio, so it cannot move the fraction on
-    /// its own.
-    #[test]
-    fn noise_is_excluded_symmetrically() {
-        let mut allele = counts(6, 6);
-        allele.noisy = 4;
-        assert_eq!(allele.clean_total(), 8);
+    fn an_absent_event_of_a_cluster_is_a_hom_ref_call() {
+        let scores = cluster(&[(0b001, 6), (0b010, 6)]);
+        assert_eq!(calls_at(&scores, B), (false, vec![(deletion("C"), GenotypeTag::HomRef)]));
+        assert!(calls_at(&scores, A).0);
     }
 }

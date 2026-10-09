@@ -2,7 +2,11 @@
 
 use super::{ColumnPhase, FragmentId, GtAllele, PhaseCall, PhaseObservation, PhaseSet};
 use crate::{
-    call::variant_calling::{EstimatedGenotype, GenotypeTag},
+    call::{
+        pair_hmm::{Cluster, Event, HaplotypeScores, ReadScores},
+        pileup::indels::{IndelAllele, IndelAlleleCounts, IndelCounts, IndelData, Scored},
+        variant_calling::{EstimatedGenotype, GenotypeTag},
+    },
     metrics::{Alt, AltCall, PileupMetrics, PositionMetrics},
     sequence::{ChunkRegion, Region},
     utils::default,
@@ -98,4 +102,25 @@ pub(crate) fn het(
         Some(GenotypeTag::RefHet(ALT_1)),
         observations,
     )
+}
+
+/// Give `column` the pair-HMM's scores of `reads` against the reference and
+/// the haplotypes carrying `scored`, in that record order, and the indel calls
+/// it makes of them.
+pub(crate) fn with_indels(
+    mut column: PileupMetrics,
+    scored: &[IndelAllele],
+    reads: &[ReadScores],
+) -> PileupMetrics {
+    let events = scored.iter().map(|a| Event { anchor: column.pos, allele: a.clone() }).collect();
+    let cluster = Cluster::new(events).expect("a cluster");
+    let scores = HaplotypeScores::new(cluster, reads.into()).expect("reads the haplotypes explain");
+    let alleles = scored
+        .iter()
+        .map(|allele| IndelAlleleCounts { allele: allele.clone(), total: 6 })
+        .collect();
+    let counts = IndelCounts { alleles };
+    let scored = Some(Scored::new(Arc::new(scores), column.pos));
+    column.indel_data = Some(Box::new(IndelData { counts, scored }));
+    column
 }

@@ -1,8 +1,7 @@
 use crate::utils::logging::ThisIsABug;
 use crate::{
-    call::pileup::indels::IndelAllele,
     metrics::{
-        MetricsForAlt, MetricsForIndel, PileupMetrics,
+        MetricsForAlt, PileupMetrics,
         ml::types::{
             ByModel, GpuRastairModel, MachineLearning, MlModel, PlattScaling, RastairFlatModel,
         },
@@ -23,7 +22,7 @@ use tracing::instrument;
 /// A larger round is not refused, it is split — [`submit_and_collect`] chunks
 /// by this — so the only cost of a low value is more rounds, and the only cost
 /// of a high one is a reservation that on a discrete GPU is real VRAM. A 100 kb
-/// segment produces ~4,900 rows across all five models, so a region is never
+/// segment produces ~4,900 rows across all models, so a region is never
 /// split, and there is room left should the inference queue ever back up
 /// enough for regions to coalesce (measured so far: it does not).
 pub const GPU_BATCH_BUFFER_SIZE: usize = 8_192;
@@ -42,7 +41,6 @@ pub fn add_ml_metrics(
     current: &mut PileupMetrics,
     after: Option<&PileupMetrics>,
     ml: &MachineLearning,
-    score_indels: bool,
 ) -> Result<()> {
     if !ml.enabled() {
         return Ok(());
@@ -80,26 +78,6 @@ pub fn add_ml_metrics(
         }
     }
 
-    // The hard-filter pathway must not carry an ML score: it did not consult the
-    // model, and a score would make `low_ml_score` reachable for calls the model
-    // never judged.
-    let mut indel_scores: Vec<(usize, Probability)> = Vec::new();
-    if let Some(ref d) = current.indel_data {
-        for (i, call) in d.calls.iter().enumerate().filter(|_| score_indels) {
-            let m = MetricsForIndel { metrics: current, indel: call };
-            if let Some(pred) = ml.predict_indels(&m) {
-                indel_scores.push((i, pred.prediction));
-            }
-        }
-    }
-    for (i, score) in indel_scores {
-        if let Some(d) = current.indel_data.as_mut()
-            && let Some(call) = d.calls.get_mut(i)
-        {
-            call.ml = Some(score);
-        }
-    }
-
     Ok(())
 }
 
@@ -112,7 +90,6 @@ pub fn extract_ml_rows(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     model: &RastairFlatModel,
-    score_indels: bool,
 ) -> Result<MlBatch> {
     let calc = &ml.feature_calculator;
     let feature_num = calc.feature_num();
@@ -142,20 +119,8 @@ pub fn extract_ml_rows(
             };
 
             let Some(f) = usable_features(features, "alt") else { continue };
-            batch[which].push(Pending::snp(i, alt_base, model.platt(which)), &f)?;
-        }
-
-        let indel_calls = current.indel_data.as_deref().map_or(&[][..], |d| &d.calls);
-        for (indel_idx, call) in indel_calls.iter().enumerate().filter(|_| score_indels) {
-            let indel = MetricsForIndel { metrics: current, indel: call };
-
-            let (which, features) = match &call.allele {
-                IndelAllele::Insertion(_) => (MlModel::Insertion, calc.calculate_insertion(&indel)),
-                IndelAllele::Deletion(_) => (MlModel::Deletion, calc.calculate_deletion(&indel)),
-            };
-
-            let Some(f) = usable_features(features, "indel") else { continue };
-            batch[which].push(Pending::indel(i, indel_idx, model.platt(which)), &f)?;
+            batch[which]
+                .push(Pending { pileup_idx: i, alt_base, platt: model.platt(which) }, &f)?;
         }
     }
 
@@ -190,11 +155,7 @@ fn usable_features(features: Result<Array2<f32>>, kind: &'static str) -> Option<
 /// batch is what lets biosphere walk 16 samples per tree in lockstep, which is
 /// ~5x faster than scoring candidates one at a time as [`add_ml_metrics`]
 /// does.
-pub fn score_on_cpu(
-    pileups: &mut [PileupMetrics],
-    ml: &MachineLearning,
-    score_indels: bool,
-) -> Result<()> {
+pub fn score_on_cpu(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Result<()> {
     let Some(model) = ml.model.as_ref() else {
         return Ok(());
     };
@@ -202,7 +163,7 @@ pub fn score_on_cpu(
         return Ok(());
     }
 
-    let (rows, targets) = extract_ml_rows(pileups, ml, model, score_indels)?.split()?;
+    let (rows, targets) = extract_ml_rows(pileups, ml, model)?.split()?;
     let scores = MlScores::from_fn(|m| {
         let rows = rows[m].view();
         if rows.nrows() == 0 {
@@ -216,8 +177,8 @@ pub fn score_on_cpu(
 
 /// Score a batch on the GPU: one dispatch per model per [`GPU_BATCH_BUFFER_SIZE`] rows.
 ///
-/// Every model is submitted before any is collected. The five forests sit on
-/// five separate devices, so this is what lets their GPU work overlap.
+/// Every model is submitted before any is collected, so their GPU work can
+/// overlap.
 pub fn submit_and_collect(rows: &MlRows, gpu: &GpuRastairModel) -> Result<MlScores> {
     let mut scores = MlScores::from_fn(|m| Vec::with_capacity(rows[m].nrows()));
     let longest = MlModel::ALL.into_iter().map(|m| rows[m].nrows()).max().unwrap_or(0);
@@ -260,13 +221,7 @@ pub fn apply_ml_scores(
             let Some(pileup) = pileups.get_mut(p.pileup_idx) else { continue };
             let calibrated: Probability = p.platt.calibrate_score(raw);
 
-            if let Some(indel_idx) = p.indel_idx {
-                if let Some(d) = pileup.indel_data.as_mut()
-                    && let Some(call) = d.calls.get_mut(indel_idx)
-                {
-                    call.ml = Some(calibrated);
-                }
-            } else if let Some(filters) = pileup.alt_filters_mut(p.alt_base) {
+            if let Some(filters) = pileup.alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);
                 filters.filters.add(RastairFilter::LowMlScore, move || calibrated < threshold);
             }
@@ -316,7 +271,7 @@ impl MlBatch {
 ///
 /// Rows are appended to a flat `Vec` that grows with the candidates actually
 /// found, rather than reserved at `positions × 4` up front: a 100 kb region
-/// has ~5,000 rows across all five models, and the bound was two orders of
+/// has ~5,000 rows across all models, and the bound was two orders of
 /// magnitude above that. `pending.len() × n_features` is always the length of
 /// `features`, which [`Self::push`] enforces, so the two cannot drift apart.
 pub struct ModelBatch {
@@ -353,19 +308,6 @@ impl ModelBatch {
 
 pub struct Pending {
     pileup_idx: usize,
-    /// For SNPs: the alt base. For indels: unused.
     alt_base: Base,
-    /// For indels: index into `indel_calls`. For SNPs: `None`.
-    indel_idx: Option<usize>,
     platt: PlattScaling,
-}
-
-impl Pending {
-    fn snp(pileup_idx: usize, alt_base: Base, platt: PlattScaling) -> Self {
-        Self { pileup_idx, alt_base, indel_idx: None, platt }
-    }
-
-    fn indel(pileup_idx: usize, indel_idx: usize, platt: PlattScaling) -> Self {
-        Self { pileup_idx, alt_base: Base::Unknown, indel_idx: Some(indel_idx), platt }
-    }
 }

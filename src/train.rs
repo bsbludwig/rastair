@@ -1,11 +1,10 @@
-//! Train the five random forests a model file carries: CpG, de-novo CpG,
-//! other SNVs, insertion and deletion.
+//! Train the three random forests a model file carries: CpG, de-novo CpG and
+//! other SNVs.
 //!
-//! 1. Collect: run the column pipeline over every segment, label each SNV and
-//!    indel candidate against the truth set, and file it under its model.
+//! 1. Collect: run the column pipeline over every segment, label each SNV
+//!    candidate against the truth set, and file it under its model.
 //!    Each model keeps a bounded uniform sample of what it is offered.
-//! 2. Sample: draw `--n-positive`/`--n-negative` examples per SNV model and
-//!    `--indel-n-positive`/`--indel-n-negative` per indel model.
+//! 2. Sample: draw `--n-positive`/`--n-negative` examples per model.
 //! 3. Fit: a random forest per model, Platt-scaled on examples it did not see.
 //! 4. Export: write the `RastairFlatModel`.
 
@@ -14,13 +13,9 @@ mod reservoir;
 #[cfg(not(feature = "experimental-seqair"))]
 use crate::call::process::calculate_pileup_metrics;
 use crate::{
-    call::{
-        pileup::indels::IndelAllele,
-        process::{PileupMappingParams, get_pileups},
-        variant_calling::indel_calling::{self, IndelParams, IndelPathway},
-    },
+    call::process::{PileupMappingParams, get_pileups},
     metrics::{
-        MetricsForIndel, PileupMetrics,
+        PileupMetrics,
         ml::{
             features::{FeatureCalculator, FeatureNum},
             types::{ByModel, MlFeatureSet, MlModel, PlattScaling, RastairFlatModel},
@@ -42,7 +37,7 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use reservoir::{ByLabel, KeySource, Label, SamplingRequest, TrainingData};
 use rust_htslib::bcf::{self, Read as _};
-use seqair_types::{Base, Pos0, RegionString, SmallVec, SmolStr};
+use seqair_types::{Base, Pos0, RegionString, SmolStr};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
@@ -84,7 +79,7 @@ pub struct TrainModelParams {
 
     /// Export collected features and labels as TSV files to this directory.
     /// One file per model type: `cpg_features.tsv`, `denovo_features.tsv`,
-    /// `other_features.tsv`, `insertion_features.tsv`, `deletion_features.tsv`.
+    /// `other_features.tsv`.
     #[arg(long, help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::DirPath)]
     export_features: Option<ClioPath>,
 
@@ -145,23 +140,6 @@ struct ModelParameters {
     #[arg(help_heading = cli::sections::TRAINING)]
     n_negative: usize,
 
-    /// Number of positive examples to draw for the insertion and deletion
-    /// models.
-    #[arg(long = "indel-n-positive", default_value_t = 8_000)]
-    #[arg(help_heading = cli::sections::TRAINING)]
-    indel_n_positive: usize,
-
-    /// Number of negative examples to draw for the insertion and deletion
-    /// models.
-    ///
-    /// Separate from `--n-negative` because indel candidates arrive already
-    /// filtered and are mostly true: the SNV draw would take nearly every
-    /// indel negative and train the indel models far more negative-heavy
-    /// than the candidates they judge.
-    #[arg(long = "indel-n-negative", default_value_t = 20_000)]
-    #[arg(help_heading = cli::sections::TRAINING)]
-    indel_n_negative: usize,
-
     /// Random seed for reproducibility (subsampling and forest training).
     /// Omit for a random seed.
     #[arg(long)]
@@ -170,34 +148,14 @@ struct ModelParameters {
 }
 
 impl ModelParameters {
-    fn sampling_plan(&self) -> SamplingPlan {
-        SamplingPlan {
-            snv: ByLabel { positive: self.n_positive, negative: self.n_negative },
-            indel: ByLabel { positive: self.indel_n_positive, negative: self.indel_n_negative },
-        }
-    }
-}
-
-/// The draw each model asks for: SNV and indel candidates have opposite
-/// class balance, so they are sampled separately.
-#[derive(Debug, Clone, Copy)]
-struct SamplingPlan {
-    snv: SamplingRequest,
-    indel: SamplingRequest,
-}
-
-impl SamplingPlan {
-    const fn request(self, model: MlModel) -> SamplingRequest {
-        match model {
-            MlModel::Cpg | MlModel::DenovoCpg | MlModel::Others => self.snv,
-            MlModel::Insertion | MlModel::Deletion => self.indel,
-        }
+    /// The draw every model asks for.
+    fn sampling_request(&self) -> SamplingRequest {
+        ByLabel { positive: self.n_positive, negative: self.n_negative }
     }
 }
 
 /// The order the models' forest seeds are drawn from the run seed in.
-const SEED_ORDER: [MlModel; MlModel::COUNT] =
-    [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others, MlModel::Insertion, MlModel::Deletion];
+const SEED_ORDER: [MlModel; MlModel::COUNT] = [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others];
 
 /// Key for indexing positions in truth set
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -205,13 +163,6 @@ struct PositionKey {
     pos: u64,
     ref_base: Base,
     alt_base: Base,
-}
-
-/// Key for indexing indel positions in truth set
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-struct IndelKey {
-    pos: u64,
-    allele: IndelAllele,
 }
 
 /// The labels a candidate is checked against.
@@ -228,7 +179,6 @@ struct Truth {
 #[derive(Debug, Default)]
 struct ContigTruth {
     snps: HashSet<PositionKey>,
-    indels: HashSet<IndelKey>,
 }
 
 impl Truth {
@@ -246,7 +196,7 @@ impl Truth {
             warn!(
                 "Training without --regions-file: candidates outside the truth set's \
                  high-confidence regions will be labelled negative even though the truth set \
-                 makes no claim there, which is most severe for indels."
+                 makes no claim there."
             );
         }
 
@@ -270,26 +220,23 @@ fn merge_collected(mut acc: Collected, other: Collected) -> Result<Collected> {
 #[instrument(level = "debug", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let seed = params.model_params.seed.unwrap_or_else(rand::random);
-    let plan = params.model_params.sampling_plan();
+    let request = params.model_params.sampling_request();
     info!(
         seed,
         n_trees = params.model_params.n_trees,
         max_features = params.model_params.max_features,
         max_depth = params.model_params.max_depth,
         min_samples_leaf = params.model_params.min_samples_leaf,
-        n_positive = plan.snv.positive,
-        n_negative = plan.snv.negative,
-        indel_n_positive = plan.indel.positive,
-        indel_n_negative = plan.indel.negative,
+        n_positive = request.positive,
+        n_negative = request.negative,
         "Training parameters",
     );
 
     create_output_dirs(params)?;
 
-    let (collected, failed_segments) = collect(params, plan, seed)?;
+    let (collected, failed_segments) = collect(params, request, seed)?;
     for (model, data) in collected.iter() {
         let (seen, kept) = (data.seen(), data.kept());
-        let request = plan.request(model);
         let draw = request.draw_from(kept);
         info!(
             model = model.name(),
@@ -323,7 +270,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         }
     }
 
-    let model = fit(params, plan, seed, collected)?;
+    let model = fit(params, request, seed, collected)?;
     serialize_model(&model, params.output.clone())
         .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
     info!(path=%params.output, "Saved model");
@@ -353,7 +300,11 @@ fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
 
 /// Label every candidate in the requested regions and file it under its model,
 /// and count the segments that failed.
-fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(Collected, usize)> {
+fn collect(
+    params: &TrainModelParams,
+    request: SamplingRequest,
+    seed: u64,
+) -> Result<(Collected, usize)> {
     let segmentation = SegmentationParams::default();
     let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
     let segments: Vec<ChunkRegion> = readers
@@ -369,12 +320,7 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
         truth: &truth,
         calculator: &*calculator,
         feature_num: calculator.feature_num(),
-        plan,
-        // Training examples come from the ML pathway, not the hard-filter chain.
-        indel_params: IndelParams {
-            experimental_indels: Some(IndelPathway::Ml),
-            ..IndelParams::default()
-        },
+        request,
     };
     let readers = ReaderSource::from(readers);
     // Reduced rather than collected: holding every segment's sample until a
@@ -442,7 +388,7 @@ fn segment_columns(
     readers: &mut PileupReaders,
     segment: &ChunkRegion,
 ) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
-    let mapping = PileupMappingParams { call_indels: true, ..Default::default() };
+    let mapping = PileupMappingParams::default();
 
     #[cfg(feature = "experimental-seqair")]
     let (segment, columns) = {
@@ -474,19 +420,18 @@ struct SegmentCollector<'a> {
     truth: &'a Truth,
     calculator: &'a dyn FeatureCalculator,
     feature_num: FeatureNum,
-    plan: SamplingPlan,
-    indel_params: IndelParams,
+    request: SamplingRequest,
 }
 
 impl SegmentCollector<'_> {
     fn empty(&self) -> Collected {
         ByModel::from_fn(|model| {
-            TrainingData::for_request(self.feature_num.get(model), self.plan.request(model))
+            TrainingData::for_request(self.feature_num.get(model), self.request)
         })
     }
 
-    /// Candidates are offered in column order, SNVs before indels, which
-    /// together with `keys` fixes which of them the reservoirs keep.
+    /// Candidates are offered in column order, which together with `keys`
+    /// fixes which of them the reservoirs keep.
     fn segment(
         &self,
         readers: &mut PileupReaders,
@@ -508,8 +453,7 @@ impl SegmentCollector<'_> {
                 if !segment.is_core(pos) || !self.truth.claims(&segment.contig, pos) {
                     return Ok(());
                 }
-                self.snvs(truth, &mut examples, before, column, after)?;
-                self.indels(truth, &mut examples, column)
+                self.snvs(truth, &mut examples, before, column, after)
             },
             "failed to extract training features, skipping",
         );
@@ -543,33 +487,6 @@ impl SegmentCollector<'_> {
                 )
             } else {
                 (MlModel::Others, self.calculator.calculate_others(&candidate, before, after))
-            };
-            examples.add(model, features, label, pos)?;
-        }
-        Ok(())
-    }
-
-    fn indels(
-        &self,
-        truth: &ContigTruth,
-        examples: &mut Examples<'_>,
-        column: &PileupMetrics,
-    ) -> Result<()> {
-        let Some(indel_data) = column.indel_data.as_ref() else { return Ok(()) };
-        let pos = u64::from(column.pos);
-        let tract = u32::from(indel_data.homopolymer_run.max(indel_data.dinucleotide_run));
-        let calls =
-            indel_calling::call_indels(&indel_data.counts, &self.indel_params, true, tract, false);
-        for call in &calls {
-            let label = truth.indels.contains(&IndelKey { pos, allele: call.allele.clone() });
-            let candidate = MetricsForIndel { metrics: column, indel: call };
-            let (model, features) = match call.allele {
-                IndelAllele::Insertion(_) => {
-                    (MlModel::Insertion, self.calculator.calculate_insertion(&candidate))
-                }
-                IndelAllele::Deletion(_) => {
-                    (MlModel::Deletion, self.calculator.calculate_deletion(&candidate))
-                }
             };
             examples.add(model, features, label, pos)?;
         }
@@ -652,7 +569,7 @@ fn covered_regions(segments: &[ChunkRegion]) -> Result<Vec<RegionString>> {
         .collect()
 }
 
-/// The SNP and indel keys of every PASS record of the truth VCF in `regions`,
+/// The SNP keys of every PASS record of the truth VCF in `regions`,
 /// for each contig of `regions` the VCF declares.
 #[instrument(level = "info", skip_all, fields(path = %path.display()))]
 fn truth_keys(
@@ -692,59 +609,33 @@ fn truth_keys(
         let alleles = record.alleles();
         let Some((&ref_allele, alts)) = alleles.split_first() else { return };
         for &alt_allele in alts {
-            match TruthKey::of(pos, ref_allele, alt_allele) {
-                Some(TruthKey::Snv(key)) => {
-                    truth.snps.insert(key);
-                }
-                Some(TruthKey::Indel(key)) => {
-                    truth.indels.insert(key);
-                }
-                None => {}
+            if let Some(key) = PositionKey::of_truth(pos, ref_allele, alt_allele) {
+                truth.snps.insert(key);
             }
         }
     })?;
-    let count = |of: fn(&ContigTruth) -> usize| contigs.values().map(of).sum::<usize>();
-    info!(
-        snps = count(|t| t.snps.len()),
-        indels = count(|t| t.indels.len()),
-        "Loaded true variants"
-    );
+    info!(snps = contigs.values().map(|t| t.snps.len()).sum::<usize>(), "Loaded true variants");
     Ok(contigs)
 }
 
-/// What one ALT allele of a truth record labels.
-#[derive(Debug, PartialEq, Eq)]
-enum TruthKey {
-    Snv(PositionKey),
-    Indel(IndelKey),
-}
-
-impl TruthKey {
-    /// The allele's key once the suffix it shares with REF past the anchor
-    /// base is stripped, which is how a multi-allelic record pads its shorter
-    /// alleles.
+impl PositionKey {
+    /// The key of one ALT allele of a truth record once the suffix it shares
+    /// with REF past the first base is stripped, which is how a multi-allelic
+    /// record pads its shorter alleles.
     ///
-    /// A single-base substitution or an insertion or deletion after the shared
-    /// anchor base has one; MNPs, complex and symbolic alleles do not.
-    fn of(pos: u64, ref_allele: &[u8], alt_allele: &[u8]) -> Option<Self> {
+    /// Only a single-base substitution has one; indels, MNPs, complex and
+    /// symbolic alleles do not.
+    fn of_truth(pos: u64, ref_allele: &[u8], alt_allele: &[u8]) -> Option<Self> {
         let (&ref_anchor, ref_rest) = ref_allele.split_first()?;
         let (&alt_anchor, alt_rest) = alt_allele.split_first()?;
         let (ref_rest, alt_rest) = strip_common_suffix(ref_rest, alt_rest);
-        let known = |bases: &[u8]| -> Option<SmallVec<Base, 4>> {
-            bases.iter().map(|&b| Some(Base::from(b)).filter(|&b| b != Base::Unknown)).collect()
-        };
-        match (ref_rest.is_empty(), alt_rest.is_empty()) {
-            (true, true) if ref_anchor != alt_anchor => {
-                let (ref_base, alt_base) = (Base::from(ref_anchor), Base::from(alt_anchor));
-                (ref_base != Base::Unknown && alt_base != Base::Unknown)
-                    .then_some(Self::Snv(PositionKey { pos, ref_base, alt_base }))
-            }
-            (false, true) if ref_anchor == alt_anchor => known(ref_rest)
-                .map(|bases| Self::Indel(IndelKey { pos, allele: IndelAllele::Deletion(bases) })),
-            (true, false) if ref_anchor == alt_anchor => known(alt_rest)
-                .map(|bases| Self::Indel(IndelKey { pos, allele: IndelAllele::Insertion(bases) })),
-            _ => None,
-        }
+        let (ref_base, alt_base) = (Base::from(ref_anchor), Base::from(alt_anchor));
+        (ref_rest.is_empty()
+            && alt_rest.is_empty()
+            && ref_base != alt_base
+            && ref_base != Base::Unknown
+            && alt_base != Base::Unknown)
+            .then_some(Self { pos, ref_base, alt_base })
     }
 }
 
@@ -763,7 +654,7 @@ fn strip_common_suffix<'a>(mut left: &'a [u8], mut right: &'a [u8]) -> (&'a [u8]
 /// each fit over `--threads` in a pool of its own.
 fn fit(
     params: &TrainModelParams,
-    plan: SamplingPlan,
+    request: SamplingRequest,
     seed: u64,
     collected: Collected,
 ) -> Result<RastairFlatModel> {
@@ -772,7 +663,7 @@ fn fit(
     let (counts, names) = (calculator.feature_num(), calculator.feature_names());
 
     let trained = collected.try_map(|model, data| -> Result<_> {
-        let (forest, platt) = fit_model(model, &data, params, plan.request(model), seeds[model])
+        let (forest, platt) = fit_model(model, &data, params, request, seeds[model])
             .wrap_err_with(|| format!("Failed to train the {} model", model.name()))?;
         if let Some(dir) = params.feature_analytics.as_ref() {
             let path = dir.path().join(format!("{}_feature_importances.csv", model.name()));
@@ -1061,22 +952,7 @@ mod tests {
     fn the_defaults_are_the_bundled_recipe() {
         let params = model_parameters(&[]);
         assert_eq!((params.max_features, params.max_depth, params.min_samples_leaf), (4, 40, 10));
-        let plan = params.sampling_plan();
-        assert_eq!(plan.snv, ByLabel { positive: 8_000, negative: 200_000 });
-        assert_eq!(plan.indel, ByLabel { positive: 8_000, negative: 20_000 });
-    }
-
-    /// Raising the SNV draw must not drag the indel models along.
-    #[test]
-    fn indel_models_draw_their_own_numbers() {
-        let plan = model_parameters(&["--n-negative", "500000", "--indel-n-negative", "7"])
-            .sampling_plan();
-        for model in [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others] {
-            assert_eq!(plan.request(model).negative, 500_000, "{}", model.name());
-        }
-        for model in [MlModel::Insertion, MlModel::Deletion] {
-            assert_eq!(plan.request(model).negative, 7, "{}", model.name());
-        }
+        assert_eq!(params.sampling_request(), ByLabel { positive: 8_000, negative: 200_000 });
     }
 
     /// A retrain reproduces a model only if every forest gets the seed it got
@@ -1086,52 +962,27 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(7);
         let expected: Vec<u64> = (0..MlModel::COUNT).map(|_| rng.random()).collect();
         let seeds = forest_seeds(7);
-        let order = [
-            MlModel::Cpg,
-            MlModel::DenovoCpg,
-            MlModel::Others,
-            MlModel::Insertion,
-            MlModel::Deletion,
-        ];
+        let order = [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others];
         assert_eq!(order.map(|model| seeds[model]).to_vec(), expected);
     }
 
-    fn truth_key(ref_allele: &str, alt_allele: &str) -> Option<TruthKey> {
-        TruthKey::of(10, ref_allele.as_bytes(), alt_allele.as_bytes())
-    }
-
-    fn deletion(bases: &[Base]) -> Option<TruthKey> {
-        Some(TruthKey::Indel(IndelKey { pos: 10, allele: IndelAllele::Deletion(bases.into()) }))
-    }
-
-    /// `REF=ATT ALT=A,AT` deletes two bases and one; the second allele is
-    /// padded with the T it shares with REF.
-    #[test]
-    fn a_padded_allele_of_a_multi_allelic_record_keys_its_own_indel() {
-        assert_eq!(truth_key("ATT", "A"), deletion(&[Base::T, Base::T]));
-        assert_eq!(truth_key("ATT", "AT"), deletion(&[Base::T]));
-        assert_eq!(truth_key("AA", "A"), deletion(&[Base::A]));
-        assert_eq!(
-            truth_key("A", "ATG"),
-            Some(TruthKey::Indel(IndelKey {
-                pos: 10,
-                allele: IndelAllele::Insertion([Base::T, Base::G].as_slice().into()),
-            }))
-        );
+    fn truth_key(ref_allele: &str, alt_allele: &str) -> Option<PositionKey> {
+        PositionKey::of_truth(10, ref_allele.as_bytes(), alt_allele.as_bytes())
     }
 
     /// `REF=AT ALT=GT` is an A>G substitution padded to the record's REF.
     #[test]
     fn a_padded_substitution_keys_an_snv() {
-        let snv =
-            |ref_base, alt_base| Some(TruthKey::Snv(PositionKey { pos: 10, ref_base, alt_base }));
+        let snv = |ref_base, alt_base| Some(PositionKey { pos: 10, ref_base, alt_base });
         assert_eq!(truth_key("AT", "GT"), snv(Base::A, Base::G));
         assert_eq!(truth_key("C", "T"), snv(Base::C, Base::T));
     }
 
     #[test]
-    fn complex_and_symbolic_alleles_key_nothing() {
+    fn indel_complex_and_symbolic_alleles_key_nothing() {
         for (ref_allele, alt_allele) in [
+            ("ATT", "AT"),
+            ("A", "ATG"),
             ("ATG", "AC"),
             ("AT", "GC"),
             ("AT", "AT"),
@@ -1202,11 +1053,7 @@ mod tests {
             truth: &truth,
             calculator: &*calculator,
             feature_num: calculator.feature_num(),
-            plan: model_parameters(&[]).sampling_plan(),
-            indel_params: IndelParams {
-                experimental_indels: Some(IndelPathway::Ml),
-                ..IndelParams::default()
-            },
+            request: model_parameters(&[]).sampling_request(),
         };
         let mut params = ReaderParams::test_data();
         params.regions = Some(crate::utils::CliRegionInput::from_region(
@@ -1301,8 +1148,8 @@ mod tests {
         let chr1 = contigs.get("chr1").wrap_err("chr1 is declared")?;
         let chr2 = contigs.get("chr2").wrap_err("chr2 is declared")?;
         assert!(chr1.snps.contains(&PositionKey { pos: 99, ref_base: Base::A, alt_base: Base::G }));
-        assert_eq!(chr1.indels.len(), 1);
-        assert!(chr2.snps.is_empty() && chr2.indels.is_empty());
+        assert_eq!(chr1.snps.len(), 1, "the insertion is not an SNV");
+        assert!(chr2.snps.is_empty());
         Ok(())
     }
 

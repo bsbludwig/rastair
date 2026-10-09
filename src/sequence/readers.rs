@@ -26,7 +26,6 @@ pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
 mod seqair_readers {
     use crate::{
         call::{
-            pileup::has_terminal_repeat,
             require_tags::TagRequirement,
             variant_calling::{ReadFlags, ReadMaskParams},
         },
@@ -36,7 +35,6 @@ mod seqair_readers {
         utils::{CliRegionInput, RegionString},
     };
     use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
-    use seqair::bam::cigar::CigarOpType;
     use seqair::bam::record_store::{
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
     };
@@ -46,7 +44,7 @@ mod seqair_readers {
 
     /// Reference sequence window installed by the pileup driver before each
     /// `readers.pileup()` call so that `RastairRecordFilter::compute` can do
-    /// mismatch-motif inference and deletion reference-base lookup.
+    /// mismatch-motif inference.
     #[derive(Clone)]
     pub struct ReferenceWindow {
         pub bases: Arc<[Base]>,
@@ -76,12 +74,6 @@ mod seqair_readers {
     #[derive(Clone)]
     pub struct RastairReadExtras {
         pub strand: Strand,
-        pub has_soft_clip: bool,
-        /// True if first or last `repeat_limit` bases repeat a mono- or di-nucleotide.
-        pub has_repeat: bool,
-        /// TAPS-aware mismatch count. Only computed when `indel_bases > 0`
-        /// (expensive walk); zero otherwise.
-        pub taps_aware_mismatches: u32,
         /// Read positions that survive read-end masking. Resolved here from
         /// (strand, reverse, `seq_len`) so the per-column check is one range
         /// comparison — masking is evaluated at every base of every read, and
@@ -143,69 +135,13 @@ mod seqair_readers {
                 from_flags
             };
 
-            let has_soft_clip = rec
-                .cigar(store)
-                .map(|ops| ops.iter().any(|op| op.op_type() == CigarOpType::SoftClip))
-                .unwrap_or(false);
-
-            let has_repeat = rec
-                .seq(store)
-                .map(|seq| has_terminal_repeat(seq.len(), |i| seq.get(i)))
-                .unwrap_or(false);
-
-            let has_indels = rec.indel_bases > 0;
-            let taps_aware_mismatches = if has_indels {
-                if let Some(reference) = self.reference.as_ref() {
-                    count_taps_aware_mismatches(rec, store, reference, strand)
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-
             let mask = self
                 .read_masking
                 .keep_range(strand, rec.flags.is_reverse(), rec.seq_len)
                 .unwrap_or(0..0);
 
-            RastairReadExtras { strand, has_soft_clip, has_repeat, taps_aware_mismatches, mask }
+            RastairReadExtras { strand, mask }
         }
-    }
-
-    /// Walk aligned pairs counting non-TAPS mismatches (same logic as `from_hts.rs`).
-    fn count_taps_aware_mismatches<U>(
-        rec: &SlimRecord,
-        store: &RecordStore<U>,
-        reference: &ReferenceWindow,
-        strand: Strand,
-    ) -> u32 {
-        let Ok(pairs) = rec.aligned_pairs_with_read(store) else { return 0 };
-        let mut count = 0u32;
-
-        for matched in pairs.matches_only() {
-            let rpos_u32 = u32::try_from(matched.rpos.as_u64()).unwrap_or(u32::MAX);
-            let Some(ref_base) = reference.base_at(rpos_u32) else { continue };
-            let observed = matched.query;
-
-            if observed == Base::Unknown || ref_base == Base::Unknown || observed == ref_base {
-                continue;
-            }
-
-            let is_taps_signal = match strand {
-                Strand::OT => observed == Base::T && ref_base == Base::C,
-                Strand::OB => observed == Base::A && ref_base == Base::G,
-                Strand::Unknown => {
-                    (observed == Base::T && ref_base == Base::C)
-                        || (observed == Base::A && ref_base == Base::G)
-                }
-            };
-
-            if !is_taps_signal {
-                count += 1;
-            }
-        }
-        count
     }
 
     /// Infer OT/OB strand from mismatch-motif evidence (same logic as `from_hts.rs`).

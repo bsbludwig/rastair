@@ -21,7 +21,8 @@ use tracing::{Level, debug, instrument, trace, warn};
 #[cfg(feature = "experimental-seqair")]
 use crate::{
     call::pileup::from_seqair::{
-        ColumnDraft, ColumnScratch, DenovoNeighbour, plain_reference_column,
+        ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, plain_reference_column,
+        score_indel_cluster,
     },
     metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{PileupReaders, ReferenceWindow},
@@ -48,12 +49,9 @@ pub struct PileupMappingParams {
     pub variant_calling: VariantCallingParams,
     pub require_tags: TagRequirement,
     pub call_indels: bool,
-    /// Ignore indels within this distance from read ends.
-    #[default(0)]
-    pub indel_end_of_read_cutoff: usize,
-    /// Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
-    #[default(5)]
-    pub indel_max_mismatches: u32,
+    /// Support an indel allele needs to be scored; see `IndelParams::min_indel_ao`.
+    #[default(2)]
+    pub min_indel_ao: u32,
     /// Per-segment compressed-byte budget for the seqair backend; segments
     /// estimated above this are subdivided. `0` disables the budget.
     #[default(32 * 1024 * 1024)]
@@ -274,6 +272,10 @@ pub fn get_pileups(
             guard.set_soft_clip_overhang(1);
         }
 
+        // Indel columns are scored once the sub-segment's columns are all
+        // drafted, so the haplotype window knows the variants around them.
+        let sub_segment_start = pileup_metrics.len();
+        let mut pending_indels: Vec<usize> = Vec::new();
         while let Some(col) = guard.pileups() {
             let pos = col.pos().as_u64();
             if !region.contains(pos) {
@@ -306,11 +308,44 @@ pub fn get_pileups(
             }
 
             if keeps(draft.pre_filter_inputs(previous, None)) {
-                keep(&mut pileup_metrics, &mut sliding_entropy, draft);
+                if keep(&mut pileup_metrics, &mut sliding_entropy, draft)
+                    .is_some_and(|kept| kept.indel_data.is_some())
+                {
+                    pending_indels.push(pileup_metrics.len().saturating_sub(1));
+                }
             } else if draft.awaits_successor() {
                 deferred = Some((draft, previous));
             }
             previous = Some(neighbour);
+        }
+
+        let context = ClusterContext::new(
+            guard.store(),
+            &segment,
+            params,
+            pileup_metrics.get(sub_segment_start..).unwrap_or_default(),
+        );
+        // Columns closer than this are one cluster: their alleles are often
+        // the aligner's different spellings of one tract event, or two events
+        // one chromosome carries, and either needs them scored together. 6,
+        // 12 and 20 bp are alike on chr12 at both depths, 20 a shade better
+        // at 73x; 25 lost recall before subsets of events were haplotypes.
+        const CLUSTER_GAP: u32 = 20;
+        let clusters: Vec<&[usize]> = pending_indels
+            .chunk_by(|&a, &b| {
+                let pos = |i: usize| pileup_metrics.get(i).map(|p| p.pos);
+                pos(a).zip(pos(b)).is_some_and(|(a, b)| b.saturating_sub(a) <= CLUSTER_GAP)
+            })
+            .collect();
+        for cluster in clusters {
+            let pos = |i: &usize| Pos0::new(pileup_metrics.get(*i)?.pos);
+            let (Some(start), Some(end)) =
+                (cluster.first().and_then(pos), cluster.last().and_then(pos))
+            else {
+                continue;
+            };
+            let spanning = guard.records_overlapping(start, end);
+            score_indel_cluster(&mut pileup_metrics, cluster, spanning, &context, &mut scratch);
         }
     }
 
@@ -341,20 +376,27 @@ pub fn get_pileups(
 /// here and not for every covered position; the sliding window is still fed
 /// ascending indices and its counts are integers, so the values are the ones
 /// the whole-region pass produced.
+///
+/// A column kept only once its successor is known (a reference C the next
+/// column makes a de-novo CpG) is finished after its reads are gone, so it
+/// cannot be scored. Outside CpG-only output an indel column is always kept at
+/// once, so only CpG-only output loses scores this way.
 #[cfg(feature = "experimental-seqair")]
-fn keep(
-    pileup_metrics: &mut Vec<PileupMetrics>,
+fn keep<'a>(
+    pileup_metrics: &'a mut Vec<PileupMetrics>,
     sliding_entropy: &mut SlidingEntropy<'_>,
     draft: ColumnDraft,
-) {
+) -> Option<&'a mut PileupMetrics> {
     let idx = draft.idx();
     match draft.finish() {
         Ok(mut metrics) => {
             metrics.pos_metrics.extended.region_entropy = sliding_entropy.entropy_at(idx);
             pileup_metrics.push(metrics);
+            pileup_metrics.last_mut()
         }
         Err(error) => {
             warn!(error = format!("{error:#}"), "Failed to finish pileup, skipping");
+            None
         }
     }
 }
@@ -466,14 +508,15 @@ mod tests {
         #[allow(clippy::type_complexity)]
         fn fingerprint(
             pileups: impl Iterator<Item = PileupMetrics>,
-        ) -> Vec<(u32, Base, usize, Vec<(Base, u32, u32, u32)>, usize)> {
+        ) -> Vec<(u32, Base, usize, Vec<(Base, u32, u32, u32)>, u32)> {
             pileups
                 .map(|p| {
                     let alleles = std::iter::once(&p.ref_metrics)
                         .chain(p.alts.iter().map(|alt| &alt.metrics))
                         .map(|m| (m.base, m.depth, m.strand_count.ot, m.strand_count.ob))
                         .collect();
-                    let indels = p.indel_data.as_ref().map_or(0, |data| data.observations.len());
+                    let indels =
+                        p.indel_data.as_ref().map_or(0, |data| data.counts.total_indel_reads());
                     (p.pos, p.reference_base, p.pos_metrics.depth as usize, alleles, indels)
                 })
                 .collect()

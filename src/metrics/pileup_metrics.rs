@@ -20,7 +20,7 @@ use seqair_types::SmolStr;
 use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand, SumOfSquares};
 use std::ops::Deref;
 use std::sync::Arc;
-use tracing::{trace, warn};
+use tracing::trace;
 
 #[derive(Debug, Clone)]
 pub struct PileupMetrics {
@@ -124,20 +124,7 @@ impl PileupMetrics {
     /// NOTE: The extended metrics in `PositionMetrics` are not set here and
     /// need to be set later using `set_extended_metrics`.
     pub fn new(pileup: Pileup) -> Result<Self> {
-        let Pileup {
-            region,
-            pos,
-            reference_base,
-            context,
-            indel_observations,
-            homopolymer_run,
-            dinucleotide_run,
-            soft_clip_count,
-            reads,
-            noisy_ref_count,
-            indel_ref_window,
-            indel_ref_anchor,
-        } = pileup;
+        let Pileup { region, pos, reference_base, context, reads } = pileup;
         let mut accumulators = PerBaseAccumulators::default();
         let mut pos_baseq = RmsAccumulator::new();
         let mut pos_mapq = RmsAccumulator::new();
@@ -195,22 +182,6 @@ impl PileupMetrics {
             .collect::<Result<_>>()?;
         order_alts(&mut alts);
 
-        let indel_data = if indel_observations.is_empty() {
-            None
-        } else {
-            let counts = aggregate_indels(&indel_observations, total_reads, noisy_ref_count, pos);
-            Some(Box::new(indels::IndelData {
-                observations: indel_observations,
-                ref_window: indel_ref_window,
-                ref_anchor: indel_ref_anchor,
-                homopolymer_run,
-                dinucleotide_run,
-                soft_clip_count,
-                counts,
-                calls: Vec::new(),
-            }))
-        };
-
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
         for read in reads.iter() {
@@ -245,7 +216,8 @@ impl PileupMetrics {
             before_counts,
             after_counts,
             tags: RecordTags::default(),
-            indel_data,
+            // Indels are collected on the seqair path only.
+            indel_data: None,
             phase: None,
         })
     }
@@ -519,7 +491,7 @@ impl AltFilters {
 
 /// The set of FILTER codes a position or an alt allele has earned.
 ///
-/// FILTER is a set, so this is a bitset: 13 variants fit in the `u16` that
+/// FILTER is a set, so this is a bitset: 14 variants fit in the `u16` that
 /// `RastairFilter`'s `#[enumset(repr)]` pins down. Iteration is therefore in
 /// discriminant order, which is also header registration order.
 #[derive(Debug, Clone, Copy, Default)]
@@ -725,70 +697,6 @@ impl MetricsForAlt<'_> {
         (self.metrics.pos_metrics.cpg == InCpG::C && self.alt.base == Base::T)
             || (self.metrics.pos_metrics.cpg == InCpG::G && self.alt.base == Base::A)
     }
-}
-
-pub struct MetricsForIndel<'p> {
-    pub metrics: &'p PileupMetrics,
-    pub indel: &'p crate::call::variant_calling::indel_calling::IndelCall,
-}
-
-pub(crate) fn aggregate_indels(
-    indel_observations: &[indels::IndelObservation],
-    total_reads: usize,
-    noisy_ref_count: u32,
-    pos: u32,
-) -> indels::IndelCounts {
-    if indel_observations.is_empty() {
-        return indels::IndelCounts {
-            ref_count: total_reads as u32,
-            noisy_ref_count,
-            ..Default::default()
-        };
-    }
-
-    let mut alleles: SmallVec<indels::IndelAlleleCounts, 2> = SmallVec::new();
-
-    for obs in indel_observations {
-        let entry = match alleles.iter_mut().find(|e| e.allele == obs.allele) {
-            Some(entry) => entry,
-            None => {
-                alleles.push(indels::IndelAlleleCounts {
-                    allele: obs.allele.clone(),
-                    ot: 0,
-                    ob: 0,
-                    unknown_strand: 0,
-                    noisy: 0,
-                });
-                alleles.last_mut().expect("just pushed")
-            }
-        };
-        match obs.strand {
-            Strand::OT => entry.ot += 1,
-            Strand::OB => entry.ob += 1,
-            Strand::Unknown => entry.unknown_strand += 1,
-        }
-        if obs.noisy {
-            entry.noisy += 1;
-        }
-    }
-
-    let total_indel_reads: u32 = alleles.iter().map(|a| a.total()).sum();
-    let depth = total_reads as u32;
-    // Both counts are drawn from one pass over the same alignments, so every
-    // indel-carrying fragment is also part of the depth. If that stops holding,
-    // `ref_count` floors to zero and every VAF here silently reads 1.0.
-    if total_indel_reads > depth {
-        warn!(
-            pos,
-            total_indel_reads,
-            depth,
-            "More indel-supporting fragments than reads at this position; the VAF \
-             denominator is wrong. This is a bug in rastair, please report it."
-        );
-    }
-    let ref_count = depth.saturating_sub(total_indel_reads);
-
-    indels::IndelCounts { alleles, ref_count, noisy_ref_count }
 }
 
 #[cfg(test)]

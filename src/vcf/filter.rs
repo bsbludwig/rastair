@@ -1,7 +1,7 @@
 //! The closed set of VCF FILTER codes rastair can emit.
 //!
 //! Filters are modelled as a `#[repr(u8)]` enum rather than carried around as
-//! strings. FILTER is a set, and there are only 13 codes, so a whole set is a
+//! strings. FILTER is a set, and there are only 14 codes, so a whole set is a
 //! `u16` bitset ([`Filters`](crate::metrics::Filters)) rather than a list.
 //! This enum is the single source of truth: the VCF header is registered from
 //! [`RastairFilter::ALL`] (in declaration order) and each filter resolves to
@@ -43,8 +43,8 @@ pub enum RastairFilter {
     PreMl,
     /// `low_ml_score`
     LowMlScore,
-    /// `indel_strand`
-    IndelStrand,
+    /// `low_indel_qual`
+    LowIndelQual,
 }
 
 impl RastairFilter {
@@ -66,7 +66,7 @@ impl RastairFilter {
         Self::MHighDp,
         Self::PreMl,
         Self::LowMlScore,
-        Self::IndelStrand,
+        Self::LowIndelQual,
     ];
 
     /// The filter's VCF ID, as it appears in the header and FILTER column.
@@ -84,7 +84,7 @@ impl RastairFilter {
             Self::MHighDp => "m_highDp",
             Self::PreMl => "pre_ml",
             Self::LowMlScore => "low_ml_score",
-            Self::IndelStrand => "indel_strand",
+            Self::LowIndelQual => "low_indel_qual",
         }
     }
 
@@ -105,7 +105,7 @@ impl RastairFilter {
             Self::MHighDp => "Excessive coverage for methylation candidate",
             Self::PreMl => "Low amount of usable evidence, skipping ML",
             Self::LowMlScore => "Machine Learning module prediction below threshold",
-            Self::IndelStrand => "Indel allele supported on only one bisulfite strand",
+            Self::LowIndelQual => "Indel allele the pair-HMM does not call present",
         }
     }
 }

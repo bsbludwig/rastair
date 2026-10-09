@@ -58,23 +58,6 @@ enum GenotypeScenario {
     HomAlt,
 }
 
-fn empty_pileup() -> Pileup {
-    Pileup {
-        region: dummy_region(),
-        context: SequenceContext::default(),
-        pos: 1000,
-        reads: SimpleReads(std::sync::Arc::new([])),
-        reference_base: Base::Unknown,
-        indel_observations: SmallVec::new(),
-        noisy_ref_count: 0,
-        homopolymer_run: 0,
-        dinucleotide_run: 0,
-        soft_clip_count: 0,
-        indel_ref_window: SmallVec::new(),
-        indel_ref_anchor: 0,
-    }
-}
-
 impl MethylationScenario {
     /// What `call()` should return for this scenario.
     ///
@@ -163,7 +146,6 @@ impl MethylationScenario {
             pos: 1000,
             reads: SimpleReads(reads.into()),
             reference_base: ref_base,
-            ..empty_pileup()
         };
 
         let mut metrics = PileupMetrics::new(pileup).unwrap();
@@ -768,7 +750,6 @@ proptest! {
             pos: 1000,
             reads: SimpleReads(reads.into()),
             reference_base: ref_base,
-            ..empty_pileup()
         };
         let metrics = PileupMetrics::new(pileup).unwrap();
         let result = call(&metrics).unwrap();
@@ -815,7 +796,6 @@ proptest! {
             pos: 1000,
             reads: SimpleReads(reads.into()),
             reference_base: ref_base,
-            ..empty_pileup()
         };
         let metrics = PileupMetrics::new(pileup).unwrap();
         let result = call(&metrics).unwrap();
@@ -901,7 +881,6 @@ fn denovo_adjacent_without_called_partner_is_not_a_cpg() {
             pos: 1000,
             reads: SimpleReads(reads.into()),
             reference_base: ref_base,
-            ..empty_pileup()
         };
         let mut metrics = PileupMetrics::new(pileup).unwrap();
 
@@ -963,7 +942,6 @@ fn denovo_adjacent_produces_original_cpg() {
             pos: 1000,
             reads: SimpleReads(reads.into()),
             reference_base: ref_base,
-            ..empty_pileup()
         };
         let mut metrics = PileupMetrics::new(pileup).unwrap();
 
@@ -1040,7 +1018,6 @@ fn both_sides_independent() {
         pos: 1000,
         reads: SimpleReads(all_reads.into()),
         reference_base: C,
-        ..empty_pileup()
     };
 
     let mut metrics = PileupMetrics::new(pileup).unwrap();

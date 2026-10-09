@@ -81,6 +81,12 @@ impl FragmentId {
     pub fn new(qname_hash: u64) -> Option<Self> {
         NonZeroU64::new(qname_hash).map(Self)
     }
+
+    /// The fragment of a read seqair reports a qname hash for.
+    #[must_use]
+    pub const fn of(qname_hash: NonZeroU64) -> Self {
+        Self(qname_hash)
+    }
 }
 
 /// The 1-based position a set of phased records is filed under, written out as

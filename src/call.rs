@@ -44,6 +44,7 @@ use tracing::{Level, debug, instrument, trace, warn};
 pub mod denovo_cpg;
 pub mod methylation;
 pub mod ml;
+pub mod pair_hmm;
 pub mod phasing;
 pub mod pileup;
 mod record_filters;
@@ -183,6 +184,12 @@ pub fn call(mut params: CallParams) -> Result<()> {
         !params.phase,
         "--phase needs the `experimental-seqair` backend, which this build does not include"
     );
+    #[cfg(not(feature = "experimental-seqair"))]
+    ensure!(
+        !params.indel.experimental_indels,
+        "--experimental-indels needs the `experimental-seqair` backend, which this build does \
+         not include: the pair-HMM scores reads while their column is built"
+    );
     // `figure_out_outputs` turns BED-only output into `--cpgs-only`, so this
     // also catches `--phase --bed out.bed`.
     ensure!(
@@ -308,14 +315,12 @@ fn process_segment(
     let pileup_mapping_params = process::PileupMappingParams {
         variant_calling: params.variant_calling.clone(),
         require_tags: params.require_tags.filter(),
-        call_indels: params.indel.enabled(),
-        indel_max_mismatches: params.indel.indel_max_mismatches,
-        indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
+        call_indels: params.indel.experimental_indels,
+        min_indel_ao: params.indel.min_indel_ao,
         segment_max_bytes: params.segmentation.segment_max_bytes,
         rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
         early_reject: Some(params.record_filters.clone()),
         phase: params.phase,
-        ..Default::default()
     };
 
     #[cfg(not(feature = "experimental-seqair"))]
@@ -409,35 +414,11 @@ fn process_collected_pileups(
         denovo_cpg: params.denovo_cpg.clone(),
     };
 
-    if params.indel.enabled() {
-        for p in &mut pileups {
-            if let Some(ref mut d) = p.indel_data {
-                let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
-                d.calls = variant_calling::indel_calling::call_indels(
-                    &d.counts,
-                    &params.indel,
-                    params.indel.use_ml(ml.enabled()),
-                    tract,
-                    params.indel.rescues_hom_ref(),
-                );
-            }
-        }
-    }
-
     // Pass 2: ML prediction on the inference thread when there is one, and on
     // this thread otherwise or if the GPU failed. Both score the region as one
     // batch per model; see `score_on_cpu` for why that matters on the CPU.
-    let score_indels = params.indel.needs_ml_scores(ml.enabled());
-    if !process::score_on_gpu(&mut pileups, ml, score_indels) {
-        process::score_on_cpu(&mut pileups, ml, score_indels)?;
-    }
-
-    if params.indel.rescues_hom_ref() {
-        for p in &mut pileups {
-            if let Some(ref mut d) = p.indel_data {
-                variant_calling::indel_calling::rescue_hom_ref(&mut d.calls, params.ml.threshold());
-            }
-        }
+    if !process::score_on_gpu(&mut pileups, ml) {
+        process::score_on_cpu(&mut pileups, ml)?;
     }
 
     let mut pileups: Vec<PileupMetrics> = pileups

@@ -605,6 +605,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "compair"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dff101249a485035f1db046a73e5d19b7e3d80eff6e48b27a56a9c54dba0566"
+dependencies = [
+ "fearless_simd",
+ "fearless_simd_macros",
+ "seqair-types",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "console"
 version = "0.16.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1007,9 +1019,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fearless_simd"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3772b63c40606beea8fe1f7b06a60de27ceb9bfc2d9dad3427368ca41dc7e62"
+checksum = "3296eb97d869113eaf148a6bdf01884e90b3828ad7ae2340b0f93362fc158611"
 
 [[package]]
 name = "fearless_simd_macros"
@@ -2551,6 +2563,7 @@ dependencies = [
  "clap_complete_command",
  "clio",
  "color-eyre",
+ "compair",
  "crossbeam-channel",
  "cstr8",
  "enumset",
@@ -2832,9 +2845,9 @@ checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 
 [[package]]
 name = "seqair"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b95904b7ad417b19202f58933c3f656d6c06f1a2a74eaee29219d871575cccbb"
+checksum = "3ec3e87c7208ffd7a56d711ec5be511a67abe7bf94b7b145107ea7c14dbd6cf9"
 dependencies = [
  "bytemuck",
  "bzip2",
