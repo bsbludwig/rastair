@@ -620,9 +620,18 @@ fn cluster_candidates<'a>(
     min_ao: u32,
 ) -> SmallVec<Event, MAX_EVENTS> {
     let mut alleles: SmallVec<(u32, &IndelAlleleCounts), 8> = columns
-        .filter_map(|column| Some((column.pos, &column.indel_data.as_deref()?.counts)))
-        .flat_map(|(pos, counts)| counts.alleles.iter().map(move |a| (pos, a)))
-        .filter(|(_, a)| a.total >= min_ao)
+        .filter_map(|column| {
+            // Two reads of a stutter allele are noise at 73x and the only
+            // evidence at 14x, so the floor also grows with the column: 5 %
+            // of its depth drops a quarter of the candidate events and 17 %
+            // of the pair-HMM cells at 73x and changes no column of the chr12
+            // scores at either depth; 2 % drops nothing.
+            let floor = min_ao.max((column.pos_metrics.depth * 5).div_ceil(100));
+            Some((column.pos, floor, &column.indel_data.as_deref()?.counts))
+        })
+        .flat_map(|(pos, floor, counts)| {
+            counts.alleles.iter().filter(move |a| a.total >= floor).map(move |a| (pos, a))
+        })
         .collect();
     alleles.sort_by_key(|(pos, a)| (Reverse(a.total), *pos, allele_order(&a.allele)));
     let mut events: SmallVec<Event, MAX_EVENTS> = SmallVec::new();

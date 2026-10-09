@@ -1755,8 +1755,10 @@ fn the_pair_hmm_calls_indels_on_a_scenario() -> Result<()> {
         .balanced(120, 370, 5)
         .reference_at(REJECTED, b"CA")
         .insertion(REJECTED, b"TT", Hap::Two)
-        .pairs(Hap::One, Strand::Top, 560, 20)
-        .pairs(Hap::One, Strand::Bottom, 560, 20)
+        // Two carriers in forty fragments: exactly the 5 % of the depth a
+        // candidate needs, so the pair-HMM scores and rejects it.
+        .pairs(Hap::One, Strand::Top, 560, 19)
+        .pairs(Hap::One, Strand::Bottom, 560, 19)
         .pairs(Hap::Two, Strand::Top, 560, 1)
         .pairs(Hap::Two, Strand::Bottom, 560, 1);
 

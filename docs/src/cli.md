@@ -152,7 +152,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Indels are called by a TAPS-aware pair-HMM, which needs the seqair backend.
 * `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations for an indel allele to be scored
 
-   Reads (one per fragment) whose alignment carries the allele. Of the alleles reaching it in a cluster of neighbouring columns, the three most reads carry are scored, at most two per column, and a scored allele is called only if the pair-HMM finds it present.
+   Reads (one per fragment) whose alignment carries the allele; at least 5% of the column's depth is required in any case. Of the alleles reaching it in a cluster of neighbouring columns, the three most reads carry are scored, at most two per column, and a scored allele is called only if the pair-HMM finds it present.
 
   Default value: `2`
 
