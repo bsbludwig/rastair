@@ -131,7 +131,7 @@ external-tool-tests = []
 # seqair is now a core dependency (VCF writer); this flag only toggles the
 # experimental seqair-backed pileup *reading* path, and with it the pair-HMM
 # indel caller (compair aligns reads at column time, which needs seqair's reads).
-experimental-seqair = ["dep:compair"]
+experimental-seqair = ["dep:compair", "compair/gpu"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

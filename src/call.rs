@@ -322,6 +322,7 @@ fn process_segment(
         rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
         early_reject: Some(params.record_filters.clone()),
         phase: params.phase,
+        gpu: params.ml.gpu,
     };
 
     #[cfg(not(feature = "experimental-seqair"))]

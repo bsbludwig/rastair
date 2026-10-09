@@ -21,8 +21,8 @@ use tracing::{Level, debug, instrument, trace, warn};
 #[cfg(feature = "experimental-seqair")]
 use crate::{
     call::pileup::from_seqair::{
-        ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, plain_reference_column,
-        score_indel_cluster,
+        ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, flush_indel_clusters,
+        plain_reference_column, score_indel_cluster,
     },
     metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{PileupReaders, ReferenceWindow},
@@ -68,6 +68,8 @@ pub struct PileupMappingParams {
     /// Keep per-read phase observations at the columns that can use them
     /// (seqair backend only).
     pub phase: bool,
+    /// Score the pair-HMM on the GPU (seqair backend only).
+    pub gpu: bool,
 }
 
 impl Deref for PileupMappingParams {
@@ -347,6 +349,10 @@ pub fn get_pileups(
             let spanning = guard.records_overlapping(start, end);
             score_indel_cluster(&mut pileup_metrics, cluster, spanning, &context, &mut scratch);
         }
+        // Before the next sub-segment's reads are loaded: a launch's prepared
+        // reads held across that load cost 100 MB at 73x, and almost every
+        // region is one sub-segment, so there is nothing to overlap with.
+        flush_indel_clusters(&mut pileup_metrics, &mut scratch);
     }
 
     // Nothing follows the last column, so a still-deferred draft was only ever

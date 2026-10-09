@@ -16,7 +16,7 @@ use seqair_types::{Phred, SmallVec};
 #[cfg(feature = "experimental-seqair")]
 mod scoring;
 #[cfg(feature = "experimental-seqair")]
-pub use scoring::{HaplotypeRead, HaplotypeScratch, score};
+pub use scoring::{HaplotypeRead, HaplotypeScratch, Prepared, prepare, score};
 
 /// Indel events a cluster scores at most: every subset of them is a
 /// haplotype, so this bounds the alignments per read at `2^MAX_EVENTS`.

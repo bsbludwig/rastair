@@ -58,7 +58,8 @@ pub struct MachineLearningParams {
     #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,
     /// Use GPU-accelerated ML predictions which might speed up large datasets,
-    /// but can be slower for small ones due to overhead.
+    /// but can be slower for small ones due to overhead. With
+    /// `--experimental-indels` the pair-HMM indel scoring runs on the GPU too.
     ///
     /// Requires a Metal/Vulkan/DX12-capable GPU.
     #[arg(long, help_heading = cli::sections::PROCESSING)]

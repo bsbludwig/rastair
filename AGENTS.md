@@ -367,6 +367,43 @@ Testing: the cluster pieces have unit tests (`cluster_candidates`, `WindowMask`,
 `call_on_pair_hmm` with three events) and one CLI scenario,
 `the_pair_hmm_calls_two_events_of_one_cluster`, which fails with one event per haplotype.
 
+### The pair-HMM on the GPU (`--gpu`)
+
+`--gpu` also scores the pair-HMM on the GPU (compair's `gpu` feature, part of
+`experimental-seqair`): the `gpu` module of `from_seqair.rs`. The calls are identical to the
+CPU path by construction — the kernel is bit-identical to compair's CPU kernels, and a pair
+whose `f32` score falls under its precision floor is rescored in `f64` on the CPU
+(`GpuScore::or_rescore`, ~0.8 % of pairs) — and were checked byte-identical on chr12 at 26x
+and 73x. What to know when touching it:
+
+- **`score` is split in two.** `pair_hmm::prepare` builds the cluster, haplotypes, owned
+  `HaplotypeRead`s and bands; `Prepared::align` runs the CPU kernel, `Prepared::push` adds the
+  cluster's pairs to a `GpuPairs` plan and `Prepared::finish_gpu` turns a launch's scores back
+  into `HaplotypeScores` through the same `rows`. Keep the two arms sharing everything but the
+  kernel call, or the identity check is the only thing standing between them.
+- **One GPU thread per worker** (`Lane`, a `thread_local`): the worker sends a plan, keeps
+  preparing clusters, and collects the scores later. The aligner's buffers live on that thread
+  and grow to the largest launch once, not per region. The wait is compair's `Wait::Spin`, which
+  costs the helper thread a core while a launch runs: `Wait::Block` would sleep instead, but in
+  compair 0.2.0 it misses the mapping callback on ~1 launch in 300 (8 % of launches with 4k-pair
+  launches at 73x), and every launch after that one fails with "Buffer with 'scores' label is
+  still mapped". The fix is on seqair branch `fix/compair-block-wait`; switch the one line once a
+  compair with it is published. A failed launch rebuilds the lane's aligner, so one failure does
+  not take the lane down for the run.
+- **A launch is at most `MAX_LAUNCH_PAIRS` (4,096) pairs**, so a sub-segment's clusters go up
+  in chunks and the prepared reads a worker holds are bounded — two launches' worth, the one on
+  the GPU and the one filling (a single cluster can exceed the cap; it launches alone). The
+  per-region `Batch` (in `ColumnScratch`) is flushed after each sub-segment's cluster loop,
+  before the next sub-segment's reads are loaded: holding a launch across that load cost
+  100 MB at 73x for no wall time. A batch dropped with a launch in flight drains it in `Drop`,
+  or the next region would collect it.
+- Every failure (no adapter, a plan too large for the device, a lost thread, a failed launch)
+  falls back to the CPU kernel for the clusters concerned, with a `warn!`. Without `--gpu` the
+  module is never entered, and the plain `cargo test` never exercises it.
+- `RASTAIR_LOG=rastair::call::pileup::from_seqair=debug` logs one line per launch with running
+  totals (launches, pairs, rescored); `grep -c "Pair-HMM GPU launch"` is the check that the GPU
+  path ran. Measured only on Apple Metal (M4 Pro) so far; a Vulkan identity check is open.
+
 ## Phasing (`--phase`, seqair only)
 
 `src/call/phasing.rs` and its `problem` and `solver` modules. Per-column data sits

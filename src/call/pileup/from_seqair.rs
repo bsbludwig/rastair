@@ -6,6 +6,7 @@ use crate::{
         PreFilterInputs,
         pair_hmm::{
             self, Cluster, Event, HaplotypeRead, HaplotypeScores, HaplotypeScratch, MAX_EVENTS,
+            Prepared,
         },
         phasing::{self, ColumnPhase, FragmentId, PhaseObservation},
         process::PileupMappingParams,
@@ -425,7 +426,9 @@ impl PileupMetrics {
         let pos = column.pos();
         let spanning = column.records_overlapping(pos, pos);
         let context = ClusterContext::new(column.store(), &segment, params, &[]);
-        score_indel_cluster(std::slice::from_mut(&mut metrics), &[0], spanning, &context, scratch);
+        let column = std::slice::from_mut(&mut metrics);
+        score_indel_cluster(column, &[0], spanning, &context, scratch);
+        flush_indel_clusters(column, scratch);
         Ok(metrics)
     }
 }
@@ -445,7 +448,35 @@ pub(crate) fn score_indel_cluster(
 ) {
     let columns = indices.iter().filter_map(|&i| pileups.get(i));
     let events = cluster_candidates(columns, context.params.min_indel_ao);
-    let scores = haplotype_scores(context, spanning, events, &mut scratch.haplotypes).map(Arc::new);
+    let prepared = prepare_cluster(context, spanning, events);
+    let prepared = match (prepared, gpu::batch(&mut scratch.gpu, context.params.gpu)) {
+        (Some(prepared), Some(batch)) => {
+            match batch.push(indices, prepared, pileups, &mut scratch.haplotypes) {
+                None => return,
+                unqueued => unqueued,
+            }
+        }
+        (prepared, _) => prepared,
+    };
+    let scores = prepared.and_then(|prepared| prepared.align(&mut scratch.haplotypes));
+    assign_scores(pileups, indices, scores);
+}
+
+/// Scores the clusters [`score_indel_cluster`] queued for the GPU; without a
+/// GPU, nothing is queued. `pileups` must be the slice the clusters were
+/// queued against.
+pub(crate) fn flush_indel_clusters(pileups: &mut [PileupMetrics], scratch: &mut ColumnScratch) {
+    if let Some(batch) = scratch.gpu.as_mut() {
+        batch.flush(pileups, &mut scratch.haplotypes);
+    }
+}
+
+fn assign_scores(
+    pileups: &mut [PileupMetrics],
+    indices: &[usize],
+    scores: Option<HaplotypeScores>,
+) {
+    let scores = scores.map(Arc::new);
     for &index in indices {
         let Some(column) = pileups.get_mut(index) else { continue };
         let pos = column.pos;
@@ -553,12 +584,22 @@ fn allele_order(allele: &IndelAllele) -> (u8, SmallVec<u8, 4>) {
 /// `events`, each at its anchor, scored against the reads spanning the cluster.
 /// The window is the reference under those reads, with the masked positions
 /// unknown.
+#[cfg(test)]
 fn haplotype_scores(
     context: &ClusterContext<'_>,
     spanning: impl Iterator<Item = RecordIdx>,
     events: SmallVec<Event, MAX_EVENTS>,
     scratch: &mut HaplotypeScratch,
 ) -> Option<HaplotypeScores> {
+    prepare_cluster(context, spanning, events)?.align(scratch)
+}
+
+/// [`haplotype_scores`] up to the alignment.
+fn prepare_cluster(
+    context: &ClusterContext<'_>,
+    spanning: impl Iterator<Item = RecordIdx>,
+    events: SmallVec<Event, MAX_EVENTS>,
+) -> Option<Prepared> {
     if events.is_empty() {
         return None;
     }
@@ -577,7 +618,7 @@ fn haplotype_scores(
         .map(|(i, &b)| if mask.contains(genomic(i)) { Base::Unknown } else { Base::from(b) })
         .collect();
     let reads: Vec<_> = reads.iter().filter_map(|read| read.haplotype_read(window_start)).collect();
-    pair_hmm::score(&window, window_start, events, &reads, scratch)
+    pair_hmm::prepare(&window, window_start, events, reads)
 }
 
 /// A read spanning the column, placed on the genome: where its first and last
@@ -772,6 +813,9 @@ pub(crate) struct ColumnScratch {
     /// Whether a phase observation was dropped because its read has no qname.
     pub(crate) saw_nameless_read: bool,
     haplotypes: HaplotypeScratch,
+    /// `None` until the first cluster, and after it when the pair-HMM is
+    /// scored on the CPU.
+    gpu: Option<gpu::Batch>,
 }
 
 impl ColumnScratch {
@@ -940,6 +984,256 @@ fn build_indel_observation(
                 .map(|s| s.iter().map(|&b| Base::from(b)).collect())
                 .unwrap_or_default();
             (!bases.is_empty()).then_some(IndelAllele::Deletion(bases))
+        }
+    }
+}
+
+/// The pair-HMM on the GPU: a region's clusters queued into launches, each
+/// run by the worker's own GPU thread while the worker prepares the next.
+mod gpu {
+    use super::{HaplotypeScratch, PileupMetrics, Prepared, assign_scores};
+    use compair::gpu::{GpuAligner, GpuContext, GpuError, GpuPairs, GpuScore, KernelOptions, Wait};
+    use std::{
+        cell::OnceCell,
+        mem,
+        ops::Range,
+        sync::{
+            Arc, OnceLock,
+            atomic::{AtomicU64, Ordering},
+            mpsc,
+        },
+        thread,
+    };
+    use tracing::{debug, info, warn};
+
+    /// Pairs a launch holds at most. A launch costs ~1.5 ms over its pairs,
+    /// so smaller launches lose that; larger ones hold more prepared reads
+    /// in memory, twice over while one runs and the next fills. 4,096 and
+    /// 8,192 time the same on chr12 at 73x; 4,096 holds 120 MB less.
+    const MAX_LAUNCH_PAIRS: usize = 4_096;
+
+    fn context() -> Option<&'static Arc<GpuContext>> {
+        static CONTEXT: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
+        CONTEXT
+            .get_or_init(|| match GpuContext::new() {
+                Ok(context) => {
+                    info!(adapter = %context.adapter_info().name, "The pair-HMM is scored on the GPU");
+                    Some(context)
+                }
+                Err(error) => {
+                    warn!(%error, "No GPU for the pair-HMM; it is scored on the CPU");
+                    None
+                }
+            })
+            .as_ref()
+    }
+
+    type Launched = (GpuPairs, Result<Vec<GpuScore>, GpuError>);
+
+    /// A worker's aligner on a thread of its own: `submit` a plan, `collect`
+    /// it back with its scores. The aligner's buffers grow to the largest
+    /// launch and stay, so it outlives the region's [`Batch`].
+    struct Lane {
+        submit: mpsc::Sender<GpuPairs>,
+        collect: mpsc::Receiver<Launched>,
+    }
+
+    thread_local! {
+        static LANE: OnceCell<Option<Lane>> = const { OnceCell::new() };
+    }
+
+    impl Lane {
+        fn spawn(context: &Arc<GpuContext>) -> std::io::Result<Self> {
+            let (submit, launches) = mpsc::channel::<GpuPairs>();
+            let (results, collect) = mpsc::channel();
+            // `Wait::Block` would sleep between polls instead of spinning a
+            // core, but in compair 0.2.0 it misses the mapping callback on
+            // ~1 launch in 300 (every launch after it then fails with the
+            // scores buffer still mapped); back to it once that is fixed.
+            let options = KernelOptions { wait: Wait::Spin, ..KernelOptions::default() };
+            let context = Arc::clone(context);
+            let aligner = move || GpuAligner::with_options(Arc::clone(&context), options);
+            let name = thread::current().name().unwrap_or("worker").to_owned();
+            thread::Builder::new().name(format!("{name}-gpu")).spawn(move || {
+                let mut current = aligner();
+                for pairs in launches {
+                    let scores = current.align(&pairs);
+                    // A failed launch can leave the aligner's buffers mapped;
+                    // a fresh one costs a regrowth and keeps the lane alive.
+                    if scores.is_err() {
+                        current = aligner();
+                    }
+                    if results.send((pairs, scores)).is_err() {
+                        break;
+                    }
+                }
+            })?;
+            Ok(Self { submit, collect })
+        }
+
+        fn with<R>(f: impl FnOnce(Option<&Lane>) -> R) -> R {
+            LANE.with(|lane| {
+                f(lane
+                    .get_or_init(|| {
+                        Lane::spawn(context()?)
+                            .inspect_err(|error| {
+                                warn!(%error, "No GPU thread for the pair-HMM; it is scored on the CPU");
+                            })
+                            .ok()
+                    })
+                    .as_ref())
+            })
+        }
+    }
+
+    /// The region's batch, created on first use; `None` when the pair-HMM
+    /// is scored on the CPU.
+    pub(super) fn batch(slot: &mut Option<Batch>, gpu: bool) -> Option<&mut Batch> {
+        if gpu && slot.is_none() && Lane::with(|lane| lane.is_some()) {
+            *slot = Some(Batch::default());
+        }
+        slot.as_mut()
+    }
+
+    /// A queued cluster: its columns, its prepared state, and where its
+    /// scores land in the launch.
+    struct Pending {
+        columns: Vec<usize>,
+        prepared: Prepared,
+        range: Range<usize>,
+    }
+
+    #[derive(Default)]
+    pub(in super::super) struct Batch {
+        filling: GpuPairs,
+        pending: Vec<Pending>,
+        /// The clusters of the launch on the lane, if one is.
+        in_flight: Option<Vec<Pending>>,
+    }
+
+    static LAUNCHES: AtomicU64 = AtomicU64::new(0);
+    static PAIRS: AtomicU64 = AtomicU64::new(0);
+    static RESCORED: AtomicU64 = AtomicU64::new(0);
+
+    impl Batch {
+        /// Queues a cluster, launching the batch once it is full; hands the
+        /// cluster back when it cannot be queued, to score on the CPU.
+        pub(super) fn push(
+            &mut self,
+            columns: &[usize],
+            prepared: Prepared,
+            pileups: &mut [PileupMetrics],
+            scratch: &mut HaplotypeScratch,
+        ) -> Option<Prepared> {
+            match prepared.push(&mut self.filling) {
+                Ok(range) => {
+                    self.pending.push(Pending { columns: columns.to_vec(), prepared, range });
+                    if self.filling.len() >= MAX_LAUNCH_PAIRS {
+                        self.launch(pileups, scratch);
+                    }
+                    None
+                }
+                Err(error) => {
+                    warn!(%error, "A cluster did not fit the GPU launch; it is scored on the CPU");
+                    Some(prepared)
+                }
+            }
+        }
+
+        /// Scores everything queued, waiting for the GPU.
+        pub(super) fn flush(
+            &mut self,
+            pileups: &mut [PileupMetrics],
+            scratch: &mut HaplotypeScratch,
+        ) {
+            if !self.pending.is_empty() {
+                self.launch(pileups, scratch);
+            }
+            if self.in_flight.is_some() {
+                self.filling = self.collect(pileups, scratch);
+            }
+        }
+
+        /// Submits the filling plan, after collecting the launch before it.
+        fn launch(&mut self, pileups: &mut [PileupMetrics], scratch: &mut HaplotypeScratch) {
+            let spare = if self.in_flight.is_some() {
+                self.collect(pileups, scratch)
+            } else {
+                GpuPairs::new()
+            };
+            let plan = mem::replace(&mut self.filling, spare);
+            let pending = mem::take(&mut self.pending);
+            match Lane::with(|lane| lane.map(|lane| lane.submit.send(plan))) {
+                Some(Ok(())) => self.in_flight = Some(pending),
+                _ => {
+                    warn!("The pair-HMM's GPU thread is gone; its clusters are scored on the CPU");
+                    settle(pending, None, pileups, scratch);
+                }
+            }
+        }
+
+        /// Waits for the launch on the lane, assigns its scores, and returns
+        /// its plan, cleared, for the next launch.
+        fn collect(
+            &mut self,
+            pileups: &mut [PileupMetrics],
+            scratch: &mut HaplotypeScratch,
+        ) -> GpuPairs {
+            let pending = self.in_flight.take().unwrap_or_default();
+            let Some((mut plan, scores)) = Lane::with(|lane| lane?.collect.recv().ok()) else {
+                warn!("The pair-HMM's GPU thread is gone; its clusters are scored on the CPU");
+                settle(pending, None, pileups, scratch);
+                return GpuPairs::new();
+            };
+            let scores = scores
+                .inspect_err(|error| {
+                    warn!(%error, "The pair-HMM's GPU launch failed; its clusters are scored on the CPU");
+                })
+                .ok();
+            if let Some(scores) = &scores {
+                let rescored = scores.iter().filter(|score| score.trusted().is_none()).count();
+                let total =
+                    |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed) + n;
+                debug!(
+                    launches = total(&LAUNCHES, 1),
+                    pairs = total(&PAIRS, scores.len() as u64),
+                    rescored = total(&RESCORED, rescored as u64),
+                    launch_pairs = scores.len(),
+                    "Pair-HMM GPU launch (running totals)"
+                );
+            }
+            settle(pending, scores.as_deref(), pileups, scratch);
+            plan.clear();
+            plan
+        }
+    }
+
+    /// A batch dropped with a launch in flight (a region that failed) takes
+    /// the launch's result off the lane, or the next region would collect it.
+    impl Drop for Batch {
+        fn drop(&mut self) {
+            if self.in_flight.is_some()
+                && !Lane::with(|lane| lane.is_some_and(|lane| lane.collect.recv().is_ok()))
+            {
+                debug!("A pair-HMM launch was lost with its GPU thread");
+            }
+        }
+    }
+
+    /// Gives each cluster its scores from the launch, or scores it on the
+    /// CPU where the launch has none.
+    fn settle(
+        pending: Vec<Pending>,
+        scores: Option<&[GpuScore]>,
+        pileups: &mut [PileupMetrics],
+        scratch: &mut HaplotypeScratch,
+    ) {
+        for Pending { columns, prepared, range } in pending {
+            let result = match scores.and_then(|scores| scores.get(range)) {
+                Some(scores) => prepared.finish_gpu(scores),
+                None => prepared.align(scratch),
+            };
+            assign_scores(pileups, &columns, result);
         }
     }
 }

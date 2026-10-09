@@ -289,7 +289,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Only affects the htslib pileup path. The seqair path deduplicates overlapping mates from seqair's per-store mate links and never matches read names, so it ignores this.
 
   Default value: `30`
-* `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead.
+* `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead. With `--experimental-indels` the pair-HMM indel scoring runs on the GPU too.
 
    Requires a Metal/Vulkan/DX12-capable GPU.
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
