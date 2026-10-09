@@ -3,7 +3,10 @@
 
 use crate::call::{
     pair_hmm::fixtures::*,
-    phasing::fixtures::{column, with_indels},
+    phasing::{
+        ColumnPhase, PhaseCall, RecordPhases,
+        fixtures::{allele, call, column, with_indels},
+    },
     pileup::indels::IndelAllele,
     tests::utils::*,
 };
@@ -84,4 +87,42 @@ fn a_rejected_pair_hmm_allele_is_filtered_and_only_written_under_all() {
         ["AT", "A", "low_indel_qual", "0/0"]
     );
     assert!(qual.parse::<f32>().is_ok_and(|qual| qual < 10.0), "{qual}");
+}
+
+/// `GT` and `PS` of each data line.
+fn phases(pileup: crate::metrics::PileupMetrics) -> Vec<(String, Option<String>)> {
+    metrics_to_vcf(&[pileup], RecordFilters::all())
+        .expect("a VCF")
+        .into_iter()
+        .map(|record| {
+            (record.format.get("GT").cloned().unwrap_or_default(), record.format.get("PS").cloned())
+        })
+        .collect()
+}
+
+fn with_indel_phase(
+    mut pileup: crate::metrics::PileupMetrics,
+    first: u8,
+) -> crate::metrics::PileupMetrics {
+    let phase = PhaseCall { set: call(901, 0).set, first: allele(first) };
+    pileup.phase =
+        Some(Box::new(ColumnPhase::Phased(RecordPhases { snv: None, indel: Some(phase) })));
+    pileup
+}
+
+/// Phasing made a site of the column's one passing het indel record, so the
+/// phase goes on that record, and not on a filtered one beside it.
+#[test]
+fn a_phased_pair_hmm_het_carries_its_phase_and_a_rejected_neighbour_does_not() {
+    let pileup = called(&[deletion(&[T]), deletion(&[T, T])], &[(REF_READ, 3), (ALT1_READ, 3)]);
+    assert_eq!(
+        phases(with_indel_phase(pileup, 1)),
+        [("1|0".to_owned(), Some("901".to_owned())), ("0/0".to_owned(), None)]
+    );
+}
+
+#[test]
+fn a_phased_pair_hmm_compound_het_is_one_phased_record() {
+    let pileup = called(&[deletion(&[T]), deletion(&[T, T])], &[(ALT1_READ, 3), (ALT2_READ, 3)]);
+    assert_eq!(phases(with_indel_phase(pileup, 2)), [("2|1".to_owned(), Some("901".to_owned()))]);
 }

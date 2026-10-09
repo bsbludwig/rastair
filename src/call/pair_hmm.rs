@@ -212,6 +212,17 @@ impl HapPair {
     pub fn is_heterozygous(self) -> bool {
         self.low != self.high
     }
+
+    /// For an event on exactly one chromosome: the haplotype carrying it and
+    /// the one not.
+    #[must_use]
+    pub fn split(self, event: EventIdx) -> Option<(HapIdx, HapIdx)> {
+        match (self.low.carries(event), self.high.carries(event)) {
+            (true, false) => Some((self.low, self.high)),
+            (false, true) => Some((self.high, self.low)),
+            _ => None,
+        }
+    }
 }
 
 /// One read's likelihood under each of a cluster's haplotypes.
@@ -722,6 +733,17 @@ mod tests {
         assert_eq!(s.verdict.copies_of(ev(1)), 2);
         assert!(s.verdict.margin(ev(0)).expect("scored").is_present());
         assert_eq!(s.support_over(&[ev(1)]).as_ref(), [0, 8]);
+    }
+
+    /// The carrier of an event on one chromosome comes first, whatever else
+    /// the two carry; an event on both or neither does not split the pair.
+    #[test]
+    fn a_pair_splits_on_an_event_one_chromosome_carries() {
+        assert_eq!(pair(0, 3).split(ev(1)), Some((HapIdx(3), HapIdx(0))));
+        assert_eq!(pair(1, 2).split(ev(1)), Some((HapIdx(2), HapIdx(1))));
+        assert_eq!(pair(1, 2).split(ev(0)), Some((HapIdx(1), HapIdx(2))));
+        assert_eq!(pair(3, 3).split(ev(0)), None);
+        assert_eq!(pair(0, 0).split(ev(0)), None);
     }
 
     #[test]

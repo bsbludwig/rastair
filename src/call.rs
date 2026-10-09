@@ -84,9 +84,10 @@ pub struct CallParams {
     #[command(flatten)]
     pub ml: ml::MachineLearningParams,
 
-    /// Link heterozygous SNVs that share read pairs into phase blocks
+    /// Link heterozygous variants that share read pairs into phase blocks
     ///
-    /// Phased genotypes are written as `0|1` with a `PS` phase set.
+    /// Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are
+    /// phased, and indels too with `--experimental-indels`.
     #[arg(long, default_value_t = false)]
     #[arg(help_heading = cli::sections::PHASING)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
