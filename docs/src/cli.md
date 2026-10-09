@@ -250,6 +250,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
     Regular BED file, usually `.bed`
 
 
+###### **Phasing Options:**
+
+* `--phase` — Link heterozygous SNVs that share read pairs into phase blocks
+
+   Phased genotypes are written as `0|1` with a `PS` phase set. Requires a build with the `experimental-seqair` backend.
+
+  Default value: `false`
+
 ###### **Processing Options:**
 
 * `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases

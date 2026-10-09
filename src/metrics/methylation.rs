@@ -55,14 +55,14 @@ fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<CpgBeta>
 }
 
 /// Which side of the CpG dinucleotide we are looking at.
-#[derive(Debug, Clone, Copy)]
-enum CpgSide {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CpgSide {
     C,
     G,
 }
 
 impl CpgSide {
-    fn strand(self) -> Strand {
+    pub(crate) fn strand(self) -> Strand {
         match self {
             CpgSide::C => Strand::OT,
             CpgSide::G => Strand::OB,
@@ -70,7 +70,7 @@ impl CpgSide {
     }
 
     /// The base that appears when methylated (T for C-side, A for G-side).
-    fn mod_base(self) -> Base {
+    pub(crate) fn mod_base(self) -> Base {
         match self {
             CpgSide::C => T,
             CpgSide::G => A,
@@ -78,7 +78,7 @@ impl CpgSide {
     }
 
     /// The base that appears when unmethylated (C for C-side, G for G-side).
-    fn unmod_base(self) -> Base {
+    pub(crate) fn unmod_base(self) -> Base {
         match self {
             CpgSide::C => C,
             CpgSide::G => G,
@@ -108,7 +108,7 @@ pub fn origins(record: &PileupMetrics) -> SmallVec<CpgOrigin, 2> {
 
 /// Determine the CpG origin for this position on the given side, or None if
 /// this position doesn't have a CpG allele on that side.
-fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
+pub(crate) fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
     // `denovo_adj` is set from de-novo candidate alts, before ML scoring, so on
     // its own it does not mean a de-novo CpG exists. Only once the partner's
     // alt was actually called does this position become the other half of a

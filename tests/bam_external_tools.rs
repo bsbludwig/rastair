@@ -783,3 +783,49 @@ fn ref_base_at(fasta: &rust_htslib::faidx::Reader, chrom: &str, pos: usize) -> O
     let seq = fasta.fetch_seq_string(chrom, pos, pos).ok()?;
     seq.bytes().next().map(|b| b.to_ascii_uppercase())
 }
+
+/// `bcftools` must read the phased records: `GT` with a `|` and an integer `PS`.
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn bcftools_reads_phased_genotypes() -> Result<()> {
+    use utils::scenario::{Hap, Scenario};
+    require_tool!("bcftools");
+
+    let scenario = Scenario::new(1000).snv(120, Hap::One).snv(420, Hap::Two).balanced(100, 350, 5);
+    let temp_dir = TempDir::new()?;
+    let fasta = scenario.write_fasta(temp_dir.path())?;
+    let bam = temp_dir.path().join("reads.bam");
+    scenario.write_bam(&bam)?;
+    let vcf = temp_dir.path().join("out.vcf.gz");
+    rastair()
+        .arg("call")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&bam)
+        .args([scenario.region().as_str(), "--no-ml", "--phase", "--vcf"])
+        .arg(&vcf)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to run rastair call --phase")?;
+
+    let query = Command::new("bcftools")
+        .args(["query", "-i", "PS!=\".\"", "-f", "%POS[\t%GT\t%PS]\n"])
+        .arg(&vcf)
+        .output()
+        .wrap_err("Failed to run bcftools query")?;
+    ensure!(
+        query.status.success(),
+        "bcftools query failed (exit {}): {}",
+        query.status,
+        String::from_utf8_lossy(&query.stderr)
+    );
+
+    let phased: Vec<Vec<String>> = String::from_utf8_lossy(&query.stdout)
+        .lines()
+        .map(|line| line.split('\t').map(str::to_owned).collect())
+        .collect();
+    let row = |pos: &str, gt: &str| vec![pos.to_owned(), gt.to_owned(), "121".to_owned()];
+    let expected = [row("121", "0|1"), row("421", "1|0")];
+    ensure!(phased == expected, "bcftools read {phased:?}, expected {expected:?}");
+    Ok(())
+}

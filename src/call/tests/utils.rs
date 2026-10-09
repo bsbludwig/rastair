@@ -331,9 +331,11 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
                 .ok_or_else(|| color_eyre::eyre::eyre!("ML field is empty"))?;
             Ok(FieldValue::F64(first))
         }
-        "GT" => {
-            let gt = record.format.get("GT").cloned().unwrap_or_else(|| ".".to_string());
-            Ok(FieldValue::String(gt))
+        // Absent renders as ".", so a test can assert a record carries no
+        // phase set as readily as it can assert a value.
+        "GT" | "PS" => {
+            let value = record.format.get(field_id).cloned().unwrap_or_else(|| ".".to_string());
+            Ok(FieldValue::String(value))
         }
         other => bail!("Unknown or unsupported field: {}", other),
     }
@@ -506,6 +508,7 @@ pub(crate) fn test_call(
         denovo_cpg: default(),
         methylation: default(),
         ml: default(),
+        phase: false,
         vcf: default(),
         bed: default(),
         total_threads: 2,

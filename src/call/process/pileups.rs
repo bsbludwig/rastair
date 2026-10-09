@@ -35,7 +35,10 @@ use seqair_types::{Base, Pos0};
 #[cfg(feature = "experimental-seqair")]
 use std::{
     num::{NonZeroU32, NonZeroU64},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 #[cfg(feature = "experimental-seqair")]
 use tracing::{debug, instrument, warn};
@@ -64,6 +67,9 @@ pub struct PileupMappingParams {
     /// the raw pileup. Production passes the record filters, so the seven
     /// columns in eight they drop never become a `PileupMetrics` at all.
     pub early_reject: Option<RecordFilters>,
+    /// Keep per-read phase observations at the columns that can use them
+    /// (seqair backend only).
+    pub phase: bool,
 }
 
 impl Deref for PileupMappingParams {
@@ -314,6 +320,16 @@ pub fn get_pileups(
         && keeps(waiting.pre_filter_inputs(before, None))
     {
         keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
+    }
+
+    // A missing read name is a property of the whole file (a CRAM written
+    // with `RN=false`), so once per run says all there is to say.
+    static WARNED_NAMELESS: AtomicBool = AtomicBool::new(false);
+    if scratch.saw_nameless_read && !WARNED_NAMELESS.swap(true, Ordering::Relaxed) {
+        warn!(
+            "Reads without a read name (e.g. a CRAM written with RN=false) cannot be linked \
+             into phase blocks and were left out of phasing"
+        );
     }
 
     Ok((segment, pileup_metrics.into_iter()))

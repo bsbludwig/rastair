@@ -5,7 +5,11 @@ use super::{
     ref_features::{indel_ref_window_at, indel_tract_runs_at},
 };
 use crate::{
-    call::{PreFilterInputs, process::PileupMappingParams},
+    call::{
+        PreFilterInputs,
+        phasing::{self, ColumnPhase, FragmentId, PhaseObservation},
+        process::PileupMappingParams,
+    },
     metrics::{
         Alt, AltFilters, Filters, FormsDenovo, PairedCounts, PerBaseAccumulators, PileupMetrics,
         ReadKey, RecordTags, aggregate_indels, alt_forms_denovo, order_alts,
@@ -49,6 +53,9 @@ pub(crate) struct ColumnDraft {
     soft_clip_count: u32,
     before_counts: PairedCounts,
     after_counts: PairedCounts,
+    /// Gathered here because the buffer the observations come from is reset at
+    /// the next column.
+    phase: Option<Box<ColumnPhase>>,
 }
 
 /// What a column contributes to its neighbours' de-novo adjacency, and nothing
@@ -181,6 +188,19 @@ impl ColumnDraft {
             }
             total_depth += 1;
 
+            let qual = seqair_types::BaseQuality::from_byte(baseq);
+            if params.phase && phasing::accepts_read(view.mapq, qual) {
+                match view.qname_hash().and_then(FragmentId::new) {
+                    Some(fragment) => scratch.phase_observations.push(PhaseObservation {
+                        fragment,
+                        base,
+                        strand,
+                        qual,
+                    }),
+                    None => scratch.saw_nameless_read = true,
+                }
+            }
+
             let qual_sq = f64::from(baseq).powi(2);
             let mapq_sq = f64::from(view.mapq).powi(2);
             accumulators.accumulate_fields(
@@ -292,6 +312,10 @@ impl ColumnDraft {
             }
         }
 
+        // Without `--phase` nothing was collected, so nothing is a candidate.
+        let phase = phasing::candidate_observations(&scratch.phase_observations, reference_base)
+            .map(|observations| Box::new(ColumnPhase::Observed(observations)));
+
         Ok(ColumnDraft {
             segment,
             pos,
@@ -310,6 +334,7 @@ impl ColumnDraft {
             soft_clip_count,
             before_counts,
             after_counts,
+            phase,
         })
     }
 
@@ -385,6 +410,7 @@ impl ColumnDraft {
             soft_clip_count,
             before_counts,
             after_counts,
+            phase,
         } = self;
 
         let depth = u32::try_from(total_depth).wrap_err("column depth exceeds u32")?;
@@ -447,6 +473,7 @@ impl ColumnDraft {
             after_counts,
             tags: RecordTags::default(),
             indel_data,
+            phase,
         })
     }
 }
@@ -562,11 +589,17 @@ pub(crate) struct ColumnScratch {
     /// that would spill to the heap once per column.
     mate_drops: Vec<RecordIdx>,
     mates: MateObservations,
+    /// The current column's phase observations, before the candidate test
+    /// decides whether they are kept.
+    phase_observations: Vec<PhaseObservation>,
+    /// Whether a phase observation was dropped because its read has no qname.
+    pub(crate) saw_nameless_read: bool,
 }
 
 impl ColumnScratch {
     fn begin(&mut self, depth: usize) {
         self.mate_drops.clear();
+        self.phase_observations.clear();
         self.mates.begin(depth);
     }
 }
@@ -2133,5 +2166,166 @@ mod tests {
             }
         }
         assert_eq!(overlap_depth, Some(2), "both mates must survive inside the overlap");
+    }
+
+    // ── phase observations ──────────────────────────────────────────────────
+
+    /// A read whose bases are exactly the reference over `[pos, pos + len)`, so
+    /// that `with_base_at` introduces the only mismatch in the column.
+    fn ref_read(qname: &[u8], pos: u32, len: usize, flags: u16) -> TestRead {
+        let start = pos as usize;
+        let mut read = TestRead::matching(qname, pos, len, Base::A, flags);
+        read.bases = REF
+            .get(start..start + len)
+            .expect("read lies inside the reference")
+            .iter()
+            .map(|&b| Base::from(b))
+            .collect();
+        read
+    }
+
+    fn phasing_params() -> PileupMappingParams {
+        PileupMappingParams { phase: true, ..dedup_params() }
+    }
+
+    /// Build the column at `pos`, handing back the scratch too so a test can see
+    /// the counters that live for a whole region.
+    fn phase_column(
+        reads: &[TestRead],
+        params: &PileupMappingParams,
+        pos: u32,
+    ) -> (PileupMetrics, ColumnScratch) {
+        let seg = segment(REF);
+        let store = store_of(reads, &params.read_masking);
+        let last = u32::try_from(REF.len() - 1).expect("a short reference");
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, last));
+        let mut scratch = ColumnScratch::default();
+        let mut metrics = None;
+        while let Some(col) = engine.pileups() {
+            if col.pos() == Pos0::new(pos).unwrap() {
+                metrics = Some(
+                    PileupMetrics::from_seqair(&col, seg.clone(), params, &mut scratch).unwrap(),
+                );
+            }
+        }
+        (metrics.expect("column at the requested position"), scratch)
+    }
+
+    fn observations(pm: &PileupMetrics) -> Option<&[crate::call::phasing::PhaseObservation]> {
+        match pm.phase.as_deref() {
+            Some(ColumnPhase::Observed(observations)) => Some(observations),
+            _ => None,
+        }
+    }
+
+    /// Reference position 8 is an A outside any CpG.
+    const REF_A: u32 = 8;
+
+    #[test]
+    fn no_column_keeps_observations_without_the_flag() {
+        let reads = vec![
+            ref_read(b"g0", 4, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"g1", 4, 8, OB_FIRST).with_base_at(4, Base::G),
+            ref_read(b"r0", 4, 8, OT_FIRST),
+        ];
+        let (pm, _) = phase_column(&reads, &dedup_params(), REF_A);
+        assert!(pm.alt(Base::G).is_some(), "the column really does carry alts");
+        assert!(pm.phase.is_none(), "observations must cost nothing without --phase");
+    }
+
+    #[test]
+    fn a_het_column_keeps_one_observation_per_read() {
+        let reads = vec![
+            ref_read(b"g0", 4, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"g1", 4, 8, OB_FIRST).with_base_at(4, Base::G),
+            ref_read(b"r0", 4, 8, OT_FIRST),
+        ];
+        let (pm, _) = phase_column(&reads, &phasing_params(), REF_A);
+        let obs = observations(&pm).expect("het column is a phase candidate");
+        assert_eq!(obs.len(), 3, "every kept read contributes, reference reads included");
+        assert_eq!(obs.iter().filter(|o| o.base == Base::G).count(), 2);
+
+        let mut fragments: Vec<_> = obs.iter().map(|o| o.fragment).collect();
+        fragments.sort_unstable();
+        fragments.dedup();
+        assert_eq!(fragments.len(), 3, "three templates, three fragment ids");
+    }
+
+    /// Both mates of a template carry the same fragment id, so a het one mate
+    /// covers can be linked to a het only the other mate reaches.
+    #[test]
+    fn both_mates_of_a_pair_share_a_fragment_id() {
+        let reads = vec![
+            ref_read(b"p0", 0, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"p1", 0, 8, OB_FIRST).with_base_at(4, Base::G),
+            ref_read(b"p0", 8, 8, OT_SECOND).with_base_at(4, Base::G),
+            ref_read(b"p1", 8, 8, OB_SECOND).with_base_at(4, Base::G),
+        ];
+        let params = phasing_params();
+
+        let fragments_at = |pos: u32| {
+            let (pm, _) = phase_column(&reads, &params, pos);
+            let mut ids: Vec<_> = observations(&pm)
+                .unwrap_or_else(|| panic!("column {pos} is a phase candidate"))
+                .iter()
+                .map(|o| o.fragment)
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+
+        let left = fragments_at(4);
+        assert_eq!(left.len(), 2);
+        assert_eq!(left, fragments_at(12), "the same two fragments span both columns");
+    }
+
+    #[test]
+    fn phase_quality_thresholds_are_stricter_than_the_calling_ones() {
+        let reads = vec![
+            ref_read(b"g0", 4, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"g1", 4, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"lowbaseq", 4, 8, OB_FIRST).with_base_at(4, Base::G).with_qual(10),
+            ref_read(b"lowmapq", 4, 8, OB_FIRST).with_base_at(4, Base::G).with_mapq(5),
+        ];
+        let params = phasing_params();
+        assert!(
+            params.quality.filter_fields(5, 10),
+            "the calling filters must accept both reads, or this proves nothing"
+        );
+
+        let (pm, _) = phase_column(&reads, &params, REF_A);
+        assert_eq!(pm.pos_metrics.depth, 4);
+        let obs = observations(&pm).expect("candidate");
+        assert_eq!(obs.len(), 2, "the low-quality reads contribute depth but not phase");
+    }
+
+    /// A read without a name has no template identity; grouping such reads
+    /// would link every het in the region, so they are dropped and flagged.
+    #[test]
+    fn reads_without_a_name_contribute_no_observation() {
+        let reads = vec![
+            ref_read(b"g0", 4, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"g1", 4, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"", 4, 8, OB_FIRST).with_base_at(4, Base::G),
+        ];
+        let (pm, scratch) = phase_column(&reads, &phasing_params(), REF_A);
+        assert_eq!(pm.pos_metrics.depth, 3, "the nameless read still counts towards depth");
+        assert_eq!(observations(&pm).map(<[_]>::len), Some(2));
+        assert!(scratch.saw_nameless_read);
+    }
+
+    /// Overlapping mates are collapsed by the dedup first, so one fragment
+    /// cannot observe a column twice.
+    #[test]
+    fn overlapping_mates_observe_a_column_once() {
+        let reads = vec![
+            ref_read(b"pair", 4, 8, OT_FIRST).with_base_at(4, Base::G),
+            ref_read(b"pair", 6, 8, OT_SECOND).with_base_at(2, Base::G),
+            ref_read(b"other", 4, 8, OB_FIRST).with_base_at(4, Base::G),
+        ];
+        let (pm, _) = phase_column(&reads, &phasing_params(), REF_A);
+        let obs = observations(&pm).expect("candidate");
+        assert_eq!(obs.len(), 2, "the pair speaks once");
+        assert_ne!(obs.first().map(|o| o.fragment), obs.get(1).map(|o| o.fragment));
     }
 }

@@ -23,6 +23,7 @@ mod figure_out_outputs_tests {
             denovo_cpg: default(),
             methylation: default(),
             ml: default(),
+            phase: false,
             vcf: default(),
             bed: default(),
             record_filters: RecordFilters { vcf_all: false, cpgs_only: false },

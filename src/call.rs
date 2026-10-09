@@ -44,6 +44,7 @@ use tracing::{Level, debug, instrument, trace, warn};
 pub mod denovo_cpg;
 pub mod methylation;
 pub mod ml;
+pub mod phasing;
 pub mod pileup;
 mod record_filters;
 pub(crate) mod require_tags;
@@ -85,6 +86,15 @@ pub struct CallParams {
     pub methylation: MethylationCallingParams,
     #[command(flatten)]
     pub ml: ml::MachineLearningParams,
+
+    /// Link heterozygous SNVs that share read pairs into phase blocks
+    ///
+    /// Phased genotypes are written as `0|1` with a `PS` phase set. Requires a
+    /// build with the `experimental-seqair` backend.
+    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = cli::sections::PHASING)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub phase: bool,
 
     // --- Output parameters ---
     #[command(flatten)]
@@ -167,6 +177,19 @@ pub fn call(mut params: CallParams) -> Result<()> {
              build with the `experimental-seqair` feature to use it"
         );
     }
+
+    #[cfg(not(feature = "experimental-seqair"))]
+    ensure!(
+        !params.phase,
+        "--phase needs the `experimental-seqair` backend, which this build does not include"
+    );
+    // `figure_out_outputs` turns BED-only output into `--cpgs-only`, so this
+    // also catches `--phase --bed out.bed`.
+    ensure!(
+        !(params.phase && params.record_filters.cpgs_only),
+        "--phase has nothing to work with under CpG-only output: the variant sites phasing \
+         links are filtered out before it runs. Write VCF output instead."
+    );
 
     let params = &params; // make params immutable for threads
 
@@ -291,6 +314,7 @@ fn process_segment(
         segment_max_bytes: params.segmentation.segment_max_bytes,
         rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
         early_reject: Some(params.record_filters.clone()),
+        phase: params.phase,
         ..Default::default()
     };
 
@@ -433,7 +457,7 @@ fn process_collected_pileups(
         "failed to propagate CpG pass flags, skipping",
     );
 
-    let pileups: Vec<PileupMetrics> = pileups
+    let mut pileups: Vec<PileupMetrics> = pileups
         .into_iter()
         .map(|mut pileup| {
             // Finally, set the actual variant calls based on all metrics and filters
@@ -455,8 +479,14 @@ fn process_collected_pileups(
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))
-        .filter(|p| only_core_positions(&segment, p))
         .collect();
+
+    // Before the overlap is trimmed: a site in it links reads reaching into
+    // the core.
+    if params.phase {
+        phasing::phase_segment(&mut pileups, |pos| segment.is_core(pos));
+    }
+    pileups.retain(|p| only_core_positions(&segment, p));
 
     // At this point, we have collected all metrics for the pileups in this
     // region. The recipient is responsible for further filtering based on
