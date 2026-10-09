@@ -18,6 +18,7 @@ This is the changelog for Rastair 2.
 - Fixed a hang when the GPU inference thread crashes: queued regions now fall back to CPU scoring, like after any other GPU failure.
 - `--phase` links heterozygous variants that share read pairs into phase blocks, written as phased genotypes (`0|1`) with a new `PS` FORMAT field. Requires the `experimental-seqair` backend.
 - `--experimental-indels` is now a plain flag and calls indels with a TAPS-aware pair-HMM instead of the ML model. Requires the `experimental-seqair` backend.
+- With `--gpu`, the pair-HMM scores on the GPU as well; the calls are the same as on the CPU.
 - Indels at most 20 bp apart are called together, against haplotypes carrying every combination of them, with positions showing a nearby SNV left open; two indels on one chromosome are now both called, and an SNV next to an indel no longer turns into an indel call.
 - Removed `--min-indel-depth`, `--indel-error-rate`, `--indel-max-mismatches` and `--indel-end-of-read-cutoff`.
 - The `indel_strand` FILTER is replaced by `low_indel_qual`.

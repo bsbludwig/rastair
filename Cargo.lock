@@ -182,7 +182,7 @@ source = "git+https://github.com/Softleif/biosphere?branch=main#24cc5d1e024aaeb7
 dependencies = [
  "bytemuck",
  "ndarray",
- "pollster",
+ "pollster 0.4.0",
  "rand 0.9.5",
  "rayon",
  "serde",
@@ -610,10 +610,14 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6a27f8597cdb0332de8ed35d2f15b818a11a8be88bc0dce1f5446747e9de2bd"
 dependencies = [
+ "bytemuck",
  "fearless_simd",
  "fearless_simd_macros",
+ "pollster 1.0.1",
  "seqair-types",
  "thiserror 2.0.21",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
@@ -2348,6 +2352,12 @@ name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
+
+[[package]]
+name = "pollster"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
 
 [[package]]
 name = "portable-atomic"

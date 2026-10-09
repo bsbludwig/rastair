@@ -98,9 +98,29 @@ pub fn score(
     reference: &[Base],
     window_start: u64,
     events: impl IntoIterator<Item = Event>,
-    reads: &[HaplotypeRead],
+    reads: Vec<HaplotypeRead>,
     scratch: &mut HaplotypeScratch,
 ) -> Option<HaplotypeScores> {
+    prepare(reference, window_start, events, reads)?.align(scratch)
+}
+
+/// A cluster ready for the kernel: everything [`score`] needs before the
+/// alignment and after it.
+#[derive(Debug)]
+pub struct Prepared {
+    cluster: Cluster,
+    haplotypes: SmallVec<Haplotype, MAX_HAPLOTYPES>,
+    reads: Vec<HaplotypeRead>,
+    bands: Vec<Band>,
+}
+
+/// [`score`] up to the alignment.
+pub fn prepare(
+    reference: &[Base],
+    window_start: u64,
+    events: impl IntoIterator<Item = Event>,
+    reads: Vec<HaplotypeRead>,
+) -> Option<Prepared> {
     let reference = Haplotype::new(reference);
     let window_anchor =
         |event: &Event| usize::try_from(u64::from(event.anchor).checked_sub(window_start)?).ok();
@@ -142,9 +162,9 @@ pub fn score(
     }
     let width = band_width(longest);
 
-    let pairs = reads
+    let bands = reads
         .iter()
-        .map(|read| Ok((&read.read, Band::new(width, read.offset)?)))
+        .map(|read| Band::new(width, read.offset))
         .collect::<Result<Vec<_>, compair::Error>>()
         .inspect_err(|error| {
             tracing::warn!(
@@ -155,15 +175,61 @@ pub fn score(
             );
         })
         .ok()?;
-    if pairs.is_empty() {
+    if bands.is_empty() {
         return None;
     }
+    Some(Prepared { cluster, haplotypes, reads, bands })
+}
 
-    let emission = TapsEmission::new(ConversionModel::taps_default(), Betas::Uniform(UNKNOWN_BETA));
-    let haplotypes: SmallVec<&Haplotype, MAX_HAPLOTYPES> = haplotypes.iter().collect();
-    scratch.workspace.align_reads(&haplotypes, &pairs, &emission, &mut scratch.scores);
-    let reads = rows(&scratch.scores, cluster.haplotypes(), reads)?;
-    HaplotypeScores::new(cluster, reads)
+fn emission() -> TapsEmission<'static> {
+    TapsEmission::new(ConversionModel::taps_default(), Betas::Uniform(UNKNOWN_BETA))
+}
+
+impl Prepared {
+    fn pairs(&self) -> Vec<(&Read, Band)> {
+        self.reads.iter().map(|read| &read.read).zip(self.bands.iter().copied()).collect()
+    }
+
+    /// [`score`] from the alignment on, on the CPU.
+    pub fn align(self, scratch: &mut HaplotypeScratch) -> Option<HaplotypeScores> {
+        scratch.workspace.align_reads(
+            &self.haplotypes,
+            &self.pairs(),
+            &emission(),
+            &mut scratch.scores,
+        );
+        self.finish(&scratch.scores)
+    }
+
+    fn finish(self, scores: &[Log10Likelihood]) -> Option<HaplotypeScores> {
+        let reads = rows(scores, self.cluster.haplotypes(), &self.reads)?;
+        HaplotypeScores::new(self.cluster, reads)
+    }
+
+    /// Adds this cluster's pairs to a launch, read-major as [`Self::align`]
+    /// lays them out; the range is where its scores land.
+    pub fn push(
+        &self,
+        pairs: &mut compair::gpu::GpuPairs,
+    ) -> Result<std::ops::Range<usize>, compair::gpu::GpuError> {
+        pairs.push_reads(&self.haplotypes, &self.pairs(), &emission())
+    }
+
+    /// [`Self::align`]'s result from this cluster's scores of a launch,
+    /// rescoring on the CPU the pairs the GPU's `f32` cannot vouch for.
+    pub fn finish_gpu(self, scores: &[compair::gpu::GpuScore]) -> Option<HaplotypeScores> {
+        let emission = &emission();
+        let rows = scores.chunks_exact(self.haplotypes.len().max(1));
+        let likelihoods: Vec<Log10Likelihood> = rows
+            .zip(self.reads.iter().zip(&self.bands))
+            .flat_map(|(row, (read, &band))| {
+                row.iter().zip(&self.haplotypes).map(move |(score, haplotype)| {
+                    score.or_rescore(haplotype, &read.read, emission, band)
+                })
+            })
+            .collect();
+        self.finish(&likelihoods)
+    }
 }
 
 /// A band wide enough for a read carrying the longest indel, which sits that
@@ -263,7 +329,7 @@ mod tests {
         let window: Vec<Base> = WINDOW.iter().map(|&b| Base::from(b)).collect();
         let anchor = u32::try_from(anchor()).expect("fits");
         let events = alleles.iter().map(|allele| Event { anchor, allele: allele.clone() });
-        score(&window, 0, events, reads, &mut HaplotypeScratch::default())
+        score(&window, 0, events, reads.to_vec(), &mut HaplotypeScratch::default())
     }
 
     fn best(scores: &HaplotypeScores) -> (usize, usize) {
@@ -384,8 +450,8 @@ mod tests {
         };
         let events =
             [at(FIRST, &WINDOW[FIRST + 1..FIRST + 3]), at(SECOND, &WINDOW[SECOND + 1..SECOND + 2])];
-        let scores =
-            score(&window, 0, events, &reads, &mut HaplotypeScratch::default()).expect("scores");
+        let scores = score(&window, 0, events, reads.clone(), &mut HaplotypeScratch::default())
+            .expect("scores");
         let [first, second] = [0, 1].map(|i| EventIdx::new(i).expect("event"));
         let both = HapIdx::of_event(first).index() | HapIdx::of_event(second).index();
         assert_eq!(best(&scores), (both, both));

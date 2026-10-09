@@ -10,8 +10,8 @@ use std::{ops::Deref, rc::Rc};
 
 use crate::{
     call::pileup::from_seqair::{
-        ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, plain_reference_column,
-        score_indel_cluster,
+        ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, flush_indel_clusters,
+        plain_reference_column, score_indel_cluster,
     },
     metrics::{PileupMetrics, entropy::SlidingEntropy},
     sequence::{ReferenceWindow, SeqairReaders},
@@ -52,6 +52,8 @@ pub struct PileupMappingParams {
     /// Keep per-read phase observations at the columns that can use them
     /// (seqair backend only).
     pub phase: bool,
+    /// Score the pair-HMM on the GPU (seqair backend only).
+    pub gpu: bool,
 }
 
 impl Deref for PileupMappingParams {
@@ -193,6 +195,10 @@ pub fn get_pileups(
             let spanning = guard.records_overlapping(start, end);
             score_indel_cluster(pileup_metrics, cluster, spanning, &context, &mut scratch);
         }
+        // Before the next sub-segment's reads are loaded: a launch's prepared
+        // reads held across that load cost 100 MB at 73x, and almost every
+        // region is one sub-segment, so there is nothing to overlap with.
+        flush_indel_clusters(pileup_metrics, &mut scratch);
     }
 
     // A missing read name is a property of the whole file (a CRAM written

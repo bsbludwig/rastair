@@ -14,7 +14,7 @@ use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
 use seqair_types::{Phred, SmallVec};
 
 mod scoring;
-pub use scoring::{HaplotypeRead, HaplotypeScratch, score};
+pub use scoring::{HaplotypeRead, HaplotypeScratch, Prepared, prepare, score};
 
 /// Indel events a cluster scores at most: every subset of them is a
 /// haplotype, so this bounds the alignments per read at `2^MAX_EVENTS`.
