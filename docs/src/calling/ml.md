@@ -11,7 +11,6 @@ These models handle several contexts with distinct sub-models:
 - **@CpG methylation sites**: Standard 5mC detection in @CpG sites
 - **@Denovo**: New methylation sites not in reference
 - **Other variants**: Non-CpG @SNP:pl
-- **Insertions** and **deletions**: Indel alleles, used when experimental indel calling is enabled
 
 Some features are shared across models, but some are model specific. Here is a plot of all features used in each model, ranked by importance:
 

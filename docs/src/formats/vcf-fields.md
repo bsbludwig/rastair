@@ -17,7 +17,7 @@
 | m_highDp | Excessive coverage for methylation candidate |
 | pre_ml | Low amount of usable evidence, skipping ML |
 | low_ml_score | Machine Learning module prediction below threshold |
-| indel_strand | Indel allele supported on only one bisulfite strand |
+| low_indel_qual | Indel allele the pair-HMM does not call present |
 
 ## INFO
 

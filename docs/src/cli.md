@@ -147,38 +147,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Indel Options:**
 
-* `--experimental-indels <EXPERIMENTAL_INDELS>` — Enable experimental indel calling
+* `--experimental-indels` — Enable experimental indel calling
 
-   Defaults to ML scoring.
+   Indels are called by a TAPS-aware pair-HMM, which needs the seqair backend.
+* `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations for an indel allele to be scored
 
-  Possible values:
-  - `ml`:
-    The model decides: a low score vetoes an allele the hard chain would keep. Best precision, worst recall
-  - `no-ml`:
-    A fixed filter chain only, with no ML scoring of indels at call time
-  - `ml-rescue`:
-    The hard chain's calls all stand, and the model reinstates an allele the chain dropped as homozygous reference. Best recall
-
-* `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations to call an indel
-
-   This threshold is evaluated per indel allele after read-level indel filters are applied.
+   Reads (one per fragment) whose alignment carries the allele. Of the alleles reaching it in a cluster of neighbouring columns, the three most reads carry are scored, at most two per column, and a scored allele is called only if the pair-HMM finds it present.
 
   Default value: `2`
-* `--min-indel-depth <MIN_INDEL_DEPTH>` — Minimum depth to call an indel
-
-   Depth is computed at the locus after applying indel-specific read filters and depth adjustments.
-
-  Default value: `2`
-* `--indel-max-mismatches <INDEL_MAX_MISMATCHES>` — Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
-
-   C->T mismatches on OT reads and G->A mismatches on OB reads are excluded from the count as they are expected TAPS methylation signal.
-
-  Default value: `5`
-* `--indel-end-of-read-cutoff <INDEL_END_OF_READ_CUTOFF>` — Ignore indels within this many bases of either read end.
-
-   This stricter end-of-read filter helps suppress alignment artifacts at read starts and ends.
-
-  Default value: `0`
 
 ###### **Input Options:**
 
@@ -250,9 +226,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Phasing Options:**
 
-* `--phase` — Link heterozygous SNVs that share read pairs into phase blocks
+* `--phase` — Link heterozygous variants that share read pairs into phase blocks
 
-   Phased genotypes are written as `0|1` with a `PS` phase set. Requires a build with the `experimental-seqair` backend.
+   Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are phased, and indels too with `--experimental-indels`. Requires a build with the `experimental-seqair` backend.
 
   Default value: `false`
 
@@ -304,9 +280,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
-* `--indel-error-rate <INDEL_ERROR_RATE>` — Error rate for indel genotyping (higher than SNV due to alignment uncertainty)
-
-  Default value: `0.05`
 * `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead.
 
    Requires a Metal/Vulkan/DX12-capable GPU.
