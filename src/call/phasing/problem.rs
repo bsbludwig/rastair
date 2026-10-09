@@ -7,9 +7,12 @@
 //! cytosine is in a CpG, observations TAPS conversion alone explains are
 //! dropped, or methylation would read as the other allele.
 
-use super::{Cost, FragmentId, GtAllele, PhaseObservation, observations_of};
+use super::{Cost, FragmentId, GtAllele, MIN_MAPQ, PhaseObservation, SiteKind, observations_of};
 use crate::{
-    call::variant_calling::GenotypeTag,
+    call::{
+        pair_hmm::{HapIdx, Margin, ReadScores},
+        variant_calling::{GenotypeTag, indel_calling::IndelRecords},
+    },
     metrics::{
         AltCall, PileupMetrics,
         methylation::{CpgSide, cpg_origin},
@@ -153,7 +156,7 @@ impl SiteAllele {
     }
 }
 
-/// One allele of a heterozygous genotype.
+/// One allele of a heterozygous SNV genotype, and the base a read shows for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HetAllele {
     pub allele: GtAllele,
@@ -188,22 +191,48 @@ fn het_alleles(pileup: &PileupMetrics) -> Option<[HetAllele; 2]> {
     (first.base != second.base).then_some(alleles)
 }
 
-/// A heterozygous column a solver can phase.
+/// A heterozygous record a solver can phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseSite {
     /// Where the column sits in the slice [`build_problem`] was given.
     pub pileup: usize,
+    /// Which of the column's records this is.
+    pub kind: SiteKind,
     pub pos: Pos0,
     /// The genotype's two alleles, ascending.
-    pub alleles: [HetAllele; 2],
-    /// The CpG cytosine one allele is, when conversion makes it read as the
-    /// other: a C/T site's top strand or a G/A site's bottom strand.
-    pub methylable: Option<CpgSide>,
+    pub alleles: [GtAllele; 2],
 }
 
 impl PhaseSite {
-    fn of(pileup: &PileupMetrics, pileup_idx: usize) -> Option<Self> {
-        let alleles = het_alleles(pileup)?;
+    #[must_use]
+    pub const fn allele(&self, allele: SiteAllele) -> GtAllele {
+        let [first, second] = self.alleles;
+        match allele {
+            SiteAllele::First => first,
+            SiteAllele::Second => second,
+        }
+    }
+}
+
+/// One read's say at a site: which allele its fragment shows there, and what
+/// a haplotype is charged for disagreeing.
+#[derive(Debug, Clone, Copy)]
+struct Vote {
+    fragment: FragmentId,
+    allele: SiteAllele,
+    cost: Cost,
+}
+
+/// An SNV site's alleles as the bases reads show for them.
+struct BaseAlleles {
+    bases: [Base; 2],
+    /// The CpG cytosine one allele is, when conversion makes it read as the
+    /// other: a C/T site's top strand or a G/A site's bottom strand.
+    methylable: Option<CpgSide>,
+}
+
+impl BaseAlleles {
+    fn of(pileup: &PileupMetrics, alleles: [HetAllele; 2]) -> Self {
         let bases = alleles.map(|allele| allele.base);
         // Outside a CpG, cytosine methylation is too rare in mammals to give
         // up a strand's reads for.
@@ -212,21 +241,20 @@ impl PhaseSite {
                 && bases.contains(&side.mod_base())
                 && cpg_origin(pileup, side).is_some()
         });
-        Some(Self { pileup: pileup_idx, pos: Pos0::new(pileup.pos)?, alleles, methylable })
+        Self { bases, methylable }
     }
 
-    #[must_use]
-    pub const fn allele(&self, allele: SiteAllele) -> HetAllele {
-        let [first, second] = self.alleles;
-        match allele {
-            SiteAllele::First => first,
-            SiteAllele::Second => second,
+    fn vote(&self, observation: &PhaseObservation) -> Option<Vote> {
+        let allele = self.allele_of(observation.base)?;
+        if self.taps_confounds(observation.base, observation.strand) {
+            return None;
         }
+        Some(Vote { fragment: observation.fragment, allele, cost: Cost::of(observation.qual) })
     }
 
     /// Which allele an observed base is, or `None` when it is neither.
     fn allele_of(&self, base: Base) -> Option<SiteAllele> {
-        match self.alleles.map(|allele| allele.base == base) {
+        match self.bases.map(|allele| allele == base) {
             [true, _] => Some(SiteAllele::First),
             [_, true] => Some(SiteAllele::Second),
             _ => None,
@@ -240,6 +268,117 @@ impl PhaseSite {
             base == side.mod_base() && strand.ok().is_none_or(|strand| strand == side.strand())
         })
     }
+}
+
+/// A column's SNV record as a site, if it is a heterozygote with something to
+/// phase it on, and the votes its reads' bases cast.
+fn snv_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, Vec<Vote>)> {
+    let alleles = het_alleles(pileup)?;
+    let site = PhaseSite {
+        pileup: pileup_idx,
+        kind: SiteKind::Snv,
+        pos: Pos0::new(pileup.pos)?,
+        alleles: alleles.map(|allele| allele.allele),
+    };
+    let observations = observations_of(pileup).filter(|observations| !observations.is_empty())?;
+    let bases = BaseAlleles::of(pileup, alleles);
+    Some((site, observations.iter().filter_map(|observation| bases.vote(observation)).collect()))
+}
+
+/// How sure the pair-HMM must be of an indel column's genotype (Phred, before
+/// the cap at 99 it is written with) for its record to be a phase site. A
+/// genotype it doubts is mostly a homozygote, an artefact or a stutter-ridden
+/// tract: its reads' votes are near coin tosses, and one such site bridging two
+/// blocks is a switch error between their SNVs, however weak its edges.
+/// Measured on chr12 NA12878 with `MIN_READS_PER_INDEL_ALLELE`; see AGENTS.md.
+const MIN_INDEL_GENOTYPE_QUALITY: f64 = 100.0;
+
+/// Votes each allele of an indel site needs at [`Margin::PRESENT`] or more:
+/// reads the pair-HMM finds ten times likelier under it than under the other,
+/// that can vote (a fragment, the phasing MAPQ). The flat-prior genotype
+/// quality treats every read's likelihoods as exact, so a few reads with
+/// large gap penalties make a confident het out of thin evidence.
+const MIN_READS_PER_INDEL_ALLELE: usize = 5;
+
+impl Cost {
+    /// What a vote by a read `margin` likelier under its allele costs.
+    #[expect(clippy::cast_possible_truncation, reason = "a vote's ratio is an f32 too")]
+    fn of_margin(margin: Margin) -> Self {
+        Self::of_log10_ratio(margin.log10() as f32)
+    }
+}
+
+/// A column's indel record as a site, and the votes its scored reads cast.
+///
+/// The pair-HMM's called genotype must be heterozygous, a `0/1` or the
+/// compound het, and *be* its best pair at [`MIN_INDEL_GENOTYPE_QUALITY`] or
+/// better, each allele carried by [`MIN_READS_PER_INDEL_ALLELE`] votes. A
+/// `0/1` whose best pair holds a second, uncalled allele is no site: its
+/// reads are split three ways. The alleles are numbered as the record writes
+/// them, a compound het's `1/2` in call order.
+fn indel_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, Vec<Vote>)> {
+    let data = pileup.indel_data.as_deref()?;
+    let scored = data.scored.as_ref()?;
+    let scores = &scored.haplotypes;
+    let verdict = &scores.verdict;
+    let called = verdict.called_pair();
+    if called != verdict.best || !called.is_heterozygous() {
+        return None;
+    }
+    // The site's two alleles are the called pair's two haplotypes, named by
+    // the record: the one carrying the event and the one not.
+    let [(low, low_hap), (high, high_hap)] = match &scored.records {
+        IndelRecords::Compound([first, second]) => {
+            let GenotypeTag::AltHet(m, n) = first.genotype else { return None };
+            let (first_hap, second_hap) = called.split(first.event)?;
+            if !second_hap.carries(second.event) {
+                return None;
+            }
+            [(GtAllele::Alt(m), first_hap), (GtAllele::Alt(n), second_hap)]
+        }
+        IndelRecords::Separate(calls) => {
+            let call = calls.iter().find(|call| call.genotype.is_heterozygous())?;
+            let GenotypeTag::RefHet(n) = call.genotype else { return None };
+            let (carrier, other) = called.split(call.event)?;
+            [(GtAllele::Ref, other), (GtAllele::Alt(n), carrier)]
+        }
+    };
+    if *verdict.quality < MIN_INDEL_GENOTYPE_QUALITY {
+        return None;
+    }
+    let votes: Vec<Vote> =
+        scores.reads.iter().filter_map(|read| scored_vote(read, [low_hap, high_hap])).collect();
+    let present = Cost::of_margin(Margin::PRESENT);
+    let carried_by = |allele: SiteAllele| {
+        votes.iter().filter(|vote| vote.allele == allele && vote.cost >= present).count()
+    };
+    if carried_by(SiteAllele::First).min(carried_by(SiteAllele::Second))
+        < MIN_READS_PER_INDEL_ALLELE
+    {
+        return None;
+    }
+    let site = PhaseSite {
+        pileup: pileup_idx,
+        kind: SiteKind::Indel,
+        pos: Pos0::new(pileup.pos)?,
+        alleles: [low, high],
+    };
+    Some((site, votes))
+}
+
+/// A read's vote for the haplotype the pair-HMM finds it likelier to come
+/// from, charged by how much likelier. A read without a template, below the
+/// phasing MAPQ, or with no preference worth a Phred point casts none. Base
+/// quality is not asked: the pair-HMM has weighed it.
+fn scored_vote(read: &ReadScores, [first, second]: [HapIdx; 2]) -> Option<Vote> {
+    let fragment = read.fragment?;
+    if read.mapq < MIN_MAPQ {
+        return None;
+    }
+    let ratio = read.log10_ratio(first, second)?;
+    let allele = if ratio > 0.0 { SiteAllele::First } else { SiteAllele::Second };
+    let cost = Cost::of_log10_ratio(ratio);
+    (cost > Cost(0)).then_some(Vote { fragment, allele, cost })
 }
 
 /// A fragment's allele at one site.
@@ -274,22 +413,19 @@ pub struct PhaseProblem {
 pub fn build_problem(pileups: &[PileupMetrics]) -> PhaseProblem {
     let mut builder = Builder::default();
 
-    for (pileup_idx, pileup) in pileups.iter().enumerate() {
-        let Some(observations) = observations_of(pileup) else {
-            continue;
-        };
-        let Some(site) = PhaseSite::of(pileup, pileup_idx) else {
-            continue;
-        };
-        let Some(index) = builder.sites.push(site) else {
-            warn!(
-                sites = builder.sites.len(),
-                "Too many heterozygous columns in one segment to phase; the rest stay unphased"
-            );
-            break;
-        };
-        for observation in observations {
-            builder.observe(index, observation);
+    'columns: for (pileup_idx, pileup) in pileups.iter().enumerate() {
+        let sites = [snv_site(pileup, pileup_idx), indel_site(pileup, pileup_idx)];
+        for (site, votes) in sites.into_iter().flatten() {
+            let Some(index) = builder.sites.push(site) else {
+                warn!(
+                    sites = builder.sites.len(),
+                    "Too many heterozygous columns in one segment to phase; the rest stay unphased"
+                );
+                break 'columns;
+            };
+            for vote in votes {
+                builder.record(index, vote);
+            }
         }
     }
 
@@ -312,20 +448,11 @@ struct Builder {
 }
 
 impl Builder {
-    fn observe(&mut self, site_index: SiteIndex, observation: &PhaseObservation) {
-        let site = &self.sites[site_index];
-        let Some(allele) = site.allele_of(observation.base) else {
-            return;
-        };
-        if site.taps_confounds(observation.base, observation.strand) {
-            return;
-        }
-        let cost = Cost::of(observation.qual);
-
+    fn record(&mut self, site_index: SiteIndex, Vote { fragment: id, allele, cost }: Vote) {
         let next = self.fragments.len();
-        let fragment_idx = *self.index.entry(observation.fragment).or_insert(next);
+        let fragment_idx = *self.index.entry(id).or_insert(next);
         if fragment_idx == next {
-            self.fragments.push(Fragment { id: observation.fragment, supports: SmallVec::new() });
+            self.fragments.push(Fragment { id, supports: SmallVec::new() });
         }
         let Some(fragment) = self.fragments.get_mut(fragment_idx) else {
             return;
@@ -351,7 +478,10 @@ mod tests {
     use super::*;
     use crate::{
         call::{
-            phasing::fixtures::{ALT_1, ALT_2, column, graded, het, obs},
+            pair_hmm::ReadScores,
+            phasing::fixtures::{
+                ALT_1, ALT_2, column, confirming, graded, het, insertion, obs, scored, with_indels,
+            },
             variant_calling::GenotypeTag,
         },
         metrics::AltCall,
@@ -675,13 +805,7 @@ mod tests {
         let problem = build_problem(&columns);
 
         let site = &problem.sites[SiteIndex(0)];
-        assert_eq!(
-            site.alleles,
-            [
-                HetAllele { allele: GtAllele::Alt(ALT_1), base: T },
-                HetAllele { allele: GtAllele::Alt(ALT_2), base: G }
-            ]
-        );
+        assert_eq!(site.alleles, [GtAllele::Alt(ALT_1), GtAllele::Alt(ALT_2)]);
         assert_eq!(supports(&problem, 1), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)]);
         assert_eq!(
             supports(&problem, 2),
@@ -705,5 +829,221 @@ mod tests {
 
         let located: Vec<_> = problem.sites.iter().map(|s| (s.pileup, s.pos.as_u32())).collect();
         assert_eq!(located, [(1, 1040), (3, 1120)]);
+    }
+
+    const NO: f32 = f32::NEG_INFINITY;
+
+    fn sites_of(problem: &PhaseProblem) -> Vec<(u32, SiteKind, [GtAllele; 2])> {
+        problem.sites.iter().map(|s| (s.pos.as_u32(), s.kind, s.alleles)).collect()
+    }
+
+    /// An SNV het every fragment reaches, so a fragment's support list shows
+    /// whether it also voted at the next site.
+    fn anchor(fragments: std::ops::RangeInclusive<u64>) -> PileupMetrics {
+        let observations: Vec<_> = fragments.map(|f| obs(f, A, Strand::OT)).collect();
+        het(1000, A, G, &observations)
+    }
+
+    /// A `0/1` insertion at `pos` the pair-HMM calls from `reads`.
+    fn ref_het_indel(pos: u32, reads: impl IntoIterator<Item = ReadScores>) -> PileupMetrics {
+        let reads: Vec<_> = reads.into_iter().collect();
+        with_indels(
+            column(pos, A, &[], Some(GenotypeTag::HomRef), &[]),
+            &[insertion(&[T, T])],
+            &reads,
+        )
+    }
+
+    /// The vote is the sign of the log10 ratio, its cost the ratio's Phred,
+    /// rounded and capped; a read that cannot tell the two apart, one below
+    /// the phasing MAPQ and one without a fragment cast none.
+    #[test]
+    fn an_indel_het_is_a_site_its_scores_vote_on() {
+        let mut low_mapq = scored(5, [-1.0, -4.0, NO]);
+        low_mapq.mapq = 19;
+        let mut unnamed = scored(9, [-1.0, -4.0, NO]);
+        unnamed.fragment = None;
+        let reads = [
+            scored(1, [-1.0, -3.0, NO]),
+            scored(2, [-6.0, -1.0, NO]),
+            scored(3, [NO, -1.0, NO]),
+            low_mapq,
+            scored(6, [-1.0, -1.04, NO]),
+            scored(7, [-1.27, -1.0, NO]),
+            scored(8, [-1.0, -1.0, NO]),
+            unnamed,
+        ];
+        let columns =
+            [anchor(1..=8), ref_het_indel(1040, reads.into_iter().chain(confirming([0, 1])))];
+
+        let problem = build_problem(&columns);
+
+        assert_eq!(
+            sites_of(&problem),
+            [
+                (1000, SiteKind::Snv, [GtAllele::Ref, GtAllele::Alt(ALT_1)]),
+                (1040, SiteKind::Indel, [GtAllele::Ref, GtAllele::Alt(ALT_1)]),
+            ]
+        );
+        let at_indel = |fragment| -> Vec<_> {
+            supports(&problem, fragment).into_iter().filter(|s| s.0 == 1).collect()
+        };
+        assert_eq!(at_indel(1), [(1, SiteAllele::First, 20)]);
+        assert_eq!(at_indel(2), [(1, SiteAllele::Second, 40)], "capped");
+        assert_eq!(
+            at_indel(3),
+            [(1, SiteAllele::Second, 40)],
+            "an impossible haplotype is the cap"
+        );
+        assert_eq!(at_indel(5), [], "below the phasing MAPQ");
+        assert_eq!(at_indel(6), [], "rounds to nothing");
+        assert_eq!(at_indel(7), [(1, SiteAllele::Second, 3)]);
+        assert_eq!(at_indel(8), [], "no preference");
+        assert_eq!(problem.fragments.len(), 4, "fragments 1, 2, 3 and 7 link the two sites");
+    }
+
+    /// A het event of a cluster votes on the called pair's two haplotypes as
+    /// they are, the cluster's other events included: the carrier here also
+    /// carries the deletion at 1050, and the haplotype of the insertion alone
+    /// explains no read, so scoring against it would leave the carriers
+    /// without a vote.
+    #[test]
+    fn a_cluster_event_votes_on_the_haplotypes_of_the_called_pair() {
+        use crate::call::{
+            pair_hmm::{Cluster, Event, HaplotypeScores, MAX_HAPLOTYPES},
+            pileup::indels::{IndelAllele, IndelCounts, IndelData, Scored},
+        };
+        use std::sync::Arc;
+        let read = |fragment, hap: usize| {
+            let mut log10 = [-4.0; MAX_HAPLOTYPES];
+            if let Some(likeliest) = log10.get_mut(hap) {
+                *likeliest = -1.0;
+            }
+            ReadScores { fragment: FragmentId::new(fragment), mapq: 60, log10 }
+        };
+        // Haplotype 0 is the reference, 3 carries both events.
+        let reads: Vec<ReadScores> =
+            (1..=6).map(|f| read(f, 0)).chain((7..=12).map(|f| read(f, 3))).collect();
+        let events = [
+            Event { anchor: 1040, allele: insertion(&[T, T]) },
+            Event { anchor: 1050, allele: IndelAllele::Deletion([C, A].into_iter().collect()) },
+        ];
+        let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
+        let scores = HaplotypeScores::new(cluster, reads.into()).expect("a verdict");
+        let mut indel = column(1040, A, &[], Some(GenotypeTag::HomRef), &[]);
+        let scored = Some(Scored::new(Arc::new(scores), 1040));
+        indel.indel_data = Some(Box::new(IndelData { counts: IndelCounts::default(), scored }));
+
+        let problem = build_problem(&[anchor(1..=12), indel]);
+
+        assert_eq!(
+            sites_of(&problem),
+            [
+                (1000, SiteKind::Snv, [GtAllele::Ref, GtAllele::Alt(ALT_1)]),
+                (1040, SiteKind::Indel, [GtAllele::Ref, GtAllele::Alt(ALT_1)]),
+            ]
+        );
+        let at_indel = |fragment| -> Vec<_> {
+            supports(&problem, fragment).into_iter().filter(|s| s.0 == 1).collect()
+        };
+        assert_eq!(at_indel(1), [(1, SiteAllele::First, 30)]);
+        assert_eq!(at_indel(7), [(1, SiteAllele::Second, 30)]);
+    }
+
+    /// The pair-HMM has to be sure of the column's het, or the site's votes
+    /// are noise that can bridge two blocks the wrong way round; a
+    /// homozygote is never a site.
+    #[test]
+    fn an_indel_het_the_pair_hmm_doubts_is_not_a_site() {
+        let sites = |reads: Vec<ReadScores>| {
+            build_problem(&[anchor(1..=1), ref_het_indel(1040, reads)]).sites.len()
+        };
+
+        assert_eq!(sites(confirming([0, 1])), 2);
+        assert_eq!(sites(confirming([1, 1]).repeat(4)), 1, "a confident homozygote");
+        assert_eq!(
+            sites(vec![scored(1, [-1.0, -4.0, NO]), scored(2, [-4.0, -1.0, NO])]),
+            1,
+            "a het, but at about Q21"
+        );
+    }
+
+    /// However sure the pair-HMM is, each allele needs votes of its own: here
+    /// four reads the reference cannot explain, against five of the
+    /// reference, make a het at the top quality, and still only five make a
+    /// site. A read that cannot vote, without a fragment or below the phasing
+    /// MAPQ, does not count.
+    #[test]
+    fn an_indel_allele_needs_five_votes_of_its_own() {
+        let sites = |alt_reads: Vec<ReadScores>| {
+            let reads = (1..=5).map(|fragment| scored(fragment, [-1.0, -9.0, NO])).chain(alt_reads);
+            build_problem(&[anchor(1..=1), ref_het_indel(1040, reads)]).sites.len()
+        };
+        let alt = |fragment| scored(fragment, [NO, -1.0, NO]);
+        let mut low_mapq = alt(15);
+        low_mapq.mapq = 19;
+        let unnamed = ReadScores { fragment: None, ..alt(16) };
+        assert_eq!(sites((11..=14).map(alt).collect()), 1);
+        assert_eq!(sites((11..=15).map(alt).collect()), 2);
+        assert_eq!(sites((11..=14).map(alt).chain([low_mapq, unnamed]).collect()), 1);
+    }
+
+    /// The SNV record and the indel record of one column are separate sites,
+    /// SNV first, and one fragment can vote at both.
+    #[test]
+    fn an_snv_and_an_indel_at_one_column_are_two_sites() {
+        let both = with_indels(
+            het(1000, A, G, &[obs(1, G, Strand::OT), obs(2, A, Strand::OT)]),
+            &[insertion(&[T, T])],
+            &[
+                [scored(1, [-4.0, -1.0, NO]), scored(2, [-1.0, -4.0, NO])].as_slice(),
+                &confirming([0, 1]),
+            ]
+            .concat(),
+        );
+        let columns = [both, het(1040, C, T, &[obs(1, T, Strand::OB)])];
+
+        let problem = build_problem(&columns);
+
+        assert_eq!(
+            sites_of(&problem).into_iter().map(|(pos, kind, _)| (pos, kind)).collect::<Vec<_>>(),
+            [(1000, SiteKind::Snv), (1000, SiteKind::Indel), (1040, SiteKind::Snv)]
+        );
+        assert!(
+            problem.sites.iter().all(|site| site.pileup == usize::from(site.pos.as_u32() != 1000))
+        );
+        assert_eq!(
+            supports(&problem, 1),
+            [(0, SiteAllele::Second, 30), (1, SiteAllele::Second, 30), (2, SiteAllele::Second, 30)]
+        );
+        assert_eq!(supports(&problem, 2), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)]);
+    }
+
+    /// A compound het's alleles are the record's `1/2`, each fragment voting
+    /// for the haplotype that carries its allele.
+    #[test]
+    fn a_compound_het_indel_votes_on_its_record_alleles() {
+        let (short, long) = (insertion(&[T]), insertion(&[T, T, T]));
+        let indel = with_indels(
+            column(1040, A, &[], Some(GenotypeTag::HomRef), &[]),
+            &[short, long],
+            &[
+                [scored(1, [-9.0, -1.0, -9.0]), scored(2, [-9.0, -9.0, -1.0])].as_slice(),
+                &confirming([1, 2]),
+            ]
+            .concat(),
+        );
+
+        let problem = build_problem(&[anchor(1..=2), indel]);
+
+        assert_eq!(
+            sites_of(&problem).get(1),
+            Some(&(1040, SiteKind::Indel, [GtAllele::Alt(ALT_1), GtAllele::Alt(ALT_2)]))
+        );
+        assert_eq!(supports(&problem, 1), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 40)]);
+        assert_eq!(
+            supports(&problem, 2),
+            [(0, SiteAllele::First, 30), (1, SiteAllele::Second, 40)]
+        );
     }
 }

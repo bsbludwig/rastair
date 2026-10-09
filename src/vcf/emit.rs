@@ -19,7 +19,7 @@ use crate::{
     call::{
         RecordFilters,
         pair_hmm::EventIdx,
-        phasing::{self, GtAllele},
+        phasing::{self, GtAllele, SiteKind},
         pileup::indels::{IndelAllele, Scored},
         variant_calling::{
             ErrorModel, GenotypeTag,
@@ -179,13 +179,39 @@ fn emit_compound_het_record<W: Write>(
 
     let mut enc = enc.begin_samples();
     if config.format.gt {
-        schema.format.gt.encode(&mut enc, &[to_seqair_gt(first.genotype, None)])?;
+        encode_indel_genotype(&mut enc, schema, pileup, first.genotype, true)?;
     }
     encode_genotype_quality(&mut enc, schema, config, scored)?;
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
     }
     enc.emit()?;
+    Ok(())
+}
+
+/// An indel record's `GT`, and its `PS` where phased.
+///
+/// Phasing made a site of the column's one passing heterozygous indel record,
+/// so the column's indel phase call belongs to whichever record that is; a
+/// filtered record under `--all` stays unphased, and so does a homozygous one.
+fn encode_indel_genotype(
+    enc: &mut seqair::vcf::RecordEncoder<'_, seqair::vcf::WithSamples>,
+    schema: &Schema,
+    pileup: &PileupMetrics,
+    tag: GenotypeTag,
+    passes: bool,
+) -> Result<()> {
+    let phase = phasing::call_of(pileup, SiteKind::Indel).filter(|_| passes);
+    let first = phase.map(|call| match call.first {
+        GtAllele::Ref => 0,
+        GtAllele::Alt(n) => NonZeroU16::from(n).get(),
+    });
+    let genotype = to_seqair_gt(tag, first);
+    let phased = genotype.phased.contains(&true);
+    schema.format.gt.encode(enc, &[genotype])?;
+    if let Some(call) = phase.filter(|_| phased) {
+        schema.format.ps.encode(enc, &[call.set.as_i32()])?;
+    }
     Ok(())
 }
 
@@ -336,7 +362,7 @@ fn emit_indel_record<W: Write>(
 
     let mut enc = enc.begin_samples();
     if config.format.gt {
-        schema.format.gt.encode(&mut enc, &[to_seqair_gt(call.genotype, None)])?;
+        encode_indel_genotype(&mut enc, schema, pileup, call.genotype, call.is_called())?;
     }
     encode_genotype_quality(&mut enc, schema, config, scored)?;
     if config.format.dp {
@@ -619,7 +645,7 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeField
 
     // A phase call whose allele does not survive the remap cannot be written
     // as a genotype either, and the record stays unphased.
-    let phase = phasing::call_of(pileup);
+    let phase = phasing::call_of(pileup, SiteKind::Snv);
     let first = phase.and_then(|call| match call.first {
         GtAllele::Ref => Some(0),
         GtAllele::Alt(n) => map(n).map(|vcf| NonZeroU16::from(vcf).get()),

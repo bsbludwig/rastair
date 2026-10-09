@@ -151,6 +151,47 @@ fn converted_reads_outside_a_cpg_are_evidence() -> Result<()> {
     Ok(())
 }
 
+/// Only the indel links the two SNVs, so without indel calling the two stay
+/// apart. Run once with an insertion and once with a deletion, each placed so
+/// it has one alignment.
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn an_indel_phased_by_the_pair_hmm_bridges_two_snvs() -> Result<()> {
+    // Too far apart for any template to reach both SNVs; templates from each
+    // side reach the indel.
+    const LEFT_SNV: usize = 120;
+    const INDEL: usize = 370;
+    const RIGHT_SNV: usize = 620;
+    let around = |indel: fn(Scenario) -> Scenario| {
+        indel(Scenario::new(1000))
+            .snv(LEFT_SNV, Hap::One)
+            .snv(RIGHT_SNV, Hap::One)
+            .balanced(100, 350, 5)
+            .balanced(340, 590, 5)
+    };
+    let insertion = around(|s| s.reference_at(INDEL, b"AT").insertion(INDEL, b"GG", Hap::Two));
+    let deletion = around(|s| s.reference_at(INDEL, b"AGTC").deletion(INDEL, 2, Hap::Two));
+
+    for scenario in [insertion, deletion] {
+        let vcf = call_scenario(&scenario, &["--phase"])?;
+        let phasing = scenario.check_phasing(&vcf)?;
+        assert_eq!(
+            phasing,
+            Phasing { blocks: BTreeMap::new(), unphased: vec![LEFT_SNV, RIGHT_SNV] },
+            "{vcf}"
+        );
+
+        let vcf = call_scenario(&scenario, &["--phase", "--experimental-indels"])?;
+        let phasing = scenario.check_phasing(&vcf)?;
+        assert_eq!(
+            phasing,
+            Phasing { blocks: blocks([&[LEFT_SNV, INDEL, RIGHT_SNV]]), unphased: vec![] },
+            "{vcf}"
+        );
+    }
+    Ok(())
+}
+
 /// The oracle itself: a correctly phased file with one genotype swapped is a
 /// switch error, and the same file with the whole block swapped no longer
 /// opens on `0|1`.

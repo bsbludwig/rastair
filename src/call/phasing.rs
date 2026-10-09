@@ -39,7 +39,8 @@ pub fn accepts_read(mapq: u8, baseq: BaseQuality) -> bool {
 }
 
 /// What a haplotype is charged for disagreeing with one observation: the
-/// observation's base quality, capped.
+/// observation's base quality, or at an indel the read's preference between
+/// its two haplotypes, Phred-scaled; capped either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Cost(u8);
 
@@ -53,6 +54,18 @@ impl Cost {
             Some(_) => Self(Self::CAP),
             None => Self(0),
         }
+    }
+
+    /// A read's log10 likelihood ratio between two haplotypes, as a Phred
+    /// cost: ten times its size, rounded; an infinite ratio is the cap.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "non-negative and below the cap; NaN becomes 0"
+    )]
+    fn of_log10_ratio(ratio: f32) -> Self {
+        let phred = (10.0 * ratio.abs()).round();
+        if phred >= f32::from(Self::CAP) { Self(Self::CAP) } else { Self(phred as u8) }
     }
 }
 
@@ -128,7 +141,15 @@ pub struct PhaseObservation {
     pub qual: BaseQuality,
 }
 
-/// Where a heterozygous column sits in its phase block.
+/// Which of a column's records a phase site is: the SNV record or the indel
+/// record. One column can hold one of each, the SNV record written first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteKind {
+    Snv,
+    Indel,
+}
+
+/// Where a heterozygous site sits in its phase block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseCall {
     /// VCF `PS`: the block's first emitted heterozygous site.
@@ -138,18 +159,54 @@ pub struct PhaseCall {
 }
 
 /// What phasing keeps on one column: its reads' observations until the segment
-/// is phased, then its place in a block, if it has one.
+/// is phased, then each record's place in a block, if it has one.
 #[derive(Debug, Clone)]
 pub enum ColumnPhase {
     Observed(Box<[PhaseObservation]>),
-    Phased(PhaseCall),
+    Phased(RecordPhases),
 }
 
-/// The phase call a column carries, if any.
-pub(crate) fn call_of(pileup: &PileupMetrics) -> Option<PhaseCall> {
+/// The phase of each of a column's records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecordPhases {
+    pub snv: Option<PhaseCall>,
+    pub indel: Option<PhaseCall>,
+}
+
+impl RecordPhases {
+    const fn get(&self, kind: SiteKind) -> Option<PhaseCall> {
+        match kind {
+            SiteKind::Snv => self.snv,
+            SiteKind::Indel => self.indel,
+        }
+    }
+
+    const fn slot(&mut self, kind: SiteKind) -> &mut Option<PhaseCall> {
+        match kind {
+            SiteKind::Snv => &mut self.snv,
+            SiteKind::Indel => &mut self.indel,
+        }
+    }
+}
+
+impl ColumnPhase {
+    /// Record `call` for the column's `kind` record, replacing any
+    /// observations still held.
+    fn set_call(slot: &mut Option<Box<Self>>, kind: SiteKind, call: PhaseCall) {
+        let mut phases = match slot.take().map(|phase| *phase) {
+            Some(Self::Phased(phases)) => phases,
+            Some(Self::Observed(_)) | None => RecordPhases::default(),
+        };
+        *phases.slot(kind) = Some(call);
+        *slot = Some(Box::new(Self::Phased(phases)));
+    }
+}
+
+/// The phase call a column's `kind` record carries, if any.
+pub(crate) fn call_of(pileup: &PileupMetrics, kind: SiteKind) -> Option<PhaseCall> {
     match pileup.phase.as_deref() {
-        Some(ColumnPhase::Phased(call)) => Some(*call),
-        _ => None,
+        Some(ColumnPhase::Phased(phases)) => phases.get(kind),
+        Some(ColumnPhase::Observed(_)) | None => None,
     }
 }
 
@@ -209,7 +266,7 @@ pub fn phase_segment(pileups: &mut [PileupMetrics], is_core: impl Fn(u64) -> boo
     let problem = build_problem(pileups);
     let solution = solve(&problem);
 
-    let mut calls: Vec<(usize, PhaseCall)> = Vec::new();
+    let mut calls: Vec<(usize, SiteKind, PhaseCall)> = Vec::new();
     for block in &solution.blocks {
         let emitted: Vec<_> = block
             .iter()
@@ -231,17 +288,18 @@ pub fn phase_segment(pileups: &mut [PileupMetrics], is_core: impl Fn(u64) -> boo
         for &&(index, allele) in &emitted {
             let site = &problem.sites[index];
             let allele = if flip { allele.flipped() } else { allele };
-            calls.push((site.pileup, PhaseCall { set, first: site.allele(allele).allele }));
+            let call = PhaseCall { set, first: site.allele(allele) };
+            calls.push((site.pileup, site.kind, call));
         }
     }
 
     for pileup in pileups.iter_mut() {
         pileup.phase = None;
     }
-    for (index, call) in calls {
+    for (index, kind, call) in calls {
         // Sites index the slice they were built from.
         match pileups.get_mut(index).ok_or_eyre("Phase site outside its segment").this_is_a_bug() {
-            Ok(pileup) => pileup.phase = Some(Box::new(ColumnPhase::Phased(call))),
+            Ok(pileup) => ColumnPhase::set_call(&mut pileup.phase, kind, call),
             Err(error) => warn!(?error, index, "Dropping a phase call"),
         }
     }

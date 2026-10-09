@@ -369,12 +369,12 @@ fn flip_delta(
 mod tests {
     use super::*;
     use crate::call::phasing::{
-        Cost, FragmentId, GtAllele,
+        Cost, FragmentId, GtAllele, SiteKind,
         fixtures::ALT_1,
-        problem::{Fragment, HetAllele, PhaseSite},
+        problem::{Fragment, PhaseSite},
     };
     use SiteAllele::{First, Second};
-    use seqair_types::{Base::*, Pos0};
+    use seqair_types::Pos0;
 
     /// Sites are interchangeable to the solver — only their count and their
     /// positions matter — so the fixtures name them by index.
@@ -383,11 +383,8 @@ mod tests {
             .map(|index| PhaseSite {
                 pileup: index as usize,
                 pos: Pos0::new(1000 + index * 10).expect("a small position"),
-                alleles: [
-                    HetAllele { allele: GtAllele::Ref, base: A },
-                    HetAllele { allele: GtAllele::Alt(ALT_1), base: C },
-                ],
-                methylable: None,
+                kind: SiteKind::Snv,
+                alleles: [GtAllele::Ref, GtAllele::Alt(ALT_1)],
             })
             .collect()
     }
