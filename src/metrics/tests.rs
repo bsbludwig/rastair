@@ -82,7 +82,7 @@ fn set_filters() -> Result<()> {
 
     map_surrounding(
         &mut pileups,
-        |b, c, a| process::add_ml_metrics(b, c, a, &ml, true),
+        |b, c, a| process::add_ml_metrics(b, c, a, &ml),
         "failed to add ML metrics",
     );
 

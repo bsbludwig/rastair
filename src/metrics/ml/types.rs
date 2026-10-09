@@ -32,31 +32,27 @@ impl PlattScaling {
     }
 }
 
+/// The field order is the on-disk layout: msgpack writes a struct as an
+/// array, so it is the order of the bundled `rastair_default.rff.mpk.lz4`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RastairFlatModel {
     pub cpg: FlatForest,
-    #[serde(default)]
-    pub cpg_platt: PlattScaling,
     pub denovo: FlatForest,
-    #[serde(default)]
-    pub denovo_platt: PlattScaling,
     pub others: FlatForest,
     #[serde(default)]
+    pub cpg_platt: PlattScaling,
+    #[serde(default)]
+    pub denovo_platt: PlattScaling,
+    #[serde(default)]
     pub others_platt: PlattScaling,
-    pub insertion: FlatForest,
-    #[serde(default)]
-    pub insertion_platt: PlattScaling,
-    pub deletion: FlatForest,
-    #[serde(default)]
-    pub deletion_platt: PlattScaling,
     #[serde(default)]
     pub feature_set: MlFeatureSet,
 }
 
 /// One value per [`MlModel`], addressed by the model itself.
 ///
-/// The five models are always handled together — a feature block, a dispatch
-/// and a score vector each — so they are one array rather than five parallel
+/// The three models are always handled together — a feature block, a dispatch
+/// and a score vector each — so they are one array rather than three parallel
 /// fields.
 #[derive(Debug, Clone)]
 pub struct ByModel<T>([T; MlModel::COUNT]);
@@ -76,9 +72,9 @@ impl<T> ByModel<T> {
         self,
         mut f: impl FnMut(MlModel, T) -> Result<U, E>,
     ) -> Result<ByModel<U>, E> {
-        let [a, b, c, d, e] = self.0;
-        let [ma, mb, mc, md, me] = MlModel::ALL;
-        Ok(ByModel([f(ma, a)?, f(mb, b)?, f(mc, c)?, f(md, d)?, f(me, e)?]))
+        let [a, b, c] = self.0;
+        let [ma, mb, mc] = MlModel::ALL;
+        Ok(ByModel([f(ma, a)?, f(mb, b)?, f(mc, c)?]))
     }
 }
 
@@ -118,37 +114,10 @@ impl RastairFlatModel {
         trained: ByModel<(FlatForest, PlattScaling)>,
     ) -> Self {
         const {
-            assert!(matches!(
-                MlModel::ALL,
-                [
-                    MlModel::Others,
-                    MlModel::Cpg,
-                    MlModel::DenovoCpg,
-                    MlModel::Insertion,
-                    MlModel::Deletion
-                ]
-            ));
+            assert!(matches!(MlModel::ALL, [MlModel::Others, MlModel::Cpg, MlModel::DenovoCpg]));
         }
-        let [
-            (others, others_platt),
-            (cpg, cpg_platt),
-            (denovo, denovo_platt),
-            (insertion, insertion_platt),
-            (deletion, deletion_platt),
-        ] = trained.0;
-        Self {
-            cpg,
-            cpg_platt,
-            denovo,
-            denovo_platt,
-            others,
-            others_platt,
-            insertion,
-            insertion_platt,
-            deletion,
-            deletion_platt,
-            feature_set,
-        }
+        let [(others, others_platt), (cpg, cpg_platt), (denovo, denovo_platt)] = trained.0;
+        Self { cpg, denovo, others, cpg_platt, denovo_platt, others_platt, feature_set }
     }
 
     pub fn forest(&self, model: MlModel) -> &FlatForest {
@@ -156,8 +125,6 @@ impl RastairFlatModel {
             MlModel::Others => &self.others,
             MlModel::Cpg => &self.cpg,
             MlModel::DenovoCpg => &self.denovo,
-            MlModel::Insertion => &self.insertion,
-            MlModel::Deletion => &self.deletion,
         }
     }
 
@@ -166,8 +133,6 @@ impl RastairFlatModel {
             MlModel::Others => self.others_platt,
             MlModel::Cpg => self.cpg_platt,
             MlModel::DenovoCpg => self.denovo_platt,
-            MlModel::Insertion => self.insertion_platt,
-            MlModel::Deletion => self.deletion_platt,
         }
     }
 }
@@ -188,22 +153,10 @@ impl fmt::Display for MlFeatureSet {
     }
 }
 
-/// Flat (BFS-linearised, f32) forests for CPU inference.
-///
-/// Built once from the loaded [`RastairModel`] and stored in [`MachineLearning`].
-/// Uses the same f32 representation as the GPU path so both paths are numerically consistent.
-pub struct FlatRastairModel {
-    pub cpg: FlatForest,
-    pub denovo: FlatForest,
-    pub others: FlatForest,
-    pub insertion: FlatForest,
-    pub deletion: FlatForest,
-}
-
-/// The five forests on one shared [`biosphere::gpu::GpuContext`], owned by the
+/// The three forests on one shared [`biosphere::gpu::GpuContext`], owned by the
 /// inference thread.
 ///
-/// One queue pipelines the five dispatches, which separate devices would
+/// One queue pipelines the dispatches, which separate devices would
 /// time-slice, and on Metal one device measures the same as five
 /// (chr12:20-30Mb, 1.87 s vs 1.90 s). Sharing relies on biosphere uploading
 /// with `write_buffer`: an upload that waited on the device's most recent
@@ -212,8 +165,6 @@ pub struct GpuRastairModel {
     pub cpg: GpuForest,
     pub denovo: GpuForest,
     pub others: GpuForest,
-    pub insertion: GpuForest,
-    pub deletion: GpuForest,
 }
 
 impl GpuRastairModel {
@@ -222,8 +173,6 @@ impl GpuRastairModel {
             MlModel::Others => &self.others,
             MlModel::Cpg => &self.cpg,
             MlModel::DenovoCpg => &self.denovo,
-            MlModel::Insertion => &self.insertion,
-            MlModel::Deletion => &self.deletion,
         }
     }
 }
@@ -282,14 +231,11 @@ pub enum MlModel {
     Others,
     Cpg,
     DenovoCpg,
-    Insertion,
-    Deletion,
 }
 
 impl MlModel {
     /// Every model, in the order [`MlModel::index`] assigns.
-    pub const ALL: [Self; 5] =
-        [Self::Others, Self::Cpg, Self::DenovoCpg, Self::Insertion, Self::Deletion];
+    pub const ALL: [Self; 3] = [Self::Others, Self::Cpg, Self::DenovoCpg];
 
     pub const COUNT: usize = Self::ALL.len();
 
@@ -300,8 +246,6 @@ impl MlModel {
             Self::Others => 0,
             Self::Cpg => 1,
             Self::DenovoCpg => 2,
-            Self::Insertion => 3,
-            Self::Deletion => 4,
         }
     }
 
@@ -311,8 +255,6 @@ impl MlModel {
             Self::Others => "other",
             Self::Cpg => "cpg",
             Self::DenovoCpg => "denovo",
-            Self::Insertion => "insertion",
-            Self::Deletion => "deletion",
         }
     }
 }

@@ -79,12 +79,7 @@ impl InferenceStage {
     /// Blocks while the GPU has the rows. Splitting that into
     /// [`Self::submit`] and [`Ticket::apply`] is what will let a caller
     /// build its next region in the meantime.
-    fn score(
-        &self,
-        pileups: &mut [PileupMetrics],
-        ml: &MachineLearning,
-        score_indels: bool,
-    ) -> Result<()> {
+    fn score(&self, pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Result<()> {
         let Some(model) = ml.model.as_ref() else {
             return Ok(());
         };
@@ -92,7 +87,7 @@ impl InferenceStage {
             return Ok(());
         }
 
-        let (rows, targets) = extract_ml_rows(pileups, ml, model, score_indels)?.split()?;
+        let (rows, targets) = extract_ml_rows(pileups, ml, model)?.split()?;
         self.submit(rows, targets)?.apply(pileups, ml.threshold)
     }
 
@@ -115,11 +110,7 @@ impl InferenceStage {
 /// The first failure retires the stage for the rest of the run, and is the
 /// only one logged: the regions in flight at the time all fail with it.
 #[must_use = "`false` means the pileups still need scoring"]
-pub fn score_on_gpu(
-    pileups: &mut [PileupMetrics],
-    ml: &MachineLearning,
-    score_indels: bool,
-) -> bool {
+pub fn score_on_gpu(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> bool {
     let Some(stage) = ml.inference.as_ref() else {
         return false;
     };
@@ -127,7 +118,7 @@ pub fn score_on_gpu(
         return false;
     }
 
-    match stage.score(pileups, ml, score_indels) {
+    match stage.score(pileups, ml) {
         Ok(()) => true,
         Err(error) => {
             if !stage.failed.swap(true, Ordering::Relaxed) {

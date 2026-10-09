@@ -1601,7 +1601,7 @@ fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
         .args([
             &format!("--region={CONTIG}:{}-{}", DEL_POS - 200, DEL_POS + 200),
             "--unpaired",
-            "--experimental-indels=no-ml",
+            "--experimental-indels",
             NO_ML,
             "--vcf",
         ])
@@ -1636,5 +1636,196 @@ fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
         multi_base_refs > 0,
         "no multi-base REF was emitted, so this test proved nothing:\n{text}"
     );
+    Ok(())
+}
+
+/// A compound het, an insertion on one haplotype and a deletion on the other
+/// at one anchor, is one `1/2` record whose REF spans the deletion; a deletion
+/// on both haplotypes is a PASS `1/1`.
+#[test]
+fn the_pair_hmm_calls_a_compound_het_and_a_homozygous_indel() -> Result<()> {
+    use utils::scenario::{Hap, Scenario};
+    const COMPOUND: usize = 150;
+    const HOMOZYGOUS: usize = 180;
+    let scenario = Scenario::new(1000)
+        .reference_at(COMPOUND, b"AGTC")
+        .insertion(COMPOUND, b"GG", Hap::One)
+        .deletion(COMPOUND, 2, Hap::Two)
+        .reference_at(HOMOZYGOUS, b"CTAG")
+        .deletion(HOMOZYGOUS, 2, Hap::One)
+        .deletion(HOMOZYGOUS, 2, Hap::Two)
+        .balanced(120, 370, 5);
+
+    let vcf = call_scenario(&scenario, &["--experimental-indels"])?;
+    let indels: Vec<_> = vcf
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let columns: Vec<&str> = line.split('\t').collect();
+            let (reference, alt) = (*columns.get(3)?, *columns.get(4)?);
+            (reference.len() > 1 || alt.len() > 1).then_some((
+                columns.get(1)?.parse::<usize>().ok()?,
+                reference,
+                alt,
+                *columns.get(6)?,
+                format_field(line, "GT")?,
+            ))
+        })
+        .collect();
+    assert_eq!(
+        indels,
+        [
+            (COMPOUND + 1, "AGT", "AGGGT,A", "PASS", "1/2"),
+            (HOMOZYGOUS + 1, "CTA", "C", "PASS", "1/1")
+        ],
+        "{vcf}"
+    );
+    Ok(())
+}
+
+/// Two events of one cluster: two deletions 13 bp apart on both haplotypes
+/// are each a PASS `1/1`, which needs a haplotype carrying both; a deletion
+/// on one haplotype and an insertion 10 bp on, on the other, are each `0/1`.
+#[test]
+fn the_pair_hmm_calls_two_events_of_one_cluster() -> Result<()> {
+    use utils::scenario::{Hap, Scenario};
+    const FIRST: usize = 150;
+    const SECOND: usize = FIRST + 13;
+    const DELETION: usize = 400;
+    const INSERTION: usize = DELETION + 10;
+    let mut scenario = Scenario::new(1000)
+        .reference_at(FIRST, b"CTAG")
+        .reference_at(SECOND, b"AGTC")
+        .reference_at(DELETION, b"AGTC")
+        .reference_at(INSERTION, b"AT");
+    for hap in [Hap::One, Hap::Two] {
+        scenario = scenario.deletion(FIRST, 2, hap).deletion(SECOND, 2, hap);
+    }
+    let scenario = scenario
+        .deletion(DELETION, 2, Hap::One)
+        .insertion(INSERTION, b"GG", Hap::Two)
+        .balanced(120, 370, 5)
+        .balanced(370, 620, 5);
+
+    let vcf = call_scenario(&scenario, &["--experimental-indels"])?;
+    let indels: Vec<_> = vcf
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let columns: Vec<&str> = line.split('\t').collect();
+            let (reference, alt) = (*columns.get(3)?, *columns.get(4)?);
+            (reference.len() > 1 || alt.len() > 1).then_some((
+                columns.get(1)?.parse::<usize>().ok()?,
+                reference,
+                alt,
+                *columns.get(6)?,
+                format_field(line, "GT")?,
+            ))
+        })
+        .collect();
+    assert_eq!(
+        indels,
+        [
+            (FIRST + 1, "CTA", "C", "PASS", "1/1"),
+            (SECOND + 1, "AGT", "A", "PASS", "1/1"),
+            (DELETION + 1, "AGT", "A", "PASS", "0/1"),
+            (INSERTION + 1, "A", "AGG", "PASS", "0/1"),
+        ],
+        "{vcf}"
+    );
+    Ok(())
+}
+
+/// Indel calling end to end on a scenario: a het insertion and a het
+/// deletion are called `0/1`, PASS, with `QUAL` of at least 10 and a `GC`.
+/// An insertion only two of forty-two fragments carry is scored and
+/// rejected: absent from the output, and written `0/0` with the
+/// `low_indel_qual` FILTER under `--all`.
+#[test]
+fn the_pair_hmm_calls_indels_on_a_scenario() -> Result<()> {
+    use utils::scenario::{Hap, Scenario, Strand};
+    const INSERTION: usize = 150;
+    const DELETION: usize = 180;
+    const REJECTED: usize = 600;
+    let scenario = Scenario::new(1000)
+        .reference_at(INSERTION, b"AT")
+        .insertion(INSERTION, b"GG", Hap::Two)
+        .reference_at(DELETION, b"AGTC")
+        .deletion(DELETION, 2, Hap::Two)
+        .balanced(120, 370, 5)
+        .reference_at(REJECTED, b"CA")
+        .insertion(REJECTED, b"TT", Hap::Two)
+        .pairs(Hap::One, Strand::Top, 560, 20)
+        .pairs(Hap::One, Strand::Bottom, 560, 20)
+        .pairs(Hap::Two, Strand::Top, 560, 1)
+        .pairs(Hap::Two, Strand::Bottom, 560, 1);
+
+    // (POS, REF, ALT, QUAL, FILTER, GT, GC) of every indel record.
+    let indels = |vcf: &str| -> Vec<(usize, String, String, f32, String, String, String)> {
+        vcf.lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| {
+                let columns: Vec<&str> = line.split('\t').collect();
+                let (reference, alt) = (*columns.get(3)?, *columns.get(4)?);
+                if reference.len() == 1 && alt.len() == 1 {
+                    return None;
+                }
+                Some((
+                    columns.get(1)?.parse().ok()?,
+                    reference.to_owned(),
+                    alt.to_owned(),
+                    columns.get(5)?.parse().ok()?,
+                    (*columns.get(6)?).to_owned(),
+                    format_field(line, "GT")?.to_owned(),
+                    format_field(line, "GC").unwrap_or(".").to_owned(),
+                ))
+            })
+            .collect()
+    };
+
+    let vcf = call_scenario(&scenario, &["--experimental-indels", "--vcf-all-fields"])?;
+    let called = indels(&vcf);
+    let sites: Vec<_> = called
+        .iter()
+        .map(|(pos, r, a, _, f, gt, _)| (*pos, r.as_str(), a.as_str(), f.as_str(), gt.as_str()))
+        .collect();
+    assert_eq!(
+        sites,
+        [(INSERTION + 1, "A", "AGG", "PASS", "0/1"), (DELETION + 1, "AGT", "A", "PASS", "0/1")],
+        "{vcf}"
+    );
+    for (pos, .., qual, _, _, gc) in &called {
+        assert!(*qual >= 10.0 && gc.parse::<f32>().is_ok_and(|gc| gc > 0.0), "{pos}: {vcf}");
+    }
+    // AD counts the reads the pair-HMM assigns to each allele, DP the reads it
+    // scored: one per fragment, so twenty pairs over each site.
+    let depths: Vec<_> = vcf
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let info = line.split('\t').nth(7)?;
+            let field =
+                |key: &str| info.split(';').find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='));
+            let pos: usize = line.split('\t').nth(1)?.parse().ok()?;
+            [INSERTION + 1, DELETION + 1].contains(&pos).then(|| (pos, field("AD"), field("DP")))
+        })
+        .collect();
+    assert_eq!(
+        depths,
+        [(INSERTION + 1, Some("10,10"), Some("20")), (DELETION + 1, Some("10,10"), Some("20"))],
+        "{vcf}"
+    );
+
+    let vcf = call_scenario(&scenario, &["--experimental-indels", "--vcf-all-fields", "--all"])?;
+    let rejected: Vec<_> =
+        indels(&vcf).into_iter().filter(|record| record.0 == REJECTED + 1).collect();
+    let [(_, reference, alt, qual, filter, gt, _)] = rejected.as_slice() else {
+        panic!("one record at the rejected insertion: {vcf}")
+    };
+    assert_eq!(
+        (reference.as_str(), alt.as_str(), filter.as_str(), gt.as_str()),
+        ("C", "CTT", "low_indel_qual", "0/0")
+    );
+    assert!(*qual < 10.0, "{vcf}");
     Ok(())
 }

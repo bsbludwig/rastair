@@ -605,6 +605,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "compair"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6a27f8597cdb0332de8ed35d2f15b818a11a8be88bc0dce1f5446747e9de2bd"
+dependencies = [
+ "fearless_simd",
+ "fearless_simd_macros",
+ "seqair-types",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "console"
 version = "0.16.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2589,6 +2601,7 @@ dependencies = [
  "clap_complete_command",
  "clio",
  "color-eyre",
+ "compair",
  "crossbeam-channel",
  "cstr8",
  "enumset",

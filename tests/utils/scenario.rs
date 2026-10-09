@@ -56,12 +56,22 @@ struct Template {
     right: usize,
 }
 
+/// An indel after the base at its position.
+#[derive(Debug, Clone)]
+enum Indel {
+    Insertion(Vec<u8>),
+    /// This many reference bases.
+    Deletion(usize),
+}
+
 #[derive(Debug, Clone)]
 pub struct Scenario {
     reference: Vec<u8>,
     /// Per position, the base each haplotype carries where it differs from the
     /// reference.
     variants: BTreeMap<usize, [u8; 2]>,
+    /// Per anchor position, the indel each haplotype carries there.
+    indels: BTreeMap<usize, [Option<Indel>; 2]>,
     methylated: [bool; 2],
     templates: Vec<Template>,
 }
@@ -87,7 +97,13 @@ impl Scenario {
                 reference.push(base);
             }
         }
-        Self { reference, variants: BTreeMap::new(), methylated: [false; 2], templates: Vec::new() }
+        Self {
+            reference,
+            variants: BTreeMap::new(),
+            indels: BTreeMap::new(),
+            methylated: [false; 2],
+            templates: Vec::new(),
+        }
     }
 
     /// Overwrite the reference from `pos` on, e.g. with `b"CG"` for a CpG.
@@ -127,6 +143,25 @@ impl Scenario {
             .find(|&alt| !(alt == b'C' && after == b'G') && !(alt == b'G' && before == Some(b'C')))
             .unwrap_or(b'T');
         self.het(pos, alt, hap)
+    }
+
+    /// An insertion of `bases` after `pos`, on `hap`; call it for each
+    /// haplotype that carries one.
+    pub fn insertion(self, pos: usize, bases: &[u8], hap: Hap) -> Self {
+        self.indel(pos, Indel::Insertion(bases.to_vec()), hap)
+    }
+
+    /// A deletion of the `len` bases after `pos`, on `hap`; call it for each
+    /// haplotype that carries one.
+    pub fn deletion(self, pos: usize, len: usize, hap: Hap) -> Self {
+        self.indel(pos, Indel::Deletion(len), hap)
+    }
+
+    fn indel(mut self, pos: usize, indel: Indel, hap: Hap) -> Self {
+        if let Some(slot) = self.indels.entry(pos).or_default().get_mut(hap.index()) {
+            *slot = Some(indel);
+        }
+        self
     }
 
     /// Every CpG on `hap`, including any its variants create, is methylated.
@@ -187,23 +222,66 @@ impl Scenario {
             .unwrap_or_else(|| self.reference_base(pos))
     }
 
-    /// One read as a BAM stores it: in reference orientation, with every
-    /// methylated CpG converted on the read's own strand.
-    fn read(&self, hap: Hap, strand: Strand, start: usize) -> Vec<u8> {
-        let methylated = self.methylated.get(hap.index()).copied().unwrap_or(false);
-        (start..start + READ_LEN)
-            .map(|pos| {
-                let here = self.base(hap, pos);
-                let cpg_c = here == b'C' && self.base(hap, pos + 1) == b'G';
-                let cpg_g =
-                    here == b'G' && pos.checked_sub(1).map(|p| self.base(hap, p)) == Some(b'C');
-                match strand {
-                    Strand::Top if methylated && cpg_c => b'T',
-                    Strand::Bottom if methylated && cpg_g => b'A',
-                    _ => here,
+    /// `hap` as reads see it: each base with the reference position it aligns
+    /// to, `None` inside an insertion.
+    fn haplotype(&self, hap: Hap) -> Vec<(Option<usize>, u8)> {
+        let mut bases = Vec::with_capacity(self.reference.len());
+        let mut pos = 0;
+        while pos < self.reference.len() {
+            bases.push((Some(pos), self.base(hap, pos)));
+            match self.indel_at(pos, hap) {
+                Some(Indel::Insertion(inserted)) => {
+                    bases.extend(inserted.iter().map(|&base| (None, base)));
                 }
-            })
-            .collect()
+                Some(Indel::Deletion(len)) => pos += len,
+                None => {}
+            }
+            pos += 1;
+        }
+        bases
+    }
+
+    /// One read as a BAM stores it: in reference orientation, with every
+    /// methylated CpG converted on the read's own strand, and the CIGAR that
+    /// aligns it.
+    fn read(&self, hap: Hap, strand: Strand, start: usize) -> Result<(Vec<u8>, CigarString)> {
+        let methylated = self.methylated.get(hap.index()).copied().unwrap_or(false);
+        let haplotype = self.haplotype(hap);
+        let first = haplotype
+            .iter()
+            .position(|&(pos, _)| pos == Some(start))
+            .ok_or_else(|| eyre!("a read cannot start at {start}, which {hap:?} deletes"))?;
+        let base_at = |index: Option<usize>| index.and_then(|i| haplotype.get(i)).map(|&(_, b)| b);
+
+        let mut seq = Vec::with_capacity(READ_LEN);
+        let mut cigar: Vec<Cigar> = Vec::new();
+        let mut last_pos: Option<usize> = None;
+        for (index, &(pos, here)) in haplotype.iter().enumerate().skip(first).take(READ_LEN) {
+            let cpg_c = here == b'C' && base_at(index.checked_add(1)) == Some(b'G');
+            let cpg_g = here == b'G' && base_at(index.checked_sub(1)) == Some(b'C');
+            seq.push(match strand {
+                Strand::Top if methylated && cpg_c => b'T',
+                Strand::Bottom if methylated && cpg_g => b'A',
+                _ => here,
+            });
+
+            let op = match (pos, last_pos) {
+                (None, _) => Cigar::Ins(1),
+                (Some(pos), Some(last)) if pos > last + 1 => {
+                    cigar.push(Cigar::Del(u32::try_from(pos - last - 1)?));
+                    Cigar::Match(1)
+                }
+                (Some(_), _) => Cigar::Match(1),
+            };
+            last_pos = pos.or(last_pos);
+            match (cigar.last_mut(), op) {
+                (Some(Cigar::Match(n)), Cigar::Match(1)) | (Some(Cigar::Ins(n)), Cigar::Ins(1)) => {
+                    *n += 1;
+                }
+                _ => cigar.push(op),
+            }
+        }
+        Ok((seq, CigarString(cigar.into())))
     }
 
     /// Write `ref.fa` and its index into `dir`, returning the FASTA path.
@@ -237,7 +315,6 @@ impl Scenario {
         sq.push_tag(b"LN", self.reference.len());
         header.push_record(&sq);
 
-        let cigar = CigarString(vec![Cigar::Match(u32::try_from(READ_LEN)?)].into());
         let mut records = Vec::new();
         for (index, template) in self.templates.iter().enumerate() {
             let name = format!("pair_{index}");
@@ -253,9 +330,9 @@ impl Scenario {
                 (template.left, template.right, left_flags, span),
                 (template.right, template.left, right_flags, -span),
             ] {
-                let seq = self.read(template.hap, template.strand, start);
+                let (seq, cigar) = self.read(template.hap, template.strand, start)?;
                 let mut record = Record::new();
-                record.set(name.as_bytes(), Some(&cigar), &seq, &[40u8; READ_LEN]);
+                record.set(name.as_bytes(), Some(&cigar), &seq, &vec![40u8; seq.len()]);
                 record.set_tid(0);
                 record.set_pos(i64::try_from(start)?);
                 record.set_mapq(60);
@@ -291,28 +368,34 @@ impl Scenario {
 
         for line in vcf.lines().filter(|line| !line.starts_with('#')) {
             let record = VcfLine::parse(line)?;
-            let truth = self.variants.get(&record.pos);
+            let truth = self.truth(&record);
             let Some(gt) = record.gt.split_once('|') else {
-                if truth.is_some_and(|[one, two]| one != two) {
+                if truth.as_ref().is_some_and(|[one, two]| one != two) {
                     unphased.push(record.pos);
                 }
                 continue;
             };
-            let [one, two] = truth.copied().ok_or_else(|| {
+            let [one, two] = truth.ok_or_else(|| {
                 eyre!("{} is phased but carries no variant in the scenario: {line}", record.pos)
             })?;
             ensure!(one != two, "{} is phased but homozygous in the scenario: {line}", record.pos);
 
-            let allele = |index: &str| -> Result<u8> {
+            let allele = |index: &str| -> Result<&str> {
                 let index: usize = index.parse().wrap_err_with(|| format!("GT in {line}"))?;
-                record.alleles.get(index).copied().ok_or_eyre("GT names a missing allele")
+                record
+                    .alleles
+                    .get(index)
+                    .map(String::as_str)
+                    .ok_or_eyre("GT names a missing allele")
             };
-            opens_low.insert(record.pos, gt.0 < gt.1);
+            // A column's SNV record comes before its indel record, and opens
+            // the block when both are in it.
+            opens_low.entry(record.pos).or_insert(gt.0 < gt.1);
             let (first, second) = (allele(gt.0)?, allele(gt.1)?);
             // Which haplotype the record's haplotype 1 is.
-            let hap = if (first, second) == (one, two) {
+            let hap = if (first, second) == (one.as_str(), two.as_str()) {
                 Hap::One
-            } else if (first, second) == (two, one) {
+            } else if (first, second) == (two.as_str(), one.as_str()) {
                 Hap::Two
             } else {
                 bail!(
@@ -342,6 +425,46 @@ impl Scenario {
         }
         Ok(Phasing { blocks: phased, unphased })
     }
+
+    /// What each haplotype carries at a record, spelled the way the record
+    /// spells its alleles: an indel record is anchored on the base before.
+    fn truth(&self, record: &VcfLine) -> Option<[String; 2]> {
+        if !record.is_indel() {
+            return Some(self.variants.get(&record.pos)?.map(|base| char::from(base).to_string()));
+        }
+        let pos = record.pos;
+        self.indels.get(&pos)?;
+        // REF spans the longest deletion at the anchor, and every allele is
+        // spelled against it.
+        let deleted = Hap::BOTH
+            .iter()
+            .filter_map(|&hap| match self.indel_at(pos, hap)? {
+                Indel::Deletion(len) => Some(*len),
+                Indel::Insertion(_) => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let spell = |hap: Hap| -> Option<String> {
+            let (inserted, kept): (&[u8], _) = match self.indel_at(pos, hap) {
+                Some(Indel::Insertion(bases)) => (bases, pos + 1),
+                Some(Indel::Deletion(len)) => (&[], pos + 1 + len),
+                None => (&[], pos + 1),
+            };
+            let tail = self.reference.get(kept..=pos + deleted)?;
+            Some(
+                std::iter::once(self.reference_base(pos))
+                    .chain(inserted.iter().copied())
+                    .chain(tail.iter().copied())
+                    .map(char::from)
+                    .collect(),
+            )
+        };
+        Some([spell(Hap::One)?, spell(Hap::Two)?])
+    }
+
+    fn indel_at(&self, pos: usize, hap: Hap) -> Option<&Indel> {
+        self.indels.get(&pos)?.get(hap.index())?.as_ref()
+    }
 }
 
 /// How a VCF phased a scenario's heterozygous sites, all consistent with the
@@ -358,20 +481,24 @@ pub struct Phasing {
 struct VcfLine {
     /// 0-based.
     pos: usize,
-    /// `REF` then each `ALT`, single bases only.
-    alleles: Vec<u8>,
+    /// `REF` then each `ALT`.
+    alleles: Vec<String>,
     gt: String,
     /// 1-based, as written.
     ps: Option<usize>,
 }
 
 impl VcfLine {
+    fn is_indel(&self) -> bool {
+        self.alleles.iter().any(|allele| allele.len() != 1)
+    }
+
     fn parse(line: &str) -> Result<Self> {
         let columns: Vec<&str> = line.split('\t').collect();
         let column = |index: usize| columns.get(index).copied().ok_or_eyre("short VCF line");
         let pos = column(1)?.parse::<usize>()?.checked_sub(1).ok_or_eyre("POS 0")?;
-        let mut alleles: Vec<u8> = column(3)?.bytes().take(1).collect();
-        alleles.extend(column(4)?.split(',').filter_map(|alt| alt.bytes().next()));
+        let mut alleles = vec![column(3)?.to_owned()];
+        alleles.extend(column(4)?.split(',').map(str::to_owned));
         let format_value = |key: &str| -> Option<&str> {
             let index = column(8).ok()?.split(':').position(|candidate| candidate == key)?;
             column(9).ok()?.split(':').nth(index)
