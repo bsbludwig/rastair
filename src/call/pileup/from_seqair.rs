@@ -1046,30 +1046,41 @@ mod gpu {
         reply: mpsc::Sender<Launched>,
     }
 
-    /// The one thread that launches the pair-HMM, like the ML's
-    /// `InferenceStage`: whatever plans the workers queued while a launch
-    /// ran go up together as the next one. One thread also makes it the
-    /// only one polling the device, which `Wait::Block` needs in compair
-    /// 0.2.0: with several pollers one can take another's map callback.
-    fn stage() -> Option<&'static mpsc::Sender<Job>> {
-        static STAGE: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+    /// Threads launching the pair-HMM. One serialises upload, kernel and
+    /// readback; two overlap them (chr12 73x −5 % wall), three add nothing.
+    const GPU_THREADS: usize = 2;
+
+    /// The threads that launch the pair-HMM, like the ML's `InferenceStage`:
+    /// whatever plans the workers queued while a thread's launch ran go up
+    /// together as its next one.
+    fn stage() -> Option<&'static crossbeam_channel::Sender<Job>> {
+        static STAGE: OnceLock<Option<crossbeam_channel::Sender<Job>>> = OnceLock::new();
         STAGE
             .get_or_init(|| {
-                let context = Arc::clone(context()?);
-                let (jobs, incoming) = mpsc::channel();
-                thread::Builder::new()
-                    .name("pair-hmm-gpu".to_owned())
-                    .spawn(move || serve(&context, &incoming))
-                    .inspect_err(|error| {
-                        warn!(%error, "No GPU thread for the pair-HMM; it is scored on the CPU");
-                    })
-                    .ok()?;
+                let context = context()?;
+                let (jobs, incoming) = crossbeam_channel::unbounded();
+                for index in 0..GPU_THREADS {
+                    let context = Arc::clone(context);
+                    let incoming = incoming.clone();
+                    thread::Builder::new()
+                        .name(format!("pair-hmm-gpu-{index}"))
+                        .spawn(move || serve(&context, &incoming))
+                        .inspect_err(|error| {
+                            warn!(%error, "No GPU thread for the pair-HMM; it is scored on the CPU");
+                        })
+                        .ok()?;
+                }
                 Some(jobs)
             })
             .as_ref()
     }
 
-    fn serve(context: &Arc<GpuContext>, incoming: &mpsc::Receiver<Job>) {
+    fn serve(context: &Arc<GpuContext>, incoming: &crossbeam_channel::Receiver<Job>) {
+        // `Wait::Block` sleeps where `Spin` burns a core per thread (11 % of
+        // the run's CPU at 73x). With several threads polling one device,
+        // compair 0.2.0 loses a map callback on ~1 launch in 300; that launch
+        // falls back to the CPU and the aligner is rebuilt. Fixed on seqair
+        // `fix/compair-block-wait-recv`.
         let options = KernelOptions { wait: Wait::Block, ..KernelOptions::default() };
         let aligner = || GpuAligner::with_options(Arc::clone(context), options);
         let mut current = aligner();
@@ -1120,7 +1131,7 @@ mod gpu {
     /// A worker's way to the GPU thread: `submit` a plan, `collect` it back
     /// with its scores.
     struct Lane {
-        submit: mpsc::Sender<Job>,
+        submit: crossbeam_channel::Sender<Job>,
         reply: mpsc::Sender<Launched>,
         collect: mpsc::Receiver<Launched>,
     }

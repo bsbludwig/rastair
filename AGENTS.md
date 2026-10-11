@@ -381,15 +381,17 @@ and 73x. What to know when touching it:
   cluster's pairs to a `GpuPairs` plan and `Prepared::finish_gpu` turns a launch's scores back
   into `HaplotypeScores` through the same `rows`. Keep the two arms sharing everything but the
   kernel call, or the identity check is the only thing standing between them.
-- **One GPU thread for the run** (`pair-hmm-gpu`, like the ML's `InferenceStage`): a worker
-  sends its plan through its `Lane` (a `thread_local` reply channel), keeps preparing clusters,
-  and collects the scores later. The thread merges every plan queued while a launch ran into the
-  next one (`GpuPairs::append`), so one aligner's buffers serve all workers. Being the only
-  thread polling its device is also what makes `Wait::Block` safe on compair 0.2.0, whose
-  blocking wait loses a map callback when several threads poll one device (~1 launch in 300 with
-  the earlier one-thread-per-worker design; then every launch fails with "Buffer with 'scores'
-  label is still mapped"). A failed launch rebuilds the aligner and fails every plan in it over
-  to the CPU.
+- **Two GPU threads for the run** (`pair-hmm-gpu-0/1`, `GPU_THREADS`, like the ML's
+  `InferenceStage`): a worker sends its plan through its `Lane` (a `thread_local` reply channel)
+  onto one shared crossbeam queue, keeps preparing clusters, and collects the scores later.
+  Whichever thread is free takes every queued plan and merges them into one launch
+  (`GpuPairs::append`). One thread serialised upload, kernel and readback and cost 1–2 % wall
+  against the old one-thread-per-worker design; two overlap them (73x chr12 −5 % vs one, −3 % vs
+  per-worker), three add nothing. The wait is `Wait::Block`: spinning cost 11 % of the run's
+  CPU at 73x. compair 0.2.0's blocking wait loses a map callback when several threads poll one
+  device (~1 launch in 340 with two threads): that launch falls back to the CPU with a warning
+  and the aligner is rebuilt, so the calls do not change. Fixed on seqair
+  `fix/compair-block-wait-recv` (0 failures in 690 launches with two and three threads).
 - **A worker's plan is at most `MAX_LAUNCH_PAIRS` (4,096) pairs**, so a sub-segment's clusters
   go up in chunks and the prepared reads a worker holds are bounded — two plans' worth, the one
   on the GPU and the one filling (a single cluster can exceed the cap; its plan holds it alone).
