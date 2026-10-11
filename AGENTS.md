@@ -381,19 +381,19 @@ and 73x. What to know when touching it:
   cluster's pairs to a `GpuPairs` plan and `Prepared::finish_gpu` turns a launch's scores back
   into `HaplotypeScores` through the same `rows`. Keep the two arms sharing everything but the
   kernel call, or the identity check is the only thing standing between them.
-- **One GPU thread per worker** (`Lane`, a `thread_local`): the worker sends a plan, keeps
-  preparing clusters, and collects the scores later. The aligner's buffers live on that thread
-  and grow to the largest launch once, not per region. The wait is compair's `Wait::Spin`, which
-  costs the helper thread a core while a launch runs: `Wait::Block` would sleep instead, but in
-  compair 0.2.0 it misses the mapping callback on ~1 launch in 300 (8 % of launches with 4k-pair
-  launches at 73x), and every launch after that one fails with "Buffer with 'scores' label is
-  still mapped". The fix is on seqair branch `fix/compair-block-wait`; switch the one line once a
-  compair with it is published. A failed launch rebuilds the lane's aligner, so one failure does
-  not take the lane down for the run.
-- **A launch is at most `MAX_LAUNCH_PAIRS` (4,096) pairs**, so a sub-segment's clusters go up
-  in chunks and the prepared reads a worker holds are bounded — two launches' worth, the one on
-  the GPU and the one filling (a single cluster can exceed the cap; it launches alone). The
-  per-region `Batch` (in `ColumnScratch`) is flushed after each sub-segment's cluster loop,
+- **One GPU thread for the run** (`pair-hmm-gpu`, like the ML's `InferenceStage`): a worker
+  sends its plan through its `Lane` (a `thread_local` reply channel), keeps preparing clusters,
+  and collects the scores later. The thread merges every plan queued while a launch ran into the
+  next one (`GpuPairs::append`), so one aligner's buffers serve all workers. Being the only
+  thread polling its device is also what makes `Wait::Block` safe on compair 0.2.0, whose
+  blocking wait loses a map callback when several threads poll one device (~1 launch in 300 with
+  the earlier one-thread-per-worker design; then every launch fails with "Buffer with 'scores'
+  label is still mapped"). A failed launch rebuilds the aligner and fails every plan in it over
+  to the CPU.
+- **A worker's plan is at most `MAX_LAUNCH_PAIRS` (4,096) pairs**, so a sub-segment's clusters
+  go up in chunks and the prepared reads a worker holds are bounded — two plans' worth, the one
+  on the GPU and the one filling (a single cluster can exceed the cap; its plan holds it alone).
+  The per-region `Batch` (in `ColumnScratch`) is flushed after each sub-segment's cluster loop,
   before the next sub-segment's reads are loaded: holding a launch across that load cost
   100 MB at 73x for no wall time. A batch dropped with a launch in flight drains it in `Drop`,
   or the next region would collect it.
@@ -402,7 +402,8 @@ and 73x. What to know when touching it:
   module is never entered, and the plain `cargo test` never exercises it.
 - `RASTAIR_LOG=rastair::call::pileup::from_seqair=debug` logs one line per launch with running
   totals (launches, pairs, rescored); `grep -c "Pair-HMM GPU launch"` is the check that the GPU
-  path ran. Measured only on Apple Metal (M4 Pro) so far; a Vulkan identity check is open.
+  path ran (one per plan; the GPU thread logs "one launch for queued plans" with how many it
+  merged). Measured only on Apple Metal (M4 Pro) so far; a Vulkan identity check is open.
 
 ## Phasing (`--phase`, seqair only)
 

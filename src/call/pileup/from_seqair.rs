@@ -1015,10 +1015,10 @@ mod gpu {
     };
     use tracing::{debug, info, warn};
 
-    /// Pairs a launch holds at most. A launch costs ~1.5 ms over its pairs,
-    /// so smaller launches lose that; larger ones hold more prepared reads
-    /// in memory, twice over while one runs and the next fills. 4,096 and
-    /// 8,192 time the same on chr12 at 73x; 4,096 holds 120 MB less.
+    /// Pairs a worker's plan holds at most; the GPU thread can merge several
+    /// plans into one launch. Larger plans hold more prepared reads in
+    /// memory, twice over while one is on the GPU and the next fills. 4,096
+    /// and 8,192 time the same on chr12 at 73x; 4,096 holds 120 MB less.
     const MAX_LAUNCH_PAIRS: usize = 4_096;
 
     fn context() -> Option<&'static Arc<GpuContext>> {
@@ -1037,13 +1037,91 @@ mod gpu {
             .as_ref()
     }
 
-    type Launched = (GpuPairs, Result<Vec<GpuScore>, GpuError>);
+    /// A plan back from the GPU thread with its scores; one launch's error
+    /// goes to every worker whose plan rode in it.
+    type Launched = (GpuPairs, Result<Vec<GpuScore>, Arc<GpuError>>);
 
-    /// A worker's aligner on a thread of its own: `submit` a plan, `collect`
-    /// it back with its scores. The aligner's buffers grow to the largest
-    /// launch and stay, so it outlives the region's [`Batch`].
+    struct Job {
+        plan: GpuPairs,
+        reply: mpsc::Sender<Launched>,
+    }
+
+    /// The one thread that launches the pair-HMM, like the ML's
+    /// `InferenceStage`: whatever plans the workers queued while a launch
+    /// ran go up together as the next one. One thread also makes it the
+    /// only one polling the device, which `Wait::Block` needs in compair
+    /// 0.2.0: with several pollers one can take another's map callback.
+    fn stage() -> Option<&'static mpsc::Sender<Job>> {
+        static STAGE: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+        STAGE
+            .get_or_init(|| {
+                let context = Arc::clone(context()?);
+                let (jobs, incoming) = mpsc::channel();
+                thread::Builder::new()
+                    .name("pair-hmm-gpu".to_owned())
+                    .spawn(move || serve(&context, &incoming))
+                    .inspect_err(|error| {
+                        warn!(%error, "No GPU thread for the pair-HMM; it is scored on the CPU");
+                    })
+                    .ok()?;
+                Some(jobs)
+            })
+            .as_ref()
+    }
+
+    fn serve(context: &Arc<GpuContext>, incoming: &mpsc::Receiver<Job>) {
+        let options = KernelOptions { wait: Wait::Block, ..KernelOptions::default() };
+        let aligner = || GpuAligner::with_options(Arc::clone(context), options);
+        let mut current = aligner();
+        let mut merged = GpuPairs::new();
+        let mut jobs = Vec::new();
+        while let Ok(first) = incoming.recv() {
+            jobs.push(first);
+            jobs.extend(incoming.try_iter());
+            let launch = match jobs.as_slice() {
+                // Alone, the plan goes up as it is, without a copy.
+                [job] => current.align(&job.plan).map(|scores| {
+                    let all = 0..scores.len();
+                    (scores, vec![all])
+                }),
+                _ => merge(&mut merged, &jobs)
+                    .and_then(|ranges| Ok((current.align(&merged)?, ranges))),
+            };
+            // A failed launch can leave the aligner's buffers mapped; a fresh
+            // one costs a regrowth and keeps the thread serving.
+            if launch.is_err() {
+                current = aligner();
+            }
+            let launch = launch.map_err(Arc::new);
+            debug!(plans = jobs.len(), "Pair-HMM GPU thread: one launch for queued plans");
+            for (index, Job { plan, reply }) in jobs.drain(..).enumerate() {
+                let scores = match &launch {
+                    Ok((scores, ranges)) => Ok(ranges
+                        .get(index)
+                        .and_then(|range| scores.get(range.clone()))
+                        .unwrap_or_default()
+                        .to_vec()),
+                    Err(error) => Err(Arc::clone(error)),
+                };
+                // A worker that is gone has nothing left to score.
+                if reply.send((plan, scores)).is_err() {
+                    debug!("A worker left before its pair-HMM launch came back");
+                }
+            }
+        }
+    }
+
+    /// `jobs`' plans as one, and where each one's pairs landed in it.
+    fn merge(merged: &mut GpuPairs, jobs: &[Job]) -> Result<Vec<Range<usize>>, GpuError> {
+        merged.clear();
+        jobs.iter().map(|job| merged.append(&job.plan)).collect()
+    }
+
+    /// A worker's way to the GPU thread: `submit` a plan, `collect` it back
+    /// with its scores.
     struct Lane {
-        submit: mpsc::Sender<GpuPairs>,
+        submit: mpsc::Sender<Job>,
+        reply: mpsc::Sender<Launched>,
         collect: mpsc::Receiver<Launched>,
     }
 
@@ -1052,43 +1130,17 @@ mod gpu {
     }
 
     impl Lane {
-        fn spawn(context: &Arc<GpuContext>) -> std::io::Result<Self> {
-            let (submit, launches) = mpsc::channel::<GpuPairs>();
-            let (results, collect) = mpsc::channel();
-            // `Wait::Block` would sleep between polls instead of spinning a
-            // core, but in compair 0.2.0 it misses the mapping callback on
-            // ~1 launch in 300 (every launch after it then fails with the
-            // scores buffer still mapped); back to it once that is fixed.
-            let options = KernelOptions { wait: Wait::Spin, ..KernelOptions::default() };
-            let context = Arc::clone(context);
-            let aligner = move || GpuAligner::with_options(Arc::clone(&context), options);
-            let name = thread::current().name().unwrap_or("worker").to_owned();
-            thread::Builder::new().name(format!("{name}-gpu")).spawn(move || {
-                let mut current = aligner();
-                for pairs in launches {
-                    let scores = current.align(&pairs);
-                    // A failed launch can leave the aligner's buffers mapped;
-                    // a fresh one costs a regrowth and keeps the lane alive.
-                    if scores.is_err() {
-                        current = aligner();
-                    }
-                    if results.send((pairs, scores)).is_err() {
-                        break;
-                    }
-                }
-            })?;
-            Ok(Self { submit, collect })
+        /// Whether the GPU thread took the plan.
+        fn submit(&self, plan: GpuPairs) -> bool {
+            self.submit.send(Job { plan, reply: self.reply.clone() }).is_ok()
         }
 
         fn with<R>(f: impl FnOnce(Option<&Lane>) -> R) -> R {
             LANE.with(|lane| {
                 f(lane
                     .get_or_init(|| {
-                        Lane::spawn(context()?)
-                            .inspect_err(|error| {
-                                warn!(%error, "No GPU thread for the pair-HMM; it is scored on the CPU");
-                            })
-                            .ok()
+                        let (reply, collect) = mpsc::channel();
+                        Some(Lane { submit: stage()?.clone(), reply, collect })
                     })
                     .as_ref())
             })
@@ -1172,8 +1224,8 @@ mod gpu {
             };
             let plan = mem::replace(&mut self.filling, spare);
             let pending = mem::take(&mut self.pending);
-            match Lane::with(|lane| lane.map(|lane| lane.submit.send(plan))) {
-                Some(Ok(())) => self.in_flight = Some(pending),
+            match Lane::with(|lane| lane.map(|lane| lane.submit(plan))) {
+                Some(true) => self.in_flight = Some(pending),
                 _ => {
                     warn!("The pair-HMM's GPU thread is gone; its clusters are scored on the CPU");
                     settle(pending, None, pileups, scratch);
