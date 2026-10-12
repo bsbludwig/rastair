@@ -7,7 +7,10 @@
 //! cytosine is in a CpG, observations TAPS conversion alone explains are
 //! dropped, or methylation would read as the other allele.
 
-use super::{Cost, FragmentId, GtAllele, MIN_MAPQ, PhaseObservation, SiteKind, observations_of};
+use super::{
+    Cost, FragmentId, GtAllele, MIN_MAPQ, PhaseObservation, SiteKind, may_be_heterozygous,
+    observations_of,
+};
 use crate::{
     call::{
         pair_hmm::{HapIdx, Margin, ReadScores},
@@ -167,7 +170,7 @@ pub struct HetAllele {
 ///
 /// Every allele must be a called real variant with a known base, and the two
 /// must read differently, or an observation could not be told apart.
-fn het_alleles(pileup: &PileupMetrics) -> Option<[HetAllele; 2]> {
+pub(super) fn het_alleles(pileup: &PileupMetrics) -> Option<[HetAllele; 2]> {
     let alt = |n: NonZeroU8| {
         let alt = pileup.alts.get(usize::from(n.get()) - 1)?;
         (alt.call == AltCall::RealVariant && alt.base.known_index().is_some())
@@ -217,10 +220,21 @@ impl PhaseSite {
 /// One read's say at a site: which allele its fragment shows there, and what
 /// a haplotype is charged for disagreeing.
 #[derive(Debug, Clone, Copy)]
-struct Vote {
-    fragment: FragmentId,
-    allele: SiteAllele,
-    cost: Cost,
+pub(super) struct Vote {
+    pub fragment: FragmentId,
+    pub allele: SiteAllele,
+    pub cost: Cost,
+}
+
+/// A site and the votes its reads cast, which the solver and the haplotype
+/// split both read.
+#[derive(Debug)]
+pub(super) struct SiteVotes {
+    pub site: PhaseSite,
+    pub votes: Vec<Vote>,
+    /// The strand on which the site places only the templates carrying one of
+    /// its alleles, because conversion makes the other read like it.
+    pub confounded_on: Option<Strand>,
 }
 
 /// An SNV site's alleles as the bases reads show for them.
@@ -272,7 +286,7 @@ impl BaseAlleles {
 
 /// A column's SNV record as a site, if it is a heterozygote with something to
 /// phase it on, and the votes its reads' bases cast.
-fn snv_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, Vec<Vote>)> {
+pub(super) fn snv_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<SiteVotes> {
     let alleles = het_alleles(pileup)?;
     let site = PhaseSite {
         pileup: pileup_idx,
@@ -280,9 +294,19 @@ fn snv_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, Vec
         pos: Pos0::new(pileup.pos)?,
         alleles: alleles.map(|allele| allele.allele),
     };
-    let observations = observations_of(pileup).filter(|observations| !observations.is_empty())?;
+    // A reference CpG keeps its reads whatever they show; anywhere else they
+    // were only kept past this gate in the first place.
+    let observations = observations_of(pileup).filter(|observations| {
+        !observations.is_empty()
+            && (!*pileup.pos_metrics.cpg
+                || may_be_heterozygous(observations, pileup.reference_base))
+    })?;
     let bases = BaseAlleles::of(pileup, alleles);
-    Some((site, observations.iter().filter_map(|observation| bases.vote(observation)).collect()))
+    Some(SiteVotes {
+        site,
+        votes: observations.iter().filter_map(|observation| bases.vote(observation)).collect(),
+        confounded_on: bases.methylable.map(CpgSide::strand),
+    })
 }
 
 /// How sure the pair-HMM must be of an indel column's genotype (Phred, before
@@ -316,7 +340,7 @@ impl Cost {
 /// `0/1` whose best pair holds a second, uncalled allele is no site: its
 /// reads are split three ways. The alleles are numbered as the record writes
 /// them, a compound het's `1/2` in call order.
-fn indel_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, Vec<Vote>)> {
+pub(super) fn indel_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<SiteVotes> {
     let data = pileup.indel_data.as_deref()?;
     let scored = data.scored.as_ref()?;
     let scores = &scored.haplotypes;
@@ -363,7 +387,7 @@ fn indel_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, V
         pos: Pos0::new(pileup.pos)?,
         alleles: [low, high],
     };
-    Some((site, votes))
+    Some(SiteVotes { site, votes, confounded_on: None })
 }
 
 /// A read's vote for the haplotype the pair-HMM finds it likelier to come
@@ -415,7 +439,7 @@ pub fn build_problem(pileups: &[PileupMetrics]) -> PhaseProblem {
 
     'columns: for (pileup_idx, pileup) in pileups.iter().enumerate() {
         let sites = [snv_site(pileup, pileup_idx), indel_site(pileup, pileup_idx)];
-        for (site, votes) in sites.into_iter().flatten() {
+        for SiteVotes { site, votes, .. } in sites.into_iter().flatten() {
             let Some(index) = builder.sites.push(site) else {
                 warn!(
                     sites = builder.sites.len(),
@@ -600,6 +624,23 @@ mod tests {
         assert!(build_problem(&columns).sites.is_empty());
     }
 
+    /// A CpG keeps its reads for the haplotype split whatever they show, but
+    /// only a column with the mismatches [`candidate_observations`] asks of
+    /// any other is a site: a genotype with one read of evidence on the
+    /// strand that reads it would phase on that read alone.
+    ///
+    /// [`candidate_observations`]: super::super::candidate_observations
+    #[test]
+    fn a_cpg_column_kept_for_the_split_is_a_site_only_with_heterozygous_evidence() {
+        let thin = [obs(1, T, Strand::OB), obs(2, C, Strand::OB), obs(3, T, Strand::OT)];
+        let columns = [cpg_het(1000, C, T, InCpG::C, &thin)];
+        assert!(build_problem(&columns).sites.is_empty(), "one bottom-strand T is not enough");
+
+        let evident = [obs(1, T, Strand::OB), obs(2, T, Strand::OB), obs(3, C, Strand::OB)];
+        let columns = [cpg_het(1000, C, T, InCpG::C, &evident)];
+        assert_eq!(build_problem(&columns).sites.len(), 1);
+    }
+
     /// At a C/T site in a CpG the top-strand `T` reads may be methylated `C`s.
     #[test]
     fn a_converted_strand_read_is_not_evidence_at_a_c_t_site() {
@@ -614,6 +655,7 @@ mod tests {
                     obs(2, T, Strand::OB), // unambiguously the T allele
                     obs(3, C, Strand::OT),
                     obs(4, C, Strand::OB),
+                    obs(9, T, Strand::OB), // the second read a site needs
                 ],
             ),
             het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT), obs(3, A, Strand::OT)]),
@@ -638,7 +680,12 @@ mod tests {
                 G,
                 A,
                 InCpG::G,
-                &[obs(1, A, Strand::OB), obs(2, A, Strand::OT), obs(3, G, Strand::OB)],
+                &[
+                    obs(1, A, Strand::OB),
+                    obs(2, A, Strand::OT),
+                    obs(3, G, Strand::OB),
+                    obs(9, A, Strand::OT),
+                ],
             ),
             het(1040, C, G, &[obs(1, C, Strand::OB), obs(2, G, Strand::OB), obs(3, C, Strand::OB)]),
         ];
@@ -683,7 +730,7 @@ mod tests {
                 C,
                 T,
                 InCpG::C,
-                &[obs(1, T, Strand::Unknown), obs(2, C, Strand::Unknown)],
+                &[obs(1, T, Strand::Unknown), obs(2, C, Strand::Unknown), obs(9, T, Strand::OB)],
             ),
             het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT)]),
         ];

@@ -261,8 +261,10 @@ impl ColumnDraft {
         }
 
         // Without `--phase` nothing was collected, so nothing is a candidate.
-        let phase = phasing::candidate_observations(&scratch.phase_observations, reference_base)
-            .map(|observations| Box::new(ColumnPhase::Observed(observations)));
+        let cpg = InCpG::new(reference_base, context.before_1, context.after_1);
+        let phase =
+            phasing::candidate_observations(&scratch.phase_observations, reference_base, cpg)
+                .map(|observations| Box::new(ColumnPhase::Observed(observations)));
 
         Ok(ColumnDraft {
             segment,

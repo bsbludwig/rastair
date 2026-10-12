@@ -105,8 +105,10 @@ fn with_indel_phase(
     first: u8,
 ) -> crate::metrics::PileupMetrics {
     let phase = PhaseCall { set: call(901, 0).set, first: allele(first) };
-    pileup.phase =
-        Some(Box::new(ColumnPhase::Phased(RecordPhases { snv: None, indel: Some(phase) })));
+    pileup.phase = Some(Box::new(ColumnPhase::Phased(RecordPhases {
+        indel: Some(phase),
+        ..RecordPhases::default()
+    })));
     pileup
 }
 

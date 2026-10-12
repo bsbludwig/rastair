@@ -328,7 +328,7 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
         }
         // Absent renders as ".", so a test can assert a record carries no
         // phase set as readily as it can assert a value.
-        "GT" | "PS" => {
+        "GT" | "PS" | "HPS" | "HPC" | "HPX" | "HPF" => {
             let value = record.format.get(field_id).cloned().unwrap_or_else(|| ".".to_string());
             Ok(FieldValue::String(value))
         }

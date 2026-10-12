@@ -5,7 +5,7 @@ use crate::{
     vcf::{CpgBeta, CpgOrigin, InCpG, Methylated},
 };
 use color_eyre::{Result, eyre::Context};
-use seqair_types::{Base, Probability, SmallVec, Strand};
+use seqair_types::{Base, Offset, Pos0, Probability, SmallVec, Strand};
 use tracing::instrument;
 
 #[cfg(test)]
@@ -91,6 +91,46 @@ impl CpgSide {
             CpgSide::C => G,
             CpgSide::G => C,
         }
+    }
+
+    /// The side whose two bases (unmethylated and methylated) include `base`;
+    /// every known base is on exactly one.
+    pub(crate) const fn of_base(base: Base) -> Option<Self> {
+        match base {
+            C | T => Some(CpgSide::C),
+            G | A => Some(CpgSide::G),
+            Base::Unknown => None,
+        }
+    }
+
+    /// The side a heterozygote's alleles are confounded on: the one whose two
+    /// bases it carries both of.
+    pub(crate) fn of_alleles(alleles: [Base; 2]) -> Option<Self> {
+        [CpgSide::C, CpgSide::G]
+            .into_iter()
+            .find(|side| alleles.contains(&side.unmod_base()) && alleles.contains(&side.mod_base()))
+    }
+
+    /// The strand the side's two bases read apart on.
+    pub(crate) fn unconfounded_strand(self) -> Strand {
+        match self {
+            CpgSide::C => Strand::OB,
+            CpgSide::G => Strand::OT,
+        }
+    }
+
+    /// The other side of the side's own base pair from `base`.
+    pub(crate) fn other_base(self, base: Base) -> Base {
+        if base == self.mod_base() { self.unmod_base() } else { self.mod_base() }
+    }
+
+    /// Where the other base of the CpG sits, for a column on this side of one.
+    pub(crate) fn partner_position(self, pos: Pos0) -> Option<Pos0> {
+        let step = match self {
+            CpgSide::C => Offset::new(1),
+            CpgSide::G => Offset::new(-1),
+        };
+        pos.checked_add_offset(step)
     }
 }
 

@@ -19,7 +19,7 @@ use crate::{
     call::{
         RecordFilters,
         pair_hmm::EventIdx,
-        phasing::{self, GtAllele, SiteKind},
+        phasing::{self, GtAllele, HaplotypeSplit, SiteKind},
         pileup::indels::{IndelAllele, Scored},
         variant_calling::{
             ErrorModel, GenotypeTag,
@@ -293,7 +293,7 @@ fn emit_main_record<W: Write>(
     let mut enc = enc.filter_pass();
     encode_info(&mut enc, schema, config, pileup, main_alts)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, main_alts)?;
+    encode_format(&mut enc, schema, config, pileup, main_alts, phasing::split_of(pileup))?;
     enc.emit()?;
     Ok(())
 }
@@ -322,7 +322,9 @@ fn emit_rejected_record<W: Write>(
     let alts = [alt];
     encode_info(&mut enc, schema, config, pileup, &alts)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, &alts)?;
+    // The split describes the column, which the main record already carries;
+    // repeating it here would count the column once per rejected allele.
+    encode_format(&mut enc, schema, config, pileup, &alts, None)?;
     enc.emit()?;
     Ok(())
 }
@@ -522,6 +524,7 @@ fn encode_format(
     config: &FieldConfig,
     pileup: &PileupMetrics,
     main_alts: &[&Alt],
+    split: Option<HaplotypeSplit>,
 ) -> Result<()> {
     let f = &schema.format;
     let c = &config.format;
@@ -567,6 +570,9 @@ fn encode_format(
             f.adm5mc.encode_single_sample(enc, &values)?;
         }
     }
+    if let Some(split) = split {
+        encode_haplotype_split(enc, schema, &split)?;
+    }
     if c.ml {
         let has_ml = main_alts.iter().any(|alt| alt.filters.ml.is_some());
         if has_ml {
@@ -578,6 +584,24 @@ fn encode_format(
             }
         }
     }
+    Ok(())
+}
+
+/// `HPS`, `HPC`, `HPX` and `HPF`. `HPX` is omitted where either haplotype's
+/// presence is unresolved: an integer array has no per-element missing value.
+fn encode_haplotype_split(
+    enc: &mut seqair::vcf::RecordEncoder<'_, seqair::vcf::WithSamples>,
+    schema: &Schema,
+    split: &HaplotypeSplit,
+) -> Result<()> {
+    let f = &schema.format;
+    let int = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+    f.hps.encode(enc, &[split.set.as_i32()])?;
+    f.hpc.encode_single_sample(enc, &split.counts().map(int))?;
+    if let (Some(first), Some(second)) = (split.cpg.first.flag(), split.cpg.second.flag()) {
+        f.hpx.encode_single_sample(enc, &[first, second])?;
+    }
+    f.hpf.encode_single_sample(enc, &split.fragment_counts().map(int))?;
     Ok(())
 }
 

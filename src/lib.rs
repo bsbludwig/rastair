@@ -43,7 +43,7 @@ pub(crate) mod utils {
     pub use conversion::{IntoF32, IntoF64, default};
 
     mod grouping;
-    pub use grouping::ByStrand;
+    pub use grouping::{ByHaplotype, ByStrand, Haplotype};
 
     mod sequence_context;
     pub use sequence_context::SequenceContext;

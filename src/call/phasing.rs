@@ -2,21 +2,27 @@
 //!
 //! Two heterozygous sites carried by one DNA fragment are in known relative
 //! phase, so the read pairs spanning them say which alleles share a
-//! chromosome. The per-read observations have to be captured while a pileup
-//! column is built, because `PileupMetrics` keeps no reads; only the seqair
-//! backend does that.
+//! chromosome. Turned around, the same answer says which haplotype each read
+//! came from, which splits a CpG's methylation by chromosome ([`haplotype`]).
+//! The per-read observations have to be captured while a pileup column is
+//! built, because `PileupMetrics` keeps no reads; only the seqair backend does
+//! that.
 
 use crate::{
     metrics::{PileupMetrics, methylation::CpgSide},
     utils::logging::ThisIsABug as _,
+    vcf::InCpG,
 };
 use color_eyre::eyre::OptionExt as _;
 use seqair_types::{Base, BaseQuality, Pos0, Pos1, Strand};
 use std::num::{NonZeroU8, NonZeroU64};
 use tracing::{debug, warn};
 
+mod haplotype;
 mod problem;
 mod solver;
+
+pub use haplotype::{CpgPresence, FragmentCounts, HaplotypeSplit};
 
 use problem::{SiteAllele, build_problem};
 use solver::solve;
@@ -166,11 +172,14 @@ pub enum ColumnPhase {
     Phased(RecordPhases),
 }
 
-/// The phase of each of a column's records.
+/// The phase of each of a column's records, and the column's reads split by
+/// haplotype.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RecordPhases {
     pub snv: Option<PhaseCall>,
     pub indel: Option<PhaseCall>,
+    /// Where the column has a TAPS-confounded pair to split.
+    pub split: Option<HaplotypeSplit>,
 }
 
 impl RecordPhases {
@@ -187,27 +196,27 @@ impl RecordPhases {
             SiteKind::Indel => &mut self.indel,
         }
     }
+
+    const fn is_empty(&self) -> bool {
+        self.snv.is_none() && self.indel.is_none() && self.split.is_none()
+    }
 }
 
-impl ColumnPhase {
-    /// Record `call` for the column's `kind` record, replacing any
-    /// observations still held.
-    fn set_call(slot: &mut Option<Box<Self>>, kind: SiteKind, call: PhaseCall) {
-        let mut phases = match slot.take().map(|phase| *phase) {
-            Some(Self::Phased(phases)) => phases,
-            Some(Self::Observed(_)) | None => RecordPhases::default(),
-        };
-        *phases.slot(kind) = Some(call);
-        *slot = Some(Box::new(Self::Phased(phases)));
+fn phases_of(pileup: &PileupMetrics) -> Option<&RecordPhases> {
+    match pileup.phase.as_deref() {
+        Some(ColumnPhase::Phased(phases)) => Some(phases),
+        Some(ColumnPhase::Observed(_)) | None => None,
     }
 }
 
 /// The phase call a column's `kind` record carries, if any.
 pub(crate) fn call_of(pileup: &PileupMetrics, kind: SiteKind) -> Option<PhaseCall> {
-    match pileup.phase.as_deref() {
-        Some(ColumnPhase::Phased(phases)) => phases.get(kind),
-        Some(ColumnPhase::Observed(_)) | None => None,
-    }
+    phases_of(pileup)?.get(kind)
+}
+
+/// The column's reads split by haplotype, if it has a split.
+pub(crate) fn split_of(pileup: &PileupMetrics) -> Option<HaplotypeSplit> {
+    phases_of(pileup)?.split
 }
 
 fn observations_of(pileup: &PileupMetrics) -> Option<&[PhaseObservation]> {
@@ -227,19 +236,33 @@ fn taps_explains_mismatch(reference_base: Base, base: Base, strand: Strand) -> b
     })
 }
 
-/// Keep a column's observations only where it may be heterozygous: at least
-/// [`MIN_ALT_READS`] mismatches on one base that TAPS conversion cannot
-/// explain. The whole column is kept, TAPS-ambiguous reads included.
+/// Keep a column's observations only where something downstream can use
+/// them: where it may be heterozygous, with at least [`MIN_ALT_READS`]
+/// mismatches on one base that TAPS conversion cannot explain, or at a
+/// reference CpG at all, whose reads the haplotype split counts; an
+/// unmethylated CpG is the null a per-haplotype methylation level is read
+/// against. The whole column is kept, TAPS-ambiguous reads included.
 ///
 /// `Some` always carries at least one observation.
 #[must_use]
 pub fn candidate_observations(
     observations: &[PhaseObservation],
     reference_base: Base,
+    cpg: InCpG,
 ) -> Option<Box<[PhaseObservation]>> {
     // An `N` in the reference can never be genotyped.
-    reference_base.known_index()?;
+    if reference_base.known_index().is_none() || observations.is_empty() {
+        return None;
+    }
+    (*cpg || may_be_heterozygous(observations, reference_base)).then(|| observations.into())
+}
 
+/// At least [`MIN_ALT_READS`] mismatches on one base that TAPS conversion
+/// cannot explain.
+///
+/// A column is a phase site only past this, CpG or not: a CpG keeps its reads
+/// for the haplotype split whatever they show, so `problem` asks again there.
+fn may_be_heterozygous(observations: &[PhaseObservation], reference_base: Base) -> bool {
     let mut informative = [0u32; Base::KNOWN.len()];
     for obs in observations.iter().filter(|obs| {
         obs.base != reference_base && !taps_explains_mismatch(reference_base, obs.base, obs.strand)
@@ -248,12 +271,11 @@ pub fn candidate_observations(
             *count += 1;
         }
     }
-
-    informative.iter().any(|&count| count >= MIN_ALT_READS).then(|| observations.into())
+    informative.iter().any(|&count| count >= MIN_ALT_READS)
 }
 
-/// Phase a segment in place, and drop the observations, which nothing reads
-/// after this.
+/// Phase a segment in place, split its CpGs' reads by haplotype, and drop the
+/// observations, which nothing reads after this.
 ///
 /// Runs before the overlap is trimmed, since a site in the overlap links reads
 /// reaching into the core, but only the sites the segment emits (`is_core`)
@@ -293,15 +315,18 @@ pub fn phase_segment(pileups: &mut [PileupMetrics], is_core: impl Fn(u64) -> boo
         }
     }
 
-    for pileup in pileups.iter_mut() {
-        pileup.phase = None;
-    }
+    let mut phases = vec![RecordPhases::default(); pileups.len()];
     for (index, kind, call) in calls {
         // Sites index the slice they were built from.
-        match pileups.get_mut(index).ok_or_eyre("Phase site outside its segment").this_is_a_bug() {
-            Ok(pileup) => ColumnPhase::set_call(&mut pileup.phase, kind, call),
+        match phases.get_mut(index).ok_or_eyre("Phase site outside its segment").this_is_a_bug() {
+            Ok(phases) => *phases.slot(kind) = Some(call),
             Err(error) => warn!(?error, index, "Dropping a phase call"),
         }
+    }
+    // After the calls: a split names the `PS` of the block that placed it.
+    haplotype::annotate_haplotype_split(pileups, &mut phases, is_core);
+    for (pileup, phases) in pileups.iter_mut().zip(phases) {
+        pileup.phase = (!phases.is_empty()).then(|| Box::new(ColumnPhase::Phased(phases)));
     }
 
     let stats = solution.stats;

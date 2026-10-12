@@ -17,7 +17,7 @@ use seqair_types::Base::*;
 fn with_call(record: &mut PileupMetrics, set: u32, first: u8) {
     record.phase = Some(Box::new(ColumnPhase::Phased(RecordPhases {
         snv: Some(call(set, first)),
-        indel: None,
+        ..RecordPhases::default()
     })));
 }
 

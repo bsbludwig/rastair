@@ -1,5 +1,6 @@
 use super::{fixtures::obs, *};
 use crate::call::phasing::fixtures::{call, het};
+use crate::vcf::InCpG;
 use seqair_types::Base::*;
 
 #[test]
@@ -11,7 +12,7 @@ fn a_zero_hash_is_no_fragment() {
 #[test]
 fn all_reference_column_is_not_a_candidate() {
     let column = [obs(1, A, Strand::OT), obs(2, A, Strand::OB), obs(3, A, Strand::OT)];
-    assert!(candidate_observations(&column, A).is_none());
+    assert!(candidate_observations(&column, A, InCpG::No).is_none());
 }
 
 /// The same column with T on the *unconverted* strand is SNP evidence.
@@ -23,7 +24,7 @@ fn t_on_the_bottom_strand_at_a_reference_c_is_a_candidate() {
         obs(3, T, Strand::OB),
         obs(4, C, Strand::OT),
     ];
-    let kept = candidate_observations(&column, C).expect("candidate");
+    let kept = candidate_observations(&column, C, InCpG::No).expect("candidate");
     assert_eq!(kept.len(), column.len(), "the ambiguous observations are kept too");
 }
 
@@ -31,52 +32,64 @@ fn t_on_the_bottom_strand_at_a_reference_c_is_a_candidate() {
 #[test]
 fn converted_reads_are_not_a_candidate() {
     let column = [obs(1, T, Strand::OT), obs(2, T, Strand::OT), obs(3, C, Strand::OB)];
-    assert!(candidate_observations(&column, C).is_none());
+    assert!(candidate_observations(&column, C, InCpG::No).is_none());
 
     let bottom = [obs(1, A, Strand::OB), obs(2, A, Strand::OB), obs(3, G, Strand::OT)];
-    assert!(candidate_observations(&bottom, G).is_none());
+    assert!(candidate_observations(&bottom, G, InCpG::No).is_none());
 }
 
 #[test]
 fn evidence_must_land_on_one_alternative_base() {
     let spread = [obs(1, C, Strand::OT), obs(2, G, Strand::OT), obs(3, A, Strand::OB)];
     assert!(
-        candidate_observations(&spread, A).is_none(),
+        candidate_observations(&spread, A, InCpG::No).is_none(),
         "one mismatch on each of two bases is noise, not an allele"
     );
 
     let agreeing = [obs(1, C, Strand::OT), obs(2, C, Strand::OT), obs(3, A, Strand::OB)];
-    assert!(candidate_observations(&agreeing, A).is_some());
+    assert!(candidate_observations(&agreeing, A, InCpG::No).is_some());
 }
 
 #[test]
 fn a_single_mismatch_is_not_enough() {
     let column = [obs(1, G, Strand::OT), obs(2, A, Strand::OB)];
-    assert!(candidate_observations(&column, A).is_none());
+    assert!(candidate_observations(&column, A, InCpG::No).is_none());
 }
 
 #[test]
 fn unknown_bases_are_not_evidence() {
     let column = [obs(1, Unknown, Strand::OT), obs(2, Unknown, Strand::OB)];
-    assert!(candidate_observations(&column, A).is_none());
+    assert!(candidate_observations(&column, A, InCpG::No).is_none());
 }
 
 #[test]
 fn an_unknown_reference_base_is_never_a_candidate() {
     let column = [obs(1, A, Strand::OT), obs(2, A, Strand::OB), obs(3, C, Strand::OT)];
-    assert!(candidate_observations(&column, Unknown).is_none());
+    assert!(candidate_observations(&column, Unknown, InCpG::No).is_none());
 }
 
 #[test]
 fn a_candidate_always_carries_observations() {
-    assert!(candidate_observations(&[], C).is_none());
+    assert!(candidate_observations(&[], C, InCpG::No).is_none());
+    assert!(candidate_observations(&[], C, InCpG::C).is_none());
+}
+
+/// An unmethylated CpG is the null the haplotype split is read against, so a
+/// reference CpG keeps its reads with no mismatch at all.
+#[test]
+fn a_reference_cpg_is_always_a_candidate() {
+    let column = [obs(1, C, Strand::OT), obs(2, C, Strand::OB)];
+    assert!(candidate_observations(&column, C, InCpG::No).is_none());
+    assert!(candidate_observations(&column, C, InCpG::C).is_some());
+    let bottom = [obs(1, G, Strand::OB), obs(2, A, Strand::OB)];
+    assert!(candidate_observations(&bottom, G, InCpG::G).is_some());
 }
 
 /// No strand means no TAPS explanation for the mismatch.
 #[test]
 fn unknown_strand_reads_count_as_evidence() {
     let column = [obs(1, T, Strand::Unknown), obs(2, T, Strand::Unknown)];
-    assert!(candidate_observations(&column, C).is_some());
+    assert!(candidate_observations(&column, C, InCpG::No).is_some());
 }
 
 // ── phase_segment: anchoring on what the segment emits ─────────────────────

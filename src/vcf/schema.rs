@@ -189,6 +189,42 @@ const ADM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
     ValueType::Integer,
     "Read depth supporting 5-methylcytosine modification, one value per CpG context",
 );
+const HPS_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "HPS",
+    Number::Count(1),
+    ValueType::Integer,
+    "Phase set the HPC counts are resolved in: either a PS this file emits, whose haplotype 1 \
+     it shares, or the position of an unphased heterozygote, in which case haplotype 1 carries \
+     the first allele of that site's GT",
+);
+const HPC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
+    "HPC",
+    Number::Count(4),
+    ValueType::Integer,
+    "Reads on the TAPS-confounded strand by haplotype: unconverted and converted base on \
+     haplotype 1, then on haplotype 2. The confounded pair is C/T at a reference C or T \
+     (top strand) and G/A at a reference G or A (bottom strand)",
+);
+const HPX_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
+    "HPX",
+    Number::Count(2),
+    ValueType::Integer,
+    "Whether each haplotype has a CpG at this position at all: 1 where it carries the cytosine \
+     (or the guanine, at the other side of the CpG), 0 where a variant took it away, and 0,0 \
+     at a column that is no CpG at all. Omitted where the column could not tell. A haplotype \
+     marked 0 converts every read by construction, so its HPC share is its genotype and not a \
+     methylation level",
+);
+const HPF_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
+    "HPF",
+    Number::Count(4),
+    ValueType::Integer,
+    "Fragments of the phase set HPS names, counted once each in HPC's order: unmethylated then \
+     methylated on haplotype 1, then the same pair on haplotype 2. Each fragment votes once by \
+     the majority of its CpG observations in the set, counted only at columns where both \
+     haplotypes carry the CpG, and a tie does not vote. The same four numbers appear on every \
+     record of the set",
+);
 const ML_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(
     "ML",
     Number::AlternateBases,
@@ -240,6 +276,10 @@ const FORMAT_DEFS: &[&dyn FieldDescription] = &[
     &M5MC_DEF,
     &DPM5MC_DEF,
     &ADM5MC_DEF,
+    &HPS_DEF,
+    &HPC_DEF,
+    &HPX_DEF,
+    &HPF_DEF,
     &ML_DEF,
 ];
 
@@ -344,6 +384,12 @@ pub(crate) struct FormatKeys {
     pub m5mc: FormatFloats,
     pub dpm5mc: FormatInts,
     pub adm5mc: FormatInts,
+    /// `HPS`, `HPC`, `HPX` and `HPF`, written only where `--phase` split a
+    /// column's reads by haplotype.
+    pub hps: FormatInt,
+    pub hpc: FormatInts,
+    pub hpx: FormatInts,
+    pub hpf: FormatInts,
     pub ml: FormatFloats,
 }
 
@@ -447,6 +493,10 @@ pub fn register(
         m5mc: builder.register_format(&M5MC_DEF)?,
         dpm5mc: builder.register_format(&DPM5MC_DEF)?,
         adm5mc: builder.register_format(&ADM5MC_DEF)?,
+        hps: builder.register_format(&HPS_DEF)?,
+        hpc: builder.register_format(&HPC_DEF)?,
+        hpx: builder.register_format(&HPX_DEF)?,
+        hpf: builder.register_format(&HPF_DEF)?,
         ml: builder.register_format(&ML_DEF)?,
     };
 
