@@ -22,6 +22,7 @@ mod haplotype;
 mod problem;
 mod solver;
 
+pub(crate) use haplotype::phase_confounded_betas;
 pub use haplotype::{CpgPresence, FragmentCounts, HaplotypeSplit};
 
 use problem::{SiteAllele, build_problem};
@@ -328,6 +329,7 @@ pub fn phase_segment(pileups: &mut [PileupMetrics], is_core: impl Fn(u64) -> boo
     for (pileup, phases) in pileups.iter_mut().zip(phases) {
         pileup.phase = (!phases.is_empty()).then(|| Box::new(ColumnPhase::Phased(phases)));
     }
+    phase_confounded_betas(pileups);
 
     let stats = solution.stats;
     debug!(

@@ -16,19 +16,23 @@
 use super::{
     FragmentId, GtAllele, PhaseObservation, PhaseSet, RecordPhases, observations_of,
     problem::{SiteVotes, het_alleles, indel_site, snv_site},
+    split_of,
 };
 use crate::{
     call::variant_calling::GenotypeTag,
-    metrics::{AltCall, PileupMetrics, methylation::CpgSide},
-    utils::{ByHaplotype, ByStrand, Haplotype},
+    metrics::{
+        AltCall, PileupMetrics,
+        methylation::{self, CpgSide},
+    },
+    utils::{ByHaplotype, ByStrand, Haplotype, IntoF64 as _},
 };
 use rustc_hash::FxHashMap;
-use seqair_types::{Base, Pos0, SmallVec, Strand};
+use seqair_types::{Base, Pos0, Probability, SmallVec, Strand};
 use std::{
     cmp::{Ordering, Reverse},
     num::{NonZeroU8, NonZeroUsize},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Whether one haplotype carries a CpG at a column, and so whether its
 /// conversion rate is a methylation level at all.
@@ -126,6 +130,32 @@ impl HaplotypeSplit {
 
     fn depth(&self) -> u32 {
         self.counts().into_iter().fold(0, u32::saturating_add)
+    }
+
+    /// The methylation level of the haplotypes carrying the CpG, averaged.
+    ///
+    /// `None` unless both haplotypes' presence is known, at least one carries
+    /// the CpG, and every carrier has reads: a haplotype without the cytosine
+    /// converts by construction and says nothing about methylation.
+    #[must_use]
+    pub fn carrier_beta(&self) -> Option<Probability> {
+        let mut betas: SmallVec<f64, 2> = SmallVec::new();
+        for haplotype in [Haplotype::First, Haplotype::Second] {
+            match self.cpg.get(haplotype) {
+                CpgPresence::Present => {
+                    let converted = (*self.converted.get(haplotype)).f();
+                    let total = converted + (*self.unconverted.get(haplotype)).f();
+                    if total == 0.0 {
+                        return None;
+                    }
+                    betas.push(converted / total);
+                }
+                CpgPresence::Absent => {}
+                CpgPresence::Unresolved => return None,
+            }
+        }
+        let count = betas.len().f();
+        Probability::new(betas.iter().sum::<f64>() / count).ok()
     }
 }
 
@@ -374,6 +404,36 @@ pub(super) fn annotate_haplotype_split(
         columns = split_columns,
         "Split columns by haplotype"
     );
+}
+
+/// Replace the half-and-half beta of each CpG a heterozygous variant confounds
+/// with the methylation of the haplotypes that carry it.
+///
+/// Unphased, a C/T heterozygote's top-strand `T`s are assumed to be half the
+/// variant's; split by haplotype they need no assumption. The CpG's other base
+/// needs no replacing: its beta counts only reads whose own neighbour is the
+/// CpG's `C` (or `G`), which the variant's haplotype never shows.
+pub(crate) fn phase_confounded_betas(pileups: &mut [PileupMetrics]) {
+    let mut replaced = 0usize;
+    for pileup in pileups {
+        let Some(side) = CpgSide::of_base(pileup.reference_base) else {
+            continue;
+        };
+        let Some(beta) = split_of(pileup).and_then(|split| split.carrier_beta()) else {
+            continue;
+        };
+        if !methylation::is_het_confounded(pileup, side) {
+            continue;
+        }
+        match methylation::call_phased(pileup, side, beta) {
+            Ok(methylated) => {
+                pileup.pos_metrics.extended.methylated = methylated.unwrap_or_default();
+                replaced += 1;
+            }
+            Err(error) => warn!(?error, pos = pileup.pos, "Keeping the unphased methylation"),
+        }
+    }
+    debug!(replaced, "Took confounded CpGs' methylation from their haplotypes");
 }
 
 /// Carry each CpG side's presence across to the other base of the CpG.
@@ -1514,6 +1574,146 @@ mod tests {
                 ],
             ))),
         ]
+    }
+
+    /// Count a column's confounded-strand reads into the paired counts the
+    /// unphased methylation call reads, every read next to its CpG partner.
+    fn counted(mut column: PileupMetrics) -> PileupMetrics {
+        let Some(side) = CpgSide::of_base(column.reference_base) else {
+            return column;
+        };
+        let observations: Vec<PhaseObservation> = match column.phase.as_deref() {
+            Some(ColumnPhase::Observed(observations)) => observations.to_vec(),
+            _ => Vec::new(),
+        };
+        for observation in observations.iter().filter(|o| o.strand == side.strand()) {
+            let key =
+                |strand, adj| crate::metrics::ReadKey { strand, current: observation.base, adj };
+            match side {
+                CpgSide::C => column.after_counts.increment(key(Strand::OT, G)),
+                CpgSide::G => column.before_counts.increment(key(Strand::OB, C)),
+            }
+        }
+        column
+    }
+
+    /// The first beta of each column, unphased and after the split replaced
+    /// what it could.
+    fn betas(columns: &[Column]) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+        let (mut pileups, mut phases) = split_input(columns);
+        for pileup in &mut pileups {
+            *pileup = counted(pileup.clone());
+            pileup.pos_metrics.extended.methylated =
+                methylation::call(pileup).expect("methylation").unwrap_or_default();
+        }
+        let first_betas = |pileups: &[PileupMetrics]| -> Vec<Option<f64>> {
+            pileups
+                .iter()
+                .map(|pileup| pileup.pos_metrics.extended.methylated.0.first().map(|b| b.beta.f()))
+                .collect()
+        };
+        let unphased = first_betas(&pileups);
+        annotate_haplotype_split(&pileups, &mut phases, |_| true);
+        for (pileup, phases) in pileups.iter_mut().zip(phases) {
+            pileup.phase = Some(Box::new(ColumnPhase::Phased(phases)));
+        }
+        phase_confounded_betas(&mut pileups);
+        (unphased, first_betas(&pileups))
+    }
+
+    #[test]
+    fn the_carrier_beta_needs_every_haplotype_resolved_and_every_carrier_read() {
+        use CpgPresence::{Absent, Present, Unresolved};
+        let beta = |cpg: [CpgPresence; 2], [u1, c1, u2, c2]: [u32; 4]| {
+            HaplotypeSplit {
+                set: PhaseSet::at(Pos0::new(1000).expect("pos")).expect("set"),
+                unconverted: ByHaplotype::new(u1, u2),
+                converted: ByHaplotype::new(c1, c2),
+                cpg: ByHaplotype::new(cpg[0], cpg[1]),
+                fragments: ByHaplotype::default(),
+            }
+            .carrier_beta()
+            .map(Probability::f)
+        };
+        assert_eq!(
+            beta([Present, Absent], [2, 2, 0, 5]),
+            Some(0.5),
+            "the T haplotype says nothing"
+        );
+        assert_eq!(beta([Absent, Present], [0, 5, 3, 1]), Some(0.25));
+        assert_eq!(beta([Present, Present], [0, 4, 4, 0]), Some(0.5), "the mean of the two");
+        assert_eq!(beta([Present, Unresolved], [2, 2, 0, 5]), None);
+        assert_eq!(beta([Present, Absent], [0, 0, 0, 5]), None, "a carrier without reads");
+        assert_eq!(beta([Absent, Absent], [0, 3, 0, 3]), None, "no CpG to measure");
+    }
+
+    /// Unphased, the `C>T` CpG's four `T`s and two `C`s are read as half the
+    /// variant's: (4 - 3) / (2 + 1). Split, haplotype 1 carries the cytosine
+    /// and shows two of each; at a `C>T` and at its `G>A` mirror.
+    #[test]
+    fn a_confounded_cpg_takes_its_methylation_from_the_carrier() {
+        for columns in [heterozygous_c_to_t_cpg().to_vec(), mirror(&heterozygous_c_to_t_cpg())] {
+            let (unphased, phased) = betas(&columns);
+            assert_eq!(unphased.get(1).copied().flatten(), Some(1.0 / 3.0));
+            assert_eq!(phased.get(1).copied().flatten(), Some(0.5));
+        }
+    }
+
+    /// Nothing placed, nothing to replace.
+    #[test]
+    fn an_unanchored_confounded_cpg_keeps_its_beta() {
+        let [_, heterozygous] = heterozygous_c_to_t_cpg();
+        let (unphased, phased) = betas(&[heterozygous]);
+        assert_eq!(phased, unphased);
+        assert_eq!(phased, [Some(1.0 / 3.0)]);
+    }
+
+    /// A label strand that cannot say which haplotype lost the cytosine leaves
+    /// no carrier to measure.
+    #[test]
+    fn an_unresolved_confounded_cpg_keeps_its_beta() {
+        let [anchor, (mut column, call)] = heterozygous_c_to_t_cpg();
+        if let Some(ColumnPhase::Observed(observations)) = column.phase.as_deref_mut() {
+            for observation in observations.iter_mut().filter(|o| o.strand == Strand::OB) {
+                observation.base = T;
+            }
+        }
+        let (unphased, phased) = betas(&[anchor, (column, call)]);
+        assert_eq!(phased, unphased);
+        assert_eq!(phased.get(1).copied().flatten(), Some(1.0 / 3.0));
+    }
+
+    /// A homozygous reference CpG's beta needs no haplotypes, however unevenly
+    /// they are methylated, and nor does a `G` beside a confounded `C`.
+    #[test]
+    fn a_cpg_no_variant_confounds_keeps_its_beta() {
+        let columns = [
+            labelled_anchor(
+                &[(1, Strand::OT), (2, Strand::OT)],
+                &[(3, Strand::OT), (4, Strand::OT)],
+            ),
+            methylation_candidate(
+                1040,
+                &[
+                    obs(1, T, Strand::OT),
+                    obs(2, T, Strand::OT),
+                    obs(3, C, Strand::OT),
+                    obs(4, T, Strand::OT),
+                ],
+            ),
+        ];
+        let (unphased, phased) = betas(&columns);
+        assert_eq!(phased, unphased);
+        assert_eq!(phased.get(1).copied().flatten(), Some(0.75));
+
+        let [anchor, heterozygous] = heterozygous_c_to_t_cpg();
+        let partner = bottom_strand_candidate(
+            1041,
+            &[obs(7, A, Strand::OB), obs(8, A, Strand::OB), obs(5, G, Strand::OB)],
+        );
+        let (unphased, phased) = betas(&[anchor, heterozygous, partner]);
+        assert_eq!(phased.get(1).copied().flatten(), Some(0.5), "the heterozygote is replaced");
+        assert_eq!(phased.get(2), unphased.get(2), "its partner is not");
     }
 
     /// A heterozygous `C>T` CpG: the bottom strand, where the alleles read

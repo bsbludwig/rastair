@@ -18,21 +18,52 @@ mod tests;
     name = "methylation_call"
 )]
 pub fn call(current: &PileupMetrics) -> Result<Option<Methylated>> {
+    call_with(current, None)
+}
+
+/// [`call`], with `side`'s beta taken from the haplotypes instead of the
+/// genotype-adjusted read counts; see `phasing::haplotype`.
+pub(crate) fn call_phased(
+    current: &PileupMetrics,
+    side: CpgSide,
+    beta: Probability,
+) -> Result<Option<Methylated>> {
+    call_with(current, Some((side, beta)))
+}
+
+fn call_with(
+    current: &PileupMetrics,
+    phased: Option<(CpgSide, Probability)>,
+) -> Result<Option<Methylated>> {
     let mut betas: SmallVec<CpgBeta, 1> = SmallVec::new();
 
-    if let Some(b) = compute_beta(current, CpgSide::C).wrap_err("C-side beta")? {
-        betas.push(b);
-    }
-    if let Some(b) = compute_beta(current, CpgSide::G).wrap_err("G-side beta")? {
-        betas.push(b);
+    for side in [CpgSide::C, CpgSide::G] {
+        let phased = phased.filter(|&(phased_side, _)| phased_side == side).map(|(_, beta)| beta);
+        if let Some(b) =
+            compute_beta(current, side, phased).wrap_err_with(|| format!("{side:?}-side beta"))?
+        {
+            betas.push(b);
+        }
     }
 
     Ok((!betas.is_empty()).then_some(Methylated(betas)))
 }
 
+/// Is `side`'s beta the half-and-half estimate of a CpG a heterozygous
+/// variant confounds?
+pub(crate) fn is_het_confounded(record: &PileupMetrics, side: CpgSide) -> bool {
+    cpg_origin(record, side).is_some_and(|origin| {
+        genotype_adjustment(record, side, origin) == GenotypeAdjustment::HetConfounded
+    })
+}
+
 /// Determine whether this position has a CpG allele on the given side,
-/// and if so compute the methylation beta value.
-fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<CpgBeta>> {
+/// and if so compute the methylation beta value, or take `phased` for it.
+fn compute_beta(
+    record: &PileupMetrics,
+    side: CpgSide,
+    phased: Option<Probability>,
+) -> Result<Option<CpgBeta>> {
     let Some(origin) = cpg_origin(record, side) else { return Ok(None) };
 
     let (raw_mod, raw_unmod) = read_counts(record, side);
@@ -43,15 +74,15 @@ fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<CpgBeta>
         return Ok(None);
     }
 
-    let adjustment = genotype_adjustment(record, side, origin);
-    let beta = adjusted_beta(mod_count, unmod_count, adjustment);
+    let beta = match phased {
+        Some(beta) => beta,
+        None => {
+            let adjustment = genotype_adjustment(record, side, origin);
+            Probability::new(adjusted_beta(mod_count, unmod_count, adjustment)).this_is_a_bug()?
+        }
+    };
 
-    Ok(Some(CpgBeta {
-        origin,
-        beta: Probability::new(beta).this_is_a_bug()?,
-        mod_count: raw_mod,
-        total_count: raw_mod + raw_unmod,
-    }))
+    Ok(Some(CpgBeta { origin, beta, mod_count: raw_mod, total_count: raw_mod + raw_unmod }))
 }
 
 /// Which side of the CpG dinucleotide we are looking at.
