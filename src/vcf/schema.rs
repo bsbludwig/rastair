@@ -221,8 +221,8 @@ const HPF_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
     ValueType::Integer,
     "Fragments of the phase set HPS names, counted once each in HPC's order: unmethylated then \
      methylated on haplotype 1, then the same pair on haplotype 2. Each fragment votes once by \
-     the majority of its CpG observations in the set, counted only at columns where both \
-     haplotypes carry the CpG, and a tie does not vote. The same four numbers appear on every \
+     the majority of its CpG observations in the set, counted only on a haplotype that carries \
+     the CpG at that column, and a tie does not vote. The same four numbers appear on every \
      record of the set",
 );
 const ML_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(

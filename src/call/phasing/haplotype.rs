@@ -365,8 +365,8 @@ pub(super) fn annotate_haplotype_split(
     }
 
     propagate_partner_presence(pileups, phases);
-    // Last: a fragment only counts where both haplotypes carry the CpG, which
-    // the partner pass settles at the `G` side of a heterozygous one.
+    // Last: a fragment only counts on a haplotype carrying the CpG, which the
+    // partner pass settles at the `G` side of a heterozygous one.
     count_fragments(pileups, phases, &assignment);
 
     debug!(
@@ -503,8 +503,11 @@ impl FragmentVote {
 /// Count each set's CpG evidence by fragment and write it onto every column of
 /// the set.
 ///
-/// The reads are the ones `HPC` counts, narrowed to CpG columns both
-/// haplotypes carry.
+/// The reads are the ones `HPC` counts, narrowed to the haplotypes that carry
+/// the CpG. A placed fragment is no longer ambiguous where the haplotypes
+/// differ: on the one carrying the cytosine a converted read is a methylated
+/// one, on the one without it the converted base is the allele and says
+/// nothing about methylation, so it is left out rather than counted as 1.0.
 fn count_fragments(
     pileups: &[PileupMetrics],
     phases: &mut [RecordPhases],
@@ -516,9 +519,7 @@ fn count_fragments(
         let (Some(split), Some(observations)) = (phase.split, observations_of(pileup)) else {
             continue;
         };
-        // A haplotype without the CpG converts by construction, and counting
-        // only the other one would test composition rather than methylation.
-        if !pileup.tags.in_cpg() || split.cpg != both(CpgPresence::Present) {
+        if !pileup.tags.in_cpg() {
             continue;
         }
         let Some(side) = confounded_side(pileup) else {
@@ -547,7 +548,9 @@ fn count_fragments(
             else {
                 continue;
             };
-            if placement.one_sided_at(strand) {
+            if placement.one_sided_at(strand)
+                || *split.cpg.get(placement.haplotype) != CpgPresence::Present
+            {
                 continue;
             }
             votes
@@ -1823,15 +1826,35 @@ mod tests {
         );
     }
 
-    /// A haplotype with no cytosine converts every read by construction, and
-    /// the other haplotype's molecules alone would make the set's table test
-    /// which chromosome has the CpG, so neither side of the column votes.
+    /// At a CpG one haplotype lacks, a placed fragment's converted read is
+    /// methylation on the haplotype carrying the cytosine and the allele on
+    /// the other: haplotype 1's top-strand reads vote, haplotype 2's `T`s do
+    /// not, though `HPC` still counts them.
     #[test]
-    fn a_cpg_on_one_haplotype_adds_no_fragments() {
-        let annotated = annotate(&heterozygous_c_to_t_cpg());
+    fn a_cpg_on_one_haplotype_counts_only_its_carriers_fragments() {
+        for columns in [heterozygous_c_to_t_cpg().to_vec(), mirror(&heterozygous_c_to_t_cpg())] {
+            let split = annotate(&columns).split(1).expect("split");
+            assert_eq!(split.counts(), [2, 2, 0, 2]);
+            assert_eq!(split.fragment_counts(), [2, 2, 0, 0]);
+        }
+    }
 
-        let split = annotated.split(1).expect("the column still reports its reads");
-        assert_eq!(split.fragment_counts(), [0, 0, 0, 0]);
+    /// Where the label strand cannot say which haplotype lost the cytosine,
+    /// neither haplotype's reads mean anything yet.
+    #[test]
+    fn an_unresolved_cpg_adds_no_fragments() {
+        let [anchor, column] = heterozygous_c_to_t_cpg();
+        let (mut column, call) = column;
+        if let Some(ColumnPhase::Observed(observations)) = column.phase.as_deref_mut() {
+            for observation in observations.iter_mut().filter(|o| o.strand == Strand::OB) {
+                observation.base = T;
+            }
+        }
+
+        let annotated = annotate(&[anchor, (column, call)]);
+
+        assert_eq!(annotated.presence(1), Some([CpgPresence::Unresolved, CpgPresence::Unresolved]));
+        assert_eq!(annotated.split(1).map(|s| s.fragment_counts()), Some([0, 0, 0, 0]));
     }
 
     #[test]
