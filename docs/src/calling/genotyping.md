@@ -69,6 +69,31 @@ Heterozygous indels called by the pair-HMM (`--experimental-indels`, see [indels
 At an indel a read has no single base to vote with, so it votes for the allele whose local haplotype explains it better, weighted by how much better.
 An indel only becomes part of a block when the pair-HMM is confident of its heterozygous genotype: a doubtful one would mostly join two blocks the wrong way round.
 
+### Methylation by haplotype
+
+`--phase` also splits each CpG's reads by the haplotype of the read pair they came from:
+
+```
+chr12  20028930  .  C  .  ...  GT:M5mC:HPS:HPC:HPX:HPF  0/0:0.48:20028875:9,0,1,11:1,1:31,2,3,29
+```
+
+`HPC` counts the reads on the strand where TAPS conversion shows (the top strand at a `C`, the bottom strand at a `G`): unconverted then converted on haplotype 1, then the same on haplotype 2.
+`HPS` names the phase set whose haplotypes these are: a `PS` from the same file, or the position of a nearby heterozygous SNV or indel that could not be linked to another, in which case haplotype 1 carries the first allele of that site's `GT`.
+Where reads reach several sets, the one that placed the most of them is reported.
+A column is never split by its own alleles, only by the heterozygous sites around it.
+Above, haplotype 2 is methylated and haplotype 1 is not: allele-specific methylation.
+
+`HPX` says whether each haplotype has a CpG here at all.
+At a heterozygous `C>T` the chromosome carrying the `T` has no cytosine, and every one of its reads converts by construction; `HPX` marks that haplotype `0`, so its share of `HPC` is read as the genotype rather than as methylation.
+Where the column cannot tell, `HPX` is omitted.
+
+At such a CpG, `M5mC` without `--phase` assumes half the converted reads are the variant's.
+With `--phase`, where `HPX` is known and the haplotype carrying the cytosine has reads, `M5mC` is that haplotype's methylation instead.
+The CpG's other base needs no such correction: its `M5mC` only counts reads that also show the cytosine next to it, which the variant's chromosome never does.
+
+`HPF` counts the same evidence per molecule: each fragment votes once for the phase set, by the majority of its reads at the set's CpGs, counting only reads on a haplotype that carries the CpG at that column.
+A molecule crossing several CpGs is one observation, not several, so `HPF` is what a statistical test of allele-specific methylation should use; it is the same on every record of a set.
+
 ```admonish warning
 Phasing only works with the `experimental-seqair` backend.
 It can not be combined with `--cpgs-only` or BED output alone.

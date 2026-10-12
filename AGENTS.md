@@ -406,7 +406,7 @@ and 73x. What to know when touching it:
 
 ## Phasing (`--phase`, seqair only)
 
-`src/call/phasing.rs` and its `problem` and `solver` modules. Per-column data sits
+`src/call/phasing.rs` and its `problem`, `solver` and `haplotype` modules. Per-column data sits
 in `PileupMetrics.phase`; thresholds are constants, there are no `--phase-*` flags. `--phase` is
 an error on htslib builds and under CpG-only output (`--cpgs-only`, or `--bed` alone): the
 pre-filter drops the variant sites before phasing runs.
@@ -487,6 +487,60 @@ pre-filter drops the variant sites before phasing runs.
   Tried and not worth it: a margin floor, tract-length caps. The remaining bad bridges are
   tetranucleotide unit expansions and TAPS-converted twin candidates near a CpG, a candidate
   generation problem.
+
+### Haplotype split (`HPS`/`HPC`/`HPX`/`HPF`) and phased `M5mC`
+
+`phasing/haplotype.rs` documents the anchors, `best_tally`'s set order and the field semantics;
+`docs/src/calling/genotyping.md` says what the fields mean. It runs inside `phase_segment`, after
+the calls and before the overlap trim, and writes `RecordPhases::split`. Traps:
+
+- **Anchors are the solver's own votes**: `problem::snv_site`/`indel_site` return `SiteVotes`, which
+  `build_problem` and the split both read, so SNV bases and the pair-HMM's indel read assignments
+  place fragments the same way. Only core sites anchor; a phased one in its block's frame, an
+  unphased one in a set named by its own position. A column mints at most one such set (its SNV
+  first) and none once any record is phased, or two frames would share one name.
+- **A column is never its own anchor.** `ColumnContribution` records each column's votes per
+  (fragment, set) and `placements` subtracts them when that column is scored.
+- **Singleton suppression is per strand** (`Placement::one_sided_at`): a C/T singleton in a CpG
+  places only `C` reads on the top strand, which selects on its own methylation.
+- **`best_tally`'s "can fill `HPC`" key is a preference, not a filter.**
+- A de-novo CpG's partner is never split, and outside a CpG a column is split only where the
+  pair's other base is a called alt. Reference CpG columns keep their observations
+  (`candidate_observations` takes `InCpG`), or an unmethylated CpG would never be split.
+- **Placed reads are not ambiguous** where one haplotype lacks the CpG: `HPF` counts a placed
+  fragment on a haplotype `HPX` marks present (a converted read there is methylation) and drops
+  the absent haplotype's reads (the converted base is the allele). Unplaced reads and unresolved
+  columns stay out. `HPC` stays raw reads.
+- **`phase_confounded_betas`** (after the splits are stored on the columns) replaces `M5mC` at a
+  `HetConfounded` CpG side with `HaplotypeSplit::carrier_beta` via `methylation::call_phased`.
+  There is no `HPB` on this line, so the design (accepted 2026-10-12) is the **mean over the
+  haplotypes `HPX` marks present**: at a het C>T only the C haplotype, since the T haplotype's
+  converted reads are the allele. `None`, and the unphased beta stays, if either haplotype is
+  unresolved or a carrier has no reads. `DPM5mC`/`ADM5mC` stay the raw counts.
+- **The CpG's partner base is not replaced**, though it was asked for: `read_counts` keys on the
+  read's own neighbouring base (`ReadKey::adj`), so the `G` of a het `C>T` CpG only counts reads
+  showing the `C`, which the T haplotype never does. Its unphased beta is already the carrier's;
+  the split's would only be the placed subset of it.
+- **`HPF` counts the carrying haplotype** (accepted 2026-10-12): at a CpG one haplotype lacks, a
+  placed fragment votes on the haplotype that carries it, which adds molecules to that side of
+  the set's table only.
+- **A reference CpG keeps its observations, but is a phase site only past the same
+  heterozygous-evidence gate as any column** (`may_be_heterozygous`, asked again in
+  `problem::snv_site` for CpG columns). Without it a het CpG with one bottom-strand read of
+  evidence became a site: on chr12 +1,145 `PS` records and 173 -> 185 SNV switch errors.
+- Measured on chr12 (26x, seqair, `--phase --gpu --vcf-all-fields`, 2026-10-12): `HPC` on 26.72 %
+  of the 2,638,525 CpG records, both haplotypes read on 15.48 %; phasing, PASS calls and
+  unordered genotypes byte-identical to the base. Indel anchors only exist under
+  `--experimental-indels`, where they add 35,008 split CpGs (26.76 % -> 28.08 %). The anchored-
+  fragment rule adds ~5,700 `HPF` fragments (757,023 -> 762,682); the phased `M5mC` changes
+  3,285 values, median |delta| 0.20, p90 0.50.
+- Follow-up, not built: a C/T het knows in its *own* frame (its block, or its singleton set)
+  which haplotype carries the cytosine, from its alleles alone. Today a partner `G` learns its
+  `HPX` only from the het's label-strand vote, so a singleton het's partner split stays
+  unresolved and adds nothing to `HPF`.
+- These FORMAT lines are registered unconditionally like `PS` (this line has no `FieldFamilies`),
+  so every VCF header carries them. An integer array has no per-element missing value; `HPX`
+  omits the whole field instead.
 
 ### Testing phasing
 
