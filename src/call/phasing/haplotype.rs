@@ -6,15 +6,16 @@
 //! reads onto one haplotype and methylation need not. At a CpG the split is
 //! that CpG's methylation per haplotype.
 //!
-//! A fragment's haplotype is read off the heterozygous sites, from the same
-//! votes the solver phases them on: a phased site places it in its block's
+//! A fragment's haplotype is read off the heterozygous sites, SNVs and the
+//! pair-HMM's indels alike, from the same votes the solver phases them on: a
+//! phased site places it in its block's
 //! frame, an unphased one in a one-site set of its own. A column is never
 //! scored on the votes it cast itself, so what it reports is what the
 //! surrounding heterozygotes say.
 
 use super::{
     FragmentId, GtAllele, PhaseObservation, PhaseSet, RecordPhases, observations_of,
-    problem::{SiteVotes, het_alleles, snv_site},
+    problem::{SiteVotes, het_alleles, indel_site, snv_site},
 };
 use crate::{
     call::variant_calling::GenotypeTag,
@@ -284,9 +285,11 @@ impl Votes {
     }
 }
 
-/// The sites of a column that may anchor a split.
+/// The sites of a column that may anchor a split: its SNV record, then its
+/// indel record, whose votes are the pair-HMM's read assignments. The SNV
+/// record comes first, so it is the one an unphased column's set is named for.
 fn anchor_sites(pileup: &PileupMetrics, index: usize) -> impl Iterator<Item = SiteVotes> {
-    snv_site(pileup, index).into_iter()
+    snv_site(pileup, index).into_iter().chain(indel_site(pileup, index))
 }
 
 /// Read each fragment's haplotype off the heterozygous sites the segment
@@ -828,7 +831,9 @@ mod tests {
     use crate::{
         call::phasing::{
             PhaseCall,
-            fixtures::{ALT_1, ALT_2, call, column, graded, het, obs},
+            fixtures::{
+                ALT_1, ALT_2, call, column, confirming, graded, het, insertion, obs, with_indels,
+            },
         },
         vcf::InCpG,
     };
@@ -1092,6 +1097,33 @@ mod tests {
         let assignment = assign_haplotypes(&pileups, &phases, &|pos| pos != 1000);
 
         assert!(assignment.votes.is_empty());
+    }
+
+    /// The pair-HMM's read assignments at a het indel place fragments exactly
+    /// as an SNV's bases do, and an unphased one names its own set.
+    #[test]
+    fn a_heterozygous_indel_anchors_the_split() {
+        // Fragments 1000-1005 favour the reference haplotype, 1010-1015 the
+        // insertion; see `confirming`.
+        let indel = with_indels(
+            column(1000, A, &[], Some(GenotypeTag::HomRef), &[]),
+            &[insertion(&[C])],
+            &confirming([0, 1]),
+        );
+        let methylated: Vec<_> = (1000..1003)
+            .map(|fragment| obs(fragment, T, Strand::OT))
+            .chain((1010..1013).map(|fragment| obs(fragment, C, Strand::OT)))
+            .collect();
+        let columns = [free(indel), methylation_candidate(1040, &methylated)];
+
+        let annotated = annotate(&columns);
+
+        assert_eq!(annotated.set(1), Some(1001));
+        assert_eq!(
+            annotated.split(1).map(|split| split.counts()),
+            Some([0, 3, 3, 0]),
+            "the reference haplotype is methylated, the insertion's is not"
+        );
     }
 
     /// Frames are independent, so a fragment reaching two sets has a haplotype
