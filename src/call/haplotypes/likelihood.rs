@@ -3,8 +3,33 @@ use crate::metrics::methylation::CpgSide;
 use color_eyre::eyre::{Result, ensure};
 use seqair_types::{Base, Probability, Strand};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+pub enum LikelihoodEngine {
+    Aligned,
+    PairHmm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+pub enum MethylationModel {
+    Integrated,
+    Neutral,
+    Shrinkage,
+}
+
 #[derive(Debug, Clone, clap::Args, serde::Serialize)]
 pub struct LikelihoodParams {
+    /// Read likelihood engine; `PairHMM` sums over local alignments
+    #[arg(long, value_enum, default_value = "aligned")]
+    pub likelihood_engine: LikelihoodEngine,
+    /// Treatment of CpG conversion evidence in the experimental likelihood
+    #[arg(long, value_enum, default_value = "integrated")]
+    pub methylation_model: MethylationModel,
+    /// Strength of the symmetric Beta prior for estimated CpG methylation rates
+    #[arg(long, default_value_t = 4.0)]
+    pub methylation_prior_strength: f64,
+    /// Minimum pilot probability that a molecule carries a CpG before estimating its rate
+    #[arg(long, default_value = "0.9")]
+    pub methylation_min_cpg_probability: Probability,
     /// Conversion probability for methylated cytosines in TAPS libraries
     #[arg(long, default_value = "0.95")]
     pub conversion_rate: Probability,
@@ -20,10 +45,29 @@ pub struct LikelihoodParams {
     /// Gauss-Legendre nodes for integrating a uniform CpG methylation prior
     #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u16).range(2..=64))]
     pub quadrature_order: u16,
+    /// Probability of opening each insertion or deletion in the `PairHMM`
+    #[arg(long, default_value = "0.00003162277660168379")]
+    pub gap_open: Probability,
+    /// Probability of extending an insertion or deletion in the `PairHMM`
+    #[arg(long, default_value = "0.1")]
+    pub gap_extend: Probability,
+    /// Prior probability of a non-reference genotype at the nuisance indel site
+    #[arg(long, default_value = "0.0001")]
+    pub indel_prior: Probability,
+    /// Local realignment flank around selected SNPs and the nuisance indel
+    #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u16).range(2..=100))]
+    pub realignment_flank: u16,
+    /// Maximum length of a CIGAR insertion/deletion proposed as a nuisance allele
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+    pub max_indel_length: u16,
 }
 
 impl LikelihoodParams {
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.methylation_prior_strength.is_finite() && self.methylation_prior_strength >= 2.0,
+            "Methylation prior strength must be finite and at least two"
+        );
         ensure!(
             self.non_taps || self.conversion_rate > self.false_conversion_rate,
             "Methylated conversion must exceed unmethylated conversion"
@@ -33,10 +77,24 @@ impl LikelihoodParams {
             "SNP prior must be strictly between zero and one"
         );
         ensure!((2..=64).contains(&self.quadrature_order), "Quadrature order must be 2..=64");
+        ensure!(
+            *self.gap_open > 0.0 && *self.gap_open < 0.5,
+            "Gap open must be between zero and 0.5"
+        );
+        ensure!(
+            *self.gap_extend > 0.0 && *self.gap_extend < 1.0,
+            "Gap extension must be between zero and one"
+        );
+        ensure!(
+            *self.indel_prior > 0.0 && *self.indel_prior < 1.0,
+            "Indel prior must be between zero and one"
+        );
+        ensure!((2..=100).contains(&self.realignment_flank), "Realignment flank must be 2..=100");
+        ensure!((1..=100).contains(&self.max_indel_length), "Maximum indel length must be 1..=100");
         Ok(())
     }
 
-    fn conversion(&self, methylation: Option<f64>) -> f64 {
+    pub(super) fn conversion(&self, methylation: Option<f64>) -> f64 {
         if self.non_taps {
             0.0
         } else {
@@ -112,7 +170,7 @@ pub(super) fn log_sum(values: impl IntoIterator<Item = f64>) -> f64 {
     values.into_iter().fold(f64::NEG_INFINITY, log_add)
 }
 
-fn sequencing_emission(observed: Base, template: Base, quality: Option<u8>) -> f64 {
+pub(super) fn sequencing_emission(observed: Base, template: Base, quality: Option<u8>) -> f64 {
     if observed.known_index().is_none() {
         return 1.0;
     }
@@ -122,17 +180,97 @@ fn sequencing_emission(observed: Base, template: Base, quality: Option<u8>) -> f
     if observed == template { 1.0 - error } else { error / 3.0 }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BaseMeasurement {
+    pub base: Base,
+    pub quality: Option<u8>,
+    pub mapq: Option<u8>,
+    pub read_index: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MolecularBase {
+    pub base: Base,
+    pub quality: Option<u8>,
+    pub source: Option<usize>,
+    pub measurements: usize,
+    pub discordant: bool,
+}
+
+pub(super) fn consensus(
+    measurements: impl IntoIterator<Item = BaseMeasurement>,
+) -> Result<MolecularBase> {
+    let mut known = [None; 2];
+    let mut known_count = 0;
+    let mut count = 0;
+    for measurement in measurements {
+        count += 1;
+        ensure!(
+            count <= 2 && measurement.read_index < 2,
+            "A molecular base requires at most two mate observations"
+        );
+        ensure!(measurement.quality != Some(255), "Missing base quality must be None");
+        if measurement.base.known_index().is_some() {
+            *known
+                .get_mut(known_count)
+                .ok_or_else(|| color_eyre::eyre::eyre!("Too many known mate observations"))? =
+                Some(measurement);
+            known_count += 1;
+        }
+    }
+    let mut result = MolecularBase {
+        base: Base::Unknown,
+        quality: None,
+        source: None,
+        measurements: known_count,
+        discordant: false,
+    };
+    let rank = |m: &BaseMeasurement| {
+        (m.quality.unwrap_or(0), m.mapq.unwrap_or(0), std::cmp::Reverse(m.read_index))
+    };
+    if let Some(best) = known.iter().flatten().max_by_key(|measurement| rank(measurement)) {
+        result.base = best.base;
+        result.quality = best.quality;
+        result.source = Some(best.read_index);
+        if let Some(other) =
+            known.iter().flatten().find(|m| m.read_index != best.read_index && m.base != best.base)
+        {
+            result.discordant = true;
+            // Both calls observe one nucleotide. Agreement cannot add Phred
+            // confidence, and a competing call spends that confidence instead.
+            result.quality = best.quality.map(|q| q.saturating_sub(other.quality.unwrap_or(0)));
+        }
+    }
+    Ok(result)
+}
+
+pub(super) fn consensus_at(fragment: &Fragment, pos: u32) -> Result<MolecularBase> {
+    consensus(fragment.reads.iter().enumerate().filter_map(|(read_index, read)| {
+        let index = read.observations.binary_search_by_key(&pos, |obs| obs.pos).ok()?;
+        let obs = read.observations.get(index)?;
+        Some(BaseMeasurement { base: obs.base, quality: obs.quality, mapq: read.mapq, read_index })
+    }))
+}
+
 pub(super) fn cpg_anchor(reference: &Reference, haplotype: &Haplotype, pos: u32) -> Option<u32> {
     let base = haplotype.base_at(reference, pos)?;
     match base {
-        Base::C if haplotype.base_at(reference, pos.checked_add(1)?) == Some(Base::G) => Some(pos),
-        Base::G if haplotype.base_at(reference, pos.checked_sub(1)?) == Some(Base::C) => {
-            pos.checked_sub(1)
+        Base::C
+            if haplotype
+                .adjacent_base(reference, pos, true)
+                .is_some_and(|(_, base)| base == Base::G) =>
+        {
+            Some(pos)
         }
+        Base::G => haplotype
+            .adjacent_base(reference, pos, false)
+            .filter(|(_, base)| *base == Base::C)
+            .map(|(pos, _)| pos),
         _ => None,
     }
 }
 
+#[cfg(test)]
 pub(super) fn fragment_likelihood(
     fragment: &Fragment,
     haplotype: &Haplotype,
@@ -141,32 +279,63 @@ pub(super) fn fragment_likelihood(
     methylation: f64,
     params: &LikelihoodParams,
 ) -> Result<f64> {
+    fragment_likelihood_with_model(
+        fragment,
+        haplotype,
+        reference,
+        loci,
+        params,
+        &super::methylation::Scoring::Integrated(methylation),
+        &BTreeSet::new(),
+    )
+}
+
+use std::collections::BTreeSet;
+
+pub(super) fn fragment_likelihood_with_model(
+    fragment: &Fragment,
+    haplotype: &Haplotype,
+    reference: &Reference,
+    loci: &[u32],
+    params: &LikelihoodParams,
+    scoring: &super::methylation::Scoring<'_>,
+    cpgs: &BTreeSet<super::methylation::Cpg>,
+) -> Result<f64> {
     ensure!(fragment.reads.len() <= 2, "A likelihood fragment may contain at most two reads");
-    let known = fragment
-        .reads
+    let bases = loci
         .iter()
-        .map(|read| read.strand)
-        .find(|strand| *strand != Strand::Unknown)
-        .filter(|strand| {
-            fragment
-                .reads
-                .iter()
-                .all(|read| read.strand == Strand::Unknown || read.strand == *strand)
-        });
-    // Mates have one molecular orientation. A known mate resolves an unknown
-    // one; disagreeing assignments instead leave that orientation uncertain.
-    let orientations: &[Strand] = match known {
-        Some(Strand::OT) => &[Strand::OT],
-        Some(Strand::OB) => &[Strand::OB],
-        _ => &[Strand::OT, Strand::OB],
-    };
+        .map(|&pos| Ok((pos, consensus_at(fragment, pos)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let owns = |read_index| bases.iter().any(|(_, base)| base.source == Some(read_index));
+    let orientations = orientations_from(
+        fragment
+            .reads
+            .iter()
+            .filter(|read| {
+                read.observations.iter().any(|obs| {
+                    obs.base.known_index().is_some() && loci.binary_search(&obs.pos).is_ok()
+                })
+            })
+            .map(|read| read.strand),
+    );
     let mut result = f64::NEG_INFINITY;
     for &orientation in orientations {
         // Mapping failure is one event per alignment, rather than an
         // independent chance for every observed base of that alignment.
         for mask in 0..(1usize << fragment.reads.len()) {
+            if fragment
+                .reads
+                .iter()
+                .enumerate()
+                .any(|(index, _)| !owns(index) && mask & (1 << index) != 0)
+            {
+                continue;
+            }
             let mut probability = if orientations.len() == 2 { 0.5 } else { 1.0 };
             for (read_index, read) in fragment.reads.iter().enumerate() {
+                if !owns(read_index) {
+                    continue;
+                }
                 let bad = mask & (1 << read_index) != 0;
                 let mismapped = read.mapq.map_or(1.0, |q| 10.0_f64.powf(-f64::from(q) / 10.0));
                 probability *= if bad { mismapped } else { 1.0 - mismapped };
@@ -175,42 +344,53 @@ pub(super) fn fragment_likelihood(
                 continue;
             }
             let mut likelihood = probability.ln();
-            for &pos in loci {
+            for &(pos, observed) in &bases {
+                let Some(source) = observed.source else { continue };
                 let Some(base) = haplotype.base_at(reference, pos) else { continue };
                 if base.known_index().is_none() {
                     continue;
                 }
+                let position = super::SequencePosition::reference(pos);
+                if !params.non_taps
+                    && let Some((ordinary, modified)) =
+                        scoring.neutral_bases(position, orientation, base)
+                {
+                    likelihood += if mask & (1 << source) != 0 {
+                        0.25_f64.ln()
+                    } else {
+                        (0.5 * sequencing_emission(observed.base, ordinary, observed.quality)
+                            + 0.5 * sequencing_emission(observed.base, modified, observed.quality))
+                        .ln()
+                    };
+                    continue;
+                }
                 let side =
                     [CpgSide::C, CpgSide::G].into_iter().find(|side| side.unmod_base() == base);
-                let rate =
-                    params.conversion(cpg_anchor(reference, haplotype, pos).map(|_| methylation));
-                let (mut unconverted, mut converted) = (0.0, 0.0);
-                for (read_index, read) in fragment.reads.iter().enumerate() {
-                    let bad = mask & (1 << read_index) != 0;
-                    let strand = orientation;
-                    if let Ok(index) = read.observations.binary_search_by_key(&pos, |obs| obs.pos)
-                        && let Some(obs) = read.observations.get(index)
-                    {
-                        let ordinary = if bad {
-                            if obs.base.known_index().is_some() { 0.25 } else { 1.0 }
-                        } else {
-                            sequencing_emission(obs.base, base, obs.quality)
-                        };
-                        let modified =
-                            if let Some(side) = side.filter(|side| side.strand() == strand) {
-                                if bad {
-                                    ordinary
-                                } else {
-                                    sequencing_emission(obs.base, side.mod_base(), obs.quality)
-                                }
-                            } else {
-                                ordinary
-                            };
-                        unconverted += ordinary.ln();
-                        converted += modified.ln();
-                    }
+                let cpg = cpgs.iter().find(|cpg| cpg.contains(position));
+                let methylation = if cpg_anchor(reference, haplotype, pos).is_some() {
+                    Some(scoring.rate(cpg, true))
+                } else {
+                    None
+                };
+                let rate = params.conversion(methylation);
+                let bad = mask & (1 << source) != 0;
+                let unconverted = if bad {
+                    0.25
+                } else {
+                    sequencing_emission(observed.base, base, observed.quality)
                 }
-                // Overlapping mates share a conversion event at this position.
+                .ln();
+                let converted = if let Some(side) = side.filter(|side| side.strand() == orientation)
+                {
+                    if bad {
+                        0.25
+                    } else {
+                        sequencing_emission(observed.base, side.mod_base(), observed.quality)
+                    }
+                    .ln()
+                } else {
+                    unconverted
+                };
                 likelihood += log_add((1.0 - rate).ln() + unconverted, rate.ln() + converted);
             }
             result = log_add(result, likelihood);
@@ -220,11 +400,30 @@ pub(super) fn fragment_likelihood(
     Ok(result)
 }
 
+pub(super) fn orientations_from(strands: impl IntoIterator<Item = Strand>) -> &'static [Strand] {
+    let mut known = None;
+    for strand in strands.into_iter().filter(|strand| *strand != Strand::Unknown) {
+        if known.is_some_and(|known| known != strand) {
+            return &[Strand::OT, Strand::OB];
+        }
+        known = Some(strand);
+    }
+    // Mates have one molecular orientation. A known mate resolves an unknown
+    // one; disagreeing assignments instead leave that orientation uncertain.
+    match known {
+        Some(Strand::OT) => &[Strand::OT],
+        Some(Strand::OB) => &[Strand::OB],
+        _ => &[Strand::OT, Strand::OB],
+    }
+}
+
 pub(super) fn pair_prior(
     first: &Haplotype,
     second: &Haplotype,
     sites: &[Site],
     prior: f64,
+    indel_prior: f64,
+    has_indel_candidate: bool,
 ) -> Result<f64> {
     let mut result = 0.0;
     let mut heterozygotes = 0u32;
@@ -244,6 +443,14 @@ pub(super) fn pair_prior(
         result += probability.ln();
         heterozygotes += u32::from(a != b);
     }
+    if has_indel_candidate {
+        result += if first.indel.is_none() && second.indel.is_none() {
+            (1.0 - indel_prior).ln()
+        } else {
+            (indel_prior / 2.0).ln()
+        };
+        heterozygotes += u32::from(first.indel != second.indel);
+    }
     // The genotype prior is shared equally by its possible phase assignments.
     // Otherwise adding neighboring hets would change the focal SNP's prior.
     result -= f64::from(heterozygotes.saturating_sub(1)) * std::f64::consts::LN_2;
@@ -253,6 +460,89 @@ pub(super) fn pair_prior(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mate_consensus_never_adds_quality_and_penalizes_disagreement() -> Result<()> {
+        for (
+            first_base,
+            second_base,
+            first_quality,
+            second_quality,
+            expected_base,
+            expected_quality,
+        ) in [
+            (Base::A, Base::A, 40, 40, Base::A, 40),
+            (Base::A, Base::A, 20, 40, Base::A, 40),
+            (Base::A, Base::G, 40, 30, Base::A, 10),
+            (Base::A, Base::G, 20, 40, Base::G, 20),
+            (Base::C, Base::T, 40, 40, Base::C, 0),
+        ] {
+            let measurements = [
+                BaseMeasurement {
+                    base: first_base,
+                    quality: Some(first_quality),
+                    mapq: Some(60),
+                    read_index: 0,
+                },
+                BaseMeasurement {
+                    base: second_base,
+                    quality: Some(second_quality),
+                    mapq: Some(60),
+                    read_index: 1,
+                },
+            ];
+            let base = consensus(measurements)?;
+            assert_eq!(base.base, expected_base);
+            assert_eq!(base.quality, Some(expected_quality));
+            assert_eq!(base.measurements, 2);
+            assert_eq!(base.discordant, first_base != second_base);
+            let reversed = consensus(measurements.into_iter().rev())?;
+            assert_eq!(base.base, reversed.base);
+            assert_eq!(base.quality, reversed.quality);
+            let emission_sum = Base::KNOWN
+                .into_iter()
+                .map(|template| sequencing_emission(base.base, template, base.quality))
+                .sum::<f64>();
+            assert!((emission_sum - 1.0).abs() < 1e-12);
+            if expected_quality == 0 {
+                assert!(Base::KNOWN.into_iter().all(|template| sequencing_emission(
+                    base.base,
+                    template,
+                    base.quality
+                ) == 0.25));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn consensus_ignores_unknown_bases_and_missing_qualities_are_neutral() -> Result<()> {
+        let known =
+            BaseMeasurement { base: Base::G, quality: Some(30), mapq: Some(60), read_index: 1 };
+        let unknown = BaseMeasurement {
+            base: Base::Unknown,
+            quality: Some(40),
+            mapq: Some(60),
+            read_index: 0,
+        };
+        let base = consensus([unknown, known])?;
+        assert_eq!(base.base, Base::G);
+        assert_eq!(base.quality, Some(30));
+        assert_eq!(base.measurements, 1);
+        let base = consensus([BaseMeasurement { quality: None, ..known }])?;
+        assert!(Base::KNOWN.into_iter().all(|template| sequencing_emission(
+            base.base,
+            template,
+            base.quality
+        ) == 0.25));
+        let base = consensus([unknown])?;
+        assert_eq!(base.source, None);
+        assert_eq!(base.measurements, 0);
+        assert!(consensus([BaseMeasurement { quality: Some(255), ..known }]).is_err());
+        assert!(consensus([BaseMeasurement { read_index: 2, ..known }]).is_err());
+        assert!(consensus([known; 3]).is_err());
+        Ok(())
+    }
 
     #[test]
     fn quadrature_integrates_uniform_polynomials() -> Result<()> {

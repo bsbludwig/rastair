@@ -18,6 +18,9 @@ pub struct HaplotypeDiagnosticParams {
     /// Also write the competing haplotype-pair likelihoods and posteriors
     #[arg(long)]
     pub pair_output: Option<ClioPath>,
+    /// Write candidate positions without evaluating likelihoods
+    #[arg(long)]
+    pub candidates_only: bool,
     /// Score these positions regardless of observed alternates (plain BED, one-base intervals)
     #[arg(long, value_parser = value_parser!(ClioPath).exists().is_file())]
     pub sites_bed: Option<ClioPath>,
@@ -53,6 +56,10 @@ pub struct DiagnosticReadParams {
 
 pub fn diagnose(params: &HaplotypeDiagnosticParams) -> Result<()> {
     params.likelihood.validate()?;
+    color_eyre::eyre::ensure!(
+        !params.candidates_only || (params.pair_output.is_none() && params.sites_bed.is_none()),
+        "Candidate discovery cannot be combined with pair output or supplied sites"
+    );
     #[cfg(feature = "experimental-seqair")]
     return backend::run(params);
     #[cfg(not(feature = "experimental-seqair"))]
@@ -64,7 +71,9 @@ mod backend {
     use super::*;
     use crate::{
         call::haplotypes::{
-            Fragment, Observation, ReadEvidence, Reference, Site, SnpEvidence, infer_snp,
+            Fragment, Indel, LikelihoodEngine, MethylationModel, Observation, ReadEvidence,
+            Reference, SequenceEvidence, SequenceObservation, SequencePosition, Site, SnpEvidence,
+            infer_snp_with_indels,
         },
         sequence::{ChunkRegion, ReferenceWindow, Region, SeqairReaders},
     };
@@ -82,7 +91,7 @@ mod backend {
     };
     use tracing::{info, warn};
 
-    const HEADER: &str = "chrom\tpos\tref\talt\tlog_bayes_factor\tposterior\tp_het\tp_hom_alt\texpected_fraction\tgenotype_entropy\tsite_log_bayes_factor\tlinkage_log_bayes_factor\tfragments\tobservations\tcontext_sites\thaplotypes\tomitted_sites\tcpg_context_limited\talignment_indel_reads";
+    const HEADER: &str = "chrom\tpos\tref\talt\tlog_bayes_factor\tposterior\tp_het\tp_hom_alt\texpected_fraction\tgenotype_entropy\tsite_log_bayes_factor\tlinkage_log_bayes_factor\tfragments\tobservations\tcontext_sites\thaplotypes\tomitted_sites\tcpg_context_limited\talignment_indel_reads\trealigned_fragments\taligned_fallback_fragments\tomitted_indels\tcpg_omitted_sites\tcpg_omitted_indels\toffered_linking_fragments\tretained_linking_fragments\tgenotype_posteriors\tsite_posterior\tsite_genotype_posteriors\tread_observations\toverlapping_fragments\tdiscordant_fragments";
 
     struct InputChunk {
         reference: Reference,
@@ -90,6 +99,7 @@ mod backend {
         candidates: Vec<Site>,
         neighbors: Vec<Site>,
         indel_intervals: Vec<(u32, u32)>,
+        indels: Vec<Indel>,
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -149,7 +159,12 @@ mod backend {
             .as_ref()
             .map(|path| path.clone().create().map(BufWriter::new))
             .transpose()?;
-        writeln!(output, "#rastair_haplotype_model=aligned_snp_v1")?;
+        let pair_hmm = params.likelihood.likelihood_engine == LikelihoodEngine::PairHmm;
+        writeln!(
+            output,
+            "#rastair_haplotype_model={}",
+            if pair_hmm { "local_pair_hmm_v2" } else { "aligned_snp_v2" }
+        )?;
         writeln!(output, "#likelihood_parameters={}", serde_json::to_string(&params.likelihood)?)?;
         writeln!(output, "#read_filters={}", serde_json::to_string(&params.reads)?)?;
         writeln!(
@@ -157,15 +172,35 @@ mod backend {
             "#window_radius={};max_sites={};min_alt_observations={}",
             params.window_radius, params.max_sites, params.min_alt_observations
         )?;
+        match params.likelihood.methylation_model {
+            MethylationModel::Integrated => writeln!(
+                output,
+                "#methylation_prior=independent_uniform_per_haplotype_cpg;maximum_observed_cpgs_per_haplotype=1;quadrature_is_approximate"
+            )?,
+            MethylationModel::Neutral => writeln!(
+                output,
+                "#methylation=neutral;mask=candidate_union_cpg_strand_positions;confounded_alleles_share_collapsed_emissions;other_alleles_retained;multiple_cpgs_retained"
+            )?,
+            MethylationModel::Shrinkage => writeln!(
+                output,
+                "#methylation=shared_per_cpg_beta_shrinkage;pilot=neutral;rate_scoring=leave_one_fragment_out;ambiguous_cpg_carriers_do_not_fit_rates;plugin_scores_are_approximate;multiple_cpgs_retained"
+            )?,
+        }
         writeln!(
             output,
-            "#methylation_prior=independent_uniform_per_haplotype_cpg;maximum_observed_cpgs_per_haplotype=1;quadrature_is_approximate"
+            "#overlap_observations=molecular_consensus;agreement=max_baseq;disagreement=baseq_difference;equal_quality_disagreement=uninformative"
         )?;
-        writeln!(output, "{HEADER}")?;
+        writeln!(output, "{}", if params.candidates_only { "chrom\tpos\tref" } else { HEADER })?;
+        if pair_hmm {
+            writeln!(
+                output,
+                "#realignment=local_cigar_cropped_profiles;overlap_consensus=best_quality_or_quality_difference;overlap_conversion=shared;discordant_overlap_or_refskip=aligned_fallback;flank_cpg_policy=selected_methylation_model;integrated_flank_methylation=0.5;nuisance_indel_sites=1"
+            )?;
+        }
         if let Some(writer) = &mut pair_output {
             writeln!(
                 writer,
-                "chrom\tpos\tsites\thaplotype_a\thaplotype_b\tlog_likelihood\tlog_prior\tposterior"
+                "chrom\tpos\tsites\thaplotype_a\thaplotype_b\tlog_likelihood\tlog_prior\tposterior\tindel_a\tindel_b"
             )?;
         }
         let mut completed = 0usize;
@@ -183,7 +218,14 @@ mod backend {
             let mut core_start = start;
             while core_start < end {
                 let core_end = core_start.saturating_add(u64::from(params.chunk_length)).min(end);
-                let padding = u64::from(params.window_radius) + 2;
+                let padding = u64::from(params.window_radius)
+                    + 2
+                    + if pair_hmm {
+                        u64::from(params.likelihood.realignment_flank)
+                            + u64::from(params.likelihood.max_indel_length)
+                    } else {
+                        0
+                    };
                 let fetch_start = core_start.saturating_sub(padding);
                 let fetch_end = core_end.saturating_add(padding).min(length);
                 let chunk =
@@ -223,6 +265,16 @@ mod backend {
                     if !seen.insert((region.chromosome.clone(), focal.pos)) {
                         continue;
                     }
+                    if params.candidates_only {
+                        writeln!(
+                            output,
+                            "{contig}\t{}\t{}",
+                            u64::from(focal.pos) + 1,
+                            focal.reference
+                        )?;
+                        completed += 1;
+                        continue;
+                    }
                     let nearby: Vec<_> = chunk
                         .neighbors
                         .iter()
@@ -232,18 +284,51 @@ mod backend {
                         })
                         .cloned()
                         .collect();
-                    let evidence = infer_snp(
-                        &chunk.reference,
+                    let nearby_indels: Vec<_> = chunk
+                        .indels
+                        .iter()
+                        .filter(|indel| indel.start.abs_diff(focal.pos) <= params.window_radius)
+                        .cloned()
+                        .collect();
+                    let local_reference = if pair_hmm {
+                        let start = focal
+                            .pos
+                            .saturating_sub(u32::try_from(padding)?)
+                            .max(chunk.reference.start);
+                        let end =
+                            focal.pos.saturating_add(u32::try_from(padding)?).saturating_add(1);
+                        let offset = usize::try_from(start - chunk.reference.start)?;
+                        let stop = usize::try_from(end.saturating_sub(chunk.reference.start))?
+                            .min(chunk.reference.bases.len());
+                        Some(Reference {
+                            start,
+                            bases: chunk
+                                .reference
+                                .bases
+                                .get(offset..stop)
+                                .ok_or_eyre("Invalid local reference window")?
+                                .to_vec(),
+                        })
+                    } else {
+                        None
+                    };
+                    let reference = local_reference.as_ref().unwrap_or(&chunk.reference);
+                    let evidence = infer_snp_with_indels(
+                        reference,
                         focal.pos,
                         &nearby,
+                        &nearby_indels,
                         &chunk.fragments,
                         &params.likelihood,
                         usize::from(params.max_sites),
                     )?;
-                    let site_only = if evidence.sites.len() > 1 {
-                        Some(infer_snp(
-                            &chunk.reference,
+                    let site_only = if evidence.sites.len() > 1
+                        || evidence.haplotypes.iter().any(|haplotype| haplotype.indel.is_some())
+                    {
+                        Some(infer_snp_with_indels(
+                            reference,
                             focal.pos,
+                            &[],
                             &[],
                             &chunk.fragments,
                             &params.likelihood,
@@ -385,6 +470,7 @@ mod backend {
                 let bases = record.seq(store)?;
                 let qualities = record.qual(store)?;
                 let mut observations = Vec::new();
+                let mut sequence = pair_hmm_sequence(params);
                 let mut has_indel = false;
                 let mut pos = record.pos.as_u64();
                 let mut query = 0u32;
@@ -397,7 +483,7 @@ mod backend {
                                     .checked_add(offset)
                                     .ok_or_eyre("Query position overflow")?;
                                 let genomic = pos + u64::from(offset);
-                                if genomic < start || genomic >= end || !mask.contains(&qpos) {
+                                if genomic < start || genomic >= end {
                                     continue;
                                 }
                                 let index = usize::try_from(qpos)?;
@@ -405,14 +491,22 @@ mod backend {
                                     .get(index)
                                     .ok_or_eyre("CIGAR exceeds quality sequence")?
                                     .get();
-                                if quality.is_some_and(|q| q < params.reads.quality.min_baseq)
-                                    || (quality.is_none() && params.reads.quality.min_baseq > 0)
-                                {
-                                    continue;
-                                }
                                 let base =
                                     *bases.get(index).ok_or_eyre("CIGAR exceeds base sequence")?;
-                                if base.known_index().is_some() {
+                                let accepted = mask.contains(&qpos)
+                                    && quality.map_or(params.reads.quality.min_baseq == 0, |q| {
+                                        q >= params.reads.quality.min_baseq
+                                    });
+                                if let Some(sequence) = &mut sequence {
+                                    sequence.bases.push(SequenceObservation {
+                                        position: SequencePosition::reference(u32::try_from(
+                                            genomic,
+                                        )?),
+                                        base: if accepted { base } else { Base::Unknown },
+                                        quality,
+                                    });
+                                }
+                                if accepted && base.known_index().is_some() {
                                     observations.push(Observation {
                                         pos: u32::try_from(genomic)?,
                                         base,
@@ -423,6 +517,81 @@ mod backend {
                         }
                         CigarOpType::Insertion | CigarOpType::Deletion | CigarOpType::RefSkip => {
                             has_indel = true;
+                            if let Some(sequence) = &mut sequence {
+                                match op.op_type() {
+                                    CigarOpType::Insertion if pos >= start && pos < end => {
+                                        let mut inserted = Vec::new();
+                                        for offset in 0..len {
+                                            let qpos = query
+                                                .checked_add(offset)
+                                                .ok_or_eyre("Insertion query overflow")?;
+                                            let index = usize::try_from(qpos)?;
+                                            let base = *bases
+                                                .get(index)
+                                                .ok_or_eyre("Insertion exceeds sequence")?;
+                                            let quality = qualities
+                                                .get(index)
+                                                .ok_or_eyre("Insertion exceeds qualities")?
+                                                .get();
+                                            let accepted = mask.contains(&qpos)
+                                                && quality.map_or(
+                                                    params.reads.quality.min_baseq == 0,
+                                                    |q| q >= params.reads.quality.min_baseq,
+                                                );
+                                            let base = if accepted { base } else { Base::Unknown };
+                                            inserted.push(base);
+                                            sequence.bases.push(SequenceObservation {
+                                                position: SequencePosition::insertion(
+                                                    u32::try_from(pos)?,
+                                                    offset,
+                                                ),
+                                                base,
+                                                quality,
+                                            });
+                                        }
+                                        if len <= u32::from(params.likelihood.max_indel_length)
+                                            && inserted
+                                                .iter()
+                                                .all(|base| base.known_index().is_some())
+                                        {
+                                            sequence.indels.push(Indel {
+                                                start: u32::try_from(pos)?,
+                                                deleted: Vec::new(),
+                                                inserted,
+                                            });
+                                        }
+                                    }
+                                    CigarOpType::Deletion
+                                        if pos >= start
+                                            && pos + u64::from(len) <= end
+                                            && len
+                                                <= u32::from(
+                                                    params.likelihood.max_indel_length,
+                                                )
+                                            && query
+                                                .checked_sub(1)
+                                                .is_some_and(|qpos| mask.contains(&qpos))
+                                            && mask.contains(&query) =>
+                                    {
+                                        let deleted = (pos..pos + u64::from(len))
+                                            .map(|pos| {
+                                                reference
+                                                    .base_at(u32::try_from(pos)?)
+                                                    .ok_or_eyre("Deletion outside reference")
+                                            })
+                                            .collect::<Result<Vec<_>>>()?;
+                                        if deleted.iter().all(|base| base.known_index().is_some()) {
+                                            sequence.indels.push(Indel {
+                                                start: u32::try_from(pos)?,
+                                                deleted,
+                                                inserted: Vec::new(),
+                                            });
+                                        }
+                                    }
+                                    CigarOpType::RefSkip => sequence.reference_skip = true,
+                                    _ => {}
+                                }
+                            }
                         }
                         CigarOpType::Unknown(code) => bail!("Unsupported BAM CIGAR opcode {code}"),
                         _ => {}
@@ -451,6 +620,7 @@ mod backend {
                     mapq: (record.mapq != 255).then_some(record.mapq),
                     strand,
                     observations,
+                    sequence,
                 };
                 let name = record.qname(store)?;
                 if name.is_empty()
@@ -488,9 +658,29 @@ mod backend {
                 }
             }
         }
+        let mut indel_counts = BTreeMap::<Indel, u32>::new();
+        for fragment in &independent {
+            let mut seen = BTreeSet::new();
+            for indel in fragment
+                .reads
+                .iter()
+                .filter_map(|read| read.sequence.as_ref())
+                .flat_map(|sequence| &sequence.indels)
+            {
+                if seen.insert(indel) {
+                    let count = indel_counts.entry(indel.clone()).or_default();
+                    *count = count.checked_add(1).ok_or_eyre("Indel candidate depth overflow")?;
+                }
+            }
+        }
+        let indels: Vec<_> = indel_counts
+            .into_iter()
+            .filter(|(_, count)| *count >= params.min_alt_observations)
+            .map(|(indel, _)| indel)
+            .collect();
         let mut candidates = Vec::new();
         let mut neighbors = Vec::new();
-        for (pos, counts) in counts {
+        for (&pos, column_counts) in &counts {
             let Some(reference_base) =
                 reference.base_at(pos).filter(|base| base.known_index().is_some())
             else {
@@ -502,7 +692,7 @@ mod backend {
                     base != reference_base
                         && base
                             .known_index()
-                            .and_then(|index| counts.get(index))
+                            .and_then(|index| column_counts.get(index))
                             .is_some_and(|&count| count >= params.min_alt_observations)
                 })
                 .collect();
@@ -510,12 +700,26 @@ mod backend {
             // Converted de-novo C/G alleles can look exactly like the reference.
             if !params.likelihood.non_taps {
                 if reference_base == Base::T
-                    && reference.base_at(pos.saturating_add(1)) == Some(Base::G)
+                    && potential_cpg_partner(
+                        &reference,
+                        &counts,
+                        &indels,
+                        pos,
+                        Base::C,
+                        params.min_alt_observations,
+                    )
                 {
                     alts.push(Base::C);
                 }
                 if reference_base == Base::A
-                    && pos.checked_sub(1).and_then(|pos| reference.base_at(pos)) == Some(Base::C)
+                    && potential_cpg_partner(
+                        &reference,
+                        &counts,
+                        &indels,
+                        pos,
+                        Base::G,
+                        params.min_alt_observations,
+                    )
                 {
                     alts.push(Base::G);
                 }
@@ -528,7 +732,48 @@ mod backend {
                 candidates.push(site);
             }
         }
-        Ok(InputChunk { reference, fragments: independent, candidates, neighbors, indel_intervals })
+        Ok(InputChunk {
+            reference,
+            fragments: independent,
+            candidates,
+            neighbors,
+            indel_intervals,
+            indels,
+        })
+    }
+
+    fn pair_hmm_sequence(params: &HaplotypeDiagnosticParams) -> Option<SequenceEvidence> {
+        (params.likelihood.likelihood_engine == LikelihoodEngine::PairHmm).then(|| {
+            SequenceEvidence { bases: Vec::new(), reference_skip: false, indels: Vec::new() }
+        })
+    }
+
+    fn potential_cpg_partner(
+        reference: &Reference,
+        counts: &BTreeMap<u32, [u32; 4]>,
+        indels: &[Indel],
+        pos: u32,
+        allele: Base,
+        minimum: u32,
+    ) -> bool {
+        let adjacent = if allele == Base::C { pos.checked_add(1) } else { pos.checked_sub(1) };
+        let partner = if allele == Base::C { Base::G } else { Base::C };
+        if let Some(adjacent) = adjacent
+            && (reference.base_at(adjacent) == Some(partner)
+                || counts
+                    .get(&adjacent)
+                    .and_then(|counts| counts.get(partner.known_index()?))
+                    .is_some_and(|&count| count >= minimum))
+        {
+            return true;
+        }
+        indels.iter().any(|indel| {
+            let haplotype = crate::call::haplotypes::Haplotype {
+                alleles: vec![(pos, allele)],
+                indel: Some(indel.clone()),
+            };
+            super::super::likelihood::cpg_anchor(reference, &haplotype, pos).is_some()
+        })
     }
 
     fn write_snp(
@@ -538,14 +783,25 @@ mod backend {
         site_only: Option<&SnpEvidence>,
         indels: usize,
     ) -> Result<()> {
+        let genotypes = evidence
+            .genotype_posteriors
+            .iter()
+            .map(|p| format!("{:.12e}", **p))
+            .collect::<Vec<_>>()
+            .join(",");
+        let site_genotypes = site_only
+            .unwrap_or(evidence)
+            .genotype_posteriors
+            .iter()
+            .map(|p| format!("{:.12e}", **p))
+            .collect::<Vec<_>>()
+            .join(",");
         for allele in &evidence.alleles {
-            let baseline = site_only
-                .and_then(|site| site.allele(allele.base))
-                .unwrap_or(allele)
-                .log_bayes_factor;
+            let site_allele = site_only.and_then(|site| site.allele(allele.base)).unwrap_or(allele);
+            let baseline = site_allele.log_bayes_factor;
             writeln!(
                 writer,
-                "{contig}\t{}\t{}\t{}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{}\t{}\t{}\t{}\t{}\t{}\t{indels}",
+                "{contig}\t{}\t{}\t{}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{}\t{}\t{}\t{}\t{}\t{}\t{indels}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{genotypes}\t{:.12e}\t{site_genotypes}\t{}\t{}\t{}",
                 u64::from(evidence.pos) + 1,
                 evidence.reference,
                 allele.base,
@@ -562,7 +818,18 @@ mod backend {
                 evidence.sites.len(),
                 evidence.haplotypes.len(),
                 evidence.omitted_sites,
-                evidence.cpg_context_limited
+                evidence.cpg_context_limited,
+                evidence.realigned_fragments,
+                evidence.aligned_fallback_fragments,
+                evidence.omitted_indels,
+                evidence.cpg_omitted_sites,
+                evidence.cpg_omitted_indels,
+                evidence.offered_linking_fragments,
+                evidence.retained_linking_fragments,
+                *site_allele.posterior,
+                evidence.focal_read_observations,
+                evidence.focal_overlapping_fragments,
+                evidence.focal_discordant_fragments,
             )?;
         }
         Ok(())
@@ -588,15 +855,39 @@ mod backend {
             };
             writeln!(
                 writer,
-                "{contig}\t{}\t{sites}\t{}\t{}\t{:.12e}\t{:.12e}\t{:.12e}",
+                "{contig}\t{}\t{sites}\t{}\t{}\t{:.12e}\t{:.12e}\t{:.12e}\t{}\t{}",
                 u64::from(evidence.pos) + 1,
                 sequence(pair.first)?,
                 sequence(pair.second)?,
                 pair.log_likelihood,
                 pair.log_prior,
-                *pair.posterior
+                *pair.posterior,
+                indel_description(
+                    evidence
+                        .haplotypes
+                        .get(pair.first)
+                        .and_then(|haplotype| haplotype.indel.as_ref())
+                ),
+                indel_description(
+                    evidence
+                        .haplotypes
+                        .get(pair.second)
+                        .and_then(|haplotype| haplotype.indel.as_ref())
+                )
             )?;
         }
         Ok(())
+    }
+
+    fn indel_description(indel: Option<&Indel>) -> String {
+        match indel {
+            None => ".".to_owned(),
+            Some(indel) => format!(
+                "{}:{}>{}",
+                indel.start,
+                indel.deleted.iter().map(|base| char::from(*base as u8)).collect::<String>(),
+                indel.inserted.iter().map(|base| char::from(*base as u8)).collect::<String>()
+            ),
+        }
     }
 }

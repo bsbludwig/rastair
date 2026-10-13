@@ -433,8 +433,8 @@ pre-filter drops the variant sites before phasing runs.
 mapping emissions, quadrature and phase-normalized genotype priors. `diagnostics.rs` drives
 `rastair ml haplotypes` (seqair only) using full records, independently of called genotypes
 and the main pileup's early filters. All focal A/C/G/T hypotheses survive. The prototype
-conditions on CIGAR placements and reduces context to one scored CpG per haplotype rather
-than tying unrelated methylation rates; this limitation is explicit in TSV output. It does
+defaults to CIGAR-conditioned scoring and reduces context to one scored CpG per haplotype
+rather than tying unrelated methylation rates; this limitation is explicit in TSV output. It does
 not modify the bundled forests or production calls. Default conversion is 0.95, background
 conversion 0.003. Do not fit conversion efficiency directly to `bacteriophage_lambda_CpG`:
 the spike-in may be incompletely converted and underestimate it by 2–5 percentage points.
@@ -445,11 +445,177 @@ zero-coverage targets. This is important when comparing TAPS and WGS: their natu
 discovered candidate sets differ, so calibration must use common focal positions.
 `scripts/validate_haplotype_likelihoods.py --inputs <manifest.json> --rastair <seqair-binary>
 --tabix <tabix> --output-dir <dir>` performs that comparison and a quadrature sensitivity
-check, restricting scoring to the truth set's confident regions and excluding nearby indels.
+check, restricting scoring to the truth set's confident regions. `--pair-hmm` adds matched
+realignment arms; `--include-indel-neighborhoods` includes and separately scores nearby indels.
 The local NA12878 input manifest is `tmp/haplotypes-validation/inputs.json`; results are in
 `tmp/haplotypes-validation/chr12/report.json`. Reads and generated diagnostics stay out of git.
 The matching full reference, including spike-ins, is
 `/mnt/lustre/shared/genomes/hg38+HPV+HBV+HVC+EBV+TAPS_SI_v2/hg38_full_gatk_HPV_HBV_HCV_spike-ins_v2.fa`.
+
+`pair_hmm.rs` implements the opt-in `--likelihood-engine pair-hmm` local forward model and
+`infer_snp_with_indels`. CIGAR insertion/deletion proposals seed one nearest biallelic nuisance
+indel (maximum 20 bp by default); pair posteriors marginalize its genotype and phase. Candidate
+sequence adjacency, including indel edits, determines CpGs. Read sequences are cropped to the
+selected loci plus flanks; masked interior bases stay in the sequence as neutral observations.
+Only one CpG rate per haplotype is integrated; other flank CpGs use fixed methylation 0.5.
+Overlapping concordant CIGARs form a molecular profile with one consensus base and one
+conversion event. Discordant CIGAR overlaps/refskips use aligned SNP likelihoods with the candidate's
+edited CpG context and report `aligned_fallback_fragments`; indel alignment evidence is unscored.
+Latent C/G discovery also checks neighboring SNP domains and indel-created CpG partners, so
+fully converted alleles need not show an unconverted base to seed a focal hypothesis. Uniform insertion
+emissions and path-mass normalization keep missing qualities uninformative across haplotype
+lengths. Tests in `pair_hmm/tests.rs` compare the forward sum with exhaustive paths and sum the
+observation probabilities to one; BAM tests show insertion realignment removing a false SNP.
+Do not introduce a mapping event for a mate outside the scoring window: fetching that mate
+depends on the input chunk and otherwise changes floating-point results. PairHMM reference
+windows are focal-site-relative so normalization and CpG annotations also survive chunking.
+Inactive mates must also be excluded from orientation consensus and reference-skip fallback;
+the regression test combines a conflicting orientation with a skip on the unused mate.
+The matched second-stage smoke report is
+`tmp/haplotypes-validation/pair-hmm-final-chr12/report.json`; it includes indel neighborhoods
+and PairHMM quadrature sensitivity. Slice results are not whole-genome accuracy estimates.
+
+The earlier v1 expanded smoke suite is in `tmp/haplotypes-validation/multichrom-smoke/`: `suite.json`
+records three 3-kb windows on chr1, chr12 and chr19, selected before caller results; `report.json`
+combines matched aligned/PairHMM arms, probability checks and read support. Of 9,000 bp, 8,453
+are GIAB-confident, containing 17 truth SNP alleles and five truth indel records. At SNP allele
+presence posterior >= 0.5, both engines recover all 17 alleles; WGS has one extra allele and
+TAPS has two. Each extra has only one informative supporting fragment, despite high base
+quality: chr19:10002962 A>T (WGS), chr1:10018946 C>T and chr1:10019303 A>G (TAPS).
+The C>T site also has two chemically confounded OT T fragments. The ordinary WGS emission
+model applied to TAPS produces 90 extra alleles. PairHMM's 16/32-point quadrature comparison
+changes SNP presence posteriors by at most 2e-18. These windows contain no truth SNP allele
+within 10 bp of a truth indel, so they do not test near-indel SNP sensitivity. The extra calls
+motivate calibration before production integration; do not infer genome-wide precision from
+this smoke suite.
+
+`scripts/benchmark_haplotype_likelihoods.py` performs the broader assessment. The earlier v1
+assessment's local
+manifest and results live in `tmp/haplotypes-validation/assessment/`. Three fixed 100-kb
+windows contain 282,271 confident bases and 433 truth SNP alleles, including five near indels.
+Discovery runs over each complete interval; inference uses all truth SNPs, all near-indel
+negative candidates, known disagreements and 400 SHA-256-sampled negative candidates per
+chromosome. This is 1,847 shared focal positions. Accuracy counts describe that panel;
+inverse sampling weights estimate calibration on the discovery union plus forced positions,
+not on all genomic bases. chr19 is recorded as held out for subsequent tuning, but these
+results and the earlier chr19 regression are now inspected; they are not an untouched future
+validation set. No likelihood parameter was fitted during this assessment.
+The ordinary BED-reader unit tests also invoke an external `tabix`, outside the
+`external-tool-tests` feature. On this checkout the validation commands used
+`PATH=/tmp/rastair-tools:$PATH`; without it, two tests fail with "Failed to run tabix".
+
+PairHMM recovers 433/433 WGS and 429/433 TAPS SNP alleles, with 5 and 13 extra panel alleles
+respectively. There are 2 WGS and 8 TAPS genotype errors among the 433 truth SNP sites. All five
+near-indel SNPs are recovered in both libraries. PairHMM does not uniformly improve scores:
+TAPS has the same aggregate TP/FP/FN as aligned scoring, with a worse weighted log loss.
+The TAPS restriction removes 1,955 neighbor-site incidences and 12,449 fragment-window links
+at 1,144 panel sites. Do not confuse `omitted_sites` (all omissions, including the three-site
+cap) with `cpg_omitted_sites` (only CpG-driven omissions after the cap), or these link counts
+with unique molecules. They count potential coverage links, including realignment spans,
+and do not guarantee informative observations at both sites. The diagnostic's genotype arrays use the ten A/C/G/T genotypes in
+VCF triangular order, not REF/ALT indices. The Python scorer must reject multi-base REF
+records even when a homozygous deletion's ALT is a single base; otherwise it labels indels
+as SNP genotypes. Run its scoring tests with `python3 -m unittest discover -s scripts/tests`.
+Of the 433 truth SNP sites, TAPS PairHMM reduces context at 169, and 94 lose every offered
+neighbor link. All four missed truth alleles have reduced context; this association does
+not establish that an unrestricted model would recover them.
+
+`case_analysis.json` reproduces the three original disagreements from BAM slices and records
+read-level perturbations. Each informative alternate is one fragment with two Q40 observations.
+Keeping only one alternate observation changes PairHMM posteriors from 0.514, 0.996 and 0.921
+to 3.52e-5, 8.88e-3 and 4.07e-4 respectively. Mates already share conversion and chromosome
+assignment; the amplification follows independent sequencing errors, without a correlated
+pre-sequencing substitution component. OT/OB flags agree between mates. Guessing orientation
+removes the C>T disagreement, but that fragment's sole orientation motif is the focal mismatch
+itself, so this does not establish a strand-assignment error. The A>G fragment has four CA
+motifs per read away from the focal mismatch, supporting its existing OB assignment.
+
+The singleton scenarios run as unit and BAM-backed CLI regressions. The earlier v1 regression
+was checked by removing the second sequencing observation and observing a failure. The current
+regression checks that duplication cannot amplify evidence.
+`independent_two_cpg_oracle_recovers_linkage_against_a_singleton_error` is a test-only oracle
+with independent per-CpG rates and negligible mapping error. With nine molecules, five
+Gauss-Legendre nodes integrate the rate polynomials exactly. In the pre-consensus model, retaining
+the neighbor lowered a constructed false SNP posterior from >0.99 to <0.01. The oracle now uses
+the same consensus as the bounded model; retaining the neighbor still lowers that posterior
+by more than 100-fold. This motivates evaluating a multi-CpG
+model; it does not constitute a production implementation or a genome-wide improvement.
+
+### Overlap consensus in haplotype likelihoods
+
+The v2 likelihood engines resolve overlapping mates using `likelihood::consensus`, shared by
+aligned SNP emissions and PairHMM profiles. Agreement takes the greater base quality without
+adding qualities. A base disagreement takes the better-quality call with Phred quality equal
+to the quality difference; equal-quality disagreements are Q0, with uniform base emissions.
+Unknown bases provide no competing observation. Mapping quality breaks base-quality ties.
+This happens after read filtering and before conversion, so TAPS C/T and G/A disagreements
+cannot be interpreted as independent chemical events. Disjoint read pieces retain their
+evidence and share one chromosome assignment.
+
+Every mapping hypothesis must score the same consensus profile, replacing bases owned by
+unmapped alignments with uniform emissions. Returning to a sum of individual read profiles
+under partial mapping hypotheses would reintroduce overlap counting. A read owning no
+consensus bases has no mapping event. CIGAR geometry remains intact, including neutral
+interior bases; conflicting overlapping paths still fall back to the aligned model, which
+uses the same consensus. Shared insertion bases also get a single uniform insertion emission.
+
+`SnpEvidence.focal_observations` and TSV `observations` now count molecular bases. The raw
+filtered measurements live in `focal_read_observations` / `read_observations`; overlap and
+base-disagreement counts are in `overlapping_fragments` and `discordant_fragments`. These
+refer to the focal SNP, not every base in the realignment window. A read spanning a deletion
+at the target can supply alignment evidence without an aligned base observation. Model IDs
+are `aligned_snp_v2` and `local_pair_hmm_v2`; historical v1 diagnostics are not comparable
+without accounting for the observation policy change.
+
+The v2 matched validation is in `tmp/haplotypes-validation/overlap-consensus/`, using the same
+300-kb intervals and byte-identical target panels as `assessment/`. Candidate discovery is
+unchanged. `case_analysis.json` reproduces the original three extra alleles with posteriors
+3.52e-5, 8.88e-3 and 4.07e-4, each from one molecular observation rather than two independent
+Q40 emissions. Unit and BAM tests cover duplication invariance, equal and unequal conflicts,
+both TAPS strands, disjoint mates, indel realignment, fallback and chunk invariance. Deliberately
+adding agreeing qualities or removing the disagreement penalty makes the consensus regression
+fail; both mutations were restored.
+
+`comparison.json` and `assessment.txt` record the matched before/after results. On the 1,847-site
+panel, WGS aligned extras decrease from 6 to 4 and PairHMM extras from 5 to 3; TAPS aligned
+extras decrease from 13 to 8 and PairHMM extras from 13 to 9. Recall is unchanged (433/433 WGS,
+429/433 TAPS). PairHMM genotype errors decrease from 2 to 1 in WGS and 8 to 6 in TAPS, while
+all five truth SNPs near indels remain recovered. These panel counts are not whole-genome
+accuracy estimates. The one-CpG context restriction remains unchanged: 169/433 TAPS truth
+sites lose context and 94 lose every offered neighbor link. Verification: 651 default tests,
+680 seqair tests, four Python scoring tests, both Clippy feature sets, documentation and
+formatting checks pass; `cargo xtask insta` passes 651 tests with no snapshots to review.
+
+### Shared CpG shrinkage and neutral conversion evidence
+
+`ml haplotypes --methylation-model neutral|shrinkage` retains multiple CpGs while keeping
+the three-SNP and single nuisance-indel limits. The default remains `integrated` for comparison.
+Neutral scoring uses candidate-union CpG positions and identical normalized emissions for
+C/T on OT and G/A on OB; both competing alleles must be treated symmetrically. Shrinkage
+uses a neutral pilot to fit one rate per candidate CpG shared across its carrier haplotypes,
+with Beta(2,2) prior (`--methylation-prior-strength 4`) and minimum molecular CpG-carrier
+probability 0.9. Each scored fragment excludes its own conversion observation from its rate
+estimate. These are approximate plug-in scores, with CIGAR-coordinate calibration, rather
+than exact joint marginal likelihoods. WGS bypasses these treatments and production forests
+are unchanged. `methylation.rs` owns the candidate context and rate fitting.
+
+PairHMM's `Prepared::interval()` is the authoritative scoring and calibration window,
+including nuisance indels. Do not reconstruct its bounds from SNP loci: distant indels can
+extend the actual window. CpG annotation includes one partner base outside either edge,
+but observations outside the scored interval cannot fit rates or contribute mate evidence.
+
+The matched assessment is `tmp/haplotypes-validation/cpg-models-large-final/`: six predefined
+1-Mb windows on chr2–7, 5,172,807 confident bases, 20,976 targets and 6,161 truth SNP alleles.
+At allele-presence posterior >=0.5, integrated/neutral/shrinkage recover 6,026/5,965/6,021
+truth alleles, with 50/45/46 extra panel alleles and 178/240/183 genotype errors. Shrinkage
+recovers 58 truth alleles lost by neutral and loses two, a net +0.909 percentage points of
+recall; neutral has lower weighted Brier error on this panel. Both alternatives remove
+CpG-driven context loss. These panel results are not whole-genome precision estimates.
+The matched 500-kb PairHMM confirmation is `cpg-models-pair-hmm-final/`: integrated and
+shrinkage recover 566/571 truth alleles with no extra panel alleles; neutral recovers 561
+with one extra. `cpg-models-sensitivity-final/` checks prior strengths 2/4/8 and 16/32-node
+quadrature on the same large-panel targets. Verification passes 657 default and 687 seqair
+tests, five Python tests, both Clippy feature sets, and snapshot review with no updates.
 
 ### Existing feature layouts
 
