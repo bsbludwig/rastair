@@ -378,6 +378,17 @@ pre-filter drops the variant sites before phasing runs.
   per site of the block; hitting the cap is a `warn!`.
 - `PS` is written only where the genotype is phased. Indel records and homozygotes are never
   phased.
+- Phase calls carry only `PS` and the allele on haplotype 1, with no phase probability or
+  confidence. `GL`/`GC` remain genotype scores. Observation costs are base qualities capped at
+  40; pair weights sum signed minimum costs, and every nonzero weight can link a block.
+  The first emitted site's lower genotype allele anchors the orientation, so a compound-het
+  anchor can open with `1|2` rather than `0|1`.
+- Full reads remain accessible through seqair's pileup guard `store()` until the guard is
+  dropped; `get_pileups` drops each guard at the end of its byte-budget sub-segment. Capture
+  or score any full-read evidence there, before recycling, rather than trying to recover it
+  from `SimpleRead` or `ColumnPhase`. Pre-ML haplotype evidence also needs its own candidate
+  CpG context: `methylation::cpg_origin` requires called variants and cannot decide whether
+  an uncalled candidate haplotype creates or destroys a CpG.
 
 ### Testing phasing
 
@@ -403,12 +414,44 @@ pre-filter drops the variant sites before phasing runs.
   `RASTAIR_PHASING_SLICE` at it, or the test skips. Run it before merging phasing changes.
 - Check a new phasing test is not tautological by breaking the code it guards and watching it
   fail; every test added on 2026-10-06 was checked that way.
+- When checking refinement fixtures, sum votes per site pair first. In
+  `refinement_corrects_a_spanning_tree_mistake`, the two cis edges each total 60, ahead of the
+  trans edge at 40, so the forest already gives the expected answer. Use the large-block and
+  local-optimum property tests to exercise refinement. As of the 2026-10-13 checkout, the
+  `phasing_accuracy_on_an_na12878_slice` test and `scripts/make_phasing_slice.py` described
+  above are absent; those instructions do not provide an executable accuracy check here.
 - `tests/data/test.bam` is a poor phasing fixture: its few het calls are C>T on a fully
   methylated control. Use a `Scenario` for anything that asserts phasing output.
 - A run that reports zero phased sites is usually an htslib binary (see "Know which binary
   produced a result"), not a regression.
 
 ## ML feature layout (`src/metrics/ml/features/`)
+
+### Experimental SNP haplotype likelihood prototype
+
+`src/call/haplotypes.rs` exposes `infer_snp`; `likelihood.rs` owns conversion, sequencing and
+mapping emissions, quadrature and phase-normalized genotype priors. `diagnostics.rs` drives
+`rastair ml haplotypes` (seqair only) using full records, independently of called genotypes
+and the main pileup's early filters. All focal A/C/G/T hypotheses survive. The prototype
+conditions on CIGAR placements and reduces context to one scored CpG per haplotype rather
+than tying unrelated methylation rates; this limitation is explicit in TSV output. It does
+not modify the bundled forests or production calls. Default conversion is 0.95, background
+conversion 0.003. Do not fit conversion efficiency directly to `bacteriophage_lambda_CpG`:
+the spike-in may be incompletely converted and underestimate it by 2–5 percentage points.
+
+Run `cargo test --features experimental-seqair --test haplotypes_cli` for BAM-backed tests.
+`--sites-bed` takes one-base, 0-based half-open BED intervals without alleles and includes
+zero-coverage targets. This is important when comparing TAPS and WGS: their naturally
+discovered candidate sets differ, so calibration must use common focal positions.
+`scripts/validate_haplotype_likelihoods.py --inputs <manifest.json> --rastair <seqair-binary>
+--tabix <tabix> --output-dir <dir>` performs that comparison and a quadrature sensitivity
+check, restricting scoring to the truth set's confident regions and excluding nearby indels.
+The local NA12878 input manifest is `tmp/haplotypes-validation/inputs.json`; results are in
+`tmp/haplotypes-validation/chr12/report.json`. Reads and generated diagnostics stay out of git.
+The matching full reference, including spike-ins, is
+`/mnt/lustre/shared/genomes/hg38+HPV+HBV+HVC+EBV+TAPS_SI_v2/hg38_full_gatk_HPV_HBV_HCV_spike-ins_v2.fa`.
+
+### Existing feature layouts
 
 Each model's feature vector is defined by a `#[repr(C)]` struct of `f32` / `[f32; N]`
 fields built with the `define_features!` macro in `src/metrics/ml/features.rs`.

@@ -42,6 +42,7 @@ use std::{rc::Rc, thread::available_parallelism};
 use tracing::{Level, debug, instrument, trace, warn};
 
 pub mod denovo_cpg;
+pub mod haplotypes;
 pub mod methylation;
 pub mod ml;
 pub mod phasing;

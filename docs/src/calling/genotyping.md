@@ -54,7 +54,7 @@ chr12  20028894  .  C  T  ...  GT:PS  1|0:20028875
 
 Both records carry `PS=20028875`, the position of the block's first heterozygous site, so they belong to one block.
 Within a block, the alleles written first all sit on the same chromosome copy: above, the reference `A` and the alternate `T` are on one copy, the alternate `G` and the reference `C` on the other.
-Each block opens with `0|1`; nothing relates one block to another, and heterozygous sites no read pair links stay `0/1` without `PS`.
+Each block opens with its lower genotype allele first (`0|1` for a reference/alternate genotype, or e.g. `1|2` for two alternates); nothing relates one block to another, and heterozygous sites no read pair links stay unphased without `PS`.
 
 Since Rastair operates on @TAPS and @5Base data,
 it has to take methylation artifacts into account.
@@ -71,3 +71,25 @@ It can not be combined with `--cpgs-only` or BED output alone.
 Blocks do not cross the boundary between two processing segments,
 so a block is at most one segment long (`--segment-max-length`, 100 kb by default).
 ```
+
+## Experimental haplotype likelihoods
+
+The `ml haplotypes` diagnostic calculates SNP likelihoods before final variant or genotype calls. It requires the `experimental-seqair` backend:
+
+```bash
+cargo run --features experimental-seqair -- ml haplotypes \
+  --fasta-file reference.fa reads.bam --region chr12:20028995-20030086 \
+  --output snps.tsv --pair-output pairs.tsv
+```
+
+Use `--non-taps` for ordinary WGS reads. For TAPS, `--conversion-rate` defaults to `0.95` and `--false-conversion-rate` to `0.003`. These describe conversion of methylated and unmethylated cytosines respectively; they are separate from base-quality sequencing errors. The lambda spike-in is not used to fit these parameters automatically: incomplete lambda conversion can underestimate conversion efficiency by 2–5 percentage points.
+
+Every focal position is evaluated against all four genetic bases. Candidate haplotypes combine up to three nearby SNP sites, with CpG context calculated from each resulting sequence. Reference and de-novo CpGs, and loss of a reference CpG, therefore receive the corresponding conversion model. Both mates share a chromosome assignment, and overlapping observations share a conversion event. There is no depth cap; configured flag, quality and read-end filters still apply.
+
+The first prototype conditions on the input CIGAR alignment. It marginalizes a uniform methylation prior independently for each haplotype's CpG using Gauss-Legendre quadrature. To keep the integral at most two-dimensional, it reduces neighboring context whenever a haplotype would contain more than one scored CpG; `cpg_context_limited` and `omitted_sites` report this. `alignment_indel_reads` reports alignments with indels or reference skips overlapping the SNP window. These limitations matter when interpreting the probabilities: the prototype does not perform PairHMM realignment or infer multiple CpG rates per haplotype window.
+
+`snps.tsv` contains alternate-presence, heterozygous and homozygous-alternate posteriors, expected allele fraction, genotype entropy and natural-log Bayes factors. The window and site-only Bayes factors distinguish neighboring evidence from the focal-site calculation. `pairs.tsv` contains every candidate diploid haplotype pair's natural-log likelihood, prior and posterior. The prior assigns `1 - --snp-prior` to the reference genotype and distributes the remaining mass uniformly across the other genotypes at each site; compatible phase assignments share that mass equally. These model probabilities are not empirically calibrated ML call scores.
+
+By default, focal candidates come from observed alternate bases and potential de-novo CpG alleles whose converted base resembles the reference. `--sites-bed` instead scores supplied positions regardless of alternate evidence or coverage; it accepts plain BED with one-base, 0-based half-open intervals and no allele information. This allows matched libraries to be compared at identical positions. Input chunk size does not change each SNP's window.
+
+`scripts/validate_haplotype_likelihoods.py` compares matched WGS/TAPS diagnostics with a truth VCF and GATK calls in confident regions. Its input JSON names `reference`, `truth`, `confidence_bed`, `gatk`, `taps`, `wgs` and `region`. Truth alleles are used only for scoring; common focal positions include the discovery union and truth SNP positions. It also evaluates TAPS reads under the ordinary model and compares 16- versus 32-node quadrature. The diagnostic currently leaves the trained forests and `call` output unchanged; integrating its features requires a new feature set and retraining.
