@@ -38,8 +38,8 @@ Within each worker, processing proceeds through a lazy iterator chain with progr
 8. **Propagate CpG flags** (context-aware): Coordinate @CpG pair decisions
 9. **Set variant calls**: Classify as variant, methylation, or error
 10. **Calls**: Final genotype and @methylation calls
-11. **Phasing** (with `--phase`): Link heterozygous sites into phase blocks
-12. **Core filter**: Remove overlap positions, then re-anchor phase blocks on the positions that remain
+11. **Phasing** (with `--phase`): Score bounded, genotype-conditioned chromosome pairs using fragment PairHMM likelihoods and shared CpG rates; emit confident relative phase
+12. **Core filter**: Remove overlap positions; phasing has already anchored each block on its first emitted site
 
 The "context-aware" steps are processed with parameters for the pileup metrics for the current position as well as the ones before and after.
 This enables @CpG pair coordination and @denovo detection without breaking the lazy iterator chain.

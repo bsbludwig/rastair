@@ -9,21 +9,11 @@ pub enum LikelihoodEngine {
     PairHmm,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
-pub enum MethylationModel {
-    Integrated,
-    Neutral,
-    Shrinkage,
-}
-
 #[derive(Debug, Clone, clap::Args, serde::Serialize)]
 pub struct LikelihoodParams {
     /// Read likelihood engine; `PairHMM` sums over local alignments
     #[arg(long, value_enum, default_value = "aligned")]
     pub likelihood_engine: LikelihoodEngine,
-    /// Treatment of CpG conversion evidence in the experimental likelihood
-    #[arg(long, value_enum, default_value = "integrated")]
-    pub methylation_model: MethylationModel,
     /// Strength of the symmetric Beta prior for estimated CpG methylation rates
     #[arg(long, default_value_t = 4.0)]
     pub methylation_prior_strength: f64,
@@ -42,7 +32,7 @@ pub struct LikelihoodParams {
     /// Prior probability of a non-reference genotype at each candidate site
     #[arg(long, default_value = "0.001")]
     pub snp_prior: Probability,
-    /// Gauss-Legendre nodes for integrating a uniform CpG methylation prior
+    /// Gauss-Legendre nodes for estimating each shared CpG methylation rate
     #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u16).range(2..=64))]
     pub quadrature_order: u16,
     /// Probability of opening each insertion or deletion in the `PairHMM`
@@ -285,7 +275,7 @@ pub(super) fn fragment_likelihood(
         reference,
         loci,
         params,
-        &super::methylation::Scoring::Integrated(methylation),
+        &super::methylation::Scoring::Fixed(methylation),
         &BTreeSet::new(),
     )
 }
@@ -368,7 +358,7 @@ pub(super) fn fragment_likelihood_with_model(
                     [CpgSide::C, CpgSide::G].into_iter().find(|side| side.unmod_base() == base);
                 let cpg = cpgs.iter().find(|cpg| cpg.contains(position));
                 let methylation = if cpg_anchor(reference, haplotype, pos).is_some() {
-                    Some(scoring.rate(cpg, true))
+                    Some(scoring.rate(cpg))
                 } else {
                     None
                 };
@@ -455,6 +445,67 @@ pub(super) fn pair_prior(
     // Otherwise adding neighboring hets would change the focal SNP's prior.
     result -= f64::from(heterozygotes.saturating_sub(1)) * std::f64::consts::LN_2;
     Ok(result)
+}
+
+pub(super) fn retained_pair_priors(
+    haplotypes: &[Haplotype],
+    sites: &[Site],
+    params: &LikelihoodParams,
+    has_indel: bool,
+) -> Result<Vec<f64>> {
+    let mut counts = std::collections::BTreeMap::<Vec<(u8, u8)>, usize>::new();
+    let mut pairs = Vec::new();
+    for (index, first) in haplotypes.iter().enumerate() {
+        for second in haplotypes.iter().skip(index) {
+            let mut key = Vec::with_capacity(sites.len() + usize::from(has_indel));
+            let mut heterozygotes = 0u32;
+            for site in sites {
+                let a = first
+                    .allele_at(site.pos)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("Missing retained allele"))?
+                    as u8;
+                let b = second
+                    .allele_at(site.pos)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("Missing retained allele"))?
+                    as u8;
+                key.push((a.min(b), a.max(b)));
+                heterozygotes += u32::from(a != b);
+            }
+            if has_indel {
+                let a = u8::from(first.indel.is_some());
+                let b = u8::from(second.indel.is_some());
+                key.push((a.min(b), a.max(b)));
+                heterozygotes += u32::from(a != b);
+            }
+            *counts.entry(key.clone()).or_default() += 1;
+            pairs.push((
+                key,
+                heterozygotes.saturating_sub(1),
+                pair_prior(
+                    first,
+                    second,
+                    sites,
+                    *params.snp_prior,
+                    *params.indel_prior,
+                    has_indel,
+                )?,
+            ));
+        }
+    }
+    pairs
+        .into_iter()
+        .map(|(key, phase_bits, prior)| {
+            let count = *counts
+                .get(&key)
+                .ok_or_else(|| color_eyre::eyre::eyre!("Missing retained phase count"))?;
+            if 1usize.checked_shl(phase_bits) == Some(count) {
+                return Ok(prior);
+            }
+            // Pruning removes phase assignments. Divide a genotype's prior over its
+            // surviving assignments, rather than penalizing it for the search budget.
+            Ok(prior + f64::from(phase_bits) * std::f64::consts::LN_2 - (count as f64).ln())
+        })
+        .collect()
 }
 
 #[cfg(test)]

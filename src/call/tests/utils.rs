@@ -509,6 +509,8 @@ pub(crate) fn test_call(
         methylation: default(),
         ml: default(),
         phase: false,
+        phase_masks: default(),
+        phase_mask: default(),
         vcf: default(),
         bed: default(),
         total_threads: 2,

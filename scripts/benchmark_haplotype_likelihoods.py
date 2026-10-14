@@ -286,7 +286,7 @@ def genotype_metrics(data, field="genotype_posteriors"):
 
 def summarize(data):
     sites = list({key(r)[:2]: r for r in data}.values())
-    limited = [r for r in sites if r["cpg_context_limited"] == "true"]
+    limited = [r for r in sites if r.get("cpg_context_limited", "false") == "true"]
     truth_sites = [r for r in sites if r["truth_genotype"] is not None]
     offered = sum(int(r["offered_linking_fragments"]) for r in sites)
     retained = sum(int(r["retained_linking_fragments"]) for r in sites)
@@ -301,21 +301,27 @@ def summarize(data):
                 ("single_snp_created_cpg", lambda r: r["context"] == "single_snp_created_cpg"),
                 ("ordinary", lambda r: r["context"] == "ordinary"),
                 ("near_indel", lambda r: r["near_indel"]),
-                ("limited_context", lambda r: r["cpg_context_limited"] == "true"),
+                ("limited_context", lambda r: r.get("cpg_context_limited", "false") == "true"),
                 ("depth_under_10", lambda r: int(r["fragments"]) < 10),
                 ("depth_10_to_19", lambda r: 10 <= int(r["fragments"]) < 20),
                 ("depth_20_or_more", lambda r: int(r["fragments"]) >= 20)]},
             "context": {"sites": len(sites), "limited_sites": len(limited),
+                "disconnected_sites": sum(int(r.get("disconnected_sites", 0)) for r in sites),
+                "resource_limited_sites": sum(int(r.get("resource_limited_sites", 0)) for r in sites),
+                "pruned_haplotypes": sum(int(r.get("pruned_haplotypes", 0)) for r in sites),
+                "rescued_haplotypes": sum(int(r.get("rescued_haplotypes", 0)) for r in sites),
+                "max_context_sites": max((int(r.get("context_sites", 1)) for r in sites), default=0),
+                "maximum_pruned_mass": max((float(r.get("maximum_pruned_mass", 0)) for r in sites), default=0),
                 "overlapping_fragment_window_observations": sum(int(r.get("overlapping_fragments", 0)) for r in sites),
                 "discordant_fragment_window_observations": sum(int(r.get("discordant_fragments", 0)) for r in sites),
                 "truth_snp_sites": len(truth_sites),
-                "limited_truth_snp_sites": sum(r["cpg_context_limited"] == "true" for r in truth_sites),
+                "limited_truth_snp_sites": sum(r.get("cpg_context_limited", "false") == "true" for r in truth_sites),
                 "truth_snp_sites_losing_all_links": sum(int(r["offered_linking_fragments"]) > 0 and int(r["retained_linking_fragments"]) == 0 for r in truth_sites),
-                "missed_truth_alleles_with_limited_context": sum(r["label"] and float(r["posterior"]) < .5 and r["cpg_context_limited"] == "true" for r in data),
+                "missed_truth_alleles_with_limited_context": sum(r["label"] and float(r["posterior"]) < .5 and r.get("cpg_context_limited", "false") == "true" for r in data),
                 "weighted_limited_fraction": sum(r["weight"] for r in limited) / site_weight if site_weight else None,
                 "weighted_link_loss_fraction": lost_weight / offered_weight if offered_weight else None,
-                "cpg_omitted_sites": sum(int(r["cpg_omitted_sites"]) for r in sites),
-                "cpg_omitted_indels": sum(int(r["cpg_omitted_indels"]) for r in sites),
+                "cpg_omitted_sites": sum(int(r.get("cpg_omitted_sites", 0)) for r in sites),
+                "cpg_omitted_indels": sum(int(r.get("cpg_omitted_indels", 0)) for r in sites),
                 "offered_links": offered, "retained_links": retained,
                 "lost_links": offered - retained,
                 "sites_losing_all_links": sum(int(r["offered_linking_fragments"]) > 0 and int(r["retained_linking_fragments"]) == 0 for r in sites),
@@ -441,14 +447,14 @@ def main():
                 "weighted_limited_fraction": value["context"]["weighted_limited_fraction"],
                 "weighted_link_loss_fraction": value["context"]["weighted_link_loss_fraction"]})
     with (root / "errors.tsv").open("w") as handle:
-        fields = ["arm", "error", "chrom", "pos", "ref", "alt", "posterior", "site_posterior", "fragments", "observations", "context", "near_indel", "cpg_omitted_sites", "offered_linking_fragments", "retained_linking_fragments", "weight", "split"]
+        fields = ["arm", "error", "chrom", "pos", "ref", "alt", "posterior", "site_posterior", "fragments", "observations", "context", "near_indel", "disconnected_sites", "resource_limited_sites", "pruned_haplotypes", "maximum_pruned_mass", "offered_linking_fragments", "retained_linking_fragments", "weight", "split"]
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
         writer.writeheader()
         for name, data in all_data.items():
             for row in data:
                 called = float(row["posterior"]) >= .5
                 if called != row["label"]:
-                    writer.writerow({"arm": name, "error": "FP" if called else "FN", **{f: row[f] for f in fields if f not in ("arm", "error")}})
+                    writer.writerow({"arm": name, "error": "FP" if called else "FN", **{f: row.get(f, "") if f in ("disconnected_sites", "resource_limited_sites", "pruned_haplotypes", "maximum_pruned_mass") else row[f] for f in fields if f not in ("arm", "error")}})
     print(json.dumps({name: value["alleles"] for name, value in combined["combined"].items()}, indent=2))
 
 

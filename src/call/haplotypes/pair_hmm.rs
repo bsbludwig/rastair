@@ -1,11 +1,14 @@
-use super::likelihood::{
-    BaseMeasurement, MolecularBase, consensus, log_add, log_sum, sequencing_emission,
-};
+#[cfg(test)]
+use super::likelihood::log_sum;
+use super::likelihood::{BaseMeasurement, MolecularBase, consensus, log_add, sequencing_emission};
 use super::{Fragment, Haplotype, LikelihoodParams, Reference, Site};
 use crate::metrics::methylation::CpgSide;
 use color_eyre::eyre::{OptionExt as _, Result, ensure};
 use seqair_types::{Base, Strand};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 /// An unanchored replacement starting at a zero-based reference coordinate.
 /// Exactly one of `deleted` and `inserted` must be nonempty.
@@ -131,13 +134,13 @@ struct TemplateBase {
     position: SequencePosition,
     base: Base,
     cpg: bool,
-    integrated: bool,
     cpg_key: Option<super::methylation::Cpg>,
 }
 
 pub(super) struct Template {
     bases: Vec<TemplateBase>,
     path_masses: BTreeMap<usize, f64>,
+    local: BTreeMap<(u32, u32), Box<Template>>,
 }
 
 fn sequence(
@@ -155,7 +158,6 @@ fn sequence(
                         position: SequencePosition::insertion(pos, u32::try_from(offset)?),
                         base,
                         cpg: false,
-                        integrated: false,
                         cpg_key: None,
                     });
                 }
@@ -170,7 +172,6 @@ fn sequence(
                 .base_at(reference, pos)
                 .ok_or_eyre("Realignment template outside reference")?,
             cpg: false,
-            integrated: false,
             cpg_key: None,
         });
     }
@@ -194,39 +195,12 @@ pub(super) fn cpgs(
         .collect())
 }
 
-pub(super) fn tracked_cpgs(
-    reference: &Reference,
-    haplotype: &Haplotype,
-    loci: &[u32],
-) -> Result<BTreeSet<SequencePosition>> {
-    let end = reference
-        .start
-        .checked_add(u32::try_from(reference.bases.len())?)
-        .ok_or_eyre("Reference coordinate overflow")?;
-    let bases = sequence(reference, haplotype, reference.start, end)?;
-    Ok(bases
-        .windows(2)
-        .filter_map(|pair| match pair {
-            [c, g]
-                if c.base == Base::C
-                    && g.base == Base::G
-                    && ((c.position.is_reference()
-                        && loci.binary_search(&c.position.pos).is_ok())
-                        || (g.position.is_reference()
-                            && loci.binary_search(&g.position.pos).is_ok())) =>
-            {
-                Some(c.position)
-            }
-            _ => None,
-        })
-        .collect())
-}
-
 type Profile = Vec<MolecularBase>;
 
 struct MolecularEvidence {
     individual: Vec<Profile>,
     joint: Vec<Profile>,
+    intervals: Vec<(u32, u32)>,
 }
 
 pub(super) struct Prepared {
@@ -234,6 +208,8 @@ pub(super) struct Prepared {
     end: u32,
     fragments: Vec<Option<MolecularEvidence>>,
     lengths: BTreeSet<usize>,
+    localized: bool,
+    normalizers: RefCell<BTreeMap<(usize, usize, u64, u64), f64>>,
 }
 
 impl Prepared {
@@ -281,7 +257,66 @@ impl Prepared {
             }
             prepared.push(molecule);
         }
-        Ok(Self { start, end, fragments: prepared, lengths })
+        Ok(Self {
+            start,
+            end,
+            fragments: prepared,
+            lengths,
+            localized: false,
+            normalizers: RefCell::new(BTreeMap::new()),
+        })
+    }
+
+    #[cfg(any(feature = "experimental-seqair", test))]
+    pub(super) fn localize(mut self) -> Self {
+        self.localized = true;
+        self
+    }
+
+    #[cfg(any(feature = "experimental-seqair", test))]
+    pub(super) fn signature(
+        &self,
+        haplotype: &Haplotype,
+        params: &LikelihoodParams,
+    ) -> Vec<(u32, u8)> {
+        let intervals: Vec<_> = self
+            .fragments
+            .iter()
+            .flatten()
+            .flat_map(|molecule| &molecule.intervals)
+            .copied()
+            .collect();
+        haplotype
+            .alleles
+            .iter()
+            .filter(|(pos, _)| {
+                if self.localized && !intervals.is_empty() {
+                    intervals.iter().any(|&(start, end)| {
+                        start
+                            .saturating_sub(u32::from(params.realignment_flank) + 1)
+                            .max(self.start.saturating_sub(1))
+                            <= *pos
+                            && *pos
+                                <= end
+                                    .saturating_add(u32::from(params.realignment_flank))
+                                    .min(self.end)
+                    })
+                } else {
+                    self.start.saturating_sub(1) <= *pos && *pos <= self.end
+                }
+            })
+            .map(|&(pos, base)| (pos, base as u8))
+            .collect()
+    }
+
+    fn normalization(&self, rows: usize, columns: usize, params: &LikelihoodParams) -> Result<f64> {
+        let key = (rows, columns, params.gap_open.to_bits(), params.gap_extend.to_bits());
+        if let Some(&value) = self.normalizers.borrow().get(&key) {
+            return Ok(value);
+        }
+        let value = forward(rows, columns, params, |_| 0.0, |_, _| 0.0)?;
+        self.normalizers.borrow_mut().insert(key, value);
+        Ok(value)
     }
 
     pub(super) fn realigned_fragments(&self) -> usize {
@@ -296,7 +331,7 @@ impl Prepared {
         &self,
         reference: &Reference,
         haplotype: &Haplotype,
-        loci: &[u32],
+        _loci: &[u32],
         params: &LikelihoodParams,
     ) -> Result<Template> {
         let reference_end = reference
@@ -309,35 +344,60 @@ impl Prepared {
             self.start.saturating_sub(1).max(reference.start),
             self.end.saturating_add(1).min(reference_end),
         )?;
-        let tracked = tracked_cpgs(reference, haplotype, loci)?;
         let mut annotations = Vec::new();
         for (index, pair) in bases.windows(2).enumerate() {
             if let [c, g] = pair
                 && c.base == Base::C
                 && g.base == Base::G
             {
-                annotations.push((
-                    index,
-                    tracked.contains(&c.position),
-                    super::methylation::Cpg { c: c.position, g: g.position },
-                ));
+                annotations.push((index, super::methylation::Cpg { c: c.position, g: g.position }));
             }
         }
-        for (index, integrated, key) in annotations {
+        for (index, key) in annotations {
             for offset in [0, 1] {
                 let base = bases.get_mut(index + offset).ok_or_eyre("Invalid CpG index")?;
                 base.cpg = true;
-                base.integrated = integrated;
                 base.cpg_key = Some(key);
             }
         }
         bases.retain(|base| (self.start..self.end).contains(&base.position.pos));
-        let path_masses = self
-            .lengths
-            .iter()
-            .map(|&length| Ok((length, forward(length, bases.len(), params, |_| 0.0, |_, _| 0.0)?)))
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        Ok(Template { bases, path_masses })
+        let mut local = BTreeMap::new();
+        if self.localized {
+            for molecule in self.fragments.iter().flatten() {
+                for (profile, &(start, end)) in molecule.joint.iter().zip(&molecule.intervals) {
+                    let start =
+                        start.saturating_sub(u32::from(params.realignment_flank)).max(self.start);
+                    let end = end.saturating_add(u32::from(params.realignment_flank)).min(self.end);
+                    let subset = bases
+                        .iter()
+                        .filter(|base| (start..end).contains(&base.position.pos))
+                        .copied()
+                        .collect::<Vec<_>>();
+                    let child = local.entry((start, end)).or_insert_with(|| {
+                        Box::new(Template {
+                            bases: subset,
+                            path_masses: BTreeMap::new(),
+                            local: BTreeMap::new(),
+                        })
+                    });
+                    if !profile.is_empty() && !child.path_masses.contains_key(&profile.len()) {
+                        child.path_masses.insert(
+                            profile.len(),
+                            self.normalization(profile.len(), child.bases.len(), params)?,
+                        );
+                    }
+                }
+            }
+        }
+        let path_masses = if self.localized {
+            BTreeMap::new()
+        } else {
+            self.lengths
+                .iter()
+                .map(|&length| Ok((length, self.normalization(length, bases.len(), params)?)))
+                .collect::<Result<BTreeMap<_, _>>>()?
+        };
+        Ok(Template { bases, path_masses, local })
     }
 
     #[cfg(test)]
@@ -354,7 +414,7 @@ impl Prepared {
             fragment,
             template,
             params,
-            &super::methylation::Scoring::Integrated(methylation),
+            &super::methylation::Scoring::Fixed(methylation),
         )
     }
 
@@ -380,6 +440,7 @@ impl Prepared {
         );
         let mut result = f64::NEG_INFINITY;
         for &orientation in orientations {
+            let mut profile_scores = vec![[None::<f64>; 4]; molecule.joint.len()];
             for mask in 0..(1usize << fragment.reads.len()) {
                 let owns = |read_index| {
                     molecule.joint.iter().flatten().any(|base| base.source == Some(read_index))
@@ -407,8 +468,51 @@ impl Prepared {
                 let likelihood = molecule
                     .joint
                     .iter()
-                    .map(|profile| {
-                        score_with_model(profile, template, orientation, scoring, params, mask)
+                    .enumerate()
+                    .map(|(index, profile)| {
+                        let sources = profile
+                            .iter()
+                            .filter_map(|base| base.source)
+                            .fold(0usize, |sources, source| sources | (1 << source));
+                        let local_mask = mask & sources;
+                        let cached = profile_scores
+                            .get_mut(index)
+                            .and_then(|scores| scores.get_mut(local_mask))
+                            .ok_or_eyre("Invalid profile mapping hypothesis")?;
+                        if let Some(score) = cached {
+                            return Ok(*score);
+                        }
+                        let local_template;
+                        let template = if self.localized && !profile.is_empty() {
+                            let &(start, end) = molecule
+                                .intervals
+                                .get(index)
+                                .ok_or_eyre("Missing molecular interval")?;
+                            local_template = (
+                                start
+                                    .saturating_sub(u32::from(params.realignment_flank))
+                                    .max(self.start),
+                                end.saturating_add(u32::from(params.realignment_flank))
+                                    .min(self.end),
+                            );
+                            template
+                                .local
+                                .get(&local_template)
+                                .ok_or_eyre("Missing read-local haplotype template")?
+                                .as_ref()
+                        } else {
+                            template
+                        };
+                        let score = score_with_model(
+                            profile,
+                            template,
+                            orientation,
+                            scoring,
+                            params,
+                            local_mask,
+                        )?;
+                        *cached = Some(score);
+                        Ok(score)
                     })
                     .collect::<Result<Vec<_>>>()?
                     .iter()
@@ -537,7 +641,35 @@ fn molecular_evidence(
         [_] | [_, _] => individual.clone(),
         _ => color_eyre::eyre::bail!("Fragments require one or two reads"),
     };
-    Ok(Some(MolecularEvidence { individual, joint }))
+    let intervals: Vec<_> =
+        if joint.len() == 1 && reads.len() == 2 && reads.iter().all(|read| !read.is_empty()) {
+            vec![(
+                reads
+                    .iter()
+                    .filter_map(|read| read.first())
+                    .map(|base| base.position.pos)
+                    .min()
+                    .ok_or_eyre("Missing molecular start")?,
+                reads
+                    .iter()
+                    .filter_map(|read| read.last())
+                    .map(|base| base.position.pos)
+                    .max()
+                    .ok_or_eyre("Missing molecular end")?
+                    .checked_add(1)
+                    .ok_or_eyre("Molecular interval overflow")?,
+            )]
+        } else {
+            reads
+                .iter()
+                .map(|read| {
+                    let start = read.first().map_or(0, |base| base.position.pos);
+                    let end = read.last().map_or(0, |base| base.position.pos.saturating_add(1));
+                    (start, end)
+                })
+                .collect()
+        };
+    Ok(Some(MolecularEvidence { individual, joint, intervals }))
 }
 
 #[cfg(test)]
@@ -564,7 +696,7 @@ fn score_with_mapping(
         profile,
         template,
         orientation,
-        &super::methylation::Scoring::Integrated(methylation),
+        &super::methylation::Scoring::Fixed(methylation),
         params,
         bad_reads,
     )
@@ -581,18 +713,24 @@ fn score_with_model(
     if profile.is_empty() {
         return Ok(0.0);
     }
+    if profile.iter().all(|base| base.source.is_none_or(|index| bad_reads & (1 << index) != 0)) {
+        // Every path emits the same uniform observation probability. Path-mass
+        // normalization cancels the entire alignment sum, including indels.
+        return Ok(profile.iter().filter(|base| base.base.known_index().is_some()).count() as f64
+            * 0.25_f64.ln());
+    }
     let insertions: Vec<_> = profile
         .iter()
-        .map(|observed| if observed.base.known_index().is_some() { 0.25_f64.ln() } else { 0.0 })
+        .map(|observed| if observed.base.known_index().is_some() { 0.25 } else { 1.0 })
         .collect();
     let emissions: Vec<[f64; 4]> = profile
         .iter()
         .map(|observed| {
             Base::KNOWN.map(|base| {
                 if observed.source.is_some_and(|index| bad_reads & (1 << index) != 0) {
-                    0.25_f64.ln()
+                    0.25
                 } else {
-                    sequencing_emission(observed.base, base, observed.quality).ln()
+                    sequencing_emission(observed.base, base, observed.quality)
                 }
             })
         })
@@ -604,14 +742,12 @@ fn score_with_model(
             let side = [CpgSide::C, CpgSide::G].into_iter().find(|side| {
                 side.unmod_base() == base.base && side.strand() == orientation && !params.non_taps
             });
-            let rate = params.conversion(
-                base.cpg.then_some(scoring.rate(base.cpg_key.as_ref(), base.integrated)),
-            );
+            let rate = params.conversion(base.cpg.then_some(scoring.rate(base.cpg_key.as_ref())));
             (
                 base.base.known_index(),
                 side.and_then(|side| side.mod_base().known_index()),
-                (-rate).ln_1p(),
-                rate.ln(),
+                1.0 - rate,
+                rate,
                 if params.non_taps {
                     None
                 } else {
@@ -620,31 +756,31 @@ fn score_with_model(
             )
         })
         .collect();
-    let insertion = |i: usize| insertions.get(i).copied().unwrap_or(f64::NEG_INFINITY);
+    let insertion = |i: usize| insertions.get(i).copied().unwrap_or(0.0);
     let emission = |i: usize, j: usize| {
         let Some(&(ordinary, modified, unconverted_rate, converted_rate, masked)) =
             conversions.get(j)
         else {
-            return f64::NEG_INFINITY;
+            return 0.0;
         };
         let Some(ordinary) = ordinary else { return insertion(i) };
-        let Some(values) = emissions.get(i) else { return f64::NEG_INFINITY };
+        let Some(values) = emissions.get(i) else { return 0.0 };
         if let Some((a, b)) = masked {
             let Some(a) = a.known_index().and_then(|index| values.get(index)) else {
-                return f64::NEG_INFINITY;
+                return 0.0;
             };
             let Some(b) = b.known_index().and_then(|index| values.get(index)) else {
-                return f64::NEG_INFINITY;
+                return 0.0;
             };
-            return log_add(*a, *b) - std::f64::consts::LN_2;
+            return (*a + *b) * 0.5;
         }
-        let ordinary = values.get(ordinary).copied().unwrap_or(f64::NEG_INFINITY);
+        let ordinary = values.get(ordinary).copied().unwrap_or(0.0);
         let Some(modified) = modified.and_then(|index| values.get(index).copied()) else {
             return ordinary;
         };
-        log_add(unconverted_rate + ordinary, converted_rate + modified)
+        unconverted_rate * ordinary + converted_rate * modified
     };
-    let value = forward(profile.len(), template.bases.len(), params, insertion, emission)?;
+    let value = forward_scaled(profile.len(), template.bases.len(), params, insertion, emission)?;
     // Condition on the observed profile length and containment in this local
     // window. Uniform bases then carry no evidence for a longer haplotype.
     let mass = *template
@@ -655,6 +791,80 @@ fn score_with_model(
 }
 
 fn forward(
+    rows: usize,
+    columns: usize,
+    params: &LikelihoodParams,
+    insertion: impl Fn(usize) -> f64,
+    emission: impl Fn(usize, usize) -> f64,
+) -> Result<f64> {
+    forward_scaled(
+        rows,
+        columns,
+        params,
+        |row| insertion(row).exp(),
+        |row, column| emission(row, column).exp(),
+    )
+}
+
+fn forward_scaled(
+    rows: usize,
+    columns: usize,
+    params: &LikelihoodParams,
+    insertion: impl Fn(usize) -> f64,
+    emission: impl Fn(usize, usize) -> f64,
+) -> Result<f64> {
+    if rows == 0 {
+        return Ok(0.0);
+    }
+    ensure!(columns > 0, "Empty PairHMM haplotype");
+    let width = columns.checked_add(1).ok_or_eyre("PairHMM width overflow")?;
+    let mut previous = vec![[0.0; 3]; width];
+    for cell in previous.iter_mut().take(columns) {
+        if let Some(deletion) = cell.get_mut(2) {
+            *deletion = 1.0 / columns as f64;
+        }
+    }
+    let mut current = vec![[0.0; 3]; width];
+    let (open, extend) = (*params.gap_open, *params.gap_extend);
+    let transitions = [1.0 - 2.0 * open, 1.0 - extend, 1.0 - extend];
+    let mut scale = 0.0;
+    for row in 0..rows {
+        current.fill([0.0; 3]);
+        let insertion = insertion(row);
+        for column in 1..width {
+            let &[matched_above, inserted_above, _] =
+                previous.get(column).ok_or_eyre("Missing HMM row cell")?;
+            let &[matched_left, _, deleted_left] =
+                current.get(column - 1).ok_or_eyre("Missing HMM column cell")?;
+            let diagonal = previous.get(column - 1).ok_or_eyre("Missing diagonal HMM cell")?;
+            let matched = emission(row, column - 1)
+                * diagonal
+                    .iter()
+                    .zip(transitions)
+                    .map(|(value, transition)| value * transition)
+                    .sum::<f64>();
+            let inserted = insertion * (matched_above * open + inserted_above * extend);
+            let deleted = matched_left * open + deleted_left * extend;
+            *current.get_mut(column).ok_or_eyre("Missing destination HMM cell")? =
+                [matched, inserted, deleted];
+        }
+        // A common row scale leaves every relative path weight intact and prevents underflow on long reads.
+        let maximum = current.iter().flatten().copied().fold(0.0, f64::max);
+        ensure!(maximum.is_finite() && maximum > 0.0, "PairHMM has no finite alignment path");
+        for value in current.iter_mut().flatten() {
+            *value /= maximum;
+        }
+        scale += maximum.ln();
+        std::mem::swap(&mut previous, &mut current);
+    }
+    let mass: f64 = previous.iter().skip(1).flat_map(|cell| cell.iter().take(2)).sum();
+    let value = scale + mass.ln();
+    ensure!(value.is_finite(), "PairHMM forward likelihood is not finite");
+    Ok(value)
+}
+
+#[cfg(test)]
+fn forward_log(
     rows: usize,
     columns: usize,
     params: &LikelihoodParams,

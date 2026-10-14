@@ -390,6 +390,26 @@ pre-filter drops the variant sites before phasing runs.
   CpG context: `methylation::cpg_origin` requires called variants and cannot decide whether
   an uncalled candidate haplotype creates or destroys a CpG.
 
+### Production likelihood phasing (2026-10-14)
+
+`call --phase` now calls `haplotypes::phase::score` on **called**, genotype-conditioned SNP blocks. The older `problem`/`solver` and `legacy_phase_segment` are `cfg(test)` reference code; production does not use signed-quality weights or MEC refinement. Earlier collection/solver notes above describe that reference path.
+
+`get_pileups_with_phase` captures full records using `haplotypes/reads.rs` before each seqair guard is recycled and returns segment-level fragments separately from `PileupMetrics`. Deduplicate alignments fetched at byte-budget boundaries by read group, name, start and flags; molecule grouping includes read group. Missing names are excluded with the existing once-per-run warning. Do not recover full sequences from `ColumnPhase`.
+
+Genetic edges require two independent fragments and two unconfounded observations for each called allele (consensus BQ/source MQ >=20). Converted CpG T/A cannot establish an edge. The score uses all eligible fragments touching the selected region, including one-site and confounded reads. Adjacent candidate C/G partners are included as context dependencies. Apply homozygous SNPs to the reference background before constructing templates. Genotype alleles still use `GtAllele` space before VCF remapping.
+
+Regions expand along connected sites, limited to 32 sites/2 kb. Phase-state beam 32, holdout 16, with competing site orientations protected up to 64 retained states. Only complementary chromosome pairs matching the called genotype are allowed; one supported nearby nuisance indel (<=20 bp) is marginalized. Shared CpG shrinkage defaults are 0.95/0.003, Beta(2,2), leave-one-molecule-out. Edges need retained-state phase posterior >=0.99. Orient and anchor on the first emitted genomic site even when expansion order differs from position order; core overlap semantics and PS-only-for-hets remain unchanged. These conditional posteriors are not calibrated PQ, and GL/GC remain genotype scores.
+
+PairHMM production profiles use mate-local coordinate windows with 12 bp flanks. An unsequenced gap between mates is absent from each alignment template: likelihood-reuse keys must omit variants there too, while retaining +/-1 CpG partners. The whole-block key caused a large slowdown in dense regions because identical molecular hypotheses were rescored. Concordant overlaps are one profile; discordant CIGARs/refskips fall back to aligned scoring. Cache path normalization by row/column lengths **and gap parameters**. Scaled linear forward and the test-only log-domain oracle agree for short and 500-base profiles; both ordinary and read-local molecular probabilities normalize. The standalone diagnostic retains its existing full selected-window realignment geometry.
+
+`tests/phasing_cli.rs` additionally tests a ten-site chain that forces pruning and a one-byte budget that repeatedly fetches the same boundary fragments. `haplotypes::phase` tests genotype-conditioned cis/trans posteriors, unlinked single-site molecules and confidence loss from disagreeing mates. Run both feature suites and clippy; a new compile warning on stderr breaks the `convert_cli::can_pipe_through` snapshot because it invokes cargo itself. Fix the warning rather than accepting that snapshot.
+
+`scripts/benchmark_phasing.py` records matched CPU caller timing, RSS, phase statistics, binary hashes and complete non-phase VCF hashes. Caller timing excludes subsequent Python inspection. Archives and NA12878 results live in ignored `tmp/phasing-pair-hmm-benchmark/`; use the final binary/reports for conclusions, and do not treat stopped `.partial` output as complete. GIAB HG001 is unphased: unchanged unphased fields and synthetic phase oracles do not establish real-data switch-error accuracy.
+
+`--phase-mask FILE` is repeatable and affects phasing only. `phasing::PhaseMask` reads plain/gzip/BGZF BED and the supplied UCSC `Chr Start End GapType` centromere table; intervals are zero-based, half-open and merged once before worker threads start. Each unmasked interval is an independent inference domain, with reference/context/PairHMM flanks clipped to its boundaries and nuisance indels required to fit inside. Keep variant and methylation calls in masked intervals. CLI tests assert masks split even fragment-bridged blocks and preserve every non-phase VCF field; the likelihood test checks excluded observations and indels cannot affect PairHMM or aligned fallback scores.
+
+`scripts/assess_phasing.py` scores genotype-matched SNP phase in confident, unmasked intervals and reports genotype errors and phase coverage separately. NA12878 chr1p was assessed against official Platinum Genomes 2017 hg38 phased truth, not GIAB. The preserved full-chr1 prefix was emitted by the 9m36s progress check, before the run stalled in centromeric sequence; it was terminated on user request at 46m18s. File modification time is not time-to-first-emission. `full-chr1/chr1p_accuracy.json` and normalized WhatsHap comparisons agree: PairHMM 16/23,706 switches, legacy 59/29,681; matching phased SNPs 37,303 versus 44,282. The normalized comparison preserves called allele identity while allowing WhatsHap to assess compound-het/multi-ALT records as well. On the intersection of the two phase outputs (23,080 identical adjacent SNP pairs), PairHMM makes 15 switches versus legacy 24. Masked validation covers the former stalled centromere and three 1 Mb regions; every non-phase VCF field remains identical, and the 5 Mb centromere-spanning run completes in 40.51s with 16 threads. A complete masked-chr1 time has not yet been measured.
+
 ### Testing phasing
 
 - `tests/phasing_cli.rs` runs `call --phase` on a `Scenario` (`tests/utils/scenario.rs`): a
@@ -429,12 +449,12 @@ pre-filter drops the variant sites before phasing runs.
 
 ### Experimental SNP haplotype likelihood prototype
 
-`src/call/haplotypes.rs` exposes `infer_snp`; `likelihood.rs` owns conversion, sequencing and
+`src/call/haplotypes.rs` exposes `infer_snp_expanded`; `likelihood.rs` owns conversion, sequencing and
 mapping emissions, quadrature and phase-normalized genotype priors. `diagnostics.rs` drives
 `rastair ml haplotypes` (seqair only) using full records, independently of called genotypes
 and the main pileup's early filters. All focal A/C/G/T hypotheses survive. The prototype
-defaults to CIGAR-conditioned scoring and reduces context to one scored CpG per haplotype
-rather than tying unrelated methylation rates; this limitation is explicit in TSV output. It does
+defaults to CIGAR-conditioned scoring and shared per-CpG shrinkage with bounded fragment-connected
+haplotype expansion. The integrated model and its CpG-driven context pruning are removed. It does
 not modify the bundled forests or production calls. Default conversion is 0.95, background
 conversion 0.003. Do not fit conversion efficiency directly to `bacteriophage_lambda_CpG`:
 the spike-in may be incompletely converted and underestimate it by 2–5 percentage points.
@@ -453,11 +473,11 @@ The matching full reference, including spike-ins, is
 `/mnt/lustre/shared/genomes/hg38+HPV+HBV+HVC+EBV+TAPS_SI_v2/hg38_full_gatk_HPV_HBV_HCV_spike-ins_v2.fa`.
 
 `pair_hmm.rs` implements the opt-in `--likelihood-engine pair-hmm` local forward model and
-`infer_snp_with_indels`. CIGAR insertion/deletion proposals seed one nearest biallelic nuisance
+`infer_snp_expanded`. CIGAR insertion/deletion proposals seed one nearest biallelic nuisance
 indel (maximum 20 bp by default); pair posteriors marginalize its genotype and phase. Candidate
 sequence adjacency, including indel edits, determines CpGs. Read sequences are cropped to the
 selected loci plus flanks; masked interior bases stay in the sequence as neutral observations.
-Only one CpG rate per haplotype is integrated; other flank CpGs use fixed methylation 0.5.
+Shared rates are estimated separately for every candidate CpG, including realignment flanks.
 Overlapping concordant CIGARs form a molecular profile with one consensus base and one
 conversion event. Discordant CIGAR overlaps/refskips use aligned SNP likelihoods with the candidate's
 edited CpG context and report `aligned_fallback_fragments`; indel alignment evidence is unscored.
@@ -588,16 +608,26 @@ formatting checks pass; `cargo xtask insta` passes 651 tests with no snapshots t
 
 ### Shared CpG shrinkage and neutral conversion evidence
 
-`ml haplotypes --methylation-model neutral|shrinkage` retains multiple CpGs while keeping
-the three-SNP and single nuisance-indel limits. The default remains `integrated` for comparison.
-Neutral scoring uses candidate-union CpG positions and identical normalized emissions for
-C/T on OT and G/A on OB; both competing alleles must be treated symmetrically. Shrinkage
-uses a neutral pilot to fit one rate per candidate CpG shared across its carrier haplotypes,
-with Beta(2,2) prior (`--methylation-prior-strength 4`) and minimum molecular CpG-carrier
-probability 0.9. Each scored fragment excludes its own conversion observation from its rate
-estimate. These are approximate plug-in scores, with CIGAR-coordinate calibration, rather
-than exact joint marginal likelihoods. WGS bypasses these treatments and production forests
-are unchanged. `methylation.rs` owns the candidate context and rate fitting.
+`ml haplotypes` uses shared CpG shrinkage exclusively; `--methylation-model` is removed.
+Neutral emissions remain internal to the pilot. Rates use Beta(2,2), molecular CpG-carrier
+probability >=0.9 and leave-one-fragment-out conversion observations. These are approximate
+plug-in scores calibrated with CIGAR coordinates. WGS bypasses conversion and rate fitting.
+
+`expansion.rs` grows focal-rooted contexts through molecular connections. Defaults are
+initial radius 150 bp, expansion radius 1000 bp, 64 retained haplotypes, 32 holdouts and
+32 SNP sites as a safety cap. Neighbors require two conversion-unconfounded alternate
+molecules and links from two independent fragments, with consensus BQ/source MAPQ >=20.
+Conversion-only CpGs cannot form genetic bridges, but their observations remain available
+for methylation fitting and scoring. Candidate CpG partners are inferred jointly, including
+latent C/G neighbors, with two qualified molecules covering either partner. This context
+dependency prevents fixing a variant partner to reference and falsely creating CpGs at
+uncovered targets; it does not establish a distant genetic connection. Haplotypes rank by diploid posterior occupancy;
+reference, every focal genotype's best pair and each active allele's carrier are protected.
+Holdouts are reconsidered at the next extension. Evidence and rates are recomputed, never
+multiplied across overlapping stages. Genotype priors are shared among surviving phase
+assignments. Pruning mass is conditional on the current proposals, not a global error bound.
+TSV v3 reports disconnected/resource-limited sites, pruning/rescue counts and context bounds.
+These contexts do not emit global phase blocks or change production ML/calling/phasing.
 
 PairHMM's `Prepared::interval()` is the authoritative scoring and calibration window,
 including nuisance indels. Do not reconstruct its bounds from SNP loci: distant indels can
@@ -616,6 +646,23 @@ shrinkage recover 566/571 truth alleles with no extra panel alleles; neutral rec
 with one extra. `cpg-models-sensitivity-final/` checks prior strengths 2/4/8 and 16/32-node
 quadrature on the same large-panel targets. Verification passes 657 default and 687 seqair
 tests, five Python tests, both Clippy feature sets, and snapshot review with no updates.
+
+The expansion assessment is `tmp/haplotypes-validation/expansion-smoke/`, with the same
+1,847 targets and 433 truth SNP alleles as the previous 300-kb assessment on chr1/12/19.
+Compared with the archived three-site shared-shrinkage model, WGS keeps 433 TP/4 FP/0 FN
+and genotype errors change 2 to 3. TAPS keeps 429 TP/4 FN, extra panel alleles decrease
+6 to 5, and genotype errors stay 7. WGS/TAPS have 528/620 contexts exceeding three sites,
+maximum 21/32 sites, 343/416 contexts with pruning and 93/44 with rescued candidates.
+These are panel results, not whole-genome precision. PairHMM's scalar forward model remains
+expensive for dense wide contexts; the completed chr1/chr19 smoke in `expansion-pair-hmm/`
+uses explicit eight-site/32-haplotype/16-holdout budgets and the same growth radii, recovering
+all six truth alleles in both libraries with no extra panel alleles. The dense chr12 run
+was stopped for runtime and remains explicitly incomplete. Superseded
+wide/default-budget runs are marked incomplete and must not be used as completed assessments.
+Verification passes 666 default and 698 seqair tests, five Python tests and both Clippy sets.
+Snapshot review passes with no updates. Removing CpG context-support edges makes the
+uncovered-focal regression fail; the exact source was restored and all 67 likelihood unit
+tests pass afterward.
 
 ### Existing feature layouts
 

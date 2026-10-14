@@ -24,6 +24,8 @@ mod figure_out_outputs_tests {
             methylation: default(),
             ml: default(),
             phase: false,
+            phase_masks: default(),
+            phase_mask: default(),
             vcf: default(),
             bed: default(),
             record_filters: RecordFilters { vcf_all: false, cpgs_only: false },

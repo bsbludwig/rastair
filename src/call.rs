@@ -19,11 +19,13 @@
 use crate::call::pileup::Pileup;
 #[cfg(any(not(feature = "experimental-seqair"), test))]
 use crate::call::process::calculate_pileup_metrics;
+#[cfg(not(feature = "experimental-seqair"))]
+use crate::call::process::get_pileups;
 use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams, pileup::SimpleRead, process::get_pileups,
+        methylation::params::MethylationCallingParams, pileup::SimpleRead,
         require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
@@ -96,6 +98,19 @@ pub struct CallParams {
     #[arg(help_heading = cli::sections::PHASING)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub phase: bool,
+
+    /// Exclude BED intervals from phasing and split blocks at their boundaries
+    ///
+    /// Repeat for multiple masks. Accepts plain or gzip BED files and UCSC
+    /// centromere tables. Variant and methylation calls are retained.
+    #[arg(long = "phase-mask", requires = "phase", value_name = "FILE")]
+    #[arg(help_heading = cli::sections::PHASING)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub phase_masks: Vec<std::path::PathBuf>,
+
+    #[arg(skip)]
+    #[serde(skip)]
+    pub(crate) phase_mask: phasing::PhaseMask,
 
     // --- Output parameters ---
     #[command(flatten)]
@@ -192,6 +207,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
          links are filtered out before it runs. Write VCF output instead."
     );
 
+    params.phase_mask = phasing::PhaseMask::load(&params.phase_masks)?;
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
@@ -326,8 +342,9 @@ fn process_segment(
     }
     #[cfg(feature = "experimental-seqair")]
     {
-        let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
-        process_pre_built_metrics(segment, metrics, params, ml)
+        let (segment, metrics, phase_reads) =
+            process::get_pileups_with_phase(readers, region, &pileup_mapping_params)?;
+        process_pre_built_metrics(segment, metrics, phase_reads, params, ml)
     }
 }
 
@@ -367,13 +384,21 @@ fn process_region(
     );
     set_strand_info_and_prefilter(&mut pileups, params);
 
-    process_collected_pileups(segment, pileups, params, ml)
+    process_collected_pileups(
+        segment,
+        pileups,
+        #[cfg(feature = "experimental-seqair")]
+        Vec::new(),
+        params,
+        ml,
+    )
 }
 
 #[cfg(feature = "experimental-seqair")]
 fn process_pre_built_metrics(
     segment: Rc<Segment>,
     pileups: impl Iterator<Item = PileupMetrics>,
+    phase_reads: Vec<haplotypes::Fragment>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
@@ -384,7 +409,7 @@ fn process_pre_built_metrics(
         "failed to set denovo adjacency, skipping",
     );
     set_strand_info_and_prefilter(&mut pileups, params);
-    process_collected_pileups(segment, pileups, params, ml)
+    process_collected_pileups(segment, pileups, phase_reads, params, ml)
 }
 
 /// The step both backends run between de-novo adjacency and the shared
@@ -401,6 +426,7 @@ fn set_strand_info_and_prefilter(pileups: &mut Vec<PileupMetrics>, params: &Call
 fn process_collected_pileups(
     segment: Rc<Segment>,
     mut pileups: Vec<PileupMetrics>,
+    #[cfg(feature = "experimental-seqair")] phase_reads: Vec<haplotypes::Fragment>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
@@ -484,8 +510,9 @@ fn process_collected_pileups(
 
     // Before the overlap is trimmed: a site in it links reads reaching into
     // the core.
+    #[cfg(feature = "experimental-seqair")]
     if params.phase {
-        phasing::phase_segment(&mut pileups, |pos| segment.is_core(pos));
+        phasing::phase_segment(&mut pileups, &segment, &phase_reads, &params.phase_mask)?;
     }
     pileups.retain(|p| only_core_positions(&segment, p));
 

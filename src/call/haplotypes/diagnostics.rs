@@ -1,4 +1,4 @@
-use super::LikelihoodParams;
+use super::{ExpansionParams, LikelihoodParams};
 use crate::sequence::ReaderParams;
 use clap::value_parser;
 use clio::ClioPath;
@@ -24,12 +24,8 @@ pub struct HaplotypeDiagnosticParams {
     /// Score these positions regardless of observed alternates (plain BED, one-base intervals)
     #[arg(long, value_parser = value_parser!(ClioPath).exists().is_file())]
     pub sites_bed: Option<ClioPath>,
-    /// Include neighboring SNP candidates within this many bases of the focal SNP
-    #[arg(long, default_value_t = 100, value_parser = value_parser!(u32).range(1..=1000))]
-    pub window_radius: u32,
-    /// Maximum candidate sites including the focal SNP; all focal A/C/G/T alleles are evaluated
-    #[arg(long, default_value_t = 3, value_parser = value_parser!(u16).range(1..=3))]
-    pub max_sites: u16,
+    #[command(flatten)]
+    pub expansion: ExpansionParams,
     /// Minimum fragment observations of a base for a position to seed a candidate
     #[arg(long, default_value_t = 1, value_parser = value_parser!(u32).range(1..))]
     pub min_alt_observations: u32,
@@ -56,6 +52,7 @@ pub struct DiagnosticReadParams {
 
 pub fn diagnose(params: &HaplotypeDiagnosticParams) -> Result<()> {
     params.likelihood.validate()?;
+    params.expansion.validate()?;
     color_eyre::eyre::ensure!(
         !params.candidates_only || (params.pair_output.is_none() && params.sites_bed.is_none()),
         "Candidate discovery cannot be combined with pair output or supplied sites"
@@ -71,9 +68,9 @@ mod backend {
     use super::*;
     use crate::{
         call::haplotypes::{
-            Fragment, Indel, LikelihoodEngine, MethylationModel, Observation, ReadEvidence,
-            Reference, SequenceEvidence, SequenceObservation, SequencePosition, Site, SnpEvidence,
-            infer_snp_with_indels,
+            Fragment, Indel, LikelihoodEngine, Observation, ReadEvidence, Reference,
+            SequenceEvidence, SequenceObservation, SequencePosition, Site, SnpEvidence,
+            infer_snp_expanded,
         },
         sequence::{ChunkRegion, ReferenceWindow, Region, SeqairReaders},
     };
@@ -91,7 +88,7 @@ mod backend {
     };
     use tracing::{info, warn};
 
-    const HEADER: &str = "chrom\tpos\tref\talt\tlog_bayes_factor\tposterior\tp_het\tp_hom_alt\texpected_fraction\tgenotype_entropy\tsite_log_bayes_factor\tlinkage_log_bayes_factor\tfragments\tobservations\tcontext_sites\thaplotypes\tomitted_sites\tcpg_context_limited\talignment_indel_reads\trealigned_fragments\taligned_fallback_fragments\tomitted_indels\tcpg_omitted_sites\tcpg_omitted_indels\toffered_linking_fragments\tretained_linking_fragments\tgenotype_posteriors\tsite_posterior\tsite_genotype_posteriors\tread_observations\toverlapping_fragments\tdiscordant_fragments";
+    const HEADER: &str = "chrom\tpos\tref\talt\tlog_bayes_factor\tposterior\tp_het\tp_hom_alt\texpected_fraction\tgenotype_entropy\tsite_log_bayes_factor\tlinkage_log_bayes_factor\tfragments\tobservations\tcontext_sites\thaplotypes\tomitted_sites\tdisconnected_sites\tresource_limited_sites\tpruned_haplotypes\trescued_haplotypes\tmaximum_pruned_mass\texpansion_steps\tcontext_start\tcontext_end\talignment_indel_reads\trealigned_fragments\taligned_fallback_fragments\tomitted_indels\toffered_linking_fragments\tretained_linking_fragments\tgenotype_posteriors\tsite_posterior\tsite_genotype_posteriors\tread_observations\toverlapping_fragments\tdiscordant_fragments";
 
     struct InputChunk {
         reference: Reference,
@@ -163,29 +160,20 @@ mod backend {
         writeln!(
             output,
             "#rastair_haplotype_model={}",
-            if pair_hmm { "local_pair_hmm_v2" } else { "aligned_snp_v2" }
+            if pair_hmm { "local_pair_hmm_v3" } else { "aligned_snp_v3" }
         )?;
         writeln!(output, "#likelihood_parameters={}", serde_json::to_string(&params.likelihood)?)?;
         writeln!(output, "#read_filters={}", serde_json::to_string(&params.reads)?)?;
+        writeln!(output, "#expansion_parameters={}", serde_json::to_string(&params.expansion)?)?;
+        writeln!(output, "#min_alt_observations={}", params.min_alt_observations)?;
         writeln!(
             output,
-            "#window_radius={};max_sites={};min_alt_observations={}",
-            params.window_radius, params.max_sites, params.min_alt_observations
+            "#methylation=shared_per_cpg_beta_shrinkage;pilot=neutral;rate_scoring=leave_one_fragment_out;ambiguous_cpg_carriers_do_not_fit_rates;plugin_scores_are_approximate;multiple_cpgs_retained"
         )?;
-        match params.likelihood.methylation_model {
-            MethylationModel::Integrated => writeln!(
-                output,
-                "#methylation_prior=independent_uniform_per_haplotype_cpg;maximum_observed_cpgs_per_haplotype=1;quadrature_is_approximate"
-            )?,
-            MethylationModel::Neutral => writeln!(
-                output,
-                "#methylation=neutral;mask=candidate_union_cpg_strand_positions;confounded_alleles_share_collapsed_emissions;other_alleles_retained;multiple_cpgs_retained"
-            )?,
-            MethylationModel::Shrinkage => writeln!(
-                output,
-                "#methylation=shared_per_cpg_beta_shrinkage;pilot=neutral;rate_scoring=leave_one_fragment_out;ambiguous_cpg_carriers_do_not_fit_rates;plugin_scores_are_approximate;multiple_cpgs_retained"
-            )?,
-        }
+        writeln!(
+            output,
+            "#search=fragment_connected_with_cpg_dependencies;pruning=diploid_posterior_occupancy;holdout=next_extension;pruned_mass=maximum_conditional_step_mass;posteriors_condition_on_retained_candidates"
+        )?;
         writeln!(
             output,
             "#overlap_observations=molecular_consensus;agreement=max_baseq;disagreement=baseq_difference;equal_quality_disagreement=uninformative"
@@ -194,7 +182,7 @@ mod backend {
         if pair_hmm {
             writeln!(
                 output,
-                "#realignment=local_cigar_cropped_profiles;overlap_consensus=best_quality_or_quality_difference;overlap_conversion=shared;discordant_overlap_or_refskip=aligned_fallback;flank_cpg_policy=selected_methylation_model;integrated_flank_methylation=0.5;nuisance_indel_sites=1"
+                "#realignment=local_cigar_cropped_profiles;overlap_consensus=best_quality_or_quality_difference;overlap_conversion=shared;discordant_overlap_or_refskip=aligned_fallback;flank_cpg_policy=shared_shrinkage;nuisance_indel_sites=1"
             )?;
         }
         if let Some(writer) = &mut pair_output {
@@ -218,7 +206,7 @@ mod backend {
             let mut core_start = start;
             while core_start < end {
                 let core_end = core_start.saturating_add(u64::from(params.chunk_length)).min(end);
-                let padding = u64::from(params.window_radius)
+                let padding = u64::from(params.expansion.expansion_radius)
                     + 2
                     + if pair_hmm {
                         u64::from(params.likelihood.realignment_flank)
@@ -280,14 +268,16 @@ mod backend {
                         .iter()
                         .filter(|site| {
                             site.pos != focal.pos
-                                && site.pos.abs_diff(focal.pos) <= params.window_radius
+                                && site.pos.abs_diff(focal.pos) <= params.expansion.expansion_radius
                         })
                         .cloned()
                         .collect();
                     let nearby_indels: Vec<_> = chunk
                         .indels
                         .iter()
-                        .filter(|indel| indel.start.abs_diff(focal.pos) <= params.window_radius)
+                        .filter(|indel| {
+                            indel.start.abs_diff(focal.pos) <= params.expansion.expansion_radius
+                        })
                         .cloned()
                         .collect();
                     let local_reference = if pair_hmm {
@@ -313,32 +303,32 @@ mod backend {
                         None
                     };
                     let reference = local_reference.as_ref().unwrap_or(&chunk.reference);
-                    let evidence = infer_snp_with_indels(
+                    let evidence = infer_snp_expanded(
                         reference,
                         focal.pos,
                         &nearby,
                         &nearby_indels,
                         &chunk.fragments,
                         &params.likelihood,
-                        usize::from(params.max_sites),
+                        &params.expansion,
                     )?;
                     let site_only = if evidence.sites.len() > 1
                         || evidence.haplotypes.iter().any(|haplotype| haplotype.indel.is_some())
                     {
-                        Some(infer_snp_with_indels(
+                        Some(infer_snp_expanded(
                             reference,
                             focal.pos,
                             &[],
                             &[],
                             &chunk.fragments,
                             &params.likelihood,
-                            1,
+                            &ExpansionParams { max_sites: 1, ..params.expansion.clone() },
                         )?)
                     } else {
                         None
                     };
-                    let first = focal.pos.saturating_sub(params.window_radius);
-                    let last = focal.pos.saturating_add(params.window_radius);
+                    let first = focal.pos.saturating_sub(params.expansion.expansion_radius);
+                    let last = focal.pos.saturating_add(params.expansion.expansion_radius);
                     let indels = chunk
                         .indel_intervals
                         .iter()
@@ -696,7 +686,6 @@ mod backend {
                             .is_some_and(|&count| count >= params.min_alt_observations)
                 })
                 .collect();
-            let observed_alternate = !alts.is_empty();
             // Converted de-novo C/G alleles can look exactly like the reference.
             if !params.likelihood.non_taps {
                 if reference_base == Base::T
@@ -726,9 +715,7 @@ mod backend {
             }
             if !alts.is_empty() {
                 let site = Site::new(pos, reference_base, alts)?;
-                if observed_alternate {
-                    neighbors.push(site.clone());
-                }
+                neighbors.push(site.clone());
                 candidates.push(site);
             }
         }
@@ -799,38 +786,48 @@ mod backend {
         for allele in &evidence.alleles {
             let site_allele = site_only.and_then(|site| site.allele(allele.base)).unwrap_or(allele);
             let baseline = site_allele.log_bayes_factor;
-            writeln!(
-                writer,
-                "{contig}\t{}\t{}\t{}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{:.12e}\t{}\t{}\t{}\t{}\t{}\t{}\t{indels}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{genotypes}\t{:.12e}\t{site_genotypes}\t{}\t{}\t{}",
-                u64::from(evidence.pos) + 1,
-                evidence.reference,
-                allele.base,
-                allele.log_bayes_factor,
-                *allele.posterior,
-                *allele.heterozygous,
-                *allele.homozygous,
-                allele.expected_fraction,
-                evidence.genotype_entropy,
-                baseline,
-                allele.log_bayes_factor - baseline,
-                evidence.focal_fragments,
-                evidence.focal_observations,
-                evidence.sites.len(),
-                evidence.haplotypes.len(),
-                evidence.omitted_sites,
-                evidence.cpg_context_limited,
-                evidence.realigned_fragments,
-                evidence.aligned_fallback_fragments,
-                evidence.omitted_indels,
-                evidence.cpg_omitted_sites,
-                evidence.cpg_omitted_indels,
-                evidence.offered_linking_fragments,
-                evidence.retained_linking_fragments,
-                *site_allele.posterior,
-                evidence.focal_read_observations,
-                evidence.focal_overlapping_fragments,
-                evidence.focal_discordant_fragments,
-            )?;
+            let fields = [
+                contig.to_owned(),
+                (u64::from(evidence.pos) + 1).to_string(),
+                evidence.reference.to_string(),
+                allele.base.to_string(),
+                format!("{:.12e}", allele.log_bayes_factor),
+                format!("{:.12e}", *allele.posterior),
+                format!("{:.12e}", *allele.heterozygous),
+                format!("{:.12e}", *allele.homozygous),
+                format!("{:.12e}", allele.expected_fraction),
+                format!("{:.12e}", evidence.genotype_entropy),
+                format!("{baseline:.12e}"),
+                format!("{:.12e}", allele.log_bayes_factor - baseline),
+                evidence.focal_fragments.to_string(),
+                evidence.focal_observations.to_string(),
+                evidence.sites.len().to_string(),
+                evidence.haplotypes.len().to_string(),
+                evidence.omitted_sites.to_string(),
+                evidence.disconnected_sites.to_string(),
+                evidence.resource_limited_sites.to_string(),
+                evidence.pruned_haplotypes.to_string(),
+                evidence.rescued_haplotypes.to_string(),
+                format!("{:.12e}", evidence.maximum_pruned_mass),
+                evidence.expansion_steps.to_string(),
+                (u64::from(evidence.sites.first().ok_or_eyre("No context start")?.pos) + 1)
+                    .to_string(),
+                (u64::from(evidence.sites.last().ok_or_eyre("No context end")?.pos) + 1)
+                    .to_string(),
+                indels.to_string(),
+                evidence.realigned_fragments.to_string(),
+                evidence.aligned_fallback_fragments.to_string(),
+                evidence.omitted_indels.to_string(),
+                evidence.offered_linking_fragments.to_string(),
+                evidence.retained_linking_fragments.to_string(),
+                genotypes.clone(),
+                format!("{:.12e}", *site_allele.posterior),
+                site_genotypes.clone(),
+                evidence.focal_read_observations.to_string(),
+                evidence.focal_overlapping_fragments.to_string(),
+                evidence.focal_discordant_fragments.to_string(),
+            ];
+            writeln!(writer, "{}", fields.join("\t"))?;
         }
         Ok(())
     }

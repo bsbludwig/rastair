@@ -3,16 +3,24 @@ use seqair_types::{Base, Probability, Strand};
 use std::collections::BTreeSet;
 
 mod likelihood;
-pub use likelihood::{LikelihoodEngine, LikelihoodParams, MethylationModel};
+pub use likelihood::{LikelihoodEngine, LikelihoodParams};
+mod expansion;
+pub use expansion::ExpansionParams;
 mod methylation;
 mod pair_hmm;
+#[cfg(any(feature = "experimental-seqair", test))]
+pub(crate) mod phase;
+#[cfg(feature = "experimental-seqair")]
+pub(crate) mod reads;
 pub use pair_hmm::{Indel, SequenceEvidence, SequenceObservation, SequencePosition};
 mod diagnostics;
 pub use diagnostics::{DiagnosticReadParams, HaplotypeDiagnosticParams, diagnose};
 
 #[cfg(test)]
+use likelihood::cpg_anchor;
+#[cfg(test)]
 use likelihood::fragment_likelihood;
-use likelihood::{Node, cpg_anchor, log_add, log_sum, pair_prior, quadrature};
+use likelihood::{log_add, log_sum};
 
 #[derive(Debug, Clone)]
 pub struct Reference {
@@ -160,13 +168,15 @@ pub struct SnpEvidence {
     pub focal_read_observations: usize,
     pub focal_overlapping_fragments: usize,
     pub focal_discordant_fragments: usize,
-    /// Other candidates were omitted to keep the Cartesian search bounded.
+    /// Candidate sites excluded by connectivity or resource limits.
     pub omitted_sites: usize,
-    /// The bounded prototype integrates at most one CpG rate per haplotype.
-    /// It reduces context rather than tying unrelated CpG rates together.
-    pub cpg_context_limited: bool,
-    pub cpg_omitted_sites: usize,
-    pub cpg_omitted_indels: usize,
+    pub disconnected_sites: usize,
+    pub resource_limited_sites: usize,
+    pub pruned_haplotypes: usize,
+    pub rescued_haplotypes: usize,
+    /// Maximum discarded pair-posterior mass in a single pruning step, conditional on that step's proposals.
+    pub maximum_pruned_mass: f64,
+    pub expansion_steps: usize,
     pub offered_linking_fragments: usize,
     pub retained_linking_fragments: usize,
     pub realigned_fragments: usize,
@@ -178,19 +188,29 @@ impl SnpEvidence {
     pub fn allele(&self, base: Base) -> Option<&AlleleEvidence> {
         self.alleles.iter().find(|allele| allele.base == base)
     }
+
+    /// Conditional on this context's retained candidate haplotypes.
+    pub fn genotypes_at(&self, pos: u32) -> Result<[Probability; 10]> {
+        ensure!(
+            self.sites.iter().any(|site| site.pos == pos),
+            "Position is outside the inferred context"
+        );
+        let mut values = [0.0; 10];
+        for pair in &self.pairs {
+            let (a, b) = pair_bases(pair, &self.haplotypes, pos)?;
+            let index = genotype_index(a, b).ok_or_eyre("Unknown context genotype")?;
+            *values.get_mut(index).ok_or_eyre("Invalid context genotype")? += *pair.posterior;
+        }
+        let mut result = [Probability::ZERO; 10];
+        for (result, value) in result.iter_mut().zip(values) {
+            *result = probability(value)?;
+        }
+        Ok(result)
+    }
 }
 
-/// SNP inference under the selected read likelihood engine. Every focal A/C/G/T hypothesis is
-/// retained, even when no read directly shows that genetic base. Methylation
-/// is marginalized under independent uniform priors for the CpGs on the two
-/// haplotypes; the same rate is shared by all fragments observing that CpG.
-///
-/// Context is reduced until each haplotype has at most one scored CpG. This
-/// makes the prototype's numerical integral at most two-dimensional without
-/// silently sharing a rate between different CpGs. `PairHMM` flank CpGs use a
-/// fixed prior-predictive methylation fraction rather than additional rate fits.
-/// The neutral and shrinkage alternatives retain multiple CpGs; shrinkage uses
-/// shared rates learned with a neutral pilot and excludes each scored molecule.
+/// All focal A/C/G/T hypotheses survive bounded expansion, including latent converted alleles.
+#[cfg(test)]
 pub fn infer_snp(
     reference: &Reference,
     focal: u32,
@@ -202,6 +222,7 @@ pub fn infer_snp(
     infer_snp_with_indels(reference, focal, neighbors, &[], fragments, params, max_sites)
 }
 
+#[cfg(test)]
 pub fn infer_snp_with_indels(
     reference: &Reference,
     focal: u32,
@@ -211,15 +232,46 @@ pub fn infer_snp_with_indels(
     params: &LikelihoodParams,
     max_sites: usize,
 ) -> Result<SnpEvidence> {
+    let search =
+        ExpansionParams { max_sites: u16::try_from(max_sites)?, ..ExpansionParams::default() };
+    infer(reference, focal, neighbors, indels, fragments, params, &search, false)
+}
+
+pub fn infer_snp_expanded(
+    reference: &Reference,
+    focal: u32,
+    neighbors: &[Site],
+    indels: &[Indel],
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+    search: &ExpansionParams,
+) -> Result<SnpEvidence> {
+    infer(reference, focal, neighbors, indels, fragments, params, search, true)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search and scoring boundary share validated evidence and configuration"
+)]
+fn infer(
+    reference: &Reference,
+    focal: u32,
+    neighbors: &[Site],
+    indels: &[Indel],
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+    search: &ExpansionParams,
+    require_links: bool,
+) -> Result<SnpEvidence> {
     params.validate()?;
-    ensure!(
-        (1..=3).contains(&max_sites),
-        "Bounded SNP search supports one to three candidate sites"
-    );
+    search.validate()?;
     let ref_base = reference.base_at(focal).ok_or_eyre("Focal site outside reference")?;
     let focal_site = Site::new(focal, ref_base, Base::KNOWN)?;
     let mut candidates: Vec<_> =
         neighbors.iter().filter(|site| site.pos != focal).cloned().collect();
+    if require_links {
+        candidates.retain(|site| site.pos.abs_diff(focal) <= search.expansion_radius);
+    }
     candidates.sort_by_key(|site| (site.pos.abs_diff(focal), site.pos));
     ensure!(
         candidates.iter().map(|site| site.pos).collect::<BTreeSet<_>>().len() == candidates.len(),
@@ -245,8 +297,6 @@ pub fn infer_snp_with_indels(
         );
     }
     let offered = candidates.len();
-    candidates.truncate(max_sites - 1);
-    let bounded_sites = candidates.len();
     let linking_fragments = |sites: &[Site]| {
         fragments
             .iter()
@@ -261,7 +311,6 @@ pub fn infer_snp_with_indels(
             .count()
     };
     let offered_linking_fragments = linking_fragments(&candidates);
-    let mut limited = false;
     let mut proposed_indels = Vec::new();
     if params.likelihood_engine == LikelihoodEngine::PairHmm {
         for indel in indels {
@@ -272,247 +321,53 @@ pub fn infer_snp_with_indels(
         }
         proposed_indels.sort_by_key(|indel| (indel.start.abs_diff(focal), indel.start));
     }
-    let mut selected_indel = proposed_indels
+    let selected_indel = proposed_indels
         .iter()
         .find(|indel| {
             indel.len() <= usize::from(params.max_indel_length)
                 && !indel.deletes(focal)
                 && candidates.iter().all(|site| !indel.deletes(site.pos))
+                && (!require_links
+                    || indel.start.abs_diff(focal) <= search.window_radius
+                    || fragments
+                        .iter()
+                        .filter(|fragment| {
+                            fragment
+                                .reads
+                                .iter()
+                                .any(|read| read.covers(focal, params.likelihood_engine))
+                                && fragment
+                                    .reads
+                                    .iter()
+                                    .any(|read| read.covers(indel.start, params.likelihood_engine))
+                        })
+                        .take(usize::from(search.min_linking_fragments))
+                        .count()
+                        >= usize::from(search.min_linking_fragments))
         })
         .cloned();
-    let offered_indel = selected_indel.is_some();
-    let (sites, haplotypes, loci) = loop {
-        let mut sites = candidates.clone();
-        sites.push(focal_site.clone());
-        sites.sort_by_key(|site| site.pos);
-        let mut haplotypes = enumerate(&sites);
-        if let Some(indel) = &selected_indel {
-            let with_indel: Vec<_> = haplotypes
-                .iter()
-                .cloned()
-                .map(|mut haplotype| {
-                    haplotype.indel = Some(indel.clone());
-                    haplotype
-                })
-                .collect();
-            haplotypes.extend(with_indel);
-        }
-        let loci = scored_loci(reference, &sites);
-        let multiple_cpgs = !params.non_taps
-            && params.methylation_model == MethylationModel::Integrated
-            && haplotypes
-                .iter()
-                .map(|haplotype| {
-                    if params.likelihood_engine == LikelihoodEngine::PairHmm {
-                        pair_hmm::tracked_cpgs(reference, haplotype, &loci)
-                            .map(|anchors| anchors.len() > 1)
-                    } else {
-                        Ok(loci
-                            .iter()
-                            .filter_map(|&pos| cpg_anchor(reference, haplotype, pos))
-                            .collect::<BTreeSet<_>>()
-                            .len()
-                            > 1)
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .any(|multiple| multiple);
-        if !multiple_cpgs {
-            break (sites, haplotypes, loci);
-        }
-        if candidates.pop().is_none() {
-            ensure!(
-                selected_indel.take().is_some(),
-                "A single SNP has multiple independent observed CpGs"
-            );
-        }
-        limited = true;
-    };
-    let included: Vec<_> = fragments
-        .iter()
-        .filter(|fragment| {
-            fragment
-                .reads
-                .iter()
-                .any(|read| loci.iter().any(|&pos| read.covers(pos, params.likelihood_engine)))
-        })
-        .collect();
-    for fragment in &included {
-        ensure!(
-            !fragment.reads.is_empty() && fragment.reads.len() <= 2,
-            "Fragments require one or two reads"
-        );
-        for read in &fragment.reads {
-            ensure!(read.mapq != Some(255), "Missing mapping quality must be represented by None");
-            ensure!(
-                read.observations.iter().all(|obs| obs.quality != Some(255)),
-                "Missing base quality must be represented by None"
-            );
-            ensure!(
-                read.observations.windows(2).all(|pair| match pair {
-                    [a, b] => a.pos < b.pos,
-                    _ => true,
-                }),
-                "A read must have one observation per position in ascending order"
-            );
-        }
-    }
-    let realignment = if params.likelihood_engine == LikelihoodEngine::PairHmm {
-        Some(pair_hmm::Prepared::new(
-            reference,
-            &sites,
-            selected_indel.as_ref(),
-            &included,
-            params,
-        )?)
-    } else {
-        None
-    };
-    let context = methylation::Context::new(
+    let expanded = expansion::expand(
         reference,
-        &haplotypes,
-        &loci,
-        realignment.as_ref().map(pair_hmm::Prepared::interval),
+        focal_site,
+        &candidates,
+        selected_indel.as_ref(),
+        fragments,
+        params,
+        search,
+        require_links,
     )?;
-    let templates = haplotypes
-        .iter()
-        .map(|haplotype| {
-            realignment
-                .as_ref()
-                .map(|prepared| prepared.template(reference, haplotype, &loci, params))
-                .transpose()
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let score = |haplotype_index: usize,
-                 fragment_index: usize,
-                 scoring: &methylation::Scoring<'_>|
-     -> Result<f64> {
-        let haplotype = haplotypes.get(haplotype_index).ok_or_eyre("Missing scoring haplotype")?;
-        let fragment = included.get(fragment_index).ok_or_eyre("Missing scoring fragment")?;
-        if let Some(prepared) = &realignment
-            && let Some(template) = templates.get(haplotype_index).and_then(Option::as_ref)
-            && let Some(value) = prepared.fragment_likelihood_with_model(
-                fragment_index,
-                fragment,
-                template,
-                params,
-                scoring,
-            )?
-        {
-            return Ok(value);
-        }
-        likelihood::fragment_likelihood_with_model(
-            fragment,
-            haplotype,
-            reference,
-            &loci,
-            params,
-            scoring,
-            context.haplotypes.get(haplotype_index).ok_or_eyre("Missing CpG context")?,
-        )
-    };
-    let rates = if !params.non_taps && params.methylation_model == MethylationModel::Shrinkage {
-        let pilot = (0..haplotypes.len())
-            .map(|haplotype| {
-                (0..included.len())
-                    .map(|fragment| {
-                        score(haplotype, fragment, &methylation::Scoring::Neutral(&context))
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Some(methylation::estimate(
-            &context,
-            &haplotypes,
-            &sites,
-            &included,
-            &pilot,
-            params,
-            selected_indel.is_some(),
-        )?)
-    } else {
-        None
-    };
-    let nodes = quadrature(params.quadrature_order)?;
-    let mut matrix = Vec::with_capacity(haplotypes.len());
-    for (haplotype_index, haplotype) in haplotypes.iter().enumerate() {
-        let methylable = !params.non_taps
-            && params.methylation_model == MethylationModel::Integrated
-            && if realignment.is_some() {
-                !pair_hmm::tracked_cpgs(reference, haplotype, &loci)?.is_empty()
-            } else {
-                loci.iter().any(|&pos| cpg_anchor(reference, haplotype, pos).is_some())
-            };
-        let nodes: Vec<_> = if methylable {
-            nodes.clone()
-        } else {
-            vec![Node { methylation: 0.0, log_weight: 0.0 }]
-        };
-        let values = nodes
-            .iter()
-            .map(|node| {
-                included
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| {
-                        let scoring = match params.methylation_model {
-                            MethylationModel::Neutral => methylation::Scoring::Neutral(&context),
-                            MethylationModel::Shrinkage if rates.is_some() => {
-                                methylation::Scoring::Shrinkage(
-                                    rates.as_ref().ok_or_eyre("Missing estimated rates")?,
-                                    index,
-                                )
-                            }
-                            _ => methylation::Scoring::Integrated(node.methylation),
-                        };
-                        score(haplotype_index, index, &scoring)
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<_>>>()?;
-        matrix.push((nodes, values));
-    }
-    let mut pairs = Vec::new();
-    for (first, a) in haplotypes.iter().enumerate() {
-        let (nodes_a, values_a) = matrix.get(first).ok_or_eyre("Missing haplotype likelihoods")?;
-        for (second, b) in haplotypes.iter().enumerate().skip(first) {
-            let (nodes_b, values_b) =
-                matrix.get(second).ok_or_eyre("Missing haplotype likelihoods")?;
-            let mut integral = f64::NEG_INFINITY;
-            for (node_a, likelihoods_a) in nodes_a.iter().zip(values_a) {
-                if first == second {
-                    integral =
-                        log_add(integral, node_a.log_weight + likelihoods_a.iter().sum::<f64>());
-                } else {
-                    for (node_b, likelihoods_b) in nodes_b.iter().zip(values_b) {
-                        let likelihood = likelihoods_a
-                            .iter()
-                            .zip(likelihoods_b)
-                            .map(|(&a, &b)| log_add(a, b) - std::f64::consts::LN_2)
-                            .sum::<f64>();
-                        integral =
-                            log_add(integral, node_a.log_weight + node_b.log_weight + likelihood);
-                    }
-                }
-            }
-            ensure!(integral.is_finite(), "Integrated pair likelihood is not finite");
-            pairs.push(PairEvidence {
-                first,
-                second,
-                log_likelihood: integral,
-                log_prior: pair_prior(
-                    a,
-                    b,
-                    &sites,
-                    *params.snp_prior,
-                    *params.indel_prior,
-                    selected_indel.is_some(),
-                )?,
-                posterior: Probability::ZERO,
-            });
-        }
-    }
+    let sites = expanded.sites;
+    let haplotypes = expanded.haplotypes;
+    let matrix = likelihood_matrix(
+        reference,
+        &sites,
+        &haplotypes,
+        selected_indel.as_ref(),
+        fragments,
+        params,
+    )?;
+    let mut pairs =
+        posterior_pairs(&haplotypes, &sites, &matrix.values, params, selected_indel.is_some())?;
     let normalization = log_sum(pairs.iter().map(|pair| pair.log_likelihood + pair.log_prior));
     let mut genotypes = [0.0; 10];
     for pair in &mut pairs {
@@ -589,25 +444,204 @@ pub fn infer_snp_with_indels(
         haplotypes,
         pairs,
         sites,
-        fragments: included.len(),
+        fragments: matrix.fragments,
         focal_fragments,
         focal_observations,
         focal_read_observations,
         focal_overlapping_fragments,
         focal_discordant_fragments,
         omitted_sites: offered - used,
-        cpg_context_limited: limited,
-        cpg_omitted_sites: bounded_sites - used,
-        cpg_omitted_indels: usize::from(offered_indel && selected_indel.is_none()),
+        disconnected_sites: expanded.disconnected_sites,
+        resource_limited_sites: expanded.resource_limited_sites,
+        pruned_haplotypes: expanded.pruned_haplotypes,
+        rescued_haplotypes: expanded.rescued_haplotypes,
+        maximum_pruned_mass: expanded.maximum_pruned_mass,
+        expansion_steps: expanded.steps,
         offered_linking_fragments,
+        realigned_fragments: matrix.realigned_fragments,
+        aligned_fallback_fragments: matrix.aligned_fallback_fragments,
+        omitted_indels: proposed_indels.len() - usize::from(selected_indel.is_some()),
+    })
+}
+
+struct LikelihoodMatrix {
+    values: Vec<Vec<f64>>,
+    fragments: usize,
+    realigned_fragments: usize,
+    aligned_fallback_fragments: usize,
+}
+
+fn likelihood_matrix(
+    reference: &Reference,
+    sites: &[Site],
+    haplotypes: &[Haplotype],
+    indel: Option<&Indel>,
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+) -> Result<LikelihoodMatrix> {
+    let loci = scored_loci(reference, sites);
+    let included: Vec<_> = fragments
+        .iter()
+        .filter(|fragment| {
+            fragment
+                .reads
+                .iter()
+                .any(|read| loci.iter().any(|&pos| read.covers(pos, params.likelihood_engine)))
+        })
+        .collect();
+    for fragment in &included {
+        ensure!(
+            !fragment.reads.is_empty() && fragment.reads.len() <= 2,
+            "Fragments require one or two reads"
+        );
+        for read in &fragment.reads {
+            ensure!(read.mapq != Some(255), "Missing mapping quality must be represented by None");
+            ensure!(
+                read.observations.iter().all(|obs| obs.quality != Some(255)),
+                "Missing base quality must be represented by None"
+            );
+            ensure!(
+                read.observations.windows(2).all(|pair| match pair {
+                    [a, b] => a.pos < b.pos,
+                    _ => true,
+                }),
+                "A read must have one observation per position in ascending order"
+            );
+        }
+    }
+    let realignment = if params.likelihood_engine == LikelihoodEngine::PairHmm {
+        Some(pair_hmm::Prepared::new(reference, sites, indel, &included, params)?)
+    } else {
+        None
+    };
+    let context = methylation::Context::new(
+        reference,
+        haplotypes,
+        &loci,
+        realignment.as_ref().map(pair_hmm::Prepared::interval),
+    )?;
+    let templates = haplotypes
+        .iter()
+        .map(|haplotype| {
+            realignment
+                .as_ref()
+                .map(|prepared| prepared.template(reference, haplotype, &loci, params))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let score = |haplotype_index: usize,
+                 fragment_index: usize,
+                 scoring: &methylation::Scoring<'_>|
+     -> Result<f64> {
+        let haplotype = haplotypes.get(haplotype_index).ok_or_eyre("Missing scoring haplotype")?;
+        let fragment = included.get(fragment_index).ok_or_eyre("Missing scoring fragment")?;
+        if let Some(prepared) = &realignment
+            && let Some(template) = templates.get(haplotype_index).and_then(Option::as_ref)
+            && let Some(value) = prepared.fragment_likelihood_with_model(
+                fragment_index,
+                fragment,
+                template,
+                params,
+                scoring,
+            )?
+        {
+            return Ok(value);
+        }
+        likelihood::fragment_likelihood_with_model(
+            fragment,
+            haplotype,
+            reference,
+            &loci,
+            params,
+            scoring,
+            context.haplotypes.get(haplotype_index).ok_or_eyre("Missing CpG context")?,
+        )
+    };
+    let rates = if !params.non_taps {
+        let pilot = (0..haplotypes.len())
+            .map(|haplotype| {
+                (0..included.len())
+                    .map(|fragment| {
+                        score(haplotype, fragment, &methylation::Scoring::Neutral(&context))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Some(methylation::estimate(
+            &context,
+            haplotypes,
+            sites,
+            &included,
+            &pilot,
+            params,
+            indel.is_some(),
+        )?)
+    } else {
+        None
+    };
+    let values = (0..haplotypes.len())
+        .map(|haplotype| {
+            (0..included.len())
+                .map(|index| {
+                    let scoring = if params.non_taps {
+                        methylation::Scoring::Ordinary
+                    } else {
+                        methylation::Scoring::Shrinkage(
+                            rates.as_ref().ok_or_eyre("Missing estimated rates")?,
+                            index,
+                        )
+                    };
+                    score(haplotype, index, &scoring)
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(LikelihoodMatrix {
+        values,
+        fragments: included.len(),
         realigned_fragments: realignment
             .as_ref()
             .map_or(0, |prepared| prepared.realigned_fragments()),
         aligned_fallback_fragments: realignment
             .as_ref()
             .map_or(0, |prepared| prepared.fallback_fragments()),
-        omitted_indels: proposed_indels.len() - usize::from(selected_indel.is_some()),
     })
+}
+
+fn posterior_pairs(
+    haplotypes: &[Haplotype],
+    sites: &[Site],
+    matrix: &[Vec<f64>],
+    params: &LikelihoodParams,
+    has_indel: bool,
+) -> Result<Vec<PairEvidence>> {
+    let priors = likelihood::retained_pair_priors(haplotypes, sites, params, has_indel)?;
+    let mut pairs = Vec::new();
+    for (first, _) in haplotypes.iter().enumerate() {
+        let a = matrix.get(first).ok_or_eyre("Missing haplotype likelihoods")?;
+        for (second, _) in haplotypes.iter().enumerate().skip(first) {
+            let b = matrix.get(second).ok_or_eyre("Missing haplotype likelihoods")?;
+            ensure!(a.len() == b.len(), "Haplotype likelihood dimensions disagree");
+            let value = if first == second {
+                a.iter().sum::<f64>()
+            } else {
+                a.iter().zip(b).map(|(&a, &b)| log_add(a, b) - std::f64::consts::LN_2).sum()
+            };
+            ensure!(value.is_finite(), "Pair likelihood is not finite");
+            pairs.push(PairEvidence {
+                first,
+                second,
+                log_likelihood: value,
+                log_prior: *priors.get(pairs.len()).ok_or_eyre("Missing pair prior")?,
+                posterior: Probability::ZERO,
+            });
+        }
+    }
+    let normalization = log_sum(pairs.iter().map(|pair| pair.log_likelihood + pair.log_prior));
+    for pair in &mut pairs {
+        pair.posterior = probability((pair.log_likelihood + pair.log_prior - normalization).exp())?;
+    }
+    Ok(pairs)
 }
 
 fn probability(value: f64) -> Result<Probability> {
@@ -634,6 +668,7 @@ fn genotype_index(a: Base, b: Base) -> Option<usize> {
     Some(high * (high + 1) / 2 + low)
 }
 
+#[cfg(test)]
 fn enumerate(sites: &[Site]) -> Vec<Haplotype> {
     let mut haplotypes = vec![Haplotype { alleles: Vec::new(), indel: None }];
     for site in sites {

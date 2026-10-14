@@ -7,14 +7,14 @@ import benchmark_haplotype_likelihoods as benchmark
 
 
 class BenchmarkTests(unittest.TestCase):
-    def test_configured_arms_keep_distinct_models_on_common_library_and_engine(self):
+    def test_configured_arms_keep_distinct_search_limits_on_common_library_and_engine(self):
         manifest = {"arms": [
-            {"name": "neutral", "library": "taps", "engine": "aligned", "arguments": ["--methylation-model", "neutral"]},
-            {"name": "shrinkage", "library": "taps", "engine": "aligned", "arguments": ["--methylation-model", "shrinkage"]},
+            {"name": "small", "library": "taps", "engine": "aligned", "arguments": ["--max-sites", "3"]},
+            {"name": "shrinkage", "library": "taps", "engine": "aligned", "arguments": ["--max-haplotypes", "64"]},
         ]}
-        self.assertEqual(benchmark.arms(manifest), [("neutral", "taps", "aligned"), ("shrinkage", "taps", "aligned")])
-        self.assertEqual(benchmark.arm_arguments(manifest,"shrinkage"), ["--methylation-model", "shrinkage"])
-        manifest["arms"][1]["name"] = "neutral"
+        self.assertEqual(benchmark.arms(manifest), [("small", "taps", "aligned"), ("shrinkage", "taps", "aligned")])
+        self.assertEqual(benchmark.arm_arguments(manifest,"shrinkage"), ["--max-haplotypes", "64"])
+        manifest["arms"][1]["name"] = "small"
         with self.assertRaises(ValueError):
             benchmark.arms(manifest)
 

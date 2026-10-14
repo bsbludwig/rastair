@@ -10,6 +10,8 @@ mod set_alt_calls;
 mod threshold_filters;
 
 // First off, let's build Rastair-specific pileups from the BAM file
+#[cfg(feature = "experimental-seqair")]
+pub(crate) use pileups::get_pileups_with_phase;
 pub use pileups::{PileupMappingParams, get_pileups};
 
 // Next, we calculate various metrics based on the generated pileups

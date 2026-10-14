@@ -9,7 +9,6 @@ pub(super) fn params(non_taps: bool) -> LikelihoodParams {
         non_taps,
         quadrature_order: 16,
         likelihood_engine: LikelihoodEngine::Aligned,
-        methylation_model: MethylationModel::Integrated,
         methylation_prior_strength: 4.0,
         methylation_min_cpg_probability: Probability::new(0.9).expect("probability"),
         gap_open: Probability::new(10.0_f64.powf(-4.5)).expect("probability"),
@@ -53,6 +52,378 @@ fn probability_sum(evidence: &SnpEvidence) -> f64 {
 }
 
 #[test]
+fn bounded_expansion_follows_transitive_fragment_links_beyond_three_sites() -> Result<()> {
+    let reference = Reference { start: 1000, bases: vec![A; 1000] };
+    let positions = [1001, 1121, 1241, 1361, 1481];
+    let neighbors =
+        positions.iter().skip(1).map(|&pos| Site::new(pos, A, [G])).collect::<Result<Vec<_>>>()?;
+    let mut reads = Vec::new();
+    for pair in positions.windows(2) {
+        let [a, b] = pair else { continue };
+        reads.extend(copies(10, Strand::OT, &[(*a, A), (*b, A)]));
+        reads.extend(copies(10, Strand::OB, &[(*a, G), (*b, G)]));
+    }
+    let exact = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &reads,
+        &params(true),
+        &ExpansionParams::default(),
+    )?;
+    let bounded = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &reads,
+        &params(true),
+        &ExpansionParams { max_haplotypes: 16, ..ExpansionParams::default() },
+    )?;
+    for result in [&exact, &bounded] {
+        assert_eq!(result.sites.len(), 5);
+        assert_eq!(result.expansion_steps, 4);
+        assert!(*allele(result, G).heterozygous > 0.999);
+        assert!((probability_sum(result) - 1.0).abs() < 1e-12);
+        let best = result
+            .pairs
+            .iter()
+            .max_by(|a, b| a.posterior.total_cmp(&b.posterior))
+            .ok_or_eyre("best pair")?;
+        let a = result.haplotypes.get(best.first).ok_or_eyre("first")?;
+        let b = result.haplotypes.get(best.second).ok_or_eyre("second")?;
+        assert!(
+            positions.iter().all(|&pos| a.allele_at(pos) == Some(A))
+                || positions.iter().all(|&pos| a.allele_at(pos) == Some(G))
+        );
+        assert!(positions.iter().all(|&pos| a.allele_at(pos) != b.allele_at(pos)));
+        for &pos in &positions {
+            let genotypes = result.genotypes_at(pos)?;
+            assert!(
+                *genotypes.get(genotype_index(A, G).ok_or_eyre("index")?).ok_or_eyre("A/G")?
+                    > Probability::new(0.999)?
+            );
+        }
+        assert_eq!(result.genotypes_at(1001)?, result.genotype_posteriors);
+        assert!(result.genotypes_at(1999).is_err());
+    }
+    assert!(bounded.haplotypes.len() <= 16);
+    assert!(bounded.pruned_haplotypes > 0);
+    assert!(bounded.maximum_pruned_mass < 1e-6);
+    assert!((*allele(&exact, G).posterior - *allele(&bounded, G).posterior).abs() < 1e-9);
+    Ok(())
+}
+
+#[test]
+fn disconnected_and_low_confidence_fragments_do_not_extend_a_region() -> Result<()> {
+    let reference = reference(b"AAAAAAAAA");
+    let neighbors = [Site::new(1004, A, [G])?];
+    let read = read(Strand::OT, &[(1001, A), (1004, G)]);
+    let duplicated = vec![Fragment { reads: vec![read.clone(), read] }];
+    let result = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &duplicated,
+        &params(true),
+        &ExpansionParams::default(),
+    )?;
+    assert_eq!(result.sites.len(), 1);
+    assert_eq!(result.disconnected_sites, 1, "two mates are one linking molecule");
+    let mut conflict = duplicated.clone();
+    conflict.extend(duplicated);
+    for fragment in &mut conflict {
+        let other = fragment.reads.get_mut(1).ok_or_eyre("mate")?;
+        let observation = other.observations.get_mut(1).ok_or_eyre("observation")?;
+        observation.base = A;
+    }
+    let result = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &conflict,
+        &params(true),
+        &ExpansionParams::default(),
+    )?;
+    assert_eq!(result.sites.len(), 1, "Q0 consensus cannot provide a connection");
+    let mut independent = copies(10, Strand::OT, &[(1001, A)]);
+    independent.extend(copies(10, Strand::OT, &[(1004, G)]));
+    let result = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &independent,
+        &params(true),
+        &ExpansionParams::default(),
+    )?;
+    assert_eq!(result.disconnected_sites, 1);
+    Ok(())
+}
+
+#[test]
+fn expansion_limits_preserve_focal_genotypes_and_report_omissions() -> Result<()> {
+    let reference = reference(b"AAAAAAAAAAAAAAAA");
+    let neighbors =
+        (1002..1010).map(|pos| Site::new(pos, A, [C, G, T])).collect::<Result<Vec<_>>>()?;
+    let bases = (1001..1010).map(|pos| (pos, A)).collect::<Vec<_>>();
+    let mut reads = copies(8, Strand::OT, &bases);
+    let alternate = (1001..1010).map(|pos| (pos, G)).collect::<Vec<_>>();
+    reads.extend(copies(8, Strand::OB, &alternate));
+    let search = ExpansionParams { max_sites: 4, max_haplotypes: 32, ..ExpansionParams::default() };
+    let result =
+        infer_snp_expanded(&reference, 1001, &neighbors, &[], &reads, &params(true), &search)?;
+    assert_eq!(result.sites.len(), 4);
+    assert_eq!(result.resource_limited_sites, 5);
+    assert_eq!(result.omitted_sites, 5);
+    assert!(result.haplotypes.len() <= 32);
+    let genotypes = result
+        .pairs
+        .iter()
+        .map(|pair| {
+            let (a, b) = pair_bases(pair, &result.haplotypes, 1001)?;
+            genotype_index(a, b).ok_or_eyre("genotype")
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    assert_eq!(genotypes.len(), 10);
+    assert!(result.pairs.iter().all(|pair| pair.log_prior.is_finite()));
+    Ok(())
+}
+
+#[test]
+fn retained_phase_assignments_share_one_genotype_prior_after_pruning() -> Result<()> {
+    let sites = [Site::new(1001, A, [G])?, Site::new(1002, A, [G])?];
+    let haplotypes = [
+        Haplotype { alleles: vec![(1001, A), (1002, A)], indel: None },
+        Haplotype { alleles: vec![(1001, G), (1002, G)], indel: None },
+    ];
+    let priors = likelihood::retained_pair_priors(&haplotypes, &sites, &params(true), false)?;
+    assert!(
+        (priors.get(1).ok_or_eyre("het prior")?.exp() - (0.001_f64 / 2.0).powi(2)).abs() < 1e-18
+    );
+    Ok(())
+}
+
+#[test]
+fn buffered_branches_can_return_when_downstream_evidence_changes_the_ranking() -> Result<()> {
+    let reference = reference(b"AAAAAAAAAAAAAAAAAAAA");
+    let positions = [1001, 1004, 1007, 1010, 1013, 1016];
+    let neighbors =
+        positions.iter().skip(1).map(|&pos| Site::new(pos, A, [G])).collect::<Result<Vec<_>>>()?;
+    for seed in 1..=32u64 {
+        let mut state = seed;
+        let mut reads = Vec::new();
+        for _ in 0..32 {
+            let mut observations = Vec::new();
+            for &pos in &positions {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                if state >> 61 != 0 {
+                    observations.push((pos, if state & (1 << 40) == 0 { A } else { G }));
+                }
+            }
+            reads.push(fragment(Strand::OT, &observations));
+        }
+        let search = ExpansionParams { max_haplotypes: 16, ..ExpansionParams::default() };
+        let result =
+            infer_snp_expanded(&reference, 1001, &neighbors, &[], &reads, &params(true), &search)?;
+        if result.rescued_haplotypes > 0 {
+            let no_holdouts = infer_snp_expanded(
+                &reference,
+                1001,
+                &neighbors,
+                &[],
+                &reads,
+                &params(true),
+                &ExpansionParams { haplotype_holdout: 0, ..search },
+            )?;
+            assert_eq!(no_holdouts.rescued_haplotypes, 0);
+            assert_eq!(result.sites.len(), positions.len());
+            assert!(result.haplotypes.len() <= 16);
+            return Ok(());
+        }
+    }
+    color_eyre::eyre::bail!("No buffered branch was reconsidered across the deterministic fixtures")
+}
+
+#[test]
+fn conversion_only_cpg_candidates_do_not_bridge_genetic_regions() -> Result<()> {
+    let reference = reference(b"ACGAACGA");
+    let neighbors = [Site::new(1005, C, [T])?];
+    let mut reads = copies(8, Strand::OT, &[(1001, T), (1005, T)]);
+    reads.extend(copies(8, Strand::OB, &[(1001, C), (1005, C)]));
+    let result = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &reads,
+        &params(false),
+        &ExpansionParams::default(),
+    )?;
+    assert_eq!(result.sites.len(), 1);
+    reads.extend(copies(4, Strand::OB, &[(1001, C), (1005, T)]));
+    let result = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &reads,
+        &params(false),
+        &ExpansionParams::default(),
+    )?;
+    assert_eq!(result.sites.len(), 2);
+    assert_eq!(result.disconnected_sites, 0);
+    Ok(())
+}
+
+#[test]
+fn discovery_reaches_both_150bp_edges_and_respects_the_expansion_bound() -> Result<()> {
+    let reference = Reference { start: 800, bases: vec![A; 500] };
+    let neighbors = [Site::new(850, A, [G])?, Site::new(1150, A, [G])?, Site::new(1151, A, [G])?];
+    let observations = [(850, G), (1000, G), (1150, G), (1151, G)];
+    let reads = copies(4, Strand::OT, &observations);
+    let result = infer_snp_expanded(
+        &reference,
+        1000,
+        &neighbors,
+        &[],
+        &reads,
+        &params(true),
+        &ExpansionParams { expansion_radius: 150, ..ExpansionParams::default() },
+    )?;
+    assert_eq!(result.sites.iter().map(|site| site.pos).collect::<Vec<_>>(), [850, 1000, 1150]);
+    Ok(())
+}
+
+#[test]
+fn unconverted_denovo_cpg_alleles_link_on_the_conversion_prone_strand() -> Result<()> {
+    for (sequence, unconverted, strand) in
+        [(b"ATGAAACA".as_slice(), C, Strand::OT), (b"CAAAAACA".as_slice(), G, Strand::OB)]
+    {
+        let reference = reference(sequence);
+        let site =
+            Site::new(1001, reference.base_at(1001).ok_or_eyre("reference")?, [unconverted])?;
+        let reads = copies(4, strand, &[(1001, unconverted), (1006, C)]);
+        let result = infer_snp_expanded(
+            &reference,
+            1006,
+            &[site],
+            &[],
+            &reads,
+            &params(false),
+            &ExpansionParams::default(),
+        )?;
+        assert_eq!(result.sites.len(), 2);
+        assert_eq!(result.disconnected_sites, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn distant_nuisance_indels_require_fragment_connections_to_the_focal_region() -> Result<()> {
+    let reference = Reference { start: 1000, bases: vec![A; 1000] };
+    let indel = Indel { start: 1501, deleted: Vec::new(), inserted: vec![C] };
+    let sequence_read = |pos| {
+        let mut read = read(Strand::OT, &[(pos, A)]);
+        read.sequence = Some(SequenceEvidence {
+            bases: vec![SequenceObservation {
+                position: SequencePosition::reference(pos),
+                base: A,
+                quality: Some(40),
+            }],
+            reference_skip: false,
+            indels: Vec::new(),
+        });
+        read
+    };
+    let mut reads =
+        (0..4).map(|_| Fragment { reads: vec![sequence_read(1001)] }).collect::<Vec<_>>();
+    let mut params = params(true);
+    params.likelihood_engine = LikelihoodEngine::PairHmm;
+    let isolated = infer_snp_expanded(
+        &reference,
+        1001,
+        &[],
+        std::slice::from_ref(&indel),
+        &reads,
+        &params,
+        &ExpansionParams::default(),
+    )?;
+    assert!(isolated.haplotypes.iter().all(|haplotype| haplotype.indel.is_none()));
+    assert_eq!(isolated.omitted_indels, 1);
+    for fragment in &mut reads {
+        fragment.reads.push(sequence_read(1501));
+    }
+    let connected = infer_snp_expanded(
+        &reference,
+        1001,
+        &[],
+        &[indel],
+        &reads,
+        &params,
+        &ExpansionParams::default(),
+    )?;
+    assert!(connected.haplotypes.iter().any(|haplotype| haplotype.indel.is_some()));
+    Ok(())
+}
+
+#[test]
+fn cpg_partner_hypotheses_are_joint_when_a_variant_removes_conversion_context() -> Result<()> {
+    let reference = reference(b"ACGAAAAA");
+    let neighbors = [Site::new(1001, C, [T])?];
+    let mut reads = copies(6, Strand::OT, &[(1001, T), (1002, G)]);
+    reads.extend(copies(2, Strand::OT, &[(1001, C), (1002, G)]));
+    reads.extend(copies(4, Strand::OT, &[(1001, T), (1002, A)]));
+    let result = infer_snp_expanded(
+        &reference,
+        1002,
+        &neighbors,
+        &[],
+        &reads,
+        &params(false),
+        &ExpansionParams::default(),
+    )?;
+    assert_eq!(
+        result.sites.len(),
+        2,
+        "conversion-ambiguous partner still changes candidate sequence context"
+    );
+    let genotypes = result.genotypes_at(1001)?;
+    assert!(
+        *genotypes.get(genotype_index(C, T).ok_or_eyre("C/T index")?).ok_or_eyre("C/T")?
+            > Probability::new(0.99)?
+    );
+    assert!(*allele(&result, A).heterozygous > 0.99);
+    Ok(())
+}
+
+#[test]
+fn a_partner_variant_does_not_create_a_false_cpg_at_an_uncovered_focal_base() -> Result<()> {
+    let reference = reference(b"ATGAAACA");
+    let neighbors = [Site::new(1002, G, [A])?];
+    let reads = copies(20, Strand::OB, &[(1002, A)]);
+    let result = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &reads,
+        &params(false),
+        &ExpansionParams::default(),
+    )?;
+    assert_eq!(result.focal_observations, 0);
+    assert_eq!(result.sites.len(), 2);
+    assert!(
+        *allele(&result, C).posterior < 0.01,
+        "the partner can be a genetic A, rather than conversion implying a de-novo C"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_isolated_snp_is_scored_without_a_called_genotype() -> Result<()> {
     let mut reads = copies(12, Strand::OT, &[(1001, A)]);
     reads.extend(copies(12, Strand::OB, &[(1001, G)]));
@@ -88,8 +459,7 @@ fn neutral_conversion_preserves_other_alleles_and_the_opposite_strand() -> Resul
         let sites = [Site::new(pos, reference.base_at(pos).ok_or_eyre("base")?, Base::KNOWN)?];
         let haplotypes = enumerate(&sites);
         let loci = scored_loci(&reference, &sites);
-        let mut params = params(false);
-        params.methylation_model = MethylationModel::Neutral;
+        let params = params(false);
         let context = methylation::Context::new(&reference, &haplotypes, &loci, None)?;
         let score = |template, observed, strand| -> Result<f64> {
             let (index, haplotype) = haplotypes
@@ -129,18 +499,14 @@ fn simplified_models_keep_multiple_cpg_neighbors_and_non_taps_likelihoods() -> R
     let mut reads = copies(10, Strand::OT, &[(1001, T), (1006, C)]);
     reads.extend(copies(10, Strand::OB, &[(1001, C), (1006, T)]));
     let ordinary = infer_snp(&reference, 1001, &neighbors, &reads, &params(true), 3)?;
-    for model in [MethylationModel::Neutral, MethylationModel::Shrinkage] {
-        let mut params = params(false);
-        params.methylation_model = model;
-        let result = infer_snp(&reference, 1001, &neighbors, &reads, &params, 3)?;
-        assert_eq!(result.sites.len(), 2);
-        assert_eq!(result.cpg_omitted_sites, 0);
-        assert_eq!(result.retained_linking_fragments, 20);
-        assert!((probability_sum(&result) - 1.0).abs() < 1e-12);
-        params.non_taps = true;
-        let control = infer_snp(&reference, 1001, &neighbors, &reads, &params, 3)?;
-        assert_eq!(ordinary.genotype_posteriors, control.genotype_posteriors);
-    }
+    let mut params = params(false);
+    let result = infer_snp(&reference, 1001, &neighbors, &reads, &params, 3)?;
+    assert_eq!(result.sites.len(), 2);
+    assert_eq!(result.retained_linking_fragments, 20);
+    assert!((probability_sum(&result) - 1.0).abs() < 1e-12);
+    params.non_taps = true;
+    let control = infer_snp(&reference, 1001, &neighbors, &reads, &params, 3)?;
+    assert_eq!(ordinary.genotype_posteriors, control.genotype_posteriors);
     Ok(())
 }
 
@@ -297,25 +663,6 @@ fn unknown_orientation_is_marginalized_once_per_fragment() -> Result<()> {
 }
 
 #[test]
-fn methylation_integral_matches_an_analytic_small_problem() -> Result<()> {
-    let reads = copies(10, Strand::OT, &[(1001, T)]);
-    let evidence = infer_snp(&reference(b"ACGA"), 1001, &[], &reads, &params(false), 1)?;
-    let pair = evidence
-        .pairs
-        .iter()
-        .find(|pair| {
-            pair_bases(pair, &evidence.haplotypes, 1001).is_ok_and(|bases| bases == (C, C))
-        })
-        .expect("C/C hypothesis");
-    let emission =
-        |rate: f64| (1.0 - 1e-6) * (rate * (1.0 - 1e-4) + (1.0 - rate) * 1e-4 / 3.0) + 1e-6 * 0.25;
-    let (a, b) = (emission(0.003), emission(0.95));
-    let expected = (b.powi(11) - a.powi(11)) / (11.0 * (b - a));
-    assert!((pair.log_likelihood - expected.ln()).abs() < 1e-10);
-    Ok(())
-}
-
-#[test]
 fn fragment_linkage_distinguishes_cis_and_trans_pairs() -> Result<()> {
     let mut reads = copies(10, Strand::OT, &[(1001, A), (1003, G)]);
     reads.extend(copies(10, Strand::OB, &[(1001, G), (1003, A)]));
@@ -350,17 +697,15 @@ fn fragment_linkage_distinguishes_cis_and_trans_pairs() -> Result<()> {
 }
 
 #[test]
-fn unrelated_cpg_rates_are_not_silently_tied_together() -> Result<()> {
+fn unrelated_cpg_rates_retain_their_neighbor_links() -> Result<()> {
     let reference = reference(b"ACGAACGA");
     let reads = copies(4, Strand::OT, &[(1001, T), (1005, T)]);
     let evidence =
         infer_snp(&reference, 1001, &[Site::new(1005, C, [T])?], &reads, &params(false), 3)?;
-    assert_eq!(evidence.sites.len(), 1);
-    assert_eq!(evidence.omitted_sites, 1);
-    assert!(evidence.cpg_context_limited);
-    assert_eq!(evidence.cpg_omitted_sites, 1);
+    assert_eq!(evidence.sites.len(), 2);
+    assert_eq!(evidence.omitted_sites, 0);
     assert_eq!(evidence.offered_linking_fragments, 4);
-    assert_eq!(evidence.retained_linking_fragments, 0);
+    assert_eq!(evidence.retained_linking_fragments, 4);
     Ok(())
 }
 
@@ -410,140 +755,17 @@ fn overlapping_singleton_alternates_cannot_amplify_the_three_smoke_patterns() ->
 }
 
 #[test]
-fn cpg_reduction_reports_lost_links_separately_from_the_site_cap() -> Result<()> {
+fn site_cap_reports_omissions_without_cpg_link_loss() -> Result<()> {
     let reference = reference(b"ACGAAACGAACA");
     let reads = copies(6, Strand::OT, &[(1001, T), (1006, C), (1010, G)]);
     let neighbors = [Site::new(1006, C, [T])?, Site::new(1010, C, [G])?];
     let capped = infer_snp(&reference, 1001, &neighbors, &reads, &params(false), 1)?;
     assert_eq!(capped.omitted_sites, 2);
-    assert_eq!(capped.cpg_omitted_sites, 0);
-    assert_eq!(capped.offered_linking_fragments, 0);
-    let reduced = infer_snp(&reference, 1001, &neighbors, &reads, &params(false), 3)?;
-    assert_eq!(reduced.cpg_omitted_sites, 2);
-    assert_eq!(reduced.offered_linking_fragments, 6);
-    assert_eq!(reduced.retained_linking_fragments, 0);
-    assert!((reduced.genotype_posteriors.iter().map(|p| **p).sum::<f64>() - 1.0).abs() < 1e-12);
-    Ok(())
-}
-
-#[test]
-fn adjacent_background_cpg_does_not_break_an_isolated_snp() -> Result<()> {
-    let evidence = infer_snp(&reference(b"CGCG"), 1001, &[], &[], &params(false), 3)?;
-    assert!(!evidence.cpg_context_limited);
-    Ok(())
-}
-
-#[test]
-fn independent_two_cpg_oracle_recovers_linkage_against_a_singleton_error() -> Result<()> {
-    use super::likelihood::{log_add, log_sum, pair_prior, quadrature, sequencing_emission};
-    let reference = reference(b"CAGAAACGAA");
-    let mut reads = copies(2, Strand::OT, &[(1001, A), (1007, G)]);
-    reads.extend(copies(3, Strand::OT, &[(1001, A), (1007, T)]));
-    reads.extend(copies(3, Strand::OB, &[(1001, A), (1007, G)]));
-    let alternate = read(Strand::OB, &[(1001, G), (1007, T)]);
-    reads.push(Fragment { reads: vec![alternate.clone(), alternate] });
-    for read in reads.iter_mut().flat_map(|fragment| &mut fragment.reads) {
-        read.mapq = Some(254);
-    }
-    let params = params(false);
-    let neighbor = Site::new(1007, G, [T])?;
-    let bounded = infer_snp(&reference, 1001, std::slice::from_ref(&neighbor), &reads, &params, 3)?;
-    assert_eq!(bounded.cpg_omitted_sites, 1);
-    assert_eq!(bounded.offered_linking_fragments, 9);
-    assert_eq!(bounded.retained_linking_fragments, 0);
-    let sites = [Site::new(1001, A, Base::KNOWN)?, neighbor];
-    let haplotypes = enumerate(&sites);
-    let loci = scored_loci(&reference, &sites);
-    // Nine molecules give a polynomial of degree at most nine per CpG rate.
-    // Five Gauss-Legendre nodes integrate it exactly under the uniform prior.
-    let nodes = quadrature(5)?;
-    let mut matrix = Vec::new();
-    for haplotype in &haplotypes {
-        let anchors: Vec<_> = loci
-            .iter()
-            .filter_map(|&pos| cpg_anchor(&reference, haplotype, pos))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        assert!(anchors.len() <= 2);
-        let mut grid = vec![(Vec::new(), 0.0)];
-        for _ in &anchors {
-            grid = grid
-                .into_iter()
-                .flat_map(|(rates, weight)| {
-                    nodes.iter().map(move |node| {
-                        let mut rates = rates.clone();
-                        rates.push(node.methylation);
-                        (rates, weight + node.log_weight)
-                    })
-                })
-                .collect();
-        }
-        let mut values = Vec::new();
-        for (rates, weight) in grid {
-            let mut likelihoods = Vec::new();
-            for fragment in &reads {
-                let strand = fragment.reads.first().ok_or_eyre("read")?.strand;
-                let mut likelihood = 0.0;
-                for &pos in &loci {
-                    let base = haplotype.base_at(&reference, pos).ok_or_eyre("base")?;
-                    let methylation = cpg_anchor(&reference, haplotype, pos)
-                        .and_then(|anchor| anchors.iter().position(|&a| a == anchor))
-                        .and_then(|i| rates.get(i))
-                        .copied();
-                    let rate = params.conversion(methylation);
-                    let modified = [
-                        crate::metrics::methylation::CpgSide::C,
-                        crate::metrics::methylation::CpgSide::G,
-                    ]
-                    .into_iter()
-                    .find(|side| side.unmod_base() == base && side.strand() == strand)
-                    .map_or(base, |side| side.mod_base());
-                    let observed = super::likelihood::consensus_at(fragment, pos)?;
-                    let unconverted =
-                        sequencing_emission(observed.base, base, observed.quality).ln();
-                    let converted =
-                        sequencing_emission(observed.base, modified, observed.quality).ln();
-                    likelihood += log_add((1.0 - rate).ln() + unconverted, rate.ln() + converted);
-                }
-                likelihoods.push(likelihood);
-            }
-            values.push((weight, likelihoods));
-        }
-        matrix.push(values);
-    }
-    let mut total = Vec::new();
-    let mut present = Vec::new();
-    for (first, a) in haplotypes.iter().enumerate() {
-        for (second, b) in haplotypes.iter().enumerate().skip(first) {
-            let a_values = matrix.get(first).ok_or_eyre("first haplotype")?;
-            let b_values = matrix.get(second).ok_or_eyre("second haplotype")?;
-            let integrated = if first == second {
-                log_sum(a_values.iter().map(|(weight, values)| weight + values.iter().sum::<f64>()))
-            } else {
-                log_sum(a_values.iter().flat_map(|(weight_a, values_a)| {
-                    b_values.iter().map(move |(weight_b, values_b)| {
-                        weight_a
-                            + weight_b
-                            + values_a
-                                .iter()
-                                .zip(values_b)
-                                .map(|(&a, &b)| log_add(a, b) - std::f64::consts::LN_2)
-                                .sum::<f64>()
-                    })
-                }))
-            };
-            let joint = integrated
-                + pair_prior(a, b, &sites, *params.snp_prior, *params.indel_prior, false)?;
-            total.push(joint);
-            if a.allele_at(1001) == Some(G) || b.allele_at(1001) == Some(G) {
-                present.push(joint);
-            }
-        }
-    }
-    let oracle = (log_sum(present) - log_sum(total)).exp();
-    assert!(*allele(&bounded, G).posterior > oracle * 100.0);
-    assert!(oracle < 1e-6, "independent CpG posterior={oracle}, bounded={:?}", allele(&bounded, G));
+    assert_eq!(capped.resource_limited_sites, 2);
+    let expanded = infer_snp(&reference, 1001, &neighbors, &reads, &params(false), 3)?;
+    assert_eq!(expanded.sites.len(), 3);
+    assert_eq!(expanded.retained_linking_fragments, 6);
+    assert!((probability_sum(&expanded) - 1.0).abs() < 1e-12);
     Ok(())
 }
 

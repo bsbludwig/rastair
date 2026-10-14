@@ -1,6 +1,6 @@
 use super::likelihood::{
-    BaseMeasurement, consensus, log_add, log_sum, orientations_from, pair_prior, quadrature,
-    sequencing_emission,
+    BaseMeasurement, consensus, log_add, log_sum, orientations_from, quadrature,
+    retained_pair_priors, sequencing_emission,
 };
 use super::{Fragment, Haplotype, LikelihoodParams, Reference, SequencePosition, Site};
 use crate::metrics::methylation::CpgSide;
@@ -87,7 +87,9 @@ impl Context {
 }
 
 pub(super) enum Scoring<'a> {
-    Integrated(f64),
+    #[cfg(test)]
+    Fixed(f64),
+    Ordinary,
     Neutral(&'a Context),
     Shrinkage(&'a Rates, usize),
 }
@@ -105,9 +107,10 @@ impl Scoring<'_> {
             .then_some((side.unmod_base(), side.mod_base()))
     }
 
-    pub fn rate(&self, cpg: Option<&Cpg>, integrated: bool) -> f64 {
+    pub fn rate(&self, cpg: Option<&Cpg>) -> f64 {
         match self {
-            Self::Integrated(rate) if integrated => *rate,
+            #[cfg(test)]
+            Self::Fixed(rate) => *rate,
             Self::Shrinkage(rates, index) => cpg
                 .and_then(|cpg| rates.values.get(cpg))
                 .and_then(|values| values.get(*index))
@@ -140,8 +143,9 @@ pub(super) fn estimate(
         "Pilot likelihood dimensions disagree"
     );
     let mut pairs = Vec::new();
-    for (a, first) in haplotypes.iter().enumerate() {
-        for (b, second) in haplotypes.iter().enumerate().skip(a) {
+    let priors = retained_pair_priors(haplotypes, sites, params, has_indel)?;
+    for (a, _) in haplotypes.iter().enumerate() {
+        for (b, _) in haplotypes.iter().enumerate().skip(a) {
             let likelihoods_a = pilot.get(a).ok_or_eyre("Missing pilot haplotype")?;
             let likelihoods_b = pilot.get(b).ok_or_eyre("Missing pilot haplotype")?;
             let joint = likelihoods_a
@@ -149,20 +153,25 @@ pub(super) fn estimate(
                 .zip(likelihoods_b)
                 .map(|(&a, &b)| log_add(a, b) - std::f64::consts::LN_2)
                 .sum::<f64>()
-                + pair_prior(
-                    first,
-                    second,
-                    sites,
-                    *params.snp_prior,
-                    *params.indel_prior,
-                    has_indel,
-                )?;
+                + *priors.get(pairs.len()).ok_or_eyre("Missing pilot pair prior")?;
             pairs.push((a, b, joint));
         }
     }
+    estimate_with_pairs(context, haplotypes, fragments, pilot, params, &pairs)
+}
+
+pub(super) fn estimate_with_pairs(
+    context: &Context,
+    haplotypes: &[Haplotype],
+    fragments: &[&Fragment],
+    pilot: &[Vec<f64>],
+    params: &LikelihoodParams,
+    pairs: &[(usize, usize, f64)],
+) -> Result<Rates> {
+    ensure!(!pairs.is_empty(), "No eligible diploid pairs for CpG estimation");
     let normalizer = log_sum(pairs.iter().map(|&(_, _, joint)| joint));
     let mut assignments = vec![vec![0.0; fragments.len()]; haplotypes.len()];
-    for (a, b, joint) in pairs {
+    for &(a, b, joint) in pairs {
         let posterior = (joint - normalizer).exp();
         for index in 0..fragments.len() {
             let first = *pilot
@@ -459,7 +468,7 @@ mod tests {
         let singleton = molecule(Base::T, Base::C);
         let rates =
             estimate(&context, &haplotypes, &sites, &[&singleton], &[vec![0.0]], &params, false)?;
-        assert!((Scoring::Shrinkage(&rates, 0).rate(Some(first), true) - 0.5).abs() < 1e-12);
+        assert!((Scoring::Shrinkage(&rates, 0).rate(Some(first)) - 0.5).abs() < 1e-12);
         let mut paired = singleton.clone();
         paired.reads.extend(singleton.reads.clone());
         let doubled =
@@ -469,8 +478,8 @@ mod tests {
         let fragments = molecules.iter().collect::<Vec<_>>();
         let rates =
             estimate(&context, &haplotypes, &sites, &fragments, &[vec![0.0; 24]], &params, false)?;
-        assert!(Scoring::Shrinkage(&rates, 0).rate(Some(first), true) > 0.8);
-        assert!(Scoring::Shrinkage(&rates, 0).rate(Some(second), true) < 0.2);
+        assert!(Scoring::Shrinkage(&rates, 0).rate(Some(first)) > 0.8);
+        assert!(Scoring::Shrinkage(&rates, 0).rate(Some(second)) < 0.2);
         let paired = molecules
             .iter()
             .cloned()
@@ -504,7 +513,7 @@ mod tests {
             &params,
             false,
         )?;
-        assert!((Scoring::Shrinkage(&rates, 0).rate(Some(first), true) - 0.5).abs() < 1e-12);
+        assert!((Scoring::Shrinkage(&rates, 0).rate(Some(first)) - 0.5).abs() < 1e-12);
         Ok(())
     }
 
@@ -560,7 +569,7 @@ mod tests {
             false,
         )?;
         let cpg = context.haplotypes.first().and_then(BTreeSet::first).ok_or_eyre("CpG")?;
-        assert!((Scoring::Shrinkage(&rates, 0).rate(Some(cpg), true) - 0.5).abs() < 1e-12);
+        assert!((Scoring::Shrinkage(&rates, 0).rate(Some(cpg)) - 0.5).abs() < 1e-12);
         Ok(())
     }
 }

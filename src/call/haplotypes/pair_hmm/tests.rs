@@ -139,6 +139,38 @@ fn ordinary_emissions_form_a_normalized_observation_model() -> Result<()> {
 }
 
 #[test]
+fn unmapped_profile_shortcut_matches_the_forward_sum_with_unknown_bases() -> Result<()> {
+    let params = params(false);
+    let reference = reference(b"ACGTTAGCATACGT");
+    let fragment = Fragment { reads: vec![aligned_read(b"ACNTTAG", Strand::OT)] };
+    let sites = [Site::new(1002, Base::G, Base::KNOWN)?];
+    for indel in
+        [None, Some(Indel { start: 1004, deleted: Vec::new(), inserted: vec![Base::C, Base::G] })]
+    {
+        let haplotype = Haplotype { alleles: vec![(1002, Base::G)], indel: indel.clone() };
+        let prepared = Prepared::new(&reference, &sites, indel.as_ref(), &[&fragment], &params)?;
+        let template = prepared.template(&reference, &haplotype, &[1002], &params)?;
+        let profile = prepared
+            .fragments
+            .first()
+            .and_then(Option::as_ref)
+            .and_then(|molecule| molecule.joint.first())
+            .ok_or_eyre("profile")?;
+        let uniform = |index: usize| {
+            profile.get(index).map_or(f64::NEG_INFINITY, |base| {
+                if base.base.known_index().is_some() { 0.25_f64.ln() } else { 0.0 }
+            })
+        };
+        let expected =
+            forward(profile.len(), template.bases.len(), &params, uniform, |i, _| uniform(i))?
+                - template.path_masses.get(&profile.len()).ok_or_eyre("path mass")?;
+        let actual = score_with_mapping(profile, &template, Strand::OT, 0.9, &params, 1)?;
+        assert!((actual - expected).abs() < 1e-12);
+    }
+    Ok(())
+}
+
+#[test]
 fn long_read_likelihoods_do_not_underflow() -> Result<()> {
     let params = params(true);
     let length = 550;
@@ -156,10 +188,10 @@ fn overlapping_mates_share_one_conversion_draw_in_the_match_emission() -> Result
             position: SequencePosition::reference(1000),
             base: Base::C,
             cpg: true,
-            integrated: true,
             cpg_key: None,
         }],
         path_masses: BTreeMap::from([(1, forward(1, 1, &params, |_| 0.0, |_, _| 0.0)?)]),
+        local: BTreeMap::new(),
     };
     let profile = vec![consensus((0..2).map(|read_index| BaseMeasurement {
         base: Base::T,
@@ -265,10 +297,10 @@ fn conflict_consensus_is_neutral_and_unequal_qualities_reduce_match_confidence()
             position: SequencePosition::reference(1000),
             base: Base::A,
             cpg: false,
-            integrated: false,
             cpg_key: None,
         }],
         path_masses: BTreeMap::from([(1, forward(1, 1, &params, |_| 0.0, |_, _| 0.0)?)]),
+        local: BTreeMap::new(),
     };
     for competing_quality in [40, 30] {
         let profile = vec![consensus([
@@ -300,13 +332,13 @@ fn candidate_insertions_and_deletions_change_cpg_context() -> Result<()> {
         indel: Some(Indel { start: 1002, deleted: vec![Base::T], inserted: Vec::new() }),
     };
     let unedited = Haplotype { alleles: insertion.alleles.clone(), indel: None };
-    assert!(tracked_cpgs(&reference, &unedited, &[1001])?.is_empty());
+    assert!(cpgs(&reference, &unedited, 1000, 1005)?.is_empty());
     assert_eq!(
-        tracked_cpgs(&reference, &insertion, &[1001])?,
+        cpgs(&reference, &insertion, 1000, 1005)?.iter().map(|key| key.c).collect::<BTreeSet<_>>(),
         BTreeSet::from([SequencePosition::reference(1001)])
     );
     assert_eq!(
-        tracked_cpgs(&reference, &deletion, &[1001])?,
+        cpgs(&reference, &deletion, 1000, 1005)?.iter().map(|key| key.c).collect::<BTreeSet<_>>(),
         BTreeSet::from([SequencePosition::reference(1001)])
     );
     Ok(())
@@ -576,13 +608,13 @@ fn cpg_annotation_uses_context_outside_the_realignment_interval() -> Result<()> 
         let prepared = Prepared::new(&reference, &[site], None, &[], &params)?;
         let template = prepared.template(&reference, &haplotype, &[focal], &params)?;
         assert!(template.bases.get(edge).expect("edge").cpg);
-        assert!(!template.bases.get(edge).expect("edge").integrated);
+        assert!(template.bases.get(edge).expect("edge").cpg_key.is_some());
     }
     Ok(())
 }
 
 #[test]
-fn internal_inserted_cpgs_do_not_share_the_focal_methylation_rate() -> Result<()> {
+fn internal_inserted_cpgs_have_distinct_rate_keys() -> Result<()> {
     let reference = reference(b"ACTAGTCATG");
     let haplotype = Haplotype {
         alleles: vec![(1003, Base::A)],
@@ -592,7 +624,9 @@ fn internal_inserted_cpgs_do_not_share_the_focal_methylation_rate() -> Result<()
             inserted: vec![Base::C, Base::G, Base::C, Base::G],
         }),
     };
-    assert!(tracked_cpgs(&reference, &haplotype, &[1003])?.is_empty());
+    let keys = cpgs(&reference, &haplotype, 1000, 1010)?;
+    assert_eq!(keys.len(), 2);
+    assert!(keys.iter().all(|key| !key.c.is_reference() && !key.g.is_reference()));
     Ok(())
 }
 
@@ -659,5 +693,107 @@ fn an_unused_mate_cannot_change_orientation_or_force_aligned_fallback() -> Resul
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn read_local_windows_keep_the_molecular_observation_model_normalized() -> Result<()> {
+    let reference = Reference { start: 1000, bases: vec![Base::A; 500] };
+    let sites = vec![Site::new(1100, Base::A, [Base::C])?, Site::new(1400, Base::A, [Base::G])?];
+    let haplotype = Haplotype { alleles: vec![(1100, Base::A), (1400, Base::G)], indel: None };
+    let params = params(true);
+    let mut total = 0.0;
+    for a in Base::KNOWN {
+        for b in Base::KNOWN {
+            let reads = [(1100, a), (1400, b)].map(|(pos, base)| {
+                let observation = Observation { pos, base, quality: Some(40) };
+                ReadEvidence {
+                    mapq: Some(60),
+                    strand: Strand::OT,
+                    observations: vec![observation],
+                    sequence: Some(SequenceEvidence {
+                        bases: vec![SequenceObservation {
+                            position: SequencePosition::reference(pos),
+                            base,
+                            quality: Some(40),
+                        }],
+                        reference_skip: false,
+                        indels: Vec::new(),
+                    }),
+                }
+            });
+            let fragment = Fragment { reads: reads.to_vec() };
+            let prepared =
+                Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
+            let template = prepared.template(&reference, &haplotype, &[1100, 1400], &params)?;
+            assert_eq!(template.local.len(), 2);
+            assert!(template.local.values().all(|template| template.bases.len() <= 25));
+            total += prepared
+                .fragment_likelihood(0, &fragment, &template, 0.5, &params)?
+                .expect("realigned")
+                .exp();
+        }
+    }
+    assert!((total - 1.0).abs() < 1e-10, "{total}");
+    Ok(())
+}
+
+#[test]
+fn scaled_forward_matches_the_log_domain_oracle_on_short_and_long_profiles() -> Result<()> {
+    let params = params(true);
+    for rows in [1, 7, 40, 150, 500] {
+        for columns in [1, 9, 63, 180] {
+            let insertion = |row| if row % 9 == 0 { 0.0 } else { 0.25_f64.ln() };
+            let emission =
+                |row, column| (0.001 + ((row * 7 + column * 11) % 19) as f64 * 0.045).ln();
+            let original = forward_log(rows, columns, &params, insertion, emission)?;
+            let scaled = forward(rows, columns, &params, insertion, emission)?;
+            assert!(
+                (original - scaled).abs() < 1e-9,
+                "{rows}/{columns}: {original} versus {scaled}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn phase_likelihood_reuse_ignores_unsequenced_mate_gaps_but_preserves_cpg_partners() -> Result<()> {
+    let reference = Reference { start: 1000, bases: vec![Base::A; 500] };
+    let sites = vec![Site::new(1100, Base::A, [Base::C])?, Site::new(1300, Base::A, [Base::G])?];
+    let reads = [1100, 1300].map(|pos| ReadEvidence {
+        mapq: Some(60),
+        strand: Strand::OT,
+        observations: vec![Observation { pos, base: Base::A, quality: Some(40) }],
+        sequence: Some(SequenceEvidence {
+            bases: vec![SequenceObservation {
+                position: SequencePosition::reference(pos),
+                base: Base::A,
+                quality: Some(40),
+            }],
+            reference_skip: false,
+            indels: Vec::new(),
+        }),
+    });
+    let fragment = Fragment { reads: reads.to_vec() };
+    let params = params(true);
+    let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
+    let first =
+        Haplotype { alleles: vec![(1100, Base::A), (1200, Base::A), (1300, Base::G)], indel: None };
+    let mut unobserved = first.clone();
+    unobserved.alleles.get_mut(1).expect("gap SNP").1 = Base::G;
+    assert_eq!(prepared.signature(&first, &params), prepared.signature(&unobserved, &params));
+    let a = prepared.template(&reference, &first, &[1100, 1300], &params)?;
+    let count = prepared.normalizers.borrow().len();
+    let b = prepared.template(&reference, &unobserved, &[1100, 1300], &params)?;
+    assert_eq!(prepared.normalizers.borrow().len(), count);
+    assert_eq!(
+        prepared.fragment_likelihood(0, &fragment, &a, 0.5, &params)?,
+        prepared.fragment_likelihood(0, &fragment, &b, 0.5, &params)?
+    );
+    let mut partner = first.clone();
+    partner.alleles.push((1113, Base::G));
+    partner.alleles.sort_by_key(|(pos, _)| *pos);
+    assert_ne!(prepared.signature(&first, &params), prepared.signature(&partner, &params));
     Ok(())
 }

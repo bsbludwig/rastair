@@ -12,3 +12,5 @@
 .Rproj.user
 docs/yapp.config
 .claude/settings.json
+
+__pycache__/

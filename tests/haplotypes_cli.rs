@@ -96,6 +96,76 @@ fn full_read_pairs_support_competing_haplotype_likelihoods() -> Result<()> {
 
 #[test]
 #[cfg(feature = "experimental-seqair")]
+fn progressive_regions_cross_fragment_and_chunk_boundaries_with_bounded_haplotypes() -> Result<()> {
+    let positions = [180, 290, 400, 510, 620];
+    let mut scenario = Scenario::new(1000);
+    for &pos in &positions {
+        scenario = scenario.reference_at(pos - 1, b"AAA").het(pos, b'G', Hap::One);
+    }
+    for pair in positions.windows(2) {
+        let [a, b] = pair else { continue };
+        scenario = scenario.balanced(a - 20, b - 20, 1);
+    }
+    for engine in ["aligned", "pair-hmm"] {
+        let args = ["--non-taps", "--likelihood-engine", engine, "--max-haplotypes=32"];
+        let (whole, whole_pairs) = diagnose_scenario_at(&scenario, &args, Some(400))?;
+        let mut small_args = args.to_vec();
+        small_args.push("--chunk-length=37");
+        let (small, small_pairs) = diagnose_scenario_at(&scenario, &small_args, Some(400))?;
+        assert_eq!(whole, small);
+        assert_eq!(whole_pairs, small_pairs);
+        let row = allele_row(&whole, 400, "G")?;
+        assert_eq!(row.get("context_sites"), Some(&"5".to_owned()));
+        assert_eq!(row.get("context_start"), Some(&"181".to_owned()));
+        assert_eq!(row.get("context_end"), Some(&"621".to_owned()));
+        ensure!(row.get("p_het").ok_or_else(|| eyre!("p_het"))?.parse::<f64>()? > 0.999);
+        ensure!(row.get("haplotypes").ok_or_else(|| eyre!("haplotypes"))?.parse::<usize>()? <= 32);
+        ensure!(
+            row.get("pruned_haplotypes")
+                .ok_or_else(|| eyre!("pruned_haplotypes"))?
+                .parse::<usize>()?
+                > 0
+        );
+        let mut sums = BTreeMap::<String, f64>::new();
+        for line in whole_pairs.lines().skip(1) {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            *sums
+                .entry(fields.get(1).ok_or_else(|| eyre!("pair position"))?.to_string())
+                .or_default() +=
+                fields.get(7).ok_or_else(|| eyre!("pair posterior"))?.parse::<f64>()?;
+        }
+        assert!(sums.values().all(|sum| (sum - 1.0).abs() < 1e-10));
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn removed_methylation_models_are_rejected_and_expansion_bounds_are_validated() -> Result<()> {
+    let scenario = Scenario::new(500);
+    let dir = TempDir::new()?;
+    let fasta = scenario.write_fasta(dir.path())?;
+    let bam = dir.path().join("reads.bam");
+    scenario.write_bam(&bam)?;
+    for extra in [
+        vec!["--methylation-model=integrated"],
+        vec!["--methylation-model=neutral"],
+        vec!["--window-radius=200", "--expansion-radius=150"],
+    ] {
+        let output = rastair()
+            .args(["ml", "haplotypes", "--fasta-file"])
+            .arg(&fasta)
+            .arg(&bam)
+            .arg(scenario.region())
+            .args(extra)
+            .output()?;
+        ensure!(!output.status.success());
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "experimental-seqair")]
 fn singleton_alternate_pairs_are_one_observation_through_bam_collection() -> Result<()> {
     use utils::scenario::Strand::{Bottom, Top};
     for (context, ref_ot, alt_ot, ref_ob, alt, non_taps) in [
@@ -462,23 +532,23 @@ fn simplified_cpg_models_retain_neighbors_and_survive_chunking_through_bam() -> 
         .methylated(Hap::One)
         .methylated(Hap::Two)
         .balanced(100, 400, 6);
-    for model in ["neutral", "shrinkage"] {
+    {
         for engine in ["aligned", "pair-hmm"] {
-            let common = ["--methylation-model", model, "--likelihood-engine", engine];
+            let common = ["--likelihood-engine", engine];
             let mut whole_args = common.to_vec();
             whole_args.push("--chunk-length=600");
             let mut chunk_args = common.to_vec();
             chunk_args.push("--chunk-length=150");
             let (whole, pairs_whole) = diagnose_scenario_at(&scenario, &whole_args, Some(120))?;
             let (chunks, pairs_chunks) = diagnose_scenario_at(&scenario, &chunk_args, Some(120))?;
-            assert_eq!(whole, chunks, "{model} {engine}");
-            assert_eq!(pairs_whole, pairs_chunks, "{model} {engine}");
+            assert_eq!(whole, chunks, "{engine}");
+            assert_eq!(pairs_whole, pairs_chunks, "{engine}");
             let row = allele_row(&whole, 120, "T")?;
-            assert_eq!(row.get("cpg_context_limited"), Some(&"false".to_owned()));
-            assert_eq!(row.get("context_sites"), Some(&"3".to_owned()));
+            assert_eq!(row.get("resource_limited_sites"), Some(&"0".to_owned()));
+            assert_eq!(row.get("context_sites"), Some(&"4".to_owned()));
             ensure!(
                 row.get("p_het").ok_or_else(|| eyre!("p_het"))?.parse::<f64>()? > 0.99,
-                "{model} {engine}: {row:?}"
+                "{engine}: {row:?}"
             );
         }
     }

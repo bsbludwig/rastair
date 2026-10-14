@@ -257,6 +257,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Phased genotypes are written as `0|1` with a `PS` phase set. Requires a build with the `experimental-seqair` backend.
 
   Default value: `false`
+* `--phase-mask <FILE>` — Exclude BED intervals from phasing and split blocks at their boundaries
+
+   Repeat for multiple masks. Accepts plain or gzip BED files and UCSC centromere tables. Variant and methylation calls are retained.
 
 ###### **Processing Options:**
 

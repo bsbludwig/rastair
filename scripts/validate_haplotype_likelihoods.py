@@ -65,7 +65,7 @@ def score(data, truth, callable_site):
         "recall": tp / (tp + fn) if tp + fn else None,
         "mean_log_loss_on_candidates": loss / len(data) if data else None,
         "brier_score_on_candidates": brier / len(data) if data else None,
-        "cpg_context_limited_rows": sum(row["cpg_context_limited"] == "true" for row in data),
+        "cpg_context_limited_rows": sum(row.get("cpg_context_limited", "false") == "true" for row in data),
         "alignment_indel_rows": sum(int(row["alignment_indel_reads"]) > 0 for row in data),
         "realigned_rows": sum(int(row.get("realigned_fragments", 0)) > 0 for row in data),
         "aligned_fallback_rows": sum(int(row.get("aligned_fallback_fragments", 0)) > 0 for row in data),
