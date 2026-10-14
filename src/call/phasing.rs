@@ -318,7 +318,7 @@ fn phase_unmasked(
     region: std::ops::Range<u64>,
 ) -> color_eyre::eyre::Result<Vec<(usize, PhaseCall)>> {
     use crate::call::haplotypes::{
-        Reference, Site,
+        Reference, Scorer, Site,
         phase::{State, parameters, score},
     };
     use color_eyre::eyre::{OptionExt as _, ensure};
@@ -373,7 +373,7 @@ fn phase_unmasked(
     )?;
     let links: BTreeMap<_, _> = linkage
         .edges
-        .into_iter()
+        .iter()
         .filter(|((a, b), _)| {
             [a, b].into_iter().all(|&index| {
                 linkage
@@ -382,6 +382,7 @@ fn phase_unmasked(
                     .is_some_and(|counts| counts.iter().all(|&count| count >= 2))
             })
         })
+        .map(|(&pair, &count)| (pair, count))
         .collect();
     let mut components: Vec<usize> = (0..sites.len()).collect();
     for (&(a, b), &count) in &links {
@@ -461,21 +462,19 @@ fn phase_unmasked(
                     })
                 })
                 .collect::<color_eyre::eyre::Result<Vec<_>>>()?;
-            let included: Vec<_> = fragments
-                .iter()
-                .filter(|fragment| {
-                    domains.iter().any(|site| {
-                        fragment.reads.iter().any(|read| {
-                            read.observations.binary_search_by_key(&site.pos, |obs| obs.pos).is_ok()
-                        })
-                    })
-                })
+            let included: Vec<_> = linkage
+                .fragments_covering(block.iter().copied())
+                .into_iter()
+                .filter_map(|index| fragments.get(index))
                 .collect();
             let first = domains
                 .first()
                 .and_then(|site| site.alleles.first())
                 .copied()
                 .ok_or_eyre("Missing anchor allele")?;
+            // Every beam step rescores the same fragments against the same
+            // read-local templates; the memo lives as long as the block does.
+            let mut scorer = Scorer::new(&params);
             let mut states = vec![State { first: vec![first] }];
             let mut held = Vec::new();
             for (step, domain) in domains.iter().enumerate().skip(1) {
@@ -492,20 +491,15 @@ fn phase_unmasked(
                     .collect();
                 if states.len() > 48 {
                     let prefix = domains.get(..=step).ok_or_eyre("Missing phase prefix")?;
-                    let prefix_reads: Vec<_> = included
-                        .iter()
-                        .copied()
-                        .filter(|fragment| {
-                            prefix.iter().any(|site| {
-                                fragment.reads.iter().any(|read| {
-                                    read.observations
-                                        .binary_search_by_key(&site.pos, |obs| obs.pos)
-                                        .is_ok()
-                                })
-                            })
-                        })
+                    let prefix_reads: Vec<_> = linkage
+                        .fragments_covering(
+                            block.get(..=step).ok_or_eyre("Missing phase prefix")?.iter().copied(),
+                        )
+                        .into_iter()
+                        .filter_map(|index| fragments.get(index))
                         .collect();
-                    let posterior = score(&reference, prefix, &states, &prefix_reads, &params)?;
+                    let posterior =
+                        score(&reference, prefix, &states, &prefix_reads, &params, &mut scorer)?;
                     let mut ranked: Vec<_> =
                         states.into_iter().zip(posterior.probabilities).collect();
                     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -546,7 +540,7 @@ fn phase_unmasked(
                 }
             }
             states.extend(held);
-            let posterior = score(&reference, &domains, &states, &included, &params)?;
+            let posterior = score(&reference, &domains, &states, &included, &params, &mut scorer)?;
             evaluated += 1;
             let best = posterior
                 .probabilities

@@ -206,13 +206,19 @@ pub(super) fn estimate_with_pairs(
     for cpg in context.haplotypes.iter().flatten().copied().collect::<BTreeSet<_>>() {
         let mut total = prior.clone();
         let mut contributions = Vec::with_capacity(fragments.len());
+        // The haplotypes carrying this CpG, once, rather than per fragment; the
+        // sum below keeps haplotype order.
+        let carriers: Vec<&Vec<f64>> = context
+            .haplotypes
+            .iter()
+            .zip(&assignments)
+            .filter(|(cpgs, _)| cpgs.contains(&cpg))
+            .map(|(_, assignments)| assignments)
+            .collect();
         for (index, fragment) in fragments.iter().enumerate() {
-            let mass = context
-                .haplotypes
+            let mass = carriers
                 .iter()
-                .zip(&assignments)
-                .filter(|(cpgs, _)| cpgs.contains(&cpg))
-                .map(|(_, assignments)| assignments.get(index).copied().unwrap_or(0.0))
+                .map(|assignments| assignments.get(index).copied().unwrap_or(0.0))
                 .sum::<f64>();
             // Ambiguous CpG/non-CpG chromosome assignments cannot distinguish
             // conversion from a genetic T/A, so they must not fit a CpG rate.

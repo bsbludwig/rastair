@@ -445,6 +445,99 @@ PairHMM production profiles use mate-local coordinate windows with 12 bp flanks.
 - A run that reports zero phased sites is usually an htslib binary (see "Know which binary
   produced a result"), not a regression.
 
+### PairHMM phasing performance (2026-10-14)
+
+`call --phase` spent ~90 % of its CPU in the scaled forward recurrence of
+`pair_hmm.rs`, one closure-driven DP per (fragment, template, mapping
+hypothesis), rescored at every beam step. On chr1:80000001-81000000 one 100 kb
+segment with 257 het sites held 63 % of the whole run's samples while 15 workers
+sat idle. Three changes, every one of them bit-identical to the old code:
+
+- **`pair_hmm/forward.rs`** runs up to eight (profile, template) problems of
+  one shape as lanes of `[f64; 8]`; every lane performs the scalar recurrence's
+  operations in the scalar order, so a batch equals scoring its members one at
+  a time. `run` dispatches to `#[target_feature(enable = "avx512f")]` /
+  `"avx2"` copies of the same generic function (`is_x86_feature_detected!`),
+  which agree bit for bit because no fused multiply-add is ever enabled and
+  the row scale stays a division. The emission closure became a five-term dot
+  product (`column_weights`): a column weights the A/C/G/T emissions and an
+  insertion slot, each branch of the old closure maps to one or two nonzero
+  weights, and adding a zero product or swapping two addends is exact.
+  Batches run on the enclosing rayon pool when there is one
+  (`rayon::current_thread_index()`), so the hot segment borrows the idle
+  workers: `ordair`'s workers leave their loop once the segment queue is
+  drained and are then stealable.
+- **`Scorer`** (in `pair_hmm.rs`) takes `Plan`s — a fragment's jobs
+  (profile rows × template weights) and the hypotheses that combine them —
+  and batches every job of a `phase::score` matrix pass. It memoizes forward
+  results by the *content* of the row and column terms (interned bit
+  patterns, so a hit is an exact recomputation avoided), which is what makes
+  the beam's repeated pilot passes cheap; shrinkage-pass results are looked
+  up but not inserted, as the rates change every step. One `Scorer` per block
+  in `phasing.rs`.
+- **Bounded mapping hypotheses are skipped exactly.** Every alignment path
+  emits each profile row once, through a match or an insertion, and a
+  column's weights are a convex combination of the row's five terms, so a
+  pass scores at most the sum of the rows' log-maxima (`ProfileTerms::bound`,
+  template-independent; a mismapped mate's rows max at 0.25). A "mate
+  mismapped" hypothesis (weight ~1e-6 for MAPQ 60) is skipped when
+  `log_add(result_so_far, bound + 1e-3) == result_so_far`: it then cannot
+  change a bit of the fragment likelihood and its DP is never run, which is
+  two of the three passes an overlapping pair used to need. The all-mapped
+  hypotheses are always scored first, in accumulation order, so the decision
+  is made on the same running value the old loop had. The first version of
+  the bound (`score ≤ -normalization`) never fired: it ignored the 0.25
+  emissions and was ~100 nats too loose.
+
+Around the kernel, the per-step work that gated wall time on the hot segment
+is parallel or indexed now: `phase::score` plans fragments with `par_iter`
+(each plan is independent; they run as one batch afterwards), `Linkage`
+records which fragments observe each site so a block selects its fragments by
+index instead of rescanning all ~6,600, `estimate_with_pairs` lists a CpG's
+carrier haplotypes once (summing in haplotype order, as before), the
+profile rows take one `powf` per base and derive the mismapped-mate rows from
+them, and `cpgs`/`template` look alleles up in a window-filtered haplotype.
+
+`src/call/haplotypes/pair_hmm/tests.rs` holds the oracles: the old closure recurrence
+(`forward_scaled_reference`) and the old mixed emission
+(`reference_score_with_model`), compared to the new path with `to_bits()`,
+plus `bounded_mapping_hypotheses_are_skipped_without_changing_the_likelihood`
+(a clean pair skips both mismapped-mate hypotheses, a pair whose mate carries
+40 mismatches must score that mate's hypothesis). Break the kernel and these
+fail.
+
+**Measuring.** `tmp/phasing-perf/` (ignored) has the harness: `run_region.sh`
+(`call --phase` with the centromere and ENCODE blacklist masks, 16 threads,
+`/usr/bin/time`), `compare_vcf.sh` (byte identity of every record and every
+header line but the command line) and `bench.sh`; baseline VCFs are in
+`ref/`. Submit through SLURM with absolute paths and `--chdir`: `sbatch`
+does not inherit the shell's `cd`, and compute nodes do not see the login
+node's `/tmp` (`tabix` for the BED-reader unit tests is staged in
+`tmp/phasing-perf/tools`). Profile with `perf record -e cycles:u` (user-space
+sampling works with `perf_event_paranoid=2`); release binaries keep symbol
+names, and the lane kernels show up as `run_avx512<8>` etc.
+
+**Results** (`--threads 16`, baseline = commit `06691dd`, both arms on the same
+SLURM node except the 30 Mb row, every output byte-identical to the baseline's):
+
+| region | baseline wall / CPU | now wall / CPU |
+| --- | --- | --- |
+| chr1:80000001-81000000 (257 hets in one segment) | 33.7 s / 53.7 s | 1.7 s / 9.7 s |
+| chr1:10000001-11000000 | 7.9 s / 16.0 s | 0.6 s / 4.3 s |
+| chr1:121000001-126000000 (5 Mb, masked centromere) | 40.9 s / 61.5 s | 3.2 s / 23.6 s |
+| chr1:1-30000000 (1,055,652 records, 11,942 phased) | 500 s / 1,858 s | 38 s / 193 s |
+
+The unphased call is 0.24 s / 1.2 s on the first region and 1.7 s / 14 s on the
+5 Mb one, so phasing itself went from ~33 s to under a second of wall time
+there. CPU time on the compute nodes inflates relative to wall once the nested
+batches share SMT siblings; on the 64-core login node the first region takes
+1.1 s / 6.1 s. The profile after the change is ~35 % in `run_avx512<8>` and its
+partial-lane variants (the row scale's divisions are most of it; a division
+cannot become a reciprocal multiply without changing bits), ~10 % template and
+weight construction, and 13 % in the variant-calling forest, which phasing
+does not touch. The next exact wins, if ever needed, are mixed-shape lanes for
+the tail batches and precomputed column weights per (window, orientation).
+
 ## ML feature layout (`src/metrics/ml/features/`)
 
 ### Experimental SNP haplotype likelihood prototype

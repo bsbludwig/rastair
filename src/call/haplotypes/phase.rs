@@ -4,6 +4,7 @@ use super::{
     methylation, pair_hmm,
 };
 use color_eyre::eyre::{OptionExt as _, Result, ensure};
+use rayon::prelude::*;
 use seqair_types::{Base, Probability};
 use std::collections::BTreeMap;
 
@@ -42,6 +43,7 @@ pub(crate) fn score(
     states: &[State],
     fragments: &[&Fragment],
     params: &LikelihoodParams,
+    scorer: &mut pair_hmm::Scorer,
 ) -> Result<Posterior> {
     ensure!(!sites.is_empty() && !states.is_empty(), "Empty phase hypothesis set");
     let mut counts = BTreeMap::<super::Indel, usize>::new();
@@ -155,43 +157,88 @@ pub(crate) fn score(
                 .map(pair_hmm::Prepared::localize)
         })
         .collect::<Result<_>>()?;
-    let matrix = |rates: Option<&methylation::Rates>, neutral: bool| -> Result<Vec<Vec<f64>>> {
-        let mut values = vec![vec![0.0; fragments.len()]; haplotypes.len()];
-        for (fragment_index, (fragment, prepared)) in fragments.iter().zip(&local).enumerate() {
-            let mut cache = BTreeMap::<(Vec<(u32, u8)>, bool), f64>::new();
-            for (index, haplotype) in haplotypes.iter().enumerate() {
-                let key = prepared.signature(haplotype, params);
-                let key = (key, haplotype.indel.is_some());
-                let value = if let Some(value) = cache.get(&key) {
-                    *value
+    let matrix = |rates: Option<&methylation::Rates>,
+                  neutral: bool,
+                  scorer: &mut pair_hmm::Scorer|
+     -> Result<Vec<Vec<f64>>> {
+        enum Slot {
+            Planned(usize),
+            Value(f64),
+        }
+        // Fragments are planned independently, on the pool when there is one;
+        // the plans run as one batch afterwards, so the order never matters.
+        let planned = fragments
+            .par_iter()
+            .zip(local.par_iter())
+            .enumerate()
+            .map(|(fragment_index, (fragment, prepared))| {
+                let model = if neutral {
+                    methylation::Scoring::Neutral(&context)
+                } else if let Some(rates) = rates {
+                    methylation::Scoring::Shrinkage(rates, fragment_index)
                 } else {
-                    let template = prepared.template(reference, haplotype, &loci, params)?;
-                    let model = if neutral {
-                        methylation::Scoring::Neutral(&context)
-                    } else if let Some(rates) = rates {
-                        methylation::Scoring::Shrinkage(rates, fragment_index)
-                    } else {
-                        methylation::Scoring::Ordinary
+                    methylation::Scoring::Ordinary
+                };
+                let mut cache = BTreeMap::<(Vec<(u32, u8)>, bool), usize>::new();
+                let mut distinct: Vec<Slot> = Vec::new();
+                let mut plans = Vec::new();
+                let mut by_haplotype = Vec::with_capacity(haplotypes.len());
+                for (index, haplotype) in haplotypes.iter().enumerate() {
+                    let key = (prepared.signature(haplotype, params), haplotype.indel.is_some());
+                    let slot = match cache.get(&key) {
+                        Some(&slot) => slot,
+                        None => {
+                            let template =
+                                prepared.template(reference, haplotype, &loci, params)?;
+                            let slot =
+                                match prepared.plan(0, fragment, &template, params, &model)? {
+                                    Some(plan) => {
+                                        plans.push(plan);
+                                        Slot::Planned(plans.len() - 1)
+                                    }
+                                    None => Slot::Value(
+                                        super::likelihood::fragment_likelihood_with_model(
+                                            fragment,
+                                            haplotype,
+                                            reference,
+                                            &loci,
+                                            params,
+                                            &model,
+                                            context
+                                                .haplotypes
+                                                .get(index)
+                                                .ok_or_eyre("Missing phase CpG context")?,
+                                        )?,
+                                    ),
+                                };
+                            distinct.push(slot);
+                            cache.insert(key, distinct.len() - 1);
+                            distinct.len() - 1
+                        }
                     };
-                    let value = match prepared
-                        .fragment_likelihood_with_model(0, fragment, &template, params, &model)?
-                    {
-                        Some(value) => value,
-                        None => super::likelihood::fragment_likelihood_with_model(
-                            fragment,
-                            haplotype,
-                            reference,
-                            &loci,
-                            params,
-                            &model,
-                            context
-                                .haplotypes
-                                .get(index)
-                                .ok_or_eyre("Missing phase CpG context")?,
-                        )?,
-                    };
-                    cache.insert(key, value);
-                    value
+                    by_haplotype.push(slot);
+                }
+                Ok((distinct, by_haplotype, plans))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut plans = Vec::new();
+        let mut slots = Vec::with_capacity(planned.len());
+        for (distinct, by_haplotype, fragment_plans) in planned {
+            let offset = plans.len();
+            plans.extend(fragment_plans);
+            slots.push((offset, distinct, by_haplotype));
+        }
+        // Shrinkage rates are refitted at every beam step, so only the other
+        // models' forward results are worth remembering across calls.
+        let scored = scorer.run(&plans, rates.is_none())?;
+        let mut values = vec![vec![0.0; fragments.len()]; haplotypes.len()];
+        for (fragment_index, (offset, distinct, by_haplotype)) in slots.iter().enumerate() {
+            for (index, &slot) in by_haplotype.iter().enumerate() {
+                let value = match distinct.get(slot).ok_or_eyre("Missing phase likelihood slot")? {
+                    Slot::Planned(plan) => {
+                        *scored.get(offset + plan).ok_or_eyre("Missing planned phase likelihood")?
+                    }
+                    Slot::Value(value) => *value,
                 };
                 *values
                     .get_mut(index)
@@ -224,9 +271,9 @@ pub(crate) fn score(
             .collect()
     };
     let values = if params.non_taps {
-        matrix(None, false)?
+        matrix(None, false, scorer)?
     } else {
-        let pilot = matrix(None, true)?;
+        let pilot = matrix(None, true, scorer)?;
         let rates = methylation::estimate_with_pairs(
             &context,
             &haplotypes,
@@ -235,7 +282,7 @@ pub(crate) fn score(
             params,
             &joint(&pilot)?,
         )?;
-        matrix(Some(&rates), false)?
+        matrix(Some(&rates), false, scorer)?
     };
     let pairs = joint(&values)?;
     let normalizer = log_sum(pairs.iter().map(|(_, _, value)| *value));
@@ -250,6 +297,13 @@ pub(crate) fn score(
 pub(crate) struct Linkage {
     pub edges: BTreeMap<(usize, usize), usize>,
     pub counts: Vec<[usize; 2]>,
+    /// Per site, ascending, the fragments with an observation there on any
+    /// read: what a block's scoring selects from.
+    #[cfg_attr(
+        not(feature = "experimental-seqair"),
+        expect(dead_code, reason = "Read by phasing, which only the seqair backend runs")
+    )]
+    pub covering: Vec<Vec<usize>>,
 }
 
 pub(crate) fn links(
@@ -259,9 +313,11 @@ pub(crate) fn links(
     use super::likelihood::{BaseMeasurement, consensus};
     let mut result = BTreeMap::new();
     let mut counts = vec![[0usize; 2]; sites.len()];
-    for fragment in fragments {
+    let mut covering = vec![Vec::new(); sites.len()];
+    for (fragment_index, fragment) in fragments.iter().enumerate() {
         let mut reached = Vec::new();
         for (index, (pos, bases, methylable)) in sites.iter().enumerate() {
+            let mut observes = false;
             let observed =
                 consensus(fragment.reads.iter().enumerate().filter_map(|(read_index, read)| {
                     let obs = read
@@ -269,6 +325,7 @@ pub(crate) fn links(
                         .binary_search_by_key(pos, |obs| obs.pos)
                         .ok()
                         .and_then(|index| read.observations.get(index))?;
+                    observes = true;
                     Some(BaseMeasurement {
                         base: obs.base,
                         quality: obs.quality,
@@ -276,6 +333,9 @@ pub(crate) fn links(
                         read_index,
                     })
                 }))?;
+            if observes && let Some(covering) = covering.get_mut(index) {
+                covering.push(fragment_index);
+            }
             let Some(source) = observed.source.and_then(|index| fragment.reads.get(index)) else {
                 continue;
             };
@@ -306,7 +366,24 @@ pub(crate) fn links(
             }
         }
     }
-    Ok(Linkage { edges: result, counts })
+    Ok(Linkage { edges: result, counts, covering })
+}
+
+#[cfg(feature = "experimental-seqair")]
+impl Linkage {
+    /// The fragments observing any of these sites, ascending: the order the
+    /// fragment slice has them in.
+    pub(crate) fn fragments_covering(&self, sites: impl IntoIterator<Item = usize>) -> Vec<usize> {
+        let mut selected: Vec<usize> = sites
+            .into_iter()
+            .filter_map(|site| self.covering.get(site))
+            .flatten()
+            .copied()
+            .collect();
+        selected.sort_unstable();
+        selected.dedup();
+        selected
+    }
 }
 
 #[cfg(test)]
@@ -316,6 +393,17 @@ mod tests {
         Observation, ReadEvidence, SequenceEvidence, SequenceObservation, SequencePosition,
     };
     use seqair_types::Strand;
+
+    fn score(
+        reference: &Reference,
+        sites: &[Site],
+        states: &[State],
+        fragments: &[&Fragment],
+        params: &LikelihoodParams,
+    ) -> Result<Posterior> {
+        let mut scorer = pair_hmm::Scorer::new(params);
+        super::score(reference, sites, states, fragments, params, &mut scorer)
+    }
 
     fn fixture() -> (Reference, Vec<Site>, Vec<State>) {
         let mut random = 0x7134_3afe_u32;

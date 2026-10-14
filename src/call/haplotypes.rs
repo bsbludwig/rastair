@@ -12,6 +12,8 @@ mod pair_hmm;
 #[cfg(any(feature = "experimental-seqair", test))]
 pub(crate) mod phase;
 pub(crate) mod reads;
+#[cfg(feature = "experimental-seqair")]
+pub(crate) use pair_hmm::Scorer;
 pub use pair_hmm::{Indel, SequenceEvidence, SequenceObservation, SequencePosition};
 mod diagnostics;
 pub use diagnostics::{DiagnosticReadParams, HaplotypeDiagnosticParams, diagnose};
@@ -549,27 +551,13 @@ fn likelihood_matrix_geometry(
                 .transpose()
         })
         .collect::<Result<Vec<_>>>()?;
-    let score_uncached = |haplotype_index: usize,
-                          fragment_index: usize,
-                          scoring: &methylation::Scoring<'_>|
+    let aligned = |haplotype_index: usize,
+                   fragment_index: usize,
+                   scoring: &methylation::Scoring<'_>|
      -> Result<f64> {
-        let haplotype = haplotypes.get(haplotype_index).ok_or_eyre("Missing scoring haplotype")?;
-        let fragment = included.get(fragment_index).ok_or_eyre("Missing scoring fragment")?;
-        if let Some(prepared) = &realignment
-            && let Some(template) = templates.get(haplotype_index).and_then(Option::as_ref)
-            && let Some(value) = prepared.fragment_likelihood_with_model(
-                fragment_index,
-                fragment,
-                template,
-                params,
-                scoring,
-            )?
-        {
-            return Ok(value);
-        }
         likelihood::fragment_likelihood_with_model(
-            fragment,
-            haplotype,
+            included.get(fragment_index).ok_or_eyre("Missing scoring fragment")?,
+            haplotypes.get(haplotype_index).ok_or_eyre("Missing scoring haplotype")?,
             reference,
             &loci,
             params,
@@ -577,49 +565,89 @@ fn likelihood_matrix_geometry(
             context.haplotypes.get(haplotype_index).ok_or_eyre("Missing CpG context")?,
         )
     };
-    let cache = std::cell::RefCell::new(std::collections::BTreeMap::new());
-    let score = |haplotype_index: usize,
-                 fragment_index: usize,
-                 scoring: &methylation::Scoring<'_>|
-     -> Result<f64> {
-        let key = if local {
-            realignment
-                .as_ref()
-                .map(|prepared| {
-                    let haplotype =
-                        haplotypes.get(haplotype_index).ok_or_eyre("Missing cached haplotype")?;
-                    Ok::<_, color_eyre::Report>((
-                        fragment_index,
-                        prepared.signature_at(fragment_index, haplotype, params),
-                        haplotype.indel.is_some(),
-                    ))
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        if let Some(key) = &key
-            && let Some(value) = cache.borrow().get(key)
-        {
-            return Ok(*value);
+    let mut scorer = pair_hmm::Scorer::new(params);
+    // One pass over the matrix: every realigned pair is planned first, so the
+    // forward passes run as one batch. In read-local mode haplotypes that agree
+    // inside a fragment's window share its first plan, as they shared a cache.
+    let mut pass = |rates: Option<&methylation::Rates>, neutral: bool| -> Result<Vec<Vec<f64>>> {
+        enum Slot {
+            Planned(usize),
+            Value(f64),
         }
-        let value = score_uncached(haplotype_index, fragment_index, scoring)?;
-        if let Some(key) = key {
-            cache.borrow_mut().insert(key, value);
+        let mut plans = Vec::new();
+        let mut distinct: Vec<Slot> = Vec::new();
+        let mut cache = std::collections::BTreeMap::<(usize, Vec<(u32, u8)>, bool), usize>::new();
+        let mut slots = Vec::with_capacity(haplotypes.len());
+        for (haplotype_index, haplotype) in haplotypes.iter().enumerate() {
+            let mut row = Vec::with_capacity(included.len());
+            for (fragment_index, fragment) in included.iter().enumerate() {
+                let scoring = if neutral {
+                    methylation::Scoring::Neutral(&context)
+                } else if let Some(rates) = rates {
+                    methylation::Scoring::Shrinkage(rates, fragment_index)
+                } else {
+                    methylation::Scoring::Ordinary
+                };
+                let key = if local {
+                    realignment.as_ref().map(|prepared| {
+                        (
+                            fragment_index,
+                            prepared.signature_at(fragment_index, haplotype, params),
+                            haplotype.indel.is_some(),
+                        )
+                    })
+                } else {
+                    None
+                };
+                if let Some(key) = &key
+                    && let Some(&slot) = cache.get(key)
+                {
+                    row.push(slot);
+                    continue;
+                }
+                let planned = match (&realignment, templates.get(haplotype_index)) {
+                    (Some(prepared), Some(Some(template))) => {
+                        prepared.plan(fragment_index, fragment, template, params, &scoring)?
+                    }
+                    _ => None,
+                };
+                let slot = match planned {
+                    Some(plan) => {
+                        plans.push(plan);
+                        Slot::Planned(plans.len() - 1)
+                    }
+                    None => Slot::Value(aligned(haplotype_index, fragment_index, &scoring)?),
+                };
+                distinct.push(slot);
+                if let Some(key) = key {
+                    cache.insert(key, distinct.len() - 1);
+                }
+                row.push(distinct.len() - 1);
+            }
+            slots.push(row);
         }
-        Ok(value)
-    };
-    let rates = if !params.non_taps {
-        let pilot = (0..haplotypes.len())
-            .map(|haplotype| {
-                (0..included.len())
-                    .map(|fragment| {
-                        score(haplotype, fragment, &methylation::Scoring::Neutral(&context))
+        let scored = scorer.run(&plans, false)?;
+        slots
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|&slot| {
+                        match distinct.get(slot).ok_or_eyre("Missing likelihood slot")? {
+                            Slot::Planned(plan) => {
+                                scored.get(*plan).copied().ok_or_eyre("Missing planned likelihood")
+                            }
+                            Slot::Value(value) => Ok(*value),
+                        }
                     })
                     .collect::<Result<Vec<_>>>()
             })
-            .collect::<Result<Vec<_>>>()?;
-        Some(methylation::estimate(
+            .collect()
+    };
+    let values = if params.non_taps {
+        pass(None, false)?
+    } else {
+        let pilot = pass(None, true)?;
+        let rates = methylation::estimate(
             &context,
             haplotypes,
             sites,
@@ -627,28 +655,9 @@ fn likelihood_matrix_geometry(
             &pilot,
             params,
             indel.is_some(),
-        )?)
-    } else {
-        None
+        )?;
+        pass(Some(&rates), false)?
     };
-    cache.borrow_mut().clear();
-    let values = (0..haplotypes.len())
-        .map(|haplotype| {
-            (0..included.len())
-                .map(|index| {
-                    let scoring = if params.non_taps {
-                        methylation::Scoring::Ordinary
-                    } else {
-                        methylation::Scoring::Shrinkage(
-                            rates.as_ref().ok_or_eyre("Missing estimated rates")?,
-                            index,
-                        )
-                    };
-                    score(haplotype, index, &scoring)
-                })
-                .collect::<Result<Vec<_>>>()
-        })
-        .collect::<Result<Vec<_>>>()?;
     Ok(LikelihoodMatrix {
         values,
         fragments: included.len(),

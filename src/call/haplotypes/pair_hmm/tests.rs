@@ -1,3 +1,4 @@
+use super::super::likelihood::sequencing_emission;
 use super::*;
 use crate::call::haplotypes::{
     LikelihoodEngine, Observation, ReadEvidence, infer_snp, infer_snp_with_indels,
@@ -164,7 +165,7 @@ fn unmapped_profile_shortcut_matches_the_forward_sum_with_unknown_bases() -> Res
         };
         let expected =
             forward(profile.len(), template.bases.len(), &params, uniform, |i, _| uniform(i))?
-                - template.path_masses.get(&profile.len()).ok_or_eyre("path mass")?;
+                - forward(profile.len(), template.bases.len(), &params, |_| 0.0, |_, _| 0.0)?;
         let actual = score_with_mapping(profile, &template, Strand::OT, 0.9, &params, 1)?;
         assert!((actual - expected).abs() < 1e-12);
     }
@@ -191,7 +192,6 @@ fn overlapping_mates_share_one_conversion_draw_in_the_match_emission() -> Result
             cpg: true,
             cpg_key: None,
         }],
-        path_masses: BTreeMap::from([(1, forward(1, 1, &params, |_| 0.0, |_, _| 0.0)?)]),
         local: BTreeMap::new(),
     };
     let profile = vec![consensus((0..2).map(|read_index| BaseMeasurement {
@@ -300,7 +300,6 @@ fn conflict_consensus_is_neutral_and_unequal_qualities_reduce_match_confidence()
             cpg: false,
             cpg_key: None,
         }],
-        path_masses: BTreeMap::from([(1, forward(1, 1, &params, |_| 0.0, |_, _| 0.0)?)]),
         local: BTreeMap::new(),
     };
     for competing_quality in [40, 30] {
@@ -787,9 +786,7 @@ fn phase_likelihood_reuse_ignores_unsequenced_mate_gaps_but_preserves_cpg_partne
     unobserved.alleles.get_mut(1).expect("gap SNP").1 = Base::G;
     assert_eq!(prepared.signature(&first, &params), prepared.signature(&unobserved, &params));
     let a = prepared.template(&reference, &first, &[1100, 1300], &params)?;
-    let count = prepared.normalizers.borrow().len();
     let b = prepared.template(&reference, &unobserved, &[1100, 1300], &params)?;
-    assert_eq!(prepared.normalizers.borrow().len(), count);
     assert_eq!(
         prepared.fragment_likelihood(0, &fragment, &a, 0.5, &params)?,
         prepared.fragment_likelihood(0, &fragment, &b, 0.5, &params)?
@@ -798,5 +795,257 @@ fn phase_likelihood_reuse_ignores_unsequenced_mate_gaps_but_preserves_cpg_partne
     partner.alleles.push((1113, Base::G));
     partner.alleles.sort_by_key(|(pos, _)| *pos);
     assert_ne!(prepared.signature(&first, &params), prepared.signature(&partner, &params));
+    Ok(())
+}
+
+/// The mixed emission as production scored it before the dot-product weights
+/// and the lane-batched kernel: every branch of the closure, cell by cell.
+fn reference_score_with_model(
+    profile: &Profile,
+    template: &Template,
+    orientation: Strand,
+    scoring: &super::super::methylation::Scoring<'_>,
+    params: &LikelihoodParams,
+    bad_reads: usize,
+) -> Result<f64> {
+    if profile.is_empty() {
+        return Ok(0.0);
+    }
+    if profile.iter().all(|base| base.source.is_none_or(|index| bad_reads & (1 << index) != 0)) {
+        return Ok(profile.iter().filter(|base| base.base.known_index().is_some()).count() as f64
+            * 0.25_f64.ln());
+    }
+    let insertions: Vec<_> = profile
+        .iter()
+        .map(|observed| if observed.base.known_index().is_some() { 0.25 } else { 1.0 })
+        .collect();
+    let emissions: Vec<[f64; 4]> = profile
+        .iter()
+        .map(|observed| {
+            Base::KNOWN.map(|base| {
+                if observed.source.is_some_and(|index| bad_reads & (1 << index) != 0) {
+                    0.25
+                } else {
+                    sequencing_emission(observed.base, base, observed.quality)
+                }
+            })
+        })
+        .collect();
+    let conversions: Vec<_> = template
+        .bases
+        .iter()
+        .map(|base| {
+            let side = [CpgSide::C, CpgSide::G].into_iter().find(|side| {
+                side.unmod_base() == base.base && side.strand() == orientation && !params.non_taps
+            });
+            let rate = params.conversion(base.cpg.then_some(scoring.rate(base.cpg_key.as_ref())));
+            (
+                base.base.known_index(),
+                side.and_then(|side| side.mod_base().known_index()),
+                1.0 - rate,
+                rate,
+                if params.non_taps {
+                    None
+                } else {
+                    scoring.neutral_bases(base.position, orientation, base.base)
+                },
+            )
+        })
+        .collect();
+    let insertion = |i: usize| insertions.get(i).copied().unwrap_or(0.0);
+    let emission = |i: usize, j: usize| {
+        let Some(&(ordinary, modified, unconverted_rate, converted_rate, masked)) =
+            conversions.get(j)
+        else {
+            return 0.0;
+        };
+        let Some(ordinary) = ordinary else { return insertion(i) };
+        let Some(values) = emissions.get(i) else { return 0.0 };
+        if let Some((a, b)) = masked {
+            let Some(a) = a.known_index().and_then(|index| values.get(index)) else {
+                return 0.0;
+            };
+            let Some(b) = b.known_index().and_then(|index| values.get(index)) else {
+                return 0.0;
+            };
+            return (*a + *b) * 0.5;
+        }
+        let ordinary = values.get(ordinary).copied().unwrap_or(0.0);
+        let Some(modified) = modified.and_then(|index| values.get(index).copied()) else {
+            return ordinary;
+        };
+        unconverted_rate * ordinary + converted_rate * modified
+    };
+    let value =
+        forward_scaled_reference(profile.len(), template.bases.len(), params, insertion, emission)?;
+    let mass = forward(profile.len(), template.bases.len(), params, |_| 0.0, |_, _| 0.0)?;
+    Ok(value - mass)
+}
+
+#[test]
+#[expect(clippy::cast_possible_truncation, reason = "Test code")]
+fn dot_product_weights_and_the_batched_kernel_reproduce_the_mixed_emission_bit_for_bit()
+-> Result<()> {
+    use super::super::methylation::{Context, Scoring};
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn below(&mut self, probability: f64) -> bool {
+            self.next() < probability
+        }
+        fn base(&mut self, unknown: f64) -> Base {
+            if self.below(unknown) {
+                Base::Unknown
+            } else {
+                Base::KNOWN.get(((self.next() * 4.0) as usize).min(3)).copied().unwrap_or(Base::A)
+            }
+        }
+    }
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut bases: Vec<_> = (0..64).map(|_| rng.base(0.0)).collect();
+    for start in [10, 30, 50] {
+        *bases.get_mut(start).expect("CpG C") = Base::C;
+        *bases.get_mut(start + 1).expect("CpG G") = Base::G;
+    }
+    let reference = Reference { start: 1000, bases };
+    let haplotypes = [Haplotype { alleles: Vec::new(), indel: None }];
+    let context = Context::new(&reference, &haplotypes, &[1005, 1040], Some(1000..1064))?;
+    let mut compared = 0;
+    for trial in 0..160 {
+        let params = params(trial % 5 == 0);
+        let rows = 1 + (trial * 7) % 13;
+        let columns = 1 + (trial * 11) % 17;
+        let profile: Profile = (0..rows)
+            .map(|_| {
+                let base = rng.base(0.15);
+                MolecularBase {
+                    base,
+                    quality: if rng.below(0.2) { None } else { Some((rng.next() * 45.0) as u8) },
+                    source: base.known_index().map(|_| usize::from(rng.below(0.5))),
+                    measurements: 1,
+                    discordant: false,
+                }
+            })
+            .collect();
+        let start = 1000 + (rng.next() * 40.0) as u32;
+        let template = Template {
+            bases: (0..columns)
+                .map(|offset| {
+                    let pos = start + u32::try_from(offset).expect("short template");
+                    let base = if rng.below(0.5) {
+                        reference.base_at(pos).unwrap_or(Base::A)
+                    } else {
+                        rng.base(0.1)
+                    };
+                    TemplateBase {
+                        position: SequencePosition::reference(pos),
+                        base,
+                        cpg: rng.below(0.3),
+                        cpg_key: None,
+                    }
+                })
+                .collect(),
+            local: BTreeMap::new(),
+        };
+        for orientation in [Strand::OT, Strand::OB] {
+            for bad_reads in 0..4 {
+                let fixed = Scoring::Fixed(rng.next());
+                for scoring in [&fixed, &Scoring::Neutral(&context), &Scoring::Ordinary] {
+                    let expected = reference_score_with_model(
+                        &profile,
+                        &template,
+                        orientation,
+                        scoring,
+                        &params,
+                        bad_reads,
+                    )?;
+                    let actual = score_with_model(
+                        &profile,
+                        &template,
+                        orientation,
+                        scoring,
+                        &params,
+                        bad_reads,
+                    )?;
+                    assert_eq!(
+                        expected.to_bits(),
+                        actual.to_bits(),
+                        "trial {trial} {orientation:?} mask {bad_reads}: {expected} versus {actual}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(compared, 160 * 2 * 4 * 3);
+    Ok(())
+}
+
+#[test]
+fn bounded_mapping_hypotheses_are_skipped_without_changing_the_likelihood() -> Result<()> {
+    use super::super::methylation::Scoring;
+    let params = params(false);
+    let mut state = 0xdead_beef_u32;
+    let sequence: Vec<u8> = (0..200)
+        .map(|_| {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            b"ACGT".get((state >> 30) as usize).copied().expect("DNA")
+        })
+        .collect();
+    let reference = reference(&sequence);
+    // Sites at both ends keep the realignment window over each mate's own bases.
+    let sites = [
+        Site::new(1030, reference.base_at(1030).ok_or_eyre("site")?, Base::KNOWN)?,
+        Site::new(1150, reference.base_at(1150).ok_or_eyre("site")?, Base::KNOWN)?,
+    ];
+    let far = reference.base_at(1150).ok_or_eyre("far site")?;
+    let positions =
+        |range: std::ops::Range<u32>| range.map(SequencePosition::reference).collect::<Vec<_>>();
+    // A clean overlapping pair can only lose ~1e-6 of its weight to a
+    // mismapped mate. A mate full of mismatches makes its own hypothesis the
+    // likely one, and drags the all-mapped score down to where the bound,
+    // which knows nothing of the template, can exclude neither.
+    for (mismatches, expected_skips_per_plan) in [(0, 2), (40, 0)] {
+        let first = sequence.get(20..120).ok_or_eyre("first mate")?.to_vec();
+        let mut second = sequence.get(60..160).ok_or_eyre("second mate")?.to_vec();
+        for base in second.iter_mut().step_by(2).take(mismatches) {
+            *base = match *base {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            };
+        }
+        let fragment = Fragment {
+            reads: vec![
+                read(&first, &positions(1020..1120), Strand::OT),
+                read(&second, &positions(1060..1160), Strand::OT),
+            ],
+        };
+        let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
+        let mut lazy = Scorer::new(&params);
+        let mut exhaustive = Scorer::new(&params).exhaustive();
+        for base in Base::KNOWN {
+            let haplotype = Haplotype { alleles: vec![(1030, base), (1150, far)], indel: None };
+            let template = prepared.template(&reference, &haplotype, &[1030, 1150], &params)?;
+            let plan = prepared
+                .plan(0, &fragment, &template, &params, &Scoring::Fixed(0.3))?
+                .ok_or_eyre("realigned fragment")?;
+            let [skipping] = lazy.run(std::slice::from_ref(&plan), true)?[..] else {
+                color_eyre::eyre::bail!("one value per plan")
+            };
+            let [complete] = exhaustive.run(std::slice::from_ref(&plan), true)?[..] else {
+                color_eyre::eyre::bail!("one value per plan")
+            };
+            assert_eq!(skipping.to_bits(), complete.to_bits(), "{mismatches} mismatches, {base:?}");
+        }
+        assert_eq!(lazy.skipped, expected_skips_per_plan * Base::KNOWN.len());
+        assert_eq!(exhaustive.skipped, 0);
+    }
     Ok(())
 }

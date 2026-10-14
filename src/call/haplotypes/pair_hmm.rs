@@ -1,14 +1,12 @@
 #[cfg(test)]
 use super::likelihood::log_sum;
-use super::likelihood::{BaseMeasurement, MolecularBase, consensus, log_add, sequencing_emission};
+use super::likelihood::{BaseMeasurement, MolecularBase, consensus, log_add, sequencing_emissions};
 use super::{Fragment, Haplotype, LikelihoodParams, Reference, Site};
 use crate::metrics::methylation::CpgSide;
 use color_eyre::eyre::{OptionExt as _, Result, ensure};
+use rustc_hash::FxHashMap;
 use seqair_types::{Base, Strand};
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// An unanchored replacement starting at a zero-based reference coordinate.
 /// Exactly one of `deleted` and `inserted` must be nonempty.
@@ -154,8 +152,21 @@ struct TemplateBase {
 
 pub(super) struct Template {
     bases: Vec<TemplateBase>,
-    path_masses: BTreeMap<usize, f64>,
     local: BTreeMap<(u32, u32), Box<Template>>,
+}
+
+/// The haplotype's alleles inside `start..end`, which is all a lookup in that
+/// window can reach; the beam's haplotypes carry every site of the block.
+fn windowed(haplotype: &Haplotype, start: u32, end: u32) -> Haplotype {
+    Haplotype {
+        alleles: haplotype
+            .alleles
+            .iter()
+            .filter(|(pos, _)| (start..end).contains(pos))
+            .copied()
+            .collect(),
+        indel: haplotype.indel.clone(),
+    }
 }
 
 fn sequence(
@@ -164,7 +175,9 @@ fn sequence(
     start: u32,
     end: u32,
 ) -> Result<Vec<TemplateBase>> {
-    let mut bases = Vec::new();
+    let haplotype = windowed(haplotype, start, end);
+    let haplotype = &haplotype;
+    let mut bases = Vec::with_capacity(usize::try_from(end.saturating_sub(start))?);
     for pos in start..end {
         if let Some(indel) = &haplotype.indel {
             if pos == indel.start {
@@ -199,32 +212,70 @@ pub(super) fn cpgs(
     start: u32,
     end: u32,
 ) -> Result<BTreeSet<super::methylation::Cpg>> {
-    Ok(sequence(reference, haplotype, start, end)?
-        .windows(2)
-        .filter_map(|pair| match pair {
-            [c, g] if c.base == Base::C && g.base == Base::G => {
-                Some(super::methylation::Cpg { c: c.position, g: g.position })
+    let haplotype = windowed(haplotype, start, end);
+    let mut cpgs = BTreeSet::new();
+    let mut previous: Option<(SequencePosition, Base)> = None;
+    let mut visit = |position, base| {
+        if let Some((c, Base::C)) = previous
+            && base == Base::G
+        {
+            cpgs.insert(super::methylation::Cpg { c, g: position });
+        }
+        previous = Some((position, base));
+    };
+    for pos in start..end {
+        if let Some(indel) = &haplotype.indel {
+            if pos == indel.start {
+                for (offset, &base) in indel.inserted.iter().enumerate() {
+                    visit(SequencePosition::insertion(pos, u32::try_from(offset)?), base);
+                }
             }
-            _ => None,
-        })
-        .collect())
+            if indel.deletes(pos) {
+                continue;
+            }
+        }
+        visit(
+            SequencePosition::reference(pos),
+            haplotype
+                .base_at(reference, pos)
+                .ok_or_eyre("Realignment template outside reference")?,
+        );
+    }
+    Ok(cpgs)
 }
 
 type Profile = Vec<MolecularBase>;
+
+/// A profile's row terms under every mapping hypothesis that leaves one of its
+/// bases mapped, indexed by the hypothesis' bad-read mask. The others have a
+/// closed form.
+struct ProfileRows {
+    sources: usize,
+    rows: [Option<ProfileTerms>; 4],
+}
+
+struct ProfileTerms {
+    rows: Box<[forward::Row]>,
+    /// Most a forward pass over these rows can score against any template:
+    /// every path emits each row once, through a match or an insertion, and
+    /// a column's weights are a convex combination of the row's terms, so the
+    /// path product is at most the product of the rows' largest terms and the
+    /// transitions' mass cancels against the normalization.
+    bound: f64,
+}
 
 struct MolecularEvidence {
     individual: Vec<Profile>,
     joint: Vec<Profile>,
     intervals: Vec<(u32, u32)>,
+    rows: Vec<ProfileRows>,
 }
 
 pub(super) struct Prepared {
     start: u32,
     end: u32,
     fragments: Vec<Option<MolecularEvidence>>,
-    lengths: BTreeSet<usize>,
     localized: bool,
-    normalizers: RefCell<BTreeMap<(usize, usize, u64, u64), f64>>,
 }
 
 impl Prepared {
@@ -263,23 +314,11 @@ impl Prepared {
             .checked_add(u32::try_from(reference.bases.len())?)
             .ok_or_eyre("Reference coordinate overflow")?;
         end = end.saturating_add(u32::from(params.realignment_flank)).min(reference_end);
-        let mut prepared = Vec::with_capacity(fragments.len());
-        let mut lengths = BTreeSet::new();
-        for fragment in fragments {
-            let molecule = molecular_evidence(fragment, start, end)?;
-            if let Some(molecule) = &molecule {
-                lengths.extend(molecule.joint.iter().map(Vec::len));
-            }
-            prepared.push(molecule);
-        }
-        Ok(Self {
-            start,
-            end,
-            fragments: prepared,
-            lengths,
-            localized: false,
-            normalizers: RefCell::new(BTreeMap::new()),
-        })
+        let prepared = fragments
+            .iter()
+            .map(|fragment| molecular_evidence(fragment, start, end))
+            .collect::<Result<_>>()?;
+        Ok(Self { start, end, fragments: prepared, localized: false })
     }
 
     pub(super) fn localize(mut self) -> Self {
@@ -343,16 +382,6 @@ impl Prepared {
             .collect()
     }
 
-    fn normalization(&self, rows: usize, columns: usize, params: &LikelihoodParams) -> Result<f64> {
-        let key = (rows, columns, params.gap_open.to_bits(), params.gap_extend.to_bits());
-        if let Some(&value) = self.normalizers.borrow().get(&key) {
-            return Ok(value);
-        }
-        let value = forward(rows, columns, params, |_| 0.0, |_, _| 0.0)?;
-        self.normalizers.borrow_mut().insert(key, value);
-        Ok(value)
-    }
-
     pub(super) fn realigned_fragments(&self) -> usize {
         self.fragments.iter().filter(|fragment| fragment.is_some()).count()
     }
@@ -398,40 +427,24 @@ impl Prepared {
         let mut local = BTreeMap::new();
         if self.localized {
             for molecule in self.fragments.iter().flatten() {
-                for (profile, &(start, end)) in molecule.joint.iter().zip(&molecule.intervals) {
+                for &(start, end) in &molecule.intervals {
                     let start =
                         start.saturating_sub(u32::from(params.realignment_flank)).max(self.start);
                     let end = end.saturating_add(u32::from(params.realignment_flank)).min(self.end);
-                    let subset = bases
-                        .iter()
-                        .filter(|base| (start..end).contains(&base.position.pos))
-                        .copied()
-                        .collect::<Vec<_>>();
-                    let child = local.entry((start, end)).or_insert_with(|| {
+                    local.entry((start, end)).or_insert_with(|| {
                         Box::new(Template {
-                            bases: subset,
-                            path_masses: BTreeMap::new(),
+                            bases: bases
+                                .iter()
+                                .filter(|base| (start..end).contains(&base.position.pos))
+                                .copied()
+                                .collect(),
                             local: BTreeMap::new(),
                         })
                     });
-                    if !profile.is_empty() && !child.path_masses.contains_key(&profile.len()) {
-                        child.path_masses.insert(
-                            profile.len(),
-                            self.normalization(profile.len(), child.bases.len(), params)?,
-                        );
-                    }
                 }
             }
         }
-        let path_masses = if self.localized {
-            BTreeMap::new()
-        } else {
-            self.lengths
-                .iter()
-                .map(|&length| Ok((length, self.normalization(length, bases.len(), params)?)))
-                .collect::<Result<BTreeMap<_, _>>>()?
-        };
-        Ok(Template { bases, path_masses, local })
+        Ok(Template { bases, local })
     }
 
     #[cfg(test)]
@@ -452,7 +465,10 @@ impl Prepared {
         )
     }
 
-    pub(super) fn fragment_likelihood_with_model(
+    /// One fragment on its own. Production [`plan`](Self::plan)s every fragment
+    /// and runs one [`Scorer`], which batches the forward passes.
+    #[cfg(test)]
+    fn fragment_likelihood_with_model(
         &self,
         index: usize,
         fragment: &Fragment,
@@ -460,6 +476,24 @@ impl Prepared {
         params: &LikelihoodParams,
         scoring: &super::methylation::Scoring<'_>,
     ) -> Result<Option<f64>> {
+        let Some(plan) = self.plan(index, fragment, template, params, scoring)? else {
+            return Ok(None);
+        };
+        let mut scorer = Scorer::new(params);
+        let mut values = scorer.run(&[plan], false)?;
+        values.pop().map(Some).ok_or_eyre("Scorer returned no value")
+    }
+
+    /// Everything the forward algorithm has to compute for this fragment under
+    /// `template`, or `None` where the fragment falls back to aligned scoring.
+    pub(super) fn plan<'a>(
+        &'a self,
+        index: usize,
+        fragment: &Fragment,
+        template: &Template,
+        params: &LikelihoodParams,
+        scoring: &super::methylation::Scoring<'_>,
+    ) -> Result<Option<Plan<'a>>> {
         let Some(molecule) = self.fragments.get(index).ok_or_eyre("Missing molecular evidence")?
         else {
             return Ok(None);
@@ -472,13 +506,40 @@ impl Prepared {
                 .filter(|(_, profile)| !profile.is_empty())
                 .map(|(read, _)| read.strand),
         );
-        let mut result = f64::NEG_INFINITY;
+        let owns = |read_index| {
+            molecule.joint.iter().flatten().any(|base| base.source == Some(read_index))
+        };
+        let mut plan = Plan { weights: Vec::new(), jobs: Vec::new(), hypotheses: Vec::new() };
         for &orientation in orientations {
-            let mut profile_scores = vec![[None::<f64>; 4]; molecule.joint.len()];
-            for mask in 0..(1usize << fragment.reads.len()) {
-                let owns = |read_index| {
-                    molecule.joint.iter().flatten().any(|base| base.source == Some(read_index))
+            let mut weights = Vec::with_capacity(molecule.joint.len());
+            for (profile_index, profile) in molecule.joint.iter().enumerate() {
+                if profile.is_empty() {
+                    weights.push(None);
+                    continue;
+                }
+                let local_template;
+                let template = if self.localized {
+                    let &(start, end) = molecule
+                        .intervals
+                        .get(profile_index)
+                        .ok_or_eyre("Missing molecular interval")?;
+                    local_template = (
+                        start.saturating_sub(u32::from(params.realignment_flank)).max(self.start),
+                        end.saturating_add(u32::from(params.realignment_flank)).min(self.end),
+                    );
+                    template
+                        .local
+                        .get(&local_template)
+                        .ok_or_eyre("Missing read-local haplotype template")?
+                        .as_ref()
+                } else {
+                    template
                 };
+                plan.weights.push(column_weights(template, orientation, scoring, params));
+                weights.push(Some(plan.weights.len() - 1));
+            }
+            let mut jobs = vec![[None::<usize>; 4]; molecule.joint.len()];
+            for mask in 0..(1usize << fragment.reads.len()) {
                 if fragment
                     .reads
                     .iter()
@@ -499,63 +560,425 @@ impl Prepared {
                 if !weight.is_finite() {
                     continue;
                 }
-                let likelihood = molecule
-                    .joint
-                    .iter()
-                    .enumerate()
-                    .map(|(index, profile)| {
-                        let sources = profile
-                            .iter()
-                            .filter_map(|base| base.source)
-                            .fold(0usize, |sources, source| sources | (1 << source));
-                        let local_mask = mask & sources;
-                        let cached = profile_scores
-                            .get_mut(index)
-                            .and_then(|scores| scores.get_mut(local_mask))
-                            .ok_or_eyre("Invalid profile mapping hypothesis")?;
-                        if let Some(score) = cached {
-                            return Ok(*score);
+                let mut hypothesis = Hypothesis {
+                    weight,
+                    jobs: Vec::with_capacity(jobs.len()),
+                    unconditional: mask == 0,
+                };
+                for (profile_index, (profile, rows)) in
+                    molecule.joint.iter().zip(&molecule.rows).enumerate()
+                {
+                    let local_mask = mask & rows.sources;
+                    let slot = jobs
+                        .get_mut(profile_index)
+                        .and_then(|slots| slots.get_mut(local_mask))
+                        .ok_or_eyre("Invalid profile mapping hypothesis")?;
+                    let job = match slot {
+                        Some(job) => *job,
+                        None => {
+                            let job = match rows.rows.get(local_mask).and_then(Option::as_ref) {
+                                Some(terms) => Job::Forward {
+                                    profile: &terms.rows,
+                                    bound: terms.bound,
+                                    weights: weights
+                                        .get(profile_index)
+                                        .copied()
+                                        .flatten()
+                                        .ok_or_eyre("Missing template weights")?,
+                                },
+                                None => Job::Known(unmapped_likelihood(profile)),
+                            };
+                            plan.jobs.push(job);
+                            *slot = Some(plan.jobs.len() - 1);
+                            plan.jobs.len() - 1
                         }
-                        let local_template;
-                        let template = if self.localized && !profile.is_empty() {
-                            let &(start, end) = molecule
-                                .intervals
-                                .get(index)
-                                .ok_or_eyre("Missing molecular interval")?;
-                            local_template = (
-                                start
-                                    .saturating_sub(u32::from(params.realignment_flank))
-                                    .max(self.start),
-                                end.saturating_add(u32::from(params.realignment_flank))
-                                    .min(self.end),
-                            );
-                            template
-                                .local
-                                .get(&local_template)
-                                .ok_or_eyre("Missing read-local haplotype template")?
-                                .as_ref()
-                        } else {
-                            template
-                        };
-                        let score = score_with_model(
-                            profile,
-                            template,
-                            orientation,
-                            scoring,
-                            params,
-                            local_mask,
-                        )?;
-                        *cached = Some(score);
-                        Ok(score)
-                    })
-                    .collect::<Result<Vec<_>>>()?
-                    .iter()
-                    .sum::<f64>();
-                result = log_add(result, weight + likelihood);
+                    };
+                    hypothesis.jobs.push(job);
+                }
+                plan.hypotheses.push(hypothesis);
             }
         }
-        ensure!(result.is_finite(), "PairHMM fragment likelihood is not finite");
-        Ok(Some(result))
+        Ok(Some(plan))
+    }
+}
+
+/// The forward passes one fragment needs under one template, and how their
+/// scores combine over orientations and mapping hypotheses.
+pub(super) struct Plan<'a> {
+    weights: Vec<Vec<forward::Column>>,
+    jobs: Vec<Job<'a>>,
+    hypotheses: Vec<Hypothesis>,
+}
+
+enum Job<'a> {
+    /// Every path emits the same uniform observation probability, so the
+    /// alignment sum cancels against its normalization.
+    Known(f64),
+    Forward {
+        profile: &'a [forward::Row],
+        bound: f64,
+        weights: usize,
+    },
+}
+
+/// One mapping hypothesis under one orientation: its log weight and the job
+/// of every joint profile, whose scores add up.
+struct Hypothesis {
+    weight: f64,
+    jobs: Vec<usize>,
+    /// Every read mapped: scored first, and never skipped.
+    unconditional: bool,
+}
+
+/// Runs plans' forward passes in batches and remembers their results.
+///
+/// A result is keyed by the full content of its profile and template terms, so
+/// a hit is a bit-identical recomputation avoided, never an approximation.
+/// Phasing's beam search rescores the same fragments against the same local
+/// templates at every step, which is what the memo exists for.
+///
+/// Hypotheses with a mismapped mate are only scored when they can change the
+/// fragment's likelihood: a hypothesis whose [`ProfileTerms::bound`] already
+/// adds nothing to the running `log_add` is left out. Those are the two of
+/// three passes an overlapping pair would otherwise spend on ~1e-6 of its
+/// weight, with that mate's bases emitting at most a quarter each.
+pub(crate) struct Scorer {
+    gaps: forward::Gaps,
+    normalizers: FxHashMap<(usize, usize), f64>,
+    profiles: Interner,
+    templates: Interner,
+    values: FxHashMap<(u32, u32), f64>,
+    skip_bounded: bool,
+    skipped: usize,
+}
+
+/// Largest footprint of interned terms before the memo starts over.
+const MEMO_BYTES: usize = 256 << 20;
+
+/// Slack on a hypothesis' bound, covering the rounding of the forward pass,
+/// of the normalization and of the bound's own sum, and any non-monotonic
+/// last bit of the `log_add` transcendentals.
+const BOUND_MARGIN: f64 = 1e-3;
+
+/// Where a plan's accumulation stands between rounds.
+struct Progress {
+    scores: Vec<Option<f64>>,
+    result: f64,
+    next: usize,
+}
+
+#[derive(Default)]
+struct Interner {
+    ids: FxHashMap<Box<[u64]>, u32>,
+    bytes: usize,
+}
+
+impl Interner {
+    fn get(&self, terms: &[[f64; forward::TERMS]]) -> Option<u32> {
+        self.ids.get(bytemuck::cast_slice::<f64, u64>(terms.as_flattened())).copied()
+    }
+
+    fn intern(&mut self, terms: &[[f64; forward::TERMS]]) -> Result<u32> {
+        let key = bytemuck::cast_slice::<f64, u64>(terms.as_flattened());
+        if let Some(&id) = self.ids.get(key) {
+            return Ok(id);
+        }
+        let id = u32::try_from(self.ids.len())?;
+        self.bytes += size_of_val(key);
+        self.ids.insert(key.into(), id);
+        Ok(id)
+    }
+}
+
+impl Scorer {
+    pub(crate) fn new(params: &LikelihoodParams) -> Self {
+        Self {
+            gaps: forward::Gaps { open: *params.gap_open, extend: *params.gap_extend },
+            normalizers: FxHashMap::default(),
+            profiles: Interner::default(),
+            templates: Interner::default(),
+            values: FxHashMap::default(),
+            skip_bounded: true,
+            skipped: 0,
+        }
+    }
+
+    /// Scores every hypothesis, bound or not.
+    #[cfg(test)]
+    fn exhaustive(mut self) -> Self {
+        self.skip_bounded = false;
+        self
+    }
+
+    /// The likelihood of every plan, in order. With `remember`, terms not seen
+    /// before join the memo; results are looked up either way.
+    pub(super) fn run(&mut self, plans: &[Plan<'_>], remember: bool) -> Result<Vec<f64>> {
+        if self.profiles.bytes + self.templates.bytes > MEMO_BYTES {
+            self.profiles = Interner::default();
+            self.templates = Interner::default();
+            self.values.clear();
+        }
+        let mut progress: Vec<Progress> = plans
+            .iter()
+            .map(|plan| Progress {
+                scores: plan
+                    .jobs
+                    .iter()
+                    .map(|job| match *job {
+                        Job::Known(value) => Some(value),
+                        Job::Forward { .. } => None,
+                    })
+                    .collect(),
+                result: f64::NEG_INFINITY,
+                next: 0,
+            })
+            .collect();
+        let shapes: Vec<(usize, usize)> = plans
+            .iter()
+            .flat_map(|plan| plan.jobs.iter().filter_map(|job| plan.shape(job)))
+            .filter(|shape| !self.normalizers.contains_key(shape))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        self.normalize(&shapes)?;
+        let mut wanted: Vec<Vec<usize>> = plans
+            .iter()
+            .map(|plan| {
+                plan.hypotheses
+                    .iter()
+                    .filter(|hypothesis| hypothesis.unconditional)
+                    .flat_map(|hypothesis| hypothesis.jobs.iter().copied())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            })
+            .collect();
+        let mut interned = Interned::default();
+        loop {
+            self.compute(plans, &wanted, &mut progress, remember, &mut interned)?;
+            let mut any = false;
+            for ((plan, progress), wanted) in plans.iter().zip(&mut progress).zip(&mut wanted) {
+                wanted.clear();
+                while let Some(hypothesis) = plan.hypotheses.get(progress.next) {
+                    let mut pending = Vec::new();
+                    let mut bound = hypothesis.weight;
+                    for &job in &hypothesis.jobs {
+                        match progress.scores.get(job).copied().flatten() {
+                            Some(score) => bound += score,
+                            None => {
+                                bound += self.bound(plan, job)?;
+                                pending.push(job);
+                            }
+                        }
+                    }
+                    if pending.is_empty() {
+                        let likelihood = hypothesis
+                            .jobs
+                            .iter()
+                            .map(|&job| {
+                                progress
+                                    .scores
+                                    .get(job)
+                                    .copied()
+                                    .flatten()
+                                    .ok_or_eyre("Unscored job")
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                            .iter()
+                            .sum::<f64>();
+                        progress.result = log_add(progress.result, hypothesis.weight + likelihood);
+                        progress.next += 1;
+                    } else if self.skip_bounded
+                        && !hypothesis.unconditional
+                        && log_add(progress.result, bound + BOUND_MARGIN) == progress.result
+                    {
+                        self.skipped += 1;
+                        progress.next += 1;
+                    } else {
+                        pending.sort_unstable();
+                        pending.dedup();
+                        *wanted = pending;
+                        any = true;
+                        break;
+                    }
+                }
+            }
+            if !any {
+                break;
+            }
+        }
+        progress
+            .into_iter()
+            .map(|progress| {
+                ensure!(progress.result.is_finite(), "PairHMM fragment likelihood is not finite");
+                Ok(progress.result)
+            })
+            .collect()
+    }
+
+    /// The normalizations of these shapes, computed as one batch.
+    fn normalize(&mut self, shapes: &[(usize, usize)]) -> Result<()> {
+        if shapes.is_empty() {
+            return Ok(());
+        }
+        let mut uniform = [0.0; forward::TERMS];
+        if let Some(slot) = uniform.get_mut(forward::INSERTION) {
+            *slot = 1.0;
+        }
+        let rows = vec![uniform; shapes.iter().map(|shape| shape.0).max().unwrap_or(0)];
+        let columns = vec![uniform; shapes.iter().map(|shape| shape.1).max().unwrap_or(0)];
+        let problems = shapes
+            .iter()
+            .map(|&(profile, template)| {
+                Ok(forward::Problem {
+                    profile: rows.get(..profile).ok_or_eyre("Missing uniform rows")?,
+                    template: columns.get(..template).ok_or_eyre("Missing uniform columns")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (shape, value) in shapes.iter().zip(forward::forward_all(&problems, self.gaps)?) {
+            self.normalizers.insert(*shape, value);
+        }
+        Ok(())
+    }
+
+    /// What a pending job's score can at most be.
+    fn bound(&self, plan: &Plan<'_>, job: usize) -> Result<f64> {
+        match plan.jobs.get(job) {
+            Some(&Job::Forward { bound, .. }) => Ok(bound),
+            Some(Job::Known(value)) => Ok(*value),
+            None => Err(color_eyre::eyre::eyre!("Bound of a job outside its plan")),
+        }
+    }
+
+    /// Scores the wanted jobs of every plan, as one batch, memo aside.
+    fn compute(
+        &mut self,
+        plans: &[Plan<'_>],
+        wanted: &[Vec<usize>],
+        progress: &mut [Progress],
+        remember: bool,
+        interned: &mut Interned,
+    ) -> Result<()> {
+        let mut problems = Vec::new();
+        let mut keys = Vec::new();
+        let mut slots = Vec::new();
+        for (plan_index, (plan, wanted)) in plans.iter().zip(wanted).enumerate() {
+            for &job in wanted {
+                let Some(&Job::Forward { profile, weights, .. }) = plan.jobs.get(job) else {
+                    continue;
+                };
+                let template = plan.weights.get(weights).ok_or_eyre("Missing template weights")?;
+                let key = interned.key(
+                    &mut self.profiles,
+                    &mut self.templates,
+                    (plan_index, weights),
+                    profile,
+                    template,
+                    remember,
+                )?;
+                let normalization = self
+                    .normalizers
+                    .get(&(profile.len(), template.len()))
+                    .copied()
+                    .ok_or_eyre("Missing normalization")?;
+                match key.and_then(|key| self.values.get(&key).copied()) {
+                    Some(value) => {
+                        progress.score(plan_index, job, value - normalization)?;
+                    }
+                    None => {
+                        problems.push(forward::Problem { profile, template });
+                        keys.push(key);
+                        slots.push((plan_index, job, normalization));
+                    }
+                }
+            }
+        }
+        if problems.is_empty() {
+            return Ok(());
+        }
+        let values = forward::forward_all(&problems, self.gaps)?;
+        for ((key, &(plan_index, job, normalization)), &value) in
+            keys.iter().zip(&slots).zip(&values)
+        {
+            if let Some(key) = key {
+                self.values.insert(*key, value);
+            }
+            // Condition on the observed profile length and containment in this local
+            // window. Uniform bases then carry no evidence for a longer haplotype.
+            progress.score(plan_index, job, value - normalization)?;
+        }
+        Ok(())
+    }
+}
+
+trait Scores {
+    fn score(&mut self, plan: usize, job: usize, value: f64) -> Result<()>;
+}
+
+impl Scores for [Progress] {
+    fn score(&mut self, plan: usize, job: usize, value: f64) -> Result<()> {
+        *self
+            .get_mut(plan)
+            .and_then(|progress| progress.scores.get_mut(job))
+            .ok_or_eyre("Scored job outside its plan")? = Some(value);
+        Ok(())
+    }
+}
+
+impl Plan<'_> {
+    fn shape(&self, job: &Job<'_>) -> Option<(usize, usize)> {
+        match *job {
+            Job::Known(_) => None,
+            Job::Forward { profile, weights, .. } => {
+                Some((profile.len(), self.weights.get(weights)?.len()))
+            }
+        }
+    }
+}
+
+/// Memo ids resolved during one run, so a profile shared by every template of
+/// its fragment and a template shared by every mapping hypothesis are hashed
+/// once. Keyed by identity, which the borrowed plans keep stable for the run.
+#[derive(Default)]
+struct Interned {
+    profiles: FxHashMap<(usize, usize), Option<u32>>,
+    templates: FxHashMap<(usize, usize), Option<u32>>,
+}
+
+impl Interned {
+    fn key(
+        &mut self,
+        profiles: &mut Interner,
+        templates: &mut Interner,
+        template_slot: (usize, usize),
+        profile: &[forward::Row],
+        template: &[forward::Column],
+        remember: bool,
+    ) -> Result<Option<(u32, u32)>> {
+        let profile_slot = (profile.as_ptr() as usize, profile.len());
+        let profile_id = match self.profiles.get(&profile_slot) {
+            Some(&id) => id,
+            None => {
+                let id =
+                    if remember { Some(profiles.intern(profile)?) } else { profiles.get(profile) };
+                self.profiles.insert(profile_slot, id);
+                id
+            }
+        };
+        let template_id = match self.templates.get(&template_slot) {
+            Some(&id) => id,
+            None => {
+                let id = if remember {
+                    Some(templates.intern(template)?)
+                } else {
+                    templates.get(template)
+                };
+                self.templates.insert(template_slot, id);
+                id
+            }
+        };
+        Ok(profile_id.zip(template_id))
     }
 }
 
@@ -703,7 +1126,8 @@ fn molecular_evidence(
                 })
                 .collect()
         };
-    Ok(Some(MolecularEvidence { individual, joint, intervals }))
+    let rows = joint.iter().map(|profile| profile_rows(profile)).collect();
+    Ok(Some(MolecularEvidence { individual, joint, intervals, rows }))
 }
 
 #[cfg(test)]
@@ -736,6 +1160,9 @@ fn score_with_mapping(
     )
 }
 
+/// One profile under one template, through the same plan and scorer the
+/// production matrix uses.
+#[cfg(test)]
 fn score_with_model(
     profile: &Profile,
     template: &Template,
@@ -744,86 +1171,131 @@ fn score_with_model(
     params: &LikelihoodParams,
     bad_reads: usize,
 ) -> Result<f64> {
+    let rows = profile_rows(profile);
+    let Some(terms) = rows.rows.get(bad_reads & rows.sources).and_then(Option::as_ref) else {
+        return Ok(unmapped_likelihood(profile));
+    };
+    let plan = Plan {
+        weights: vec![column_weights(template, orientation, scoring, params)],
+        jobs: vec![Job::Forward { profile: &terms.rows, bound: terms.bound, weights: 0 }],
+        hypotheses: vec![Hypothesis { weight: 0.0, jobs: vec![0], unconditional: true }],
+    };
+    Scorer::new(params).run(&[plan], false)?.pop().ok_or_eyre("Scorer returned no value")
+}
+
+fn unmapped_likelihood(profile: &[MolecularBase]) -> f64 {
     if profile.is_empty() {
-        return Ok(0.0);
+        return 0.0;
     }
-    if profile.iter().all(|base| base.source.is_none_or(|index| bad_reads & (1 << index) != 0)) {
-        // Every path emits the same uniform observation probability. Path-mass
-        // normalization cancels the entire alignment sum, including indels.
-        return Ok(profile.iter().filter(|base| base.base.known_index().is_some()).count() as f64
-            * 0.25_f64.ln());
-    }
-    let insertions: Vec<_> = profile
+    // Every path emits the same uniform observation probability. Path-mass
+    // normalization cancels the entire alignment sum, including indels.
+    profile.iter().filter(|base| base.base.known_index().is_some()).count() as f64 * 0.25_f64.ln()
+}
+
+fn profile_rows(profile: &[MolecularBase]) -> ProfileRows {
+    let sources = profile
         .iter()
-        .map(|observed| if observed.base.known_index().is_some() { 0.25 } else { 1.0 })
-        .collect();
-    let emissions: Vec<[f64; 4]> = profile
+        .filter_map(|base| base.source)
+        .fold(0usize, |sources, source| sources | (1 << source));
+    let mapped: Vec<forward::Row> = profile
         .iter()
         .map(|observed| {
-            Base::KNOWN.map(|base| {
-                if observed.source.is_some_and(|index| bad_reads & (1 << index) != 0) {
-                    0.25
-                } else {
-                    sequencing_emission(observed.base, base, observed.quality)
-                }
-            })
+            let mut row = [0.0; forward::TERMS];
+            for (slot, emission) in
+                row.iter_mut().zip(sequencing_emissions(observed.base, observed.quality))
+            {
+                *slot = emission;
+            }
+            if let Some(slot) = row.get_mut(forward::INSERTION) {
+                *slot = if observed.base.known_index().is_some() { 0.25 } else { 1.0 };
+            }
+            row
         })
         .collect();
-    let conversions: Vec<_> = template
+    let mut rows = [None, None, None, None];
+    for (bad_reads, slot) in rows.iter_mut().enumerate() {
+        if bad_reads & !sources != 0
+            || profile
+                .iter()
+                .all(|base| base.source.is_none_or(|index| bad_reads & (1 << index) != 0))
+        {
+            continue;
+        }
+        let rows: Box<[forward::Row]> = profile
+            .iter()
+            .zip(&mapped)
+            .map(|(observed, &row)| {
+                if observed.source.is_some_and(|index| bad_reads & (1 << index) != 0) {
+                    let mut uniform = [0.25; forward::TERMS];
+                    if let (Some(uniform), Some(insertion)) =
+                        (uniform.get_mut(forward::INSERTION), row.get(forward::INSERTION))
+                    {
+                        *uniform = *insertion;
+                    }
+                    uniform
+                } else {
+                    row
+                }
+            })
+            .collect();
+        let bound =
+            rows.iter().map(|row| row.iter().copied().fold(f64::NEG_INFINITY, f64::max).ln()).sum();
+        *slot = Some(ProfileTerms { rows, bound });
+    }
+    ProfileRows { sources, rows }
+}
+
+/// Emission weights of every template column over a profile row's terms.
+///
+/// Each branch sets the terms the mixed emission used to compute in place,
+/// and the dot product adds a column's two nonzero products in slot order,
+/// which is bit-identical because addition commutes and adding a zero product
+/// is exact.
+fn column_weights(
+    template: &Template,
+    orientation: Strand,
+    scoring: &super::methylation::Scoring<'_>,
+    params: &LikelihoodParams,
+) -> Vec<forward::Column> {
+    template
         .bases
         .iter()
         .map(|base| {
+            let mut column = [0.0; forward::TERMS];
+            let mut set = |slot: usize, value: f64| {
+                if let Some(slot) = column.get_mut(slot) {
+                    *slot = value;
+                }
+            };
+            let Some(ordinary) = base.base.known_index() else {
+                set(forward::INSERTION, 1.0);
+                return column;
+            };
+            if !params.non_taps
+                && let Some((a, b)) = scoring.neutral_bases(base.position, orientation, base.base)
+                && let (Some(a), Some(b)) = (a.known_index(), b.known_index())
+            {
+                set(a, 0.5);
+                set(b, 0.5);
+                return column;
+            }
             let side = [CpgSide::C, CpgSide::G].into_iter().find(|side| {
                 side.unmod_base() == base.base && side.strand() == orientation && !params.non_taps
             });
             let rate = params.conversion(base.cpg.then_some(scoring.rate(base.cpg_key.as_ref())));
-            (
-                base.base.known_index(),
-                side.and_then(|side| side.mod_base().known_index()),
-                1.0 - rate,
-                rate,
-                if params.non_taps {
-                    None
-                } else {
-                    scoring.neutral_bases(base.position, orientation, base.base)
-                },
-            )
+            match side.and_then(|side| side.mod_base().known_index()) {
+                Some(modified) => {
+                    set(ordinary, 1.0 - rate);
+                    set(modified, rate);
+                }
+                None => set(ordinary, 1.0),
+            }
+            column
         })
-        .collect();
-    let insertion = |i: usize| insertions.get(i).copied().unwrap_or(0.0);
-    let emission = |i: usize, j: usize| {
-        let Some(&(ordinary, modified, unconverted_rate, converted_rate, masked)) =
-            conversions.get(j)
-        else {
-            return 0.0;
-        };
-        let Some(ordinary) = ordinary else { return insertion(i) };
-        let Some(values) = emissions.get(i) else { return 0.0 };
-        if let Some((a, b)) = masked {
-            let Some(a) = a.known_index().and_then(|index| values.get(index)) else {
-                return 0.0;
-            };
-            let Some(b) = b.known_index().and_then(|index| values.get(index)) else {
-                return 0.0;
-            };
-            return (*a + *b) * 0.5;
-        }
-        let ordinary = values.get(ordinary).copied().unwrap_or(0.0);
-        let Some(modified) = modified.and_then(|index| values.get(index).copied()) else {
-            return ordinary;
-        };
-        unconverted_rate * ordinary + converted_rate * modified
-    };
-    let value = forward_scaled(profile.len(), template.bases.len(), params, insertion, emission)?;
-    // Condition on the observed profile length and containment in this local
-    // window. Uniform bases then carry no evidence for a longer haplotype.
-    let mass = *template
-        .path_masses
-        .get(&profile.len())
-        .ok_or_eyre("Missing alignment path normalization")?;
-    Ok(value - mass)
+        .collect()
 }
 
+#[cfg(test)]
 fn forward(
     rows: usize,
     columns: usize,
@@ -831,7 +1303,7 @@ fn forward(
     insertion: impl Fn(usize) -> f64,
     emission: impl Fn(usize, usize) -> f64,
 ) -> Result<f64> {
-    forward_scaled(
+    forward_scaled_reference(
         rows,
         columns,
         params,
@@ -840,7 +1312,10 @@ fn forward(
     )
 }
 
-fn forward_scaled(
+/// The recurrence cell by cell, as production computed it before the
+/// lane-batched kernel: the oracle that kernel is held to bit for bit.
+#[cfg(test)]
+fn forward_scaled_reference(
     rows: usize,
     columns: usize,
     params: &LikelihoodParams,
@@ -882,7 +1357,6 @@ fn forward_scaled(
             *current.get_mut(column).ok_or_eyre("Missing destination HMM cell")? =
                 [matched, inserted, deleted];
         }
-        // A common row scale leaves every relative path weight intact and prevents underflow on long reads.
         let maximum = current.iter().flatten().copied().fold(0.0, f64::max);
         ensure!(maximum.is_finite() && maximum > 0.0, "PairHMM has no finite alignment path");
         for value in current.iter_mut().flatten() {
@@ -948,6 +1422,8 @@ fn forward_log(
     ensure!(value.is_finite(), "PairHMM forward likelihood is not finite");
     Ok(value)
 }
+
+mod forward;
 
 #[cfg(test)]
 mod tests;
