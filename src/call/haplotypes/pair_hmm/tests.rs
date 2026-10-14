@@ -26,6 +26,7 @@ fn read(sequence: &[u8], positions: &[SequencePosition], strand: Strand) -> Read
         })
         .collect();
     ReadEvidence {
+        annotations: None,
         mapq: Some(60),
         strand,
         observations: bases
@@ -708,6 +709,7 @@ fn read_local_windows_keep_the_molecular_observation_model_normalized() -> Resul
             let reads = [(1100, a), (1400, b)].map(|(pos, base)| {
                 let observation = Observation { pos, base, quality: Some(40) };
                 ReadEvidence {
+                    annotations: None,
                     mapq: Some(60),
                     strand: Strand::OT,
                     observations: vec![observation],
@@ -762,6 +764,7 @@ fn phase_likelihood_reuse_ignores_unsequenced_mate_gaps_but_preserves_cpg_partne
     let reference = Reference { start: 1000, bases: vec![Base::A; 500] };
     let sites = vec![Site::new(1100, Base::A, [Base::C])?, Site::new(1300, Base::A, [Base::G])?];
     let reads = [1100, 1300].map(|pos| ReadEvidence {
+        annotations: None,
         mapq: Some(60),
         strand: Strand::OT,
         observations: vec![Observation { pos, base: Base::A, quality: Some(40) }],

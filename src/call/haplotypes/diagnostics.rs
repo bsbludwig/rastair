@@ -607,6 +607,7 @@ mod backend {
                     continue;
                 }
                 let read = ReadEvidence {
+                    annotations: None,
                     mapq: (record.mapq != 255).then_some(record.mapq),
                     strand,
                     observations,

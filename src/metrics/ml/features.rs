@@ -10,9 +10,11 @@ use color_eyre::{Result, eyre::Context as _};
 use ndarray::Array2;
 use std::fmt;
 
+mod haplotypes;
 pub mod shared;
 pub mod standard;
 pub mod utils;
+pub(crate) use haplotypes::HaplotypeEvidence;
 
 /// Define a feature struct whose memory layout *is* its ML feature vector.
 ///
@@ -216,8 +218,9 @@ pub trait FeatureCalculator: fmt::Debug + Send + Sync {
 impl MlFeatureSet {
     pub fn get_calculator(&self) -> FeatureCalculatorBox {
         match self {
-            MlFeatureSet::Standard => Box::new(StandardFeatures),
+            MlFeatureSet::Standard | MlFeatureSet::Canonical => Box::new(StandardFeatures),
             MlFeatureSet::Simple => Box::new(SimpleFeatures),
+            MlFeatureSet::Haplotypes => Box::new(haplotypes::HaplotypeFeatures),
         }
     }
 }

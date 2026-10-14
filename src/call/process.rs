@@ -25,6 +25,7 @@ pub use threshold_filters::{ThresholdFilterParams, apply_threshold_filters};
 // And machine learning-based metrics, which are just more filters
 #[cfg(test)]
 pub use calc_ml::add_ml_metrics;
+pub(crate) use calc_ml::pre_ml_filter;
 pub use calc_ml::{GPU_BATCH_BUFFER_SIZE, score_on_cpu};
 // run on one dedicated thread when there is a GPU, so workers never own a forest
 pub use inference::{InferenceStage, score_on_gpu};

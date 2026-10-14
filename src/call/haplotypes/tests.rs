@@ -1,6 +1,27 @@
 use super::*;
 use Base::*;
 
+#[test]
+fn posterior_normalization_survives_large_common_log_offsets() -> Result<()> {
+    let sites = [Site::new(1001, A, [G])?];
+    let haplotypes = enumerate(&sites);
+    let params = params(true);
+    let baseline =
+        posterior_pairs(&haplotypes, &sites, &[vec![-1.0; 100], vec![-1.05; 100]], &params, false)?;
+    let shifted = posterior_pairs(
+        &haplotypes,
+        &sites,
+        &[vec![-10_000_001.0; 100], vec![-10_000_001.05; 100]],
+        &params,
+        false,
+    )?;
+    assert!((shifted.iter().map(|pair| *pair.posterior).sum::<f64>() - 1.0).abs() < 1e-12);
+    for (a, b) in baseline.iter().zip(&shifted) {
+        assert!((*a.posterior - *b.posterior).abs() < 1e-6);
+    }
+    Ok(())
+}
+
 pub(super) fn params(non_taps: bool) -> LikelihoodParams {
     LikelihoodParams {
         conversion_rate: Probability::new(0.95).expect("probability"),
@@ -25,6 +46,7 @@ fn reference(bases: &[u8]) -> Reference {
 
 fn read(strand: Strand, bases: &[(u32, Base)]) -> ReadEvidence {
     ReadEvidence {
+        annotations: None,
         strand,
         mapq: Some(60),
         sequence: None,

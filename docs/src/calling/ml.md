@@ -21,6 +21,28 @@ Here, `_adj` refers to a feature of the `adjacent` nucleotide, _ie_ the C when e
 
 The resulting ML scores are calibrated using [Platt scaling](https://en.wikipedia.org/wiki/Platt_scaling), which normalizes score distributions across the three separate sub-models.
 
+## Haplotype likelihood features
+
+`ml train --ml-features haplotypes` trains five forests with 13 molecular features appended to each existing feature layout. A model's metadata selects this feature path automatically when loaded with `call --model FILE`, on both BAM backends. `--phase` is only needed to write phased genotypes and phase sets. The bundled model remains unchanged until the new model has passed held-out validation.
+
+Features are calculated before output selection, ML filtering and genotype calling, so final phase calls cannot feed back into their own filters. CpG-only output retains neighboring SNPs for likelihood calculation. All four focal SNP bases are evaluated with full PairHMM scoring. Diploid chromosome likelihoods marginalize neighboring SNP assignments and one supported nuisance indel. SNP features summarize alternate-presence, heterozygous and homozygous probabilities, expected allele fraction, a log Bayes factor, genotype entropy, context size, linking molecules, scored molecules, realignment fraction and search pruning. Separate availability and boundary-resolution fields distinguish missing evidence from evidence against an allele. Indel rows use the same likelihood model for zero, one or two copies of the candidate indel, with linked SNP context.
+
+Training and calling share the likelihood configuration: 0.95 TAPS conversion, 0.003 background conversion, shared per-CpG Beta(2,2) shrinkage with leave-one-molecule-out estimation, 12-base realignment flanks, and bounded expansion from 150 bases to 1,000 bases on either side. The search retains at most 32 SNP sites, 64 haplotypes and 32 held-out hypotheses. Both mates represent one molecule; overlapping observations are combined once, with disagreement reducing confidence. The same read filters and pre-ML eligibility rules apply during training and calling. There is no faster CIGAR-only policy for ordinary SNP candidates. Discordant alignment geometry or reference skips retain the existing aligned fallback, exposed by the realignment fraction; an indel with no realignment evidence has unavailable likelihood features.
+
+Repeated `--phase-mask FILE` options on both `ml train` and `call` exclude centromeres and blacklisted intervals from molecular haplotype evidence, and split its context at mask boundaries. Variant and methylation candidates still go through their normal calling paths. Supply the same mask files for training and inference.
+
+The `canonical` feature set is an experimental control with the original feature count and canonical indel preprocessing, without the 13 likelihood features. Legacy `standard` models retain their original indel preprocessing and frozen feature layout. Model likelihoods are approximate conditional probabilities; Platt calibration applies to the forest's final score, not directly to the haplotype probabilities.
+
+### Indel coordinates
+
+PairHMM sums read-to-haplotype alignment paths. It does not select a replacement CIGAR, move a read's SNP observations, or assemble complex variant alleles. The molecular feature path independently left-normalizes simple indels against the reference, merges equivalent observations once per molecule, and calculates depth, reference repeat context and boundary features at that canonical anchor. Original CIGAR sequence geometry is retained for PairHMM. Read query boundaries are shifted only within a supported preceding alignment run; missing or masked boundaries remain explicitly unresolved. Normalization retains accepted allele observations even when the new boundary is less certain, rather than treating those molecules as independent or silently dropping them.
+
+Alignment windows include the reference-equivalent placement span of a repeat indel. A nearby supported SNP can break that equivalence: shifting the indel across the SNP may produce a different chromosome sequence. Without a complex-allele assembler, those combinations have unavailable molecular features and retain their ordinary feature evidence. This is a conservative limitation, not an inferred new alignment. Indels longer than 100 bases also have unavailable molecular likelihood features.
+
+Training truth should be split and left-normalized with `bcftools norm -f REF -m -any`; remove unused ALT rows with reference genotypes after splitting. Supply GIAB's confident BED with `--regions-file` so absent calls outside the benchmark are not labelled negative. A deletion's entire reference span must be confident. Training refuses incomplete segment extraction.
+
+`scripts/benchmark_haplotype_ml.py` records commands, binary hashes, caller CPU/wall time and peak memory for a matched chr19 training/chr12 validation experiment. Its `train`, `call` and `compare` stages keep the bundled, canonical and haplotype arms separate. The comparison uses normalized PASS non-reference calls in confident regions and Aardvark's haplotype-aware matching, with the truth sample read from its header. Review precision, recall, F1 and genotype errors separately for SNPs, insertions and deletions before installing a new default.
+
 ## Adjusting the Threshold
 
 After calibration, a threshold of $ 0.5 $ should filter out all candidate variants with less than 50% likelihood of being true. Empirically, we determined this to be a good compromise between sensitivity and specificity. However, you can manually override this:

@@ -142,9 +142,14 @@ pub struct PhaseCall {
 /// What phasing keeps on one column: its reads' observations until the segment
 /// is phased, then its place in a block, if it has one.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Columns already box phase data; inline features avoid another allocation per ML candidate"
+)]
 pub enum ColumnPhase {
     Observed(Box<[PhaseObservation]>),
     Phased(PhaseCall),
+    Likelihood(crate::call::haplotypes::features::ColumnEvidence),
 }
 
 /// The phase call a column carries, if any.

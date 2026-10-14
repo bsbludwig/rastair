@@ -361,7 +361,13 @@ mod tests {
             reference_skip: false,
             indels: Vec::new(),
         };
-        ReadEvidence { observations, sequence: Some(sequence), mapq: Some(60), strand: Strand::OT }
+        ReadEvidence {
+            annotations: None,
+            observations,
+            sequence: Some(sequence),
+            mapq: Some(60),
+            strand: Strand::OT,
+        }
     }
 
     #[test]

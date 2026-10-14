@@ -6,11 +6,11 @@ mod likelihood;
 pub use likelihood::{LikelihoodEngine, LikelihoodParams};
 mod expansion;
 pub use expansion::ExpansionParams;
+pub(crate) mod features;
 mod methylation;
 mod pair_hmm;
 #[cfg(any(feature = "experimental-seqair", test))]
 pub(crate) mod phase;
-#[cfg(feature = "experimental-seqair")]
 pub(crate) mod reads;
 pub use pair_hmm::{Indel, SequenceEvidence, SequenceObservation, SequencePosition};
 mod diagnostics;
@@ -20,7 +20,7 @@ pub use diagnostics::{DiagnosticReadParams, HaplotypeDiagnosticParams, diagnose}
 use likelihood::cpg_anchor;
 #[cfg(test)]
 use likelihood::fragment_likelihood;
-use likelihood::{log_add, log_sum};
+use likelihood::log_add;
 
 #[derive(Debug, Clone)]
 pub struct Reference {
@@ -69,6 +69,7 @@ pub struct ReadEvidence {
     pub strand: Strand,
     pub observations: Vec<Observation>,
     pub sequence: Option<SequenceEvidence>,
+    pub annotations: Option<Box<reads::ReadAnnotations>>,
 }
 
 impl ReadEvidence {
@@ -358,20 +359,19 @@ fn infer(
     )?;
     let sites = expanded.sites;
     let haplotypes = expanded.haplotypes;
-    let matrix = likelihood_matrix(
+    let matrix = likelihood_matrix_geometry(
         reference,
         &sites,
         &haplotypes,
         selected_indel.as_ref(),
         fragments,
         params,
+        search.read_local,
     )?;
-    let mut pairs =
+    let pairs =
         posterior_pairs(&haplotypes, &sites, &matrix.values, params, selected_indel.is_some())?;
-    let normalization = log_sum(pairs.iter().map(|pair| pair.log_likelihood + pair.log_prior));
     let mut genotypes = [0.0; 10];
-    for pair in &mut pairs {
-        pair.posterior = probability((pair.log_likelihood + pair.log_prior - normalization).exp())?;
+    for pair in &pairs {
         let (a, b) = pair_bases(pair, &haplotypes, focal)?;
         let index = genotype_index(a, b).ok_or_eyre("Unknown focal genotype")?;
         *genotypes.get_mut(index).ok_or_eyre("Invalid genotype index")? += *pair.posterior;
@@ -471,22 +471,32 @@ struct LikelihoodMatrix {
     aligned_fallback_fragments: usize,
 }
 
-fn likelihood_matrix(
+fn likelihood_matrix_geometry(
     reference: &Reference,
     sites: &[Site],
     haplotypes: &[Haplotype],
     indel: Option<&Indel>,
     fragments: &[Fragment],
     params: &LikelihoodParams,
+    local: bool,
 ) -> Result<LikelihoodMatrix> {
     let loci = scored_loci(reference, sites);
+    let indel_span = if local {
+        indel
+            .map(|indel| Ok::<_, color_eyre::Report>(indel.start..indel.equivalent_end(reference)?))
+            .transpose()?
+    } else {
+        None
+    };
     let included: Vec<_> = fragments
         .iter()
         .filter(|fragment| {
-            fragment
-                .reads
-                .iter()
-                .any(|read| loci.iter().any(|&pos| read.covers(pos, params.likelihood_engine)))
+            fragment.reads.iter().any(|read| {
+                loci.iter().any(|&pos| read.covers(pos, params.likelihood_engine))
+                    || indel_span.as_ref().is_some_and(|span| {
+                        read.observations.iter().any(|obs| span.contains(&obs.pos))
+                    })
+            })
         })
         .collect();
     for fragment in &included {
@@ -510,7 +520,17 @@ fn likelihood_matrix(
         }
     }
     let realignment = if params.likelihood_engine == LikelihoodEngine::PairHmm {
-        Some(pair_hmm::Prepared::new(reference, sites, indel, &included, params)?)
+        let mut geometry = sites.to_vec();
+        if let Some(span) = &indel_span {
+            let pos = span.end.saturating_sub(1);
+            if let Some(base) = reference.base_at(pos) {
+                // A normalized gap can stand for placements throughout a repeat.
+                // Include the right boundary before clipping alignment profiles.
+                geometry.push(Site { pos, reference: base, alleles: vec![base] });
+            }
+        }
+        let prepared = pair_hmm::Prepared::new(reference, &geometry, indel, &included, params)?;
+        Some(if local { prepared.localize() } else { prepared })
     } else {
         None
     };
@@ -529,9 +549,9 @@ fn likelihood_matrix(
                 .transpose()
         })
         .collect::<Result<Vec<_>>>()?;
-    let score = |haplotype_index: usize,
-                 fragment_index: usize,
-                 scoring: &methylation::Scoring<'_>|
+    let score_uncached = |haplotype_index: usize,
+                          fragment_index: usize,
+                          scoring: &methylation::Scoring<'_>|
      -> Result<f64> {
         let haplotype = haplotypes.get(haplotype_index).ok_or_eyre("Missing scoring haplotype")?;
         let fragment = included.get(fragment_index).ok_or_eyre("Missing scoring fragment")?;
@@ -557,6 +577,38 @@ fn likelihood_matrix(
             context.haplotypes.get(haplotype_index).ok_or_eyre("Missing CpG context")?,
         )
     };
+    let cache = std::cell::RefCell::new(std::collections::BTreeMap::new());
+    let score = |haplotype_index: usize,
+                 fragment_index: usize,
+                 scoring: &methylation::Scoring<'_>|
+     -> Result<f64> {
+        let key = if local {
+            realignment
+                .as_ref()
+                .map(|prepared| {
+                    let haplotype =
+                        haplotypes.get(haplotype_index).ok_or_eyre("Missing cached haplotype")?;
+                    Ok::<_, color_eyre::Report>((
+                        fragment_index,
+                        prepared.signature_at(fragment_index, haplotype, params),
+                        haplotype.indel.is_some(),
+                    ))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        if let Some(key) = &key
+            && let Some(value) = cache.borrow().get(key)
+        {
+            return Ok(*value);
+        }
+        let value = score_uncached(haplotype_index, fragment_index, scoring)?;
+        if let Some(key) = key {
+            cache.borrow_mut().insert(key, value);
+        }
+        Ok(value)
+    };
     let rates = if !params.non_taps {
         let pilot = (0..haplotypes.len())
             .map(|haplotype| {
@@ -579,6 +631,7 @@ fn likelihood_matrix(
     } else {
         None
     };
+    cache.borrow_mut().clear();
     let values = (0..haplotypes.len())
         .map(|haplotype| {
             (0..included.len())
@@ -637,9 +690,22 @@ fn posterior_pairs(
             });
         }
     }
-    let normalization = log_sum(pairs.iter().map(|pair| pair.log_likelihood + pair.log_prior));
-    for pair in &mut pairs {
-        pair.posterior = probability((pair.log_likelihood + pair.log_prior - normalization).exp())?;
+    let maximum = pairs
+        .iter()
+        .map(|pair| pair.log_likelihood + pair.log_prior)
+        .reduce(f64::max)
+        .ok_or_eyre("No haplotype pairs")?;
+    let weights: Vec<_> =
+        pairs.iter().map(|pair| (pair.log_likelihood + pair.log_prior - maximum).exp()).collect();
+    let normalization: f64 = weights.iter().sum();
+    ensure!(
+        normalization.is_finite() && normalization > 0.0,
+        "Invalid haplotype pair normalization"
+    );
+    // Normalizing relative weights avoids subtracting a large negative log
+    // normalizer, whose rounding can make aggregate probabilities exceed one.
+    for (pair, weight) in pairs.iter_mut().zip(weights) {
+        pair.posterior = probability(weight / normalization)?;
     }
     Ok(pairs)
 }

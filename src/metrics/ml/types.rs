@@ -177,6 +177,14 @@ pub enum MlFeatureSet {
     #[default]
     Standard,
     Simple,
+    Haplotypes,
+    Canonical,
+}
+
+impl MlFeatureSet {
+    pub fn needs_molecular_evidence(self) -> bool {
+        matches!(self, Self::Haplotypes | Self::Canonical)
+    }
 }
 
 impl fmt::Display for MlFeatureSet {
@@ -184,6 +192,8 @@ impl fmt::Display for MlFeatureSet {
         match self {
             MlFeatureSet::Standard => write!(f, "standard"),
             MlFeatureSet::Simple => write!(f, "simple"),
+            MlFeatureSet::Haplotypes => write!(f, "haplotypes"),
+            MlFeatureSet::Canonical => write!(f, "canonical"),
         }
     }
 }

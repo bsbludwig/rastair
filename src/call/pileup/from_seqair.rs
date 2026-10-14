@@ -457,6 +457,7 @@ impl ColumnDraft {
                 soft_clip_count,
                 counts,
                 calls: Vec::new(),
+                canonical_position: None,
             }))
         };
 

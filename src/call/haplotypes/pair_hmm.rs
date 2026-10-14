@@ -82,6 +82,21 @@ impl Indel {
         self.deleted.len().max(self.inserted.len())
     }
 
+    pub(super) fn equivalent_end(&self, reference: &Reference) -> Result<u32> {
+        let mut start = self.start;
+        let mut sequence =
+            if self.deleted.is_empty() { self.inserted.clone() } else { self.deleted.clone() };
+        let deleted = u32::try_from(self.deleted.len())?;
+        while let Some(next) = start.checked_add(deleted) {
+            if reference.base_at(next) != sequence.first().copied() {
+                break;
+            }
+            start = start.checked_add(1).ok_or_eyre("Indel equivalent placement overflow")?;
+            sequence.rotate_left(1);
+        }
+        start.checked_add(deleted.max(1)).ok_or_eyre("Indel equivalent span overflow")
+    }
+
     pub(super) fn deletes(&self, pos: u32) -> bool {
         pos.checked_sub(self.start)
             .is_some_and(|offset| u64::from(offset) < self.deleted.len() as u64)
@@ -267,7 +282,6 @@ impl Prepared {
         })
     }
 
-    #[cfg(any(feature = "experimental-seqair", test))]
     pub(super) fn localize(mut self) -> Self {
         self.localized = true;
         self
@@ -279,10 +293,30 @@ impl Prepared {
         haplotype: &Haplotype,
         params: &LikelihoodParams,
     ) -> Vec<(u32, u8)> {
+        self.signature_for(haplotype, params, None)
+    }
+
+    pub(super) fn signature_at(
+        &self,
+        index: usize,
+        haplotype: &Haplotype,
+        params: &LikelihoodParams,
+    ) -> Vec<(u32, u8)> {
+        self.signature_for(haplotype, params, Some(index))
+    }
+
+    fn signature_for(
+        &self,
+        haplotype: &Haplotype,
+        params: &LikelihoodParams,
+        index: Option<usize>,
+    ) -> Vec<(u32, u8)> {
         let intervals: Vec<_> = self
             .fragments
             .iter()
-            .flatten()
+            .enumerate()
+            .filter(|(offset, _)| index.is_none_or(|index| *offset == index))
+            .flat_map(|(_, fragment)| fragment)
             .flat_map(|molecule| &molecule.intervals)
             .copied()
             .collect();

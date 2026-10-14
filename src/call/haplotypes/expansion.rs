@@ -4,6 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize)]
 pub struct ExpansionParams {
+    #[arg(skip)]
+    #[serde(skip)]
+    pub(crate) read_local: bool,
     /// Initial SNP discovery radius around the focal position
     #[arg(long, default_value_t = 150, value_parser = clap::value_parser!(u32).range(1..=10_000))]
     pub window_radius: u32,
@@ -27,6 +30,7 @@ pub struct ExpansionParams {
 impl Default for ExpansionParams {
     fn default() -> Self {
         Self {
+            read_local: false,
             window_radius: 150,
             expansion_radius: 1000,
             max_sites: 32,
@@ -172,8 +176,15 @@ pub(super) fn expand(
         } else {
             // Recompute each molecular likelihood on the expanded context. Old
             // posteriors are never used as priors for already observed evidence.
-            let matrix =
-                super::likelihood_matrix(reference, &sites, &proposals, indel, fragments, params)?;
+            let matrix = super::likelihood_matrix_geometry(
+                reference,
+                &sites,
+                &proposals,
+                indel,
+                fragments,
+                params,
+                search.read_local,
+            )?;
             let pairs = super::posterior_pairs(
                 &proposals,
                 &sites,

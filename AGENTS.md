@@ -887,6 +887,20 @@ The render is exercised by `tests/mbias_report.rs`, gated behind the `external-t
 
 # Keep this updated
 
+## Molecular ML feature experiment (2026-10-14)
+
+`ml train --ml-features haplotypes` appends 13 features to all five frozen Standard layouts (68/69/67/30/30). Model metadata automatically enables full read capture and pre-ML PairHMM scoring in both backends; final `--phase` calls are never training inputs. `canonical` is the original-layout ablation with the same canonical indel preprocessing. The bundle is replaced only after held-out validation; the current experiment's full PairHMM results are pending.
+
+`src/call/haplotypes/features.rs` owns shared likelihood parameters and preprocessing for training and calling. Simple indels are normalized before filtering/label lookup; reference tracts, per-molecule depth and query boundary metrics use that anchor. Reads retain their original CIGAR profiles. A boundary outside the preceding matching run or read mask is unresolved. Keep already-accepted indel allele observations even when the canonical boundary is lower-quality/missing: encode that uncertainty rather than imposing a second, different BQ cutoff. A supported SNP within an observed indel shift tract makes the complex chromosome hypothesis unsafe without assembly, so its molecular features are unavailable. Local ML alignment geometry includes the full reference-equivalent placement span; the diagnostic retains its existing geometry. Indels over 100 bp and wholly aligned-fallback indels have unavailable molecular features.
+
+Training and calling use the same pre-ML eligibility predicate, de-novo adjacency setup and shared CpG shrinkage. Use normalized, split GIAB truth and remove unused ALT rows after splitting (`GT="alt"`). A deletion's full reference span must be inside the confidence BED. New molecular feature extraction fails the training run on any failed segment. Relative-weight normalization in `posterior_pairs` prevents large common negative log offsets from producing aggregate probabilities above one.
+
+`tests/call_cli.rs::model_metadata_activates_pair_hmm_features_without_a_phase_flag` uses a tiny forest that responds to the availability feature; masking makes that feature unavailable. It runs on both readers and proves the model selected the actual capture/scoring path. `features.rs` and `reads.rs` tests cover canonical boundaries/qualities, shifted CIGAR placements, read-group identity, molecular deduplication, aligned fallback and CpG conversion guards.
+
+`scripts/benchmark_haplotype_ml.py` provides separate train/call/compare stages. Run long experiments via SLURM `short` (24 h maximum), supplying realistic `-t`, `-c`, and `--mem`. Current jobs request 64 CPUs/96 GB/6 h for chr19 training, 64 CPUs/96 GB/12 h for full chr12 calling, and 8 CPUs/16 GB/1 h for comparison; record actual resources to refine these estimates. Keep binaries, source patches, masks, commands, sample names and complete-status markers in the run directory. Do not install a model from incomplete data or a failed job.
+
+Compute nodes do not share the login/session `/tmp`: put test helper executables in shared storage and add that path to the SLURM job's PATH. GIAB's sample name is `HG001`, not the Platinum Genomes `NA12878`; read it from the VCF header. The augmented reference has IUPAC `Y` bases that Rastair renders as `N`; these can fail bcftools normalization outside GIAB confidence. Subset query calls to the confidence BED before normalization for benchmarking, retaining strict reference validation inside that BED. Do not use a permissive REF-repair flag to hide a coordinate error.
+
 **Important:** Whenever you learned something new about how to develop features, find code, or how to debug issues, you **must** add it to this document.
 This is the single source of truth for how to work on this codebase, and it must be kept up-to-date with any new insights or changes.
 If you find yourself asking "How do I do X?" and you figure it out, add a section here so that the next person doesn't have to ask the same question.

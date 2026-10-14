@@ -129,4 +129,13 @@ pub struct IndelData {
     pub soft_clip_count: u32,
     pub counts: IndelCounts,
     pub calls: Vec<IndelCall>,
+    pub canonical_position: Option<IndelPositionMetrics>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IndelPositionMetrics {
+    pub depth: u32,
+    pub mapq: f32,
+    pub baseq: f32,
+    pub boundary_aligned_fraction: f32,
 }

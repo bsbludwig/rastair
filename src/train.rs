@@ -16,7 +16,7 @@ use crate::call::process::calculate_pileup_metrics;
 use crate::{
     call::{
         pileup::indels::IndelAllele,
-        process::{PileupMappingParams, get_pileups},
+        process::PileupMappingParams,
         variant_calling::indel_calling::{self, IndelParams, IndelPathway},
     },
     metrics::{
@@ -35,7 +35,7 @@ use crate::{
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
 use clio::ClioPath;
-use color_eyre::eyre::{Context as _, ContextCompat as _, Result, ensure, eyre};
+use color_eyre::eyre::{Context as _, ContextCompat as _, OptionExt as _, Result, ensure, eyre};
 use lz4::EncoderBuilder;
 use ndarray::Array2;
 use rand::prelude::*;
@@ -95,8 +95,13 @@ pub struct TrainModelParams {
     #[command(flatten)]
     model_params: ModelParameters,
 
+    /// Feature set to train: haplotypes uses full PairHMM; canonical isolates normalized indel preprocessing.
     #[arg(long, default_value_t = MlFeatureSet::Standard)]
     ml_features: MlFeatureSet,
+
+    /// Exclude BED intervals from haplotype evidence, matching the masks supplied to call.
+    #[arg(long = "phase-mask", value_name = "FILE")]
+    phase_masks: Vec<std::path::PathBuf>,
 
     /// Number of threads to use
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
@@ -287,6 +292,10 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
     create_output_dirs(params)?;
 
     let (collected, failed_segments) = collect(params, plan, seed)?;
+    ensure!(
+        failed_segments == 0,
+        "Refusing to train on incomplete data: {failed_segments} segments failed"
+    );
     for (model, data) in collected.iter() {
         let (seen, kept) = (data.seen(), data.kept());
         let request = plan.request(model);
@@ -365,7 +374,11 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
     let truth = Truth::load(params, &covered_regions(&segments)?)?;
 
     let calculator = params.ml_features.get_calculator();
+    let phase_mask = crate::call::phasing::PhaseMask::load(&params.phase_masks)?;
     let collector = SegmentCollector {
+        reader_params: &params.reader,
+        feature_set: params.ml_features,
+        phase_mask: &phase_mask,
         truth: &truth,
         calculator: &*calculator,
         feature_num: calculator.feature_num(),
@@ -377,6 +390,7 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
         },
     };
     let readers = ReaderSource::from(readers);
+    let completed = std::sync::atomic::AtomicUsize::new(0);
     // Reduced rather than collected: holding every segment's sample until a
     // final merge would keep `segments x cap` examples alive.
     let (mut collected, failed_segments) = rayon::ThreadPoolBuilder::new()
@@ -399,16 +413,31 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
                         let readers = readers
                             .as_mut()
                             .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
-                        collector.segment(
-                            readers,
-                            segment,
-                            &mut ByModel::from_fn(|model| {
-                                KeySource::for_segment(seed, index, model)
-                            }),
-                        )
+                        collector
+                            .segment(
+                                readers,
+                                segment,
+                                &mut ByModel::from_fn(|model| {
+                                    KeySource::for_segment(seed, index, model)
+                                }),
+                            )
+                            .wrap_err_with(|| {
+                                format!("Failed training feature extraction in {}", segment.region)
+                            })
                     },
                 )
                 .map(|result| -> Result<(Collected, usize)> {
+                    let count = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if count.is_multiple_of(32) || count == segments.len() {
+                        info!(
+                            completed = count,
+                            total = segments.len(),
+                            "Training segment extraction progress"
+                        );
+                    }
+                    if params.ml_features.needs_molecular_evidence() {
+                        return result.map(|collected| (collected, 0));
+                    }
                     Ok(result.map_or_else(
                         |e| {
                             warn!(
@@ -441,19 +470,36 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
 fn segment_columns(
     readers: &mut PileupReaders,
     segment: &ChunkRegion,
+    reader_params: &ReaderParams,
+    feature_set: MlFeatureSet,
+    indel_params: &IndelParams,
+    phase_mask: &crate::call::phasing::PhaseMask,
 ) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
-    let mapping = PileupMappingParams { call_indels: true, ..Default::default() };
+    let mapping = PileupMappingParams {
+        call_indels: true,
+        phase: feature_set.needs_molecular_evidence(),
+        indel_max_mismatches: indel_params.indel_max_mismatches,
+        indel_end_of_read_cutoff: indel_params.indel_end_of_read_cutoff,
+        ..Default::default()
+    };
 
     #[cfg(feature = "experimental-seqair")]
-    let (segment, columns) = {
-        let (segment, columns) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        (segment, columns.collect())
+    let (segment, mut columns, fragments) = {
+        let (segment, columns, fragments) =
+            crate::call::process::get_pileups_with_phase(readers, segment, &mapping)
+                .wrap_err("Failed to build pileups")?;
+        (segment, columns.collect::<Vec<_>>(), fragments)
     };
     #[cfg(not(feature = "experimental-seqair"))]
-    let (segment, columns) = {
-        let (segment, pileups) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
+    let (segment, mut columns, fragments) = {
+        let fragments = if feature_set.needs_molecular_evidence() {
+            let reference = readers.segment(segment, 2)?;
+            crate::call::haplotypes::reads::fetch_hts(reader_params, &reference, &mapping)?
+        } else {
+            Vec::new()
+        };
+        let (segment, pileups) = crate::call::process::get_pileups(readers, segment, &mapping)
+            .wrap_err("Failed to build pileups")?;
         let columns = calculate_pileup_metrics(pileups, &segment)
             .filter_map(|metrics| {
                 metrics
@@ -462,15 +508,41 @@ fn segment_columns(
                     })
                     .ok()
             })
-            .collect();
-        (segment, columns)
+            .collect::<Vec<_>>();
+        (segment, columns, fragments)
     };
+
+    #[cfg(feature = "experimental-seqair")]
+    let _reader_params = reader_params;
+    if feature_set.needs_molecular_evidence() {
+        crate::call::haplotypes::features::normalize_indels(&mut columns, &segment, &fragments)?;
+    }
+    map_surrounding(
+        &mut columns,
+        crate::call::process::set_denovo_adj,
+        "Failed to set training CpG context",
+    );
+    for column in &mut columns {
+        column.pos_metrics.extended.methylation_strand_info =
+            crate::metrics::MethylationEvidenceStrandInfo::from_pileup(column);
+    }
+    if matches!(feature_set, MlFeatureSet::Haplotypes) {
+        crate::call::haplotypes::features::add_likelihoods(
+            &mut columns,
+            &segment,
+            &fragments,
+            phase_mask,
+        )?;
+    }
 
     Ok((segment, columns))
 }
 
 /// Turns one segment's candidates into labelled examples.
 struct SegmentCollector<'a> {
+    reader_params: &'a ReaderParams,
+    feature_set: MlFeatureSet,
+    phase_mask: &'a crate::call::phasing::PhaseMask,
     truth: &'a Truth,
     calculator: &'a dyn FeatureCalculator,
     feature_num: FeatureNum,
@@ -496,7 +568,14 @@ impl SegmentCollector<'_> {
         let Some(truth) = self.truth.contigs.get(&segment.contig) else {
             return Ok(self.empty());
         };
-        let (segment, mut columns) = segment_columns(readers, segment)?;
+        let (segment, mut columns) = segment_columns(
+            readers,
+            segment,
+            self.reader_params,
+            self.feature_set,
+            &self.indel_params,
+            self.phase_mask,
+        )?;
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
         // The overlap columns stay in as neighbours, as in `call`, but only
@@ -532,6 +611,9 @@ impl SegmentCollector<'_> {
                 continue;
             }
             let Some(candidate) = column.alt_metrics(alt_base) else { continue };
+            if !crate::call::process::pre_ml_filter(&candidate) {
+                continue;
+            }
             let label = truth.snps.contains(&PositionKey { pos, ref_base, alt_base });
 
             let (model, features) = if candidate.is_evidence_for_methylation() {
@@ -561,6 +643,19 @@ impl SegmentCollector<'_> {
         let calls =
             indel_calling::call_indels(&indel_data.counts, &self.indel_params, true, tract, false);
         for call in &calls {
+            let reference_length = match &call.allele {
+                IndelAllele::Insertion(_) => 1,
+                IndelAllele::Deletion(bases) => u64::try_from(bases.len())? + 1,
+            };
+            let end = pos.checked_add(reference_length).ok_or_eyre("Indel truth span overflow")?;
+            if self
+                .truth
+                .confident
+                .as_ref()
+                .is_some_and(|regions| !regions.contains_span(examples.contig, pos, end))
+            {
+                continue;
+            }
             let label = truth.indels.contains(&IndelKey { pos, allele: call.allele.clone() });
             let candidate = MetricsForIndel { metrics: column, indel: call };
             let (model, features) = match call.allele {
@@ -1198,7 +1293,12 @@ mod tests {
             confident: None,
         };
         let calculator = MlFeatureSet::Standard.get_calculator();
+        let reader_params = ReaderParams::test_data();
+        let phase_mask = crate::call::phasing::PhaseMask::default();
         let collector = SegmentCollector {
+            reader_params: &reader_params,
+            feature_set: MlFeatureSet::Standard,
+            phase_mask: &phase_mask,
             truth: &truth,
             calculator: &*calculator,
             feature_num: calculator.feature_num(),

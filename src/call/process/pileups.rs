@@ -35,10 +35,7 @@ use seqair_types::{Base, Pos0};
 #[cfg(feature = "experimental-seqair")]
 use std::{
     num::{NonZeroU32, NonZeroU64},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 #[cfg(feature = "experimental-seqair")]
 use tracing::{debug, instrument, warn};
@@ -346,15 +343,9 @@ pub fn get_pileups_with_phase(
 
     // A missing read name is a property of the whole file (a CRAM written
     // with `RN=false`), so once per run says all there is to say.
-    static WARNED_NAMELESS: AtomicBool = AtomicBool::new(false);
-    if (scratch.saw_nameless_read || phase_reads.nameless)
-        && !WARNED_NAMELESS.swap(true, Ordering::Relaxed)
-    {
-        warn!(
-            "Reads without a read name (e.g. a CRAM written with RN=false) cannot be linked \
-             into phase blocks and were left out of phasing"
-        );
-    }
+    crate::call::haplotypes::reads::warn_nameless(
+        scratch.saw_nameless_read || phase_reads.nameless,
+    );
 
     Ok((segment, pileup_metrics.into_iter(), phase_reads.finish()?))
 }

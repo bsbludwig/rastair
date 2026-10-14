@@ -96,11 +96,12 @@ impl CommonIndelFeatures {
         let agg = compute_aggregates(observations, allele);
         let dominance = compute_dominance(&d.counts.alleles, allele);
 
-        let total_reads = metrics.pos_metrics.depth.max(1).f();
+        let pos_depth = d.canonical_position.map_or(metrics.pos_metrics.depth, |p| p.depth);
+        let total_reads = pos_depth.max(1).f();
         let soft_clip_rate = d.soft_clip_count.f() / total_reads;
 
-        let pos_depth = metrics.pos_metrics.depth;
-        let pos_mapq = metrics.pos_metrics.mapq.f();
+        let pos_mapq =
+            d.canonical_position.map_or_else(|| metrics.pos_metrics.mapq.f(), |p| p.mapq);
 
         let repeat = RepeatContext::detect(allele, &d.ref_window, d.ref_anchor as usize);
 
@@ -135,7 +136,8 @@ impl InsertionFeatures {
         let observations = &d.observations;
         let allele = &current.indel.allele;
         let insertion_baseq_rms = insertion_baseq_rms(observations, allele);
-        let pos_baseq = current.metrics.pos_metrics.baseq.f();
+        let pos_baseq =
+            d.canonical_position.map_or_else(|| current.metrics.pos_metrics.baseq.f(), |p| p.baseq);
         let relative_insertion_baseq =
             if pos_baseq > 0.0 { insertion_baseq_rms / pos_baseq } else { 0.0 };
         InsertionFeatures { common, insertion_baseq_rms, relative_insertion_baseq }
@@ -153,7 +155,8 @@ impl DeletionFeatures {
         let observations = &d.observations;
         let allele = &current.indel.allele;
         let post_del_baseq_rms = post_del_baseq_rms(observations, allele);
-        let pos_baseq = current.metrics.pos_metrics.baseq.f();
+        let pos_baseq =
+            d.canonical_position.map_or_else(|| current.metrics.pos_metrics.baseq.f(), |p| p.baseq);
         let relative_post_del_baseq =
             if pos_baseq > 0.0 { post_del_baseq_rms / pos_baseq } else { 0.0 };
         DeletionFeatures { common, post_del_baseq_rms, relative_post_del_baseq }

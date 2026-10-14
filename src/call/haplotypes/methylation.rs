@@ -430,6 +430,7 @@ mod tests {
         let cpg = context.haplotypes.first().and_then(BTreeSet::first).ok_or_eyre("edge CpG")?;
         let mate = Fragment {
             reads: vec![ReadEvidence {
+                annotations: None,
                 mapq: Some(60),
                 strand: Strand::OB,
                 sequence: None,
@@ -443,6 +444,7 @@ mod tests {
     fn molecule(first: Base, second: Base) -> Fragment {
         Fragment {
             reads: vec![ReadEvidence {
+                annotations: None,
                 strand: Strand::OT,
                 mapq: Some(60),
                 sequence: None,

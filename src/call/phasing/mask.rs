@@ -62,7 +62,6 @@ impl PhaseMask {
         Ok(())
     }
 
-    #[cfg(any(feature = "experimental-seqair", test))]
     pub(crate) fn unmasked(&self, chrom: &str, region: Range<u64>) -> Vec<Range<u64>> {
         let mut result = Vec::new();
         let mut start = region.start;

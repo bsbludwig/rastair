@@ -99,11 +99,12 @@ pub struct CallParams {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub phase: bool,
 
-    /// Exclude BED intervals from phasing and split blocks at their boundaries
+    /// Exclude BED intervals from phasing and molecular ML evidence
     ///
     /// Repeat for multiple masks. Accepts plain or gzip BED files and UCSC
-    /// centromere tables. Variant and methylation calls are retained.
-    #[arg(long = "phase-mask", requires = "phase", value_name = "FILE")]
+    /// centromere tables. Masks split haplotype contexts at their boundaries.
+    /// Variant and methylation candidates still follow their normal calling paths.
+    #[arg(long = "phase-mask", value_name = "FILE")]
     #[arg(help_heading = cli::sections::PHASING)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub phase_masks: Vec<std::path::PathBuf>,
@@ -330,15 +331,22 @@ fn process_segment(
         indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
         segment_max_bytes: params.segmentation.segment_max_bytes,
         rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
-        early_reject: Some(params.record_filters.clone()),
-        phase: params.phase,
+        early_reject: (!ml.feature_set.needs_molecular_evidence())
+            .then(|| params.record_filters.clone()),
+        phase: params.phase || ml.feature_set.needs_molecular_evidence(),
         ..Default::default()
     };
 
     #[cfg(not(feature = "experimental-seqair"))]
     {
+        let evidence = if ml.feature_set.needs_molecular_evidence() {
+            let segment = readers.segment(region, 2)?;
+            haplotypes::reads::fetch_hts(&params.segments, &segment, &pileup_mapping_params)?
+        } else {
+            Vec::new()
+        };
         let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
-        process_region(segment, pileups, params, ml)
+        process_region(segment, pileups, evidence, params, ml)
     }
     #[cfg(feature = "experimental-seqair")]
     {
@@ -365,6 +373,7 @@ macro_rules! log_failed_and_skip {
 fn process_region(
     segment: Rc<Segment>,
     pileups_iter: impl Iterator<Item = Pileup>,
+    phase_reads: Vec<haplotypes::Fragment>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
@@ -377,21 +386,17 @@ fn process_region(
         calculate_pileup_metrics(pileups_iter, &segment)
             .filter_map(log_failed_and_skip!("failed to calculate metric, skipping")),
     );
+    if ml.feature_set.needs_molecular_evidence() {
+        haplotypes::features::normalize_indels(&mut pileups, &segment, &phase_reads)?;
+    }
     map_surrounding(
         &mut pileups,
         process::set_denovo_adj,
         "failed to set denovo adjacency, skipping",
     );
-    set_strand_info_and_prefilter(&mut pileups, params);
+    set_strand_info_and_prefilter(&mut pileups, params, ml, &segment, &phase_reads)?;
 
-    process_collected_pileups(
-        segment,
-        pileups,
-        #[cfg(feature = "experimental-seqair")]
-        Vec::new(),
-        params,
-        ml,
-    )
+    process_collected_pileups(segment, pileups, phase_reads, params, ml)
 }
 
 #[cfg(feature = "experimental-seqair")]
@@ -403,33 +408,49 @@ fn process_pre_built_metrics(
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
     let mut pileups: Vec<PileupMetrics> = pileups.collect();
+    if ml.feature_set.needs_molecular_evidence() {
+        haplotypes::features::normalize_indels(&mut pileups, &segment, &phase_reads)?;
+    }
     map_surrounding(
         &mut pileups,
         process::set_denovo_adj,
         "failed to set denovo adjacency, skipping",
     );
-    set_strand_info_and_prefilter(&mut pileups, params);
+    set_strand_info_and_prefilter(&mut pileups, params, ml, &segment, &phase_reads)?;
     process_collected_pileups(segment, pileups, phase_reads, params, ml)
 }
 
 /// The step both backends run between de-novo adjacency and the shared
 /// pipeline: strand info depends on the adjacency flags just set, and the
 /// pre-filter on the alts, so the order matters.
-fn set_strand_info_and_prefilter(pileups: &mut Vec<PileupMetrics>, params: &CallParams) {
+fn set_strand_info_and_prefilter(
+    pileups: &mut Vec<PileupMetrics>,
+    params: &CallParams,
+    ml: &MachineLearning,
+    segment: &Segment,
+    fragments: &[haplotypes::Fragment],
+) -> Result<()> {
     for pileup in pileups.iter_mut() {
         pileup.pos_metrics.extended.methylation_strand_info =
             MethylationEvidenceStrandInfo::from_pileup(pileup);
     }
+    if matches!(ml.feature_set, metrics::ml::types::MlFeatureSet::Haplotypes) {
+        // Output selection must not remove genetic neighbours from the model's context.
+        haplotypes::features::add_likelihoods(pileups, segment, fragments, &params.phase_mask)?;
+    }
     pileups.retain(|p| params.record_filters.pre_filter(p));
+    Ok(())
 }
 
 fn process_collected_pileups(
     segment: Rc<Segment>,
     mut pileups: Vec<PileupMetrics>,
-    #[cfg(feature = "experimental-seqair")] phase_reads: Vec<haplotypes::Fragment>,
+    phase_reads: Vec<haplotypes::Fragment>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
+    #[cfg(not(feature = "experimental-seqair"))]
+    drop(phase_reads);
     let threshold_filters = process::ThresholdFilterParams {
         variant_calling: params.variant_calling.clone(),
         methylation: params.methylation.thresholds.clone(),
@@ -457,6 +478,11 @@ fn process_collected_pileups(
     let score_indels = params.indel.needs_ml_scores(ml.enabled());
     if !process::score_on_gpu(&mut pileups, ml, score_indels) {
         process::score_on_cpu(&mut pileups, ml, score_indels)?;
+    }
+    for pileup in &mut pileups {
+        if matches!(pileup.phase.as_deref(), Some(phasing::ColumnPhase::Likelihood(_))) {
+            pileup.phase = None;
+        }
     }
 
     if params.indel.rescues_hom_ref() {

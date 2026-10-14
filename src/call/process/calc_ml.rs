@@ -29,7 +29,7 @@ use tracing::instrument;
 pub const GPU_BATCH_BUFFER_SIZE: usize = 8_192;
 
 /// Filter out very unlikely alts before running slow ML
-fn pre_ml_filter(c: &MetricsForAlt) -> bool {
+pub(crate) fn pre_ml_filter(c: &MetricsForAlt) -> bool {
     c.metrics.pos_metrics.depth > 1 && *c.metrics.pos_metrics.mapq > 5.
 }
 
