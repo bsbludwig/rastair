@@ -16,8 +16,8 @@ use seqair::vcf::record_encoder::{
     Arr, FieldDescription, FilterFieldDef, FormatFieldDef, InfoFieldDef, Scalar, Str,
 };
 use seqair::vcf::{
-    ContigId, FilterId, FormatFloat, FormatFloats, FormatGt, FormatInt, FormatInts, InfoFlag,
-    InfoFloat, InfoFloats, InfoInt, InfoInts, InfoString, Number, ValueType, VcfHeader,
+    ContigId, FilterId, FormatFloat, FormatFloats, FormatGt, FormatInt, FormatInts, FormatString,
+    InfoFlag, InfoFloat, InfoFloats, InfoInt, InfoInts, InfoString, Number, ValueType, VcfHeader,
 };
 use seqair_types::SmolStr;
 
@@ -164,6 +164,18 @@ const GC_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
     ValueType::Float,
     "Genotype confidence, Phred-scaled",
 );
+const GQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "GQ",
+    Number::Count(1),
+    ValueType::Integer,
+    "Model-derived genotype quality, capped at 99; PairHMM quality is conditional on retained haplotypes and limited by observed pruning mass",
+);
+const GTM_DEF: FormatFieldDef<Str> = FormatFieldDef::new(
+    "GTM",
+    Number::Count(1),
+    ValueType::String,
+    "Genotype model: pairhmm or counts (including molecular-evidence fallback)",
+);
 const SAMPLE_DP_DEF: FormatFieldDef<Scalar<i32>> =
     FormatFieldDef::new("DP", Number::Count(1), ValueType::Integer, "Read depth");
 // `Number=M` — seqair's base-modification cardinality — is not in the VCF
@@ -236,6 +248,8 @@ const FORMAT_DEFS: &[&dyn FieldDescription] = &[
     &PS_DEF,
     &GL_DEF,
     &GC_DEF,
+    &GQ_DEF,
+    &GTM_DEF,
     &SAMPLE_DP_DEF,
     &M5MC_DEF,
     &DPM5MC_DEF,
@@ -302,7 +316,8 @@ pub const ALL_INFO_IDS: &[&str] = &[
 ];
 
 /// All FORMAT field IDs. Used to validate `--vcf-format-fields` CLI input.
-pub const ALL_FORMAT_IDS: &[&str] = &["GT", "GL", "GC", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
+pub const ALL_FORMAT_IDS: &[&str] =
+    &["GT", "GL", "GC", "GQ", "GTM", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
 
 // ── Resolved keys ───────────────────────────────────────────────────────
 
@@ -340,6 +355,8 @@ pub(crate) struct FormatKeys {
     pub ps: FormatInt,
     pub gl: FormatFloat,
     pub gc: FormatFloat,
+    pub gq: FormatInt,
+    pub gtm: FormatString,
     pub dp: FormatInt,
     pub m5mc: FormatFloats,
     pub dpm5mc: FormatInts,
@@ -443,6 +460,8 @@ pub fn register(
         ps: builder.register_format(&PS_DEF)?,
         gl: builder.register_format(&GL_DEF)?,
         gc: builder.register_format(&GC_DEF)?,
+        gq: builder.register_format(&GQ_DEF)?,
+        gtm: builder.register_format(&GTM_DEF)?,
         dp: builder.register_format(&SAMPLE_DP_DEF)?,
         m5mc: builder.register_format(&M5MC_DEF)?,
         dpm5mc: builder.register_format(&DPM5MC_DEF)?,
@@ -500,6 +519,8 @@ pub struct FormatSelection {
     pub gt: bool,
     pub gl: bool,
     pub gc: bool,
+    pub gq: bool,
+    pub gtm: bool,
     pub dp: bool,
     pub m5mc: bool,
     pub dpm5mc: bool,
@@ -537,6 +558,8 @@ impl Default for FieldConfig {
                 gt: true,
                 gl: true,
                 gc: true,
+                gq: true,
+                gtm: true,
                 dp: true,
                 m5mc: true,
                 dpm5mc: true,
@@ -580,6 +603,8 @@ impl FieldConfig {
             &mut m.gt,
             &mut m.gl,
             &mut m.gc,
+            &mut m.gq,
+            &mut m.gtm,
             &mut m.dp,
             &mut m.m5mc,
             &mut m.dpm5mc,
@@ -640,6 +665,8 @@ impl FieldConfig {
             "GT" => m.gt = true,
             "GL" => m.gl = true,
             "GC" => m.gc = true,
+            "GQ" => m.gq = true,
+            "GTM" => m.gtm = true,
             "DP" => m.dp = true,
             "M5mC" => m.m5mc = true,
             "DPM5mC" => m.dpm5mc = true,

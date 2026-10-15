@@ -51,6 +51,8 @@ def main():
     parser.add_argument('--threads', type=int, required=True)
     parser.add_argument('--aardvark', type=Path)
     parser.add_argument('--arms', nargs='+', choices=['bundled', 'canonical', 'haplotypes'])
+    parser.add_argument('--phase-calls', action='store_true',
+                        help='Also emit final genotype-conditioned phase calls in every calling arm')
     args = parser.parse_args()
     inputs = json.loads(args.inputs.read_text())
     output = args.output_dir.resolve()
@@ -60,6 +62,7 @@ def main():
     manifest = dict(inputs=inputs, binary=binary, binary_sha256=digest(binary),
                     baseline_model_sha256=digest(args.baseline_model), threads=args.threads,
                     stage=args.stage, slurm_job_id=os.environ.get('SLURM_JOB_ID'),
+                    phase_calls=args.phase_calls,
                     engine='PairHMM at every eligible candidate; shared CpG shrinkage')
     (output / f'{args.stage}-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     if args.stage == 'train':
@@ -85,7 +88,7 @@ def main():
             run([binary, 'call', '-r', inputs['reference'], inputs['taps'], '-l', 'chr12',
                  '--model', str(model), '--experimental-indels=ml', '--vcf-all-fields',
                  '--threads', str(args.threads), '--vcf', str(directory / 'calls.bcf'),
-                 *masks], directory)
+                 *(['--phase'] if args.phase_calls else []), *masks], directory)
     else:
         if args.aardvark is None:
             parser.error('--aardvark is required for compare')

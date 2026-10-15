@@ -29,6 +29,7 @@ pub struct NormalizedObservation {
 #[derive(Debug, Clone)]
 pub struct ReadAnnotations {
     pub indels: Vec<NormalizedObservation>,
+    pub indel_anchors: Vec<u32>,
     pub soft_clipped: bool,
     pub noisy: bool,
 }
@@ -243,8 +244,12 @@ fn evidence(
         .filter(|op| matches!(op.op_type(), CigarOpType::Insertion | CigarOpType::Deletion))
         .map(|op| op.len())
         .sum();
-    let mut annotations =
-        ReadAnnotations { indels: Vec::new(), soft_clipped, noisy: has_repeat || soft_clipped };
+    let mut annotations = ReadAnnotations {
+        indels: Vec::new(),
+        indel_anchors: Vec::new(),
+        soft_clipped,
+        noisy: has_repeat || soft_clipped,
+    };
     let mut observations = Vec::new();
     let mut sequence =
         SequenceEvidence { bases: Vec::new(), reference_skip: false, indels: Vec::new() };
@@ -310,6 +315,9 @@ fn evidence(
         if matches!(kind, CigarOpType::Insertion | CigarOpType::Deletion)
             && reference.base_at(pos).is_some()
         {
+            if let Some(anchor) = pos.checked_sub(1) {
+                annotations.indel_anchors.push(anchor);
+            }
             let proposal = if kind == CigarOpType::Insertion {
                 let inserted: Vec<_> = (query
                     ..query.checked_add(len).ok_or_eyre("Insertion query overflow")?)
@@ -342,6 +350,9 @@ fn evidence(
             };
             if let Some(raw) = proposal {
                 let indel = raw.normalized(reference)?;
+                if let Some(anchor) = indel.start.checked_sub(1) {
+                    annotations.indel_anchors.push(anchor);
+                }
                 if len <= 20
                     && (kind == CigarOpType::Deletion
                         || (query..query.saturating_add(len)).all(|q| {
@@ -501,6 +512,9 @@ mod tests {
                 .ok_or_eyre("read")?;
             let annotation =
                 read.annotations.as_ref().and_then(|a| a.indels.first()).ok_or_eyre("indel")?;
+            let anchors = &read.annotations.as_ref().ok_or_eyre("annotations")?.indel_anchors;
+            assert!(anchors.contains(&1004));
+            assert!(anchors.contains(&1001));
             assert_eq!(annotation.raw_start, 1005);
             assert_eq!(annotation.indel.start, 1002);
             assert!(annotation.boundary_aligned);

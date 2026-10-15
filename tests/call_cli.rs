@@ -58,6 +58,8 @@ fn model_metadata_activates_pair_hmm_features_without_a_phase_flag() -> Result<(
     let scenario = scenario::Scenario::new(1000)
         .reference_at(120, b"AAT")
         .het(120, b'T', scenario::Hap::One)
+        .reference_at(420, b"AAT")
+        .het(420, b'T', scenario::Hap::One)
         .balanced(100, 350, 8);
     let fasta = scenario.write_fasta(dir.path())?;
     let bam = dir.path().join("reads.bam");
@@ -66,8 +68,10 @@ fn model_metadata_activates_pair_hmm_features_without_a_phase_flag() -> Result<(
     haplotype_feature_model(&model, "haplotype_available", 0.0, 1.0)?;
     let mask = dir.path().join("mask.bed");
     std::fs::write(&mask, "scenario\t120\t121\n")?;
-    for masked in [false, true] {
-        let vcf = dir.path().join(if masked { "masked.vcf" } else { "unmasked.vcf" });
+    for (masked, phased) in
+        [(false, false), (true, false), (false, cfg!(feature = "experimental-seqair"))]
+    {
+        let vcf = dir.path().join(format!("masked-{masked}-phased-{phased}.vcf"));
         let mut command = rastair();
         command
             .args(["call", "--all", "--vcf-all-fields", "--fasta-file"])
@@ -81,6 +85,9 @@ fn model_metadata_activates_pair_hmm_features_without_a_phase_flag() -> Result<(
         if masked {
             command.arg("--phase-mask").arg(&mask);
         }
+        if phased {
+            command.arg("--phase");
+        }
         command.succeeds()?;
         let content = std::fs::read_to_string(vcf)?;
         let focal = vcf_content_lines(&content)
@@ -89,6 +96,16 @@ fn model_metadata_activates_pair_hmm_features_without_a_phase_flag() -> Result<(
         let score: f64 = format_field(focal, "ML").wrap_err("ML score")?.parse()?;
         assert_eq!(score > 0.99, !masked, "{focal}");
         assert_eq!(score < 0.01, masked, "{focal}");
+        assert_eq!(format_field(focal, "GTM"), (!masked).then_some("pairhmm"), "{focal}");
+        if !masked {
+            assert_eq!(format_field(focal, "GT").wrap_err("GT")?.replace('|', "/"), "0/1");
+            assert!(format_field(focal, "GQ").wrap_err("GQ")?.parse::<u8>()? >= 20);
+            assert!(
+                format_field(focal, "GL").is_none(),
+                "Legacy scalar GL is not a molecular likelihood: {focal}"
+            );
+            assert_eq!(format_field(focal, "PS").is_some(), phased, "{focal}");
+        }
     }
     Ok(())
 }
@@ -1587,5 +1604,93 @@ fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
         multi_base_refs > 0,
         "no multi-base REF was emitted, so this test proved nothing:\n{text}"
     );
+    Ok(())
+}
+
+#[test]
+fn molecular_indel_genotypes_use_joint_alleles_and_report_masked_fallback() -> Result<()> {
+    use rust_htslib::{
+        bam::{self, Read as _},
+        faidx,
+    };
+    const CONTIG: &str = "bacteriophage_lambda_CpG";
+    let dir = TempDir::new()?;
+    let fasta = faidx::Reader::from_path("tests/data/test.fasta.gz")?;
+    let anchor = (24_137..24_237)
+        .find(|&position| {
+            fasta.fetch_seq(CONTIG, position, position + 5).is_ok_and(|bases| {
+                bases.first().zip(bases.get(2)).is_some_and(|(a, b)| a != b)
+                    && bases.first().zip(bases.get(5)).is_some_and(|(a, b)| a != b)
+            })
+        })
+        .wrap_err("non-shifting indel anchor")?;
+    let mut records = Vec::new();
+    let mut header = None;
+    for length in [2, 5] {
+        let path = dir.path().join(format!("deletion-{length}.bam"));
+        write_deletion_bam(&path, CONTIG, anchor as u64, length, 12)?;
+        let mut reader = bam::Reader::from_path(&path)?;
+        header = Some(bam::Header::from_template(reader.header()));
+        for (index, record) in reader.records().enumerate() {
+            let mut record = record?;
+            record.set_qname(format!("allele-{length}-{index}").as_bytes());
+            records.push(record);
+        }
+    }
+    records.sort_by_key(|record| record.pos());
+    let bam = dir.path().join("compound.bam");
+    let mut writer =
+        bam::Writer::from_path(&bam, &header.wrap_err("BAM header")?, bam::Format::Bam)?;
+    for record in records {
+        writer.write(&record)?;
+    }
+    drop(writer);
+    bam::index::build(&bam, None, bam::index::Type::Bai, 1)?;
+    let model = dir.path().join("model.rff.mpk.lz4");
+    haplotype_feature_model(&model, "haplotype_available", 0.0, 1.0)?;
+    let mask = dir.path().join("mask.bed");
+    std::fs::write(&mask, format!("{CONTIG}\t{anchor}\t{}\n", anchor + 1))?;
+    for masked in [false, true] {
+        let vcf = dir.path().join(format!("{masked}.vcf"));
+        let mut command = rastair();
+        command
+            .args([
+                "call",
+                "--fasta-file=tests/data/test.fasta.gz",
+                "--unpaired",
+                "--experimental-indels=ml",
+                "--all",
+                "--vcf-all-fields",
+            ])
+            .arg(&bam)
+            .arg(format!("--region={CONTIG}:{}-{}", anchor - 200, anchor + 200))
+            .arg("--model")
+            .arg(&model)
+            .arg("--vcf")
+            .arg(&vcf);
+        if masked {
+            command.arg("--phase-mask").arg(&mask);
+        }
+        command.succeeds()?;
+        let content = std::fs::read_to_string(vcf)?;
+        let indels = vcf_content_lines(&content)
+            .filter(|line| line.split('\t').nth(3).is_some_and(|reference| reference.len() > 1))
+            .collect::<Vec<_>>();
+        assert!(!indels.is_empty(), "{content}");
+        if masked {
+            assert!(
+                indels.iter().all(|line| format_field(line, "GTM") == Some("counts")),
+                "{indels:?}"
+            );
+        } else {
+            let record = indels
+                .iter()
+                .find(|line| format_field(line, "GT") == Some("1/2"))
+                .wrap_err_with(|| format!("missing compound genotype: {indels:?}"))?;
+            assert_eq!(format_field(record, "GTM"), Some("pairhmm"));
+            assert!(format_field(record, "GQ").wrap_err("GQ")?.parse::<u8>()? >= 20, "{record}");
+            assert_eq!(record.split('\t').nth(4).wrap_err("ALT")?.split(',').count(), 2);
+        }
+    }
     Ok(())
 }

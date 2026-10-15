@@ -9,38 +9,75 @@ When multiple alternate alleles are present at the same genomic position, they a
 For example, with `REF=A` and `ALT=T,G`, the genotype represents the complete set of observed alleles:
 
 - A genotype of `1/2` means "on one chromosome there was a T (allele 1), on the other was a G (allele 2)"
-- A genotype of `0/1` means "on one chromosome there was the reference A (allele 0), on the other was a T (allele 1)" (G alt did not pass filters)
-- A genotype of `1/1` means "both chromosomes had a T (allele 1)" (only T alt passed filters)
+- A genotype of `0/1` means "on one chromosome there was the reference A (allele 0), on the other was a T (allele 1)"
+- A genotype of `1/1` means "both chromosomes had a T (allele 1)"
 
 This representation follows VCF specification standards where allele indices start at 0 for the reference, and 1, 2, 3... for the alternate alleles in order.
 
 ## Genotype Calls
 
-- Homozygous Reference (`0/0`): no alternate alleles passed filters
-- Heterozygous (`0/1`): One alternate allele passed filters but read counts show a mix of reference and alternate reads
-- Homozygous Alternate (`1/1`): an alternate allele passed filters and read counts show predominantly alternate reads, consistent with two copies of the variant
-- Compound Heterozygous (`1/2`, `2/3`, etc.): Multiple alternates passed filters and read counts support different variants on each chromosome copy
+`0/0` denotes two reference copies, `0/1` one reference and one alternate copy,
+`1/1` two copies of the same alternate, and `1/2` two different alternates.
+Passing a variant filter makes an allele eligible for genotyping; it does not determine its copy number.
+
+Models trained with `--ml-features haplotypes` automatically enable molecular
+genotyping for SNPs and indels. No `--phase` flag is needed for this step.
+Models using the Standard or Canonical feature sets retain count-based genotyping.
+
+For molecular genotyping, PairHMM scores each captured fragment against candidate
+chromosome sequences. A diploid pair mixes the two chromosome likelihoods with
+equal weight, and independent fragments contribute to the joint likelihood.
+Overlapping mates represent one molecule: disagreement reduces the consensus
+quality rather than contributing two independent votes.
+
+The genotype posterior combines these likelihoods with the existing SNP/indel
+priors and marginalizes over retained neighboring haplotypes. SNPs consider all
+ten unordered A/C/G/T genotypes. A biallelic indel considers zero, one or two
+alternate copies. Competing indels at the same canonical anchor are scored
+together, including `1/2` hypotheses; a candidate SNP at that anchor is included
+in the joint search. This search supports up to seven alternate indels per
+anchor and uses the existing bounded haplotype expansion.
+
+The forest remains an allele filter. Its score is not multiplied into the
+molecular genotype posterior, since the forest already sees molecular features.
+Rejected alleles cannot appear in the emitted genotype, but their posterior
+mass remains uncertainty when calculating confidence. Genotyping runs before
+methylation calling and before the final genotype-conditioned phaser.
+
+When molecular evidence is unavailable, Rastair falls back to count-based
+genotyping. Examples include masked intervals, indels over 100 bp, unsafe
+complex repeat events, wholly aligned-fallback evidence, and competing-indel
+sets that exceed the search limit. Molecular scoring uses the existing read
+quality and candidate filters; it does not assemble arbitrary complex alleles.
 
 ## Confidence Scoring
 
-Confidence values reflect call certainty:
+On SNP records with a genotype estimate and on indel records, FORMAT `GTM`
+identifies the method: `pairhmm` or `counts`. FORMAT `GQ` reports model-derived
+genotype confidence, capped at 99. If no SNP genotype estimate is available,
+these two annotations are omitted; the existing output fallback remains `0/0`.
+For molecular calls it is derived from the posterior error of the selected
+genotype, with an error floor at the maximum posterior mass observed to be
+removed during pruning. This is confidence conditional on the retained
+haplotypes, model parameters and shared CpG rate estimates. It is not an
+externally calibrated error rate or a bound on all omitted hypotheses.
 
-- For `0/0` calls: based on the margin between the ML threshold and the highest-scoring alternate
-- For variant calls: based on how well read count ratios match the expected distribution
+Legacy `GL` and `GC` scores remain available on count-based calls and are omitted
+for molecular genotypes. They are not substituted for a complete molecular
+likelihood vector. On the count path, reference confidence uses ML threshold
+margins and variant confidence uses read-count distributions.
 
-## Biological Interpretation
+For ML-filtered indels, VCF QUAL remains the forest's variant-presence confidence,
+while GQ describes the genotype decision. A high QUAL therefore does not imply
+high confidence in `1/1`. The two scores are also kept separate for compound
+indel records.
 
-A genotype represents the complete set of observed alleles in an individual.
-All alternate alleles listed in a VCF record's ALT field are simultaneously present at that position in at least one chromosome copy.
-In most cases:
+## Strand-Specific Evidence
 
-- If only one variant passes filters, the genotype indicates whether it's present on one chromosome copy (heterozygous `0/1`) or both copies (homozygous alternate `1/1`)
-- If multiple variants pass filters, they represent compound heterozygosity where different variants are present on different chromosome copies (e.g., `1/2`)
-
-## Strand-Specific Counting
-
-For `C→T` and `G→A` variants, only one strand is used to avoid confounding with methylation.
-For all other variant types, both strands contribute to genotyping.
+The count model avoids methylation-confounded observations when genotyping
+`C→T` and `G→A` SNPs. Molecular genotyping uses the shared CpG shrinkage model
+below, including reference and candidate de-novo CpGs, to account for conversion
+in the read likelihood rather than treating it as independent genetic support.
 
 ## Phasing
 
@@ -56,7 +93,7 @@ Both records carry `PS=20028875`, the position of the block's first heterozygous
 Within a block, the alleles written first all sit on the same chromosome copy: above, the reference `A` and the alternate `T` are on one copy, the alternate `G` and the reference `C` on the other.
 Each block opens with its lower genotype allele first (`0|1` for a reference/alternate genotype, or e.g. `1|2` for two alternates); nothing relates one block to another, and heterozygous sites no read pair links stay unphased without `PS`.
 
-Phasing now uses fragment likelihoods and a local PairHMM, conditioned on the two alleles of each **called** heterozygous SNP. It changes chromosome assignments only; variant calls, unphased genotypes, genotype scores and methylation calls retain their existing calculation. The previous signed-quality graph solver is used only as a reference in unit tests.
+Phasing now uses fragment likelihoods and a local PairHMM, conditioned on the two alleles of each **called** heterozygous SNP. This final phasing step changes chromosome assignments only; genotype selection occurs earlier using the model-specific procedure above. The previous signed-quality graph solver is used only as a reference in unit tests.
 
 Full sequences, qualities, CIGAR coordinates and OT/OB orientation are captured before seqair recycles its read store. Read name plus read group identifies a molecule, and boundary alignments fetched again in byte-budget subdivisions are captured once. Overlapping mates form one consensus observation: agreement retains the better quality, while disagreement reduces it by the competing quality. Disagreeing CIGAR paths or reference skips use the aligned likelihood fallback.
 
@@ -68,9 +105,9 @@ The neutral pilot and final PairHMM scores use the shared CpG shrinkage model de
 
 Each mate is aligned within its own CIGAR-coordinate footprint plus a 12 bp realignment flank; concordant overlaps use the joint molecular footprint. An unsequenced gap between mates provides no alignment observations. Scores are reused for chromosome hypotheses with identical DNA over these footprints, retaining an additional base for CpG partners outside a scoring window. Alignment path sums use row scaling to prevent underflow; their normalization is cached by sequence lengths and gap parameters.
 
-A genetic edge is emitted only if the retained-state posterior probability of its chosen relative phase is at least 0.99. Ambiguous edges can split a connected inference region into separate output phase sets. These probabilities are conditional on called genotypes, retained hypotheses and estimated shared rates, and are not externally calibrated phase quality scores. `GL` and `GC` remain genotype scores; only `GT` orientation and `PS` are changed.
+A genetic edge is emitted only if the retained-state posterior probability of its chosen relative phase is at least 0.99. Ambiguous edges can split a connected inference region into separate output phase sets. These probabilities are conditional on called genotypes, retained hypotheses and estimated shared rates, and are not externally calibrated phase quality scores. Genotype scores and the `GTM` method annotation survive this step; only `GT` orientation and `PS` are changed.
 
-Use repeated `--phase-mask FILE` arguments to exclude centromeres and poorly mappable intervals from **phasing only**. Inputs can be plain, gzip or BGZF BED files, including the UCSC centromere table with its `Chr Start End GapType` header. Coordinates are zero-based and half-open; overlapping intervals from all files are merged. Masked positions retain their variant and methylation calls but have no phased genotype or `PS`. Masks are barriers even when a read pair bridges them: inference, CpG context, nearby indel proposals and PairHMM flanks are restricted to each unmasked interval. Paths must be supplied explicitly, and contig names must match the BAM/reference.
+Use repeated `--phase-mask FILE` arguments to exclude centromeres and poorly mappable intervals from **phasing only**. Inputs can be plain, gzip or BGZF BED files, including the UCSC centromere table with its `Chr Start End GapType` header. Coordinates are zero-based and half-open; overlapping intervals from all files are merged. Masked positions retain variant and methylation calling but have no phased genotype or `PS`. For models using molecular features, masks also make those features unavailable and select count-based genotyping (`GTM=counts`); consequently calls can differ from an unmasked molecular run. Masks are barriers even when a read pair bridges them: inference, CpG context, nearby indel proposals and PairHMM flanks are restricted to each unmasked interval. Paths must be supplied explicitly, and contig names must match the BAM/reference.
 
 ```bash
 rastair call --phase --phase-mask centromeres.txt --phase-mask blacklist.bed.gz \

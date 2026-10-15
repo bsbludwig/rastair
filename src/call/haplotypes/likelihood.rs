@@ -423,7 +423,7 @@ pub(super) fn pair_prior(
     sites: &[Site],
     prior: f64,
     indel_prior: f64,
-    has_indel_candidate: bool,
+    indel_alternatives: usize,
 ) -> Result<f64> {
     let mut result = 0.0;
     let mut heterozygotes = 0u32;
@@ -443,11 +443,13 @@ pub(super) fn pair_prior(
         result += probability.ln();
         heterozygotes += u32::from(a != b);
     }
-    if has_indel_candidate {
+    if indel_alternatives > 0 {
+        let alleles = indel_alternatives + 1;
+        let alternate_genotypes = alleles * (alleles + 1) / 2 - 1;
         result += if first.indel.is_none() && second.indel.is_none() {
             (1.0 - indel_prior).ln()
         } else {
-            (indel_prior / 2.0).ln()
+            (indel_prior / f64::from(u32::try_from(alternate_genotypes)?)).ln()
         };
         heterozygotes += u32::from(first.indel != second.indel);
     }
@@ -463,6 +465,12 @@ pub(super) fn retained_pair_priors(
     params: &LikelihoodParams,
     has_indel: bool,
 ) -> Result<Vec<f64>> {
+    let indels = haplotypes
+        .iter()
+        .filter_map(|haplotype| haplotype.indel.as_ref())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let mut counts = std::collections::BTreeMap::<Vec<(u8, u8)>, usize>::new();
     let mut pairs = Vec::new();
     for (index, first) in haplotypes.iter().enumerate() {
@@ -482,8 +490,18 @@ pub(super) fn retained_pair_priors(
                 heterozygotes += u32::from(a != b);
             }
             if has_indel {
-                let a = u8::from(first.indel.is_some());
-                let b = u8::from(second.indel.is_some());
+                let allele = |indel: Option<&super::Indel>| -> Result<u8> {
+                    match indel {
+                        None => Ok(0),
+                        Some(indel) => Ok(u8::try_from(
+                            indels.binary_search(&indel).map_err(|_| {
+                                color_eyre::eyre::eyre!("Missing candidate indel prior")
+                            })? + 1,
+                        )?),
+                    }
+                };
+                let a = allele(first.indel.as_ref())?;
+                let b = allele(second.indel.as_ref())?;
                 key.push((a.min(b), a.max(b)));
                 heterozygotes += u32::from(a != b);
             }
@@ -497,7 +515,7 @@ pub(super) fn retained_pair_priors(
                     sites,
                     *params.snp_prior,
                     *params.indel_prior,
-                    has_indel,
+                    if has_indel { indels.len() } else { 0 },
                 )?,
             ));
         }

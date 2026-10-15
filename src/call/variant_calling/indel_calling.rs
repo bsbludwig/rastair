@@ -95,6 +95,7 @@ pub struct IndelCall {
     /// Supported on only one bisulfite strand. Emitted with an `indel_strand`
     /// FILTER rather than dropped, so `--all` shows why the allele did not pass.
     pub one_sided: bool,
+    pub genotype_model: crate::call::haplotypes::genotype::GenotypeModel,
 }
 
 /// Call indels at a position. Returns empty vec if no indels pass filters.
@@ -110,6 +111,25 @@ pub fn call_indels(
     ml_enabled: bool,
     tract: u32,
     rescue: bool,
+) -> Vec<IndelCall> {
+    collect_indels(indels, params, ml_enabled, tract, rescue, true)
+}
+
+pub(crate) fn molecular_candidates(
+    indels: &IndelCounts,
+    params: &IndelParams,
+    tract: u32,
+) -> Vec<IndelCall> {
+    collect_indels(indels, params, true, tract, false, false)
+}
+
+fn collect_indels(
+    indels: &IndelCounts,
+    params: &IndelParams,
+    ml_enabled: bool,
+    tract: u32,
+    rescue: bool,
+    resolve: bool,
 ) -> Vec<IndelCall> {
     let mut calls = Vec::new();
 
@@ -163,6 +183,7 @@ pub fn call_indels(
                 depth: filtered_depth,
                 alt_count,
                 one_sided: !allele_counts.on_both_strands(),
+                genotype_model: Default::default(),
             });
         } else {
             let (tag, quality) = genotype
@@ -176,11 +197,14 @@ pub fn call_indels(
                 depth: filtered_depth,
                 alt_count,
                 one_sided: !allele_counts.on_both_strands(),
+                genotype_model: Default::default(),
             });
         }
     }
 
-    resolve_compound_het(&mut calls, filtered_depth, params.indel_error_rate, tract);
+    if resolve {
+        resolve_compound_het(&mut calls, filtered_depth, params.indel_error_rate, tract);
+    }
     calls
 }
 
@@ -254,8 +278,8 @@ fn expected_allele_fractions(tract: u32) -> (f64, f64) {
 ///
 /// Runs after ML scoring, which is the first point where both the binomial's
 /// verdict and the model's score are available. A rescued allele becomes a
-/// heterozygote: it is the most conservative genotype that is still a variant, and
-/// the binomial having preferred hom-ref means the evidence is at the low end.
+/// heterozygote only on the count path. A molecular genotype is retained because
+/// the forest cannot provide independent evidence of allele dosage.
 pub fn rescue_hom_ref(calls: &mut Vec<IndelCall>, ml_threshold: Option<Probability>) {
     let alt_one = NonZeroU8::new(1).expect("nonzero");
     calls.retain_mut(|call| {
@@ -268,7 +292,9 @@ pub fn rescue_hom_ref(calls: &mut Vec<IndelCall>, ml_threshold: Option<Probabili
         }
         match (call.ml, ml_threshold) {
             (Some(ml), Some(threshold)) if ml >= threshold => {
-                call.genotype = GenotypeTag::ref_het(alt_one);
+                if call.genotype_model == crate::call::haplotypes::genotype::GenotypeModel::Counts {
+                    call.genotype = GenotypeTag::ref_het(alt_one);
+                }
                 true
             }
             _ => false,
@@ -426,6 +452,7 @@ mod tests {
             depth: 30,
             alt_count,
             one_sided: false,
+            genotype_model: Default::default(),
         }
     }
 
@@ -525,6 +552,18 @@ mod tests {
         assert_eq!(calls[0].genotype, GenotypeTag::RefHet(ALT_1));
         assert!(calls[0].ml.is_none(), "a low score must not veto a call the binomial kept");
         assert_eq!(calls[1].genotype, GenotypeTag::RefHet(ALT_1), "rescued as a het");
+    }
+
+    #[test]
+    fn rescue_does_not_override_a_molecular_genotype_with_the_ml_score() -> color_eyre::Result<()> {
+        let mut candidate = call("AA", 3);
+        candidate.genotype = GenotypeTag::HomRef;
+        candidate.genotype_model = crate::call::haplotypes::genotype::GenotypeModel::PairHmm;
+        candidate.ml = Some(Probability::new(0.99)?);
+        let mut calls = vec![candidate];
+        rescue_hom_ref(&mut calls, Some(Probability::new(0.5)?));
+        assert_eq!(calls.first().map(|call| call.genotype), Some(GenotypeTag::HomRef));
+        Ok(())
     }
 
     /// A one-sided allele is emitted for visibility but is not evidence, so it must

@@ -18,6 +18,7 @@ use seqair_types::{Base, Phred, Pos1, Probability, SmallVec, SmolStr};
 use crate::{
     call::{
         RecordFilters,
+        haplotypes::genotype::{self, GenotypeModel},
         phasing::{self, GtAllele},
         pileup::indels::IndelAllele,
         variant_calling::{ErrorModel, GenotypeTag},
@@ -208,7 +209,14 @@ fn emit_compound_het_record<W: Write>(
         contig,
         pos1(pileup)?,
         &alleles,
-        Some(first.quality.as_int() as f32),
+        Some(
+            [first, second]
+                .iter()
+                .filter_map(|call| call.ml)
+                .min_by(|a, b| (**a).total_cmp(b))
+                .map_or(first.quality.as_int(), |score| Phred::from(score.inverted()).as_int())
+                as f32,
+        ),
     )?;
     let mut enc = match filter {
         Some(filter) => encode_filters(enc, schema, filter.into())?,
@@ -231,6 +239,12 @@ fn emit_compound_het_record<W: Write>(
     let mut enc = enc.begin_samples();
     if config.format.gt {
         schema.format.gt.encode(&mut enc, &[to_seqair_gt(first.genotype, None)])?;
+    }
+    if config.format.gq {
+        schema.format.gq.encode(&mut enc, &[first.quality.as_int().min(99)])?;
+    }
+    if config.format.gtm {
+        schema.format.gtm.encode(&mut enc, &[first.genotype_model.as_str()])?;
     }
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
@@ -391,6 +405,12 @@ fn emit_indel_record<W: Write>(
     let mut enc = enc.begin_samples();
     if config.format.gt {
         schema.format.gt.encode(&mut enc, &[to_seqair_gt(call.genotype, None)])?;
+    }
+    if config.format.gq {
+        schema.format.gq.encode(&mut enc, &[call.quality.as_int().min(99)])?;
+    }
+    if config.format.gtm {
+        schema.format.gtm.encode(&mut enc, &[call.genotype_model.as_str()])?;
     }
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(call.depth).unwrap_or(i32::MAX)])?;
@@ -555,11 +575,20 @@ fn encode_format(
             f.ps.encode(enc, &[set])?;
         }
     }
-    if c.gl {
+    let model = genotype::model(pileup);
+    if c.gl && model == GenotypeModel::Counts {
         f.gl.encode(enc, &[genotype.likelihood])?;
     }
-    if c.gc {
+    if c.gc && model == GenotypeModel::Counts {
         f.gc.encode(enc, &[genotype.confidence])?;
+    }
+    if let Some(estimate) = pileup.pos_metrics.extended.genotype {
+        if c.gq {
+            f.gq.encode(enc, &[Phred::from(estimate.confidence).as_int().min(99)])?;
+        }
+        if c.gtm {
+            f.gtm.encode(enc, &[model.as_str()])?;
+        }
     }
     if c.dp {
         f.dp.encode(enc, &[i32::try_from(pileup.pos_metrics.depth).unwrap_or(i32::MAX)])?;

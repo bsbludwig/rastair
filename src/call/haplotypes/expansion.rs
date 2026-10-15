@@ -81,6 +81,32 @@ pub(super) fn expand(
     search: &ExpansionParams,
     require_links: bool,
 ) -> Result<Expanded> {
+    expand_indels(
+        reference,
+        focal,
+        candidates,
+        indel.map(std::slice::from_ref).unwrap_or_default(),
+        fragments,
+        params,
+        search,
+        require_links,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Shared bounded search for SNP and competing-indel hypotheses"
+)]
+pub(super) fn expand_indels(
+    reference: &Reference,
+    focal: Site,
+    candidates: &[Site],
+    indels: &[Indel],
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+    search: &ExpansionParams,
+    require_links: bool,
+) -> Result<Expanded> {
     let focal_pos = focal.pos;
     let mut ordered = candidates.to_vec();
     ordered.sort_by_key(|site| {
@@ -91,7 +117,7 @@ pub(super) fn expand(
         )
     });
     let links = if require_links {
-        links(reference, &focal, &ordered, indel, fragments, params)?
+        links(reference, &focal, &ordered, indels, fragments, params)?
     } else {
         BTreeMap::new()
     };
@@ -129,10 +155,11 @@ pub(super) fn expand(
         maximum_pruned_mass: 0.0,
         steps: 0,
     };
-    if let Some(indel) = indel {
+    for indel in indels {
         let alternates = result
             .haplotypes
             .iter()
+            .filter(|haplotype| haplotype.indel.is_none())
             .cloned()
             .map(|mut haplotype| {
                 haplotype.indel = Some(indel.clone());
@@ -180,7 +207,7 @@ pub(super) fn expand(
                 reference,
                 &sites,
                 &proposals,
-                indel,
+                indels.first(),
                 fragments,
                 params,
                 search.read_local,
@@ -190,7 +217,7 @@ pub(super) fn expand(
                 &sites,
                 &matrix.values,
                 params,
-                indel.is_some(),
+                !indels.is_empty(),
             )?;
             let mut support = vec![0.0; proposals.len()];
             for pair in &pairs {
@@ -246,12 +273,39 @@ pub(super) fn expand(
                     }
                 }
             }
-            if indel.is_some()
+            if !indels.is_empty()
                 && let Some(index) = ranking.iter().copied().find(|&index| {
                     proposals.get(index).is_some_and(|haplotype| haplotype.indel.is_some())
                 })
             {
                 keep.insert(index);
+            }
+            if indels.len() > 1 {
+                let mut best = BTreeMap::new();
+                for (index, pair) in pairs.iter().enumerate() {
+                    let a = proposals
+                        .get(pair.first)
+                        .ok_or_eyre("Missing joint indel haplotype")?
+                        .indel
+                        .as_ref();
+                    let b = proposals
+                        .get(pair.second)
+                        .ok_or_eyre("Missing joint indel haplotype")?
+                        .indel
+                        .as_ref();
+                    let key = (a.min(b), a.max(b));
+                    let previous = best.entry(key).or_insert(index);
+                    if pairs.get(*previous).is_some_and(|other| {
+                        pair.log_likelihood + pair.log_prior
+                            > other.log_likelihood + other.log_prior
+                    }) {
+                        *previous = index;
+                    }
+                }
+                for index in best.into_values() {
+                    let pair = pairs.get(index).ok_or_eyre("Missing protected indel genotype")?;
+                    keep.extend([pair.first, pair.second]);
+                }
             }
             if keep.len() > usize::from(search.max_haplotypes) {
                 ordered.push(site);
@@ -296,7 +350,7 @@ fn links(
     reference: &Reference,
     focal: &Site,
     candidates: &[Site],
-    indel: Option<&Indel>,
+    indels: &[Indel],
     fragments: &[Fragment],
     params: &LikelihoodParams,
 ) -> Result<BTreeMap<(u32, u32), usize>> {
@@ -308,7 +362,7 @@ fn links(
         if !site.alleles.contains(&seqair_types::Base::C) {
             continue;
         }
-        for edit in [None, indel] {
+        for edit in std::iter::once(None).chain(indels.iter().map(Some)) {
             if edit.is_some_and(|edit| {
                 !edit.inserted.is_empty() && site.pos.checked_add(1) == Some(edit.start)
             }) {
@@ -357,7 +411,7 @@ fn links(
                         {
                             return false;
                         }
-                        [None, indel].into_iter().any(|edit| {
+                        std::iter::once(None).chain(indels.iter().map(Some)).any(|edit| {
                             let haplotype = Haplotype {
                                 alleles: vec![(pos, side.unmod_base())],
                                 indel: edit.cloned(),

@@ -150,12 +150,14 @@ pub enum ColumnPhase {
     Observed(Box<[PhaseObservation]>),
     Phased(PhaseCall),
     Likelihood(crate::call::haplotypes::features::ColumnEvidence),
+    Genotyped(Option<PhaseCall>),
 }
 
 /// The phase call a column carries, if any.
 pub(crate) fn call_of(pileup: &PileupMetrics) -> Option<PhaseCall> {
     match pileup.phase.as_deref() {
         Some(ColumnPhase::Phased(call)) => Some(*call),
+        Some(ColumnPhase::Genotyped(call)) => *call,
         _ => None,
     }
 }
@@ -301,11 +303,19 @@ pub fn phase_segment(
         calls.extend(phase_unmasked(pileups, segment, fragments, region)?);
     }
     for pileup in pileups.iter_mut() {
-        pileup.phase = None;
+        if let Some(ColumnPhase::Genotyped(call)) = pileup.phase.as_deref_mut() {
+            *call = None;
+        } else {
+            pileup.phase = None;
+        }
     }
     for (index, call) in calls {
-        pileups.get_mut(index).ok_or_eyre("Phase call outside segment")?.phase =
-            Some(Box::new(ColumnPhase::Phased(call)));
+        let pileup = pileups.get_mut(index).ok_or_eyre("Phase call outside segment")?;
+        if let Some(ColumnPhase::Genotyped(phase)) = pileup.phase.as_deref_mut() {
+            *phase = Some(call);
+        } else {
+            pileup.phase = Some(Box::new(ColumnPhase::Phased(call)));
+        }
     }
     Ok(())
 }

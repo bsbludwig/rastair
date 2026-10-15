@@ -24,9 +24,14 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct ColumnEvidence {
     snps: [HaplotypeEvidence; 4],
     indels: Vec<(IndelAllele, HaplotypeEvidence)>,
+    pub(super) snp_genotype: Option<super::genotype::DiploidPosterior<Base>>,
+    pub(super) indel_genotype: Option<super::genotype::DiploidPosterior<Option<IndelAllele>>>,
 }
 
 impl ColumnEvidence {
+    pub(crate) fn has_indel_genotypes(&self) -> bool {
+        self.indel_genotype.is_some()
+    }
     pub(crate) fn snp(current: &MetricsForAlt) -> HaplotypeEvidence {
         current
             .metrics
@@ -215,8 +220,19 @@ pub(crate) fn normalize_indels(
         let mut mapq = RmsAccumulator::new();
         let mut baseq = RmsAccumulator::new();
         for (index, fragment) in fragments.iter().enumerate() {
+            let alternate = alternate_fragments.contains(&index);
             let base = super::likelihood::consensus_at(fragment, column.pos)?;
-            if base.source.is_none() && !alternate_fragments.contains(&index) {
+            let reference_reads = || {
+                fragment.reads.iter().filter(|read| {
+                    read.observations.binary_search_by_key(&column.pos, |obs| obs.pos).is_ok()
+                        && read.annotations.as_ref().is_none_or(|annotations| {
+                            !annotations.indel_anchors.contains(&column.pos)
+                        })
+                })
+            };
+            // A rejected gap is uninformative, not an observation of reference.
+            // A clean mate at this column can still supply the molecule's reference.
+            if !alternate && reference_reads().next().is_none() {
                 continue;
             }
             depth += 1;
@@ -230,10 +246,10 @@ pub(crate) fn normalize_indels(
             if let Some(q) = base.quality {
                 baseq.add(f64::from(q));
             }
-            let annotations = fragment.reads.iter().filter_map(|read| read.annotations.as_ref());
+            let annotations = reference_reads().filter_map(|read| read.annotations.as_ref());
             let noisy = annotations.clone().any(|a| a.noisy);
             soft_clipped += u32::from(annotations.clone().any(|a| a.soft_clipped));
-            noisy_ref += u32::from(noisy && !alternate_fragments.contains(&index));
+            noisy_ref += u32::from(noisy && !alternate);
         }
         let idx = usize::try_from(u64::from(column.pos) - segment.start)?;
         let (ref_window, ref_anchor) = indel_ref_window_at(idx, segment);
@@ -422,6 +438,9 @@ pub(crate) fn add_likelihoods(
                 {
                     continue;
                 }
+                if result.realigned_fragments > 0 {
+                    evidence.snp_genotype = Some(super::genotype::DiploidPosterior::snp(&result)?);
+                }
                 for allele in result.alleles {
                     let Some(index) = allele.base.known_index() else { continue };
                     let row = evidence
@@ -450,8 +469,14 @@ pub(crate) fn add_likelihoods(
                 }
             }
             if let Some(data) = column.indel_data.as_ref() {
+                let mut genotype_indels = Vec::new();
+                let mut all_supported = true;
                 for allele in &data.counts.alleles {
-                    if allele.total() < 2 || allele.allele.len() > 100 {
+                    if allele.total() < 2 {
+                        continue;
+                    }
+                    if allele.allele.len() > 100 {
+                        all_supported = false;
                         continue;
                     }
                     let (deleted, inserted) = match &allele.allele {
@@ -469,17 +494,42 @@ pub(crate) fn add_likelihoods(
                             .and_then(|len| indel.start.checked_add(len))
                             .is_none_or(|end| reference.base_at(end).is_none())
                     {
+                        all_supported = false;
                         continue;
                     }
                     if complex_repeat_context(&reference, &indel, &neighbors, local)? {
+                        all_supported = false;
                         continue;
                     }
-                    let mut row = indel_likelihood(
+                    let (mut row, genotype) = score_indel(
                         &reference, column.pos, &indel, &neighbors, local, &params, &search,
                     )?;
+                    all_supported &= genotype.is_some();
+                    evidence.indel_genotype = genotype;
+                    genotype_indels.push(indel);
                     row.haplotype_boundary_resolved =
                         data.canonical_position.map_or(0.0, |p| p.boundary_aligned_fraction);
                     evidence.indels.push((allele.allele.clone(), row));
+                }
+                if !all_supported {
+                    evidence.indel_genotype = None;
+                } else if genotype_indels.len() > 1
+                    || (!genotype_indels.is_empty()
+                        && neighbors.iter().any(|site| site.pos == column.pos))
+                {
+                    let joint = joint_indel_genotypes(
+                        &reference,
+                        column.pos,
+                        &genotype_indels,
+                        &neighbors,
+                        local,
+                        &params,
+                        &search,
+                    )?;
+                    evidence.indel_genotype = joint.as_ref().map(|joint| joint.indels.clone());
+                    if evidence.snp_genotype.is_some() {
+                        evidence.snp_genotype = joint.map(|joint| joint.snps);
+                    }
                 }
             }
             column.phase = Some(Box::new(ColumnPhase::Likelihood(evidence)));
@@ -551,6 +601,7 @@ fn complex_repeat_context(
     Ok(false)
 }
 
+#[cfg(test)]
 fn indel_likelihood(
     reference: &Reference,
     anchor: u32,
@@ -560,6 +611,18 @@ fn indel_likelihood(
     params: &LikelihoodParams,
     search: &ExpansionParams,
 ) -> Result<HaplotypeEvidence> {
+    Ok(score_indel(reference, anchor, indel, neighbors, fragments, params, search)?.0)
+}
+
+fn score_indel(
+    reference: &Reference,
+    anchor: u32,
+    indel: &Indel,
+    neighbors: &[Site],
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+    search: &ExpansionParams,
+) -> Result<(HaplotypeEvidence, Option<super::genotype::DiploidPosterior<Option<IndelAllele>>>)> {
     let base = reference.base_at(anchor).ok_or_eyre("Indel anchor outside reference")?;
     let focal = Site { pos: anchor, reference: base, alleles: vec![base] };
     let neighbors: Vec<_> = neighbors
@@ -587,7 +650,7 @@ fn indel_likelihood(
         true,
     )?;
     if matrix.realigned_fragments == 0 {
-        return Ok(HaplotypeEvidence::default());
+        return Ok((HaplotypeEvidence::default(), None));
     }
     let pairs = super::posterior_pairs(
         &expanded.haplotypes,
@@ -601,6 +664,11 @@ fn indel_likelihood(
     let mut absent = f64::NEG_INFINITY;
     let mut present_prior = f64::NEG_INFINITY;
     let mut absent_prior = f64::NEG_INFINITY;
+    let genotype = super::genotype::DiploidPosterior::indels(
+        &expanded.haplotypes,
+        &pairs,
+        expanded.maximum_pruned_mass,
+    )?;
     for pair in pairs {
         let a = expanded.haplotypes.get(pair.first).ok_or_eyre("Missing first indel haplotype")?;
         let b =
@@ -618,44 +686,109 @@ fn indel_likelihood(
     let heterozygous =
         *probabilities.get(1).ok_or_eyre("Missing heterozygous indel probability")?;
     let homozygous = *probabilities.get(2).ok_or_eyre("Missing homozygous indel probability")?;
-    Ok(HaplotypeEvidence {
-        haplotype_available: 1.0,
-        haplotype_alt_probability: (heterozygous + homozygous).f(),
-        haplotype_heterozygous_probability: heterozygous.f(),
-        haplotype_homozygous_probability: homozygous.f(),
-        haplotype_expected_fraction: (heterozygous / 2.0 + homozygous).f(),
-        haplotype_log_bayes_factor: ((present - present_prior) - (absent - absent_prior))
-            .clamp(-100.0, 100.0)
-            .f(),
-        haplotype_genotype_entropy: -probabilities
-            .iter()
-            .filter(|&&p| p > 0.0)
-            .map(|p| p * p.ln())
-            .sum::<f64>()
-            .f(),
-        haplotype_context_sites: expanded.sites.len().f(),
-        haplotype_linking_fragments: fragments
-            .iter()
-            .filter(|fragment| {
-                fragment.reads.iter().any(|read| {
-                    read.covers(anchor, params.likelihood_engine)
-                        || read
-                            .sequence
-                            .as_ref()
-                            .is_some_and(|sequence| sequence.indels.contains(indel))
-                }) && fragment.reads.iter().any(|read| {
-                    expanded.sites.iter().any(|site| {
-                        site.pos != anchor && read.covers(site.pos, params.likelihood_engine)
+    Ok((
+        HaplotypeEvidence {
+            haplotype_available: 1.0,
+            haplotype_alt_probability: (heterozygous + homozygous).f(),
+            haplotype_heterozygous_probability: heterozygous.f(),
+            haplotype_homozygous_probability: homozygous.f(),
+            haplotype_expected_fraction: (heterozygous / 2.0 + homozygous).f(),
+            haplotype_log_bayes_factor: ((present - present_prior) - (absent - absent_prior))
+                .clamp(-100.0, 100.0)
+                .f(),
+            haplotype_genotype_entropy: -probabilities
+                .iter()
+                .filter(|&&p| p > 0.0)
+                .map(|p| p * p.ln())
+                .sum::<f64>()
+                .f(),
+            haplotype_context_sites: expanded.sites.len().f(),
+            haplotype_linking_fragments: fragments
+                .iter()
+                .filter(|fragment| {
+                    fragment.reads.iter().any(|read| {
+                        read.covers(anchor, params.likelihood_engine)
+                            || read
+                                .sequence
+                                .as_ref()
+                                .is_some_and(|sequence| sequence.indels.contains(indel))
+                    }) && fragment.reads.iter().any(|read| {
+                        expanded.sites.iter().any(|site| {
+                            site.pos != anchor && read.covers(site.pos, params.likelihood_engine)
+                        })
                     })
                 })
-            })
-            .count()
-            .f(),
-        haplotype_fragments: matrix.fragments.f(),
-        haplotype_realigned_fraction: matrix.realigned_fragments.f() / matrix.fragments.max(1).f(),
-        haplotype_pruned_mass: expanded.maximum_pruned_mass.f(),
-        haplotype_boundary_resolved: 1.0,
-    })
+                .count()
+                .f(),
+            haplotype_fragments: matrix.fragments.f(),
+            haplotype_realigned_fraction: matrix.realigned_fragments.f()
+                / matrix.fragments.max(1).f(),
+            haplotype_pruned_mass: expanded.maximum_pruned_mass.f(),
+            haplotype_boundary_resolved: 1.0,
+        },
+        Some(genotype),
+    ))
+}
+
+fn joint_indel_genotypes(
+    reference: &Reference,
+    anchor: u32,
+    indels: &[Indel],
+    neighbors: &[Site],
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+    search: &ExpansionParams,
+) -> Result<Option<JointGenotypes>> {
+    if indels.len() >= 8 {
+        return Ok(None);
+    }
+    let base = reference.base_at(anchor).ok_or_eyre("Joint indel anchor outside reference")?;
+    let focal = Site::new(anchor, base, Base::KNOWN)?;
+    let neighbors = neighbors
+        .iter()
+        .filter(|site| site.pos != anchor && !indels.iter().any(|indel| indel.deletes(site.pos)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let expanded = super::expansion::expand_indels(
+        reference, focal, &neighbors, indels, fragments, params, search, true,
+    )?;
+    let matrix = super::likelihood_matrix_geometry(
+        reference,
+        &expanded.sites,
+        &expanded.haplotypes,
+        indels.first(),
+        fragments,
+        params,
+        true,
+    )?;
+    if matrix.realigned_fragments == 0 {
+        return Ok(None);
+    }
+    let pairs = super::posterior_pairs(
+        &expanded.haplotypes,
+        &expanded.sites,
+        &matrix.values,
+        params,
+        true,
+    )?;
+    Ok(Some(JointGenotypes {
+        indels: super::genotype::DiploidPosterior::indels(
+            &expanded.haplotypes,
+            &pairs,
+            expanded.maximum_pruned_mass,
+        )?,
+        snps: super::genotype::DiploidPosterior::pairs(
+            &expanded.haplotypes,
+            &pairs,
+            anchor,
+            expanded.maximum_pruned_mass,
+        )?,
+    }))
+}
+
+struct JointGenotypes {
+    indels: super::genotype::DiploidPosterior<Option<IndelAllele>>,
+    snps: super::genotype::DiploidPosterior<Base>,
 }
 
 #[cfg(test)]
@@ -706,6 +839,83 @@ mod tests {
         let candidate = focal.alt_metrics(Base::T).ok_or_eyre("candidate")?;
         assert_eq!(ColumnEvidence::snp(&candidate).haplotype_available, 0.0);
         assert_eq!(candidate.alt.depth, 2);
+        Ok(())
+    }
+
+    fn noise_reproducer_counts(remote_on_alternate: bool, overlaps: bool) -> Result<IndelCounts> {
+        let reference = reference(b"GCAAAACTG");
+        let (segment, pileups) = crate::pileups! {
+            [G C A A A A C T G] Ref,
+            [G C A A A A C T G] OT,
+            [G C A A A A C T G] OB,
+        };
+        let mut columns =
+            pileups.into_iter().map(PileupMetrics::new).collect::<Result<Vec<_>>>()?;
+        let alternate =
+            fixture_read(&reference, b"GCAAAAACTG", &[(Match, 5), (Insertion, 1), (Match, 4)])?;
+        let wildtype = fixture_read(&reference, b"GCAAAACTG", &[(Match, 9)])?;
+        let remote_reference =
+            Reference { start: if overlaps { 1000 } else { 2000 }, bases: reference.bases.clone() };
+        let mut noisy_mate = fixture_read(&remote_reference, b"GCAAAACTG", &[(Match, 9)])?;
+        noisy_mate.annotations.as_mut().ok_or_eyre("mate annotations")?.noisy = true;
+        let mut fragments = Vec::new();
+        for index in 0..9 {
+            let mut reads = vec![alternate.clone()];
+            if remote_on_alternate && index < 3 {
+                reads.push(noisy_mate.clone());
+            }
+            fragments.push(Fragment { reads });
+        }
+        for index in 0..4 {
+            let mut reads = vec![wildtype.clone()];
+            if !remote_on_alternate && index < 3 {
+                reads.push(noisy_mate.clone());
+            }
+            fragments.push(Fragment { reads });
+        }
+        normalize_indels(&mut columns, &segment, &fragments)?;
+        let column = columns.iter().find(|c| c.pos == 1001).ok_or_eyre("canonical column")?;
+        Ok(column.indel_data.as_ref().ok_or_eyre("indel")?.counts.clone())
+    }
+
+    #[test]
+    fn remote_noise_reproducer_keeps_reference_molecules() -> Result<()> {
+        let counts = noise_reproducer_counts(false, false)?;
+        assert_eq!(counts.ref_count, 4);
+        assert_eq!(
+            counts.noisy_ref_count, 0,
+            "a mate outside this locus cannot make its clean reference observation noisy"
+        );
+        assert_eq!(counts.clean_depth(), 13);
+        let calls = crate::call::variant_calling::indel_calling::call_indels(
+            &counts,
+            &crate::call::variant_calling::IndelParams::default(),
+            true,
+            4,
+            false,
+        );
+        assert!(matches!(
+            calls.first().ok_or_eyre("call")?.genotype,
+            crate::call::variant_calling::GenotypeTag::RefHet(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn remote_noise_reproducer_does_not_remove_alternate_molecules() -> Result<()> {
+        let counts = noise_reproducer_counts(true, false)?;
+        assert_eq!(counts.alleles.first().ok_or_eyre("allele")?.clean_total(), 9);
+        assert_eq!(counts.noisy_ref_count, 0);
+        assert_eq!(counts.clean_depth(), 13);
+        Ok(())
+    }
+
+    #[test]
+    fn local_noise_reproducer_still_excludes_reference_molecules() -> Result<()> {
+        let counts = noise_reproducer_counts(false, true)?;
+        assert_eq!(counts.ref_count, 4);
+        assert_eq!(counts.noisy_ref_count, 3);
+        assert_eq!(counts.clean_depth(), 10);
         Ok(())
     }
 
@@ -807,6 +1017,128 @@ mod tests {
         let mut only_one = fragments.first().ok_or_eyre("fragment")?.clone();
         only_one.reads.push(read);
         assert!(!complex_repeat_context(&reference, &indel, &sites, &[only_one])?);
+        Ok(())
+    }
+
+    #[test]
+    fn indel_pair_hmm_distinguishes_zero_one_and_two_copies() -> Result<()> {
+        let reference = reference(b"GCTGACGTCA");
+        let unchanged = fixture_read(&reference, b"GCTGACGTCA", &[(Match, 10)])?;
+        let alternate =
+            fixture_read(&reference, b"GCATGACGTCA", &[(Match, 2), (Insertion, 1), (Match, 8)])?;
+        let edit = alternate
+            .annotations
+            .as_ref()
+            .and_then(|a| a.indels.first())
+            .ok_or_eyre("indel")?
+            .indel
+            .clone();
+        let mut params = parameters()?;
+        params.non_taps = true;
+        let one = std::num::NonZeroU8::new(1).ok_or_eyre("allele")?;
+        for (copies, expected) in [
+            (0, crate::call::variant_calling::GenotypeTag::HomRef),
+            (1, crate::call::variant_calling::GenotypeTag::ref_het(one)),
+            (2, crate::call::variant_calling::GenotypeTag::hom_alt(one)),
+        ] {
+            let fragments = (0..32)
+                .map(|index| Fragment {
+                    reads: vec![if index < copies * 16 { &alternate } else { &unchanged }.clone()],
+                })
+                .collect::<Vec<_>>();
+            let (_, posterior) = score_indel(
+                &reference,
+                1001,
+                &edit,
+                &[],
+                &fragments,
+                &params,
+                &ExpansionParams::default(),
+            )?;
+            let estimate = posterior
+                .ok_or_eyre("posterior")?
+                .select(|allele| Some(u8::from(allele.is_some())))?
+                .ok_or_eyre("genotype")?;
+            assert_eq!(estimate.genotype, expected, "{estimate:?}");
+            assert!(*estimate.confidence < 0.01, "{estimate:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn competing_indel_templates_produce_a_joint_compound_heterozygote() -> Result<()> {
+        let reference = reference(b"GCTGACGTCA");
+        let first =
+            fixture_read(&reference, b"GCATGACGTCA", &[(Match, 2), (Insertion, 1), (Match, 8)])?;
+        let second =
+            fixture_read(&reference, b"GCGGTGACGTCA", &[(Match, 2), (Insertion, 2), (Match, 8)])?;
+        let edits = [&first, &second]
+            .into_iter()
+            .map(|read| {
+                read.annotations
+                    .as_ref()
+                    .and_then(|a| a.indels.first())
+                    .map(|a| a.indel.clone())
+                    .ok_or_eyre("indel")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fragments = [first, second]
+            .into_iter()
+            .flat_map(|read| std::iter::repeat_n(Fragment { reads: vec![read] }, 16))
+            .collect::<Vec<_>>();
+        let mut params = parameters()?;
+        params.non_taps = true;
+        let result = joint_indel_genotypes(
+            &reference,
+            1001,
+            &edits,
+            &[],
+            &fragments,
+            &params,
+            &ExpansionParams::default(),
+        )?
+        .ok_or_eyre("joint evidence")?;
+        let estimate = result
+            .indels
+            .select(|allele| {
+                Some(match allele {
+                    None => 0,
+                    Some(IndelAllele::Insertion(bases)) if bases.len() == 1 => 1,
+                    _ => 2,
+                })
+            })?
+            .ok_or_eyre("genotype")?;
+        assert!(
+            matches!(estimate.genotype, crate::call::variant_calling::GenotypeTag::AltHet(..)),
+            "{estimate:?}"
+        );
+        assert!(*estimate.confidence < 0.01, "{estimate:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_indel_is_not_reclassified_as_reference_support() -> Result<()> {
+        let reference = reference(b"GCAAAACTG");
+        let (segment, pileups) = crate::pileups! {
+            [G C A A A A C T G] Ref,
+            [G C A A A A C T G] OT,
+            [G C A A A A C T G] OB,
+        };
+        let mut columns =
+            pileups.into_iter().map(PileupMetrics::new).collect::<Result<Vec<_>>>()?;
+        let alternate =
+            fixture_read(&reference, b"GCAAAAACTG", &[(Match, 5), (Insertion, 1), (Match, 4)])?;
+        let mut rejected = alternate.clone();
+        rejected.annotations.as_mut().ok_or_eyre("annotations")?.indels.clear();
+        let fragments = [Fragment { reads: vec![alternate] }, Fragment { reads: vec![rejected] }];
+        normalize_indels(&mut columns, &segment, &fragments)?;
+        let data = columns
+            .iter()
+            .find(|c| c.pos == 1001)
+            .and_then(|c| c.indel_data.as_ref())
+            .ok_or_eyre("indel")?;
+        assert_eq!(data.counts.ref_count, 0);
+        assert_eq!(data.counts.clean_depth(), 1);
         Ok(())
     }
 }

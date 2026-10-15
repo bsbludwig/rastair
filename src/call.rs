@@ -459,15 +459,24 @@ fn process_collected_pileups(
 
     if params.indel.enabled() {
         for p in &mut pileups {
+            let molecular = matches!(p.phase.as_deref(), Some(phasing::ColumnPhase::Likelihood(evidence)) if evidence.has_indel_genotypes());
             if let Some(ref mut d) = p.indel_data {
                 let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
-                d.calls = variant_calling::indel_calling::call_indels(
-                    &d.counts,
-                    &params.indel,
-                    params.indel.use_ml(ml.enabled()),
-                    tract,
-                    params.indel.rescues_hom_ref(),
-                );
+                d.calls = if molecular {
+                    variant_calling::indel_calling::molecular_candidates(
+                        &d.counts,
+                        &params.indel,
+                        tract,
+                    )
+                } else {
+                    variant_calling::indel_calling::call_indels(
+                        &d.counts,
+                        &params.indel,
+                        params.indel.use_ml(ml.enabled()),
+                        tract,
+                        params.indel.rescues_hom_ref(),
+                    )
+                };
             }
         }
     }
@@ -479,12 +488,11 @@ fn process_collected_pileups(
     if !process::score_on_gpu(&mut pileups, ml, score_indels) {
         process::score_on_cpu(&mut pileups, ml, score_indels)?;
     }
-    for pileup in &mut pileups {
-        if matches!(pileup.phase.as_deref(), Some(phasing::ColumnPhase::Likelihood(_))) {
-            pileup.phase = None;
-        }
-    }
 
+    for pileup in &mut pileups {
+        let threshold = params.indel.use_ml(ml.enabled()).then(|| params.ml.threshold()).flatten();
+        haplotypes::genotype::assign_indels(pileup, threshold)?;
+    }
     if params.indel.rescues_hom_ref() {
         for p in &mut pileups {
             if let Some(ref mut d) = p.indel_data {
@@ -522,8 +530,11 @@ fn process_collected_pileups(
         .map(|mut pileup| {
             // Set "extended" metrics that depend on the segment and params. This is
             // done in a separate step since it uses the pileup as well as the ML score.
-            pileup.pos_metrics.extended.genotype =
-                pileup.estimate_genotype(params.ml.threshold(), params.variant_calling.error_model);
+            haplotypes::genotype::assign_snp(
+                &mut pileup,
+                params.ml.threshold(),
+                params.variant_calling.error_model,
+            )?;
             pileup.pos_metrics.extended.methylated =
                 metrics::methylation::call(&pileup)?.unwrap_or_default();
             pileup.pos_metrics.extended.methylation_strand_info =

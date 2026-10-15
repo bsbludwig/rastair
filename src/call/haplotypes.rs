@@ -7,6 +7,7 @@ pub use likelihood::{LikelihoodEngine, LikelihoodParams};
 mod expansion;
 pub use expansion::ExpansionParams;
 pub(crate) mod features;
+pub(crate) mod genotype;
 mod methylation;
 mod pair_hmm;
 #[cfg(any(feature = "experimental-seqair", test))]
@@ -484,9 +485,23 @@ fn likelihood_matrix_geometry(
 ) -> Result<LikelihoodMatrix> {
     let loci = scored_loci(reference, sites);
     let indel_span = if local {
-        indel
-            .map(|indel| Ok::<_, color_eyre::Report>(indel.start..indel.equivalent_end(reference)?))
-            .transpose()?
+        let mut span: Option<std::ops::Range<u32>> = None;
+        let edits = haplotypes
+            .iter()
+            .filter_map(|haplotype| haplotype.indel.as_ref())
+            .chain(indel)
+            .collect::<std::collections::BTreeSet<_>>();
+        for edit in edits {
+            let end = edit.equivalent_end(reference)?;
+            match &mut span {
+                Some(span) => {
+                    span.start = span.start.min(edit.start);
+                    span.end = span.end.max(end);
+                }
+                None => span = Some(edit.start..end),
+            }
+        }
+        span
     } else {
         None
     };
@@ -576,7 +591,8 @@ fn likelihood_matrix_geometry(
         }
         let mut plans = Vec::new();
         let mut distinct: Vec<Slot> = Vec::new();
-        let mut cache = std::collections::BTreeMap::<(usize, Vec<(u32, u8)>, bool), usize>::new();
+        let mut cache =
+            std::collections::BTreeMap::<(usize, Vec<(u32, u8)>, Option<&Indel>), usize>::new();
         let mut slots = Vec::with_capacity(haplotypes.len());
         for (haplotype_index, haplotype) in haplotypes.iter().enumerate() {
             let mut row = Vec::with_capacity(included.len());
@@ -593,7 +609,7 @@ fn likelihood_matrix_geometry(
                         (
                             fragment_index,
                             prepared.signature_at(fragment_index, haplotype, params),
-                            haplotype.indel.is_some(),
+                            haplotype.indel.as_ref(),
                         )
                     })
                 } else {
