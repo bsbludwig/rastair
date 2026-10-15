@@ -5,6 +5,10 @@ use crate::call::haplotypes::{
 };
 use seqair_types::Probability;
 
+/// Relative agreement of compair's `f32` kernels with an `f64` recurrence on
+/// these short profiles.
+const COMPAIR_PRECISION: f64 = 1e-6;
+
 fn params(non_taps: bool) -> LikelihoodParams {
     let mut params = crate::call::haplotypes::tests::params(non_taps);
     params.likelihood_engine = LikelihoodEngine::PairHmm;
@@ -203,11 +207,11 @@ fn overlapping_mates_share_one_conversion_draw_in_the_match_emission() -> Result
     let rate = params.conversion(Some(0.6));
     let expected = (1.0 - rate) * (0.0001_f64 / 3.0) + rate * 0.9999;
     let actual = score(&profile, &template, Strand::OT, 0.6, &params)?.exp();
-    assert!((actual - expected).abs() < 1e-12);
+    assert!((actual / expected - 1.0).abs() < COMPAIR_PRECISION, "{actual} versus {expected}");
     let independent = ((1.0 - rate) * (0.0001 / 3.0) + rate * 0.9999).powi(2);
     assert!((actual - independent).abs() > 0.1);
     let opposite = score(&profile, &template, Strand::OB, 0.6, &params)?.exp();
-    assert!((opposite - (0.0001_f64 / 3.0)).abs() < 1e-12);
+    assert!((opposite / (0.0001_f64 / 3.0) - 1.0).abs() < COMPAIR_PRECISION, "{opposite}");
     Ok(())
 }
 
@@ -314,7 +318,7 @@ fn conflict_consensus_is_neutral_and_unequal_qualities_reduce_match_confidence()
         ])?];
         let actual = score(&profile, &template, Strand::OT, 0.0, &params)?.exp();
         let expected = if competing_quality == 40 { 0.25 } else { 0.9 };
-        assert!((actual - expected).abs() < 1e-12);
+        assert!((actual / expected - 1.0).abs() < COMPAIR_PRECISION, "{actual} versus {expected}");
         assert!(actual < 0.9999);
     }
     Ok(())
@@ -735,7 +739,9 @@ fn read_local_windows_keep_the_molecular_observation_model_normalized() -> Resul
                 .exp();
         }
     }
-    assert!((total - 1.0).abs() < 1e-10, "{total}");
+    // Sixteen two-read likelihoods, each within compair's precision. A band
+    // cannot unnormalize the model: the normalization runs through the same one.
+    assert!((total - 1.0).abs() < 16.0 * COMPAIR_PRECISION, "{total}");
     Ok(())
 }
 
@@ -798,8 +804,8 @@ fn phase_likelihood_reuse_ignores_unsequenced_mate_gaps_but_preserves_cpg_partne
     Ok(())
 }
 
-/// The mixed emission as production scored it before the dot-product weights
-/// and the lane-batched kernel: every branch of the closure, cell by cell.
+/// The mixed emission as production scored it before compair: every branch of
+/// the closure, cell by cell, through the full `f64` matrix.
 fn reference_score_with_model(
     profile: &Profile,
     template: &Template,
@@ -859,8 +865,10 @@ fn reference_score_with_model(
         else {
             return 0.0;
         };
-        let Some(ordinary) = ordinary else { return insertion(i) };
         let Some(values) = emissions.get(i) else { return 0.0 };
+        // An unknown template base matches every read base, as compair and
+        // GATK score it: the larger of the row's emissions.
+        let Some(ordinary) = ordinary else { return values.iter().copied().fold(0.0, f64::max) };
         if let Some((a, b)) = masked {
             let Some(a) = a.known_index().and_then(|index| values.get(index)) else {
                 return 0.0;
@@ -884,8 +892,7 @@ fn reference_score_with_model(
 
 #[test]
 #[expect(clippy::cast_possible_truncation, reason = "Test code")]
-fn dot_product_weights_and_the_batched_kernel_reproduce_the_mixed_emission_bit_for_bit()
--> Result<()> {
+fn compair_reproduces_the_mixed_emission_through_the_full_matrix() -> Result<()> {
     use super::super::methylation::{Context, Scoring};
     struct Rng(u64);
     impl Rng {
@@ -972,9 +979,8 @@ fn dot_product_weights_and_the_batched_kernel_reproduce_the_mixed_emission_bit_f
                         &params,
                         bad_reads,
                     )?;
-                    assert_eq!(
-                        expected.to_bits(),
-                        actual.to_bits(),
+                    assert!(
+                        (expected - actual).abs() < COMPAIR_PRECISION * (1.0 + expected.abs()),
                         "trial {trial} {orientation:?} mask {bad_reads}: {expected} versus {actual}"
                     );
                     compared += 1;
@@ -1028,8 +1034,8 @@ fn bounded_mapping_hypotheses_are_skipped_without_changing_the_likelihood() -> R
             ],
         };
         let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
-        let mut lazy = Scorer::new(&params);
-        let mut exhaustive = Scorer::new(&params).exhaustive();
+        let mut lazy = Scorer::new(&params)?;
+        let mut exhaustive = Scorer::new(&params)?.exhaustive();
         for base in Base::KNOWN {
             let haplotype = Haplotype { alleles: vec![(1030, base), (1150, far)], indel: None };
             let template = prepared.template(&reference, &haplotype, &[1030, 1150], &params)?;
@@ -1046,6 +1052,77 @@ fn bounded_mapping_hypotheses_are_skipped_without_changing_the_likelihood() -> R
         }
         assert_eq!(lazy.skipped, expected_skips_per_plan * Base::KNOWN.len());
         assert_eq!(exhaustive.skipped, 0);
+    }
+    Ok(())
+}
+
+/// The band reaches a path that leaves its diagonal by a whole indel: a read
+/// spelling a 60-base deletion scores the same against the reference and the
+/// deletion template as the full `f64` matrix does, whether its CIGAR carries
+/// the deletion or aligns straight through it. A default-width band holds
+/// neither the reference template's path for the first read nor the deletion
+/// template's for the second.
+#[test]
+fn the_band_holds_a_path_across_a_long_indel() -> Result<()> {
+    use super::super::methylation::Scoring;
+    let mut state = 0x9e37_79b9_u32;
+    let sequence: Vec<u8> = (0..300)
+        .map(|_| {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            b"ACGT".get((state >> 30) as usize).copied().expect("DNA")
+        })
+        .collect();
+    let reference = reference(&sequence);
+    let deleted: Vec<Base> =
+        sequence.get(120..180).ok_or_eyre("deletion")?.iter().copied().map(Base::from).collect();
+    let indel = Indel { start: 1120, deleted, inserted: Vec::new() }.normalized(&reference)?;
+    let spelled: Vec<u8> = [
+        sequence.get(60..120).ok_or_eyre("left flank")?,
+        sequence.get(180..240).ok_or_eyre("right flank")?,
+    ]
+    .concat();
+    let carrying: Vec<_> =
+        (1060..1120).chain(1180..1240).map(SequencePosition::reference).collect();
+    let straight: Vec<_> = (1060..1180).map(SequencePosition::reference).collect();
+    let sites = [
+        Site::new(1060, reference.base_at(1060).ok_or_eyre("site")?, Base::KNOWN)?,
+        Site::new(1239, reference.base_at(1239).ok_or_eyre("site")?, Base::KNOWN)?,
+    ];
+    let alleles = sites.iter().map(|site| (site.pos, site.reference)).collect::<Vec<_>>();
+    let params = params(true);
+    let error = 1e-6_f64;
+    for positions in [&carrying, &straight] {
+        let fragment = Fragment { reads: vec![read(&spelled, positions, Strand::OT)] };
+        let prepared = Prepared::new(&reference, &sites, Some(&indel), &[&fragment], &params)?;
+        let profile = prepared
+            .fragments
+            .first()
+            .and_then(Option::as_ref)
+            .and_then(|molecule| molecule.joint.first())
+            .ok_or_eyre("profile")?;
+        for indel in [None, Some(indel.clone())] {
+            let haplotype = Haplotype { alleles: alleles.clone(), indel };
+            let template = prepared.template(&reference, &haplotype, &[1060, 1239], &params)?;
+            let actual = prepared
+                .fragment_likelihood(0, &fragment, &template, 0.5, &params)?
+                .ok_or_eyre("realigned")?;
+            let mapped = reference_score_with_model(
+                profile,
+                &template,
+                Strand::OT,
+                &Scoring::Fixed(0.5),
+                &params,
+                0,
+            )?;
+            let expected =
+                log_add((-error).ln_1p() + mapped, error.ln() + unmapped_likelihood(profile));
+            assert!(
+                (actual - expected).abs() < COMPAIR_PRECISION * (1.0 + expected.abs()),
+                "{} bases, deletion template {}: {actual} versus {expected}",
+                positions.len(),
+                haplotype.indel.is_some()
+            );
+        }
     }
     Ok(())
 }

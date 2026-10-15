@@ -447,6 +447,10 @@ PairHMM production profiles use mate-local coordinate windows with 12 bp flanks.
 
 ### PairHMM phasing performance (2026-10-14)
 
+Superseded for the kernel on 2026-10-15: `forward.rs` is replaced by compair (see "compair is the
+PairHMM kernel"). The `Scorer`, bounded-hypothesis skipping and parallel planning below still
+apply; the bit-identity claims and `run_avx512` profiles describe the removed `f64` kernel.
+
 `call --phase` spent ~90 % of its CPU in the scaled forward recurrence of
 `pair_hmm.rs`, one closure-driven DP per (fragment, template, mapping
 hypothesis), rescored at every beam step. On chr1:80000001-81000000 one 100 kb
@@ -1028,3 +1032,85 @@ Live progress caveat: `runtime::segments::process_in_order` uses ordair's bounde
 **Important:** Whenever you learned something new about how to develop features, find code, or how to debug issues, you **must** add it to this document.
 This is the single source of truth for how to work on this codebase, and it must be kept up-to-date with any new insights or changes.
 If you find yourself asking "How do I do X?" and you figure it out, add a section here so that the next person doesn't have to ask the same question.
+
+### compair is the PairHMM kernel (2026-10-15)
+
+`pair_hmm.rs` scores every (profile, template) forward pass with seqair's `compair` crate; the
+lane-batched `f64` kernel (`pair_hmm/forward.rs`) is gone. compair runs GATK's recurrence
+(free start `D[0][j] = 1/h`, total over the last row's M+I) in banded `f32` SIMD kernels with an
+`f64` rescue, and returns log10 (`align` converts to ln).
+
+**Vendored, patched compair.** compair 0.2.0 emits an inserted base at one, as GATK does; rastair
+emits it at 0.25, which keeps the observation model a distribution (at one, each inserted base
+is 4x cheaper, ~10^6 for 10 bp, which moves indel genotypes). `vendor/compair` is the published
+0.2.0 plus `Read::with_insertion_emissions`, wired in via `[patch.crates-io]` and excluded from
+the workspace. The emission folds into the two transitions into the insertion state
+(`Transition::insertion_continuation` beside `gap_continuation`, a ninth row track; in the pairs
+kernel it rides beside the 8x8 `RowEntry` transpose), so emissions of one are bit-identical to
+upstream. The GPU path refuses such reads (`GpuError::InsertionEmissions`). The upstream patch,
+with tests, is `tmp/compair-patch/compair-insertion-emissions.patch`. The patched clone with the
+full compair suite is `tmp/compair-patch/seqair` (all compair tests, the `gpu` feature and clippy
+pass there). Drop the vendor copy once a compair release carries the change.
+
+**How rastair's model maps onto compair.**
+- A profile becomes one `compair::Read` per mapping hypothesis (`ProfileTerms`). Bases owned by a
+  mismapped read get Q0 (eps capped at 0.75, a quarter under every column). Unknown bases get
+  Q254 (emission one) and insertion emission one. Other bases insert at `INSERTION_EMISSION`.
+  Gap open/extend must be whole Phred qualities (`phred` errors otherwise; defaults are Q45/Q10).
+- A template becomes a `TemplateTrack` per read orientation: a `compair::Haplotype` whose betas
+  carry each column's conversion rate. A stateless `TemplateEmission` maps a level onto the C/T
+  or G/A pair, so neutral columns (0.5 at a template T or A too), shrinkage rates and window-edge
+  CpG roles are exact, and compair's own CpG roles and the read strand are unused.
+- **Accepted difference:** an unknown (`N`, incl. IUPAC) template base emits `1 - eps` (GATK's "N
+  matches"), not the old 0.25; `SiteWeights` cannot express a uniform column, and all compared
+  haplotypes share the column.
+- Normalization (path mass) is computed with compair too, as unknown read vs unknown template
+  through the *same band*. A band cannot unnormalize the model.
+
+**Bands.** Each job's band is anchored at the template index of the profile's first base
+(`ProfileSpan.first`; `partition_point` over template positions). Its half-width is
+max(23, profile CIGAR indel bases + max(template indel bases, `Prepared::indel_reach`) + 16),
+rounded to compair's `16n - 2` widths. **`indel_reach` is the trap**: a read can carry an indel
+its CIGAR aligns straight through, and against the reference template neither side shows it.
+The first band rule missed exactly that, scoring such a read 29 nats too low against the
+reference. `Prepared::new` seeds the reach from its indel, and `likelihood_matrix_geometry`
+widens it with `.reaching(...)` over every haplotype's indel (competing indel alleles).
+`the_band_holds_a_path_across_a_long_indel` (60 bp deletion, CIGAR-carrying and straight reads,
+both templates, against the full `f64` oracle) fails with a default-width band.
+
+**Scorer.** The API (`new` is now fallible, `plan`, `run`) and the memo/bound/skip logic are
+unchanged. Memo keys are interned read bytes (base, quality) and template (base, level bits), plus
+band offset and width; normalizers are keyed by `Shape` (rows, columns, offset, width). `align`
+sorts pairs by (band width, read, template), because a compair pairs-kernel group shares one
+width and caches derived tracks by address. It scores chunks of 64 pairs on a thread-local
+`Workspace`, on the enclosing rayon pool, and sends chunks shorter than `PAIRS_BREAK_EVEN`
+through `align_candidates` (the strip kernel). `ProfileTerms::bound` stays valid: a band only
+removes paths.
+
+**Precision and tests.** Scores agree with the `f64` recurrence to ~1e-6 relative.
+`pair_hmm/tests.rs` compares against the old closure oracle with `COMPAIR_PRECISION`, not
+`to_bits()` (`compair_reproduces_the_mixed_emission_through_the_full_matrix`; its oracle treats
+an unknown template base as compair does). Outputs are no longer byte-identical to pre-compair
+runs, so `tmp/phasing-perf/ref/` VCFs are pre-compair references.
+
+**Validation** (`tmp/compair-integration/`, ignored; `report.json`, `panel/phase-accuracy.json`).
+The baseline is rebuilt from HEAD plus the staged diff, both arms in one SLURM job on node01 at
+64 threads, with the haplotype-metadata model on the `tmp/pairhmm-genotyping/panel` intervals:
+
+| | baseline f64 | compair |
+| --- | --- | --- |
+| panel calling wall / CPU | 908 s / 15,407 s | 671 s / 6,273 s |
+| chr1:80000001-81000000 `--phase`, bundled model | 1.79 s / 25.4 s | 1.28 s / 17.8 s |
+
+Aardvark GT metrics are identical in every column for SNV, insertion and deletion (recall,
+precision, F1, `truth_fn_gt`, `query_fp_gt`), and match the frozen `pairhmm-genotypes` arm. All
+35,196 records agree on GT, FILTER, QUAL, phase and PS; 12 differ in GQ by 1-2. Platinum phase:
+514 phased SNPs, 0 switch errors in both. On the chr1 region every non-phase field is identical,
+with 524 phased records in both. CPU drops 2.5x but panel wall only 1.35x: wall is now bound by
+something serial (~9 of 64 cores busy on average), likely the slow-segment look-ahead stall
+described under "Live progress caveat". Profile that next, not the kernel.
+
+**Building a baseline tree under `tmp/`:** `git apply` run inside the repository's `tmp/`
+silently applies nothing, because it ignores patch paths outside the current directory. Use
+`git archive HEAD | tar -x -C <dir>` and then `patch -p1 < staged.patch`, and diff a few files
+against `git show :<path>` to confirm.

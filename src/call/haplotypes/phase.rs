@@ -401,7 +401,7 @@ mod tests {
         fragments: &[&Fragment],
         params: &LikelihoodParams,
     ) -> Result<Posterior> {
-        let mut scorer = pair_hmm::Scorer::new(params);
+        let mut scorer = pair_hmm::Scorer::new(params)?;
         super::score(reference, sites, states, fragments, params, &mut scorer)
     }
 

@@ -170,16 +170,6 @@ pub(super) fn sequencing_emission(observed: Base, template: Base, quality: Optio
     if observed == template { 1.0 - error } else { error / 3.0 }
 }
 
-/// [`sequencing_emission`] under every known template base, in
-/// [`Base::KNOWN`] order, from one evaluation of the error rate.
-pub(super) fn sequencing_emissions(observed: Base, quality: Option<u8>) -> [f64; 4] {
-    if observed.known_index().is_none() {
-        return [1.0; 4];
-    }
-    let error = quality.map_or(0.75, |q| 10.0_f64.powf(-f64::from(q) / 10.0).min(0.75));
-    Base::KNOWN.map(|template| if observed == template { 1.0 - error } else { error / 3.0 })
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(super) struct BaseMeasurement {
     pub base: Base,

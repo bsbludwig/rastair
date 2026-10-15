@@ -546,7 +546,8 @@ fn likelihood_matrix_geometry(
                 geometry.push(Site { pos, reference: base, alleles: vec![base] });
             }
         }
-        let prepared = pair_hmm::Prepared::new(reference, &geometry, indel, &included, params)?;
+        let prepared = pair_hmm::Prepared::new(reference, &geometry, indel, &included, params)?
+            .reaching(haplotypes.iter().filter_map(|haplotype| haplotype.indel.as_ref()));
         Some(if local { prepared.localize() } else { prepared })
     } else {
         None
@@ -580,7 +581,7 @@ fn likelihood_matrix_geometry(
             context.haplotypes.get(haplotype_index).ok_or_eyre("Missing CpG context")?,
         )
     };
-    let mut scorer = pair_hmm::Scorer::new(params);
+    let mut scorer = pair_hmm::Scorer::new(params)?;
     // One pass over the matrix: every realigned pair is planned first, so the
     // forward passes run as one batch. In read-local mode haplotypes that agree
     // inside a fragment's window share its first plan, as they shared a cache.

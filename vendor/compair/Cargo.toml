@@ -1,0 +1,35 @@
+# compair 0.2.0 as published on crates.io, with per-base insertion-state
+# emissions added (`Read::with_insertion_emissions`, see CHANGELOG.md), which
+# rastair's PairHMM needs. Library only: the published examples and the
+# upstream test suite live in Softleif/seqair. Remove this crate and the
+# `[patch.crates-io]` entry once a compair release carries the change.
+[package]
+edition = "2024"
+rust-version = "1.98.1"
+name = "compair"
+version = "0.2.0"
+authors = ["Pascal Hertleif <pascal@softleif.se>"]
+description = "Banded affine-gap pair-HMM with a pluggable, conversion-aware emission model"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Softleif/seqair"
+autoexamples = false
+autotests = false
+autobenches = false
+
+[features]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:tracing"]
+
+[lib]
+name = "compair"
+path = "src/lib.rs"
+
+[dependencies]
+bytemuck = { version = "1.25", features = ["derive"], optional = true }
+fearless_simd = "1.1"
+fearless_simd_macros = "0.1"
+pollster = { version = "1.0", optional = true }
+seqair-types = "^0.3.1"
+thiserror = "2.0.18"
+tracing = { version = "0.1.44", features = ["release_max_level_debug"], optional = true }
+wgpu = { version = "30", optional = true }

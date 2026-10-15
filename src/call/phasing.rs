@@ -484,7 +484,7 @@ fn phase_unmasked(
                 .ok_or_eyre("Missing anchor allele")?;
             // Every beam step rescores the same fragments against the same
             // read-local templates; the memo lives as long as the block does.
-            let mut scorer = Scorer::new(&params);
+            let mut scorer = Scorer::new(&params)?;
             let mut states = vec![State { first: vec![first] }];
             let mut held = Vec::new();
             for (step, domain) in domains.iter().enumerate().skip(1) {
