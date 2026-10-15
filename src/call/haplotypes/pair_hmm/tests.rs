@@ -732,7 +732,7 @@ fn read_local_windows_keep_the_molecular_observation_model_normalized() -> Resul
                 Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
             let template = prepared.template(&reference, &haplotype, &[1100, 1400], &params)?;
             assert_eq!(template.local.len(), 2);
-            assert!(template.local.values().all(|template| template.bases.len() <= 25));
+            assert!(template.local.values().all(|window| window.len() <= 25));
             total += prepared
                 .fragment_likelihood(0, &fragment, &template, 0.5, &params)?
                 .expect("realigned")

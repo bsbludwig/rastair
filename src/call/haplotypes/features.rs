@@ -17,6 +17,7 @@ use crate::{
     sequence::Segment,
 };
 use color_eyre::eyre::{OptionExt as _, Result, ensure};
+use rayon::prelude::*;
 use seqair_types::{Base, RmsAccumulator, Strand};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -366,174 +367,52 @@ pub(crate) fn add_likelihoods(
             indices.sort_unstable();
             indices.dedup();
         }
-        for column in columns.iter_mut().filter(|column| {
-            region.contains(&u64::from(column.pos)) && column.reference_base != Base::Unknown
-        }) {
-            if column.alts.is_empty() && column.indel_data.is_none() {
-                continue;
-            }
-            let mut evidence = ColumnEvidence::default();
-            let mut indices = BTreeSet::new();
-            let start = column.pos.saturating_sub(search.expansion_radius);
-            let end = column.pos.saturating_add(search.expansion_radius);
-            for bucket in start / 1024..=end / 1024 {
-                if let Some(offered) = by_position.get(&bucket) {
-                    indices.extend(offered.iter().copied());
-                }
-            }
-            let local = match indices.first().zip(indices.last()) {
-                Some((&first, &last)) => {
-                    fragments.get(first..=last).ok_or_eyre("Invalid molecular feature interval")?
-                }
-                None => continue,
-            };
-            if local.is_empty() {
-                continue;
-            }
-            let neighbors: Vec<_> = sites
-                .iter()
-                .filter(|site| site.pos.abs_diff(column.pos) <= search.expansion_radius)
-                .cloned()
-                .collect();
-            let indels: Vec<_> = local
-                .iter()
-                .flat_map(|fragment| &fragment.reads)
-                .filter_map(|read| read.sequence.as_ref())
-                .flat_map(|sequence| &sequence.indels)
-                .filter(|indel| {
-                    indel.start > reference.start
-                        && reference.base_at(indel.start).is_some()
-                        && u32::try_from(indel.deleted.len())
-                            .ok()
-                            .and_then(|len| indel.start.checked_add(len))
-                            .is_some_and(|end| reference.base_at(end).is_some())
-                })
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            let mut unsafe_indels = BTreeSet::new();
-            for indel in &indels {
-                if complex_repeat_context(&reference, indel, &neighbors, local)? {
-                    unsafe_indels.insert(indel.clone());
-                }
-            }
-            let score_snps = column.alts.iter().any(|alt| {
-                column
-                    .alt_metrics(alt.base)
-                    .is_some_and(|candidate| crate::call::process::pre_ml_filter(&candidate))
-            });
-            if score_snps {
-                if unsafe_indels.iter().any(|indel| indel.start.abs_diff(column.pos) <= 150) {
-                    continue;
-                }
-                let result = super::infer_snp_expanded(
-                    &reference, column.pos, &neighbors, &indels, local, &params, &search,
-                )?;
-                if result
-                    .haplotypes
+        let context = ColumnContext {
+            reference: &reference,
+            sites: &sites,
+            by_position: &by_position,
+            fragments,
+            params: &params,
+            search: &search,
+        };
+        let eligible: Vec<usize> = columns
+            .iter()
+            .enumerate()
+            .filter(|(_, column)| {
+                region.contains(&u64::from(column.pos))
+                    && column.reference_base != Base::Unknown
+                    && !(column.alts.is_empty() && column.indel_data.is_none())
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let shared: &[PileupMetrics] = columns;
+        // Columns are independent. Each task scores a run of adjacent ones
+        // with one memo, since they align largely the same fragments against
+        // the same read-local templates; the memo is exact, so neither the
+        // split nor the order changes a result.
+        let evidence = eligible
+            .par_chunks(COLUMNS_PER_TASK)
+            // Rayon otherwise stops splitting once each thread has a range, and
+            // the expensive columns cluster: a whole run of them then waits on
+            // one thread at the end of the segment.
+            .with_max_len(1)
+            .map(|chunk| -> Result<Vec<Option<ColumnEvidence>>> {
+                let mut scorer = super::Scorer::new(&params)?;
+                chunk
                     .iter()
-                    .filter_map(|haplotype| haplotype.indel.as_ref())
-                    .any(|indel| unsafe_indels.contains(indel))
-                {
-                    continue;
-                }
-                if result.realigned_fragments > 0 {
-                    evidence.snp_genotype = Some(super::genotype::DiploidPosterior::snp(&result)?);
-                }
-                for allele in result.alleles {
-                    let Some(index) = allele.base.known_index() else { continue };
-                    let row = evidence
-                        .snps
-                        .get_mut(index)
-                        .ok_or_eyre("Unknown haplotype feature allele")?;
-                    *row = HaplotypeEvidence {
-                        haplotype_available: 1.0,
-                        haplotype_alt_probability: allele.posterior.f(),
-                        haplotype_heterozygous_probability: allele.heterozygous.f(),
-                        haplotype_homozygous_probability: allele.homozygous.f(),
-                        haplotype_expected_fraction: allele.expected_fraction.f(),
-                        haplotype_log_bayes_factor: allele
-                            .log_bayes_factor
-                            .clamp(-100.0, 100.0)
-                            .f(),
-                        haplotype_genotype_entropy: result.genotype_entropy.f(),
-                        haplotype_context_sites: result.sites.len().f(),
-                        haplotype_linking_fragments: result.retained_linking_fragments.f(),
-                        haplotype_fragments: result.fragments.f(),
-                        haplotype_realigned_fraction: result.realigned_fragments.f()
-                            / result.fragments.max(1).f(),
-                        haplotype_pruned_mass: result.maximum_pruned_mass.f(),
-                        haplotype_boundary_resolved: 1.0,
-                    };
-                }
+                    .map(|&index| {
+                        let column = shared.get(index).ok_or_eyre("Missing feature column")?;
+                        score_column(column, &context, &mut scorer)
+                    })
+                    .collect()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (&index, evidence) in eligible.iter().zip(evidence.into_iter().flatten()) {
+            if let Some(evidence) = evidence {
+                columns.get_mut(index).ok_or_eyre("Missing feature column")?.phase =
+                    Some(Box::new(ColumnPhase::Likelihood(evidence)));
+                scored += 1;
             }
-            if let Some(data) = column.indel_data.as_ref() {
-                let mut genotype_indels = Vec::new();
-                let mut all_supported = true;
-                for allele in &data.counts.alleles {
-                    if allele.total() < 2 {
-                        continue;
-                    }
-                    if allele.allele.len() > 100 {
-                        all_supported = false;
-                        continue;
-                    }
-                    let (deleted, inserted) = match &allele.allele {
-                        IndelAllele::Insertion(bases) => (Vec::new(), bases.to_vec()),
-                        IndelAllele::Deletion(bases) => (bases.to_vec(), Vec::new()),
-                    };
-                    let indel = Indel {
-                        start: column.pos.checked_add(1).ok_or_eyre("Indel position overflow")?,
-                        deleted,
-                        inserted,
-                    };
-                    if reference.base_at(indel.start).is_none()
-                        || u32::try_from(indel.deleted.len())
-                            .ok()
-                            .and_then(|len| indel.start.checked_add(len))
-                            .is_none_or(|end| reference.base_at(end).is_none())
-                    {
-                        all_supported = false;
-                        continue;
-                    }
-                    if complex_repeat_context(&reference, &indel, &neighbors, local)? {
-                        all_supported = false;
-                        continue;
-                    }
-                    let (mut row, genotype) = score_indel(
-                        &reference, column.pos, &indel, &neighbors, local, &params, &search,
-                    )?;
-                    all_supported &= genotype.is_some();
-                    evidence.indel_genotype = genotype;
-                    genotype_indels.push(indel);
-                    row.haplotype_boundary_resolved =
-                        data.canonical_position.map_or(0.0, |p| p.boundary_aligned_fraction);
-                    evidence.indels.push((allele.allele.clone(), row));
-                }
-                if !all_supported {
-                    evidence.indel_genotype = None;
-                } else if genotype_indels.len() > 1
-                    || (!genotype_indels.is_empty()
-                        && neighbors.iter().any(|site| site.pos == column.pos))
-                {
-                    let joint = joint_indel_genotypes(
-                        &reference,
-                        column.pos,
-                        &genotype_indels,
-                        &neighbors,
-                        local,
-                        &params,
-                        &search,
-                    )?;
-                    evidence.indel_genotype = joint.as_ref().map(|joint| joint.indels.clone());
-                    if evidence.snp_genotype.is_some() {
-                        evidence.snp_genotype = joint.map(|joint| joint.snps);
-                    }
-                }
-            }
-            column.phase = Some(Box::new(ColumnPhase::Likelihood(evidence)));
-            scored += 1;
         }
     }
     tracing::debug!(
@@ -542,6 +421,201 @@ pub(crate) fn add_likelihoods(
         "Calculated pre-filter haplotype ML features"
     );
     Ok(())
+}
+
+/// Columns one task scores in order, sharing a memo. Small, because the
+/// expensive columns cluster and one task's columns run on one thread.
+const COLUMNS_PER_TASK: usize = 4;
+
+/// What every column of one unmasked interval is scored against.
+struct ColumnContext<'a> {
+    reference: &'a Reference,
+    sites: &'a [Site],
+    /// Fragment indices by 1 kb bucket of the positions their reads cover.
+    by_position: &'a BTreeMap<u32, Vec<usize>>,
+    fragments: &'a [Fragment],
+    params: &'a LikelihoodParams,
+    search: &'a ExpansionParams,
+}
+
+/// The molecular evidence of one column, or `None` where it has none: no
+/// fragment reaches it, or an unsafe indel nearby makes its context unsafe.
+fn score_column(
+    column: &PileupMetrics,
+    context: &ColumnContext<'_>,
+    scorer: &mut super::Scorer,
+) -> Result<Option<ColumnEvidence>> {
+    let mut evidence = ColumnEvidence::default();
+    let mut indices = BTreeSet::new();
+    let start = column.pos.saturating_sub(context.search.expansion_radius);
+    let end = column.pos.saturating_add(context.search.expansion_radius);
+    for bucket in start / 1024..=end / 1024 {
+        if let Some(offered) = context.by_position.get(&bucket) {
+            indices.extend(offered.iter().copied());
+        }
+    }
+    let local = match indices.first().zip(indices.last()) {
+        Some((&first, &last)) => {
+            context.fragments.get(first..=last).ok_or_eyre("Invalid molecular feature interval")?
+        }
+        None => return Ok(None),
+    };
+    if local.is_empty() {
+        return Ok(None);
+    }
+    let neighbors: Vec<_> = context
+        .sites
+        .iter()
+        .filter(|site| site.pos.abs_diff(column.pos) <= context.search.expansion_radius)
+        .cloned()
+        .collect();
+    let indels: Vec<_> = local
+        .iter()
+        .flat_map(|fragment| &fragment.reads)
+        .filter_map(|read| read.sequence.as_ref())
+        .flat_map(|sequence| &sequence.indels)
+        .filter(|indel| {
+            indel.start > context.reference.start
+                && context.reference.base_at(indel.start).is_some()
+                && u32::try_from(indel.deleted.len())
+                    .ok()
+                    .and_then(|len| indel.start.checked_add(len))
+                    .is_some_and(|end| context.reference.base_at(end).is_some())
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut unsafe_indels = BTreeSet::new();
+    for indel in &indels {
+        if complex_repeat_context(context.reference, indel, &neighbors, local)? {
+            unsafe_indels.insert(indel.clone());
+        }
+    }
+    let score_snps = column.alts.iter().any(|alt| {
+        column
+            .alt_metrics(alt.base)
+            .is_some_and(|candidate| crate::call::process::pre_ml_filter(&candidate))
+    });
+    if score_snps {
+        if unsafe_indels.iter().any(|indel| indel.start.abs_diff(column.pos) <= 150) {
+            return Ok(None);
+        }
+        let result = super::infer_snp_expanded(
+            context.reference,
+            column.pos,
+            &neighbors,
+            &indels,
+            local,
+            context.params,
+            context.search,
+            scorer,
+        )?;
+        if result
+            .haplotypes
+            .iter()
+            .filter_map(|haplotype| haplotype.indel.as_ref())
+            .any(|indel| unsafe_indels.contains(indel))
+        {
+            return Ok(None);
+        }
+        if result.realigned_fragments > 0 {
+            evidence.snp_genotype = Some(super::genotype::DiploidPosterior::snp(&result)?);
+        }
+        for allele in result.alleles {
+            let Some(index) = allele.base.known_index() else { continue };
+            let row =
+                evidence.snps.get_mut(index).ok_or_eyre("Unknown haplotype feature allele")?;
+            *row = HaplotypeEvidence {
+                haplotype_available: 1.0,
+                haplotype_alt_probability: allele.posterior.f(),
+                haplotype_heterozygous_probability: allele.heterozygous.f(),
+                haplotype_homozygous_probability: allele.homozygous.f(),
+                haplotype_expected_fraction: allele.expected_fraction.f(),
+                haplotype_log_bayes_factor: allele.log_bayes_factor.clamp(-100.0, 100.0).f(),
+                haplotype_genotype_entropy: result.genotype_entropy.f(),
+                haplotype_context_sites: result.sites.len().f(),
+                haplotype_linking_fragments: result.retained_linking_fragments.f(),
+                haplotype_fragments: result.fragments.f(),
+                haplotype_realigned_fraction: result.realigned_fragments.f()
+                    / result.fragments.max(1).f(),
+                haplotype_pruned_mass: result.maximum_pruned_mass.f(),
+                haplotype_boundary_resolved: 1.0,
+            };
+        }
+    }
+    if let Some(data) = column.indel_data.as_ref() {
+        let mut genotype_indels = Vec::new();
+        let mut all_supported = true;
+        for allele in &data.counts.alleles {
+            if allele.total() < 2 {
+                continue;
+            }
+            if allele.allele.len() > 100 {
+                all_supported = false;
+                continue;
+            }
+            let (deleted, inserted) = match &allele.allele {
+                IndelAllele::Insertion(bases) => (Vec::new(), bases.to_vec()),
+                IndelAllele::Deletion(bases) => (bases.to_vec(), Vec::new()),
+            };
+            let indel = Indel {
+                start: column.pos.checked_add(1).ok_or_eyre("Indel position overflow")?,
+                deleted,
+                inserted,
+            };
+            if context.reference.base_at(indel.start).is_none()
+                || u32::try_from(indel.deleted.len())
+                    .ok()
+                    .and_then(|len| indel.start.checked_add(len))
+                    .is_none_or(|end| context.reference.base_at(end).is_none())
+            {
+                all_supported = false;
+                continue;
+            }
+            if complex_repeat_context(context.reference, &indel, &neighbors, local)? {
+                all_supported = false;
+                continue;
+            }
+            let (mut row, genotype) = score_indel(
+                context.reference,
+                column.pos,
+                &indel,
+                &neighbors,
+                local,
+                context.params,
+                context.search,
+                scorer,
+            )?;
+            all_supported &= genotype.is_some();
+            evidence.indel_genotype = genotype;
+            genotype_indels.push(indel);
+            row.haplotype_boundary_resolved =
+                data.canonical_position.map_or(0.0, |p| p.boundary_aligned_fraction);
+            evidence.indels.push((allele.allele.clone(), row));
+        }
+        if !all_supported {
+            evidence.indel_genotype = None;
+        } else if genotype_indels.len() > 1
+            || (!genotype_indels.is_empty() && neighbors.iter().any(|site| site.pos == column.pos))
+        {
+            let joint = joint_indel_genotypes(
+                context.reference,
+                column.pos,
+                &genotype_indels,
+                &neighbors,
+                local,
+                context.params,
+                context.search,
+                scorer,
+            )?;
+            evidence.indel_genotype = joint.as_ref().map(|joint| joint.indels.clone());
+            if evidence.snp_genotype.is_some() {
+                evidence.snp_genotype = joint.map(|joint| joint.snps);
+            }
+        }
+    }
+    Ok(Some(evidence))
 }
 
 fn complex_repeat_context(
@@ -611,9 +685,14 @@ fn indel_likelihood(
     params: &LikelihoodParams,
     search: &ExpansionParams,
 ) -> Result<HaplotypeEvidence> {
-    Ok(score_indel(reference, anchor, indel, neighbors, fragments, params, search)?.0)
+    let mut scorer = super::Scorer::new(params)?;
+    Ok(score_indel(reference, anchor, indel, neighbors, fragments, params, search, &mut scorer)?.0)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search and scoring boundary share validated evidence and configuration"
+)]
 fn score_indel(
     reference: &Reference,
     anchor: u32,
@@ -622,6 +701,7 @@ fn score_indel(
     fragments: &[Fragment],
     params: &LikelihoodParams,
     search: &ExpansionParams,
+    scorer: &mut super::Scorer,
 ) -> Result<(HaplotypeEvidence, Option<super::genotype::DiploidPosterior<Option<IndelAllele>>>)> {
     let base = reference.base_at(anchor).ok_or_eyre("Indel anchor outside reference")?;
     let focal = Site { pos: anchor, reference: base, alleles: vec![base] };
@@ -639,6 +719,7 @@ fn score_indel(
         params,
         search,
         true,
+        scorer,
     )?;
     let matrix = super::likelihood_matrix_geometry(
         reference,
@@ -648,6 +729,7 @@ fn score_indel(
         fragments,
         params,
         true,
+        scorer,
     )?;
     if matrix.realigned_fragments == 0 {
         return Ok((HaplotypeEvidence::default(), None));
@@ -730,6 +812,10 @@ fn score_indel(
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search and scoring boundary share validated evidence and configuration"
+)]
 fn joint_indel_genotypes(
     reference: &Reference,
     anchor: u32,
@@ -738,6 +824,7 @@ fn joint_indel_genotypes(
     fragments: &[Fragment],
     params: &LikelihoodParams,
     search: &ExpansionParams,
+    scorer: &mut super::Scorer,
 ) -> Result<Option<JointGenotypes>> {
     if indels.len() >= 8 {
         return Ok(None);
@@ -750,7 +837,7 @@ fn joint_indel_genotypes(
         .cloned()
         .collect::<Vec<_>>();
     let expanded = super::expansion::expand_indels(
-        reference, focal, &neighbors, indels, fragments, params, search, true,
+        reference, focal, &neighbors, indels, fragments, params, search, true, scorer,
     )?;
     let matrix = super::likelihood_matrix_geometry(
         reference,
@@ -760,6 +847,7 @@ fn joint_indel_genotypes(
         fragments,
         params,
         true,
+        scorer,
     )?;
     if matrix.realigned_fragments == 0 {
         return Ok(None);
@@ -1054,6 +1142,7 @@ mod tests {
                 &fragments,
                 &params,
                 &ExpansionParams::default(),
+                &mut crate::call::haplotypes::Scorer::new(&params)?,
             )?;
             let estimate = posterior
                 .ok_or_eyre("posterior")?
@@ -1096,6 +1185,7 @@ mod tests {
             &fragments,
             &params,
             &ExpansionParams::default(),
+            &mut crate::call::haplotypes::Scorer::new(&params)?,
         )?
         .ok_or_eyre("joint evidence")?;
         let estimate = result

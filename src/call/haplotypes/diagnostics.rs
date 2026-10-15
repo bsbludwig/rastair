@@ -303,6 +303,7 @@ mod backend {
                         None
                     };
                     let reference = local_reference.as_ref().unwrap_or(&chunk.reference);
+                    let mut scorer = crate::call::haplotypes::Scorer::new(&params.likelihood)?;
                     let evidence = infer_snp_expanded(
                         reference,
                         focal.pos,
@@ -311,6 +312,7 @@ mod backend {
                         &chunk.fragments,
                         &params.likelihood,
                         &params.expansion,
+                        &mut scorer,
                     )?;
                     let site_only = if evidence.sites.len() > 1
                         || evidence.haplotypes.iter().any(|haplotype| haplotype.indel.is_some())
@@ -323,6 +325,7 @@ mod backend {
                             &chunk.fragments,
                             &params.likelihood,
                             &ExpansionParams { max_sites: 1, ..params.expansion.clone() },
+                            &mut scorer,
                         )?)
                     } else {
                         None

@@ -13,7 +13,6 @@ mod pair_hmm;
 #[cfg(any(feature = "experimental-seqair", test))]
 pub(crate) mod phase;
 pub(crate) mod reads;
-#[cfg(feature = "experimental-seqair")]
 pub(crate) use pair_hmm::Scorer;
 pub use pair_hmm::{Indel, SequenceEvidence, SequenceObservation, SequencePosition};
 mod diagnostics;
@@ -238,10 +237,18 @@ pub fn infer_snp_with_indels(
 ) -> Result<SnpEvidence> {
     let search =
         ExpansionParams { max_sites: u16::try_from(max_sites)?, ..ExpansionParams::default() };
-    infer(reference, focal, neighbors, indels, fragments, params, &search, false)
+    let mut scorer = pair_hmm::Scorer::new(params)?;
+    infer(reference, focal, neighbors, indels, fragments, params, &search, false, &mut scorer)
 }
 
-pub fn infer_snp_expanded(
+/// `scorer` carries forward-pass results between calls; sharing one across
+/// nearby focal sites lets their overlapping contexts reuse each other's
+/// alignments, which changes no result.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search and scoring boundary share validated evidence and configuration"
+)]
+pub(crate) fn infer_snp_expanded(
     reference: &Reference,
     focal: u32,
     neighbors: &[Site],
@@ -249,8 +256,9 @@ pub fn infer_snp_expanded(
     fragments: &[Fragment],
     params: &LikelihoodParams,
     search: &ExpansionParams,
+    scorer: &mut pair_hmm::Scorer,
 ) -> Result<SnpEvidence> {
-    infer(reference, focal, neighbors, indels, fragments, params, search, true)
+    infer(reference, focal, neighbors, indels, fragments, params, search, true, scorer)
 }
 
 #[expect(
@@ -266,6 +274,7 @@ fn infer(
     params: &LikelihoodParams,
     search: &ExpansionParams,
     require_links: bool,
+    scorer: &mut pair_hmm::Scorer,
 ) -> Result<SnpEvidence> {
     params.validate()?;
     search.validate()?;
@@ -359,6 +368,7 @@ fn infer(
         params,
         search,
         require_links,
+        scorer,
     )?;
     let sites = expanded.sites;
     let haplotypes = expanded.haplotypes;
@@ -370,6 +380,7 @@ fn infer(
         fragments,
         params,
         search.read_local,
+        scorer,
     )?;
     let pairs =
         posterior_pairs(&haplotypes, &sites, &matrix.values, params, selected_indel.is_some())?;
@@ -474,6 +485,10 @@ struct LikelihoodMatrix {
     aligned_fallback_fragments: usize,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search and scoring boundary share validated evidence and configuration"
+)]
 fn likelihood_matrix_geometry(
     reference: &Reference,
     sites: &[Site],
@@ -482,6 +497,7 @@ fn likelihood_matrix_geometry(
     fragments: &[Fragment],
     params: &LikelihoodParams,
     local: bool,
+    scorer: &mut pair_hmm::Scorer,
 ) -> Result<LikelihoodMatrix> {
     let loci = scored_loci(reference, sites);
     let indel_span = if local {
@@ -581,7 +597,6 @@ fn likelihood_matrix_geometry(
             context.haplotypes.get(haplotype_index).ok_or_eyre("Missing CpG context")?,
         )
     };
-    let mut scorer = pair_hmm::Scorer::new(params)?;
     // One pass over the matrix: every realigned pair is planned first, so the
     // forward passes run as one batch. In read-local mode haplotypes that agree
     // inside a fragment's window share its first plan, as they shared a cache.
@@ -643,7 +658,10 @@ fn likelihood_matrix_geometry(
             }
             slots.push(row);
         }
-        let scored = scorer.run(&plans, false)?;
+        // The shrinkage pass's rates change with every call, so only the
+        // rate-free passes are worth remembering; the memo key includes the
+        // rates, so remembering either is exact.
+        let scored = scorer.run(&plans, rates.is_none())?;
         slots
             .iter()
             .map(|row| {

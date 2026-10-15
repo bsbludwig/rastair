@@ -153,7 +153,20 @@ struct TemplateBase {
 
 pub(super) struct Template {
     bases: Vec<TemplateBase>,
-    local: BTreeMap<(u32, u32), Box<Template>>,
+    /// Each read-local window as the range of `bases` it holds; the bases are
+    /// in position order, so a window is one contiguous run of them.
+    local: BTreeMap<(u32, u32), std::ops::Range<usize>>,
+}
+
+impl Template {
+    fn window(&self, start: u32, end: u32) -> std::ops::Range<usize> {
+        let index = |pos: u32| self.bases.partition_point(|base| base.position.pos < pos);
+        index(start)..index(end)
+    }
+
+    fn local_bases(&self, window: (u32, u32)) -> Option<&[TemplateBase]> {
+        self.bases.get(self.local.get(&window)?.clone())
+    }
 }
 
 /// The haplotype's alleles inside `start..end`, which is all a lookup in that
@@ -365,13 +378,36 @@ fn indel_bases(positions: impl IntoIterator<Item = SequencePosition>) -> usize {
 /// A template under one read orientation: its bases, with each column's
 /// conversion rate carried as the haplotype's level there (see
 /// [`TemplateEmission`]).
+///
+/// Most passes over a beam step find their forward results in the memo, so a
+/// track is only its key: the compair haplotype is decoded from it for the
+/// passes that have to run.
 struct TemplateTrack {
-    haplotype: compair::Haplotype,
-    /// The bases and levels, which determine the track: the memo's key.
+    /// Each column's base, then its level's bits or `u64::MAX` for none: the
+    /// memo's key, and the whole of the track.
     key: Box<[u64]>,
-    positions: Vec<SequencePosition>,
     /// Inserted plus deleted bases relative to the reference.
     indel_bases: usize,
+}
+
+impl TemplateTrack {
+    fn len(&self) -> usize {
+        self.key.len() / 2
+    }
+
+    fn haplotype(&self) -> Result<compair::Haplotype> {
+        let mut bases = Vec::with_capacity(self.len());
+        let mut levels = Vec::with_capacity(self.len());
+        let (columns, rest) = self.key.as_chunks::<2>();
+        ensure!(rest.is_empty(), "Malformed template key");
+        for &[base, level] in columns {
+            bases.push(Base::from(u8::try_from(base)?));
+            levels.push(
+                (level != u64::MAX).then(|| Probability::new(f64::from_bits(level))).transpose()?,
+            );
+        }
+        Ok(compair::Haplotype::new(bases).with_betas(levels)?)
+    }
 }
 
 /// The emission of every template column, read from the column itself.
@@ -574,27 +610,23 @@ impl Prepared {
             }
         }
         bases.retain(|base| (self.start..self.end).contains(&base.position.pos));
-        let mut local = BTreeMap::new();
+        let mut windows = BTreeSet::new();
         if self.localized {
             for molecule in self.fragments.iter().flatten() {
                 for &(start, end) in &molecule.intervals {
-                    let start =
-                        start.saturating_sub(u32::from(params.realignment_flank)).max(self.start);
-                    let end = end.saturating_add(u32::from(params.realignment_flank)).min(self.end);
-                    local.entry((start, end)).or_insert_with(|| {
-                        Box::new(Template {
-                            bases: bases
-                                .iter()
-                                .filter(|base| (start..end).contains(&base.position.pos))
-                                .copied()
-                                .collect(),
-                            local: BTreeMap::new(),
-                        })
-                    });
+                    windows.insert((
+                        start.saturating_sub(u32::from(params.realignment_flank)).max(self.start),
+                        end.saturating_add(u32::from(params.realignment_flank)).min(self.end),
+                    ));
                 }
             }
         }
-        Ok(Template { bases, local })
+        let mut template = Template { bases, local: BTreeMap::new() };
+        template.local = windows
+            .into_iter()
+            .map(|(start, end)| ((start, end), template.window(start, end)))
+            .collect();
+        Ok(template)
     }
 
     #[cfg(test)]
@@ -667,30 +699,28 @@ impl Prepared {
                     tracks.push(None);
                     continue;
                 }
-                let local_template;
-                let template = if self.localized {
+                let bases = if self.localized {
                     let &(start, end) = molecule
                         .intervals
                         .get(profile_index)
                         .ok_or_eyre("Missing molecular interval")?;
-                    local_template = (
-                        start.saturating_sub(u32::from(params.realignment_flank)).max(self.start),
-                        end.saturating_add(u32::from(params.realignment_flank)).min(self.end),
-                    );
                     template
-                        .local
-                        .get(&local_template)
+                        .local_bases((
+                            start
+                                .saturating_sub(u32::from(params.realignment_flank))
+                                .max(self.start),
+                            end.saturating_add(u32::from(params.realignment_flank)).min(self.end),
+                        ))
                         .ok_or_eyre("Missing read-local haplotype template")?
-                        .as_ref()
                 } else {
-                    template
+                    &template.bases
                 };
-                let track = template_track(template, orientation, scoring, params)?;
+                let track = template_track(bases, orientation, scoring, params)?;
                 let span = molecule
                     .spans
                     .get(profile_index)
                     .ok_or_eyre("Missing molecular profile span")?;
-                let offset = track.positions.partition_point(|position| *position < span.first);
+                let offset = bases.partition_point(|base| base.position < span.first);
                 let band = band(
                     offset,
                     span.indel_bases.saturating_add(track.indel_bases.max(self.indel_reach)),
@@ -801,13 +831,8 @@ struct Shape {
 }
 
 impl Shape {
-    fn of(read: &compair::Read, haplotype: &compair::Haplotype, band: compair::Band) -> Self {
-        Self {
-            rows: read.len(),
-            columns: haplotype.len(),
-            offset: band.offset(),
-            width: band.width(),
-        }
+    fn of(read: &compair::Read, columns: usize, band: compair::Band) -> Self {
+        Self { rows: read.len(), columns, offset: band.offset(), width: band.width() }
     }
 }
 
@@ -1067,7 +1092,8 @@ impl Scorer {
         remember: bool,
         interned: &mut Interned,
     ) -> Result<()> {
-        let mut pairs = Vec::new();
+        // The jobs the memo cannot answer: their profile, template and band.
+        let mut pending = Vec::new();
         let mut keys = Vec::new();
         let mut slots = Vec::new();
         for (plan_index, (plan, wanted)) in plans.iter().zip(wanted).enumerate() {
@@ -1086,7 +1112,7 @@ impl Scorer {
                 )?;
                 let normalization = self
                     .normalizers
-                    .get(&Shape::of(&profile.read, &track.haplotype, band))
+                    .get(&Shape::of(&profile.read, track.len(), band))
                     .copied()
                     .ok_or_eyre("Missing normalization")?;
                 let key =
@@ -1096,16 +1122,41 @@ impl Scorer {
                         progress.score(plan_index, job, value - normalization)?;
                     }
                     None => {
-                        pairs.push(compair::Pair::new(&track.haplotype, &profile.read, band));
+                        pending.push((profile, (plan_index, template), band));
                         keys.push(key);
                         slots.push((plan_index, job, normalization));
                     }
                 }
             }
         }
-        if pairs.is_empty() {
+        if pending.is_empty() {
             return Ok(());
         }
+        // Mapping hypotheses of one profile share its template; decode each once.
+        let mut decoded = FxHashMap::<(usize, usize), usize>::default();
+        let mut haplotypes = Vec::new();
+        for &(_, (plan_index, template), _) in &pending {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                decoded.entry((plan_index, template))
+            {
+                let track = plans
+                    .get(plan_index)
+                    .and_then(|plan| plan.templates.get(template))
+                    .ok_or_eyre("Missing template track")?;
+                entry.insert(haplotypes.len());
+                haplotypes.push(track.haplotype()?);
+            }
+        }
+        let pairs = pending
+            .iter()
+            .map(|(profile, slot, band)| {
+                let haplotype = decoded
+                    .get(slot)
+                    .and_then(|&index| haplotypes.get(index))
+                    .ok_or_eyre("Missing decoded template")?;
+                Ok(compair::Pair::new(haplotype, &profile.read, *band))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let values = align(&pairs)?;
         for ((key, &(plan_index, job, normalization)), &value) in
             keys.iter().zip(&slots).zip(&values)
@@ -1215,7 +1266,7 @@ impl Plan<'_> {
         match *job {
             Job::Known(_) => None,
             Job::Forward { profile, template, band } => {
-                Some(Shape::of(&profile.read, &self.templates.get(template)?.haplotype, band))
+                Some(Shape::of(&profile.read, self.templates.get(template)?.len(), band))
             }
         }
     }
@@ -1489,7 +1540,7 @@ fn score_with_model(
     // unanchored recurrence.
     let band = band(0, profile.len().max(template.bases.len()))?;
     let plan = Plan {
-        templates: vec![template_track(template, orientation, scoring, params)?],
+        templates: vec![template_track(&template.bases, orientation, scoring, params)?],
         jobs: vec![Job::Forward { profile: terms, template: 0, band }],
         hypotheses: vec![Hypothesis { weight: 0.0, jobs: vec![0], unconditional: true }],
     };
@@ -1584,15 +1635,13 @@ fn profile_rows(profile: &[MolecularBase], gaps: GapQualities) -> Result<Profile
 /// and the base itself elsewhere. An unknown template base matches every read
 /// base, as in GATK.
 fn template_track(
-    template: &Template,
+    template: &[TemplateBase],
     orientation: Strand,
     scoring: &super::methylation::Scoring<'_>,
     params: &LikelihoodParams,
 ) -> Result<TemplateTrack> {
-    let mut bases = Vec::with_capacity(template.bases.len());
-    let mut levels = Vec::with_capacity(template.bases.len());
-    let mut key = Vec::with_capacity(2 * template.bases.len());
-    for base in &template.bases {
+    let mut key = Vec::with_capacity(2 * template.len());
+    for base in template {
         let level = if base.base.known_index().is_none() || params.non_taps {
             None
         } else if let Some((a, b)) = scoring.neutral_bases(base.position, orientation, base.base)
@@ -1607,19 +1656,12 @@ fn template_track(
                 .then(|| params.conversion(base.cpg.then_some(scoring.rate(base.cpg_key.as_ref()))))
         };
         let level = level.map(Probability::new).transpose()?;
-        bases.push(base.base);
-        levels.push(level);
         key.push(u64::from(base.base as u8));
         key.push(level.map_or(u64::MAX, |level| level.to_bits()));
     }
-    let positions: Vec<SequencePosition> =
-        template.bases.iter().map(|base| base.position).collect();
-    let indel_bases = indel_bases(positions.iter().copied());
     Ok(TemplateTrack {
-        haplotype: compair::Haplotype::new(bases).with_betas(levels)?,
         key: key.into(),
-        positions,
-        indel_bases,
+        indel_bases: indel_bases(template.iter().map(|base| base.position)),
     })
 }
 

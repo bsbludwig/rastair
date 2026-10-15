@@ -93,6 +93,7 @@ fn bounded_expansion_follows_transitive_fragment_links_beyond_three_sites() -> R
         &reads,
         &params(true),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
     )?;
     let bounded = infer_snp_expanded(
         &reference,
@@ -102,6 +103,7 @@ fn bounded_expansion_follows_transitive_fragment_links_beyond_three_sites() -> R
         &reads,
         &params(true),
         &ExpansionParams { max_haplotypes: 16, ..ExpansionParams::default() },
+        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
     )?;
     for result in [&exact, &bounded] {
         assert_eq!(result.sites.len(), 5);
@@ -151,6 +153,7 @@ fn disconnected_and_low_confidence_fragments_do_not_extend_a_region() -> Result<
         &duplicated,
         &params(true),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
     )?;
     assert_eq!(result.sites.len(), 1);
     assert_eq!(result.disconnected_sites, 1, "two mates are one linking molecule");
@@ -169,6 +172,7 @@ fn disconnected_and_low_confidence_fragments_do_not_extend_a_region() -> Result<
         &conflict,
         &params(true),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
     )?;
     assert_eq!(result.sites.len(), 1, "Q0 consensus cannot provide a connection");
     let mut independent = copies(10, Strand::OT, &[(1001, A)]);
@@ -181,6 +185,7 @@ fn disconnected_and_low_confidence_fragments_do_not_extend_a_region() -> Result<
         &independent,
         &params(true),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
     )?;
     assert_eq!(result.disconnected_sites, 1);
     Ok(())
@@ -196,8 +201,16 @@ fn expansion_limits_preserve_focal_genotypes_and_report_omissions() -> Result<()
     let alternate = (1001..1010).map(|pos| (pos, G)).collect::<Vec<_>>();
     reads.extend(copies(8, Strand::OB, &alternate));
     let search = ExpansionParams { max_sites: 4, max_haplotypes: 32, ..ExpansionParams::default() };
-    let result =
-        infer_snp_expanded(&reference, 1001, &neighbors, &[], &reads, &params(true), &search)?;
+    let result = infer_snp_expanded(
+        &reference,
+        1001,
+        &neighbors,
+        &[],
+        &reads,
+        &params(true),
+        &search,
+        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
+    )?;
     assert_eq!(result.sites.len(), 4);
     assert_eq!(result.resource_limited_sites, 5);
     assert_eq!(result.omitted_sites, 5);
@@ -249,8 +262,16 @@ fn buffered_branches_can_return_when_downstream_evidence_changes_the_ranking() -
             reads.push(fragment(Strand::OT, &observations));
         }
         let search = ExpansionParams { max_haplotypes: 16, ..ExpansionParams::default() };
-        let result =
-            infer_snp_expanded(&reference, 1001, &neighbors, &[], &reads, &params(true), &search)?;
+        let result = infer_snp_expanded(
+            &reference,
+            1001,
+            &neighbors,
+            &[],
+            &reads,
+            &params(true),
+            &search,
+            &mut crate::call::haplotypes::Scorer::new(&params(true))?,
+        )?;
         if result.rescued_haplotypes > 0 {
             let no_holdouts = infer_snp_expanded(
                 &reference,
@@ -260,6 +281,7 @@ fn buffered_branches_can_return_when_downstream_evidence_changes_the_ranking() -
                 &reads,
                 &params(true),
                 &ExpansionParams { haplotype_holdout: 0, ..search },
+                &mut crate::call::haplotypes::Scorer::new(&params(true))?,
             )?;
             assert_eq!(no_holdouts.rescued_haplotypes, 0);
             assert_eq!(result.sites.len(), positions.len());
@@ -284,6 +306,7 @@ fn conversion_only_cpg_candidates_do_not_bridge_genetic_regions() -> Result<()> 
         &reads,
         &params(false),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
     )?;
     assert_eq!(result.sites.len(), 1);
     reads.extend(copies(4, Strand::OB, &[(1001, C), (1005, T)]));
@@ -295,6 +318,7 @@ fn conversion_only_cpg_candidates_do_not_bridge_genetic_regions() -> Result<()> 
         &reads,
         &params(false),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
     )?;
     assert_eq!(result.sites.len(), 2);
     assert_eq!(result.disconnected_sites, 0);
@@ -315,6 +339,7 @@ fn discovery_reaches_both_150bp_edges_and_respects_the_expansion_bound() -> Resu
         &reads,
         &params(true),
         &ExpansionParams { expansion_radius: 150, ..ExpansionParams::default() },
+        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
     )?;
     assert_eq!(result.sites.iter().map(|site| site.pos).collect::<Vec<_>>(), [850, 1000, 1150]);
     Ok(())
@@ -337,6 +362,7 @@ fn unconverted_denovo_cpg_alleles_link_on_the_conversion_prone_strand() -> Resul
             &reads,
             &params(false),
             &ExpansionParams::default(),
+            &mut crate::call::haplotypes::Scorer::new(&params(false))?,
         )?;
         assert_eq!(result.sites.len(), 2);
         assert_eq!(result.disconnected_sites, 0);
@@ -373,6 +399,7 @@ fn distant_nuisance_indels_require_fragment_connections_to_the_focal_region() ->
         &reads,
         &params,
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params)?,
     )?;
     assert!(isolated.haplotypes.iter().all(|haplotype| haplotype.indel.is_none()));
     assert_eq!(isolated.omitted_indels, 1);
@@ -387,6 +414,7 @@ fn distant_nuisance_indels_require_fragment_connections_to_the_focal_region() ->
         &reads,
         &params,
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params)?,
     )?;
     assert!(connected.haplotypes.iter().any(|haplotype| haplotype.indel.is_some()));
     Ok(())
@@ -407,6 +435,7 @@ fn cpg_partner_hypotheses_are_joint_when_a_variant_removes_conversion_context() 
         &reads,
         &params(false),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
     )?;
     assert_eq!(
         result.sites.len(),
@@ -435,6 +464,7 @@ fn a_partner_variant_does_not_create_a_false_cpg_at_an_uncovered_focal_base() ->
         &reads,
         &params(false),
         &ExpansionParams::default(),
+        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
     )?;
     assert_eq!(result.focal_observations, 0);
     assert_eq!(result.sites.len(), 2);

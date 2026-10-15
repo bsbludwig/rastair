@@ -144,22 +144,29 @@ pub(super) fn estimate(
     );
     let mut pairs = Vec::new();
     let priors = retained_pair_priors(haplotypes, sites, params, has_indel)?;
+    // Each pair's per-fragment mixture, kept for the responsibilities below,
+    // which need exactly these values.
+    let mut mixtures = Vec::with_capacity(priors.len() * fragments.len());
     for (a, _) in haplotypes.iter().enumerate() {
         for (b, _) in haplotypes.iter().enumerate().skip(a) {
             let likelihoods_a = pilot.get(a).ok_or_eyre("Missing pilot haplotype")?;
             let likelihoods_b = pilot.get(b).ok_or_eyre("Missing pilot haplotype")?;
-            let joint = likelihoods_a
+            let start = mixtures.len();
+            mixtures.extend(likelihoods_a.iter().zip(likelihoods_b).map(|(&a, &b)| log_add(a, b)));
+            let joint = mixtures
+                .get(start..)
+                .ok_or_eyre("Missing pilot mixtures")?
                 .iter()
-                .zip(likelihoods_b)
-                .map(|(&a, &b)| log_add(a, b) - std::f64::consts::LN_2)
+                .map(|&mixture| mixture - std::f64::consts::LN_2)
                 .sum::<f64>()
                 + *priors.get(pairs.len()).ok_or_eyre("Missing pilot pair prior")?;
             pairs.push((a, b, joint));
         }
     }
-    estimate_with_pairs(context, haplotypes, fragments, pilot, params, &pairs)
+    estimate_with_mixtures(context, haplotypes, fragments, pilot, params, &pairs, Some(&mixtures))
 }
 
+#[cfg(any(feature = "experimental-seqair", test))]
 pub(super) fn estimate_with_pairs(
     context: &Context,
     haplotypes: &[Haplotype],
@@ -168,10 +175,28 @@ pub(super) fn estimate_with_pairs(
     params: &LikelihoodParams,
     pairs: &[(usize, usize, f64)],
 ) -> Result<Rates> {
+    estimate_with_mixtures(context, haplotypes, fragments, pilot, params, pairs, None)
+}
+
+/// [`estimate_with_pairs`] given, optionally, each pair's
+/// `log_add(pilot[a][f], pilot[b][f])` for every fragment, pair-major.
+fn estimate_with_mixtures(
+    context: &Context,
+    haplotypes: &[Haplotype],
+    fragments: &[&Fragment],
+    pilot: &[Vec<f64>],
+    params: &LikelihoodParams,
+    pairs: &[(usize, usize, f64)],
+    mixtures: Option<&[f64]>,
+) -> Result<Rates> {
     ensure!(!pairs.is_empty(), "No eligible diploid pairs for CpG estimation");
+    ensure!(
+        mixtures.is_none_or(|mixtures| mixtures.len() == pairs.len() * fragments.len()),
+        "Pilot mixture dimensions disagree"
+    );
     let normalizer = log_sum(pairs.iter().map(|&(_, _, joint)| joint));
     let mut assignments = vec![vec![0.0; fragments.len()]; haplotypes.len()];
-    for &(a, b, joint) in pairs {
+    for (pair_index, &(a, b, joint)) in pairs.iter().enumerate() {
         let posterior = (joint - normalizer).exp();
         for index in 0..fragments.len() {
             let first = *pilot
@@ -182,7 +207,13 @@ pub(super) fn estimate_with_pairs(
                 .get(b)
                 .and_then(|values| values.get(index))
                 .ok_or_eyre("Missing pilot fragment")?;
-            let responsibility = (first - log_add(first, second)).exp();
+            let mixture = match mixtures {
+                Some(mixtures) => *mixtures
+                    .get(pair_index * fragments.len() + index)
+                    .ok_or_eyre("Missing pilot mixture")?,
+                None => log_add(first, second),
+            };
+            let responsibility = (first - mixture).exp();
             *assignments
                 .get_mut(a)
                 .and_then(|values| values.get_mut(index))

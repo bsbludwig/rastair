@@ -1,6 +1,7 @@
 use super::{Fragment, Haplotype, Reference, Site};
 use crate::metrics::methylation::CpgSide;
-use color_eyre::eyre::{Result, ensure};
+use color_eyre::eyre::{OptionExt as _, Result, ensure};
+use rustc_hash::FxHashMap;
 use seqair_types::{Base, Probability, Strand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
@@ -152,9 +153,19 @@ pub(super) fn log_add(a: f64, b: f64) -> f64 {
     if b == f64::NEG_INFINITY {
         return a;
     }
+    // Two haplotypes that agree over a fragment's window score it alike, so
+    // equal terms are common in the diploid pair sums; this is the general
+    // expression's own value for them, computed once.
+    if a == b && a.is_finite() {
+        return a + *LOG_ADD_EQUAL;
+    }
     let upper = a.max(b);
     upper + (-(a - b).abs()).exp().ln_1p()
 }
+
+/// `log_add(x, x) - x`, as the general expression in [`log_add`] computes it.
+static LOG_ADD_EQUAL: std::sync::LazyLock<f64> =
+    std::sync::LazyLock::new(|| (-(0.0_f64)).exp().ln_1p());
 
 pub(super) fn log_sum(values: impl IntoIterator<Item = f64>) -> f64 {
     values.into_iter().fold(f64::NEG_INFINITY, log_add)
@@ -407,6 +418,7 @@ pub(super) fn orientations_from(strands: impl IntoIterator<Item = Strand>) -> &'
     }
 }
 
+#[cfg(test)]
 pub(super) fn pair_prior(
     first: &Haplotype,
     second: &Haplotype,
@@ -450,6 +462,127 @@ pub(super) fn pair_prior(
 }
 
 pub(super) fn retained_pair_priors(
+    haplotypes: &[Haplotype],
+    sites: &[Site],
+    params: &LikelihoodParams,
+    has_indel: bool,
+) -> Result<Vec<f64>> {
+    let indels = haplotypes
+        .iter()
+        .filter_map(|haplotype| haplotype.indel.as_ref())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let indel_alternatives = if has_indel { indels.len() } else { 0 };
+    // Every allele lookup and logarithm happens once per haplotype or site
+    // rather than once per pair; each pair sums the same terms, in the same
+    // order, as `pair_prior`.
+    let alleles = haplotypes
+        .iter()
+        .map(|haplotype| {
+            sites
+                .iter()
+                .map(|site| haplotype.allele_at(site.pos).ok_or_eyre("Missing retained allele"))
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let indel_codes = if has_indel {
+        haplotypes
+            .iter()
+            .map(|haplotype| match haplotype.indel.as_ref() {
+                None => Ok(0u8),
+                Some(indel) => Ok(u8::try_from(
+                    indels
+                        .binary_search(&indel)
+                        .map_err(|_| color_eyre::eyre::eyre!("Missing candidate indel prior"))?
+                        + 1,
+                )?),
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let homozygous_reference = (1.0 - *params.snp_prior).ln();
+    let alternative = sites
+        .iter()
+        .map(|site| {
+            let genotypes = site.alleles.len() * (site.alleles.len() + 1) / 2;
+            genotypes
+                .checked_sub(1)
+                .and_then(|alternatives| u16::try_from(alternatives).ok())
+                .map(|alternatives| (*params.snp_prior / f64::from(alternatives)).ln())
+        })
+        .collect::<Vec<_>>();
+    let indel_terms = if indel_alternatives > 0 {
+        let alleles = indel_alternatives + 1;
+        let alternate_genotypes = u32::try_from(alleles * (alleles + 1) / 2 - 1)?;
+        Some((
+            (1.0 - *params.indel_prior).ln(),
+            (*params.indel_prior / f64::from(alternate_genotypes)).ln(),
+        ))
+    } else {
+        None
+    };
+    let mut ids = FxHashMap::<Vec<(u8, u8)>, usize>::default();
+    let mut counts = Vec::<usize>::new();
+    let mut pairs = Vec::new();
+    for (index, first) in alleles.iter().enumerate() {
+        for (offset, second) in alleles.iter().enumerate().skip(index) {
+            let mut key = Vec::with_capacity(sites.len() + usize::from(has_indel));
+            let mut heterozygotes = 0u32;
+            let mut prior = 0.0;
+            for (((site, &a), &b), alternative) in
+                sites.iter().zip(first).zip(second).zip(&alternative)
+            {
+                let (a_code, b_code) = (a as u8, b as u8);
+                key.push((a_code.min(b_code), a_code.max(b_code)));
+                heterozygotes += u32::from(a != b);
+                prior += if a == site.reference && b == site.reference {
+                    homozygous_reference
+                } else {
+                    alternative.ok_or_eyre("Too many genotypes for a site prior")?
+                };
+            }
+            if has_indel {
+                let a = *indel_codes.get(index).ok_or_eyre("Missing indel code")?;
+                let b = *indel_codes.get(offset).ok_or_eyre("Missing indel code")?;
+                key.push((a.min(b), a.max(b)));
+                heterozygotes += u32::from(a != b);
+                if let Some((none, some)) = indel_terms {
+                    prior += if a == 0 && b == 0 { none } else { some };
+                }
+            }
+            // The genotype prior is shared equally by its possible phase
+            // assignments. Otherwise adding neighboring hets would change the
+            // focal SNP's prior.
+            prior -= f64::from(heterozygotes.saturating_sub(1)) * std::f64::consts::LN_2;
+            let next = ids.len();
+            let id = *ids.entry(key).or_insert(next);
+            if id == counts.len() {
+                counts.push(0);
+            }
+            *counts.get_mut(id).ok_or_eyre("Missing retained phase count")? += 1;
+            pairs.push((id, heterozygotes.saturating_sub(1), prior));
+        }
+    }
+    pairs
+        .into_iter()
+        .map(|(id, phase_bits, prior)| {
+            let count = *counts
+                .get(id)
+                .ok_or_else(|| color_eyre::eyre::eyre!("Missing retained phase count"))?;
+            if 1usize.checked_shl(phase_bits) == Some(count) {
+                return Ok(prior);
+            }
+            // Pruning removes phase assignments. Divide a genotype's prior over its
+            // surviving assignments, rather than penalizing it for the search budget.
+            Ok(prior + f64::from(phase_bits) * std::f64::consts::LN_2 - (count as f64).ln())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn retained_pair_priors_reference(
     haplotypes: &[Haplotype],
     sites: &[Site],
     params: &LikelihoodParams,
@@ -529,6 +662,77 @@ pub(super) fn retained_pair_priors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tabled priors are the per-pair computation they replaced, bit for
+    /// bit: random haplotype sets over up to twelve sites, with pruned phase
+    /// assignments (a random subset of haplotypes) and competing indels.
+    #[test]
+    fn retained_pair_priors_match_the_per_pair_reference() -> Result<()> {
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        let mut next = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        let params = crate::call::haplotypes::tests::params(false);
+        let indels = [
+            super::super::Indel { start: 1010, deleted: vec![Base::A], inserted: Vec::new() },
+            super::super::Indel {
+                start: 1012,
+                deleted: Vec::new(),
+                inserted: vec![Base::C, Base::G],
+            },
+        ];
+        for trial in 0..200 {
+            let site_count = 1 + usize::try_from(next(12))?;
+            let sites = (0..site_count)
+                .map(|offset| {
+                    let reference =
+                        *Base::KNOWN.get(usize::try_from(next(4))?).ok_or_eyre("base")?;
+                    let alleles: Vec<Base> =
+                        Base::KNOWN.into_iter().filter(|_| next(2) == 0).collect();
+                    let alternative = Base::KNOWN
+                        .into_iter()
+                        .find(|&base| base != reference)
+                        .ok_or_eyre("alternative")?;
+                    Site::new(
+                        1000 + u32::try_from(offset)?,
+                        reference,
+                        [alternative].into_iter().chain(alleles),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let has_indel = trial % 3 == 0;
+            let haplotypes = (0..=next(20))
+                .map(|_| -> Result<Haplotype> {
+                    Ok(Haplotype {
+                        alleles: sites
+                            .iter()
+                            .map(|site| -> Result<(u32, Base)> {
+                                let index =
+                                    usize::try_from(next(u64::try_from(site.alleles.len())?))?;
+                                Ok((site.pos, *site.alleles.get(index).ok_or_eyre("allele")?))
+                            })
+                            .collect::<Result<_>>()?,
+                        indel: if has_indel {
+                            indels.get(usize::try_from(next(3))?).cloned()
+                        } else {
+                            None
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let tabled = retained_pair_priors(&haplotypes, &sites, &params, has_indel)?;
+            let reference =
+                retained_pair_priors_reference(&haplotypes, &sites, &params, has_indel)?;
+            assert_eq!(tabled.len(), reference.len());
+            for (a, b) in tabled.iter().zip(&reference) {
+                assert_eq!(a.to_bits(), b.to_bits(), "trial {trial}: {a} versus {b}");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn mate_consensus_never_adds_quality_and_penalizes_disagreement() -> Result<()> {

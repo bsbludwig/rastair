@@ -80,6 +80,7 @@ pub(super) fn expand(
     params: &LikelihoodParams,
     search: &ExpansionParams,
     require_links: bool,
+    scorer: &mut super::pair_hmm::Scorer,
 ) -> Result<Expanded> {
     expand_indels(
         reference,
@@ -90,6 +91,7 @@ pub(super) fn expand(
         params,
         search,
         require_links,
+        scorer,
     )
 }
 
@@ -106,6 +108,7 @@ pub(super) fn expand_indels(
     params: &LikelihoodParams,
     search: &ExpansionParams,
     require_links: bool,
+    scorer: &mut super::pair_hmm::Scorer,
 ) -> Result<Expanded> {
     let focal_pos = focal.pos;
     let mut ordered = candidates.to_vec();
@@ -211,6 +214,7 @@ pub(super) fn expand_indels(
                 fragments,
                 params,
                 search.read_local,
+                scorer,
             )?;
             let pairs = super::posterior_pairs(
                 &proposals,
