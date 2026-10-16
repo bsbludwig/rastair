@@ -23,15 +23,57 @@ The resulting ML scores are calibrated using [Platt scaling](https://en.wikipedi
 
 ## Haplotype likelihood features
 
-`ml train --ml-features haplotypes` trains five forests with 13 molecular features appended to each existing feature layout. A model's metadata selects this feature path automatically when loaded with `call --model FILE`, on both BAM backends. `--phase` is only needed to write phased genotypes and phase sets. The bundled model remains unchanged until the new model has passed held-out validation.
+`ml train --ml-features haplotypes` trains five forests with 16 molecular features appended to each existing feature layout. A model's metadata selects this feature path automatically when loaded with `call --model FILE`, on both BAM backends. `--phase` is only needed to write phased genotypes and phase sets. The bundled model remains unchanged until the new model has passed held-out validation.
 
-Features are calculated before output selection, ML filtering and genotype calling, so final phase calls cannot feed back into their own filters. CpG-only output retains neighboring SNPs for likelihood calculation. All four focal SNP bases are evaluated with full PairHMM scoring. Diploid chromosome likelihoods marginalize neighboring SNP assignments and one supported nuisance indel. SNP features summarize alternate-presence, heterozygous and homozygous probabilities, expected allele fraction, a log Bayes factor, genotype entropy, context size, linking molecules, scored molecules, realignment fraction and search pruning. Separate availability and boundary-resolution fields distinguish missing evidence from evidence against an allele. Indel rows use the same likelihood model for zero, one or two copies of the candidate indel, with linked SNP context.
+Features are calculated before output selection, ML filtering and genotype calling, so final phase calls cannot feed back into their own filters. CpG-only output retains neighboring SNPs for likelihood calculation. Observed alleles enter the search: every alternate base with at least two supporting reads or passing the pre-ML candidate filters, and every supported indel. Observed sites that are not candidates are kept as context within 150 bp of a candidate. Diploid chromosome likelihoods jointly marginalize neighboring SNP assignments and compatible indels at multiple anchors. SNP features summarize alternate-presence, heterozygous and homozygous probabilities, expected allele fraction, a log Bayes factor, genotype entropy, context size, linking molecules, scored molecules, realignment fraction and search pruning, and three prior-free views of the same matrix: the homozygous fraction of the allele's own posterior, and the number and fraction of informative molecules the best allele-carrying chromosome pair assigns to the carrying chromosome (GATK's allele depth, counting a molecule where its two chromosome likelihoods differ by more than a fifth of a decade). Separate availability and boundary-resolution fields distinguish missing evidence from evidence against an allele. Indel rows use the same likelihood model for zero, one or two copies of the candidate indel, with linked SNP context.
 
-Training and calling share the likelihood configuration: 0.95 TAPS conversion, 0.003 background conversion, shared per-CpG Beta(2,2) shrinkage with leave-one-molecule-out estimation, 12-base realignment flanks, and bounded expansion from 150 bases to 1,000 bases on either side. The search retains at most 32 SNP sites, 64 haplotypes and 32 held-out hypotheses. Both mates represent one molecule; overlapping observations are combined once, with disagreement reducing confidence. The same read filters and pre-ML eligibility rules apply during training and calling. There is no faster CIGAR-only policy for ordinary SNP candidates. Discordant alignment geometry or reference skips retain the existing aligned fallback, exposed by the realignment fraction; an indel with no realignment evidence has unavailable likelihood features.
+Training and calling share the likelihood configuration: 0.95 TAPS conversion, 0.003 background conversion, shared per-CpG Beta(2,2) shrinkage with leave-one-molecule-out estimation, template padding of 12 bases plus the maximum total candidate indel length, and connected regions up to 2 kb. The search retains at most 32 candidate sites, 64 haplotypes and 32 buffered hypotheses. Both mates represent one molecule; overlapping observations are combined once, with disagreement reducing confidence. The same read filters and pre-ML eligibility rules apply during training and calling. There is no faster CIGAR-only policy for ordinary SNP candidates. Discordant alignment geometry or reference skips retain the existing aligned fallback, exposed by the realignment fraction; an indel with no realignment evidence has unavailable likelihood features.
 
 Repeated `--phase-mask FILE` options on both `ml train` and `call` exclude centromeres and blacklisted intervals from molecular haplotype evidence, and split its context at mask boundaries. Variant and methylation candidates still go through their normal calling paths. Supply the same mask files for training and inference.
 
-The `canonical` feature set is an experimental control with the original feature count and canonical indel preprocessing, without the 13 likelihood features. Legacy `standard` models retain their original indel preprocessing and frozen feature layout. Model likelihoods are approximate conditional probabilities; Platt calibration applies to the forest's final score, not directly to the haplotype probabilities.
+The `canonical` feature set is an experimental control with the original feature count and canonical indel preprocessing, without the 16 likelihood features. Legacy `standard` models retain their original indel preprocessing and frozen feature layout. Model likelihoods are approximate conditional probabilities; Platt calibration applies to the forest's final score, not directly to the haplotype probabilities.
+
+### Library error profiles
+
+`ml train --ml-features haplotypes --haplotype-error-profile profile.json` embeds
+the full error profile in the trained forest. Calling reads that embedded profile;
+there is no independent override that can silently change the feature definition.
+Older haplotype forests without this metadata require retraining. Standard and
+Canonical forests remain compatible. With no profile file, training uses an
+explicit conservative GATK-style repeat curve, not an empirical calibration.
+
+Profiles contain a version, platform and library names, a molecular evidence cap,
+and separate insertion/deletion opening and extension Phred qualities indexed by
+repeat period and minimum copy count. `scripts/calibrate_haplotype_errors.py`
+estimates them from confidently homozygous-reference repeat tracts on chr19,
+excluding truth variants and their flanks. Both intact flanks must match and the
+intervening sequence must remain compatible with the repeat motif. Each molecule
+has one vote; disagreeing mates share that vote. Sparse contexts shrink toward
+the conservative profile. The `.counts.json` output records exposure, errors and
+input provenance. Use `--non-taps` for ordinary WGS. This calibration measures
+repeat-length errors relative to alignment coordinates, not a complete learned
+model of all sequencing and alignment errors.
+
+The read's gap qualities are taken from the reference repeat context at the
+positions it aligns to, as GATK takes them from the read's own context, so one
+read object serves every candidate template.
+
+A profile may also carry a `stutter` table: per repeat period and minimum copy
+count, the per-molecule probabilities that a tract is read with two units
+fewer, one fewer, one more or two more. With that table, whole-unit
+copy-number errors are a molecule-level mixture — a molecule is read from its
+chromosome as is, or from that chromosome with the tract's copy number
+changed, at the rate of the chromosome's own copy count — and the
+per-position repeat qualities are not applied. A per-position gap quality
+inside a 14-copy homopolymer is counted once per placement by the forward
+sum, and the same quality cannot serve both the presence and the dosage of
+an indel when, as in TAPS libraries, a fifth of the molecules at such tracts
+stutter. The calibration script fits both tables from the same tracts; the
+`.counts.json` output records the step counts.
+
+Keep calibration and forest training on the training chromosome. Evaluate both
+hom-to-het and het-to-hom errors, alongside genotype-aware F1, on held-out chr12.
+Changing profiles requires retraining the forest because it changes its features.
 
 ### Indel coordinates
 

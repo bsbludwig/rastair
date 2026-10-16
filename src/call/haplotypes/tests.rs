@@ -24,6 +24,7 @@ fn posterior_normalization_survives_large_common_log_offsets() -> Result<()> {
 
 pub(super) fn params(non_taps: bool) -> LikelihoodParams {
     LikelihoodParams {
+        error_profile: super::ErrorProfile { repeats: Vec::new(), ..Default::default() },
         conversion_rate: Probability::new(0.95).expect("probability"),
         false_conversion_rate: Probability::new(0.003).expect("probability"),
         snp_prior: Probability::new(0.001).expect("probability"),
@@ -232,8 +233,8 @@ fn expansion_limits_preserve_focal_genotypes_and_report_omissions() -> Result<()
 fn retained_phase_assignments_share_one_genotype_prior_after_pruning() -> Result<()> {
     let sites = [Site::new(1001, A, [G])?, Site::new(1002, A, [G])?];
     let haplotypes = [
-        Haplotype { alleles: vec![(1001, A), (1002, A)], indel: None },
-        Haplotype { alleles: vec![(1001, G), (1002, G)], indel: None },
+        Haplotype { alleles: vec![(1001, A), (1002, A)], indels: Vec::new() },
+        Haplotype { alleles: vec![(1001, G), (1002, G)], indels: Vec::new() },
     ];
     let priors = likelihood::retained_pair_priors(&haplotypes, &sites, &params(true), false)?;
     assert!(
@@ -401,7 +402,7 @@ fn distant_nuisance_indels_require_fragment_connections_to_the_focal_region() ->
         &ExpansionParams::default(),
         &mut crate::call::haplotypes::Scorer::new(&params)?,
     )?;
-    assert!(isolated.haplotypes.iter().all(|haplotype| haplotype.indel.is_none()));
+    assert!(isolated.haplotypes.iter().all(|haplotype| haplotype.indels.is_empty()));
     assert_eq!(isolated.omitted_indels, 1);
     for fragment in &mut reads {
         fragment.reads.push(sequence_read(1501));
@@ -416,7 +417,7 @@ fn distant_nuisance_indels_require_fragment_connections_to_the_focal_region() ->
         &ExpansionParams::default(),
         &mut crate::call::haplotypes::Scorer::new(&params)?,
     )?;
-    assert!(connected.haplotypes.iter().any(|haplotype| haplotype.indel.is_some()));
+    assert!(connected.haplotypes.iter().any(|haplotype| !haplotype.indels.is_empty()));
     Ok(())
 }
 
@@ -631,12 +632,12 @@ fn compound_heterozygotes_retain_both_nonreference_alleles() -> Result<()> {
 #[test]
 fn haplotype_sequence_decides_cpg_creation_and_destruction() -> Result<()> {
     let reference = reference(b"ACGA");
-    let intact = Haplotype { alleles: vec![(1002, G)], indel: None };
-    let disrupted = Haplotype { alleles: vec![(1002, T)], indel: None };
+    let intact = Haplotype { alleles: vec![(1002, G)], indels: Vec::new() };
+    let disrupted = Haplotype { alleles: vec![(1002, T)], indels: Vec::new() };
     assert_eq!(cpg_anchor(&reference, &intact, 1001), Some(1001));
     assert_eq!(cpg_anchor(&reference, &disrupted, 1001), None);
     let reference = super::tests::reference(b"ATGA");
-    let created = Haplotype { alleles: vec![(1001, C)], indel: None };
+    let created = Haplotype { alleles: vec![(1001, C)], indels: Vec::new() };
     assert_eq!(cpg_anchor(&reference, &created, 1001), Some(1001));
     Ok(())
 }
@@ -644,7 +645,7 @@ fn haplotype_sequence_decides_cpg_creation_and_destruction() -> Result<()> {
 #[test]
 fn overlapping_mates_share_the_conversion_event() -> Result<()> {
     let reference = reference(b"ACGA");
-    let haplotype = Haplotype { alleles: vec![(1001, C)], indel: None };
+    let haplotype = Haplotype { alleles: vec![(1001, C)], indels: Vec::new() };
     let reads =
         Fragment { reads: vec![read(Strand::OT, &[(1001, T)]), read(Strand::OT, &[(1001, T)])] };
     let likelihood =
@@ -705,7 +706,7 @@ fn missing_mapping_quality_and_q0_do_not_create_evidence() -> Result<()> {
 #[test]
 fn unknown_orientation_is_marginalized_once_per_fragment() -> Result<()> {
     let reference = reference(b"ACGA");
-    let haplotype = Haplotype { alleles: vec![(1001, C)], indel: None };
+    let haplotype = Haplotype { alleles: vec![(1001, C)], indels: Vec::new() };
     let read = fragment(Strand::Unknown, &[(1001, T), (1002, A)]);
     let likelihood =
         fragment_likelihood(&read, &haplotype, &reference, &[1001, 1002], 0.5, &params(false))?
@@ -868,8 +869,8 @@ fn adjacent_variants_form_a_cpg_only_on_the_cis_haplotype() -> Result<()> {
 #[test]
 fn fully_converted_strand_alone_cannot_distinguish_c_from_t() -> Result<()> {
     let reference = reference(b"ACGA");
-    let c = Haplotype { alleles: vec![(1001, C)], indel: None };
-    let t = Haplotype { alleles: vec![(1001, T)], indel: None };
+    let c = Haplotype { alleles: vec![(1001, C)], indels: Vec::new() };
+    let t = Haplotype { alleles: vec![(1001, T)], indels: Vec::new() };
     let fragment = fragment(Strand::OT, &[(1001, T)]);
     let mut params = params(false);
     params.conversion_rate = Probability::ONE;
@@ -882,7 +883,7 @@ fn fully_converted_strand_alone_cannot_distinguish_c_from_t() -> Result<()> {
 #[test]
 fn unknown_observed_bases_do_not_change_mapping_evidence() -> Result<()> {
     let reference = reference(b"AAA");
-    let haplotype = Haplotype { alleles: vec![(1001, A)], indel: None };
+    let haplotype = Haplotype { alleles: vec![(1001, A)], indels: Vec::new() };
     let plain = fragment(Strand::OT, &[(1001, A)]);
     let unknown = fragment(Strand::OT, &[(1001, A), (1002, Unknown)]);
     let a = fragment_likelihood(&plain, &haplotype, &reference, &[1001, 1002], 0.0, &params(true))?;
@@ -895,7 +896,7 @@ fn unknown_observed_bases_do_not_change_mapping_evidence() -> Result<()> {
 #[test]
 fn a_known_mate_resolves_an_unknown_molecular_orientation() -> Result<()> {
     let reference = reference(b"ACGA");
-    let haplotype = Haplotype { alleles: vec![(1001, C)], indel: None };
+    let haplotype = Haplotype { alleles: vec![(1001, C)], indels: Vec::new() };
     let known =
         Fragment { reads: vec![read(Strand::OB, &[(1001, T)]), read(Strand::OB, &[(1001, T)])] };
     let unknown = Fragment {
@@ -910,7 +911,7 @@ fn a_known_mate_resolves_an_unknown_molecular_orientation() -> Result<()> {
 #[test]
 fn disagreeing_mate_assignments_are_one_uncertain_orientation() -> Result<()> {
     let reference = reference(b"ACGA");
-    let haplotype = Haplotype { alleles: vec![(1001, C)], indel: None };
+    let haplotype = Haplotype { alleles: vec![(1001, C)], indels: Vec::new() };
     let disagreeing =
         Fragment { reads: vec![read(Strand::OT, &[(1001, T)]), read(Strand::OB, &[(1001, T)])] };
     let unknown = Fragment {

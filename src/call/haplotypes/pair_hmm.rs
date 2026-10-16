@@ -179,7 +179,7 @@ fn windowed(haplotype: &Haplotype, start: u32, end: u32) -> Haplotype {
             .filter(|(pos, _)| (start..end).contains(pos))
             .copied()
             .collect(),
-        indel: haplotype.indel.clone(),
+        indels: haplotype.indels.clone(),
     }
 }
 
@@ -192,8 +192,8 @@ fn sequence(
     let haplotype = windowed(haplotype, start, end);
     let haplotype = &haplotype;
     let mut bases = Vec::with_capacity(usize::try_from(end.saturating_sub(start))?);
-    for pos in start..end {
-        if let Some(indel) = &haplotype.indel {
+    'positions: for pos in start..end {
+        for indel in &haplotype.indels {
             if pos == indel.start {
                 for (offset, &base) in indel.inserted.iter().enumerate() {
                     bases.push(TemplateBase {
@@ -205,7 +205,7 @@ fn sequence(
                 }
             }
             if indel.deletes(pos) {
-                continue;
+                continue 'positions;
             }
         }
         bases.push(TemplateBase {
@@ -237,15 +237,15 @@ pub(super) fn cpgs(
         }
         previous = Some((position, base));
     };
-    for pos in start..end {
-        if let Some(indel) = &haplotype.indel {
+    'positions: for pos in start..end {
+        for indel in &haplotype.indels {
             if pos == indel.start {
                 for (offset, &base) in indel.inserted.iter().enumerate() {
                     visit(SequencePosition::insertion(pos, u32::try_from(offset)?), base);
                 }
             }
             if indel.deletes(pos) {
-                continue;
+                continue 'positions;
             }
         }
         visit(
@@ -260,25 +260,59 @@ pub(super) fn cpgs(
 
 type Profile = Vec<MolecularBase>;
 
-/// A profile as compair scores it under every mapping hypothesis that leaves
-/// one of its bases mapped, indexed by the hypothesis' bad-read mask. The
-/// others have a closed form.
-struct ProfileRows {
-    sources: usize,
-    rows: [Option<ProfileTerms>; 4],
-}
-
+/// A profile as compair scores it under every template: its bases and
+/// qualities, with gap qualities from the reference's repeat context at the
+/// positions they align to (as GATK takes them from the read's own context),
+/// so the forward results under one template serve every other through the
+/// memo. `key` is what determines `read`: the memo's key.
 struct ProfileTerms {
     read: compair::Read,
-    /// The bases and qualities `read` was built from, which determine it: the
-    /// memo's key.
     key: Box<[u8]>,
-    /// Most a forward pass over this read can score against any template:
-    /// every path emits each base once, through a match or an insertion, and
-    /// neither emission exceeds the base's larger one, so the path product is
-    /// at most the product of those and the transitions' mass cancels against
-    /// the normalization. A band can only remove paths.
-    bound: f64,
+}
+
+/// The gap qualities of every reference position of a window, from the
+/// library's repeat profile; a position outside it has the plain qualities.
+struct RepeatTracks {
+    start: u32,
+    gaps: Vec<[BaseQuality; 3]>,
+    plain: [BaseQuality; 3],
+}
+
+impl RepeatTracks {
+    fn new(
+        reference: &Reference,
+        window: std::ops::Range<u32>,
+        profile: &super::ErrorProfile,
+        gaps: GapQualities,
+    ) -> Result<Self> {
+        let start = window.start.max(reference.start);
+        let end = window
+            .end
+            .max(start)
+            .min(reference.start.saturating_add(u32::try_from(reference.bases.len())?));
+        let bases = reference
+            .bases
+            .get(
+                usize::try_from(start.saturating_sub(reference.start))?
+                    ..usize::try_from(end.saturating_sub(reference.start))?,
+            )
+            .ok_or_eyre("Repeat track window outside the reference")?;
+        Ok(Self {
+            start,
+            gaps: profile.tracks(bases, gaps.open, gaps.extend),
+            plain: [gaps.open, gaps.open, gaps.extend],
+        })
+    }
+
+    /// An inserted base takes the qualities of the reference base it follows.
+    fn at(&self, position: SequencePosition) -> [BaseQuality; 3] {
+        position
+            .pos
+            .checked_sub(self.start)
+            .and_then(|offset| self.gaps.get(usize::try_from(offset).ok()?))
+            .copied()
+            .unwrap_or(self.plain)
+    }
 }
 
 /// Where a joint profile sits: the band of every forward pass over it is
@@ -296,7 +330,7 @@ struct MolecularEvidence {
     joint: Vec<Profile>,
     intervals: Vec<(u32, u32)>,
     spans: Vec<ProfileSpan>,
-    rows: Vec<ProfileRows>,
+    rows: Vec<ProfileTerms>,
 }
 
 /// The gap model as compair's whole-Phred read qualities.
@@ -331,12 +365,6 @@ fn phred(probability: f64, name: &str) -> Result<BaseQuality> {
     )]
     Ok(BaseQuality::from_byte(quality as u8))
 }
-
-/// The insertion state's emission of a known read base: uniform, so that the
-/// observation model stays a distribution over read sequences. GATK's
-/// convention of one would make each inserted base four times cheaper than
-/// any matching one.
-const INSERTION_EMISSION: f64 = 0.25;
 
 /// A read base no model can predict: high enough that compair's match
 /// emission for an unknown base, `1 - eps`, is one in `f64`.
@@ -441,10 +469,12 @@ impl compair::Emission for TemplateEmission {
 pub(super) struct Prepared {
     start: u32,
     end: u32,
+    padding: u32,
+    reference_bounds: std::ops::Range<u32>,
     fragments: Vec<Option<MolecularEvidence>>,
     localized: bool,
-    /// The longest indel any compared haplotype carries. A read can carry
-    /// one that its CIGAR does not show, so every band reaches this far,
+    /// The total indel length on the most edited candidate chromosome. A read can carry
+    /// edits that its CIGAR does not show, so every band reaches this far,
     /// whatever the template it scores against holds.
     indel_reach: usize,
 }
@@ -486,25 +516,59 @@ impl Prepared {
             .ok_or_eyre("Reference coordinate overflow")?;
         end = end.saturating_add(u32::from(params.realignment_flank)).min(reference_end);
         let gaps = GapQualities::new(params)?;
-        let prepared = fragments
+        let mut extent: Option<(u32, u32)> = None;
+        for read in fragments.iter().flat_map(|fragment| &fragment.reads) {
+            if let Some((first, last)) = read
+                .sequence
+                .as_ref()
+                .and_then(|sequence| sequence.bases.first().zip(sequence.bases.last()))
+            {
+                let (first, last) = (first.position.pos, last.position.pos.saturating_add(1));
+                extent = Some(extent.map_or((first, last), |(a, b)| (a.min(first), b.max(last))));
+            }
+        }
+        let tracks = RepeatTracks::new(
+            reference,
+            extent.map_or(start..end, |(first, last)| first..last),
+            &params.error_profile,
+            gaps,
+        )?;
+        let prepared: Vec<_> = fragments
             .iter()
-            .map(|fragment| molecular_evidence(fragment, start, end, gaps))
+            .map(|fragment| {
+                molecular_evidence(fragment, reference.start, reference_end, gaps, &tracks)
+            })
             .collect::<Result<_>>()?;
+        let flank =
+            u32::from(params.realignment_flank) + u32::try_from(indel.map_or(0, Indel::len))?;
+        for molecule in prepared.iter().flatten() {
+            for &(first, last) in &molecule.intervals {
+                start = start.min(first.saturating_sub(flank).max(reference.start));
+                end = end.max(last.saturating_add(flank).min(reference_end));
+            }
+        }
         Ok(Self {
             start,
             end,
+            padding: flank,
+            reference_bounds: reference.start..reference_end,
             fragments: prepared,
             localized: false,
             indel_reach: indel.map_or(0, Indel::len),
         })
     }
 
-    /// Widens every band to reach the longest of `indels`: the haplotypes
-    /// this window's templates will be built from, when they carry more than
-    /// the one indel it was prepared for.
-    pub(super) fn reaching<'a>(mut self, indels: impl IntoIterator<Item = &'a Indel>) -> Self {
-        self.indel_reach = indels.into_iter().map(Indel::len).fold(self.indel_reach, usize::max);
-        self
+    pub(super) fn reaching(mut self, haplotypes: &[Haplotype]) -> Result<Self> {
+        let reach = haplotypes
+            .iter()
+            .map(|h| h.indels.iter().map(Indel::len).sum::<usize>())
+            .fold(self.indel_reach, usize::max);
+        let extra = u32::try_from(reach - self.indel_reach)?;
+        self.start = self.start.saturating_sub(extra).max(self.reference_bounds.start);
+        self.end = self.end.saturating_add(extra).min(self.reference_bounds.end);
+        self.padding = self.padding.checked_add(extra).ok_or_eyre("Template padding overflow")?;
+        self.indel_reach = reach;
+        Ok(self)
     }
 
     pub(super) fn localize(mut self) -> Self {
@@ -533,7 +597,7 @@ impl Prepared {
     fn signature_for(
         &self,
         haplotype: &Haplotype,
-        params: &LikelihoodParams,
+        _params: &LikelihoodParams,
         index: Option<usize>,
     ) -> Vec<(u32, u8)> {
         let intervals: Vec<_> = self
@@ -551,14 +615,9 @@ impl Prepared {
             .filter(|(pos, _)| {
                 if self.localized && !intervals.is_empty() {
                     intervals.iter().any(|&(start, end)| {
-                        start
-                            .saturating_sub(u32::from(params.realignment_flank) + 1)
-                            .max(self.start.saturating_sub(1))
+                        start.saturating_sub(self.padding + 1).max(self.start.saturating_sub(1))
                             <= *pos
-                            && *pos
-                                <= end
-                                    .saturating_add(u32::from(params.realignment_flank))
-                                    .min(self.end)
+                            && *pos <= end.saturating_add(self.padding).min(self.end)
                     })
                 } else {
                     self.start.saturating_sub(1) <= *pos && *pos <= self.end
@@ -581,7 +640,7 @@ impl Prepared {
         reference: &Reference,
         haplotype: &Haplotype,
         _loci: &[u32],
-        params: &LikelihoodParams,
+        _params: &LikelihoodParams,
     ) -> Result<Template> {
         let reference_end = reference
             .start
@@ -615,8 +674,8 @@ impl Prepared {
             for molecule in self.fragments.iter().flatten() {
                 for &(start, end) in &molecule.intervals {
                     windows.insert((
-                        start.saturating_sub(u32::from(params.realignment_flank)).max(self.start),
-                        end.saturating_add(u32::from(params.realignment_flank)).min(self.end),
+                        start.saturating_sub(self.padding).max(self.start),
+                        end.saturating_add(self.padding).min(self.end),
                     ));
                 }
             }
@@ -688,9 +747,6 @@ impl Prepared {
                 .filter(|(_, profile)| !profile.is_empty())
                 .map(|(read, _)| read.strand),
         );
-        let owns = |read_index| {
-            molecule.joint.iter().flatten().any(|base| base.source == Some(read_index))
-        };
         let mut plan = Plan { templates: Vec::new(), jobs: Vec::new(), hypotheses: Vec::new() };
         for &orientation in orientations {
             let mut tracks = Vec::with_capacity(molecule.joint.len());
@@ -706,10 +762,8 @@ impl Prepared {
                         .ok_or_eyre("Missing molecular interval")?;
                     template
                         .local_bases((
-                            start
-                                .saturating_sub(u32::from(params.realignment_flank))
-                                .max(self.start),
-                            end.saturating_add(u32::from(params.realignment_flank)).min(self.end),
+                            start.saturating_sub(self.padding).max(self.start),
+                            end.saturating_add(self.padding).min(self.end),
                         ))
                         .ok_or_eyre("Missing read-local haplotype template")?
                 } else {
@@ -721,78 +775,45 @@ impl Prepared {
                     .get(profile_index)
                     .ok_or_eyre("Missing molecular profile span")?;
                 let offset = bases.partition_point(|base| base.position < span.first);
-                let band = band(
-                    offset,
-                    span.indel_bases.saturating_add(track.indel_bases.max(self.indel_reach)),
-                )?;
+                let band = if self.localized {
+                    band(
+                        offset,
+                        span.indel_bases
+                            .saturating_add(track.indel_bases.max(self.indel_reach))
+                            .max(self.padding as usize),
+                    )?
+                } else {
+                    band(0, profile.len().max(bases.len()))?
+                };
                 plan.templates.push(track);
                 tracks.push(Some((plan.templates.len() - 1, band)));
             }
-            let mut jobs = vec![[None::<usize>; 4]; molecule.joint.len()];
-            for mask in 0..(1usize << fragment.reads.len()) {
-                if fragment
-                    .reads
-                    .iter()
-                    .enumerate()
-                    .any(|(read_index, _)| !owns(read_index) && mask & (1 << read_index) != 0)
-                {
-                    continue;
-                }
-                let mut weight = -(orientations.len() as f64).ln();
-                for (read_index, read) in fragment.reads.iter().enumerate() {
-                    if !owns(read_index) {
-                        continue;
-                    }
-                    let bad = mask & (1 << read_index) != 0;
-                    let error = read.mapq.map_or(1.0, |q| 10.0_f64.powf(-f64::from(q) / 10.0));
-                    weight += if bad { error.ln() } else { (-error).ln_1p() };
-                }
-                if !weight.is_finite() {
-                    continue;
-                }
-                let mut hypothesis = Hypothesis {
-                    weight,
-                    jobs: Vec::with_capacity(jobs.len()),
-                    unconditional: mask == 0,
+            let mut hypothesis =
+                Hypothesis { weight: -(orientations.len() as f64).ln(), jobs: Vec::new() };
+            for (profile_index, (profile, terms)) in
+                molecule.joint.iter().zip(&molecule.rows).enumerate()
+            {
+                let job = if profile.is_empty() {
+                    Job::Known(0.0)
+                } else {
+                    let (template, band) = tracks
+                        .get(profile_index)
+                        .copied()
+                        .flatten()
+                        .ok_or_eyre("Missing template track")?;
+                    Job::Forward { profile: terms, template, band }
                 };
-                for (profile_index, (profile, rows)) in
-                    molecule.joint.iter().zip(&molecule.rows).enumerate()
-                {
-                    let local_mask = mask & rows.sources;
-                    let slot = jobs
-                        .get_mut(profile_index)
-                        .and_then(|slots| slots.get_mut(local_mask))
-                        .ok_or_eyre("Invalid profile mapping hypothesis")?;
-                    let job = match slot {
-                        Some(job) => *job,
-                        None => {
-                            let job = match rows.rows.get(local_mask).and_then(Option::as_ref) {
-                                Some(profile) => {
-                                    let (template, band) = tracks
-                                        .get(profile_index)
-                                        .copied()
-                                        .flatten()
-                                        .ok_or_eyre("Missing template track")?;
-                                    Job::Forward { profile, template, band }
-                                }
-                                None => Job::Known(unmapped_likelihood(profile)),
-                            };
-                            plan.jobs.push(job);
-                            *slot = Some(plan.jobs.len() - 1);
-                            plan.jobs.len() - 1
-                        }
-                    };
-                    hypothesis.jobs.push(job);
-                }
-                plan.hypotheses.push(hypothesis);
+                hypothesis.jobs.push(plan.jobs.len());
+                plan.jobs.push(job);
             }
+            plan.hypotheses.push(hypothesis);
         }
         Ok(Some(plan))
     }
 }
 
 /// The forward passes one fragment needs under one template, and how their
-/// scores combine over orientations and mapping hypotheses.
+/// scores combine over molecular strand orientations.
 pub(super) struct Plan<'a> {
     templates: Vec<TemplateTrack>,
     jobs: Vec<Job<'a>>,
@@ -800,40 +821,14 @@ pub(super) struct Plan<'a> {
 }
 
 enum Job<'a> {
-    /// Every path emits the same uniform observation probability, so the
-    /// alignment sum cancels against its normalization.
     Known(f64),
-    Forward {
-        profile: &'a ProfileTerms,
-        template: usize,
-        band: compair::Band,
-    },
+    Forward { profile: &'a ProfileTerms, template: usize, band: compair::Band },
 }
 
-/// One mapping hypothesis under one orientation: its log weight and the job
-/// of every joint profile, whose scores add up.
+/// One molecular strand orientation and the profiles it observes.
 struct Hypothesis {
     weight: f64,
     jobs: Vec<usize>,
-    /// Every read mapped: scored first, and never skipped.
-    unconditional: bool,
-}
-
-/// What a forward pass's normalization depends on: the path mass of a
-/// profile of `rows` bases against a template of `columns`, through the
-/// same band.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct Shape {
-    rows: usize,
-    columns: usize,
-    offset: i32,
-    width: u32,
-}
-
-impl Shape {
-    fn of(read: &compair::Read, columns: usize, band: compair::Band) -> Self {
-        Self { rows: read.len(), columns, offset: band.offset(), width: band.width() }
-    }
 }
 
 /// Runs plans' forward passes through compair in batches and remembers their
@@ -843,34 +838,17 @@ impl Shape {
 /// band, so a hit is an exact recomputation avoided, never an approximation.
 /// Phasing's beam search rescores the same fragments against the same local
 /// templates at every step, which is what the memo exists for.
-///
-/// Hypotheses with a mismapped mate are only scored when they can change the
-/// fragment's likelihood: a hypothesis whose [`ProfileTerms::bound`] already
-/// adds nothing to the running `log_add` is left out. Those are the two of
-/// three passes an overlapping pair would otherwise spend on ~1e-6 of its
-/// weight, with that mate's bases emitting at most a quarter each.
 pub(crate) struct Scorer {
-    gaps: GapQualities,
-    normalizers: FxHashMap<Shape, f64>,
     profiles: Interner<u8>,
     templates: Interner<u64>,
     values: FxHashMap<(u32, u32, i32, u32), f64>,
-    skip_bounded: bool,
-    skipped: usize,
 }
 
 /// Largest footprint of interned keys before the memo starts over.
 const MEMO_BYTES: usize = 256 << 20;
 
-/// Slack on a hypothesis' bound, covering compair's `f32` kernels and the
-/// rounding of the normalization and of the bound's own sum.
-const BOUND_MARGIN: f64 = 1e-3;
-
-/// Where a plan's accumulation stands between rounds.
 struct Progress {
     scores: Vec<Option<f64>>,
-    result: f64,
-    next: usize,
 }
 
 struct Interner<T> {
@@ -902,22 +880,12 @@ impl<T: std::hash::Hash + Eq + Clone> Interner<T> {
 
 impl Scorer {
     pub(crate) fn new(params: &LikelihoodParams) -> Result<Self> {
+        params.validate()?;
         Ok(Self {
-            gaps: GapQualities::new(params)?,
-            normalizers: FxHashMap::default(),
             profiles: Interner::default(),
             templates: Interner::default(),
             values: FxHashMap::default(),
-            skip_bounded: true,
-            skipped: 0,
         })
-    }
-
-    /// Scores every hypothesis, bound or not.
-    #[cfg(test)]
-    fn exhaustive(mut self) -> Self {
-        self.skip_bounded = false;
-        self
     }
 
     /// The likelihood of every plan, in order. With `remember`, keys not seen
@@ -934,156 +902,47 @@ impl Scorer {
                 scores: plan
                     .jobs
                     .iter()
-                    .map(|job| match *job {
-                        Job::Known(value) => Some(value),
+                    .map(|job| match job {
+                        Job::Known(value) => Some(*value),
                         Job::Forward { .. } => None,
                     })
                     .collect(),
-                result: f64::NEG_INFINITY,
-                next: 0,
             })
             .collect();
-        let shapes: Vec<Shape> = plans
-            .iter()
-            .flat_map(|plan| plan.jobs.iter().filter_map(|job| plan.shape(job)))
-            .filter(|shape| !self.normalizers.contains_key(shape))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        self.normalize(&shapes)?;
-        let mut wanted: Vec<Vec<usize>> = plans
+        let wanted: Vec<_> = plans
             .iter()
             .map(|plan| {
-                plan.hypotheses
+                plan.jobs
                     .iter()
-                    .filter(|hypothesis| hypothesis.unconditional)
-                    .flat_map(|hypothesis| hypothesis.jobs.iter().copied())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, job)| matches!(job, Job::Forward { .. }).then_some(index))
                     .collect()
             })
             .collect();
-        let mut interned = Interned::default();
-        loop {
-            self.compute(plans, &wanted, &mut progress, remember, &mut interned)?;
-            let mut any = false;
-            for ((plan, progress), wanted) in plans.iter().zip(&mut progress).zip(&mut wanted) {
-                wanted.clear();
-                while let Some(hypothesis) = plan.hypotheses.get(progress.next) {
-                    let mut pending = Vec::new();
-                    let mut bound = hypothesis.weight;
+        self.compute(plans, &wanted, &mut progress, remember, &mut Interned::default())?;
+        plans
+            .iter()
+            .zip(progress)
+            .map(|(plan, progress)| {
+                let mut result = f64::NEG_INFINITY;
+                for hypothesis in &plan.hypotheses {
+                    let mut value = hypothesis.weight;
                     for &job in &hypothesis.jobs {
-                        match progress.scores.get(job).copied().flatten() {
-                            Some(score) => bound += score,
-                            None => {
-                                bound += self.bound(plan, job)?;
-                                pending.push(job);
-                            }
-                        }
+                        value += progress
+                            .scores
+                            .get(job)
+                            .copied()
+                            .flatten()
+                            .ok_or_eyre("Unscored molecular profile")?;
                     }
-                    if pending.is_empty() {
-                        let likelihood = hypothesis
-                            .jobs
-                            .iter()
-                            .map(|&job| {
-                                progress
-                                    .scores
-                                    .get(job)
-                                    .copied()
-                                    .flatten()
-                                    .ok_or_eyre("Unscored job")
-                            })
-                            .collect::<Result<Vec<_>>>()?
-                            .iter()
-                            .sum::<f64>();
-                        progress.result = log_add(progress.result, hypothesis.weight + likelihood);
-                        progress.next += 1;
-                    } else if self.skip_bounded
-                        && !hypothesis.unconditional
-                        && log_add(progress.result, bound + BOUND_MARGIN) == progress.result
-                    {
-                        self.skipped += 1;
-                        progress.next += 1;
-                    } else {
-                        pending.sort_unstable();
-                        pending.dedup();
-                        *wanted = pending;
-                        any = true;
-                        break;
-                    }
+                    result = log_add(result, value);
                 }
-            }
-            if !any {
-                break;
-            }
-        }
-        progress
-            .into_iter()
-            .map(|progress| {
-                ensure!(progress.result.is_finite(), "PairHMM fragment likelihood is not finite");
-                Ok(progress.result)
+                ensure!(result.is_finite(), "PairHMM fragment likelihood is not finite");
+                Ok(result)
             })
             .collect()
     }
 
-    /// The path mass of these shapes, computed as one batch: a profile of
-    /// unknown bases against a template of unknown bases emits one
-    /// everywhere, insertions included.
-    fn normalize(&mut self, shapes: &[Shape]) -> Result<()> {
-        if shapes.is_empty() {
-            return Ok(());
-        }
-        let longest = |length: fn(&Shape) -> usize| shapes.iter().map(length).max().unwrap_or(0);
-        let rows = longest(|shape| shape.rows);
-        let unknown_reads = (1..=rows)
-            .map(|length| {
-                Ok(compair::Read::uniform(
-                    vec![Base::Unknown; length],
-                    &vec![UNINFORMATIVE; length],
-                    self.gaps.open,
-                    self.gaps.open,
-                    self.gaps.extend,
-                    Strand::OT,
-                )?)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let unknown_templates: Vec<compair::Haplotype> = (1..=longest(|shape| shape.columns))
-            .map(|length| compair::Haplotype::new(vec![Base::Unknown; length]))
-            .collect();
-        let pairs = shapes
-            .iter()
-            .map(|shape| {
-                Ok(compair::Pair::new(
-                    shape
-                        .columns
-                        .checked_sub(1)
-                        .and_then(|index| unknown_templates.get(index))
-                        .ok_or_eyre("Empty PairHMM haplotype")?,
-                    shape
-                        .rows
-                        .checked_sub(1)
-                        .and_then(|index| unknown_reads.get(index))
-                        .ok_or_eyre("Empty PairHMM profile")?,
-                    compair::Band::new(shape.width, shape.offset)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for (shape, value) in shapes.iter().zip(align(&pairs)?) {
-            self.normalizers.insert(*shape, value);
-        }
-        Ok(())
-    }
-
-    /// What a pending job's score can at most be.
-    fn bound(&self, plan: &Plan<'_>, job: usize) -> Result<f64> {
-        match plan.jobs.get(job) {
-            Some(Job::Forward { profile, .. }) => Ok(profile.bound),
-            Some(Job::Known(value)) => Ok(*value),
-            None => Err(color_eyre::eyre::eyre!("Bound of a job outside its plan")),
-        }
-    }
-
-    /// Scores the wanted jobs of every plan, as one batch, memo aside.
     fn compute(
         &mut self,
         plans: &[Plan<'_>],
@@ -1098,33 +957,28 @@ impl Scorer {
         let mut slots = Vec::new();
         for (plan_index, (plan, wanted)) in plans.iter().zip(wanted).enumerate() {
             for &job in wanted {
-                let Some(&Job::Forward { profile, template, band }) = plan.jobs.get(job) else {
+                let Some(Job::Forward { profile, template, band }) = plan.jobs.get(job) else {
                     continue;
                 };
-                let track = plan.templates.get(template).ok_or_eyre("Missing template track")?;
+                let track = plan.templates.get(*template).ok_or_eyre("Missing template track")?;
                 let key = interned.key(
                     &mut self.profiles,
                     &mut self.templates,
-                    (plan_index, template),
+                    (plan_index, *template),
                     profile,
                     track,
                     remember,
                 )?;
-                let normalization = self
-                    .normalizers
-                    .get(&Shape::of(&profile.read, track.len(), band))
-                    .copied()
-                    .ok_or_eyre("Missing normalization")?;
                 let key =
                     key.map(|(profile, template)| (profile, template, band.offset(), band.width()));
                 match key.and_then(|key| self.values.get(&key).copied()) {
                     Some(value) => {
-                        progress.score(plan_index, job, value - normalization)?;
+                        progress.score(plan_index, job, value)?;
                     }
                     None => {
-                        pending.push((profile, (plan_index, template), band));
+                        pending.push((*profile, (plan_index, *template), *band));
                         keys.push(key);
-                        slots.push((plan_index, job, normalization));
+                        slots.push((plan_index, job));
                     }
                 }
             }
@@ -1132,7 +986,7 @@ impl Scorer {
         if pending.is_empty() {
             return Ok(());
         }
-        // Mapping hypotheses of one profile share its template; decode each once.
+        // Profiles sharing a template use one decoded compair haplotype.
         let mut decoded = FxHashMap::<(usize, usize), usize>::default();
         let mut haplotypes = Vec::new();
         for &(_, (plan_index, template), _) in &pending {
@@ -1158,15 +1012,11 @@ impl Scorer {
             })
             .collect::<Result<Vec<_>>>()?;
         let values = align(&pairs)?;
-        for ((key, &(plan_index, job, normalization)), &value) in
-            keys.iter().zip(&slots).zip(&values)
-        {
+        for ((key, &(plan_index, job)), &value) in keys.iter().zip(&slots).zip(&values) {
             if let Some(key) = key {
                 self.values.insert(*key, value);
             }
-            // Condition on the observed profile length and containment in this local
-            // window. Uniform bases then carry no evidence for a longer haplotype.
-            progress.score(plan_index, job, value - normalization)?;
+            progress.score(plan_index, job, value)?;
         }
         Ok(())
     }
@@ -1261,20 +1111,8 @@ impl Scores for [Progress] {
     }
 }
 
-impl Plan<'_> {
-    fn shape(&self, job: &Job<'_>) -> Option<Shape> {
-        match *job {
-            Job::Known(_) => None,
-            Job::Forward { profile, template, band } => {
-                Some(Shape::of(&profile.read, self.templates.get(template)?.len(), band))
-            }
-        }
-    }
-}
-
-/// Memo ids resolved during one run, so a profile shared by every template of
-/// its fragment and a template shared by every mapping hypothesis are hashed
-/// once. Keyed by identity, which the borrowed plans keep stable for the run.
+/// Memo ids are keyed by identity within one run; the borrowed plans keep
+/// profile and template addresses stable until scoring finishes.
 #[derive(Default)]
 struct Interned {
     profiles: FxHashMap<usize, Option<u32>>,
@@ -1325,6 +1163,7 @@ fn molecular_evidence(
     start: u32,
     end: u32,
     gaps: GapQualities,
+    tracks: &RepeatTracks,
 ) -> Result<Option<MolecularEvidence>> {
     let mut reads = Vec::new();
     for read in &fragment.reads {
@@ -1487,7 +1326,32 @@ fn molecular_evidence(
                 })
                 .collect()
         };
-    let rows = joint.iter().map(|profile| profile_rows(profile, gaps)).collect::<Result<_>>()?;
+    let positions: Vec<Vec<SequencePosition>> = if joint.len() == 1 {
+        vec![
+            reads
+                .iter()
+                .flatten()
+                .map(|base| base.position)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        ]
+    } else {
+        reads.iter().map(|read| read.iter().map(|base| base.position).collect()).collect()
+    };
+    let rows = joint
+        .iter()
+        .zip(&positions)
+        .map(|(profile, positions)| {
+            ensure!(positions.len() == profile.len(), "Profile coordinate count differs");
+            profile_terms(
+                profile,
+                |index| positions.get(index).map_or(tracks.plain, |&position| tracks.at(position)),
+                gaps,
+                0,
+            )
+        })
+        .collect::<Result<_>>()?;
     Ok(Some(MolecularEvidence { individual, joint, intervals, spans, rows }))
 }
 
@@ -1532,99 +1396,68 @@ fn score_with_model(
     params: &LikelihoodParams,
     bad_reads: usize,
 ) -> Result<f64> {
-    let rows = profile_rows(profile, GapQualities::new(params)?)?;
-    let Some(terms) = rows.rows.get(bad_reads & rows.sources).and_then(Option::as_ref) else {
-        return Ok(unmapped_likelihood(profile));
-    };
+    if profile.is_empty() {
+        return Ok(0.0);
+    }
+    let gaps = GapQualities::new(params)?;
+    let terms = profile_terms(profile, |_| [gaps.open, gaps.open, gaps.extend], gaps, bad_reads)?;
     // A band holding the whole matrix: these scores stand for the
     // unanchored recurrence.
     let band = band(0, profile.len().max(template.bases.len()))?;
     let plan = Plan {
         templates: vec![template_track(&template.bases, orientation, scoring, params)?],
-        jobs: vec![Job::Forward { profile: terms, template: 0, band }],
-        hypotheses: vec![Hypothesis { weight: 0.0, jobs: vec![0], unconditional: true }],
+        jobs: vec![Job::Forward { profile: &terms, template: 0, band }],
+        hypotheses: vec![Hypothesis { weight: 0.0, jobs: vec![0] }],
     };
     Scorer::new(params)?.run(&[plan], false)?.pop().ok_or_eyre("Scorer returned no value")
 }
 
-fn unmapped_likelihood(profile: &[MolecularBase]) -> f64 {
-    if profile.is_empty() {
-        return 0.0;
-    }
-    // Every path emits the same uniform observation probability. Path-mass
-    // normalization cancels the entire alignment sum, including indels.
-    profile.iter().filter(|base| base.base.known_index().is_some()).count() as f64 * 0.25_f64.ln()
-}
-
-fn profile_rows(profile: &[MolecularBase], gaps: GapQualities) -> Result<ProfileRows> {
-    let sources = profile
-        .iter()
-        .filter_map(|base| base.source)
-        .fold(0usize, |sources, source| sources | (1 << source));
-    let insertion_emissions = profile
+/// `gaps_at` gives each profile base its insertion-open, deletion-open and
+/// extension qualities; `gaps` are the plain ones, which the memo key omits.
+fn profile_terms(
+    profile: &[MolecularBase],
+    gaps_at: impl Fn(usize) -> [BaseQuality; 3],
+    gaps: GapQualities,
+    bad_reads: usize,
+) -> Result<ProfileTerms> {
+    let bases: Vec<Base> = profile.iter().map(|observed| observed.base).collect();
+    let qualities: Vec<_> = profile
         .iter()
         .map(|observed| {
-            Probability::new(if observed.base.known_index().is_some() {
-                INSERTION_EMISSION
+            if observed.source.is_some_and(|index| bad_reads & (1 << index) != 0) {
+                BaseQuality::from_byte(0)
+            } else if observed.base.known_index().is_none() {
+                UNINFORMATIVE
             } else {
-                1.0
-            })
+                BaseQuality::from_byte(observed.quality.unwrap_or(0))
+            }
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    let bases: Vec<Base> = profile.iter().map(|observed| observed.base).collect();
-    let mut rows = [None, None, None, None];
-    for (bad_reads, slot) in rows.iter_mut().enumerate() {
-        if bad_reads & !sources != 0
-            || profile
-                .iter()
-                .all(|base| base.source.is_none_or(|index| bad_reads & (1 << index) != 0))
-        {
-            continue;
+        .collect();
+    let (mut insertion, mut deletion, mut extension) = (
+        Vec::with_capacity(bases.len()),
+        Vec::with_capacity(bases.len()),
+        Vec::with_capacity(bases.len()),
+    );
+    let plain = [gaps.open, gaps.open, gaps.extend];
+    let mut key: Vec<u8> = bases
+        .iter()
+        .zip(&qualities)
+        .flat_map(|(base, quality)| [*base as u8, quality.as_byte()])
+        .collect();
+    for index in 0..bases.len() {
+        let [i, d, e] = gaps_at(index);
+        insertion.push(i);
+        deletion.push(d);
+        extension.push(e);
+        if [i, d, e] != plain {
+            key.extend(u16::try_from(index)?.to_le_bytes());
+            key.extend([i.as_byte(), d.as_byte(), e.as_byte()]);
         }
-        // A base of a mismapped read emits a quarter under every template
-        // column, which is compair's emission at the error cap; an unknown
-        // base emits one.
-        let qualities: Vec<BaseQuality> = profile
-            .iter()
-            .map(|observed| {
-                if observed.source.is_some_and(|index| bad_reads & (1 << index) != 0) {
-                    BaseQuality::from_byte(0)
-                } else if observed.base.known_index().is_none() {
-                    UNINFORMATIVE
-                } else {
-                    BaseQuality::from_byte(observed.quality.unwrap_or(0))
-                }
-            })
-            .collect();
-        let bound = profile
-            .iter()
-            .zip(&qualities)
-            .map(|(observed, quality)| {
-                if observed.base.known_index().is_none() {
-                    0.0
-                } else {
-                    let error = compair::error_probability(*quality).min(compair::MAX_EPSILON);
-                    (1.0 - error).max(INSERTION_EMISSION).ln()
-                }
-            })
-            .sum();
-        let key = bases
-            .iter()
-            .zip(&qualities)
-            .flat_map(|(base, quality)| [*base as u8, quality.as_byte()])
-            .collect();
-        let read = compair::Read::uniform(
-            bases.clone(),
-            &qualities,
-            gaps.open,
-            gaps.open,
-            gaps.extend,
-            Strand::OT,
-        )?
-        .with_insertion_emissions(&insertion_emissions)?;
-        *slot = Some(ProfileTerms { read, key, bound });
     }
-    Ok(ProfileRows { sources, rows })
+    // Compair's native insertion emission of one; indel costs are transitions.
+    let read =
+        compair::Read::new(bases, &qualities, &insertion, &deletion, &extension, Strand::OT)?;
+    Ok(ProfileTerms { read, key: key.into() })
 }
 
 /// A template under one read orientation, as compair scores it.

@@ -399,10 +399,10 @@ mod tests {
                 bases: sequence.iter().copied().map(Base::from).collect(),
             };
             let haplotypes = [
-                Haplotype { alleles: vec![], indel: None },
+                Haplotype { alleles: vec![], indels: Vec::new() },
                 Haplotype {
                     alleles: vec![],
-                    indel: Some(super::super::Indel { start: 1002, deleted, inserted }),
+                    indels: vec![super::super::Indel { start: 1002, deleted, inserted }],
                 },
             ];
             let context = Context::new(&reference, &haplotypes, &[1001, expected.g.pos], None)?;
@@ -429,14 +429,14 @@ mod tests {
         *bases.get_mut(180).ok_or_eyre("fixture G")? = Base::G;
         let reference = Reference { start: 1000, bases };
         let haplotypes = [
-            Haplotype { alleles: vec![], indel: None },
+            Haplotype { alleles: vec![], indels: Vec::new() },
             Haplotype {
                 alleles: vec![],
-                indel: Some(super::super::Indel {
+                indels: vec![super::super::Indel {
                     start: 1180,
                     deleted: vec![],
                     inserted: vec![Base::C],
-                }),
+                }],
             },
         ];
         let mut params = super::super::tests::params(false);
@@ -445,7 +445,7 @@ mod tests {
         let prepared = super::super::pair_hmm::Prepared::new(
             &reference,
             &sites,
-            haplotypes.get(1).and_then(|haplotype| haplotype.indel.as_ref()),
+            haplotypes.get(1).and_then(|haplotype| haplotype.indels.first()),
             &[],
             &params,
         )?;
@@ -461,7 +461,7 @@ mod tests {
         let mut edge = reference.clone();
         *edge.bases.get_mut(32).ok_or_eyre("edge C")? = Base::C;
         *edge.bases.get_mut(33).ok_or_eyre("edge G")? = Base::G;
-        let haplotypes = [Haplotype { alleles: vec![], indel: None }];
+        let haplotypes = [Haplotype { alleles: vec![], indels: Vec::new() }];
         let prepared = super::super::pair_hmm::Prepared::new(&edge, &sites, None, &[], &params)?;
         let context = Context::new(&edge, &haplotypes, &[1020, 1021], Some(prepared.interval()))?;
         let cpg = context.haplotypes.first().and_then(BTreeSet::first).ok_or_eyre("edge CpG")?;
@@ -498,7 +498,7 @@ mod tests {
         let reference =
             Reference { start: 1000, bases: b"ACGAACGA".iter().copied().map(Base::from).collect() };
         let sites = [Site::new(1001, Base::C, [Base::T])?];
-        let haplotypes = [Haplotype { alleles: vec![(1001, Base::C)], indel: None }];
+        let haplotypes = [Haplotype { alleles: vec![(1001, Base::C)], indels: Vec::new() }];
         let params = super::super::tests::params(false);
         let context = Context::new(&reference, &haplotypes, &[1001, 1005], None)?;
         let cpgs = context.haplotypes.first().ok_or_eyre("cpgs")?;
@@ -561,8 +561,8 @@ mod tests {
         let reference =
             Reference { start: 1000, bases: b"ACGAACGA".iter().copied().map(Base::from).collect() };
         let sites = [Site::new(1001, Base::C, [Base::T])?];
-        let haplotypes =
-            [Base::C, Base::T].map(|base| Haplotype { alleles: vec![(1001, base)], indel: None });
+        let haplotypes = [Base::C, Base::T]
+            .map(|base| Haplotype { alleles: vec![(1001, base)], indels: Vec::new() });
         let mut params = super::super::tests::params(false);
         params.likelihood_engine = LikelihoodEngine::Aligned;
         let context = Context::new(&reference, &haplotypes, &[1001], None)?;

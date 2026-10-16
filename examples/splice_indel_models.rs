@@ -101,6 +101,10 @@ fn main() -> Result<()> {
         new.feature_set,
     );
 
+    ensure!(
+        new.haplotype_error_profile.is_none(),
+        "Cannot splice forests trained with different haplotype error profiles"
+    );
     let merged = RastairFlatModel {
         cpg: old.cpg,
         cpg_platt: old.cpg_platt,
@@ -113,6 +117,7 @@ fn main() -> Result<()> {
         deletion: new.deletion,
         deletion_platt: new.deletion_platt,
         feature_set: old.feature_set,
+        haplotype_error_profile: None,
     };
 
     write_model(&merged, &args.output)?;

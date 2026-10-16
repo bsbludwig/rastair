@@ -148,7 +148,7 @@ pub(super) fn expand_indels(
         haplotypes: focal
             .alleles
             .iter()
-            .map(|&base| Haplotype { alleles: vec![(focal_pos, base)], indel: None })
+            .map(|&base| Haplotype { alleles: vec![(focal_pos, base)], indels: Vec::new() })
             .collect(),
         sites: vec![focal],
         disconnected_sites,
@@ -162,10 +162,10 @@ pub(super) fn expand_indels(
         let alternates = result
             .haplotypes
             .iter()
-            .filter(|haplotype| haplotype.indel.is_none())
+            .filter(|haplotype| haplotype.indels.is_empty())
             .cloned()
             .map(|mut haplotype| {
-                haplotype.indel = Some(indel.clone());
+                haplotype.indels.push(indel.clone());
                 haplotype
             })
             .collect::<Vec<_>>();
@@ -241,7 +241,7 @@ pub(super) fn expand_indels(
             });
             let mut keep = BTreeSet::new();
             if let Some(index) = proposals.iter().position(|haplotype| {
-                haplotype.indel.is_none()
+                haplotype.indels.is_empty()
                     && sites
                         .iter()
                         .all(|site| haplotype.allele_at(site.pos) == Some(site.reference))
@@ -279,7 +279,7 @@ pub(super) fn expand_indels(
             }
             if !indels.is_empty()
                 && let Some(index) = ranking.iter().copied().find(|&index| {
-                    proposals.get(index).is_some_and(|haplotype| haplotype.indel.is_some())
+                    proposals.get(index).is_some_and(|haplotype| !haplotype.indels.is_empty())
                 })
             {
                 keep.insert(index);
@@ -290,13 +290,13 @@ pub(super) fn expand_indels(
                     let a = proposals
                         .get(pair.first)
                         .ok_or_eyre("Missing joint indel haplotype")?
-                        .indel
-                        .as_ref();
+                        .indels
+                        .first();
                     let b = proposals
                         .get(pair.second)
                         .ok_or_eyre("Missing joint indel haplotype")?
-                        .indel
-                        .as_ref();
+                        .indels
+                        .first();
                     let key = (a.min(b), a.max(b));
                     let previous = best.entry(key).or_insert(index);
                     if pairs.get(*previous).is_some_and(|other| {
@@ -374,7 +374,7 @@ fn links(
             }
             let haplotype = Haplotype {
                 alleles: vec![(site.pos, seqair_types::Base::C)],
-                indel: edit.cloned(),
+                indels: (edit.cloned()).into_iter().collect(),
             };
             if let Some((partner, _)) = haplotype.adjacent_base(reference, site.pos, true)
                 && sites.iter().any(|site| {
@@ -418,7 +418,7 @@ fn links(
                         std::iter::once(None).chain(indels.iter().map(Some)).any(|edit| {
                             let haplotype = Haplotype {
                                 alleles: vec![(pos, side.unmod_base())],
-                                indel: edit.cloned(),
+                                indels: (edit.cloned()).into_iter().collect(),
                             };
                             haplotype
                                 .adjacent_base(

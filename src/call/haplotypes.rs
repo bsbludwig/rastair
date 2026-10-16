@@ -2,8 +2,18 @@ use color_eyre::eyre::{OptionExt as _, Result, ensure};
 use seqair_types::{Base, Probability, Strand};
 use std::collections::BTreeSet;
 
+mod error_model;
+mod regional;
+pub use error_model::ErrorProfile;
 mod likelihood;
 pub use likelihood::{LikelihoodEngine, LikelihoodParams};
+#[cfg_attr(
+    not(any(feature = "experimental-seqair", test)),
+    expect(
+        dead_code,
+        reason = "The focal diagnostic requires seqair; production uses regional inference"
+    )
+)]
 mod expansion;
 pub use expansion::ExpansionParams;
 pub(crate) mod features;
@@ -95,7 +105,7 @@ pub struct Fragment {
 #[derive(Debug, Clone)]
 pub struct Haplotype {
     pub alleles: Vec<(u32, Base)>,
-    pub indel: Option<Indel>,
+    pub indels: Vec<Indel>,
 }
 
 impl Haplotype {
@@ -104,7 +114,7 @@ impl Haplotype {
     }
 
     pub fn base_at(&self, reference: &Reference, pos: u32) -> Option<Base> {
-        if self.indel.as_ref().is_some_and(|indel| indel.deletes(pos)) {
+        if self.indels.iter().any(|indel| indel.deletes(pos)) {
             return None;
         }
         self.allele_at(pos).or_else(|| reference.base_at(pos))
@@ -113,7 +123,7 @@ impl Haplotype {
     fn adjacent_base(&self, reference: &Reference, pos: u32, forward: bool) -> Option<(u32, Base)> {
         let mut adjacent =
             if forward { pos.checked_add(1)? } else { pos.checked_sub(1).unwrap_or(pos) };
-        if let Some(indel) = &self.indel {
+        for indel in &self.indels {
             if (forward && indel.start == adjacent) || (!forward && indel.start == pos) {
                 let inserted = if forward { indel.inserted.first() } else { indel.inserted.last() };
                 if let Some(&base) = inserted {
@@ -248,6 +258,7 @@ pub fn infer_snp_with_indels(
     clippy::too_many_arguments,
     reason = "The search and scoring boundary share validated evidence and configuration"
 )]
+#[cfg(any(feature = "experimental-seqair", test))]
 pub(crate) fn infer_snp_expanded(
     reference: &Reference,
     focal: u32,
@@ -265,6 +276,7 @@ pub(crate) fn infer_snp_expanded(
     clippy::too_many_arguments,
     reason = "The search and scoring boundary share validated evidence and configuration"
 )]
+#[cfg(any(feature = "experimental-seqair", test))]
 fn infer(
     reference: &Reference,
     focal: u32,
@@ -482,6 +494,10 @@ struct LikelihoodMatrix {
     values: Vec<Vec<f64>>,
     fragments: usize,
     realigned_fragments: usize,
+    #[cfg_attr(
+        not(any(feature = "experimental-seqair", test)),
+        expect(dead_code, reason = "Diagnostic counter")
+    )]
     aligned_fallback_fragments: usize,
 }
 
@@ -500,11 +516,19 @@ fn likelihood_matrix_geometry(
     scorer: &mut pair_hmm::Scorer,
 ) -> Result<LikelihoodMatrix> {
     let loci = scored_loci(reference, sites);
+    let stutter = (params.likelihood_engine == LikelihoodEngine::PairHmm)
+        .then(|| error_model::stutter_mixture(reference, haplotypes, indel, &params.error_profile))
+        .transpose()?
+        .flatten();
+    // The chromosomes the passes score: with stutter modelled, every compared
+    // haplotype and then its stuttered copies, mixed back into its row below.
+    let scored: &[Haplotype] =
+        stutter.as_ref().map_or(haplotypes, |mixture| mixture.extended.as_slice());
     let indel_span = if local {
         let mut span: Option<std::ops::Range<u32>> = None;
-        let edits = haplotypes
+        let edits = scored
             .iter()
-            .filter_map(|haplotype| haplotype.indel.as_ref())
+            .flat_map(|haplotype| &haplotype.indels)
             .chain(indel)
             .collect::<std::collections::BTreeSet<_>>();
         for edit in edits {
@@ -563,18 +587,29 @@ fn likelihood_matrix_geometry(
             }
         }
         let prepared = pair_hmm::Prepared::new(reference, &geometry, indel, &included, params)?
-            .reaching(haplotypes.iter().filter_map(|haplotype| haplotype.indel.as_ref()));
+            .reaching(scored)?;
         Some(if local { prepared.localize() } else { prepared })
     } else {
         None
     };
     let context = methylation::Context::new(
         reference,
-        haplotypes,
+        scored,
         &loci,
         realignment.as_ref().map(pair_hmm::Prepared::interval),
     )?;
-    let templates = haplotypes
+    let base_context = stutter
+        .is_some()
+        .then(|| {
+            methylation::Context::new(
+                reference,
+                haplotypes,
+                &loci,
+                realignment.as_ref().map(pair_hmm::Prepared::interval),
+            )
+        })
+        .transpose()?;
+    let templates = scored
         .iter()
         .map(|haplotype| {
             realignment
@@ -589,7 +624,7 @@ fn likelihood_matrix_geometry(
      -> Result<f64> {
         likelihood::fragment_likelihood_with_model(
             included.get(fragment_index).ok_or_eyre("Missing scoring fragment")?,
-            haplotypes.get(haplotype_index).ok_or_eyre("Missing scoring haplotype")?,
+            scored.get(haplotype_index).ok_or_eyre("Missing scoring haplotype")?,
             reference,
             &loci,
             params,
@@ -608,9 +643,9 @@ fn likelihood_matrix_geometry(
         let mut plans = Vec::new();
         let mut distinct: Vec<Slot> = Vec::new();
         let mut cache =
-            std::collections::BTreeMap::<(usize, Vec<(u32, u8)>, Option<&Indel>), usize>::new();
-        let mut slots = Vec::with_capacity(haplotypes.len());
-        for (haplotype_index, haplotype) in haplotypes.iter().enumerate() {
+            std::collections::BTreeMap::<(usize, Vec<(u32, u8)>, &[Indel]), usize>::new();
+        let mut slots = Vec::with_capacity(scored.len());
+        for (haplotype_index, haplotype) in scored.iter().enumerate() {
             let mut row = Vec::with_capacity(included.len());
             for (fragment_index, fragment) in included.iter().enumerate() {
                 let scoring = if neutral {
@@ -625,7 +660,7 @@ fn likelihood_matrix_geometry(
                         (
                             fragment_index,
                             prepared.signature_at(fragment_index, haplotype, params),
-                            haplotype.indel.as_ref(),
+                            haplotype.indels.as_slice(),
                         )
                     })
                 } else {
@@ -662,7 +697,7 @@ fn likelihood_matrix_geometry(
         // rate-free passes are worth remembering; the memo key includes the
         // rates, so remembering either is exact.
         let scored = scorer.run(&plans, rates.is_none())?;
-        slots
+        let mut values = slots
             .iter()
             .map(|row| {
                 row.iter()
@@ -676,14 +711,40 @@ fn likelihood_matrix_geometry(
                     })
                     .collect::<Result<Vec<_>>>()
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(mixture) = &stutter {
+            // A molecule is read from its chromosome as is, or from one of its
+            // stuttered copies with that step's rate.
+            values = mixture
+                .mixtures
+                .iter()
+                .map(|mixture| {
+                    (0..included.len())
+                        .map(|fragment| {
+                            mixture.iter().try_fold(f64::NEG_INFINITY, |total, &(row, weight)| {
+                                let value = values
+                                    .get(row)
+                                    .and_then(|row| row.get(fragment))
+                                    .copied()
+                                    .ok_or_eyre("Missing stuttered chromosome likelihood")?;
+                                Ok(log_add(total, value + weight.ln()))
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .collect::<Result<Vec<_>>>()?;
+        }
+        if params.likelihood_engine == LikelihoodEngine::PairHmm {
+            error_model::cap_molecules(&mut values, &included, reference, params)?;
+        }
+        Ok(values)
     };
     let values = if params.non_taps {
         pass(None, false)?
     } else {
         let pilot = pass(None, true)?;
         let rates = methylation::estimate(
-            &context,
+            base_context.as_ref().unwrap_or(&context),
             haplotypes,
             sites,
             &included,
@@ -780,7 +841,7 @@ fn genotype_index(a: Base, b: Base) -> Option<usize> {
 
 #[cfg(test)]
 fn enumerate(sites: &[Site]) -> Vec<Haplotype> {
-    let mut haplotypes = vec![Haplotype { alleles: Vec::new(), indel: None }];
+    let mut haplotypes = vec![Haplotype { alleles: Vec::new(), indels: Vec::new() }];
     for site in sites {
         haplotypes = haplotypes
             .iter()

@@ -14,3 +14,4 @@ docs/yapp.config
 .claude/settings.json
 
 __pycache__/
+**/slurm-*.out

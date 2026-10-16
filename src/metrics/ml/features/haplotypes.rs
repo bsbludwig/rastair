@@ -21,6 +21,9 @@ define_features! {
         scalar haplotype_realigned_fraction;
         scalar haplotype_pruned_mass;
         scalar haplotype_boundary_resolved;
+        scalar haplotype_conditional_homozygous;
+        scalar haplotype_molecular_alt_molecules;
+        scalar haplotype_molecular_alt_fraction;
     }
 }
 
@@ -126,8 +129,8 @@ mod tests {
             assert_eq!(new.get(..old.len()), Some(old.as_slice()));
             assert_eq!(new.get(old.len()..), Some(HaplotypeEvidence::names().as_slice()));
             assert_eq!(new.len(), expected);
-            assert_eq!(new.len(), old.len() + 13);
+            assert_eq!(new.len(), old.len() + 16);
         }
-        assert_eq!(HaplotypeEvidence::default().as_row(), &[0.0; 13]);
+        assert_eq!(HaplotypeEvidence::default().as_row(), &[0.0; 16]);
     }
 }

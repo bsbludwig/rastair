@@ -1116,3 +1116,372 @@ described under "Live progress caveat". Profile that next, not the kernel.
 silently applies nothing, because it ignores patch paths outside the current directory. Use
 `git archive HEAD | tar -x -C <dir>` and then `patch -p1 < staged.patch`, and diff a few files
 against `git show :<path>` to confirm.
+
+### SNP-dense regions: pre-ML scoring cost (2026-10-15)
+
+With compair in place, the haplotype-metadata model (`--experimental-indels=ml --phase`, 64
+threads) spent ~99 % of its CPU in `add_likelihoods` → `infer_snp_expanded`. Dense regions such
+as chr12:1-12M hold columns with 24-32 context sites (31 expansion steps, 64 haplotypes, 128
+proposals, 8,256 diploid pairs), which took 3-3.5 s each. Most of that cost was not the
+alignment kernel. The changes below are all exact, and every run's VCF was identical to the
+previous version's:
+
+- **One `Scorer` per task, not one per matrix pass.** `likelihood_matrix_geometry` used to build
+  a fresh `Scorer` for every pass, so the content-keyed memo never hit (0 hits measured), and
+  every expansion step realigned every (profile, template) pair. The `Scorer` is now threaded
+  through `infer_snp_expanded`/`expand_indels`/`score_indel`/`joint_indel_genotypes`. Memo keys
+  are exact content, so sharing a `Scorer` across passes and columns cannot change a result.
+- **Columns run in parallel.** `add_likelihoods` scores eligible columns with
+  `par_chunks(COLUMNS_PER_TASK).with_max_len(1)`, with one `Scorer` per chunk, and writes the
+  results back in column order. **`with_max_len(1)` matters:** without it rayon's adaptive
+  splitting handed one thread ~22 consecutive heavy columns, which ran serially at the end of
+  the run. On chr12:1-12M that tail cost 250 s of a 870 s wall.
+- Template windows are index ranges into one base vector. `TemplateTrack` stores only its memo
+  key, and the `compair::Haplotype` is decoded only for memo misses.
+- `retained_pair_priors` precomputes allele and indel codes and per-site log priors, and keys
+  haplotypes with an `FxHashMap` (`retained_pair_priors_reference` is the bit-identical test
+  oracle). `methylation::estimate` reuses the per-(pair, fragment) mixtures it already computed.
+  `log_add` has an equal-argument fast path.
+
+**Results** (`tmp/compair-profiling/`, ignored; one SLURM job per arm on `short`, 64 threads;
+"compair" is commit `8d3e99b`):
+
+| region | compair wall / CPU | now wall / CPU |
+| --- | --- | --- |
+| chr12:8.3-8.4M (densest segment, alone) | 4,154 s / — | 65.5 s / 2,692 s |
+| chr12:1-12M (321,198 records) | 4,430 s / 87,421 s | 620 s / 37,232 s |
+| chr19:1-6M (384,293 records, 3,009 phased) | >2,051 s, cancelled, 58/60 segments | 436 s / 24,886 s |
+| chr12:60-72M control (195,165 records, 4,786 phased) | not run | 226 s / 13,071 s |
+
+The runs now average 57-60 of 64 cores, so wall time follows CPU. The cancelled compair chr19 run had
+written output only up to chr19:297,515: the remaining two segments, chr19:299802-400201 and
+599802-700201, blocked publication through the look-ahead stall (see "Live progress caveat").
+
+**What is left is structural.** On the dense segment the profile is flat: compair kernel ~13 %,
+step plans ~11 %, pair priors and `posterior_pairs` ~11 %, `exp` ~6 %, memo bookkeeping ~7 %.
+The cost is O(steps × haplotypes² × fragments) per candidate column, repeated for every
+candidate, and ~97 % of SNP-scored columns there end up non-variant. Further gains need
+model-changing work, so they need the full genotype validation and the user's approval:
+region-based joint inference (as in GATK and Octopus), a cheaper candidate pre-gate, or
+dense-region haplotype caps.
+
+**Profiling harness** (`tmp/compair-profiling/`):
+- `instrument.py <tree>` patches a *copy* of the source with span-close timing and stage spans.
+  In parallel-column mode it adds per-column `COLUMN snp` logs, which carry `pos`, `ms`, sites,
+  steps and haplotypes.
+- `run.sh <region> <name> [threads]` (the binary comes from `BIN`) runs the call with a CPU
+  sampler.
+- `analyze.py runs/<name>` reports per-segment stage times and the busy-core timeline;
+  `columns.py`/`tail_columns.py` analyse the per-column logs.
+
+Rayon worker threads do not inherit the segment span, so attribute a column by `pos` rather
+than by span. Under parallel columns, segment busy times overlap and stop being a cost measure;
+use the per-column logs and `perf` instead. The CPU sampler must follow the `rastair` process
+(`pgrep -x rastair`), not `/usr/bin/time`.
+
+### Investigating molecular indel undercalls (2026-10-15)
+
+`tmp/indel-dosage-mechanism/findings.json` preserves a diagnostic investigation at `8a6cc42`,
+including the actual optimized scorer, isolated instrumented source, scalar oracle and ten
+5 kb real-data reruns. No production likelihood change was made. Distinguish three mechanisms:
+
+- `Prepared::new` crops molecular sequences to the same reference-coordinate interval used
+  for templates. A spanning insertion-bearing profile can therefore be longer than REF.
+  `Scorer` subtracts a separate path-mass normalizer for each profile/template shape. When REF
+  requires insertions just to accommodate that length, its normalizer is tiny, cancelling much
+  of the gap penalty. Deletion-bearing profiles do not suffer that cancellation against REF.
+  With 20 ALT molecules and one REF outlier, a mirrored 5 bp test through current compair scores
+  insertion as 99.8015% het and deletion as 99.2166% hom-alt, with methylation disabled. This is
+  a property of the cropped, length-conditioned model, not floating-point drift. Do not simply
+  remove normalization: its neutral-observation invariants still matter. Separate evidence
+  cropping from padded template geometry when testing a replacement.
+- The genotype mixture gives each decisive ALT molecule at most ln(2) evidence for hom-alt
+  over REF/ALT; a REF-favoring outlier can contribute much more in the opposite direction.
+  PairHMM uses fixed Q45 gap-open / Q10 extension, without the old count model's repeat-dependent
+  hom-alt fraction (down to 0.683) or an explicit local-artifact/stutter model.
+- `normalize_indels` removes noisy REF from count evidence, but the full molecular likelihood
+  does not use `ReadAnnotations.noisy` as an artifact probability. At chr12:10,905,014 T>TA,
+  AD=0,9 accompanies GT=0/1, GQ=13: one terminal-repeat-marked molecule contributes log(ALT/REF)
+  = -8.5209. Removing just that molecule from the saved, two-haplotype matrix changes the
+  conditional-on-variant result from 95.245% het to 99.208% hom-alt. This diagnostic removal
+  establishes influence; it is not a validated proposal to discard all noisy reads.
+
+In the direct normalized-allele intersection of both chr12 query callsets, true hom-alt
+insertions are undercalled at 1,022/4,141 sites, deletions at 647/4,199. Of these, 983 and 614
+have at least six reference-equivalent right shifts; count shifts *after the deleted sequence*
+for deletions, rather than counting the deletion itself as repeat length. Insertions with only
+A/T inserted bases account for 806/1,022 errors. These subsets are not the full Aardvark totals
+(1,036/662); complex/absent alleles are excluded. Trace unsplit calls too: normalization turns a
+wrong 1/2 into one-copy records. Compound genotypes explain 29 insertion / 47 deletion errors
+here, only 7/723 and 14/477 newly regressed calls, so they are a secondary contribution.
+
+The mechanisms have controlled and real-locus evidence, but their separate whole-chromosome
+accuracy contributions have not been measured. Fit any repeat/artifact parameters on chr19,
+keep chr12 held out, and assess both dosage error directions. The test and tracing worktree
+remains isolated under `tmp/indel-dosage-mechanism/tree`; production source is unchanged.
+
+Upstream comparison: `tmp/indel-dosage-mechanism/upstream/` preserves source from GATK 4.5.0.0
+(`8317d8b`) and Octopus `ed012a6`. GATK's `LoglessPairHMM` returns its forward sum with a uniform
+haplotype-start prior and numerical scaling; it does not divide by Rastair's length-conditioned
+path mass. Its insertion-state emission convention is one, whereas Rastair uses 0.25. Do not
+confuse `AlleleLikelihoods.normalizeLikelihoods` with our path normalizer: it floors per-read
+scores relative to the best haplotype (Q45 maximum separation by default in 4.5), symmetrically
+including REF. GATK also filters poorly modeled reads and adjusts indel qualities with its PCR
+model, or supplied DRAGstr context parameters. Its documentation assumes haplotypes long enough
+to contain reads; assembly has padded regions and read clipping, not a claim of never clipping.
+
+Octopus explicitly checks read length plus HMM padding and throws `ShortHaplotypeError` when
+it cannot fit. The inspected `pair_hmm.hpp`/`simd_pair_hmm.hpp` scoring path is a banded best-path
+penalty approximation, not GATK's forward sum over paths. There is no equivalent length-conditioned
+path-mass division. Its repeat model assigns both gap-open and gap-extension penalties by the
+candidate haplotype's repeat motif and length, with library/technology-specific or custom parameters.
+With mapping quality enabled, its relative likelihood is mixed as `(1-e)*L + e`, assuming an
+off-locus score of one. Rastair's off-locus sequence probability instead decays as `4^-n`; that
+component can be negligible for a locally wrong read whose flanks match, so it is not equivalent
+to Octopus's floor or GATK's likelihood-ratio cap. These are modeling differences, not a guarantee
+that either upstream caller avoids all hom/het errors. The supplied filtered GATK VCF retains a
+GenotypeGVCFs 4.5.0.0 command but no HaplotypeCaller command, so its exact likelihood options cannot
+be established from that header.
+
+### Regional forward likelihoods (2026-10-15)
+
+Production molecular features now use `haplotypes::regional`, with one diploid posterior
+per connected region (32 sites / 2 kb, 64 retained and 32 buffered chromosomes). Compatible
+indels at multiple anchors can coexist. Pruning protects the best pair for every local SNP
+and indel genotype plus the all-reference chromosome. Insufficient protection capacity or
+a deletion spanning the next candidate splits the region before that candidate; never erase
+the earlier deletion chromosome to accommodate an interior anchor. Site marginals supply
+both forest features and molecular genotyping. The focal-rooted diagnostic and called-SNP
+phase solver remain separate inference searches sharing the likelihood kernel.
+
+This supersedes the length-conditioned scorer described above. Compair now uses insertion
+emission one, with no separate path-mass normalizer. Full molecular profiles within each
+unmasked reference domain have independently padded templates: 12 bp plus the maximum sum
+of indel lengths on a candidate chromosome. A symmetric per-molecule cap, bounded by source
+MAPQ and the library profile's maximum (default Q45), applies to both neutral and final
+matrices. Repeat errors are evaluated on candidate DNA before conversion, and projected into
+compair read transition qualities using original coordinates; this is not a per-path,
+per-template-column transition model. Cache keys include the resulting gap tracks.
+
+`haplotypes::ErrorProfile` stores platform/library names, separate insertion/deletion opening
+qualities and extension qualities by repeat period/copy count. `ml train
+--haplotype-error-profile FILE` embeds it in the forest; call and phase use that profile.
+Older Haplotypes forests lacking this metadata are rejected at caller initialization, since
+their feature definitions differ. Standard/Canonical forests still load. Default profiles
+use an explicitly conservative GATK-style repeat curve. Calibration is available through
+`scripts/calibrate_haplotype_errors.py`: confident hom-reference repeat tracts with matching
+flanks, known-variant exclusion, molecule deduplication and shrinkage of sparse contexts.
+
+Regression coverage includes mirrored insertion/deletion outlier cases, multiple indels
+plus SNP inference, overlap deduplication, local genotype protection, spanning-deletion
+splitting, raw-forward oracles, profile serialization and invalid-profile rejection.
+Run manifests, calibration counts, frozen old/new binaries and SLURM validation artifacts
+live in `tmp/regional-pairhmm/`. Chr19 training and held-out chr12 evaluation must complete
+before any bundled forest promotion; submission alone is not validation.
+
+### Regional deletion sensitivity audit (2026-10-16)
+
+The completed 2 Mb chr19 / 2 Mb chr12 pilot lives in
+`tmp/regional-pairhmm/pilot-2mb/`. Relative to the equally trained Canonical
+control, deletion truth-side recovery loses 19 alleles and gains 3: 11 losses
+are ML-passing PairHMM `0/0` calls, 2 are hom-to-het, and 6 are filtered out.
+Use `call --all` to retain rejected indels for diagnosis (`--vcf-all-fields`
+only expands fields). A PASS indel can still have GT=0/0; filter both fields
+when making a benchmark query. Aardvark truth-side TP alone does not establish
+correct query dosage: excess copies are penalized on its query side.
+
+The regional model inherited `indel_prior=0.0001` from the nuisance-indel model.
+At a biallelic locus its 0/1:0/0 prior odds are 1:19998. In the calibrated
+repeat model, chr12:10270785 AT>A has AD=9,6 and ML=0.78947, but GT=0/0:
+the marginalized read likelihood favors het over reference by about 85:1,
+insufficient to overcome this prior. The resulting reference posterior is
+0.99577. This example reproduces the original pilot's call in an isolated
+trace. The same issue appears in training: 37/214 true deletions with available
+molecular features have P(variant)<0.5; 33 of those have positive log Bayes
+factors. More forest examples cannot directly change a later molecular veto.
+
+`tmp/regional-pairhmm/deletion-mechanism/` preserves the isolated instrumented
+source, matrices, profile ablations, training-feature audit and `summary.json`.
+Its 7 kb windows are error-enriched; some change context relative to the
+original 100 kb windows, so check exact call fields before claiming identity.
+Replacing only the error profile with the conservative preset restores
+non-reference calls at all 16 traced hom-ref losses, but does not establish
+overall accuracy or resolve the two original hom-to-het errors. Forests must
+be retrained when profiles change; diagnostic overrides are confined to the
+isolated tree. Local prior reweighting conditions on retained states and fixed
+methylation estimates, not a fresh complete search.
+
+The follow-up `tmp/regional-pairhmm/pilot-4mb/` doubles each original interval
+symmetrically, expanding adjoining original windows together to retain exactly
+4 Mb per chromosome without overlap. It retains all original positions and
+selects no regions based on errors. Calibrated and conservative profiles each
+receive matched forest retraining and calling; `jobs.json` records dependencies
+and the combined report job. Keep these pilot results separate from a full
+chromosome validation and do not promote the bundled default from them.
+
+The 4 Mb runs completed (194839–194850; combined report at 09:31:58 BST on
+2026-10-16). Calibrated training/calling took 36m51s/27m28s; conservative
+36m55s/28m11s. Genotype-aware SNP/insertion/deletion F1 is respectively
+0.974176/0.830063/0.857295 for the equally trained Canonical control,
+0.976374/0.831112/0.838387 for calibrated PairHMM, and
+0.975779/0.827098/0.857426 for conservative PairHMM. Conservative improves
+deletion recall (0.740047→0.779859) but lowers precision (0.966867→0.952128).
+The calibrated arm loses 39 truth-side deletion recoveries relative to
+Canonical and gains 10; 31 losses are PASS `0/0`, 3 hom-to-het and 5 absent.
+
+The conservative profile reintroduces dosage undercalls even on identical
+emitted alleles: among 142 shared true homozygous insertions, hom-to-het errors
+are 9 calibrated versus 25 conservative; among 134 shared homozygous deletions,
+7 versus 21. Shared heterozygote overcalls are insertion 7 versus 5 (200 truth
+hets), deletion 2 versus 2 (189 truth hets). See `shared-allele-dosage.json`:
+comparing only total errors without this intersection confounds dosage with
+missing variants. This supports investigating the variant-presence decision
+while retaining calibrated dosage evidence, not adopting the conservative
+profile on deletion F1 alone. No genotype-policy change or default promotion
+was made. Phase switches are 1/1205 for calibrated and 0/1198 conservative;
+all four arms have 0/1144 switches on their shared links, so this pilot does
+not establish a difference in shared-link phase accuracy.
+
+### Review of the regional PairHMM: why it does not beat the count model (2026-10-16)
+
+The evidence is the 4 Mb pilot (`tmp/regional-pairhmm/pilot-4mb/`, forests trained on 4 Mb of
+chr19: 224 deletion / 201 insertion positives) and a per-record audit of it in
+`tmp/regional-pairhmm/veto-audit/` (`audit.py`, `results.txt`; every confident truth variant
+classified as correct / absent / filtered / PASS-but-0/0 / wrong dosage, per arm, with each arm's
+own aardvark annotations). The full-chr19 training (job 194825) timed out at 6 h, so no
+whole-chromosome result exists.
+
+**Root cause of the indel losses: the molecular hom-ref veto.** `genotype::assign_snp` /
+`assign_indels` take the argmax of the full diploid posterior with hom-ref always eligible, so an
+allele the forest accepts is emitted as PASS `0/0` whenever the prior-weighted posterior favours
+reference. On the pilot the regional arm does that at 22 SNV / 24 insertion / 38 deletion truth
+variants against 4 / 7 / 8 non-variants. With the consistent per-record metric, lifting the veto
+(GT from the non-reference genotypes once ML passes) bounds F1 at SNV 0.979 / ins 0.864 /
+del 0.887 against canonical 0.976 / 0.843 / 0.877 and the current 0.977 / 0.837 / 0.840. Nothing
+else in the audit is large: absent truth indels are equal between arms (91/66 vs 95/74), and the
+calibrated arm already makes fewer dosage errors than counts (hom→het 7/5 vs 16/8).
+
+**Why the posterior favours reference at real hets.** The per-locus prior is 1e-4 for an indel
+(het:ref odds 1:20,000) and 1e-3 for a SNP, and the calibrated TAPS profile is pessimistic
+because the library is: `taps-error-profile.counts.json` shows 19 % of molecules at
+hom-reference 14-mer homopolymers carrying a deletion (39 % at 20-mers), i.e. a gap-open of
+Q19 per position for a forward-sum HMM. That calibration is self-consistent (per-position rate ×
+L equivalent placements = per-molecule rate), and it is 60× GATK's CONSERVATIVE curve (Q37 at
+14 copies ≈ 0.3 % per molecule) and ~10× Octopus's PCR-free table (Q17, but Octopus's SIMD HMM
+is best-path, `_mm_min_epi16`, so no sum over placements ≈ 2 % per molecule). At such stutter
+rates an AD 9,6 het is only ~85:1 likelihood evidence, so no prior-weighted presence decision
+keeps it; the forest keeps it because it is trained on the candidate population. One gap-open
+per context cannot serve both decisions: the conservative profile restored presence at 16/16
+traced losses but doubled hom→het errors (26/25 vs 7/5), because a REF-looking stutter read at
+a true hom-alt then looks like a second haplotype.
+
+**What GATK and Octopus do instead** (sources: `tmp/indel-dosage-mechanism/upstream/`, and
+sparse clones of GATK 4.5.0.0 and Octopus made during the review).
+- GATK: the heterozygosity prior (1e-3 SNP, 1.25e-4 indel) enters only QUAL = P(AF>0),
+  thresholded at 30; the genotype is the argmax of the PLs with no prior
+  (`GenotypeAssignmentMethod.USE_PLS_TO_ASSIGN`; posteriors are used only in `--dragen-mode`,
+  which also drops the call confidence to 3). Per-read allele likelihood = max over the
+  haplotypes carrying the allele (`AlleleLikelihoods.marginalize`), then each site's genotype
+  likelihoods are computed independently (`GenotypeLikelihoodCalculator`), reads capped at Q45
+  below the best haplotype (`normalizeLikelihoods`, symmetric to reference in 4.5) and
+  poorly-modelled reads dropped. Haplotypes come from assembly: only observed alleles.
+- Octopus: joint genotype posterior over haplotype pairs with a coalescent prior (θ 1e-3 /
+  1e-4), variants reported at marginal posterior ≥ Phred 0.1 and then filtered at QUAL ≥ 10 or
+  by its random forest; GT is the MAP genotype, and candidates above threshold that the MAP
+  genotype lacks are force-called into viable genotypes. Only observed alleles form haplotypes
+  (200, with lagging and holdout); repeat penalties are set per haplotype position.
+  Rastair's regional model is Octopus's structure with GATK-magnitude priors and no separate
+  presence filter, which is the combination that vetoes.
+
+**Other findings in the regional code.**
+- `features::add_likelihoods_with_profile` proposes all four bases at every SNP candidate
+  (`Base::KNOWN`) and `regional::infer` protects the best pair of every genotype of every site,
+  so unobserved alleles take ~3 of the 64 beam slots per site and regions split at ~21
+  candidates (feature histogram peaks at 11 and 21; `max_sites` 32 is never reached). Later
+  regions see earlier sites as reference.
+- Once the beam is full every candidate runs a full matrix pass over all local fragments and
+  all proposals, and `context_profile` builds one `compair::Read` per (read, template) with the
+  template's gap tracks in the memo key: 24,500 CPU-s/Mb on the pilot (98,075 CPU-s for 4 Mb)
+  against 1,100-3,100 CPU-s/Mb for the per-site PairHMM after the dense-region work and
+  15 CPU-s/Mb for counts. This is why chr19 training timed out.
+- The regional SNV forest filters more true SNVs than the count forest (174 absent vs 129; 50
+  are canonical PASS with median ML 0.99), on 4 Mb of training. The previous per-site PairHMM
+  arm, trained on full chr19, has SNV recall 0.972 against 0.961; the pilot cannot separate the
+  forest size from the model.
+- Everything structural is sound: GATK forward convention, symmetric Q45/MAPQ cap, independent
+  padded templates, multi-indel haplotypes, profile serialised with the forest, tests pass.
+
+**Plan, in order.** (A) Decide presence with the forest and dosage with the likelihood: when an
+allele passes ML, choose the genotype among those carrying accepted alleles (flat prior, or at
+most het:hom 2:1), keep 0/0 only when nothing passes; report the conditional posterior as GQ.
+Rerun the 4 Mb pilot; expect every class above canonical. (B) Propose observed alleles only and
+protect observed genotypes; rescore incrementally so a candidate's pass touches only pairs that
+include it; drop the template-dependent read objects from the memo key. Target the per-site
+cost so full-chr19 training fits in `short`. (C) Retrain on full chr19 and validate full chr12
+with both dosage directions, SNV isec and Platinum phase. (D) For homopolymers, replace the
+per-position gap-open with a haplotype-level stutter mixture (length-specific, −1 ≫ −2) so
+presence and dosage share one calibrated model; calibrate on chr19 hom-ref tracts as now.
+(E) Give the forest prior-free molecular features (conditional het/hom posterior, per-strand
+and per-mate allele consistency) rather than the prior-weighted `haplotype_alt_probability`.
+
+### Regional PairHMM v2: the review's five changes (2026-10-16)
+
+All five recommendations above are implemented on Codex's regional tree; artifacts, job ids,
+the frozen binary and the source patch are in `tmp/regional-pairhmm/v2/` (`README.md`).
+
+- **A. Presence is the forest's, dosage is the likelihood's.** `DiploidPosterior::select`
+  chooses among genotypes carrying ML-admissible alleles whenever there is one; `0/0` is the
+  molecular genotype only when no allele passes. GQ is the dosage error conditional on that
+  choice (still floored at the pruning mass). The het:hom prior inside the posterior is 1:1
+  per locus, so this is a flat prior over the accepted genotypes.
+- **B. Search and cost.** `add_likelihoods_with_profile` proposes observed alleles only (alt
+  depth ≥ 2 or passing `pre_ml_filter`); observed sites that are not candidates stay as
+  context within `window_radius` (150 bp) of a candidate and emit nothing; fragments are
+  borrowed as the index run of their buckets, as the per-site code did. In `pair_hmm`, gap
+  qualities come from the reference repeat context at each read's aligned positions
+  (`RepeatTracks`, GATK's convention), so a profile is one `compair::Read` under every
+  template and the memo serves every template again; the memo key carries only the
+  positions whose gaps differ from the plain ones. `TemplateTrack` is back to its key.
+- **D. Stutter mixture.** `ErrorProfile` gained a `stutter` table (`StutterRate`: per
+  period and minimum copies, per-molecule probabilities of −2, −1, +1, +2 units).
+  `error_model::stutter_mixture` builds, for every compared haplotype and every tract one
+  of the compared indels sits in (`tract_of`: normalized start, primitive unit,
+  `equivalent_end` copies), its stuttered copies at *that chromosome's* copy count,
+  deduplicated against the compared haplotypes; `likelihood_matrix_geometry` scores the
+  extended set and folds each row as `log Σ w_k exp(L_k)` before the cap and the shrinkage
+  estimate (`base_context` keeps `estimate` on the compared haplotypes). With a stutter
+  table the per-position repeat qualities are plain. `calibrate_haplotype_errors.py` counts
+  whole-unit steps per molecule (`step_minus_2` … `step_plus_2` in `.counts.json`) and
+  shrinks them toward the conservative curve's per-molecule rate (`fit_stutter`). On the TAPS
+  NA12878 chr19 calibration a 14-mer homopolymer reads −1 in 14 %, −2 in 4.5 %, +1 in 7.6 %
+  and +2 in 0.8 % of molecules.
+- **E. Prior-free features**: `haplotype_conditional_homozygous`,
+  `haplotype_molecular_alt_molecules`, `haplotype_molecular_alt_fraction` (GATK-style allele
+  depth from the best allele-carrying pair, counting molecules whose two chromosome
+  likelihoods differ by more than log10 0.2). The layout is 16 molecular features; the
+  `feature_name_layout` snapshot covers the Standard structs only and did not change.
+
+**Cost** (4 Mb pilot training, 64 threads): Codex's regional 2,202 s wall / 133,369 CPU-s;
+v2 per-position profile 343 s / 20,763 CPU-s; v2 stutter profile 445 s / 26,606 CPU-s.
+Tests: 715 default + 751 seqair, clippy under both feature sets and the Python tests pass
+(`check-*.log`); the full-chr19 training that timed out at 6 h now fits in an hour or two.
+
+**4 Mb pilot** (`tmp/regional-pairhmm/v2/pilot-4mb-report/report.json`; same 4 Mb chr19 forests
+and 4 Mb chr12 panel as Codex's pilot; aardvark GT-aware F1 / dosage errors hom→het + het→hom
+on exact shared alleles):
+
+| arm | SNV F1 | ins F1 | del F1 | SNV dosage | ins dosage | del dosage | call CPU-s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| canonical (counts) | 0.9742 | 0.8301 | 0.8573 | 22+20 | 16+14 | 8+17 | 46 |
+| Codex regional | 0.9764 | 0.8311 | 0.8384 | 14+12 | 9+7 | 7+2 | 98,075 |
+| v2, per-position profile (A+B+E) | 0.9767 | 0.8498 | 0.8757 | 14+13 | 11+8 | 12+4 | 14,804 |
+| v2, stutter profile (A+B+D+E) | 0.9769 | **0.8566** | **0.8763** | 14+14 | 9+5 | 11+4 | 18,568 |
+| previous per-site PairHMM, full-chr19 forest | 0.9826 | 0.8011 | 0.8532 | 20+12 | 38+7 | 27+7 | — |
+
+Both v2 arms beat the count model in every class, and the veto is gone (0-1 PASS `0/0` at
+truth variants per class against 22/24/38). The stutter mixture adds a little on insertions
+and on dosage for 25 % more CPU; on 4 Mb that is within noise. The per-site arm's SNV recall
+(0.972 vs 0.963) remains the forest-size effect: it is the only arm trained on full chr19.
+Phase: 0 switches on the 1,141 shared links in every arm. The full-chr19 training and
+full-chr12 validation of both v2 profiles run as jobs 195272-195277
+(`tmp/regional-pairhmm/v2/full/{perpos,stutter}/benchmark`).

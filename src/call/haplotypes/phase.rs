@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 pub(crate) fn parameters() -> Result<LikelihoodParams> {
     Ok(LikelihoodParams {
+        error_profile: super::ErrorProfile::default(),
         likelihood_engine: LikelihoodEngine::PairHmm,
         conversion_rate: Probability::new(0.95)?,
         false_conversion_rate: Probability::new(0.003)?,
@@ -88,7 +89,7 @@ pub(crate) fn score(
     let mut haplotypes = Vec::new();
     for state in states {
         ensure!(state.first.len() == sites.len(), "Incomplete phase hypothesis");
-        let mut first = Haplotype { alleles: Vec::new(), indel: None };
+        let mut first = Haplotype { alleles: Vec::new(), indels: Vec::new() };
         let mut second = first.clone();
         for (site, &base) in sites.iter().zip(&state.first) {
             let [a, b] = site.alleles.as_slice() else {
@@ -101,8 +102,8 @@ pub(crate) fn score(
         for &(a, b, _) in &configurations {
             let mut first = first.clone();
             let mut second = second.clone();
-            first.indel = a.then(|| indel.clone()).flatten();
-            second.indel = b.then(|| indel.clone()).flatten();
+            first.indels = a.then(|| indel.clone()).flatten().into_iter().collect();
+            second.indels = b.then(|| indel.clone()).flatten().into_iter().collect();
             first.alleles.sort_by_key(|(pos, _)| *pos);
             second.alleles.sort_by_key(|(pos, _)| *pos);
             haplotypes.extend([first, second]);
@@ -184,7 +185,7 @@ pub(crate) fn score(
                 let mut plans = Vec::new();
                 let mut by_haplotype = Vec::with_capacity(haplotypes.len());
                 for (index, haplotype) in haplotypes.iter().enumerate() {
-                    let key = (prepared.signature(haplotype, params), haplotype.indel.is_some());
+                    let key = (prepared.signature(haplotype, params), !haplotype.indels.is_empty());
                     let slot = match cache.get(&key) {
                         Some(&slot) => slot,
                         None => {
@@ -246,6 +247,7 @@ pub(crate) fn score(
                     .ok_or_eyre("Invalid phase likelihood index")? = value;
             }
         }
+        super::error_model::cap_molecules(&mut values, fragments, reference, params)?;
         Ok(values)
     };
     let joint = |values: &[Vec<f64>]| -> Result<Vec<(usize, usize, f64)>> {
@@ -497,7 +499,11 @@ mod tests {
         let good = score(&reference, &sites, &states, &[&concordant], &params)?;
         let bad = score(&reference, &sites, &states, &[&discordant], &params)?;
         assert!(good.probabilities.first().copied().expect("cis") > 0.99);
-        assert!((bad.probabilities.first().copied().expect("cis") - 0.5).abs() < 1e-8);
+        assert!(
+            (bad.probabilities.first().copied().expect("cis") - 0.5).abs() < 1e-6,
+            "{:?}",
+            bad.probabilities
+        );
         let linkage = links(
             &[(1020, [Base::A, Base::G], None), (1035, [Base::A, Base::G], None)],
             &[discordant],

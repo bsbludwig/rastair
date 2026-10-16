@@ -436,7 +436,22 @@ fn set_strand_info_and_prefilter(
     }
     if matches!(ml.feature_set, metrics::ml::types::MlFeatureSet::Haplotypes) {
         // Output selection must not remove genetic neighbours from the model's context.
-        haplotypes::features::add_likelihoods(pileups, segment, fragments, &params.phase_mask)?;
+        let profile = ml.model.as_ref().and_then(|model| model.haplotype_error_profile.as_ref());
+        match profile {
+            Some(profile) => haplotypes::features::add_likelihoods_with_profile(
+                pileups,
+                segment,
+                fragments,
+                &params.phase_mask,
+                profile,
+            )?,
+            None => haplotypes::features::add_likelihoods(
+                pileups,
+                segment,
+                fragments,
+                &params.phase_mask,
+            )?,
+        }
     }
     pileups.retain(|p| params.record_filters.pre_filter(p));
     Ok(())
@@ -549,7 +564,13 @@ fn process_collected_pileups(
     // the core.
     #[cfg(feature = "experimental-seqair")]
     if params.phase {
-        phasing::phase_segment(&mut pileups, &segment, &phase_reads, &params.phase_mask)?;
+        let default_profile = haplotypes::ErrorProfile::default();
+        let profile = ml
+            .model
+            .as_ref()
+            .and_then(|model| model.haplotype_error_profile.as_ref())
+            .unwrap_or(&default_profile);
+        phasing::phase_segment(&mut pileups, &segment, &phase_reads, &params.phase_mask, profile)?;
     }
     pileups.retain(|p| only_core_positions(&segment, p));
 

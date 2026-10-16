@@ -95,9 +95,13 @@ pub struct TrainModelParams {
     #[command(flatten)]
     model_params: ModelParameters,
 
-    /// Feature set to train: haplotypes uses full PairHMM; canonical isolates normalized indel preprocessing.
+    /// Feature set to train: haplotypes uses full `PairHMM`; canonical isolates normalized indel preprocessing.
     #[arg(long, default_value_t = MlFeatureSet::Standard)]
     ml_features: MlFeatureSet,
+
+    /// JSON platform/library indel error profile, embedded in the trained forest.
+    #[arg(long, value_name = "FILE")]
+    haplotype_error_profile: Option<ClioPath>,
 
     /// Exclude BED intervals from haplotype evidence, matching the masks supplied to call.
     #[arg(long = "phase-mask", value_name = "FILE")]
@@ -274,6 +278,11 @@ fn merge_collected(mut acc: Collected, other: Collected) -> Result<Collected> {
 
 #[instrument(level = "debug", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
+    ensure!(
+        params.haplotype_error_profile.is_none()
+            || matches!(params.ml_features, MlFeatureSet::Haplotypes),
+        "--haplotype-error-profile requires --ml-features haplotypes"
+    );
     let seed = params.model_params.seed.unwrap_or_else(rand::random);
     let plan = params.model_params.sampling_plan();
     info!(
@@ -291,7 +300,18 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     create_output_dirs(params)?;
 
-    let (collected, failed_segments) = collect(params, plan, seed)?;
+    let error_profile = params
+        .haplotype_error_profile
+        .as_ref()
+        .map(|path| -> Result<_> {
+            Ok(serde_json::from_reader::<_, crate::call::haplotypes::ErrorProfile>(File::open(
+                path.path(),
+            )?)?)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    error_profile.validate()?;
+    let (collected, failed_segments) = collect(params, plan, seed, &error_profile)?;
     ensure!(
         failed_segments == 0,
         "Refusing to train on incomplete data: {failed_segments} segments failed"
@@ -332,7 +352,10 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         }
     }
 
-    let model = fit(params, plan, seed, collected)?;
+    let mut model = fit(params, plan, seed, collected)?;
+    if matches!(params.ml_features, MlFeatureSet::Haplotypes) {
+        model.haplotype_error_profile = Some(error_profile);
+    }
     serialize_model(&model, params.output.clone())
         .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
     info!(path=%params.output, "Saved model");
@@ -362,7 +385,12 @@ fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
 
 /// Label every candidate in the requested regions and file it under its model,
 /// and count the segments that failed.
-fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(Collected, usize)> {
+fn collect(
+    params: &TrainModelParams,
+    plan: SamplingPlan,
+    seed: u64,
+    error_profile: &crate::call::haplotypes::ErrorProfile,
+) -> Result<(Collected, usize)> {
     let segmentation = SegmentationParams::default();
     let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
     let segments: Vec<ChunkRegion> = readers
@@ -379,6 +407,7 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
         reader_params: &params.reader,
         feature_set: params.ml_features,
         phase_mask: &phase_mask,
+        error_profile,
         truth: &truth,
         calculator: &*calculator,
         feature_num: calculator.feature_num(),
@@ -474,6 +503,7 @@ fn segment_columns(
     feature_set: MlFeatureSet,
     indel_params: &IndelParams,
     phase_mask: &crate::call::phasing::PhaseMask,
+    error_profile: &crate::call::haplotypes::ErrorProfile,
 ) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
     let mapping = PileupMappingParams {
         call_indels: true,
@@ -527,11 +557,12 @@ fn segment_columns(
             crate::metrics::MethylationEvidenceStrandInfo::from_pileup(column);
     }
     if matches!(feature_set, MlFeatureSet::Haplotypes) {
-        crate::call::haplotypes::features::add_likelihoods(
+        crate::call::haplotypes::features::add_likelihoods_with_profile(
             &mut columns,
             &segment,
             &fragments,
             phase_mask,
+            error_profile,
         )?;
     }
 
@@ -543,6 +574,7 @@ struct SegmentCollector<'a> {
     reader_params: &'a ReaderParams,
     feature_set: MlFeatureSet,
     phase_mask: &'a crate::call::phasing::PhaseMask,
+    error_profile: &'a crate::call::haplotypes::ErrorProfile,
     truth: &'a Truth,
     calculator: &'a dyn FeatureCalculator,
     feature_num: FeatureNum,
@@ -575,6 +607,7 @@ impl SegmentCollector<'_> {
             self.feature_set,
             &self.indel_params,
             self.phase_mask,
+            self.error_profile,
         )?;
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
@@ -1299,6 +1332,7 @@ mod tests {
             reader_params: &reader_params,
             feature_set: MlFeatureSet::Standard,
             phase_mask: &phase_mask,
+            error_profile: &crate::call::haplotypes::ErrorProfile::default(),
             truth: &truth,
             calculator: &*calculator,
             feature_num: calculator.feature_num(),

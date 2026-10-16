@@ -12,6 +12,8 @@ pub enum LikelihoodEngine {
 
 #[derive(Debug, Clone, clap::Args, serde::Serialize)]
 pub struct LikelihoodParams {
+    #[arg(skip)]
+    pub error_profile: super::ErrorProfile,
     /// Read likelihood engine; `PairHMM` sums over local alignments
     #[arg(long, value_enum, default_value = "aligned")]
     pub likelihood_engine: LikelihoodEngine,
@@ -55,6 +57,7 @@ pub struct LikelihoodParams {
 
 impl LikelihoodParams {
     pub fn validate(&self) -> Result<()> {
+        self.error_profile.validate()?;
         ensure!(
             self.methylation_prior_strength.is_finite() && self.methylation_prior_strength >= 2.0,
             "Methylation prior strength must be finite and at least two"
@@ -194,6 +197,10 @@ pub(super) struct MolecularBase {
     pub base: Base,
     pub quality: Option<u8>,
     pub source: Option<usize>,
+    #[cfg_attr(
+        not(any(feature = "experimental-seqair", test)),
+        expect(dead_code, reason = "Focal diagnostic overlap counter")
+    )]
     pub measurements: usize,
     pub discordant: bool,
 }
@@ -448,12 +455,12 @@ pub(super) fn pair_prior(
     if indel_alternatives > 0 {
         let alleles = indel_alternatives + 1;
         let alternate_genotypes = alleles * (alleles + 1) / 2 - 1;
-        result += if first.indel.is_none() && second.indel.is_none() {
+        result += if first.indels.is_empty() && second.indels.is_empty() {
             (1.0 - indel_prior).ln()
         } else {
             (indel_prior / f64::from(u32::try_from(alternate_genotypes)?)).ln()
         };
-        heterozygotes += u32::from(first.indel != second.indel);
+        heterozygotes += u32::from(first.indels != second.indels);
     }
     // The genotype prior is shared equally by its possible phase assignments.
     // Otherwise adding neighboring hets would change the focal SNP's prior.
@@ -467,13 +474,13 @@ pub(super) fn retained_pair_priors(
     params: &LikelihoodParams,
     has_indel: bool,
 ) -> Result<Vec<f64>> {
-    let indels = haplotypes
-        .iter()
-        .filter_map(|haplotype| haplotype.indel.as_ref())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let indel_alternatives = if has_indel { indels.len() } else { 0 };
+    let mut groups =
+        std::collections::BTreeMap::<u32, std::collections::BTreeSet<&super::Indel>>::new();
+    if has_indel {
+        for edit in haplotypes.iter().flat_map(|haplotype| &haplotype.indels) {
+            groups.entry(edit.start).or_default().insert(edit);
+        }
+    }
     // Every allele lookup and logarithm happens once per haplotype or site
     // rather than once per pair; each pair sums the same terms, in the same
     // order, as `pair_prior`.
@@ -486,22 +493,28 @@ pub(super) fn retained_pair_priors(
                 .collect::<Result<Vec<_>>>()
         })
         .collect::<Result<Vec<_>>>()?;
-    let indel_codes = if has_indel {
-        haplotypes
-            .iter()
-            .map(|haplotype| match haplotype.indel.as_ref() {
-                None => Ok(0u8),
-                Some(indel) => Ok(u8::try_from(
-                    indels
-                        .binary_search(&indel)
-                        .map_err(|_| color_eyre::eyre::eyre!("Missing candidate indel prior"))?
-                        + 1,
-                )?),
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        Vec::new()
-    };
+    let indel_codes = groups
+        .iter()
+        .map(|(&start, edits)| {
+            let edits: Vec<_> = edits.iter().copied().collect();
+            haplotypes
+                .iter()
+                .map(|haplotype| {
+                    haplotype.indels.iter().find(|edit| edit.start == start).map_or(
+                        Ok(0u8),
+                        |edit| {
+                            Ok(u8::try_from(
+                                edits
+                                    .binary_search(&edit)
+                                    .map_err(|_| color_eyre::eyre::eyre!("Missing indel prior"))?
+                                    + 1,
+                            )?)
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect::<Result<Vec<_>>>()?;
     let homozygous_reference = (1.0 - *params.snp_prior).ln();
     let alternative = sites
         .iter()
@@ -513,16 +526,17 @@ pub(super) fn retained_pair_priors(
                 .map(|alternatives| (*params.snp_prior / f64::from(alternatives)).ln())
         })
         .collect::<Vec<_>>();
-    let indel_terms = if indel_alternatives > 0 {
-        let alleles = indel_alternatives + 1;
-        let alternate_genotypes = u32::try_from(alleles * (alleles + 1) / 2 - 1)?;
-        Some((
-            (1.0 - *params.indel_prior).ln(),
-            (*params.indel_prior / f64::from(alternate_genotypes)).ln(),
-        ))
-    } else {
-        None
-    };
+    let indel_terms = groups
+        .values()
+        .map(|edits| -> Result<_> {
+            let alleles = edits.len() + 1;
+            let alternatives = u32::try_from(alleles * (alleles + 1) / 2 - 1)?;
+            Ok((
+                (1.0 - *params.indel_prior).ln(),
+                (*params.indel_prior / f64::from(alternatives)).ln(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut ids = FxHashMap::<Vec<(u8, u8)>, usize>::default();
     let mut counts = Vec::<usize>::new();
     let mut pairs = Vec::new();
@@ -543,14 +557,12 @@ pub(super) fn retained_pair_priors(
                     alternative.ok_or_eyre("Too many genotypes for a site prior")?
                 };
             }
-            if has_indel {
-                let a = *indel_codes.get(index).ok_or_eyre("Missing indel code")?;
-                let b = *indel_codes.get(offset).ok_or_eyre("Missing indel code")?;
+            for (codes, &(none, some)) in indel_codes.iter().zip(&indel_terms) {
+                let a = *codes.get(index).ok_or_eyre("Missing indel code")?;
+                let b = *codes.get(offset).ok_or_eyre("Missing indel code")?;
                 key.push((a.min(b), a.max(b)));
                 heterozygotes += u32::from(a != b);
-                if let Some((none, some)) = indel_terms {
-                    prior += if a == 0 && b == 0 { none } else { some };
-                }
+                prior += if a == 0 && b == 0 { none } else { some };
             }
             // The genotype prior is shared equally by its possible phase
             // assignments. Otherwise adding neighboring hets would change the
@@ -590,7 +602,7 @@ fn retained_pair_priors_reference(
 ) -> Result<Vec<f64>> {
     let indels = haplotypes
         .iter()
-        .filter_map(|haplotype| haplotype.indel.as_ref())
+        .flat_map(|haplotype| &haplotype.indels)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -623,8 +635,8 @@ fn retained_pair_priors_reference(
                         )?),
                     }
                 };
-                let a = allele(first.indel.as_ref())?;
-                let b = allele(second.indel.as_ref())?;
+                let a = allele(first.indels.first())?;
+                let b = allele(second.indels.first())?;
                 key.push((a.min(b), a.max(b)));
                 heterozygotes += u32::from(a != b);
             }
@@ -679,7 +691,7 @@ mod tests {
         let indels = [
             super::super::Indel { start: 1010, deleted: vec![Base::A], inserted: Vec::new() },
             super::super::Indel {
-                start: 1012,
+                start: 1010,
                 deleted: Vec::new(),
                 inserted: vec![Base::C, Base::G],
             },
@@ -715,11 +727,13 @@ mod tests {
                                 Ok((site.pos, *site.alleles.get(index).ok_or_eyre("allele")?))
                             })
                             .collect::<Result<_>>()?,
-                        indel: if has_indel {
+                        indels: (if has_indel {
                             indels.get(usize::try_from(next(3))?).cloned()
                         } else {
                             None
-                        },
+                        })
+                        .into_iter()
+                        .collect(),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;

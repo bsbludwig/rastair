@@ -160,7 +160,7 @@ mod backend {
         writeln!(
             output,
             "#rastair_haplotype_model={}",
-            if pair_hmm { "local_pair_hmm_v3" } else { "aligned_snp_v3" }
+            if pair_hmm { "local_pair_hmm_v4" } else { "aligned_snp_v4" }
         )?;
         writeln!(output, "#likelihood_parameters={}", serde_json::to_string(&params.likelihood)?)?;
         writeln!(output, "#read_filters={}", serde_json::to_string(&params.reads)?)?;
@@ -315,7 +315,7 @@ mod backend {
                         &mut scorer,
                     )?;
                     let site_only = if evidence.sites.len() > 1
-                        || evidence.haplotypes.iter().any(|haplotype| haplotype.indel.is_some())
+                        || evidence.haplotypes.iter().any(|haplotype| !haplotype.indels.is_empty())
                     {
                         Some(infer_snp_expanded(
                             reference,
@@ -761,7 +761,7 @@ mod backend {
         indels.iter().any(|indel| {
             let haplotype = crate::call::haplotypes::Haplotype {
                 alleles: vec![(pos, allele)],
-                indel: Some(indel.clone()),
+                indels: vec![indel.clone()],
             };
             super::super::likelihood::cpg_anchor(reference, &haplotype, pos).is_some()
         })
@@ -867,13 +867,13 @@ mod backend {
                     evidence
                         .haplotypes
                         .get(pair.first)
-                        .and_then(|haplotype| haplotype.indel.as_ref())
+                        .and_then(|haplotype| haplotype.indels.first())
                 ),
                 indel_description(
                     evidence
                         .haplotypes
                         .get(pair.second)
-                        .and_then(|haplotype| haplotype.indel.as_ref())
+                        .and_then(|haplotype| haplotype.indels.first())
                 )
             )?;
         }

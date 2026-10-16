@@ -51,6 +51,8 @@ pub struct RastairFlatModel {
     pub deletion_platt: PlattScaling,
     #[serde(default)]
     pub feature_set: MlFeatureSet,
+    #[serde(default)]
+    pub haplotype_error_profile: Option<crate::call::haplotypes::ErrorProfile>,
 }
 
 /// One value per [`MlModel`], addressed by the model itself.
@@ -148,6 +150,7 @@ impl RastairFlatModel {
             deletion,
             deletion_platt,
             feature_set,
+            haplotype_error_profile: None,
         }
     }
 

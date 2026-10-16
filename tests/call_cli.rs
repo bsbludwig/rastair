@@ -45,6 +45,7 @@ fn haplotype_feature_model(path: &Path, name: &str, negative: f64, positive: f64
         deletion: forest(counts.deletion, &names.deletion)?,
         deletion_platt: scaling,
         feature_set: MlFeatureSet::Haplotypes,
+        haplotype_error_profile: Some(rastair::call::haplotypes::ErrorProfile::default()),
     };
     let mut encoder = lz4::EncoderBuilder::new().build(std::fs::File::create(path)?)?;
     rmp_serde::encode::write(&mut encoder, &model)?;

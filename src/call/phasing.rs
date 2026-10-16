@@ -280,6 +280,7 @@ pub fn phase_segment(
     segment: &crate::sequence::Segment,
     fragments: &[crate::call::haplotypes::Fragment],
     mask: &PhaseMask,
+    profile: &crate::call::haplotypes::ErrorProfile,
 ) -> color_eyre::eyre::Result<()> {
     use color_eyre::eyre::OptionExt as _;
     let end = segment
@@ -300,7 +301,7 @@ pub fn phase_segment(
         {
             continue;
         }
-        calls.extend(phase_unmasked(pileups, segment, fragments, region)?);
+        calls.extend(phase_unmasked(pileups, segment, fragments, region, profile)?);
     }
     for pileup in pileups.iter_mut() {
         if let Some(ColumnPhase::Genotyped(call)) = pileup.phase.as_deref_mut() {
@@ -326,6 +327,7 @@ fn phase_unmasked(
     segment: &crate::sequence::Segment,
     fragments: &[crate::call::haplotypes::Fragment],
     region: std::ops::Range<u64>,
+    profile: &crate::call::haplotypes::ErrorProfile,
 ) -> color_eyre::eyre::Result<Vec<(usize, PhaseCall)>> {
     use crate::call::haplotypes::{
         Reference, Scorer, Site,
@@ -421,7 +423,8 @@ fn phase_unmasked(
     for index in 0..sites.len() {
         groups.entry(root(&components, index)?).or_default().push(index);
     }
-    let params = parameters()?;
+    let mut params = parameters()?;
+    params.error_profile = profile.clone();
     let mut calls = Vec::new();
     let mut evaluated = 0usize;
     let mut pruned = 0usize;

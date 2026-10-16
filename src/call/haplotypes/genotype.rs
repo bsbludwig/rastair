@@ -1,4 +1,4 @@
-use super::{Haplotype, PairEvidence, SnpEvidence};
+use super::{Haplotype, PairEvidence};
 use crate::call::{
     phasing::ColumnPhase,
     pileup::indels::IndelAllele,
@@ -46,13 +46,33 @@ impl<A> DiploidPosterior<A> {
         Ok(Self { alleles, probabilities, pruning_mass })
     }
 
-    /// Disallowed ML alleles retain their probability mass as uncertainty. The
-    /// forest is a gate on emitted alleles, not independent likelihood evidence.
+    pub(super) fn entropy(&self) -> f64 {
+        -self
+            .probabilities
+            .iter()
+            .map(|p| **p)
+            .filter(|p| *p > 0.0)
+            .map(|p| p * p.ln())
+            .sum::<f64>()
+    }
+
+    /// The forest decides whether an allele is present; the likelihood decides
+    /// its dosage. A genotype carrying an admissible non-reference allele is
+    /// chosen over homozygous reference whenever there is one, however the
+    /// prior-weighted posterior ranks them: with the per-locus prior and a
+    /// library whose homopolymer stutter is this common, real heterozygotes
+    /// would otherwise be emitted as `0/0` under a passing ML score. Its
+    /// confidence is conditional on that choice, the dosage error given
+    /// presence. Disallowed ML alleles retain their probability mass as
+    /// uncertainty either way: the forest is a gate on emitted alleles, not
+    /// independent likelihood evidence.
     pub(super) fn select(
         &self,
         map: impl Fn(&A) -> Option<u8>,
     ) -> Result<Option<EstimatedGenotype>> {
+        let mut reference: Option<f64> = None;
         let mut best: Option<(f64, u8, u8)> = None;
+        let mut admissible = 0.0;
         for (higher, b) in self.alleles.iter().enumerate() {
             let Some(b) = map(b) else { continue };
             for (lower, a) in self.alleles.iter().take(higher + 1).enumerate() {
@@ -60,12 +80,21 @@ impl<A> DiploidPosterior<A> {
                 let index = higher * (higher + 1) / 2 + lower;
                 let probability =
                     **self.probabilities.get(index).ok_or_eyre("Missing diploid posterior")?;
+                if a == 0 && b == 0 {
+                    reference = Some(reference.map_or(probability, |p| p.max(probability)));
+                    continue;
+                }
+                admissible += probability;
                 if best.is_none_or(|(previous, _, _)| probability > previous) {
                     best = Some((probability, a.min(b), a.max(b)));
                 }
             }
         }
-        let Some((posterior, a, b)) = best else { return Ok(None) };
+        let (posterior, a, b) = match (best, reference) {
+            (Some((probability, a, b)), _) => ((probability / admissible).clamp(0.0, 1.0), a, b),
+            (None, Some(probability)) => (probability, 0, 0),
+            (None, None) => return Ok(None),
+        };
         let genotype = match (NonZeroU8::new(a), NonZeroU8::new(b)) {
             (None, None) => GenotypeTag::HomRef,
             (None, Some(b)) => GenotypeTag::ref_het(b),
@@ -81,14 +110,6 @@ impl<A> DiploidPosterior<A> {
 }
 
 impl DiploidPosterior<Base> {
-    pub(super) fn snp(evidence: &SnpEvidence) -> Result<Self> {
-        Self::new(
-            Base::KNOWN.to_vec(),
-            evidence.genotype_posteriors.to_vec(),
-            evidence.maximum_pruned_mass,
-        )
-    }
-
     pub(super) fn pairs(
         haplotypes: &[Haplotype],
         pairs: &[PairEvidence],
@@ -111,14 +132,31 @@ impl DiploidPosterior<Base> {
 }
 
 impl DiploidPosterior<Option<IndelAllele>> {
+    #[cfg(test)]
     pub(super) fn indels(
         haplotypes: &[Haplotype],
         pairs: &[PairEvidence],
         pruning_mass: f64,
     ) -> Result<Self> {
+        let starts = haplotypes
+            .iter()
+            .flat_map(|h| &h.indels)
+            .map(|e| e.start)
+            .collect::<std::collections::BTreeSet<_>>();
+        ensure!(starts.len() <= 1, "Use position-specific marginalization for regional indels");
+        Self::indels_at(haplotypes, pairs, starts.first().copied().unwrap_or(0), pruning_mass)
+    }
+
+    pub(super) fn indels_at(
+        haplotypes: &[Haplotype],
+        pairs: &[PairEvidence],
+        start: u32,
+        pruning_mass: f64,
+    ) -> Result<Self> {
         let edits = haplotypes
             .iter()
-            .filter_map(|haplotype| haplotype.indel.as_ref())
+            .flat_map(|haplotype| &haplotype.indels)
+            .filter(|edit| edit.start == start)
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -132,7 +170,12 @@ impl DiploidPosterior<Option<IndelAllele>> {
         }
         let mut probabilities = vec![0.0; alleles.len() * (alleles.len() + 1) / 2];
         let index = |haplotype: usize| -> Result<usize> {
-            match haplotypes.get(haplotype).ok_or_eyre("Missing genotype haplotype")?.indel.as_ref()
+            match haplotypes
+                .get(haplotype)
+                .ok_or_eyre("Missing genotype haplotype")?
+                .indels
+                .iter()
+                .find(|edit| edit.start == start)
             {
                 None => Ok(0),
                 Some(edit) => edits
@@ -293,7 +336,26 @@ mod tests {
                 NonZeroU8::new(2).ok_or_eyre("allele")?
             )
         );
-        assert!((*selected.confidence - 0.005).abs() < 1e-12);
+        // Conditional on an admissible allele being present: the homozygous
+        // reference mass is not part of the dosage decision.
+        assert!((*selected.confidence - (1.0 - 0.995 / 0.999)).abs() < 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn an_accepted_allele_is_never_vetoed_by_the_reference_genotype() -> Result<()> {
+        let posterior = distribution(vec![Base::A, Base::C], &[0.99, 0.009, 0.001], 0.0)?;
+        let selected =
+            posterior.select(|base| Some(u8::from(*base == Base::C)))?.ok_or_eyre("genotype")?;
+        assert_eq!(
+            selected.genotype,
+            GenotypeTag::ref_het(NonZeroU8::new(1).ok_or_eyre("allele")?)
+        );
+        assert!((*selected.confidence - 0.1).abs() < 1e-12);
+        let rejected =
+            posterior.select(|base| (*base == Base::A).then_some(0))?.ok_or_eyre("genotype")?;
+        assert_eq!(rejected.genotype, GenotypeTag::HomRef);
+        assert!((*rejected.confidence - 0.01).abs() < 1e-12);
         Ok(())
     }
 
