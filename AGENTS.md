@@ -1613,7 +1613,8 @@ into `feature/haplotypings` at `3429c89`. What is kept from each side:
   vendored insertion-emission patch was unused once the regional model emitted inserted bases
   at one.
 - **SNVs keep the regional molecular features** (`ml train --ml-features haplotypes
-  --haplotype-error-profile`; 16 features appended to the CpG/de-novo/other layouts, 71/72/70),
+  --haplotype-error-profile`; 13 depth-free features appended to the CpG/de-novo/other layouts,
+  68/69/67, see "Depth-free molecular features" below),
   the genotype rule (the forest decides presence, the likelihood decides dosage; `GTM`, `GQ`)
   and the **likelihood phaser** (`--phase`, repeatable `--phase-mask`). `ColumnPhase` is
   `Observed | Phased(RecordPhases) | Likelihood(ColumnEvidence) | Genotyped(RecordPhases)`;
@@ -1646,3 +1647,34 @@ Two traps met while checking the worktree:
   expectation"; use `#[allow(.., reason = ..)]` there. The `len_without_is_empty` warning on
   `IndelAllele::len`, `regions[0]` in `call.rs` and `usize::from(n.get())` in `emit.rs` are
   HEAD's own and were left alone.
+
+### Depth-free molecular features (2026-10-16)
+
+The forests must work at depths other than the training BAM's (~26x), which is why the
+Standard layout holds only ratios, log-ratios and per-read means. The first merged layout
+broke that: measured on the chr19 training export of the merged forests
+(`tmp/regional-pairhmm/merge/benchmark-16feat/haplotypes/features/`, medians at true
+variants across quartiles of informative molecules at the site, Spearman against that count
+at negatives), `haplotype_log_bayes_factor` rose 41 → 56 → 65 → 64 (rho −0.53; it is a sum
+over molecules), the raw counts `molecular_alt_molecules` 6 → 17, `fragments` 40 → 58 and
+`linking_fragments` 12 → 18 (rho +0.4 to +0.7), and `context_sites` sat at the 32-site cap
+in every quartile. The bounded posteriors saturate at 1 or 0 and only sharpen with depth;
+the fractions (`molecular_alt_fraction`, `expected_fraction`, `realigned_fraction`,
+`pruned_mass`) and the Standard `alt_score`/`depth_ratio_alt` were flat (|rho| < 0.1). By
+importance the Bayes factor was fourth or fifth in every forest, the counts under 0.007.
+
+The layout is now 13 features (68/69/67 with the Standard parts): the Bayes factor is a
+per-molecule mean over the fragments covering the site
+(`haplotype_log_bayes_factor_per_molecule`, clamped ±50 after dividing), the counts are
+`haplotype_linking_fraction` (fragments covering the site that also reach another site of
+the region, over those covering it) and `haplotype_informative_fraction` (fragments whose
+likelihoods under the best carrying pair's two chromosomes differ by more than 0.2 decades,
+over the region's fragments); `context_sites`, `fragments`, `linking_fragments`,
+`molecular_alt_molecules` and the always-one `boundary_resolved` are gone. The layout change
+retrains every Haplotypes forest; nothing bundled uses it. The CLI test
+`cpg_only_output_keeps_non_cpg_snps_in_the_likelihood_context` probes
+`haplotype_linking_fraction` instead of the site count; its read pairs already span both SNVs
+(a `Scenario` pair's second read starts at `right`, so `balanced(100, 350, _)` covers 350-450,
+and moving `right` to 450 breaks the link). Depth-free features are necessary, not sufficient: the check that the model
+transfers is training at 26x and scoring a BAM of another depth against a forest trained at
+that depth, which has not been run yet.

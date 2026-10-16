@@ -120,7 +120,7 @@ fn cpg_only_output_keeps_non_cpg_snps_in_the_likelihood_context() -> Result<()> 
     let bam = dir.path().join("reads.bam");
     scenario.write_bam(&bam)?;
     let model = dir.path().join("model.rff.mpk.lz4");
-    haplotype_feature_model(&model, "haplotype_context_sites", 1.0, 2.0)?;
+    haplotype_feature_model(&model, "haplotype_linking_fraction", 0.0, 1.0)?;
     for cpgs_only in [false, true] {
         let vcf = dir.path().join(if cpgs_only { "cpgs.vcf" } else { "all.vcf" });
         let mut command = rastair();

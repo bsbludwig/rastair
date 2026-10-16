@@ -7,22 +7,22 @@ use color_eyre::Result;
 use ndarray::Array2;
 
 define_features! {
+    /// Every value is a probability, a fraction of the site's molecules or a
+    /// per-molecule mean: a forest trained at one depth must not learn that
+    /// depth, so no raw count enters the layout.
     pub struct HaplotypeEvidence {
         scalar haplotype_available;
         scalar haplotype_alt_probability;
         scalar haplotype_heterozygous_probability;
         scalar haplotype_homozygous_probability;
         scalar haplotype_expected_fraction;
-        scalar haplotype_log_bayes_factor;
+        scalar haplotype_log_bayes_factor_per_molecule;
         scalar haplotype_genotype_entropy;
-        scalar haplotype_context_sites;
-        scalar haplotype_linking_fragments;
-        scalar haplotype_fragments;
+        scalar haplotype_linking_fraction;
+        scalar haplotype_informative_fraction;
         scalar haplotype_realigned_fraction;
         scalar haplotype_pruned_mass;
-        scalar haplotype_boundary_resolved;
         scalar haplotype_conditional_homozygous;
-        scalar haplotype_molecular_alt_molecules;
         scalar haplotype_molecular_alt_fraction;
     }
 }
@@ -113,8 +113,8 @@ mod tests {
             assert_eq!(new.get(..old.len()), Some(old.as_slice()));
             assert_eq!(new.get(old.len()..), Some(HaplotypeEvidence::names().as_slice()));
             assert_eq!(new.len(), expected);
-            assert_eq!(new.len(), old.len() + 16);
+            assert_eq!(new.len(), old.len() + 13);
         }
-        assert_eq!(HaplotypeEvidence::default().as_row(), &[0.0; 16]);
+        assert_eq!(HaplotypeEvidence::default().as_row(), &[0.0; 13]);
     }
 }

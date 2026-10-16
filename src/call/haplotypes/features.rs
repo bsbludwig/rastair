@@ -398,10 +398,25 @@ fn regional_feature(
     }
     let [_, het, hom] = probabilities;
     let bayes = if present_prior.is_finite() && absent_prior.is_finite() {
-        ((present - present_prior) - (absent - absent_prior)).clamp(-100.0, 100.0)
+        (present - present_prior) - (absent - absent_prior)
     } else {
         0.0
     };
+    // The forest is trained at one depth and applied at others, so nothing
+    // here may scale with coverage: the Bayes factor, a sum over molecules,
+    // becomes a mean over the fragments covering the site, and the counts
+    // below become fractions of the molecules that could have produced them.
+    let covers = |fragment: &Fragment, at: u32| {
+        fragment.reads.iter().any(|read| read.covers(at, super::LikelihoodEngine::PairHmm))
+    };
+    let (mut covering, mut linking) = (0usize, 0usize);
+    for fragment in fragments.iter().filter(|fragment| covers(fragment, pos)) {
+        covering += 1;
+        if region.sites.iter().any(|site| site.pos != pos && covers(fragment, site.pos)) {
+            linking += 1;
+        }
+    }
+    let bayes_per_molecule = (bayes.f() / covering.max(1).f()).clamp(-50.0, 50.0);
     // The prior-free view the forest needs beside the posterior: which dosage
     // the molecules favour given the allele, and how many of them its best
     // pair assigns to the carrying chromosome (GATK's allele depth), counting
@@ -431,44 +446,28 @@ fn regional_feature(
         }
     }
     Ok(HaplotypeEvidence {
-        haplotype_conditional_homozygous: conditional_homozygous.f(),
-        haplotype_molecular_alt_molecules: molecules.f(),
-        haplotype_molecular_alt_fraction: if informative > 0 {
-            molecules.f() / informative.f()
-        } else {
-            0.0
-        },
         haplotype_available: 1.0,
         haplotype_alt_probability: (het + hom).f(),
         haplotype_heterozygous_probability: het.f(),
         haplotype_homozygous_probability: hom.f(),
         haplotype_expected_fraction: (het / 2.0 + hom).f(),
-        haplotype_log_bayes_factor: bayes.f(),
+        haplotype_log_bayes_factor_per_molecule: bayes_per_molecule,
         haplotype_genotype_entropy: (-probabilities
             .iter()
             .filter(|&&p| p > 0.0)
             .map(|p| p * p.ln())
             .sum::<f64>())
         .f(),
-        haplotype_context_sites: region.sites.len().f(),
-        haplotype_linking_fragments: fragments
-            .iter()
-            .filter(|fragment| {
-                fragment.reads.iter().any(|read| read.covers(pos, super::LikelihoodEngine::PairHmm))
-                    && region.sites.iter().any(|site| {
-                        site.pos != pos
-                            && fragment
-                                .reads
-                                .iter()
-                                .any(|read| read.covers(site.pos, super::LikelihoodEngine::PairHmm))
-                    })
-            })
-            .count()
-            .f(),
-        haplotype_fragments: region.fragments.f(),
+        haplotype_linking_fraction: if covering > 0 { linking.f() / covering.f() } else { 0.0 },
+        haplotype_informative_fraction: informative.f() / region.fragments.max(1).f(),
         haplotype_realigned_fraction: region.realigned.f() / region.fragments.max(1).f(),
         haplotype_pruned_mass: region.pruning_mass.f(),
-        haplotype_boundary_resolved: 1.0,
+        haplotype_conditional_homozygous: conditional_homozygous.f(),
+        haplotype_molecular_alt_fraction: if informative > 0 {
+            molecules.f() / informative.f()
+        } else {
+            0.0
+        },
     })
 }
 
@@ -555,7 +554,10 @@ mod tests {
         let row = ColumnEvidence::snp(&candidate);
         assert_eq!(row.haplotype_available, 1.0);
         assert_eq!(row.haplotype_realigned_fraction, 1.0);
-        assert_eq!(row.haplotype_fragments, 4.0);
+        assert_eq!(row.haplotype_informative_fraction, 1.0, "{row:?}");
+        assert_eq!(row.haplotype_molecular_alt_fraction, 0.5, "{row:?}");
+        assert_eq!(row.haplotype_linking_fraction, 0.0, "{row:?}");
+        assert!(row.haplotype_log_bayes_factor_per_molecule > 0.0, "{row:?}");
         assert_eq!(candidate.metrics.pos_metrics.depth, 4);
         for column in &mut columns {
             column.phase = None;
