@@ -55,6 +55,8 @@
 | PS | 1 | Integer | Phase set identifier: the position of the first variant in the phase block |
 | GL | G | Float | Genotype likelihoods, Phred-scaled |
 | GC | G | Float | Genotype confidence, Phred-scaled |
+| GQ | 1 | Integer | Model-derived genotype quality, capped at 99; PairHMM quality is conditional on retained haplotypes and limited by observed pruning mass |
+| GTM | 1 | String | Genotype model: pairhmm or counts (including molecular-evidence fallback) |
 | DP | 1 | Integer | Read depth |
 | M5mC | . | Float | Methylation level at CpG sites, one value per CpG context |
 | DPM5mC | . | Integer | Total read depth for 5-methylcytosine detection, one value per CpG context |

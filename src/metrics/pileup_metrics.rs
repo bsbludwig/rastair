@@ -78,8 +78,7 @@ pub struct PileupMetrics {
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
     pub indel_data: Option<Box<indels::IndelData>>,
-    /// Phase observations and results, only under `--phase` and only on
-    /// columns that can take part in phasing.
+    /// Molecular ML evidence before filtering, or phase observations/results.
     pub phase: Option<Box<ColumnPhase>>,
 }
 

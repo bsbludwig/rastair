@@ -13,7 +13,7 @@ mod reservoir;
 #[cfg(not(feature = "experimental-seqair"))]
 use crate::call::process::calculate_pileup_metrics;
 use crate::{
-    call::process::{PileupMappingParams, get_pileups},
+    call::process::PileupMappingParams,
     metrics::{
         PileupMetrics,
         ml::{
@@ -90,8 +90,17 @@ pub struct TrainModelParams {
     #[command(flatten)]
     model_params: ModelParameters,
 
+    /// Feature set to train: haplotypes uses full `PairHMM`; canonical isolates normalized indel preprocessing.
     #[arg(long, default_value_t = MlFeatureSet::Standard)]
     ml_features: MlFeatureSet,
+
+    /// JSON platform/library indel error profile, embedded in the trained forest.
+    #[arg(long, value_name = "FILE")]
+    haplotype_error_profile: Option<ClioPath>,
+
+    /// Exclude BED intervals from haplotype evidence, matching the masks supplied to call.
+    #[arg(long = "phase-mask", value_name = "FILE")]
+    phase_masks: Vec<std::path::PathBuf>,
 
     /// Number of threads to use
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
@@ -219,6 +228,11 @@ fn merge_collected(mut acc: Collected, other: Collected) -> Result<Collected> {
 
 #[instrument(level = "debug", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
+    ensure!(
+        params.haplotype_error_profile.is_none()
+            || matches!(params.ml_features, MlFeatureSet::Haplotypes),
+        "--haplotype-error-profile requires --ml-features haplotypes"
+    );
     let seed = params.model_params.seed.unwrap_or_else(rand::random);
     let request = params.model_params.sampling_request();
     info!(
@@ -234,7 +248,22 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     create_output_dirs(params)?;
 
-    let (collected, failed_segments) = collect(params, request, seed)?;
+    let error_profile = params
+        .haplotype_error_profile
+        .as_ref()
+        .map(|path| -> Result<_> {
+            Ok(serde_json::from_reader::<_, crate::call::haplotypes::ErrorProfile>(File::open(
+                path.path(),
+            )?)?)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    error_profile.validate()?;
+    let (collected, failed_segments) = collect(params, request, seed, &error_profile)?;
+    ensure!(
+        failed_segments == 0,
+        "Refusing to train on incomplete data: {failed_segments} segments failed"
+    );
     for (model, data) in collected.iter() {
         let (seen, kept) = (data.seen(), data.kept());
         let draw = request.draw_from(kept);
@@ -270,7 +299,10 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         }
     }
 
-    let model = fit(params, request, seed, collected)?;
+    let mut model = fit(params, request, seed, collected)?;
+    if matches!(params.ml_features, MlFeatureSet::Haplotypes) {
+        model.haplotype_error_profile = Some(error_profile);
+    }
     serialize_model(&model, params.output.clone())
         .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
     info!(path=%params.output, "Saved model");
@@ -304,6 +336,7 @@ fn collect(
     params: &TrainModelParams,
     request: SamplingRequest,
     seed: u64,
+    error_profile: &crate::call::haplotypes::ErrorProfile,
 ) -> Result<(Collected, usize)> {
     let segmentation = SegmentationParams::default();
     let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
@@ -316,13 +349,19 @@ fn collect(
     let truth = Truth::load(params, &covered_regions(&segments)?)?;
 
     let calculator = params.ml_features.get_calculator();
+    let phase_mask = crate::call::phasing::PhaseMask::load(&params.phase_masks)?;
     let collector = SegmentCollector {
+        reader_params: &params.reader,
+        feature_set: params.ml_features,
+        phase_mask: &phase_mask,
+        error_profile,
         truth: &truth,
         calculator: &*calculator,
         feature_num: calculator.feature_num(),
         request,
     };
     let readers = ReaderSource::from(readers);
+    let completed = std::sync::atomic::AtomicUsize::new(0);
     // Reduced rather than collected: holding every segment's sample until a
     // final merge would keep `segments x cap` examples alive.
     let (mut collected, failed_segments) = rayon::ThreadPoolBuilder::new()
@@ -345,16 +384,31 @@ fn collect(
                         let readers = readers
                             .as_mut()
                             .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
-                        collector.segment(
-                            readers,
-                            segment,
-                            &mut ByModel::from_fn(|model| {
-                                KeySource::for_segment(seed, index, model)
-                            }),
-                        )
+                        collector
+                            .segment(
+                                readers,
+                                segment,
+                                &mut ByModel::from_fn(|model| {
+                                    KeySource::for_segment(seed, index, model)
+                                }),
+                            )
+                            .wrap_err_with(|| {
+                                format!("Failed training feature extraction in {}", segment.region)
+                            })
                     },
                 )
                 .map(|result| -> Result<(Collected, usize)> {
+                    let count = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if count.is_multiple_of(32) || count == segments.len() {
+                        info!(
+                            completed = count,
+                            total = segments.len(),
+                            "Training segment extraction progress"
+                        );
+                    }
+                    if params.ml_features.needs_molecular_evidence() {
+                        return result.map(|collected| (collected, 0));
+                    }
                     Ok(result.map_or_else(
                         |e| {
                             warn!(
@@ -387,19 +441,31 @@ fn collect(
 fn segment_columns(
     readers: &mut PileupReaders,
     segment: &ChunkRegion,
+    reader_params: &ReaderParams,
+    feature_set: MlFeatureSet,
+    phase_mask: &crate::call::phasing::PhaseMask,
+    error_profile: &crate::call::haplotypes::ErrorProfile,
 ) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
-    let mapping = PileupMappingParams::default();
+    let mapping =
+        PileupMappingParams { phase: feature_set.needs_molecular_evidence(), ..Default::default() };
 
     #[cfg(feature = "experimental-seqair")]
-    let (segment, columns) = {
-        let (segment, columns) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        (segment, columns.collect())
+    let (segment, mut columns, fragments) = {
+        let (segment, columns, fragments) =
+            crate::call::process::get_pileups_with_phase(readers, segment, &mapping)
+                .wrap_err("Failed to build pileups")?;
+        (segment, columns.collect::<Vec<_>>(), fragments)
     };
     #[cfg(not(feature = "experimental-seqair"))]
-    let (segment, columns) = {
-        let (segment, pileups) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
+    let (segment, mut columns, fragments) = {
+        let fragments = if feature_set.needs_molecular_evidence() {
+            let reference = readers.segment(segment, 2)?;
+            crate::call::haplotypes::reads::fetch_hts(reader_params, &reference, &mapping)?
+        } else {
+            Vec::new()
+        };
+        let (segment, pileups) = crate::call::process::get_pileups(readers, segment, &mapping)
+            .wrap_err("Failed to build pileups")?;
         let columns = calculate_pileup_metrics(pileups, &segment)
             .filter_map(|metrics| {
                 metrics
@@ -408,15 +474,40 @@ fn segment_columns(
                     })
                     .ok()
             })
-            .collect();
-        (segment, columns)
+            .collect::<Vec<_>>();
+        (segment, columns, fragments)
     };
+
+    #[cfg(feature = "experimental-seqair")]
+    let _reader_params = reader_params;
+    map_surrounding(
+        &mut columns,
+        crate::call::process::set_denovo_adj,
+        "Failed to set training CpG context",
+    );
+    for column in &mut columns {
+        column.pos_metrics.extended.methylation_strand_info =
+            crate::metrics::MethylationEvidenceStrandInfo::from_pileup(column);
+    }
+    if matches!(feature_set, MlFeatureSet::Haplotypes) {
+        crate::call::haplotypes::features::add_likelihoods_with_profile(
+            &mut columns,
+            &segment,
+            &fragments,
+            phase_mask,
+            error_profile,
+        )?;
+    }
 
     Ok((segment, columns))
 }
 
 /// Turns one segment's candidates into labelled examples.
 struct SegmentCollector<'a> {
+    reader_params: &'a ReaderParams,
+    feature_set: MlFeatureSet,
+    phase_mask: &'a crate::call::phasing::PhaseMask,
+    error_profile: &'a crate::call::haplotypes::ErrorProfile,
     truth: &'a Truth,
     calculator: &'a dyn FeatureCalculator,
     feature_num: FeatureNum,
@@ -441,7 +532,14 @@ impl SegmentCollector<'_> {
         let Some(truth) = self.truth.contigs.get(&segment.contig) else {
             return Ok(self.empty());
         };
-        let (segment, mut columns) = segment_columns(readers, segment)?;
+        let (segment, mut columns) = segment_columns(
+            readers,
+            segment,
+            self.reader_params,
+            self.feature_set,
+            self.phase_mask,
+            self.error_profile,
+        )?;
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
         // The overlap columns stay in as neighbours, as in `call`, but only
@@ -476,6 +574,9 @@ impl SegmentCollector<'_> {
                 continue;
             }
             let Some(candidate) = column.alt_metrics(alt_base) else { continue };
+            if !crate::call::process::pre_ml_filter(&candidate) {
+                continue;
+            }
             let label = truth.snps.contains(&PositionKey { pos, ref_base, alt_base });
 
             let (model, features) = if candidate.is_evidence_for_methylation() {
@@ -1049,7 +1150,13 @@ mod tests {
             confident: None,
         };
         let calculator = MlFeatureSet::Standard.get_calculator();
+        let reader_params = ReaderParams::test_data();
+        let phase_mask = crate::call::phasing::PhaseMask::default();
         let collector = SegmentCollector {
+            reader_params: &reader_params,
+            feature_set: MlFeatureSet::Standard,
+            phase_mask: &phase_mask,
+            error_profile: &crate::call::haplotypes::ErrorProfile::default(),
             truth: &truth,
             calculator: &*calculator,
             feature_num: calculator.feature_num(),

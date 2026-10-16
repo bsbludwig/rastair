@@ -626,7 +626,9 @@ fn prepare_cluster(
         .enumerate()
         .map(|(i, &b)| if mask.contains(genomic(i)) { Base::Unknown } else { Base::from(b) })
         .collect();
-    let reads: Vec<_> = reads.iter().filter_map(|read| read.haplotype_read(window_start)).collect();
+    let gaps = params.indel_gap_profile.as_deref();
+    let reads: Vec<_> =
+        reads.iter().filter_map(|read| read.haplotype_read(window_start, gaps)).collect();
     pair_hmm::prepare(&window, window_start, events, reads)
 }
 
@@ -667,7 +669,11 @@ impl PlacedRead<'_> {
         Some(PlacedRead { rec, start, end, bases })
     }
 
-    fn haplotype_read(&self, window_start: u64) -> Option<HaplotypeRead> {
+    fn haplotype_read(
+        &self,
+        window_start: u64,
+        gaps: Option<&crate::call::haplotypes::ErrorProfile>,
+    ) -> Option<HaplotypeRead> {
         HaplotypeRead::new(
             self.rec.seq().get(self.bases.clone())?,
             self.rec.qual().get(self.bases.clone())?,
@@ -675,6 +681,7 @@ impl PlacedRead<'_> {
             self.rec.extra().strand,
             self.rec.qname_hash().map(FragmentId::of),
             self.rec.mapq,
+            gaps,
         )
         .inspect_err(|error| warn!(%error, pos = self.start, "Read not scored by the pair-HMM"))
         .ok()

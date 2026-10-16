@@ -94,6 +94,16 @@ impl ConfidentRegions {
             })
             .is_ok()
     }
+
+    #[cfg(test)]
+    pub(crate) fn contains_span(&self, chrom: &str, start: u64, end: u64) -> bool {
+        self.by_contig.get(chrom).is_some_and(|intervals| {
+            let index = intervals.partition_point(|&(_, stop)| stop <= start);
+            intervals
+                .get(index)
+                .is_some_and(|&(begin, stop)| begin <= start && start < end && end <= stop)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -118,6 +128,15 @@ mod tests {
         assert!(r.contains("chr1", 100));
         assert!(r.contains("chr1", 199));
         assert!(!r.contains("chr1", 200), "BED end is exclusive");
+    }
+
+    #[test]
+    fn deletion_cannot_cross_a_confidence_gap() {
+        let r = regions(&[("chr1", 100, 200), ("chr1", 210, 300)]);
+        assert!(r.contains_span("chr1", 199, 200));
+        assert!(!r.contains_span("chr1", 199, 211));
+        assert!(!r.contains_span("chr1", 200, 201));
+        assert!(!r.contains_span("chr2", 100, 101));
     }
 
     /// A contig absent from the BED is outside the confident set, not inside it —

@@ -22,7 +22,7 @@ Indel positions at most 20 bases apart are called together, as one cluster: an a
 A cluster's candidates are its indel alleles with at least `--min-indel-ao` reads, the best supported first, at most three per cluster and at most two at one position.
 Rastair builds a local haplotype for every combination of candidates one chromosome can carry: the reference, each candidate, and candidates at different positions together (two at the same position, or a deletion over another candidate's position, cannot share a chromosome).
 Every read covering the cluster is then aligned to each haplotype by a pair hidden Markov model that knows about TAPS conversion, so a converted base costs no more than it should.
-Gaps are cheaper inside the read's own tandem repeats, where polymerase slippage makes them common.
+Gaps are cheaper inside the read's own tandem repeats, where polymerase slippage makes them common: by default GATK's conservative PCR model, floored at Q20; with `--indel-error-profile FILE` (experimental) by the library's calibrated profile from `scripts/calibrate_haplotype_errors.py`, which measures insertion, deletion and extension errors per repeat period and copy count on homozygous-reference tracts.
 Only one read of each read pair is used (the one reaching further), and only reads with a mapping quality of at least the `call` minimum and a known strand.
 
 Positions near the cluster where at least five reads show a base other than the reference, one that TAPS conversion cannot explain, are left open in every haplotype and match any base.
@@ -45,4 +45,4 @@ Under `--all`, an allele the pair-HMM looked at but did not call is written as `
 
 Indel calling needs a build with the `experimental-seqair` backend, since it aligns reads while their position is built; other builds refuse `--experimental-indels`.
 No @ML model is involved, so `--ml` and `--no-ml` do not affect indel calls.
-With `--phase`, heterozygous indels are phased along with the SNVs (see [genotyping](genotyping.md#phasing)).
+With `--phase`, SNVs are phased; indel records are not (see [genotyping](genotyping.md#phasing)).

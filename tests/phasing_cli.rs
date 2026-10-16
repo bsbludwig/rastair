@@ -3,6 +3,8 @@
 //! test then states which sites had to end up phased together.
 
 mod utils;
+#[cfg(feature = "experimental-seqair")]
+use color_eyre::eyre::OptionExt as _;
 use std::collections::BTreeMap;
 #[cfg(feature = "experimental-seqair")]
 use utils::scenario::Strand;
@@ -40,6 +42,83 @@ fn read_pairs_link_two_hets_into_one_block() -> Result<()> {
     assert!(vcf.contains("##FORMAT=<ID=PS,"), "PS must be declared");
     assert!(vcf.contains(r#""phase":true"#), "the config names the flag");
     Ok(())
+}
+
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn masked_sites_are_called_but_unphased() -> Result<()> {
+    let dir = TempDir::new()?;
+    let mask = dir.path().join("centromere.txt");
+    std::fs::write(
+        &mask,
+        format!("Chr\tStart\tEnd\tGapType\nscenario\t{SITE_A}\t{}\tcentromere\n", SITE_A + 1),
+    )?;
+    let scenario = two_sites_in_trans();
+    let plain = call_scenario_in(dir.path(), &scenario, &["--phase"])?;
+    let masked = call_scenario_in(
+        dir.path(),
+        &scenario,
+        &["--phase", "--phase-mask", mask.to_str().ok_or_eyre("Mask path is not UTF-8")?],
+    )?;
+    assert_eq!(
+        scenario.check_phasing(&masked)?,
+        Phasing { blocks: BTreeMap::new(), unphased: vec![SITE_A, SITE_B] }
+    );
+    assert_nonphase_fields_equal(&plain, &masked);
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn a_mask_is_a_barrier_even_when_fragments_bridge_it() -> Result<()> {
+    let dir = TempDir::new()?;
+    let mask = dir.path().join("blacklist.bed");
+    std::fs::write(&mask, "scenario\t250\t251\n")?;
+    let scenario = Scenario::new(1000)
+        .snv(SITE_A, Hap::One)
+        .snv(140, Hap::Two)
+        .snv(380, Hap::One)
+        .snv(SITE_B, Hap::Two)
+        .balanced(LEFT, RIGHT, 5);
+    let plain = call_scenario_in(dir.path(), &scenario, &["--phase"])?;
+    assert_eq!(scenario.check_phasing(&plain)?.blocks, blocks([&[SITE_A, 140, 380, SITE_B]]));
+    let masked = call_scenario_in(
+        dir.path(),
+        &scenario,
+        &["--phase", "--phase-mask", mask.to_str().ok_or_eyre("Mask path is not UTF-8")?],
+    )?;
+    assert_eq!(
+        scenario.check_phasing(&masked)?,
+        Phasing { blocks: blocks([&[SITE_A, 140], &[380, SITE_B]]), unphased: vec![] }
+    );
+    assert_nonphase_fields_equal(&plain, &masked);
+    Ok(())
+}
+
+#[cfg(feature = "experimental-seqair")]
+fn assert_nonphase_fields_equal(a: &str, b: &str) {
+    let canonical = |vcf: &str| {
+        vcf_content_lines(vcf)
+            .map(|line| {
+                let fields: Vec<_> = line.split('\t').collect();
+                let mut format: BTreeMap<_, _> = fields
+                    .get(8)
+                    .into_iter()
+                    .flat_map(|v| v.split(':'))
+                    .zip(fields.get(9).into_iter().flat_map(|v| v.split(':')))
+                    .filter(|(key, _)| *key != "PS")
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                    .collect();
+                if let Some(gt) = format.get_mut("GT") {
+                    let mut alleles: Vec<_> = gt.split(['/', '|']).collect();
+                    alleles.sort_unstable();
+                    *gt = alleles.join("/");
+                }
+                (fields.iter().take(8).map(|v| (*v).to_owned()).collect::<Vec<_>>(), format)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(canonical(a), canonical(b));
 }
 
 /// A block is solved on the whole segment, overlap included, and then cut to
@@ -151,12 +230,13 @@ fn converted_reads_outside_a_cpg_are_evidence() -> Result<()> {
     Ok(())
 }
 
-/// Only the indel links the two SNVs, so without indel calling the two stay
-/// apart. Run once with an insertion and once with a deletion, each placed so
-/// it has one alignment.
+/// Only the indel links the two SNVs. Indel records are not phased, so the two
+/// stay apart with and without indel calling, and the called indel is written
+/// unphased. Run once with an insertion and once with a deletion, each placed
+/// so it has one alignment.
 #[test]
 #[cfg(feature = "experimental-seqair")]
-fn an_indel_phased_by_the_pair_hmm_bridges_two_snvs() -> Result<()> {
+fn an_indel_called_by_the_pair_hmm_is_not_phased_and_does_not_bridge_snvs() -> Result<()> {
     // Too far apart for any template to reach both SNVs; templates from each
     // side reach the indel.
     const LEFT_SNV: usize = 120;
@@ -185,7 +265,7 @@ fn an_indel_phased_by_the_pair_hmm_bridges_two_snvs() -> Result<()> {
         let phasing = scenario.check_phasing(&vcf)?;
         assert_eq!(
             phasing,
-            Phasing { blocks: blocks([&[LEFT_SNV, INDEL, RIGHT_SNV]]), unphased: vec![] },
+            Phasing { blocks: BTreeMap::new(), unphased: vec![LEFT_SNV, INDEL, RIGHT_SNV] },
             "{vcf}"
         );
     }
@@ -258,5 +338,34 @@ fn phasing_refuses_cpg_only_output() -> Result<()> {
     assert!(!output.status.success(), "--phase --cpgs-only must fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--phase has nothing to work with under CpG-only output"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn pair_hmm_expansion_phases_a_chain_that_requires_pruning() -> Result<()> {
+    let positions: Vec<_> = (0..10).map(|index| 120 + index * 150).collect();
+    let mut scenario = Scenario::new(2200);
+    for (index, &pos) in positions.iter().enumerate() {
+        scenario = scenario.snv(pos, if index % 2 == 0 { Hap::One } else { Hap::Two });
+    }
+    for pair in positions.windows(2) {
+        let [left, right] = pair else { continue };
+        scenario = scenario.balanced(left - 20, right - 20, 3);
+    }
+    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let phasing = scenario.check_phasing(&vcf)?;
+    assert_eq!(phasing, Phasing { blocks: blocks([positions.as_slice()]), unphased: vec![] });
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "experimental-seqair")]
+fn fetching_the_same_fragment_in_byte_budget_subdivisions_does_not_change_phase() -> Result<()> {
+    let scenario = two_sites_in_trans();
+    let ordinary = scenario.check_phasing(&call_scenario(&scenario, &["--phase"])?)?;
+    let subdivided = scenario
+        .check_phasing(&call_scenario(&scenario, &["--phase", "--segment-max-bytes=1"])?)?;
+    assert_eq!(ordinary, subdivided);
     Ok(())
 }

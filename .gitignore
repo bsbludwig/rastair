@@ -1,4 +1,4 @@
-/target
+/target*
 /tmp
 .ipynb_checkpoints
 **/*.Rproj
@@ -12,3 +12,6 @@
 .Rproj.user
 docs/yapp.config
 .claude/settings.json
+
+__pycache__/
+**/slurm-*.out

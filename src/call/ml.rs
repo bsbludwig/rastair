@@ -86,6 +86,11 @@ impl MachineLearningParams {
             &include_bytes!("../../models/rastair_default.rff.mpk.lz4")[..],
         )
         .wrap_err("Failed to load combined RF model")?;
+        ensure!(
+            !matches!(model.feature_set, crate::metrics::ml::types::MlFeatureSet::Haplotypes)
+                || model.haplotype_error_profile.is_some(),
+            "This haplotype forest predates regional likelihoods. Retrain with --ml-features haplotypes; its original caller remains usable for comparisons"
+        );
 
         let gpu = if self.gpu {
             let ctx = GpuContext::new()
@@ -135,14 +140,47 @@ pub fn load_combined_model(path: Option<&Path>, built_in: &[u8]) -> Result<Rasta
         rmp_serde::from_read(decompress).wrap_err("Failed to deserialize combined model")
     }
 
-    if let Some(path) = path {
+    let model = if let Some(path) = path {
         let model = load_model_from_file(path)
-            .wrap_err_with(|| format!("Failed to load combined model from {path:?}"));
+            .wrap_err_with(|| format!("Failed to load combined model from {path:?}"))?;
         debug!(?path, "Loaded combined model from file");
         model
     } else {
-        let model = load_combined(built_in);
+        let model = load_combined(built_in)?;
         debug!("Loaded built-in combined model");
         model
+    };
+    if let Some(profile) = &model.haplotype_error_profile {
+        profile.validate()?;
+    }
+    Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_profile_survives_forest_serialization_and_is_validated() -> Result<()> {
+        let mut model =
+            load_combined_model(None, include_bytes!("../../models/rastair_default.rff.mpk.lz4"))?;
+        assert!(model.haplotype_error_profile.is_none());
+        let mut profile = crate::call::haplotypes::ErrorProfile::default();
+        profile.library = "test-library".into();
+        profile.maximum_evidence_phred = 32;
+        model.haplotype_error_profile = Some(profile.clone());
+        let encode = |model: &RastairFlatModel| -> Result<Vec<u8>> {
+            let mut encoder = lz4::EncoderBuilder::new().build(Vec::new())?;
+            rmp_serde::encode::write(&mut encoder, model)?;
+            let (bytes, status) = encoder.finish();
+            status?;
+            Ok(bytes)
+        };
+        let restored = load_combined_model(None, &encode(&model)?)?;
+        assert_eq!(restored.haplotype_error_profile, Some(profile.clone()));
+        profile.version = 999;
+        model.haplotype_error_profile = Some(profile);
+        assert!(load_combined_model(None, &encode(&model)?).is_err());
+        Ok(())
     }
 }

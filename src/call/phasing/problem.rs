@@ -119,7 +119,7 @@ impl<T> From<Vec<T>> for SiteMap<T> {
 impl<T> Index<SiteIndex> for SiteMap<T> {
     type Output = T;
 
-    #[expect(
+    #[allow(
         clippy::indexing_slicing,
         reason = "every map is shaped after the Sites that minted the token"
     )]
@@ -129,7 +129,7 @@ impl<T> Index<SiteIndex> for SiteMap<T> {
 }
 
 impl<T> IndexMut<SiteIndex> for SiteMap<T> {
-    #[expect(
+    #[allow(
         clippy::indexing_slicing,
         reason = "every map is shaped after the Sites that minted the token"
     )]

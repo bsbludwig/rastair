@@ -102,7 +102,7 @@ fn calls(records: &[PileupMetrics]) -> Vec<Option<PhaseCall>> {
 fn a_block_covering_the_whole_segment_is_anchored_on_its_first_site() {
     let mut records = three_hets([A, A, G], [G, G, A]);
 
-    phase_segment(&mut records, |_| true);
+    legacy_phase_segment(&mut records, |_| true);
 
     assert_eq!(calls(&records), [Some(call(1001, 0)), Some(call(1001, 0)), Some(call(1001, 1))]);
 }
@@ -114,7 +114,7 @@ fn a_block_covering_the_whole_segment_is_anchored_on_its_first_site() {
 fn a_block_is_anchored_on_its_first_emitted_site() {
     let mut records = three_hets([A, A, A], [G, G, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1040);
+    legacy_phase_segment(&mut records, |pos| pos >= 1040);
 
     assert_eq!(calls(&records), [None, Some(call(1041, 0)), Some(call(1041, 0))]);
 }
@@ -126,7 +126,7 @@ fn a_block_is_anchored_on_its_first_emitted_site() {
 fn a_block_opens_on_the_lower_allele_of_its_anchor() {
     let mut records = three_hets([A, G, A], [G, A, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1040);
+    legacy_phase_segment(&mut records, |pos| pos >= 1040);
 
     assert_eq!(calls(&records), [None, Some(call(1041, 0)), Some(call(1041, 1))]);
 }
@@ -137,7 +137,7 @@ fn a_block_opens_on_the_lower_allele_of_its_anchor() {
 fn a_block_with_one_emitted_site_loses_its_phase() {
     let mut records = three_hets([A, A, A], [G, G, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1080);
+    legacy_phase_segment(&mut records, |pos| pos >= 1080);
 
     assert_eq!(calls(&records), [None, None, None]);
 }
@@ -151,7 +151,7 @@ fn a_site_no_fragment_links_stays_unphased() {
         )));
     }
 
-    phase_segment(&mut records, |_| true);
+    legacy_phase_segment(&mut records, |_| true);
 
     assert_eq!(calls(&records), [Some(call(1001, 0)), Some(call(1001, 0)), None]);
 }
@@ -161,7 +161,7 @@ fn a_site_no_fragment_links_stays_unphased() {
 fn phasing_drops_the_observations() {
     let mut records = three_hets([A, A, A], [G, G, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1080);
+    legacy_phase_segment(&mut records, |pos| pos >= 1080);
 
     assert!(records.iter().all(|r| r.phase.is_none()));
 }
@@ -187,7 +187,7 @@ fn a_phased_indel_column_gets_a_phase_of_its_own() {
         ),
     ];
 
-    phase_segment(&mut columns, |_| true);
+    legacy_phase_segment(&mut columns, |_| true);
 
     let [snv, indel] = &columns;
     assert_eq!(call_of(snv, SiteKind::Snv).map(|c| c.first), Some(GtAllele::Ref));
@@ -223,7 +223,7 @@ fn an_indel_site_first_in_a_block_anchors_and_flips_it() {
         het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT)]),
     ];
 
-    phase_segment(&mut columns, |_| true);
+    legacy_phase_segment(&mut columns, |_| true);
 
     let [indel, snv] = &columns;
     let pair = |call: Option<PhaseCall>| call.map(|c| (c.set, c.first));
@@ -250,7 +250,7 @@ fn at_a_shared_position_the_snv_record_opens_the_block() {
     );
     let mut columns = [both];
 
-    phase_segment(&mut columns, |_| true);
+    legacy_phase_segment(&mut columns, |_| true);
 
     let [both] = &columns;
     let first = |kind| call_of(both, kind).map(|c| c.first);

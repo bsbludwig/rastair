@@ -59,7 +59,7 @@ tracing = { workspace = true }
 
 seqair-types = { workspace = true }
 seqair = { workspace = true }
-compair = { version = "0.2.0", optional = true }
+compair = "0.2.0"
 
 # bio tools
 bio-types = "1"
@@ -131,7 +131,7 @@ external-tool-tests = []
 # seqair is now a core dependency (VCF writer); this flag only toggles the
 # experimental seqair-backed pileup *reading* path, and with it the pair-HMM
 # indel caller (compair aligns reads at column time, which needs seqair's reads).
-experimental-seqair = ["dep:compair", "compair/gpu"]
+experimental-seqair = ["compair/gpu"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
@@ -186,6 +186,7 @@ create_dir = "warn"
 pathbuf_init_then_push = "warn"
 
 [profile.dev.package]
+compair.opt-level = 3
 rand_chacha.opt-level = 3
 proptest.opt-level = 3
 insta.opt-level = 3
@@ -195,9 +196,9 @@ ndarray.opt-level = 3
 lz4.opt-level = 3
 rust-htslib.opt-level = 3
 
-[patch.crates-io]
-rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git" }
-
 [profile.profiling]
 inherits = "release"
 debug = true
+
+[patch.crates-io]
+rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git" }

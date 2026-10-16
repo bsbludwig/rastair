@@ -1,9 +1,151 @@
 #![expect(non_snake_case, reason = "readable test names")]
 
 mod utils;
+use color_eyre::eyre::ContextCompat as _;
 use insta::assert_compact_debug_snapshot;
 use std::collections::{BTreeMap, BTreeSet};
 use utils::*;
+
+fn haplotype_feature_model(path: &Path, name: &str, negative: f64, positive: f64) -> Result<()> {
+    use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
+    use ndarray::{Array1, Array2};
+    use rastair::metrics::ml::types::{MlFeatureSet, PlattScaling, RastairFlatModel};
+    let counts = MlFeatureSet::Haplotypes.get_calculator().feature_num();
+    let names = MlFeatureSet::Haplotypes.get_calculator().feature_names();
+    let forest = |features: usize, names: &[&str]| -> Result<FlatForest> {
+        let mut data = Array2::<f64>::zeros((40, features));
+        let mut labels = Array1::<f64>::zeros(40);
+        let index = names.iter().position(|&field| field == name).wrap_err("feature name")?;
+        for i in 0..40 {
+            *data.get_mut((i, index)).wrap_err("feature column")? =
+                if i < 20 { negative } else { positive };
+            *labels.get_mut(i).wrap_err("label")? = if i < 20 { 0.0 } else { 1.0 };
+        }
+        let mut forest = RandomForest::new(
+            RandomForestParameters::default()
+                .with_n_estimators(4)
+                .with_max_features(MaxFeatures::Value(features))
+                .with_min_samples_leaf(1)
+                .with_n_jobs(Some(1))
+                .with_seed(7),
+        );
+        forest.fit(&data.view(), &labels.view());
+        Ok(FlatForest::from_forest(&forest, features))
+    };
+    let scaling = PlattScaling { a: -20.0, b: 10.0 };
+    let model = RastairFlatModel {
+        cpg: forest(counts.cpg, &names.cpg)?,
+        cpg_platt: scaling,
+        denovo: forest(counts.denovo_cpg, &names.denovo_cpg)?,
+        denovo_platt: scaling,
+        others: forest(counts.others, &names.others)?,
+        others_platt: scaling,
+        feature_set: MlFeatureSet::Haplotypes,
+        haplotype_error_profile: Some(rastair::call::haplotypes::ErrorProfile::default()),
+    };
+    let mut encoder = lz4::EncoderBuilder::new().build(std::fs::File::create(path)?)?;
+    rmp_serde::encode::write(&mut encoder, &model)?;
+    encoder.finish().1?;
+    Ok(())
+}
+
+#[test]
+fn model_metadata_activates_pair_hmm_features_without_a_phase_flag() -> Result<()> {
+    let dir = TempDir::new()?;
+    let scenario = scenario::Scenario::new(1000)
+        .reference_at(120, b"AAT")
+        .het(120, b'T', scenario::Hap::One)
+        .reference_at(420, b"AAT")
+        .het(420, b'T', scenario::Hap::One)
+        .balanced(100, 350, 8);
+    let fasta = scenario.write_fasta(dir.path())?;
+    let bam = dir.path().join("reads.bam");
+    scenario.write_bam(&bam)?;
+    let model = dir.path().join("model.rff.mpk.lz4");
+    haplotype_feature_model(&model, "haplotype_available", 0.0, 1.0)?;
+    let mask = dir.path().join("mask.bed");
+    std::fs::write(&mask, "scenario\t120\t121\n")?;
+    for (masked, phased) in
+        [(false, false), (true, false), (false, cfg!(feature = "experimental-seqair"))]
+    {
+        let vcf = dir.path().join(format!("masked-{masked}-phased-{phased}.vcf"));
+        let mut command = rastair();
+        command
+            .args(["call", "--all", "--vcf-all-fields", "--fasta-file"])
+            .arg(&fasta)
+            .arg(&bam)
+            .arg(scenario.region())
+            .arg("--model")
+            .arg(&model)
+            .arg("--vcf")
+            .arg(&vcf);
+        if masked {
+            command.arg("--phase-mask").arg(&mask);
+        }
+        if phased {
+            command.arg("--phase");
+        }
+        command.succeeds()?;
+        let content = std::fs::read_to_string(vcf)?;
+        let focal = vcf_content_lines(&content)
+            .find(|line| line.split('\t').nth(1) == Some("121"))
+            .wrap_err("focal SNP")?;
+        let score: f64 = format_field(focal, "ML").wrap_err("ML score")?.parse()?;
+        assert_eq!(score > 0.99, !masked, "{focal}");
+        assert_eq!(score < 0.01, masked, "{focal}");
+        assert_eq!(format_field(focal, "GTM"), (!masked).then_some("pairhmm"), "{focal}");
+        if !masked {
+            assert_eq!(format_field(focal, "GT").wrap_err("GT")?.replace('|', "/"), "0/1");
+            assert!(format_field(focal, "GQ").wrap_err("GQ")?.parse::<u8>()? >= 20);
+            assert!(
+                format_field(focal, "GL").is_none(),
+                "Legacy scalar GL is not a molecular likelihood: {focal}"
+            );
+            assert_eq!(format_field(focal, "PS").is_some(), phased, "{focal}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cpg_only_output_keeps_non_cpg_snps_in_the_likelihood_context() -> Result<()> {
+    let dir = TempDir::new()?;
+    let scenario = scenario::Scenario::new(1000)
+        .reference_at(120, b"CG")
+        .het(120, b'A', scenario::Hap::One)
+        .reference_at(420, b"ATA")
+        .het(420, b'C', scenario::Hap::One)
+        .balanced(100, 350, 8);
+    let fasta = scenario.write_fasta(dir.path())?;
+    let bam = dir.path().join("reads.bam");
+    scenario.write_bam(&bam)?;
+    let model = dir.path().join("model.rff.mpk.lz4");
+    haplotype_feature_model(&model, "haplotype_context_sites", 1.0, 2.0)?;
+    for cpgs_only in [false, true] {
+        let vcf = dir.path().join(if cpgs_only { "cpgs.vcf" } else { "all.vcf" });
+        let mut command = rastair();
+        command
+            .args(["call", "--vcf-all-fields", "--fasta-file"])
+            .arg(&fasta)
+            .arg(&bam)
+            .arg(scenario.region())
+            .arg("--model")
+            .arg(&model)
+            .arg("--vcf")
+            .arg(&vcf);
+        if cpgs_only {
+            command.arg("--cpgs-only");
+        }
+        command.succeeds()?;
+        let content = std::fs::read_to_string(vcf)?;
+        let focal = vcf_content_lines(&content)
+            .find(|line| line.split('\t').nth(1) == Some("121"))
+            .wrap_err("focal CpG variant")?;
+        let score: f64 = format_field(focal, "ML").wrap_err("ML score")?.parse()?;
+        assert!(score > 0.99, "Context forest needs both SNPs: {focal}");
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq)]
 struct CpgBedCall {

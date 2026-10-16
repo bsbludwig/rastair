@@ -36,10 +36,7 @@ use seqair_types::{Base, Pos0};
 #[cfg(feature = "experimental-seqair")]
 use std::{
     num::{NonZeroU32, NonZeroU64},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 #[cfg(feature = "experimental-seqair")]
 use tracing::{debug, instrument, warn};
@@ -68,6 +65,9 @@ pub struct PileupMappingParams {
     /// Keep per-read phase observations at the columns that can use them
     /// (seqair backend only).
     pub phase: bool,
+    /// Gap qualities for the indel pair-HMM's reads from this library profile
+    /// rather than GATK's PCR model; see `IndelParams::indel_error_profile`.
+    pub indel_gap_profile: Option<std::sync::Arc<crate::call::haplotypes::ErrorProfile>>,
     /// Score the pair-HMM on the GPU (seqair backend only).
     pub gpu: bool,
 }
@@ -162,12 +162,26 @@ pub fn get_pileups(
 }
 
 #[cfg(feature = "experimental-seqair")]
-#[instrument(level = "info", skip_all)]
 pub fn get_pileups(
     readers: &mut PileupReaders,
     region: &ChunkRegion,
     params: &PileupMappingParams,
 ) -> Result<(Rc<Segment>, impl Iterator<Item = PileupMetrics>)> {
+    let (segment, pileups, _) = get_pileups_with_phase(readers, region, params)?;
+    Ok((segment, pileups))
+}
+
+#[cfg(feature = "experimental-seqair")]
+#[instrument(level = "info", skip_all)]
+pub fn get_pileups_with_phase(
+    readers: &mut PileupReaders,
+    region: &ChunkRegion,
+    params: &PileupMappingParams,
+) -> Result<(
+    Rc<Segment>,
+    impl Iterator<Item = PileupMetrics>,
+    Vec<crate::call::haplotypes::Fragment>,
+)> {
     // Build the rastair Segment (FASTA fetch only) and extract ref window.
     let segment = readers.segment(region, 2).wrap_err("Failed to fetch segment")?;
     debug!(len = segment.sequence.len(), "Processing region (seqair)");
@@ -257,6 +271,11 @@ pub fn get_pileups(
     let keeps = |inputs| params.early_reject.as_ref().is_none_or(|f| f.keeps(inputs));
     let mut sliding_entropy = SlidingEntropy::new(&segment);
 
+    let reference = params.phase.then(|| crate::call::haplotypes::Reference {
+        start: start.as_u32(),
+        bases: segment.sequence.iter().copied().map(Base::from).collect(),
+    });
+    let mut phase_reads = crate::call::haplotypes::reads::Collector::default();
     for seqair_seg in &seqair_segments {
         // Fetch BAM records + FASTA into PileupEngine (compute() runs here).
         // The store is reused (cleared) per sub-segment, so peak memory is one
@@ -353,6 +372,9 @@ pub fn get_pileups(
         // reads held across that load cost 100 MB at 73x, and almost every
         // region is one sub-segment, so there is nothing to overlap with.
         flush_indel_clusters(&mut pileup_metrics, &mut scratch);
+        if let Some(reference) = &reference {
+            phase_reads.capture(guard.store(), reference, params)?;
+        }
     }
 
     // Nothing follows the last column, so a still-deferred draft was only ever
@@ -365,15 +387,11 @@ pub fn get_pileups(
 
     // A missing read name is a property of the whole file (a CRAM written
     // with `RN=false`), so once per run says all there is to say.
-    static WARNED_NAMELESS: AtomicBool = AtomicBool::new(false);
-    if scratch.saw_nameless_read && !WARNED_NAMELESS.swap(true, Ordering::Relaxed) {
-        warn!(
-            "Reads without a read name (e.g. a CRAM written with RN=false) cannot be linked \
-             into phase blocks and were left out of phasing"
-        );
-    }
+    crate::call::haplotypes::reads::warn_nameless(
+        scratch.saw_nameless_read || phase_reads.nameless,
+    );
 
-    Ok((segment, pileup_metrics.into_iter()))
+    Ok((segment, pileup_metrics.into_iter(), phase_reads.finish()?))
 }
 
 /// Finish a surviving column and give it its region entropy.

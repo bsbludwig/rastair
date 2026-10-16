@@ -47,6 +47,8 @@ pub struct RastairFlatModel {
     pub others_platt: PlattScaling,
     #[serde(default)]
     pub feature_set: MlFeatureSet,
+    #[serde(default)]
+    pub haplotype_error_profile: Option<crate::call::haplotypes::ErrorProfile>,
 }
 
 /// One value per [`MlModel`], addressed by the model itself.
@@ -117,7 +119,16 @@ impl RastairFlatModel {
             assert!(matches!(MlModel::ALL, [MlModel::Others, MlModel::Cpg, MlModel::DenovoCpg]));
         }
         let [(others, others_platt), (cpg, cpg_platt), (denovo, denovo_platt)] = trained.0;
-        Self { cpg, denovo, others, cpg_platt, denovo_platt, others_platt, feature_set }
+        Self {
+            cpg,
+            denovo,
+            others,
+            cpg_platt,
+            denovo_platt,
+            others_platt,
+            feature_set,
+            haplotype_error_profile: None,
+        }
     }
 
     pub fn forest(&self, model: MlModel) -> &FlatForest {
@@ -142,6 +153,16 @@ pub enum MlFeatureSet {
     #[default]
     Standard,
     Simple,
+    /// The Standard layouts with the molecular SNV features appended; the
+    /// model's metadata selects full read capture and regional pair-HMM
+    /// scoring on both backends.
+    Haplotypes,
+}
+
+impl MlFeatureSet {
+    pub fn needs_molecular_evidence(self) -> bool {
+        matches!(self, Self::Haplotypes)
+    }
 }
 
 impl fmt::Display for MlFeatureSet {
@@ -149,6 +170,7 @@ impl fmt::Display for MlFeatureSet {
         match self {
             MlFeatureSet::Standard => write!(f, "standard"),
             MlFeatureSet::Simple => write!(f, "simple"),
+            MlFeatureSet::Haplotypes => write!(f, "haplotypes"),
         }
     }
 }

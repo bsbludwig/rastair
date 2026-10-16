@@ -504,6 +504,9 @@ pub(crate) fn test_call(
         methylation: default(),
         ml: default(),
         phase: false,
+        phase_masks: default(),
+        phase_mask: default(),
+        indel_gap_profile: None,
         vcf: default(),
         bed: default(),
         total_threads: 2,
@@ -512,7 +515,7 @@ pub(crate) fn test_call(
     static ML: OnceLock<MachineLearning> = OnceLock::new();
     let ml = ML.get_or_init(|| params.ml.init(1).unwrap());
 
-    process_region(segment, pileups.into_iter(), &params, ml)
+    process_region(segment, pileups.into_iter(), Vec::new(), &params, ml)
 }
 
 #[track_caller]

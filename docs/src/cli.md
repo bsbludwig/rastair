@@ -157,6 +157,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Reads (one per fragment) whose alignment carries the allele; at least 5% of the column's depth is required in any case. Of the alleles reaching it in a cluster of neighbouring columns, the three most reads carry are scored, at most two per column, and a scored allele is called only if the pair-HMM finds it present.
 
   Default value: `2`
+* `--indel-error-profile <FILE>` — Score indel reads with the gap qualities of a calibrated library error profile instead of GATK's conservative PCR model (experimental)
+
+   A JSON profile written by `scripts/calibrate_haplotype_errors.py`: per repeat period and copy count, the insertion-open, deletion-open and extension qualities measured on the library. Evaluated on each read's own tandem repeats, as the PCR model is.
 
 ###### **Input Options:**
 
@@ -209,7 +212,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    By default, only a minimal set is included.
 
-  Possible values: `GT`, `GL`, `GC`, `DP`, `M5mC`, `DPM5mC`, `ADM5mC`, `ML`
+  Possible values: `GT`, `GL`, `GC`, `GQ`, `GTM`, `DP`, `M5mC`, `DPM5mC`, `ADM5mC`, `ML`
 
 * `--vcf-all-fields`
 
@@ -233,6 +236,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are phased, and indels too with `--experimental-indels`. Requires a build with the `experimental-seqair` backend.
 
   Default value: `false`
+* `--phase-mask <FILE>` — Exclude BED intervals from phasing and molecular ML evidence
+
+   Repeat for multiple masks. Accepts plain or gzip BED files and UCSC centromere tables. Masks split haplotype contexts at their boundaries. Variant and methylation candidates still follow their normal calling paths.
 
 ###### **Processing Options:**
 
