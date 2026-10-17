@@ -1728,3 +1728,53 @@ all four arms share: 14 / 7 / 7 / 7.
 Operational: a cancelled call keeps executing its binary for a while, so a build job that
 `cp`s over `rastair-merge` fails with "Text file busy"; `build.sbatch` now copies to a
 temporary name and renames.
+
+### Where the merged caller's time goes, and the regional admission gate (2026-10-17)
+
+Measured on chr12:60-62M, 32 threads, the benchmark binary and model
+(`tmp/regional-pairhmm/merge/profile/`, `profile.sbatch`; `perf record -e cycles:u` flat
+profile in `full.perf.txt`):
+
+| run | wall | CPU |
+| --- | --- | --- |
+| merged model, `--phase` | 161 s | 4,738 s |
+| merged model, no `--phase` | 159 s | 4,725 s |
+| bundled Standard model, `--phase` | 0.8 s | 9 s |
+| `--no-ml` | 0.1 s | 1 s |
+
+Phasing is free; 99.8 % is the regional SNV model, and its profile is flat (compair pairs
+kernel ~25 %, `Prepared::plan`/`template` 12 %, `regional::infer` + pair priors + posteriors
+14 %, libm `exp`/`log` 16 %, methylation/CpG 6 %, memo and allocation 8 %). The cost was the
+**number of sites**: 78,694 regional sites in 2 Mb (39,000/Mb) in 3,219 regions of 24 sites,
+for 2,571 passing SNV records. `pre_ml_filter` only checks column depth > 1 and MAPQ > 5, so
+the admission rule "alt depth ≥ 2 or passes `pre_ml_filter`" admitted every single-read
+alternate base and every methylated CpG (converted reads look like `C>T`). On the chr19
+training export 94 % of regionally scored rows had a TAPS-unconfounded alt fraction under 0.1
+and held 2.7 % of the true variants.
+
+Gates evaluated on the window's `--all` output against GIAB truth (76,006 sites, 2,434 called
+true positives, 9 called false positives):
+
+| admission gate | sites kept | called TPs kept | called FPs kept |
+| --- | --- | --- | --- |
+| ≥ 2 alt reads, any strand | 17.3 % | 2,434 / 2,434 | 8 / 9 |
+| ≥ 2 alt reads and a het not excluded on the informative strand | 13.8 % | 2,434 / 2,434 | 8 / 9 |
+| ≥ 3 alt reads | 12.2 % | 2,414 / 2,434 | 4 / 9 |
+
+Whole-chr12 cross-check of the two-read gate on the merged calls: of the 2,132 true positives
+the merged caller gains over `feature/haplotypings`, 104 have fewer than two alt reads; 74 of
+its false positives do too; the 175 shared true positives under the gate are called by the
+Standard features anyway. Fewer than two unconfounded reads, by contrast, would touch 543 of
+the gained true positives, so the gate counts both strands and only asks the informative
+strand not to rule a heterozygote out.
+
+`features::admits_alt` implements the second row: alt depth ≥ 2, then on the strand
+`informative_strand` names (OB for a `T` over `C` and for any `C` allele, OT for an `A` over
+`G` and for any `G` allele, both otherwise) a binomial test P(X ≤ alt | n, 0.4) ≥ 0.01, or
+fewer than three informative reads. It gates both the scored candidates and the context
+alleles; `observed_sites` (deletion guard, repeat context) still uses plain alt depth ≥ 2.
+Training and calling share it. Unit test:
+`a_methylated_cpg_is_not_a_regional_site_but_a_c_to_t_het_is` (methylated CpG with ten
+converted OT reads: no site; het: site; two OB reads: cannot exclude, site; one read: no
+site). The gated retraining and chr12 rerun are recorded below once complete; the ungated
+run is kept in `benchmark-ungated/` and `report-ungated/`.

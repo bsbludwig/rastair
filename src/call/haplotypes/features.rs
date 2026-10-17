@@ -1,6 +1,7 @@
 use super::{
     ExpansionParams, Fragment, Indel, LikelihoodParams, Reference, Site, likelihood::log_add,
 };
+use crate::metrics::AlleleMetrics;
 use crate::utils::IntoF32 as _;
 use crate::{
     call::{
@@ -128,16 +129,16 @@ pub(crate) fn add_likelihoods_with_profile(
             let mut alleles = vec![column.reference_base];
             let mut snps = false;
             for alt in &column.alts {
-                let candidate = column
+                if alt.base.known_index().is_none()
+                    || alleles.contains(&alt.base)
+                    || !admits_alt(column, &alt.metrics)
+                {
+                    continue;
+                }
+                alleles.push(alt.base);
+                snps |= column
                     .alt_metrics(alt.base)
                     .is_some_and(|candidate| crate::call::process::pre_ml_filter(&candidate));
-                if (candidate || alt.metrics.depth >= 2)
-                    && alt.base.known_index().is_some()
-                    && !alleles.contains(&alt.base)
-                {
-                    alleles.push(alt.base);
-                    snps |= candidate;
-                }
             }
             let mut indels = Vec::new();
             if let Some(data) = &column.indel_data {
@@ -374,6 +375,61 @@ pub(crate) fn add_likelihoods_with_profile(
 /// GATK's informative-read threshold, log10 0.2, in nats.
 const INFORMATIVE_NATS: f64 = 0.2 * std::f64::consts::LN_10;
 
+/// Allele fraction the heterozygote test uses, under one half so that an allele
+/// the informative strand under-observes still passes.
+const HET_GATE_FRACTION: f64 = 0.4;
+/// A column whose informative strand leaves a heterozygote this improbable is
+/// not a regional site.
+const HET_GATE_P: f64 = 0.01;
+/// Fewer informative reads than this exclude nothing.
+const HET_GATE_MIN_READS: u32 = 3;
+
+/// Whether an observed allele earns a regional site. Admitting every column
+/// with a mismatching read made the regional model the whole cost of a call:
+/// on chr12 it scored 39,000 sites per Mb, 83 % of them with one alternate
+/// read and nearly every methylated CpG among them, for 3 % of the records
+/// that pass. Two reads are required, and the strand TAPS conversion leaves
+/// informative for the allele must not rule a heterozygote out.
+fn admits_alt(column: &PileupMetrics, alt: &AlleleMetrics) -> bool {
+    if alt.depth < 2 {
+        return false;
+    }
+    let (alt_reads, reads) = match informative_strand(column.reference_base, alt.base) {
+        Some(strand) => {
+            let on = |metrics: &AlleleMetrics| match strand {
+                Strand::OT => metrics.strand_count.ot,
+                Strand::OB | Strand::Unknown => metrics.strand_count.ob,
+            };
+            (on(alt), column.ref_alts_metrics().map(on).sum())
+        }
+        None => (alt.depth, column.ref_alts_metrics().map(|metrics| metrics.depth).sum()),
+    };
+    reads < HET_GATE_MIN_READS || binomial_cdf(alt_reads, reads, HET_GATE_FRACTION) >= HET_GATE_P
+}
+
+/// The strand that observes `alt` over `reference` without TAPS conversion in
+/// the way: a `T` over a `C` may be a converted methylated `C` on OT and an
+/// `A` over a `G` on OB, and a true `C` or `G` allele is itself converted
+/// there. `None` when both strands count.
+fn informative_strand(reference: Base, alt: Base) -> Option<Strand> {
+    match (reference, alt) {
+        (Base::C, Base::T) | (_, Base::C) => Some(Strand::OB),
+        (Base::G, Base::A) | (_, Base::G) => Some(Strand::OT),
+        _ => None,
+    }
+}
+
+/// P(X <= k) for X ~ Binomial(n, p), summed upwards from the zero term.
+fn binomial_cdf(k: u32, n: u32, p: f64) -> f64 {
+    let mut term = (1.0 - p).powi(i32::try_from(n).unwrap_or(i32::MAX));
+    let mut total = term;
+    for i in 1..=k.min(n) {
+        term *= f64::from(n - i + 1) / f64::from(i) * p / (1.0 - p);
+        total += term;
+    }
+    total.min(1.0)
+}
+
 fn regional_feature(
     region: &super::regional::Inferred,
     fragments: &[Fragment],
@@ -528,6 +584,52 @@ mod tests {
 
     fn reference(sequence: &[u8]) -> Reference {
         Reference { start: 1000, bases: sequence.iter().copied().map(Base::from).collect() }
+    }
+
+    /// Converted reads look like a `C>T` allele, so the regional model used to
+    /// run at every methylated CpG; the strand TAPS cannot convert decides.
+    #[test]
+    fn a_methylated_cpg_is_not_a_regional_site_but_a_c_to_t_het_is() -> Result<()> {
+        use crate::call::tests::utils::{ReadLine, create_pileups};
+        let reference = reference(b"GACGAATG");
+        let read = |bases: &[u8], strand: Strand, copies: usize| {
+            let bases: Vec<Base> = bases.iter().copied().map(Base::from).collect();
+            (0..copies).map(move |_| ReadLine { bases: bases.clone(), strand })
+        };
+        let available = |reads: Vec<ReadLine>| -> Result<f32> {
+            let (segment, pileups) =
+                create_pileups(b"GACGAATG".iter().copied().map(Base::from).collect(), reads);
+            let mut columns =
+                pileups.into_iter().map(PileupMetrics::new).collect::<Result<Vec<_>>>()?;
+            let alt = fixture_read(&reference, b"GATGAATG", &[(Match, 8)])?;
+            let wt = fixture_read(&reference, b"GACGAATG", &[(Match, 8)])?;
+            let fragments = [alt.clone(), alt, wt.clone(), wt]
+                .into_iter()
+                .map(|read| Fragment { reads: vec![read] })
+                .collect::<Vec<_>>();
+            add_likelihoods(&mut columns, &segment, &fragments, &PhaseMask::default())?;
+            let focal = columns.iter().find(|c| c.pos == 1002).ok_or_eyre("focal")?;
+            let candidate = focal.alt_metrics(Base::T).ok_or_eyre("candidate")?;
+            Ok(ColumnEvidence::snp(&candidate).haplotype_available)
+        };
+        // Every OT read converted, every OB read a C: methylation, not a variant.
+        let methylated =
+            read(b"GATGAATG", Strand::OT, 10).chain(read(b"GACGAATG", Strand::OB, 10)).collect();
+        assert_eq!(available(methylated)?, 0.0);
+        // Half the reads on both strands carry T: a heterozygote.
+        let het = read(b"GATGAATG", Strand::OT, 5)
+            .chain(read(b"GACGAATG", Strand::OT, 5))
+            .chain(read(b"GATGAATG", Strand::OB, 5))
+            .chain(read(b"GACGAATG", Strand::OB, 5))
+            .collect();
+        assert_eq!(available(het)?, 1.0);
+        // Too few OB reads to rule a heterozygote out: still scored.
+        let thin = read(b"GATGAATG", Strand::OT, 10).chain(read(b"GACGAATG", Strand::OB, 2)).collect();
+        assert_eq!(available(thin)?, 1.0);
+        // One mismatching read is no site at all.
+        let single = read(b"GATGAATG", Strand::OB, 1).chain(read(b"GACGAATG", Strand::OB, 9)).collect();
+        assert_eq!(available(single)?, 0.0);
+        Ok(())
     }
 
     #[test]
