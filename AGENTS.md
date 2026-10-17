@@ -1596,9 +1596,45 @@ Both v2 arms beat the count model in every class, and the veto is gone (0-1 PASS
 truth variants per class against 22/24/38). The stutter mixture adds a little on insertions
 and on dosage for 25 % more CPU; on 4 Mb that is within noise. The per-site arm's SNV recall
 (0.972 vs 0.963) remains the forest-size effect: it is the only arm trained on full chr19.
-Phase: 0 switches on the 1,141 shared links in every arm. The full-chr19 training and
-full-chr12 validation of both v2 profiles run as jobs 195272-195277
-(`tmp/regional-pairhmm/v2/full/{perpos,stutter}/benchmark`).
+Phase: 0 switches on the 1,141 shared links in every arm.
+
+**Full chr19 training, full chr12 validation** (`tmp/regional-pairhmm/v2/full/report/report.json`;
+jobs 195272-195282; GIAB HG001 v4.2.1 truth and confident regions, aardvark GT-aware; 64
+threads). The fourth arm is `feature/haplotypings` HEAD `3429c89` (Softleif's cluster-based
+pair-HMM indel caller, SNVs by the Standard forest, legacy MEC phasing with indel sites; built
+from a detached worktree in `tmp/regional-pairhmm/competing/`, trained and called by
+`competing/bench.py` with the same seed, truth, regions and panel; it has no `--phase-mask`, the
+assessment masks instead):
+
+| arm | SNV R / P / F1 | ins R / P / F1 | del R / P / F1 | fnGT+fpGT ins · del | chr12 call |
+| --- | --- | --- | --- | --- | --- |
+| canonical (counts) | 0.9621 / 0.9855 / 0.9737 | 0.7615 / 0.9324 / 0.8383 | 0.8124 / 0.8946 / 0.8515 | 514+365 · 323+716 | 28 s / 972 CPU-s |
+| v2 per-position | 0.9726 / 0.9873 / **0.9799** | 0.7936 / 0.9598 / 0.8688 | 0.8239 / 0.9558 / 0.8849 | 361+175 · 354+192 | 7,571 s / 463,611 CPU-s |
+| v2 stutter | 0.9720 / 0.9872 / 0.9795 | 0.7968 / 0.9566 / 0.8694 | 0.8230 / 0.9555 / 0.8843 | 304+195 · 364+183 | 9,599 s / 579,690 CPU-s |
+| `feature/haplotypings` | 0.9621 / 0.9855 / 0.9737 | 0.8705 / 0.9414 / **0.9045** | 0.9114 / 0.8983 / **0.9048** | 272+189 · 213+235 | **7 s / 214 CPU-s** |
+
+Phasing against Platinum (masks applied by the assessment): canonical 48,531 phased SNPs,
+10 switches / 30,861 links; v2 per-position 49,349, 7 / 31,545; v2 stutter 49,323, 5 / 31,509;
+`feature/haplotypings` 59,421 (indel sites bridge blocks), 87 / 39,338 and 734 phased non-hets
+(v2: 358). On the 29,714 shared links: 6 / 4 / 5 / 12.
+
+What this says:
+- v2 does what the review predicted against the count model: every class up (SNV +0.6, ins
+  +3.1, del +3.3 F1 points), SNV genotype errors halved (322+533 vs 621+695), the veto gone
+  (5/22/28 PASS `0/0` at truth variants vs 87/107/39 for counts), the best phasing of the four,
+  and SNV F1 level with the frozen per-site PairHMM (0.9796). The two profiles are within noise
+  of each other on the whole chromosome; the stutter arm costs 25 % more.
+- The `feature/haplotypings` indel caller is better still on indels, by recall (absent
+  insertions 1,294 vs 2,108, deletions 921 vs 1,862) and by dosage (ins 4.3 % vs 5.4 %, del
+  3.7 % vs 5.0 % of shared alleles), at lower deletion precision (0.898 vs 0.956), and it costs
+  2,000× less CPU: whole chr12 with phasing in 7 s. Its SNVs are the plain Standard forest
+  (identical to canonical to within one GT error) and its phasing makes 10× the switch rate.
+- So for indels the pure likelihood-margin presence decision over candidate clusters beats the
+  forest-gated regional posterior; the forest is where v2 loses its indel recall (the "absent"
+  column), not the likelihood. The strongest caller would take `feature/haplotypings`'s indel
+  candidates, clusters and presence margin with v2's SNV features, genotype rule and
+  likelihood phasing; that is a merge of two branches that diverged at `c671f8c`, with the
+  indel forests removed on one side.
 
 ### Merged base: `feature/haplotypings` plus the SNV features, genotype rule and likelihood phasing (2026-10-16)
 
@@ -1776,5 +1812,174 @@ alleles; `observed_sites` (deletion guard, repeat context) still uses plain alt 
 Training and calling share it. Unit test:
 `a_methylated_cpg_is_not_a_regional_site_but_a_c_to_t_het_is` (methylated CpG with ten
 converted OT reads: no site; het: site; two OB reads: cannot exclude, site; one read: no
-site). The gated retraining and chr12 rerun are recorded below once complete; the ungated
-run is kept in `benchmark-ungated/` and `report-ungated/`.
+site). The ungated run is kept in `benchmark-ungated/` and `report-ungated/`; the gated run is
+`benchmark/` and `report/` (jobs 202911-202918, commit `b52ebb4`, same protocol):
+
+| arm | SNV R / P / F1 | SNV dosage | ins F1 | del F1 | phased / switches (shared-link switches) | chr19 train | chr12 call |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `feature/haplotypings` | 0.9621 / 0.9855 / 0.9737 | 621+689 | 0.9045 | 0.9048 | 59,421 / 87 (12) | — | 7 s / 214 CPU-s |
+| merged, ungated | 0.9721 / 0.9879 / 0.9799 | 321+535 | 0.9045 | 0.9047 | 49,245 / 8 (5) | 4,658 s / 289k | 7,601 s / 465k |
+| **merged, gated** | 0.9725 / 0.9882 / **0.9803** | 389+412 | 0.9047 | 0.9045 | 49,506 / 7 (6) | **1,099 s / 67k** | **1,201 s / 73k** |
+| merged, gated, calibrated indel gaps | 0.9725 / 0.9882 / 0.9803 | 389+412 | 0.8951 | 0.9064 | 49,506 / 7 (6) | — | 1,216 s / 74k |
+
+- The gate costs nothing measurable: SNV recall, precision and F1 all tick up, SNV dosage
+  errors fall 856 → 801, correct truth SNVs rise 150,853 → 150,913 and absent ones fall
+  4,001 → 3,841, while false passes rise 1,377 → 1,458 and PASS `0/0` at truth SNVs 4 → 36.
+  Indel records are still byte-identical to `feature/haplotypings` (40,179 records,
+  `report/indels-haplotypings-vs-gatk.txt`). Phasing gains 261 sites at 7 switches.
+- Cost falls 4.2× in training and 6.3× in calling on the whole chromosome, 15× on the
+  2 Mb window (`profile-gated/`: 13.6 s / 314 CPU-s against 161 s / 4,738; 12,043 sites in
+  2,557 regions of 4.7 sites against 78,694 in 3,219 of 24). The whole-chromosome factor is
+  smaller because dense segments keep more sites and the fixed costs (capture, pileup,
+  forests) are now a visible share. The profile's shape is unchanged (kernel 23 %, planning
+  11 %, beam bookkeeping 11 %, libm 18 %), so the next factor would again have to come from
+  fewer or cheaper sites, not from the kernel: a 20-minute chr12 is 170× the Standard
+  forest's 7 s.
+- The calibrated indel gap profile reproduces its ungated result under the gate (insertion
+  F1 −1.0, deletion +0.2, joint down) and stays an opt-in.
+
+**Decision (2026-10-17): the gated merged caller is the baseline from here on; the ungated
+arm is abandoned** (it has no benefit) and survives only as `benchmark-ungated/` and
+`report-ungated/` for the record.
+
+### Whole-genome evaluation against GIAB and GATK (2026-10-17)
+
+`tmp/regional-pairhmm/merge/genome/`: the frozen gated binary and chr19 forest
+(`rastair-merge`, `model.rff.mpk.lz4`, `commit.txt` = `b52ebb4`), `call.sbatch` (SLURM array
+over chr1-22, 64 threads each, `--experimental-indels --vcf-all-fields --phase` with the
+centromere and ENCODE masks, per-chromosome BCFs under `merged/`), `call-haplotypings.sbatch`
+(the `feature/haplotypings` binary and Standard forest on the same BAM, under
+`haplotypings/`), and `evaluate.sbatch` → `evaluate.py`, which concatenates the chromosomes,
+builds a genome-wide truth the way the chr12/chr19 one was built (GIAB v4.2.1 restricted to
+the autosomes, `norm -f ref -m -any`, then `GT="alt"`; `truth/`), normalizes every arm's PASS
+`GT="alt"` calls inside the confident BED and runs aardvark on three region sets: the 21
+held-out autosomes, chr19 (the training chromosome, reported apart), and each chromosome.
+The third arm is the GATK HaplotypeCaller / GenotypeGVCFs 4.5.0.0 callset of the **matched WGS
+library** (`inputs.json` `gatk`, sample named by its BAM hash, hard-filtered: PASS only is
+used), so that comparison is library and caller together, not caller alone. Jobs 203113
+(array), 203114, 203122; results go to `genome/report.json`. The earlier normalized truth
+`tmp/haplotype-ml-chr19/giab-normalized.vcf.gz` holds only chr12 and chr19, which is why the
+genome evaluation builds its own.
+
+**Result** (`genome/report.json`; aardvark GT-aware, GIAB HG001 v4.2.1 confident regions):
+
+| arm | region | SNV R / P / F1 | ins R / P / F1 | del R / P / F1 | GT errors fnGT+fpGT SNV · ins · del |
+| --- | --- | --- | --- | --- | --- |
+| merged, gated (TAPS 26x) | 21 held-out autosomes | 0.9725 / 0.9885 / **0.9804** | 0.8738 / 0.9432 / **0.9071** | 0.9146 / 0.9017 / **0.9082** | 7,508+7,645 · 5,308+3,696 · 3,865+4,784 |
+| `feature/haplotypings` (TAPS 26x) | 21 held-out autosomes | 0.9623 / 0.9855 / 0.9738 | 0.8739 / 0.9432 / 0.9072 | 0.9152 / 0.9020 / 0.9086 | 11,966+13,196 · 5,371+3,724 · 3,936+4,821 |
+| GATK HC 4.5 (WGS, matched sample) | 21 held-out autosomes | 0.9701 / 0.9902 / 0.9800 | 0.8631 / 0.8983 / 0.8804 | 0.8937 / 0.8249 / 0.8579 | 3,255+4,100 · 13,872+2,024 · 12,814+2,326 |
+| merged, gated | chr19 (training) | 0.9693 / 0.9837 / 0.9765 | 0.8472 / 0.9228 / 0.8834 | 0.9003 / 0.8663 / 0.8830 | 239+270 · 125+93 · 82+127 |
+| GATK HC 4.5 (WGS) | chr19 | 0.9718 / 0.9837 / 0.9777 | 0.8586 / 0.8690 / 0.8638 | 0.8801 / 0.7790 / 0.8265 | 149+81 · 294+41 · 280+51 |
+
+3,188,952 truth SNVs, 235,004 insertions and 248,790 deletions on the held-out set. Per
+chromosome (also in the report) every autosome tells the same story: merged SNV F1 within
+±0.002 of GATK's and ins/del F1 2.5-5 points above it; the baseline's indel F1 is within
+0.001 of the merged (the SNV side alters a few multi-allelic records). chr19 is the hardest
+chromosome for every arm, so the training chromosome shows no sign of overfitting: merged SNV
+F1 0.9765 there against GATK 0.9777, the same gap as chr15-17 and chr22.
+
+What this says:
+- On SNVs the merged caller on 26x TAPS equals GATK on the matched WGS library (F1 0.9804 vs
+  0.9800: more recall, 0.9725 vs 0.9701, less precision, 0.9885 vs 0.9902), and is +0.66 F1
+  points over the Standard forest. GATK makes half as many SNV genotype errors (7,355 vs
+  15,153): dosage at 26x TAPS, where only one strand is informative at a C/T or G/A site, is
+  where the remaining gap to WGS lies.
+- On indels the cluster pair-HMM beats GATK's hard-filtered callset by 2.7 (insertions) and 5.0
+  (deletions) F1 points, with ~40 % fewer indel genotype errors, mostly because GATK's deletion
+  precision is 0.82 and it under-calls homozygotes (fnGT 12,814 deletions). GATK here is
+  GenotypeGVCFs with hard filters (`MQ40`, `SOR3`, `QD2` …), not VQSR, so this is the
+  comparison against that pipeline, not against GATK's best configuration.
+- Cost: merged 1.58 M CPU-s for the autosomes (7.5 node-hours summed, 2 h 15 m wall on seven
+  64-core nodes, peak RSS 22.9 GB on chr1) against 4,417 CPU-s (2 m 36 s) for the baseline.
+- Not measured here: the depth-transfer check.
+
+**Genome-wide phasing** (`genome/phase.py`, job 203642, `genome/phase/report.json`): SNP phase
+against Platinum Genomes 2017 on the per-chromosome intersection of the Platinum and GIAB
+confident regions, with the centromere and ENCODE masks applied, scored by
+`scripts/assess_phasing.py` per chromosome and summed. GATK is scored twice: on its emitted
+`GT`/`PS`, and on its physical phase `PGT`/`PID` (biallelic `0/1` SNPs with `PGT` `0|1` or
+`1|0`, `PS` from the `PID` position), since GenotypeGVCFs reorders `GT` while keeping the
+physical phase in `PGT` (36,061 of 406,884 phased hets here) and writes phased homozygotes.
+
+| arm | phased SNPs | truth hets phased | links | switches | rate | phased non-hets | blocks |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| merged, gated (TAPS) | 1,003,712 | 999,039 (52.1 %) | 644,355 | **41** | 0.006 % | 3,802 | 334,693 |
+| `feature/haplotypings` (TAPS, MEC + indel sites) | 1,192,113 | 1,184,725 (61.8 %) | 796,271 | 1,025 | 0.13 % | 7,171 | 343,806 |
+| GATK HC physical phase (WGS, `PGT`/`PID`) | 196,707 | 181,685 (9.5 %) | 72,679 | 86 | 0.12 % | 15,022 | 65,077 |
+| GATK HC emitted `GT`/`PS` (WGS) | 323,904 | 181,685 (9.5 %) | 72,679 | 5,157 | 7.1 % | 141,843 | 65,077 |
+
+1,916,063 confident, unmasked truth hets. On the 59,966 links all four arms share (135,868
+sites): merged 0 switches, baseline 2, GATK physical 69, GATK `GT`/`PS` 4,318. Per chromosome
+the merged caller makes 0-7 switches (the baseline 13-87); chr6 is GATK's worst at 27.
+
+- HaplotypeCaller's phasing is physical phasing inside one assembled active region, so it
+  reaches a tenth of the hets in short blocks (65k blocks over 182k sites) and is not a
+  phasing tool in the sense of the other two arms; WhatsHap or HapCUT2 on the WGS BAM would
+  be the fair phasing comparison and was not run.
+- The likelihood phaser's genome-wide switch rate, 6 per 100,000 links, is 20x below the MEC
+  solver's and GATK's at the same link positions it makes no error at all; the MEC solver
+  phases 18 % more truth hets by bridging through indel sites and having no posterior gate.
+
+**Octopus on the WGS library** (`genome/call-octopus.sbatch`, array 203653, one chromosome per
+task at 32 threads; `evaluate-octopus.sbatch` reruns `evaluate.py` and `phase.py
+--with-octopus` with the `octopus` arm, results `genome/report.json` and
+`genome/phase/report-octopus.json`). Site quirks, all worked around in the job script:
+`module load octopus/0.8.0/gcc-11.5.0` only prepends `PATH`, the binary needs `libhts.so.3`,
+which is on no default path (the spack `htslib-1.22.1` prefix ships no shared library; the
+job borrows `/opt/apps/manual/hatchet/2.1.0/python-3.11.14/lib`), and the binary reports
+`octopus version 0.7.4 (ed012a6e)`, not 0.8.0. In a non-interactive shell `module` is a
+function from the environment-modules `init/bash` script and must be sourced first. Octopus's
+pre-trained random forests could not be obtained (the GitHub release assets 404 and the
+`storage.googleapis.com/luntergroup` bucket now demands a billing project), so Octopus runs
+with its default filters, not `--forest-model`, and with the default
+`--sequence-error-model` (PCR-free.HiSeq-2500) for a NextSeq library of unknown PCR status.
+Octopus phases its calls (GT `0|1` with `PS`), so it enters the phasing comparison directly.
+
+Octopus traps: `--temp-directory-prefix` is taken relative to the working directory even when
+absolute (it doubled the path and died with "Failed to create temporary directory"), so pass a
+relative prefix; its header declares `INFO/MQ` as Integer where the spec reserves Float and
+carries a structured `##octopus=<version=..,command="..">` line, and aardvark's reader rejects
+the file on each, so `evaluate.py` strips `INFO/MQ` and reheaders the Octopus query before
+comparing; and aardvark's `summary.tsv` has an empty recall cell for Octopus's complex-indel
+class (no truth records), which the metric parser must tolerate.
+
+**Result** (array 203676, evaluation 203701; Octopus 0.7.4 default filters, 32 threads per
+chromosome: 84 min summed wall, 57.6k CPU-s, peak 12 GB):
+
+| arm, held-out autosomes | SNV R / P / F1 | ins R / P / F1 | del R / P / F1 | GT errors SNV · ins · del |
+| --- | --- | --- | --- | --- |
+| merged, gated (TAPS) | 0.9725 / 0.9885 / 0.9804 | 0.8738 / 0.9432 / 0.9071 | 0.9146 / 0.9017 / 0.9082 | 15,153 · 9,004 · 8,649 |
+| GATK HC 4.5 (WGS) | 0.9701 / 0.9902 / 0.9800 | 0.8631 / 0.8983 / 0.8804 | 0.8937 / 0.8249 / 0.8579 | 7,355 · 15,896 · 15,140 |
+| Octopus 0.7.4 (WGS) | 0.9305 / 0.9967 / 0.9624 | 0.8492 / 0.9300 / 0.8878 | 0.8643 / 0.9311 / 0.8964 | 3,910 · 6,071 · 6,502 |
+
+Phasing (same assessment, `phase/report-octopus.json`): Octopus phases 1,718,701 truth hets
+(89.7 % coverage, against the merged caller's 52.1 %) in 384,315 blocks, with 1,150 switches
+on 703,358 links (0.16 %, against 0.006 %), and writes phased homozygotes (1,317,188 phased
+records without a truth het). On the 52,560 links all five arms share, Octopus and the merged
+caller both make 0 switches; the baseline 2, GATK physical 49.
+
+Reading: without its random forest Octopus is a high-precision, low-recall SNV caller here
+(precision 0.9967, recall 0.9305, the fewest genotype errors of any arm) and sits between GATK
+and the merged caller on indels. Its phasing is the most complete by far and as accurate as
+the merged caller's on the links both phase, but 27× worse overall, because the long-range
+links Octopus adds are where its errors are. The merged caller on 26x TAPS remains the best
+F1 in every class.
+
+**Octopus with its random forest** (`/mnt/lustre/shared/octopus/forests/germline.v0.7.0.forest`,
+`--forest-model`; `call-octopus-forest.sbatch`, array 203719, evaluation 203720, arm
+`octopus_forest`; `phase/report-octopus-octopus_forest.json`; 90 min summed wall, 58.5k
+CPU-s, peak 14 GB, so the forest costs nothing in time):
+
+| arm, held-out autosomes | SNV R / P / F1 | ins R / P / F1 | del R / P / F1 | GT errors SNV · ins · del |
+| --- | --- | --- | --- | --- |
+| merged, gated (TAPS 26x) | 0.9725 / 0.9885 / 0.9804 | 0.8738 / 0.9432 / 0.9071 | 0.9146 / 0.9017 / 0.9082 | 15,153 · 9,004 · 8,649 |
+| Octopus 0.7.4 + forest (WGS 47x) | 0.9809 / 0.9942 / **0.9875** | 0.8884 / 0.9511 / **0.9187** | 0.9097 / 0.9360 / **0.9227** | 5,574 · 7,119 · 7,911 |
+
+The forest turns Octopus from the lowest-recall arm into the best in every class: SNV recall
+0.9305 → 0.9809 at precision 0.9942, and 0.7 / 1.2 / 1.5 F1 points above the merged TAPS
+caller on SNVs / insertions / deletions, with a third of its SNV genotype errors. Phasing:
+1,874,620 truth hets phased (97.8 %), 1,542 switches on 799,149 links (0.19 %); 0 switches
+on the shared links, like the merged caller. Two caveats when reading this against the TAPS
+arm: the WGS library is at 47x against 26x, and Octopus's published germline forest was
+trained on GIAB samples, which may include HG001, so its numbers on this sample can be
+optimistic; the comparison is library, depth and caller together.
