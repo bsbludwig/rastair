@@ -1678,3 +1678,53 @@ retrains every Haplotypes forest; nothing bundled uses it. The CLI test
 and moving `right` to 450 breaks the link). Depth-free features are necessary, not sufficient: the check that the model
 transfers is training at 26x and scoring a BAM of another depth against a forest trained at
 that depth, which has not been run yet.
+
+### Merged branch: full chr19 training, full chr12 validation (2026-10-17)
+
+Jobs 202903-202909 on commit `25096b9` (depth-free layout), artifacts in
+`tmp/regional-pairhmm/merge/` (`benchmark/`, `report/report.json`, `report/indels-*.txt`; the
+superseded 16-feature training is `benchmark-16feat/`). Same protocol as the v2 full run: GIAB
+HG001 chr19 training with the chr19-calibrated SNV error profile, chr12 calls with
+`--experimental-indels --phase` and the centromere/ENCODE masks, aardvark GT-aware on the GIAB
+confident BED, Platinum phase assessment. `merge_gatk` is the merged caller as committed;
+`merge_calibrated` adds `--indel-error-profile` with the same calibrated profile.
+
+| arm | SNV R / P / F1 | ins R / P / F1 | del R / P / F1 | dosage SNV · ins · del (hom→het + het→hom) | chr12 call |
+| --- | --- | --- | --- | --- | --- |
+| `feature/haplotypings` | 0.9621 / 0.9855 / 0.9737 | 0.8705 / 0.9414 / 0.9045 | 0.9114 / 0.8983 / 0.9048 | 621+689 · 269+188 · 208+233 | 7 s / 214 CPU-s |
+| merged, PCR gap model | 0.9721 / 0.9879 / **0.9799** | 0.8705 / 0.9414 / 0.9045 | 0.9112 / 0.8982 / 0.9047 | 321+535 · 269+188 · 208+233 | 7,601 s / 465,389 CPU-s |
+| merged, calibrated per-read gaps | 0.9721 / 0.9879 / 0.9799 | 0.8884 / 0.9016 / 0.8949 | 0.9057 / 0.9075 / 0.9066 | 321+535 · 254+197 · 275+159 | 7,708 s / 471,465 CPU-s |
+| v2 per-position (16 features, for reference) | 0.9726 / 0.9873 / 0.9799 | 0.7936 / 0.9598 / 0.8688 | 0.8239 / 0.9558 / 0.8849 | 322+530 · 360+176 · 351+192 | 7,571 s / 463,611 CPU-s |
+
+Phasing against Platinum (masks applied by the assessment): `feature/haplotypings` 59,421
+phased SNPs, 87 switches / 39,338 links, 734 phased non-hets; merged 49,245, 8 / 31,496, 327
+(both gap models identical, as SNVs are untouched); v2 49,349, 7 / 31,545. On the 29,834 links
+all four arms share: 14 / 7 / 7 / 7.
+
+- **The merge is exact on indels**: `compare_indels.py` finds the merged PCR-model arm's
+  40,179 indel records identical to `feature/haplotypings` in POS/REF/ALT/QUAL/FILTER/GT/AD/DP
+  (phase aside). The one-record differences in the deletion row (correct 11,596 vs 11,599) are
+  SNV-side changes to multi-allelic records, not indel calls.
+- **SNVs carry over in full**: +0.6 F1 points over the Standard forest, SNV dosage errors
+  halved, and the depth-free layout matches the 16-feature v2 arm (0.9799 both; v2 had
+  slightly more recall, 0.9726 vs 0.9721, and less precision). The top molecular features are
+  now `expected_fraction`, `alt_probability`, `heterozygous_probability` and the per-molecule
+  Bayes factor (0.07-0.08); `linking_fraction` and `informative_fraction` are below 0.01.
+- **Calibrated per-read repeat qualities do not help the indel caller**: insertions gain recall
+  (absent 1,294 → 1,093) but lose more precision (false passes 492 → 999, F1 −1.0 point);
+  deletions trade the other way (F1 +0.2) with deletion hom→het errors up 208 → 275; joint
+  indel F1 0.9047 → 0.9009. Same conclusion as the SNV-side profile experiments: the TAPS
+  library's stutter rates are too high for a per-position gap-open to serve the presence
+  margin, and the PCR model stays the default. `--indel-error-profile` remains available.
+- **Phasing** keeps the likelihood phaser's accuracy (8 vs 87 switches; 7 vs 14 on shared
+  links) and loses ~17 % of phased SNPs against the MEC solver, which bridged blocks through
+  indel sites and had no posterior gate.
+- **Cost** is the SNV regional model: 2 h 07 m / 465k CPU-s for chr12 against 7 s for the
+  baseline, the same as v2. This is the next thing to work on if the merged caller is to be
+  the default; see "SNP-dense regions: pre-ML scoring cost".
+- Still open: the depth-transfer check (26x forest on another depth) described under
+  "Depth-free molecular features".
+
+Operational: a cancelled call keeps executing its binary for a while, so a build job that
+`cp`s over `rastair-merge` fails with "Text file busy"; `build.sbatch` now copies to a
+temporary name and renames.
