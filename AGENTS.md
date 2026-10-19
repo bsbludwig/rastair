@@ -14,7 +14,10 @@ Variant calling is complicated by the fact that C->T and G->A SNPs are confounde
 Rastair uses a combination of thresholding and machine learning to determine true variants.
 Rastair's main feature is `call` which processes pileup data
 in multiple steps and produces VCF records with variant and methylation calls.
-Rastair uses htslib via rust-htslib for reading/writing BAM and VCF/BCF files.
+`call` and `ml train` read BAM files through seqair's pileup engine and write VCF/BCF through
+seqair; `per-read` and `bam` read and write BAM files with rust-htslib. There is one pileup
+backend: the htslib pileup path and the `experimental-seqair` build feature were removed on
+2026-10-19 (see "Cleanup of experiment leftovers").
 
 ## Structure
 
@@ -23,8 +26,8 @@ The main functionality is implemented in the `rastair` crate,
 with submodules for different components like pileup processing, variant calling, and methylation analysis.
 The `xtask` crate is used for auxiliary tasks like testing and benchmarking.
 
-The core processing pipeline is implemented in `src/call.rs` in the `process_region` function, which processes pileups through several stages:
-calculate pileup metrics → set de-novo adjacency flags → add ML metrics → apply threshold filters → propagate de-novo pass flags → set alt calls → estimate genotype → call methylation.
+The core processing pipeline is implemented in `src/call.rs` (`process_segment` → `process_pre_built_metrics` → `process_collected_pileups`; the test-only `process_region` feeds it the `pileups!` fixtures), which processes columns through several stages:
+build columns → set de-novo adjacency flags → add ML metrics → apply threshold filters → propagate de-novo pass flags → set alt calls → estimate genotype → call methylation.
 Methylation calling logic is in `src/metrics/methylation.rs` with separate functions for reference C/G positions (`ref_c`, `ref_g`) and de-novo CpG creation (`ref_t_to_c`, `ref_a_to_g`, etc.).
 Genotype estimation happens before methylation calling in `src/call/variant_calling/genotype.rs`.
 The results are stored in `PileupMetrics.pos_metrics.extended.genotype` and `.methylated`.
@@ -63,8 +66,7 @@ Specific adn well-named types are the main way to ensure correctness and introdu
 
 - Write comprehensive unit tests for the most critical and complex parts of the codebase when you either add them or encounter bugs in them
 - Write integration tests for critical workflows and components, e.g. like the ones in `tests/call_cli.rs`
-- Run the tests with `cargo test` **and** `cargo test --features experimental-seqair`. Phasing and indel calling are seqair-only, so their tests are `#[cfg(feature = "experimental-seqair")]` and a plain `cargo test` never runs them; the htslib build instead tests that `--phase` and `--experimental-indels` are refused.
-- Run `cargo clippy --all-targets` under both feature sets too.
+- Run the tests with `cargo test` and `cargo clippy --all-targets`. There is one feature set now; `external-tool-tests` only adds the third-party cross-checks.
 - Use `cargo xtask insta` to run tests and update any snapshot tests. You need to verify the updated content is correct!
 
 ### VCF Tests
@@ -112,7 +114,6 @@ cargo test --features external-tool-tests
 ```
 
 Each test self-skips when its tool is missing, so this is harmless elsewhere.
-`bcftools_reads_phased_genotypes` additionally needs `experimental-seqair`.
 
 On **macOS** neither modkit nor the Bismark tarball has a build, so use `Dockerfile.ci`:
 
@@ -147,9 +148,10 @@ If you think there is a better way to implement something, suggest it and explai
 
 ## Pileup construction and `Base::Unknown`
 
-`Pileup` objects are constructed in `src/call/pileup/from_hts.rs` via `Pileup::from_hts()`.
+Columns are built in `src/call/pileup/from_seqair.rs` (`ColumnDraft::accumulate` → `finish`) from seqair's pileup engine.
+The tests' `pileups!` fixtures build a `Pileup` (a read list, `src/call/pileup.rs`) and reduce it with `PileupMetrics::new`, which only `calculate_pileup_metrics` (`cfg(test)`) calls.
 The `reference_base` comes from the FASTA sequence via `Base::from(u8)`, which maps any non-ACGT byte (e.g. `N`) to `Base::Unknown`.
-There is **no filtering** to skip pileups with zero reads or Unknown reference bases before `PileupMetrics::new()` is called.
+There is **no filtering** to skip columns with zero reads or Unknown reference bases before their metrics are built.
 
 Important implications:
 
@@ -174,7 +176,7 @@ When computing grouped statistics from a collection of items (e.g. per-base metr
 
 ## Read orientation modes
 
-The main pileup-based `call` path assigns OT/OB in `src/call/pileup/from_hts.rs` before `PileupMetrics::new()` sees a `SimpleRead`.
+The main pileup-based `call` path assigns OT/OB once per record when seqair fetches it (`RastairRecordFilter::compute` in `src/sequence/readers.rs`), so every column reads the strand off the record's extras.
 The default `VariantCallingParams.read_orientation=flags` path still uses `strand_from_flags()`.
 The opt-in `--guess-read-orientation` mode does **not** require reference CpG annotation. Instead it scans each read over `aligned_pairs_full()` and only looks at read positions where the observed base mismatches the reference:
 
@@ -183,9 +185,7 @@ The opt-in `--guess-read-orientation` mode does **not** require reference CpG an
 - `TG > CA` means OT, `CA > TG` means OB
 - ties / no evidence: split deterministically from a hash of qname + start + flags so repeated runs stay reproducible
 
-Implementation detail: `src/call/process/pileups.rs` keeps a per-segment `ReadOrientationCache`, because `alignment_to_read()` is called once per pileup column and mismatch scoring would otherwise rescan the full read for every covered base.
-
-Current scope: this new evidence-based OT/OB assignment only affects the main pileup-based `call` path. `call-reads` and BAM rewriting still use their existing orientation logic.
+Current scope: this new evidence-based OT/OB assignment only affects the main pileup-based `call` path. `per-read` uses the htslib-record copy of the same motif rule in `src/call/pileup/hts_utils.rs`, and BAM rewriting its existing orientation logic.
 
 For BAM-backed regression tests that compare strand-assignment modes, `tests/call_cli.rs` can write plain BED output with `call --cpgs-only --bed <path>` and compare per-CpG `(start, strand)` records via the BED columns `beta_est`, `unmod`, and `mod`. This is a convenient way to inspect differences before choosing hard thresholds.
 
@@ -215,12 +215,11 @@ Two related API notes:
   store keeping its slab capacity, for the next region. It is not a way to read
   the pileup's input back.
 
-## Indel observations (seqair only)
+## Indel observations
 
-Only `from_seqair.rs` collects indels; an htslib build refuses `--experimental-indels`. The rules
-below came out of a parity hunt against the htslib backend's indel collection, since deleted (its
-write-up is in this file's history before `feature/pair-hmm-cleanup`). Each guards a *class* of
-mistake:
+`from_seqair.rs` collects indels. The rules below came out of a parity hunt against the old
+htslib backend's indel collection, since deleted (its write-up is in this file's history before
+`feature/pair-hmm-cleanup`). Each guards a *class* of mistake:
 
 - **A deletion's REF comes from the deletion site.** `view.qpos()` once shadowed the column's
   `pos`, so REF alleles were read from the segment's opening bases; seqair's `QPos` newtype now
@@ -369,8 +368,8 @@ Testing: the cluster pieces have unit tests (`cluster_candidates`, `WindowMask`,
 
 ### The pair-HMM on the GPU (`--gpu`)
 
-`--gpu` also scores the pair-HMM on the GPU (compair's `gpu` feature, part of
-`experimental-seqair`): the `gpu` module of `from_seqair.rs`. The calls are identical to the
+`--gpu` also scores the pair-HMM on the GPU (compair's `gpu` feature): the `gpu` module of
+`from_seqair.rs`. The calls are identical to the
 CPU path by construction — the kernel is bit-identical to compair's CPU kernels, and a pair
 whose `f32` score falls under its precision floor is rescored in `f64` on the CPU
 (`GpuScore::or_rescore`, ~0.8 % of pairs) — and were checked byte-identical on chr12 at 26x
@@ -404,106 +403,46 @@ and 73x. What to know when touching it:
   totals (launches, pairs, rescored); `grep -c "Pair-HMM GPU launch"` is the check that the GPU
   path ran. Measured only on Apple Metal (M4 Pro) so far; a Vulkan identity check is open.
 
-## Phasing (`--phase`, seqair only)
+## Phasing (`--phase`)
 
-`src/call/phasing.rs` and its `problem` and `solver` modules. Per-column data sits
-in `PileupMetrics.phase`; thresholds are constants, there are no `--phase-*` flags. `--phase` is
-an error on htslib builds and under CpG-only output (`--cpgs-only`, or `--bed` alone): the
-pre-filter drops the variant sites before phasing runs.
+`src/call/phasing.rs`: `phase_segment` → `phase_unmasked`, over the fragments
+`get_pileups_with_phase` captured (`haplotypes/reads.rs`), scored by `haplotypes::phase`.
+Thresholds are constants, there are no `--phase-*` flags. `--phase` is an error under CpG-only
+output (`--cpgs-only`, or `--bed` alone): the pre-filter drops the variant sites before phasing
+runs. Per-column state sits in `PileupMetrics.phase`, a `ColumnPhase`:
+`Likelihood(ColumnEvidence)` from the regional SNV features until `genotype::assign_snp` reads
+it, then `Genotyped(Option<PhaseCall>)` on a molecular genotype or `Phased(PhaseCall)` on a
+count genotype; `call_of` reads both. `PhaseCall` carries the block's `set` (`PS`) and the
+allele haplotype 1 carries, in `GtAllele` (genotype) space; the VCF writer remaps it. `PS` is
+written only where the genotype is phased; homozygotes and indel records are never phased.
 
-### Observations
-
-- Captured inside the seqair column loop (`PileupMetrics` keeps no reads). A column keeps its
-  whole observation list when it has `MIN_ALT_READS` mismatches on one base that TAPS cannot
-  explain (`candidate_observations`). An `N` reference or an empty column is
-  excluded, so `phase.is_some()` always means there is something to use.
-- `accepts_read` (MAPQ and base quality ≥ 20) is applied at collection; a read can count for
-  depth and genotype without carrying phase.
 - **`FragmentId` is `NonZeroU64`**: seqair reports "no qname" as a missing hash, and bucketing
   those reads together would link every het in the region. They are dropped, and
   `call` warns once per run: a missing qname is a whole-file property (CRAM with `RN=false`),
   so there is no count worth reporting.
-
-### Two TAPS gates — do not confuse them
-
-- `taps_explains_mismatch` is *mismatch-level* (ref C + OT + T, ref G + OB + A), used when a
-  column is built. It ignores sequence context: de-novo CpGs are not known yet.
-- `PhaseSite::taps_confounds` is *allele-set-level* and **CpG-only**: at a C/T site whose `C`
+- `PhaseSite::taps_confounds`-style gating lives in `CalledSite::of`: at a C/T site whose `C`
   is in a CpG (`methylation::cpg_origin`, reference or de-novo), a `T` is evidence only on OB;
-  at G/A an `A` only on OT. Outside a CpG every strand counts, since mammalian non-CpG
-  methylation is rare (neurons and ES cells are the exception). Both gates use
-  `methylation::CpgSide`; do not add a second copy of its bases and strand.
-- Fixture trap: at a C/T site in a CpG an OT `T` is confounded, at A/G an OB `A` is; a bare
-  `het()` is not in a CpG, so set `pos_metrics.cpg` or `context.after_1`. Tests of something
-  other than the gate should use A/C or T/G sites. Both mates share the OT/OB assignment.
-
-### Problem and solver
-
-- **A site's alleles come from the stored `GenotypeTag`, never from scanning `pileup.alts`.**
-  `GtAllele { Ref, Alt(NonZeroU8) }` is in *genotype space* (index into `pileup.alts`), not
-  `ALT` column order; `compute_genotype` remaps both the genotype and the phase call with one
-  map. Do not phase after remapping.
-- Fragments reaching fewer than two sites are dropped; fragment order is first appearance, so
-  the result does not depend on the hasher.
-- **A zero-weight edge is not an edge**: cancelling cis and trans evidence would otherwise emit
-  a coin toss as a confident phase.
+  at G/A an `A` only on OT. Outside a CpG every strand counts. Fixture trap: a bare het is not
+  in a CpG, so set `pos_metrics.cpg` or `context.after_1` to test the gate.
 - `phase_segment` runs **before** the overlap trim, because a site in the overlap links reads
-  reaching into the core, and takes the segment's `is_core` predicate: each block is anchored on
-  its first *emitted* site, so `PS` names a record of this file and is unique across segments,
-  and a block with fewer than two emitted sites is not written. The solver itself returns raw
-  orientations, defined only up to a flip per block; `phase_segment` is the one place that
-  normalises, onto the anchor, so the first record is `0|1`.
-- `solver::refine` is a greedy descent run to convergence, capped at `MAX_FLIPS_PER_SITE` flips
-  per site of the block; hitting the cap is a `warn!`.
-- `PS` is written only where the genotype is phased. Homozygotes are never phased; indel records
-  are phased as the next section says.
-
-### Indel sites
-
-- A column can hold an SNV site and an indel site (`SiteKind`); `ColumnPhase::Phased` holds a
-  `RecordPhases` with one optional phase per kind. At a shared position the SNV record, pushed
-  first, anchors the block. `PhaseCall` carries only the block's `set` and `first`, the allele
-  haplotype 1 carries; the other haplotype's allele is the genotype's other one.
-- `problem::indel_site`: the pair-HMM's called pair must be a het (`0/1` or the compound) and *be*
-  its best pair. The site's two haplotypes are the called pair's own, `HapPair::split(event)`
-  (carrier, other), so a read votes on them with the cluster's other events included: the
-  carrier of a `0/1` may also carry a neighbouring event, and the haplotype of the event alone
-  may explain no read at all.
-  A read votes by the sign of its log10 ratio, cost `round(10 * |ratio|)` capped (inf is the cap,
-  0 no vote); no base quality or TAPS gate, the emission has weighed both.
-- **The gate**: GQ >= 100 (unclamped) and >= 5 *votes* per allele at Phred 10 or more
-  (`Cost::of_margin(Margin::PRESENT)`), counted after `scored_vote` has dropped reads without a
-  fragment or below the phasing MAPQ, so a site is admitted on what it feeds the solver. A
-  wrong indel bridge is an SNV switch error, so judge a gate on SNV-only switches (whatshap
-  `--only-snvs`) and phased non-hets, not on indel counts. Chosen on chr12 NA12878 (~26x) only:
-
-  | gate | phased indels | SNV switches | phased non-hets |
-  | --- | --- | --- | --- |
-  | none (SNV-only phasing) | 0 | 66 | 612 |
-  | **GQ >= 100, >= 5 reads** | 5,431 | 67 | 886 |
-  | GQ >= 100 alone | 6,768 | 71 | 979 |
-  | GQ >= 40 alone | 9,622 | 80 | 1,217 |
-
-  Tried and not worth it: a margin floor, tract-length caps. The remaining bad bridges are
-  tetranucleotide unit expansions and TAPS-converted twin candidates near a CpG, a candidate
-  generation problem.
-- `PS` is written only where the genotype is phased. Indel records and homozygotes are never
-  phased.
-- Phase calls carry only `PS` and the allele on haplotype 1, with no phase probability or
-  confidence. `GL`/`GC` remain genotype scores. Observation costs are base qualities capped at
-  40; pair weights sum signed minimum costs, and every nonzero weight can link a block.
-  The first emitted site's lower genotype allele anchors the orientation, so a compound-het
-  anchor can open with `1|2` rather than `0|1`.
+  reaching into the core, and takes the segment's `is_core` predicate: each block is anchored
+  on its first *emitted* site, so `PS` names a record of this file and is unique across
+  segments, and a block with fewer than two emitted sites is not written. The first emitted
+  site's lower genotype allele anchors the orientation, so the first record is `0|1` (a
+  compound-het anchor can open with `1|2`).
+- Phase calls carry only `PS` and the allele on haplotype 1, with no phase probability.
+  `GL`/`GC` remain genotype scores.
 - Full reads remain accessible through seqair's pileup guard `store()` until the guard is
-  dropped; `get_pileups` drops each guard at the end of its byte-budget sub-segment. Capture
-  or score any full-read evidence there, before recycling, rather than trying to recover it
-  from `SimpleRead` or `ColumnPhase`. Pre-ML haplotype evidence also needs its own candidate
-  CpG context: `methylation::cpg_origin` requires called variants and cannot decide whether
-  an uncalled candidate haplotype creates or destroys a CpG.
+  dropped; `get_pileups_with_phase` captures them there, before recycling. Nothing can be
+  recovered from `SimpleRead` or `ColumnPhase` later.
+
+The 2026-10-06 MEC solver (`phasing/problem.rs`, `solver.rs`, per-column
+`PhaseObservation`s, the indel phase slot and its GQ/vote gate) was removed on 2026-10-19;
+its design notes are in this file's history.
 
 ### Production likelihood phasing (2026-10-14)
 
-`call --phase` now calls `haplotypes::phase::score` on **called**, genotype-conditioned SNP blocks. The older `problem`/`solver` and `legacy_phase_segment` are `cfg(test)` reference code; production does not use signed-quality weights or MEC refinement. Earlier collection/solver notes above describe that reference path.
+`call --phase` calls `haplotypes::phase::score` on **called**, genotype-conditioned SNP blocks; production does not use signed-quality weights or MEC refinement.
 
 `get_pileups_with_phase` captures full records using `haplotypes/reads.rs` before each seqair guard is recycled and returns segment-level fragments separately from `PileupMetrics`. Deduplicate alignments fetched at byte-budget boundaries by read group, name, start and flags; molecule grouping includes read group. Missing names are excluded with the existing once-per-run warning. Do not recover full sequences from `ColumnPhase`.
 
@@ -511,11 +450,11 @@ Genetic edges require two independent fragments and two unconfounded observation
 
 Regions expand along connected sites, limited to 32 sites/2 kb. Phase-state beam 32, holdout 16, with competing site orientations protected up to 64 retained states. Only complementary chromosome pairs matching the called genotype are allowed; one supported nearby nuisance indel (<=20 bp) is marginalized. Shared CpG shrinkage defaults are 0.95/0.003, Beta(2,2), leave-one-molecule-out. Edges need retained-state phase posterior >=0.99. Orient and anchor on the first emitted genomic site even when expansion order differs from position order; core overlap semantics and PS-only-for-hets remain unchanged. These conditional posteriors are not calibrated PQ, and GL/GC remain genotype scores.
 
-PairHMM production profiles use mate-local coordinate windows with 12 bp flanks. An unsequenced gap between mates is absent from each alignment template: likelihood-reuse keys must omit variants there too, while retaining +/-1 CpG partners. The whole-block key caused a large slowdown in dense regions because identical molecular hypotheses were rescored. Concordant overlaps are one profile; discordant CIGARs/refskips fall back to aligned scoring. Cache path normalization by row/column lengths **and gap parameters**. Scaled linear forward and the test-only log-domain oracle agree for short and 500-base profiles; both ordinary and read-local molecular probabilities normalize. The standalone diagnostic retains its existing full selected-window realignment geometry.
+PairHMM production profiles use mate-local coordinate windows with 12 bp flanks. An unsequenced gap between mates is absent from each alignment template: likelihood-reuse keys must omit variants there too, while retaining +/-1 CpG partners. The whole-block key caused a large slowdown in dense regions because identical molecular hypotheses were rescored. Concordant overlaps are one profile; discordant CIGARs/refskips fall back to aligned scoring. Cache path normalization by row/column lengths **and gap parameters**. Scaled linear forward and the test-only log-domain oracle agree for short and 500-base profiles; both ordinary and read-local molecular probabilities normalize.
 
 `tests/phasing_cli.rs` additionally tests a ten-site chain that forces pruning and a one-byte budget that repeatedly fetches the same boundary fragments. `haplotypes::phase` tests genotype-conditioned cis/trans posteriors, unlinked single-site molecules and confidence loss from disagreeing mates. Run both feature suites and clippy; a new compile warning on stderr breaks the `convert_cli::can_pipe_through` snapshot because it invokes cargo itself. Fix the warning rather than accepting that snapshot.
 
-`scripts/benchmark_phasing.py` records matched CPU caller timing, RSS, phase statistics, binary hashes and complete non-phase VCF hashes. Caller timing excludes subsequent Python inspection. Archives and NA12878 results live in ignored `tmp/phasing-pair-hmm-benchmark/`; use the final binary/reports for conclusions, and do not treat stopped `.partial` output as complete. GIAB HG001 is unphased: unchanged unphased fields and synthetic phase oracles do not establish real-data switch-error accuracy.
+The matched timing benchmark of the legacy and likelihood phasers (`scripts/benchmark_phasing.py`) was removed with the legacy phaser; its NA12878 results live in ignored `tmp/phasing-pair-hmm-benchmark/`. GIAB HG001 is unphased: unchanged unphased fields and synthetic phase oracles do not establish real-data switch-error accuracy.
 
 `--phase-mask FILE` is repeatable and affects phasing only. `phasing::PhaseMask` reads plain/gzip/BGZF BED and the supplied UCSC `Chr Start End GapType` centromere table; intervals are zero-based, half-open and merged once before worker threads start. Each unmasked interval is an independent inference domain, with reference/context/PairHMM flanks clipped to its boundaries and nuisance indels required to fit inside. Keep variant and methylation calls in masked intervals. CLI tests assert masks split even fragment-bridged blocks and preserve every non-phase VCF field; the likelihood test checks excluded observations and indels cannot affect PairHMM or aligned fallback scores.
 
@@ -556,8 +495,6 @@ PairHMM production profiles use mate-local coordinate windows with 12 bp flanks.
   above are absent; those instructions do not provide an executable accuracy check here.
 - `tests/data/test.bam` is a poor phasing fixture: its few het calls are C>T on a fully
   methylated control. Use a `Scenario` for anything that asserts phasing output.
-- A run that reports zero phased sites is usually an htslib binary (see "Know which binary
-  produced a result"), not a regression.
 
 ### PairHMM phasing performance (2026-10-14)
 
@@ -658,7 +595,16 @@ the tail batches and precomputed column weights per (window, orientation).
 
 ## ML feature layout (`src/metrics/ml/features/`)
 
-### Experimental SNP haplotype likelihood prototype
+### Experimental SNP haplotype likelihood prototype (removed 2026-10-19)
+
+The focal-rooted diagnostic this section and the next two describe (`ml haplotypes`,
+`diagnostics.rs`, `expansion.rs`, `infer_snp_expanded`, `LikelihoodEngine`,
+`scripts/validate_haplotype_likelihoods.py`, `scripts/benchmark_haplotype_likelihoods.py`,
+`tests/haplotypes_cli.rs`) was removed: production only ever ran `regional::infer`. The
+likelihood kernel, consensus, shrinkage and realignment notes still hold; the unit tests that
+drove them through `infer_snp` now drive them through a regional-model wrapper of the same
+name in `haplotypes/tests.rs` (a focal site proposed with every base plus its neighbours).
+The validation results quoted below are historical.
 
 `src/call/haplotypes.rs` exposes `infer_snp_expanded`; `likelihood.rs` owns conversion, sequencing and
 mapping emissions, quadrature and phase-normalized genotype priors. `diagnostics.rs` drives
@@ -670,7 +616,7 @@ not modify the bundled forests or production calls. Default conversion is 0.95, 
 conversion 0.003. Do not fit conversion efficiency directly to `bacteriophage_lambda_CpG`:
 the spike-in may be incompletely converted and underestimate it by 2–5 percentage points.
 
-Run `cargo test --features experimental-seqair --test haplotypes_cli` for BAM-backed tests.
+`tests/haplotypes_cli.rs` held the BAM-backed tests of the diagnostic (removed).
 `--sites-bed` takes one-base, 0-based half-open BED intervals without alleles and includes
 zero-coverage targets. This is important when comparing TAPS and WGS: their naturally
 discovered candidate sets differ, so calibration must use common focal positions.
@@ -1033,13 +979,11 @@ uvx --from whatshap whatshap compare --only-snvs --names truth,rastair --tsv-pai
 
 ## Know which binary produced a result
 
-`cargo build --release` without `--features experimental-seqair` replaces
-`target/release/rastair` with the htslib build, and a plain `cargo test` rebuilds
-`target/debug/rastair` the same way. Keep one `CARGO_TARGET_DIR` per backend when comparing,
-and check the log: `grep -c "Using experimental seqair backend" run.log` is 1 on seqair.
-The backends differ in mate dedup and soft-clip handling, so arms built on different
-backends are not comparable. Likewise score every arm of a comparison with `--gpu` or every arm
-without it: the two are not bitwise identical.
+There is one backend since 2026-10-19 (binaries from before that date could be htslib
+builds, which differ in mate dedup and soft-clip handling and are not comparable). Keep the
+binary, its commit and `git diff --stat` next to every benchmark output (`bench.py` writes a
+manifest with the binary's hash), and score every arm of a comparison with `--gpu` or every
+arm without it: the two are not bitwise identical.
 
 ## Release version bump checklist
 
@@ -1556,7 +1500,8 @@ the frozen binary and the source patch are in `tmp/regional-pairhmm/v2/` (`READM
   (`RepeatTracks`, GATK's convention), so a profile is one `compair::Read` under every
   template and the memo serves every template again; the memo key carries only the
   positions whose gaps differ from the plain ones. `TemplateTrack` is back to its key.
-- **D. Stutter mixture.** `ErrorProfile` gained a `stutter` table (`StutterRate`: per
+- **D. Stutter mixture** (removed 2026-10-19; it was never in the production profile and
+  measured within noise). `ErrorProfile` gained a `stutter` table (`StutterRate`: per
   period and minimum copies, per-molecule probabilities of −2, −1, +1, +2 units).
   `error_model::stutter_mixture` builds, for every compared haplotype and every tract one
   of the compared indels sits in (`tract_of`: normalized start, primitive unit,
@@ -1644,8 +1589,8 @@ into `feature/haplotypings` at `3429c89`. What is kept from each side:
 - **Indels are the cluster pair-HMM caller's alone** (`--experimental-indels`, the "Pair-HMM
   indel calling" section): no indel forests, no `normalize_indels`, no canonical anchor
   preprocessing, no `assign_indels`, no count genotyper. `MlFeatureSet` is
-  `Standard | Simple | Haplotypes`; `Canonical` and the `InsertionFeatures`/`DeletionFeatures`
-  layouts are gone, and a model holds three forests. compair 0.2.0 comes from crates.io: the
+  `Standard | Haplotypes` (`Simple` went on 2026-10-19); `Canonical` and the
+  `InsertionFeatures`/`DeletionFeatures` layouts are gone, and a model holds three forests. compair 0.2.0 comes from crates.io: the
   vendored insertion-emission patch was unused once the regional model emitted inserted bases
   at one.
 - **SNVs keep the regional molecular features** (`ml train --ml-features haplotypes
@@ -1653,12 +1598,10 @@ into `feature/haplotypings` at `3429c89`. What is kept from each side:
   68/69/67, see "Depth-free molecular features" below),
   the genotype rule (the forest decides presence, the likelihood decides dosage; `GTM`, `GQ`)
   and the **likelihood phaser** (`--phase`, repeatable `--phase-mask`). `ColumnPhase` is
-  `Observed | Phased(RecordPhases) | Likelihood(ColumnEvidence) | Genotyped(RecordPhases)`;
-  `call_of` reads `Phased` and `Genotyped`. Indel records are not phased: the MEC solver and
-  `problem::indel_site` survive as `cfg(test)` reference code (`legacy_phase_segment`), so the
-  "Indel sites" gate table above is historical.
-- **`--indel-error-profile FILE`** (experimental, INDELS group) is the per-read repeat-quality
-  experiment: the indel pair-HMM's reads take insertion-open, deletion-open and extension
+  `Phased(PhaseCall) | Likelihood(ColumnEvidence) | Genotyped(Option<PhaseCall>)` since
+  2026-10-19; `call_of` reads `Phased` and `Genotyped`. Indel records are not phased.
+- **`--indel-error-profile FILE`** (removed 2026-10-19, after the measurement below) was the
+  per-read repeat-quality experiment: the indel pair-HMM's reads take insertion-open, deletion-open and extension
   qualities from the calibrated `ErrorProfile.repeats` evaluated on the read's own bases
   (`ErrorProfile::tracks` → `HaplotypeRead::new(.., gaps)` → `compair::Read::new`), in place of
   compair's `PcrIndelModel` (GATK's conservative curve, Q45 open floored at Q20 on the read's
@@ -1983,3 +1926,110 @@ on the shared links, like the merged caller. Two caveats when reading this again
 arm: the WGS library is at 47x against 26x, and Octopus's published germline forest was
 trained on GIAB samples, which may include HG001, so its numbers on this sample can be
 optimistic; the comparison is library, depth and caller together.
+
+### Why the merged caller makes more het/hom errors than the WGS callers (2026-10-17)
+
+`tmp/regional-pairhmm/merge/genome/gt_errors/` (`analyse.py`, `results.txt`, `report.json`):
+every held-out truth SNV the merged caller calls (3,108,662; 15,159 dosage errors, 0.49 %),
+stratified on the exact-allele join of normalized truth and query. The genotype code is not
+the cause; the information is not in the TAPS reads at the sites concerned.
+
+| stratum | sites | dosage errors | rate |
+| --- | --- | --- | --- |
+| non-CpG, not de-novo CpG (`other`) | 1,504,086 | 3,709 | 0.25 % |
+| de-novo CpG allele (X>C / X>G, `CPGnovo`) | 447,616 | 6,052 | 1.35 % |
+| C>T or G>A at a reference CpG | 384,373 | 3,688 | 0.96 % |
+| C>T or G>A outside CpGs | 682,086 | 1,423 | 0.21 % |
+| genotyped by counts (gate fallback) | 19,718 | 559 | 2.84 % |
+
+GATK's and Octopus+forest's own dosage error rates on `other` at 47x WGS are 0.25 % and
+0.19 %, so on alleles both TAPS strands can see the merged caller at 26x equals GATK. The
+excess (65 % of all errors) is in the two classes where **TAPS conversion blinds one strand**:
+a methylated reference-CpG `C` reads as `T` on OT, so at a `C>T` het only OB can tell `C`
+from `T`; a methylated de-novo `C` (an X>C allele that creates a CpG) reads as the reference
+`T` on OT, so only OB can see the allele at all, and symmetrically for `G` alleles on OB. The
+decision then rests on the informative strand alone, and at 26x that strand has fewer than six
+reads at 20-22 % of these sites: de-novo CpG errors by informative-strand depth are 5.15 % (<6
+reads, 5,230 errors), 0.54 % (6-9), 0.18 % (10-14); reference-CpG `C>T` het→hom errors are
+4.8 % at <6 OB reads against 0.07 % at 10-14. 76 % of all errors have fewer than ten informative
+reads. BAM check of five `C>T` CpG hets called `1/1` (chr12:609596, 1528520, 2895223, 3075342,
+3175072): every read, OT and OB, shows `T` at the C and `G` at the partner, so no read carries
+the `C` allele; OT is blind by methylation and the 2-8 OB reads all came from the `T`
+haplotype. The posterior is right to be unsure: errors have GQ < 20 in 76 % of cases
+(12.9 % error rate at GQ 0-9, 0.06 % at GQ ≥ 30), so GQ is the handle downstream. Direction is
+symmetric overall (7,508 hom→het, 7,651 het→hom), so the flat het:hom prior is not the
+problem; at reference CpGs with low methylation the errors are het→hom (OT shows only `T`
+because the few OB reads all did), at methylated ones hom→het.
+
+The WGS callers get 74 % of these sites right because every read is informative there and
+the depth is 47x. The chr12 gated-vs-ungated transition table shows the gate moving ~150
+sites each way between right and wrong (`pairhmm` on both sides): changed regional context at
+coin-flip sites, not a systematic effect. Options, none implemented: a population or
+allele-frequency prior on het:hom would help only at the coin-flip sites and bias the rest;
+more depth is the real fix; downstream, treat het/hom at GQ < 20 as undecided.
+
+### Cleanup of experiment leftovers (2026-10-19)
+
+Removed, after a review of what production reaches (every number below is from
+`tmp/cleanup/`, whose `jobs.txt`, `report/report.json`, frozen trees `tree-*`, binaries
+`bin-*` and `nuisance-indels-removal.patch` are the record):
+
+- **The htslib pileup backend and the `experimental-seqair` feature.** `call` and `ml train`
+  are seqair-only; `from_hts.rs`, `overlapping_reads.rs`, the `Readers` pileup path, the
+  reader/source type aliases, the CI `seqair` job and the second clippy run are gone.
+  `rust-htslib` stays for `per-read` and `bam`; `hts_utils.rs` keeps the per-read copy of the
+  mismatch-motif orientation rule. `--linear-dedup-threshold` only served the htslib name
+  dedup and was removed with it. compair's `gpu` feature is unconditional.
+- **The focal diagnostic** (`ml haplotypes`, `diagnostics.rs`, `expansion.rs`,
+  `infer_snp_expanded`, `LikelihoodEngine`, `ExpansionParams` CLI flags, the non-local
+  `Prepared` geometry, `tests/haplotypes_cli.rs`, `scripts/validate_haplotype_likelihoods.py`,
+  `scripts/benchmark_haplotype_likelihoods.py`). `ExpansionParams` lives in `regional.rs`
+  as a plain struct; `methylation::Context::new` takes the realignment window; a read without
+  a captured sequence takes the aligned fallback in `molecular_evidence`. The likelihood unit
+  tests run through `haplotypes::tests::infer_snp`, a wrapper over `regional::infer`.
+- **The MEC phaser** (`phasing/problem.rs`, `solver.rs`, `legacy_phase_segment`, `Cost`,
+  per-column `PhaseObservation` capture, `SiteKind`/`RecordPhases`, the indel `PS` path in
+  `emit.rs`, `scripts/benchmark_phasing.py`). `ColumnPhase` is
+  `Phased(PhaseCall) | Likelihood | Genotyped(Option<PhaseCall>)`; the observation capture
+  ran on every `--phase` and molecular-model column and nothing read it.
+- **The stutter mixture** (`ErrorProfile.stutter`, `StutterRate`, `error_model::stutter_mixture`,
+  `fit_stutter`): never in the production profile, within noise when tried. The field's
+  removal changes the msgpack layout of `haplotype_error_profile`, so Haplotypes forests
+  trained before this date do not load; the bundled Standard model is unaffected.
+- **`--indel-error-profile`** and the per-read gap tracks of the indel pair-HMM
+  (`ErrorProfile::tracks` stays: `RepeatTracks` in the regional model reads it).
+- **`MlFeatureSet::Simple`**.
+
+**Behaviour check.** The cleaned tree with the regional model unchanged (`tree-with-indels`,
+`bin-with-indels`) reproduces the gated baseline (`b52ebb4`,
+`tmp/regional-pairhmm/merge/benchmark/`) exactly: byte-identical training feature exports
+for all three forests, and all 2,802,939 chr12 records identical in QUAL, FILTER, GT, GQ,
+GTM, ML, AD, DP, M5mC and PS (`report/identity-baseline-vs-with-indels.txt`). Training
+1,095 s and calling 1,198 s against 1,099 s and 1,201 s. The full suite, clippy, the Python
+tests and the CLI docs pass on the frozen trees (`check-*-*.log`, 694 tests).
+
+**Nuisance indels in the regional SNV model** (`tree-no-indels`; the proposal of CIGAR
+indel alleles as context in `features::add_likelihoods_with_profile`, with
+`complex_repeat_context`, removed; the phaser still marginalizes its one nuisance indel). The
+first finding is that `ml train` never sets `call_indels`, so training columns carried no
+indel observations and the proposals only ever acted at calling time under
+`--experimental-indels`: both arms train byte-identical forests, and the ablation also makes
+calling consistent with training. On chr12 (same protocol as the merged-branch runs):
+
+| arm | SNV R / P / F1 | SNV dosage hom→het + het→hom | absent truth SNVs / false passes | ins F1 | del F1 | phased / switches (shared-link switches) | chr12 call |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| gated baseline = cleanup with indels | 0.9725 / 0.9882 / 0.9803 | 389+412 | 3,841 / 1,458 | 0.9047 | 0.9045 | 49,506 / 7 (7) | 1,198 s / 73,177 CPU-s |
+| cleanup without indels | 0.9728 / 0.9878 / 0.9802 | 394+416 | 3,799 / 1,515 | 0.9046 | 0.9047 | 49,601 / 7 (7) | 1,068 s / 65,382 CPU-s |
+
+The indels were worth 0.0001 SNV F1 (+38 recovered truth SNVs, +57 false passes, +9 dosage
+errors, with the regional context moving 310 genotypes and 498 phase sets either way) for
+11 % of the calling CPU; indel records are untouched (one-record differences are
+multi-allelic SNV records). The removal is kept. `nuisance-indels-removal.patch` restores
+the proposals if ever wanted.
+
+**Open.** `the_band_holds_a_path_across_a_long_indel` now runs the production (read-local)
+band: a read whose CIGAR aligns straight through a 60 bp deletion loses 0.3 nats of side
+mass against the reference template at the reach-sized band (95 columns) and is exact at
+146; the carrying read and both reads against the deletion template are exact. The test
+tolerates that case at 0.5 nats and documents it. It is a property of the band rule the
+production model always had, not of this cleanup.

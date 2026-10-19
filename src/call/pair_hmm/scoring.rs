@@ -58,9 +58,7 @@ pub struct HaplotypeRead {
 
 impl HaplotypeRead {
     /// An error for a read without a bisulfite strand, which the emission
-    /// cannot score, or whose bases and qualities disagree in length. With
-    /// `gaps`, the read's gap qualities come from that library profile on its
-    /// own tandem repeats rather than from the PCR model.
+    /// cannot score, or whose bases and qualities disagree in length.
     pub fn new(
         bases: &[Base],
         quals: &[BaseQuality],
@@ -68,7 +66,6 @@ impl HaplotypeRead {
         strand: Strand,
         fragment: Option<FragmentId>,
         mapq: u8,
-        gaps: Option<&crate::call::haplotypes::ErrorProfile>,
     ) -> Result<Self, compair::Error> {
         let quals: Cow<'_, [BaseQuality]> = if quals.contains(&BaseQuality::UNAVAILABLE) {
             quals
@@ -78,26 +75,8 @@ impl HaplotypeRead {
         } else {
             Cow::Borrowed(quals)
         };
-        let read = match gaps {
-            Some(profile) => {
-                let tracks = profile.tracks(bases, PCR_INDEL_MODEL.gap_open, GAP_EXTEND_QUAL);
-                let (mut insertion, mut deletion, mut extension) =
-                    (Vec::with_capacity(bases.len()), Vec::with_capacity(bases.len()), Vec::with_capacity(bases.len()));
-                for [open_insertion, open_deletion, extend] in tracks {
-                    insertion.push(open_insertion);
-                    deletion.push(open_deletion);
-                    extension.push(extend);
-                }
-                Read::new(bases, &quals, &insertion, &deletion, &extension, strand)?
-            }
-            None => Read::with_pcr_indel_model(
-                bases,
-                &quals,
-                &PCR_INDEL_MODEL,
-                GAP_EXTEND_QUAL,
-                strand,
-            )?,
-        };
+        let read =
+            Read::with_pcr_indel_model(bases, &quals, &PCR_INDEL_MODEL, GAP_EXTEND_QUAL, strand)?;
         Ok(Self { read, offset, fragment, mapq })
     }
 }
@@ -335,7 +314,7 @@ mod tests {
         let quals = vec![BaseQuality::from_byte(30); slice.len()];
         let offset = i32::try_from(start).expect("fits");
         let fragment = FragmentId::new(u64::try_from(start).expect("fits") + 1);
-        HaplotypeRead::new(&bases, &quals, offset, strand, fragment, 60, None).expect("a read")
+        HaplotypeRead::new(&bases, &quals, offset, strand, fragment, 60).expect("a read")
     }
 
     /// The window with `n` bases of the T run deleted.
@@ -367,11 +346,10 @@ mod tests {
             Strand::OT,
             None,
             60,
-            None,
         )
         .expect("a read");
         assert_eq!(read.read.base_quals(), [MISSING_QUAL, BaseQuality::from_byte(30)]);
-        assert!(HaplotypeRead::new(&[Base::A], &[], 0, Strand::OT, None, 60, None).is_err());
+        assert!(HaplotypeRead::new(&[Base::A], &[], 0, Strand::OT, None, 60).is_err());
     }
 
     /// A reference-length stutter read at a homozygous deletion in a long run
@@ -515,7 +493,6 @@ mod tests {
             Strand::Unknown,
             None,
             60,
-            None,
         );
         assert_eq!(read, Err(compair::Error::UnknownStrand));
     }

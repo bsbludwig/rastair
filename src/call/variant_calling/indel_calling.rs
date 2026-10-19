@@ -12,8 +12,8 @@ use std::num::NonZeroU8;
 pub struct IndelParams {
     /// Enable experimental indel calling
     ///
-    /// Indels are called by a TAPS-aware pair-HMM, which needs the seqair
-    /// backend.
+    /// Indels are called by a TAPS-aware pair-HMM over the reads spanning
+    /// each cluster of candidate columns.
     #[arg(long)]
     #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     pub experimental_indels: bool,
@@ -29,18 +29,6 @@ pub struct IndelParams {
     #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     #[default(2)]
     pub min_indel_ao: u32,
-
-    /// Score indel reads with the gap qualities of a calibrated library error
-    /// profile instead of GATK's conservative PCR model (experimental)
-    ///
-    /// A JSON profile written by `scripts/calibrate_haplotype_errors.py`: per
-    /// repeat period and copy count, the insertion-open, deletion-open and
-    /// extension qualities measured on the library. Evaluated on each read's
-    /// own tandem repeats, as the PCR model is.
-    #[arg(long = "indel-error-profile", value_name = "FILE")]
-    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub indel_error_profile: Option<std::path::PathBuf>,
 }
 
 /// Result of indel calling at a single position for one allele.

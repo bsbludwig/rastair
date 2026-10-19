@@ -13,16 +13,16 @@ This is the changelog for Rastair 2.
 - `call`, `per-read` and `bam` no longer accumulate finished segments without limit behind a slow one (deep coverage, a repeat); at most four segments per thread wait to be written.
 - Crashes and internal errors end with a link to open a pre-filled GitHub issue, with the error, Rastair's version and the region being processed. With `--verbose`, only crashes and internal errors show a backtrace.
 - Fixed a hang when the GPU inference thread crashes: queued regions now fall back to CPU scoring, like after any other GPU failure.
-- `--phase` links called heterozygous SNVs into phase blocks by the likelihood of the captured read pairs under a local pair-HMM, written as phased genotypes (`0|1`) with a new `PS` FORMAT field; repeated `--phase-mask FILE` arguments keep centromeres and blacklisted intervals out of phasing. Requires the `experimental-seqair` backend. Indel records are not phased yet.
+- `--phase` links called heterozygous SNVs into phase blocks by the likelihood of the captured read pairs under a local pair-HMM, written as phased genotypes (`0|1`) with a new `PS` FORMAT field; repeated `--phase-mask FILE` arguments keep centromeres and blacklisted intervals out of phasing. Indel records are not phased.
 - `ml train --ml-features haplotypes` trains the SNV forests with thirteen depth-free molecular features from a regional pair-HMM over the captured read pairs, and `--haplotype-error-profile FILE` embeds the library's calibrated gap qualities in the model (`scripts/calibrate_haplotype_errors.py`). A model with those features genotypes SNVs from the same likelihoods: FORMAT `GTM` names the method (`pairhmm` or `counts`) and `GQ` the genotype's confidence. The forest decides whether an allele is present and the likelihood its dosage.
-- `--experimental-indels` is now a plain flag and calls indels with a TAPS-aware pair-HMM instead of the ML model. Requires the `experimental-seqair` backend.
+- `--experimental-indels` is now a plain flag and calls indels with a TAPS-aware pair-HMM instead of the ML model.
 - With `--gpu`, the pair-HMM scores on the GPU as well; the calls are the same as on the CPU.
 - An indel allele needs at least 5% of the column's depth, besides `--min-indel-ao`, to be scored.
 - Indels at most 20 bp apart are called together, against haplotypes carrying every combination of them, with positions showing a nearby SNV left open; two indels on one chromosome are now both called, and an SNV next to an indel no longer turns into an indel call.
 - Removed `--min-indel-depth`, `--indel-error-rate`, `--indel-max-mismatches` and `--indel-end-of-read-cutoff`.
 - The `indel_strand` FILTER is replaced by `low_indel_qual`.
 - The bundled model no longer contains indel models.
-- `--indel-error-profile FILE` (experimental) scores the indel pair-HMM's reads with the gap qualities of a calibrated library error profile in place of GATK's conservative PCR model.
+- `call` and `ml train` read BAM files through seqair only; the htslib pileup backend and the `experimental-seqair` build feature are gone, and so is the `ml haplotypes` diagnostic.
 
 ## Version 2.2.0 (2026-08-24)
 

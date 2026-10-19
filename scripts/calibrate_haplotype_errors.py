@@ -88,38 +88,10 @@ def context_counts(task):
             totals[key][2] += sum(weight for delta in values if delta < 0)
             totals[key][3] += sum(weight * abs(delta) for delta in values if delta)
             totals[key][4] += 1
-            # Whole-unit changes of copy number are stutter, a molecule-level
-            # event; a step beyond two units counts as two.
-            for delta in values:
-                if delta and delta % period == 0:
-                    step = max(-2, min(2, delta // period))
-                    totals[key][5 + STEPS.index(step)] += weight
     return dict(totals)
 
 
-COLUMNS = ['exposure', 'insertions', 'deletions', 'error_bases', 'molecules',
-           'step_minus_2', 'step_minus_1', 'step_plus_1', 'step_plus_2']
-STEPS = [-2, -1, 1, 2]
-# How GATK's conservative curve, read per molecule, splits over steps: the
-# prior for a context with few molecules.
-STEP_PRIOR = [0.1, 0.5, 0.3, 0.1]
-
-
-def fit_stutter(counts, prior_molecules=100.0):
-    stutter = []
-    for period in range(1, 7):
-        for copies in range(2, 21):
-            values = (list(counts.get((period, copies), [])) + [0.0] * len(COLUMNS))[:len(COLUMNS)]
-            molecules = values[4]
-            baseline_q = max(10, round(40 - math.exp(copies / (3 * math.pi)) + 1))
-            baseline = min(0.5, copies * 10 ** (-baseline_q / 10))
-            steps = [(values[5 + i] + prior_molecules * baseline * STEP_PRIOR[i]) / (molecules + prior_molecules)
-                     for i in range(4)]
-            total = sum(steps)
-            if total > 0.9:
-                steps = [step * 0.9 / total for step in steps]
-            stutter.append(dict(period=period, minimum_copies=copies, steps=steps))
-    return stutter
+COLUMNS = ['exposure', 'insertions', 'deletions', 'error_bases', 'molecules']
 
 
 def fit_profile(counts, platform, library, prior_exposure=1000.0):
@@ -137,8 +109,7 @@ def fit_profile(counts, platform, library, prior_exposure=1000.0):
                          for events in (insertions, deletions)]
             repeats.append(dict(period=period, minimum_copies=copies,
                 insertion_open_phred=qualities[0], deletion_open_phred=qualities[1], extension_phred=extension))
-    return dict(version=1, platform=platform, library=library, maximum_evidence_phred=45, repeats=repeats,
-                stutter=fit_stutter(counts))
+    return dict(version=1, platform=platform, library=library, maximum_evidence_phred=45, repeats=repeats)
 
 
 def main():

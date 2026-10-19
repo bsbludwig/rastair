@@ -24,43 +24,27 @@ pub(super) struct Context {
     pub haplotypes: Vec<BTreeSet<Cpg>>,
     ot: BTreeSet<SequencePosition>,
     ob: BTreeSet<SequencePosition>,
-    calibration: CalibrationRegion,
-}
-
-enum CalibrationRegion {
-    Aligned(BTreeSet<SequencePosition>),
-    Realigned(std::ops::Range<u32>),
+    /// The realignment window: the observations that can fit a rate.
+    calibration: std::ops::Range<u32>,
 }
 
 impl Context {
+    /// `loci` must not be empty, so that a scoring context has something to
+    /// annotate.
     pub fn new(
         reference: &Reference,
         haplotypes: &[Haplotype],
         loci: &[u32],
-        realignment_window: Option<std::ops::Range<u32>>,
+        realignment_window: std::ops::Range<u32>,
     ) -> Result<Self> {
+        ensure!(!loci.is_empty(), "No scoring loci");
         let reference_end = reference
             .start
             .checked_add(u32::try_from(reference.bases.len())?)
             .ok_or_eyre("Reference coordinate overflow")?;
-        let mut start = loci.first().copied().ok_or_eyre("No scoring loci")?;
-        let mut end = loci
-            .last()
-            .copied()
-            .ok_or_eyre("No scoring loci")?
-            .checked_add(1)
-            .ok_or_eyre("Scoring coordinate overflow")?;
-        let calibration = if let Some(window) = realignment_window {
-            start = window.start;
-            end = window.end;
-            CalibrationRegion::Realigned(window)
-        } else {
-            CalibrationRegion::Aligned(
-                loci.iter().copied().map(SequencePosition::reference).collect(),
-            )
-        };
-        let start = start.saturating_sub(1).max(reference.start);
-        let end = end.saturating_add(1).min(reference_end);
+        let calibration = realignment_window;
+        let start = calibration.start.saturating_sub(1).max(reference.start);
+        let end = calibration.end.saturating_add(1).min(reference_end);
         let cpgs = haplotypes
             .iter()
             .map(|haplotype| super::pair_hmm::cpgs(reference, haplotype, start, end))
@@ -71,10 +55,7 @@ impl Context {
     }
 
     fn accepts_observation(&self, position: SequencePosition) -> bool {
-        match &self.calibration {
-            CalibrationRegion::Aligned(positions) => positions.contains(&position),
-            CalibrationRegion::Realigned(range) => range.contains(&position.pos),
-        }
+        self.calibration.contains(&position.pos)
     }
 
     fn side(&self, position: SequencePosition, strand: Strand) -> Option<CpgSide> {
@@ -166,7 +147,6 @@ pub(super) fn estimate(
     estimate_with_mixtures(context, haplotypes, fragments, pilot, params, &pairs, Some(&mixtures))
 }
 
-#[cfg(any(feature = "experimental-seqair", test))]
 pub(super) fn estimate_with_pairs(
     context: &Context,
     haplotypes: &[Haplotype],
@@ -372,7 +352,7 @@ fn observation(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{LikelihoodEngine, Observation, ReadEvidence};
+    use super::super::{Observation, ReadEvidence, tests::loci_window};
     use super::*;
 
     #[test]
@@ -405,7 +385,8 @@ mod tests {
                     indels: vec![super::super::Indel { start: 1002, deleted, inserted }],
                 },
             ];
-            let context = Context::new(&reference, &haplotypes, &[1001, expected.g.pos], None)?;
+            let loci = [1001, expected.g.pos];
+            let context = Context::new(&reference, &haplotypes, &loci, loci_window(&loci))?;
             assert!(context.haplotypes.first().ok_or_eyre("reference CpGs")?.is_empty());
             assert_eq!(
                 context.haplotypes.get(1).ok_or_eyre("edited CpGs")?,
@@ -439,8 +420,7 @@ mod tests {
                 }],
             },
         ];
-        let mut params = super::super::tests::params(false);
-        params.likelihood_engine = LikelihoodEngine::PairHmm;
+        let params = super::super::tests::params(false);
         let sites = [Site::new(1020, Base::A, [Base::C])?];
         let prepared = super::super::pair_hmm::Prepared::new(
             &reference,
@@ -449,7 +429,7 @@ mod tests {
             &[],
             &params,
         )?;
-        let context = Context::new(&reference, &haplotypes, &[1020], Some(prepared.interval()))?;
+        let context = Context::new(&reference, &haplotypes, &[1020], prepared.interval())?;
         assert_eq!(
             Scoring::Neutral(&context).neutral_bases(
                 SequencePosition::reference(1180),
@@ -463,7 +443,7 @@ mod tests {
         *edge.bases.get_mut(33).ok_or_eyre("edge G")? = Base::G;
         let haplotypes = [Haplotype { alleles: vec![], indels: Vec::new() }];
         let prepared = super::super::pair_hmm::Prepared::new(&edge, &sites, None, &[], &params)?;
-        let context = Context::new(&edge, &haplotypes, &[1020, 1021], Some(prepared.interval()))?;
+        let context = Context::new(&edge, &haplotypes, &[1020, 1021], prepared.interval())?;
         let cpg = context.haplotypes.first().and_then(BTreeSet::first).ok_or_eyre("edge CpG")?;
         let mate = Fragment {
             reads: vec![ReadEvidence {
@@ -498,7 +478,8 @@ mod tests {
         let sites = [Site::new(1001, Base::C, [Base::T])?];
         let haplotypes = [Haplotype { alleles: vec![(1001, Base::C)], indels: Vec::new() }];
         let params = super::super::tests::params(false);
-        let context = Context::new(&reference, &haplotypes, &[1001, 1005], None)?;
+        let context =
+            Context::new(&reference, &haplotypes, &[1001, 1005], loci_window(&[1001, 1005]))?;
         let cpgs = context.haplotypes.first().ok_or_eyre("cpgs")?;
         let first = cpgs.first().ok_or_eyre("first CpG")?;
         let second = cpgs.last().ok_or_eyre("second CpG")?;
@@ -561,9 +542,8 @@ mod tests {
         let sites = [Site::new(1001, Base::C, [Base::T])?];
         let haplotypes = [Base::C, Base::T]
             .map(|base| Haplotype { alleles: vec![(1001, base)], indels: Vec::new() });
-        let mut params = super::super::tests::params(false);
-        params.likelihood_engine = LikelihoodEngine::Aligned;
-        let context = Context::new(&reference, &haplotypes, &[1001], None)?;
+        let params = super::super::tests::params(false);
+        let context = Context::new(&reference, &haplotypes, &[1001], loci_window(&[1001]))?;
         let mut molecules = vec![molecule(Base::T, Base::Unknown); 16];
         for base in [Base::C, Base::T] {
             for _ in 0..8 {

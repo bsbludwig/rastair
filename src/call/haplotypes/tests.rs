@@ -1,5 +1,242 @@
+//! Tests of the likelihood model through the regional search: a focal site
+//! proposed with every base, its neighbours with their alleles, and what the
+//! diploid posterior says about each allele at the focal site.
+
 use super::*;
 use Base::*;
+use likelihood::{cpg_anchor, fragment_likelihood};
+
+pub(super) fn params(non_taps: bool) -> LikelihoodParams {
+    LikelihoodParams {
+        error_profile: super::ErrorProfile { repeats: Vec::new(), ..Default::default() },
+        conversion_rate: Probability::new(0.95).expect("probability"),
+        false_conversion_rate: Probability::new(0.003).expect("probability"),
+        snp_prior: Probability::new(0.001).expect("probability"),
+        non_taps,
+        quadrature_order: 16,
+        methylation_prior_strength: 4.0,
+        methylation_min_cpg_probability: Probability::new(0.9).expect("probability"),
+        gap_open: Probability::new(10.0_f64.powf(-4.5)).expect("probability"),
+        gap_extend: Probability::new(0.1).expect("probability"),
+        indel_prior: Probability::new(0.0001).expect("probability"),
+        realignment_flank: 12,
+        max_indel_length: 20,
+    }
+}
+
+/// The window the aligned model calibrates on: the loci themselves.
+pub(super) fn loci_window(loci: &[u32]) -> std::ops::Range<u32> {
+    let first = loci.first().copied().expect("loci");
+    let last = loci.last().copied().expect("loci");
+    first..last + 1
+}
+
+/// Every combination of the sites' alleles.
+pub(super) fn enumerate(sites: &[Site]) -> Vec<Haplotype> {
+    let mut haplotypes = vec![Haplotype { alleles: Vec::new(), indels: Vec::new() }];
+    for site in sites {
+        haplotypes = haplotypes
+            .iter()
+            .flat_map(|haplotype| {
+                site.alleles.iter().map(|&base| {
+                    let mut haplotype = haplotype.clone();
+                    haplotype.alleles.push((site.pos, base));
+                    haplotype
+                })
+            })
+            .collect();
+    }
+    haplotypes
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AlleleEvidence {
+    pub base: Base,
+    pub log_bayes_factor: f64,
+    pub posterior: Probability,
+    pub heterozygous: Probability,
+    pub homozygous: Probability,
+}
+
+/// What the regional model says about one focal site.
+#[derive(Debug)]
+pub(super) struct SnpEvidence {
+    pub alleles: Vec<AlleleEvidence>,
+    pub haplotypes: Vec<Haplotype>,
+    pub pairs: Vec<PairEvidence>,
+    pub sites: Vec<Site>,
+    /// Unphased A/C/G/T genotypes at the focal site in VCF triangular order.
+    pub genotype_posteriors: [Probability; 10],
+    pub realigned_fragments: usize,
+    pub aligned_fallback_fragments: usize,
+    pub focal_fragments: usize,
+    pub focal_observations: usize,
+    pub focal_read_observations: usize,
+    pub focal_overlapping_fragments: usize,
+    pub focal_discordant_fragments: usize,
+    /// Fragments covering the focal site and another site of the region.
+    pub linking_fragments: usize,
+}
+
+impl SnpEvidence {
+    pub fn allele(&self, base: Base) -> Option<&AlleleEvidence> {
+        self.alleles.iter().find(|allele| allele.base == base)
+    }
+
+    /// Conditional on the retained chromosomes.
+    pub fn genotypes_at(&self, pos: u32) -> Result<[Probability; 10]> {
+        ensure!(self.sites.iter().any(|site| site.pos == pos), "Position is outside the region");
+        let mut values = [0.0; 10];
+        for pair in &self.pairs {
+            let (a, b) = pair_bases(pair, &self.haplotypes, pos)?;
+            let index = genotype_index(a, b).ok_or_eyre("Unknown context genotype")?;
+            *values.get_mut(index).ok_or_eyre("Invalid context genotype")? += *pair.posterior;
+        }
+        let mut result = [Probability::ZERO; 10];
+        for (result, value) in result.iter_mut().zip(values) {
+            *result = probability(value)?;
+        }
+        Ok(result)
+    }
+}
+
+pub(super) fn infer_snp(
+    reference: &Reference,
+    focal: u32,
+    neighbors: &[Site],
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+    max_sites: usize,
+) -> Result<SnpEvidence> {
+    infer_snp_with_indels(reference, focal, neighbors, &[], fragments, params, max_sites)
+}
+
+/// The regional model over the focal site, proposed with every base, and the
+/// `max_sites - 1` nearest of `neighbors`; each of `indels` is an alternate
+/// at the candidate anchoring it.
+pub(super) fn infer_snp_with_indels(
+    reference: &Reference,
+    focal: u32,
+    neighbors: &[Site],
+    indels: &[Indel],
+    fragments: &[Fragment],
+    params: &LikelihoodParams,
+    max_sites: usize,
+) -> Result<SnpEvidence> {
+    params.validate()?;
+    let ref_base = reference.base_at(focal).ok_or_eyre("Focal site outside reference")?;
+    let mut sites = vec![Site::new(focal, ref_base, Base::KNOWN)?];
+    let mut nearest: Vec<_> = neighbors.iter().filter(|site| site.pos != focal).cloned().collect();
+    nearest.sort_by_key(|site| (site.pos.abs_diff(focal), site.pos));
+    for site in nearest.into_iter().take(max_sites.saturating_sub(1)) {
+        ensure!(
+            reference.base_at(site.pos) == Some(site.reference),
+            "Candidate reference mismatch"
+        );
+        sites.push(site);
+    }
+    let mut candidates: Vec<_> =
+        sites.into_iter().map(|site| regional::Candidate { site, indels: Vec::new() }).collect();
+    for indel in indels {
+        let indel = indel.normalized(reference)?;
+        let anchor = indel.start.checked_sub(1).ok_or_eyre("Indel at the reference start")?;
+        match candidates.iter_mut().find(|candidate| candidate.site.pos == anchor) {
+            Some(candidate) => candidate.indels.push(indel),
+            None => {
+                let base =
+                    reference.base_at(anchor).ok_or_eyre("Indel anchor outside reference")?;
+                candidates.push(regional::Candidate {
+                    site: Site { pos: anchor, reference: base, alleles: vec![base] },
+                    indels: vec![indel],
+                });
+            }
+        }
+    }
+    candidates.sort_by_key(|candidate| candidate.site.pos);
+    let search = ExpansionParams { max_sites: 64, ..ExpansionParams::default() };
+    let mut scorer = Scorer::new(params)?;
+    let region = regional::infer(reference, &candidates, fragments, params, &search, &mut scorer)?;
+    ensure!(region.used == candidates.len(), "The region did not reach every candidate");
+
+    let mut genotypes = [0.0; 10];
+    for pair in &region.pairs {
+        let (a, b) = pair_bases(pair, &region.haplotypes, focal)?;
+        let index = genotype_index(a, b).ok_or_eyre("Unknown focal genotype")?;
+        *genotypes.get_mut(index).ok_or_eyre("Invalid genotype index")? += *pair.posterior;
+    }
+    let mut genotype_posteriors = [Probability::ZERO; 10];
+    for (posterior, value) in genotype_posteriors.iter_mut().zip(genotypes) {
+        *posterior = probability(value)?;
+    }
+    let mut alleles = Vec::with_capacity(3);
+    for base in Base::KNOWN.into_iter().filter(|base| *base != ref_base) {
+        let (mut present_likelihood, mut absent_likelihood, mut present_prior, mut absent_prior) =
+            (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let (mut present, mut heterozygous, mut homozygous) = (0.0, 0.0, 0.0);
+        for pair in &region.pairs {
+            let (a, b) = pair_bases(pair, &region.haplotypes, focal)?;
+            let copies = u8::from(a == base) + u8::from(b == base);
+            if copies == 0 {
+                absent_likelihood =
+                    log_add(absent_likelihood, pair.log_likelihood + pair.log_prior);
+                absent_prior = log_add(absent_prior, pair.log_prior);
+            } else {
+                present_likelihood =
+                    log_add(present_likelihood, pair.log_likelihood + pair.log_prior);
+                present_prior = log_add(present_prior, pair.log_prior);
+                present += *pair.posterior;
+                if copies == 1 {
+                    heterozygous += *pair.posterior;
+                } else {
+                    homozygous += *pair.posterior;
+                }
+            }
+        }
+        alleles.push(AlleleEvidence {
+            base,
+            log_bayes_factor: (present_likelihood - present_prior)
+                - (absent_likelihood - absent_prior),
+            posterior: probability(present)?,
+            heterozygous: probability(heterozygous)?,
+            homozygous: probability(homozygous)?,
+        });
+    }
+    let covers = |fragment: &Fragment, pos| fragment.reads.iter().any(|read| read.covers(pos));
+    let mut focal_observations = 0;
+    let mut focal_read_observations = 0;
+    let mut focal_overlapping_fragments = 0;
+    let mut focal_discordant_fragments = 0;
+    for fragment in fragments {
+        let base = likelihood::consensus_at(fragment, focal)?;
+        focal_observations += usize::from(base.source.is_some());
+        focal_read_observations += base.measurements;
+        focal_overlapping_fragments += usize::from(base.measurements == 2);
+        focal_discordant_fragments += usize::from(base.discordant);
+    }
+    let focal_fragments = fragments.iter().filter(|fragment| covers(fragment, focal)).count();
+    let linking_fragments = fragments
+        .iter()
+        .filter(|fragment| {
+            covers(fragment, focal)
+                && region.sites.iter().any(|site| site.pos != focal && covers(fragment, site.pos))
+        })
+        .count();
+    Ok(SnpEvidence {
+        alleles,
+        aligned_fallback_fragments: region.fragments - region.realigned,
+        haplotypes: region.haplotypes,
+        pairs: region.pairs,
+        sites: region.sites,
+        genotype_posteriors,
+        realigned_fragments: region.realigned,
+        focal_fragments,
+        focal_observations,
+        focal_read_observations,
+        focal_overlapping_fragments,
+        focal_discordant_fragments,
+        linking_fragments,
+    })
+}
 
 #[test]
 fn posterior_normalization_survives_large_common_log_offsets() -> Result<()> {
@@ -22,26 +259,7 @@ fn posterior_normalization_survives_large_common_log_offsets() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn params(non_taps: bool) -> LikelihoodParams {
-    LikelihoodParams {
-        error_profile: super::ErrorProfile { repeats: Vec::new(), ..Default::default() },
-        conversion_rate: Probability::new(0.95).expect("probability"),
-        false_conversion_rate: Probability::new(0.003).expect("probability"),
-        snp_prior: Probability::new(0.001).expect("probability"),
-        non_taps,
-        quadrature_order: 16,
-        likelihood_engine: LikelihoodEngine::Aligned,
-        methylation_prior_strength: 4.0,
-        methylation_min_cpg_probability: Probability::new(0.9).expect("probability"),
-        gap_open: Probability::new(10.0_f64.powf(-4.5)).expect("probability"),
-        gap_extend: Probability::new(0.1).expect("probability"),
-        indel_prior: Probability::new(0.0001).expect("probability"),
-        realignment_flank: 12,
-        max_indel_length: 20,
-    }
-}
-
-fn reference(bases: &[u8]) -> Reference {
+pub(super) fn reference(bases: &[u8]) -> Reference {
     Reference { start: 1000, bases: bases.iter().copied().map(Base::from).collect() }
 }
 
@@ -73,8 +291,11 @@ fn probability_sum(evidence: &SnpEvidence) -> f64 {
     evidence.pairs.iter().map(|pair| *pair.posterior).sum()
 }
 
+/// Five `A/G` hets linked pairwise by fragments are phased as one region:
+/// the best pair is all-`A` against all-`G`, and every site's genotype is
+/// the het.
 #[test]
-fn bounded_expansion_follows_transitive_fragment_links_beyond_three_sites() -> Result<()> {
+fn a_chain_of_linked_sites_is_phased_jointly() -> Result<()> {
     let reference = Reference { start: 1000, bases: vec![A; 1000] };
     let positions = [1001, 1121, 1241, 1361, 1481];
     let neighbors =
@@ -85,146 +306,31 @@ fn bounded_expansion_follows_transitive_fragment_links_beyond_three_sites() -> R
         reads.extend(copies(10, Strand::OT, &[(*a, A), (*b, A)]));
         reads.extend(copies(10, Strand::OB, &[(*a, G), (*b, G)]));
     }
-    let exact = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &reads,
-        &params(true),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-    )?;
-    let bounded = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &reads,
-        &params(true),
-        &ExpansionParams { max_haplotypes: 16, ..ExpansionParams::default() },
-        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-    )?;
-    for result in [&exact, &bounded] {
-        assert_eq!(result.sites.len(), 5);
-        assert_eq!(result.expansion_steps, 4);
-        assert!(*allele(result, G).heterozygous > 0.999);
-        assert!((probability_sum(result) - 1.0).abs() < 1e-12);
-        let best = result
-            .pairs
-            .iter()
-            .max_by(|a, b| a.posterior.total_cmp(&b.posterior))
-            .ok_or_eyre("best pair")?;
-        let a = result.haplotypes.get(best.first).ok_or_eyre("first")?;
-        let b = result.haplotypes.get(best.second).ok_or_eyre("second")?;
-        assert!(
-            positions.iter().all(|&pos| a.allele_at(pos) == Some(A))
-                || positions.iter().all(|&pos| a.allele_at(pos) == Some(G))
-        );
-        assert!(positions.iter().all(|&pos| a.allele_at(pos) != b.allele_at(pos)));
-        for &pos in &positions {
-            let genotypes = result.genotypes_at(pos)?;
-            assert!(
-                *genotypes.get(genotype_index(A, G).ok_or_eyre("index")?).ok_or_eyre("A/G")?
-                    > Probability::new(0.999)?
-            );
-        }
-        assert_eq!(result.genotypes_at(1001)?, result.genotype_posteriors);
-        assert!(result.genotypes_at(1999).is_err());
-    }
-    assert!(bounded.haplotypes.len() <= 16);
-    assert!(bounded.pruned_haplotypes > 0);
-    assert!(bounded.maximum_pruned_mass < 1e-6);
-    assert!((*allele(&exact, G).posterior - *allele(&bounded, G).posterior).abs() < 1e-9);
-    Ok(())
-}
-
-#[test]
-fn disconnected_and_low_confidence_fragments_do_not_extend_a_region() -> Result<()> {
-    let reference = reference(b"AAAAAAAAA");
-    let neighbors = [Site::new(1004, A, [G])?];
-    let read = read(Strand::OT, &[(1001, A), (1004, G)]);
-    let duplicated = vec![Fragment { reads: vec![read.clone(), read] }];
-    let result = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &duplicated,
-        &params(true),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-    )?;
-    assert_eq!(result.sites.len(), 1);
-    assert_eq!(result.disconnected_sites, 1, "two mates are one linking molecule");
-    let mut conflict = duplicated.clone();
-    conflict.extend(duplicated);
-    for fragment in &mut conflict {
-        let other = fragment.reads.get_mut(1).ok_or_eyre("mate")?;
-        let observation = other.observations.get_mut(1).ok_or_eyre("observation")?;
-        observation.base = A;
-    }
-    let result = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &conflict,
-        &params(true),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-    )?;
-    assert_eq!(result.sites.len(), 1, "Q0 consensus cannot provide a connection");
-    let mut independent = copies(10, Strand::OT, &[(1001, A)]);
-    independent.extend(copies(10, Strand::OT, &[(1004, G)]));
-    let result = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &independent,
-        &params(true),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-    )?;
-    assert_eq!(result.disconnected_sites, 1);
-    Ok(())
-}
-
-#[test]
-fn expansion_limits_preserve_focal_genotypes_and_report_omissions() -> Result<()> {
-    let reference = reference(b"AAAAAAAAAAAAAAAA");
-    let neighbors =
-        (1002..1010).map(|pos| Site::new(pos, A, [C, G, T])).collect::<Result<Vec<_>>>()?;
-    let bases = (1001..1010).map(|pos| (pos, A)).collect::<Vec<_>>();
-    let mut reads = copies(8, Strand::OT, &bases);
-    let alternate = (1001..1010).map(|pos| (pos, G)).collect::<Vec<_>>();
-    reads.extend(copies(8, Strand::OB, &alternate));
-    let search = ExpansionParams { max_sites: 4, max_haplotypes: 32, ..ExpansionParams::default() };
-    let result = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &reads,
-        &params(true),
-        &search,
-        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-    )?;
-    assert_eq!(result.sites.len(), 4);
-    assert_eq!(result.resource_limited_sites, 5);
-    assert_eq!(result.omitted_sites, 5);
-    assert!(result.haplotypes.len() <= 32);
-    let genotypes = result
+    let result = infer_snp(&reference, 1001, &neighbors, &reads, &params(true), 5)?;
+    assert_eq!(result.sites.len(), 5);
+    assert!(*allele(&result, G).heterozygous > 0.999);
+    assert!((probability_sum(&result) - 1.0).abs() < 1e-12);
+    let best = result
         .pairs
         .iter()
-        .map(|pair| {
-            let (a, b) = pair_bases(pair, &result.haplotypes, 1001)?;
-            genotype_index(a, b).ok_or_eyre("genotype")
-        })
-        .collect::<Result<BTreeSet<_>>>()?;
-    assert_eq!(genotypes.len(), 10);
-    assert!(result.pairs.iter().all(|pair| pair.log_prior.is_finite()));
+        .max_by(|a, b| a.posterior.total_cmp(&b.posterior))
+        .ok_or_eyre("best pair")?;
+    let a = result.haplotypes.get(best.first).ok_or_eyre("first")?;
+    let b = result.haplotypes.get(best.second).ok_or_eyre("second")?;
+    assert!(
+        positions.iter().all(|&pos| a.allele_at(pos) == Some(A))
+            || positions.iter().all(|&pos| a.allele_at(pos) == Some(G))
+    );
+    assert!(positions.iter().all(|&pos| a.allele_at(pos) != b.allele_at(pos)));
+    for &pos in &positions {
+        let genotypes = result.genotypes_at(pos)?;
+        assert!(
+            *genotypes.get(genotype_index(A, G).ok_or_eyre("index")?).ok_or_eyre("A/G")?
+                > Probability::new(0.999)?
+        );
+    }
+    assert_eq!(result.genotypes_at(1001)?, result.genotype_posteriors);
+    assert!(result.genotypes_at(1999).is_err());
     Ok(())
 }
 
@@ -243,205 +349,14 @@ fn retained_phase_assignments_share_one_genotype_prior_after_pruning() -> Result
 }
 
 #[test]
-fn buffered_branches_can_return_when_downstream_evidence_changes_the_ranking() -> Result<()> {
-    let reference = reference(b"AAAAAAAAAAAAAAAAAAAA");
-    let positions = [1001, 1004, 1007, 1010, 1013, 1016];
-    let neighbors =
-        positions.iter().skip(1).map(|&pos| Site::new(pos, A, [G])).collect::<Result<Vec<_>>>()?;
-    for seed in 1..=32u64 {
-        let mut state = seed;
-        let mut reads = Vec::new();
-        for _ in 0..32 {
-            let mut observations = Vec::new();
-            for &pos in &positions {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-                if state >> 61 != 0 {
-                    observations.push((pos, if state & (1 << 40) == 0 { A } else { G }));
-                }
-            }
-            reads.push(fragment(Strand::OT, &observations));
-        }
-        let search = ExpansionParams { max_haplotypes: 16, ..ExpansionParams::default() };
-        let result = infer_snp_expanded(
-            &reference,
-            1001,
-            &neighbors,
-            &[],
-            &reads,
-            &params(true),
-            &search,
-            &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-        )?;
-        if result.rescued_haplotypes > 0 {
-            let no_holdouts = infer_snp_expanded(
-                &reference,
-                1001,
-                &neighbors,
-                &[],
-                &reads,
-                &params(true),
-                &ExpansionParams { haplotype_holdout: 0, ..search },
-                &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-            )?;
-            assert_eq!(no_holdouts.rescued_haplotypes, 0);
-            assert_eq!(result.sites.len(), positions.len());
-            assert!(result.haplotypes.len() <= 16);
-            return Ok(());
-        }
-    }
-    color_eyre::eyre::bail!("No buffered branch was reconsidered across the deterministic fixtures")
-}
-
-#[test]
-fn conversion_only_cpg_candidates_do_not_bridge_genetic_regions() -> Result<()> {
-    let reference = reference(b"ACGAACGA");
-    let neighbors = [Site::new(1005, C, [T])?];
-    let mut reads = copies(8, Strand::OT, &[(1001, T), (1005, T)]);
-    reads.extend(copies(8, Strand::OB, &[(1001, C), (1005, C)]));
-    let result = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &reads,
-        &params(false),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
-    )?;
-    assert_eq!(result.sites.len(), 1);
-    reads.extend(copies(4, Strand::OB, &[(1001, C), (1005, T)]));
-    let result = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &reads,
-        &params(false),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
-    )?;
-    assert_eq!(result.sites.len(), 2);
-    assert_eq!(result.disconnected_sites, 0);
-    Ok(())
-}
-
-#[test]
-fn discovery_reaches_both_150bp_edges_and_respects_the_expansion_bound() -> Result<()> {
-    let reference = Reference { start: 800, bases: vec![A; 500] };
-    let neighbors = [Site::new(850, A, [G])?, Site::new(1150, A, [G])?, Site::new(1151, A, [G])?];
-    let observations = [(850, G), (1000, G), (1150, G), (1151, G)];
-    let reads = copies(4, Strand::OT, &observations);
-    let result = infer_snp_expanded(
-        &reference,
-        1000,
-        &neighbors,
-        &[],
-        &reads,
-        &params(true),
-        &ExpansionParams { expansion_radius: 150, ..ExpansionParams::default() },
-        &mut crate::call::haplotypes::Scorer::new(&params(true))?,
-    )?;
-    assert_eq!(result.sites.iter().map(|site| site.pos).collect::<Vec<_>>(), [850, 1000, 1150]);
-    Ok(())
-}
-
-#[test]
-fn unconverted_denovo_cpg_alleles_link_on_the_conversion_prone_strand() -> Result<()> {
-    for (sequence, unconverted, strand) in
-        [(b"ATGAAACA".as_slice(), C, Strand::OT), (b"CAAAAACA".as_slice(), G, Strand::OB)]
-    {
-        let reference = reference(sequence);
-        let site =
-            Site::new(1001, reference.base_at(1001).ok_or_eyre("reference")?, [unconverted])?;
-        let reads = copies(4, strand, &[(1001, unconverted), (1006, C)]);
-        let result = infer_snp_expanded(
-            &reference,
-            1006,
-            &[site],
-            &[],
-            &reads,
-            &params(false),
-            &ExpansionParams::default(),
-            &mut crate::call::haplotypes::Scorer::new(&params(false))?,
-        )?;
-        assert_eq!(result.sites.len(), 2);
-        assert_eq!(result.disconnected_sites, 0);
-    }
-    Ok(())
-}
-
-#[test]
-fn distant_nuisance_indels_require_fragment_connections_to_the_focal_region() -> Result<()> {
-    let reference = Reference { start: 1000, bases: vec![A; 1000] };
-    let indel = Indel { start: 1501, deleted: Vec::new(), inserted: vec![C] };
-    let sequence_read = |pos| {
-        let mut read = read(Strand::OT, &[(pos, A)]);
-        read.sequence = Some(SequenceEvidence {
-            bases: vec![SequenceObservation {
-                position: SequencePosition::reference(pos),
-                base: A,
-                quality: Some(40),
-            }],
-            reference_skip: false,
-            indels: Vec::new(),
-        });
-        read
-    };
-    let mut reads =
-        (0..4).map(|_| Fragment { reads: vec![sequence_read(1001)] }).collect::<Vec<_>>();
-    let mut params = params(true);
-    params.likelihood_engine = LikelihoodEngine::PairHmm;
-    let isolated = infer_snp_expanded(
-        &reference,
-        1001,
-        &[],
-        std::slice::from_ref(&indel),
-        &reads,
-        &params,
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params)?,
-    )?;
-    assert!(isolated.haplotypes.iter().all(|haplotype| haplotype.indels.is_empty()));
-    assert_eq!(isolated.omitted_indels, 1);
-    for fragment in &mut reads {
-        fragment.reads.push(sequence_read(1501));
-    }
-    let connected = infer_snp_expanded(
-        &reference,
-        1001,
-        &[],
-        &[indel],
-        &reads,
-        &params,
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params)?,
-    )?;
-    assert!(connected.haplotypes.iter().any(|haplotype| !haplotype.indels.is_empty()));
-    Ok(())
-}
-
-#[test]
 fn cpg_partner_hypotheses_are_joint_when_a_variant_removes_conversion_context() -> Result<()> {
     let reference = reference(b"ACGAAAAA");
     let neighbors = [Site::new(1001, C, [T])?];
     let mut reads = copies(6, Strand::OT, &[(1001, T), (1002, G)]);
     reads.extend(copies(2, Strand::OT, &[(1001, C), (1002, G)]));
     reads.extend(copies(4, Strand::OT, &[(1001, T), (1002, A)]));
-    let result = infer_snp_expanded(
-        &reference,
-        1002,
-        &neighbors,
-        &[],
-        &reads,
-        &params(false),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
-    )?;
-    assert_eq!(
-        result.sites.len(),
-        2,
-        "conversion-ambiguous partner still changes candidate sequence context"
-    );
+    let result = infer_snp(&reference, 1002, &neighbors, &reads, &params(false), 2)?;
+    assert_eq!(result.sites.len(), 2, "the conversion-ambiguous partner is part of the context");
     let genotypes = result.genotypes_at(1001)?;
     assert!(
         *genotypes.get(genotype_index(C, T).ok_or_eyre("C/T index")?).ok_or_eyre("C/T")?
@@ -456,16 +371,7 @@ fn a_partner_variant_does_not_create_a_false_cpg_at_an_uncovered_focal_base() ->
     let reference = reference(b"ATGAAACA");
     let neighbors = [Site::new(1002, G, [A])?];
     let reads = copies(20, Strand::OB, &[(1002, A)]);
-    let result = infer_snp_expanded(
-        &reference,
-        1001,
-        &neighbors,
-        &[],
-        &reads,
-        &params(false),
-        &ExpansionParams::default(),
-        &mut crate::call::haplotypes::Scorer::new(&params(false))?,
-    )?;
+    let result = infer_snp(&reference, 1001, &neighbors, &reads, &params(false), 2)?;
     assert_eq!(result.focal_observations, 0);
     assert_eq!(result.sites.len(), 2);
     assert!(
@@ -512,7 +418,8 @@ fn neutral_conversion_preserves_other_alleles_and_the_opposite_strand() -> Resul
         let haplotypes = enumerate(&sites);
         let loci = scored_loci(&reference, &sites);
         let params = params(false);
-        let context = methylation::Context::new(&reference, &haplotypes, &loci, None)?;
+        let context =
+            methylation::Context::new(&reference, &haplotypes, &loci, loci_window(&loci))?;
         let score = |template, observed, strand| -> Result<f64> {
             let (index, haplotype) = haplotypes
                 .iter()
@@ -554,7 +461,7 @@ fn simplified_models_keep_multiple_cpg_neighbors_and_non_taps_likelihoods() -> R
     let mut params = params(false);
     let result = infer_snp(&reference, 1001, &neighbors, &reads, &params, 3)?;
     assert_eq!(result.sites.len(), 2);
-    assert_eq!(result.retained_linking_fragments, 20);
+    assert_eq!(result.linking_fragments, 20);
     assert!((probability_sum(&result) - 1.0).abs() < 1e-12);
     params.non_taps = true;
     let control = infer_snp(&reference, 1001, &neighbors, &reads, &params, 3)?;
@@ -755,9 +662,7 @@ fn unrelated_cpg_rates_retain_their_neighbor_links() -> Result<()> {
     let evidence =
         infer_snp(&reference, 1001, &[Site::new(1005, C, [T])?], &reads, &params(false), 3)?;
     assert_eq!(evidence.sites.len(), 2);
-    assert_eq!(evidence.omitted_sites, 0);
-    assert_eq!(evidence.offered_linking_fragments, 4);
-    assert_eq!(evidence.retained_linking_fragments, 4);
+    assert_eq!(evidence.linking_fragments, 4);
     Ok(())
 }
 
@@ -807,16 +712,15 @@ fn overlapping_singleton_alternates_cannot_amplify_the_three_smoke_patterns() ->
 }
 
 #[test]
-fn site_cap_reports_omissions_without_cpg_link_loss() -> Result<()> {
+fn the_site_cap_keeps_the_nearest_neighbours() -> Result<()> {
     let reference = reference(b"ACGAAACGAACA");
     let reads = copies(6, Strand::OT, &[(1001, T), (1006, C), (1010, G)]);
     let neighbors = [Site::new(1006, C, [T])?, Site::new(1010, C, [G])?];
     let capped = infer_snp(&reference, 1001, &neighbors, &reads, &params(false), 1)?;
-    assert_eq!(capped.omitted_sites, 2);
-    assert_eq!(capped.resource_limited_sites, 2);
+    assert_eq!(capped.sites.len(), 1);
     let expanded = infer_snp(&reference, 1001, &neighbors, &reads, &params(false), 3)?;
     assert_eq!(expanded.sites.len(), 3);
-    assert_eq!(expanded.retained_linking_fragments, 6);
+    assert_eq!(expanded.linking_fragments, 6);
     assert!((probability_sum(&expanded) - 1.0).abs() < 1e-12);
     Ok(())
 }

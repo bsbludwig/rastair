@@ -3,10 +3,8 @@
 //! test then states which sites had to end up phased together.
 
 mod utils;
-#[cfg(feature = "experimental-seqair")]
 use color_eyre::eyre::OptionExt as _;
 use std::collections::BTreeMap;
-#[cfg(feature = "experimental-seqair")]
 use utils::scenario::Strand;
 use utils::{
     scenario::{Hap, Phasing, Scenario},
@@ -24,7 +22,6 @@ fn two_sites_in_trans() -> Scenario {
     Scenario::new(1000).snv(SITE_A, Hap::One).snv(SITE_B, Hap::Two).balanced(LEFT, RIGHT, 5)
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn blocks<const N: usize>(blocks: [&[usize]; N]) -> BTreeMap<usize, Vec<usize>> {
     blocks.into_iter().filter_map(|sites| Some((*sites.first()?, sites.to_vec()))).collect()
 }
@@ -32,7 +29,6 @@ fn blocks<const N: usize>(blocks: [&[usize]; N]) -> BTreeMap<usize, Vec<usize>> 
 /// Two heterozygous SNVs that only read pairs connect come out as one block,
 /// filed under the first site's position.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn read_pairs_link_two_hets_into_one_block() -> Result<()> {
     let scenario = two_sites_in_trans();
     let vcf = call_scenario(&scenario, &["--phase"])?;
@@ -45,7 +41,6 @@ fn read_pairs_link_two_hets_into_one_block() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn masked_sites_are_called_but_unphased() -> Result<()> {
     let dir = TempDir::new()?;
     let mask = dir.path().join("centromere.txt");
@@ -69,7 +64,6 @@ fn masked_sites_are_called_but_unphased() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn a_mask_is_a_barrier_even_when_fragments_bridge_it() -> Result<()> {
     let dir = TempDir::new()?;
     let mask = dir.path().join("blacklist.bed");
@@ -95,7 +89,6 @@ fn a_mask_is_a_barrier_even_when_fragments_bridge_it() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn assert_nonphase_fields_equal(a: &str, b: &str) {
     let canonical = |vcf: &str| {
         vcf_content_lines(vcf)
@@ -128,7 +121,6 @@ fn assert_nonphase_fields_equal(a: &str, b: &str) {
 /// block, and the hub, alone in its core, stays unphased. Phasing after the
 /// trim would leave all three unphased.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
     const HUB: usize = 120;
     const SPOKE_1: usize = 370;
@@ -150,14 +142,11 @@ fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "experimental-seqair")]
 /// The SNV the methylation-confounded site is linked to.
 const SNV: usize = 130;
-#[cfg(feature = "experimental-seqair")]
 /// A C/T heterozygote, or the T/C of a de-novo CpG.
 const TRANSITION: usize = 160;
 
-#[cfg(feature = "experimental-seqair")]
 /// Haplotype one carries a methylated `C` in a CpG at `TRANSITION`, so its
 /// top-strand reads show `T` there — the allele haplotype two carries. Those
 /// reads say nothing about the haplotype and must be dropped. Counted, they
@@ -175,7 +164,6 @@ fn methylated_cpg_het(scenario: Scenario) -> Scenario {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn converted_reads_at_a_reference_cpg_het_are_not_evidence() -> Result<()> {
     let scenario = methylated_cpg_het(Scenario::new(1000).reference_at(TRANSITION, b"CG").het(
         TRANSITION,
@@ -192,7 +180,6 @@ fn converted_reads_at_a_reference_cpg_het_are_not_evidence() -> Result<()> {
 /// The `C` alt before a reference `G` makes a CpG on haplotype one only, and
 /// its methylated top-strand reads show the reference `T`.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn converted_reads_at_a_denovo_cpg_het_are_not_evidence() -> Result<()> {
     let scenario = methylated_cpg_het(Scenario::new(1000).reference_at(TRANSITION, b"TG").het(
         TRANSITION,
@@ -210,7 +197,6 @@ fn converted_reads_at_a_denovo_cpg_het_are_not_evidence() -> Result<()> {
 /// haplotype one's reads cover one site or the other, never both, and so do
 /// haplotype two's bottom-strand reads.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn converted_reads_outside_a_cpg_are_evidence() -> Result<()> {
     let scenario = Scenario::new(1000)
         .reference_at(TRANSITION, b"CA")
@@ -235,7 +221,6 @@ fn converted_reads_outside_a_cpg_are_evidence() -> Result<()> {
 /// unphased. Run once with an insertion and once with a deletion, each placed
 /// so it has one alignment.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn an_indel_called_by_the_pair_hmm_is_not_phased_and_does_not_bridge_snvs() -> Result<()> {
     // Too far apart for any template to reach both SNVs; templates from each
     // side reach the indel.
@@ -276,7 +261,6 @@ fn an_indel_called_by_the_pair_hmm_is_not_phased_and_does_not_bridge_snvs() -> R
 /// switch error, and the same file with the whole block swapped no longer
 /// opens on `0|1`.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn check_phasing_rejects_a_switch_and_an_unnormalised_block() -> Result<()> {
     let scenario = two_sites_in_trans();
     let vcf = call_scenario(&scenario, &["--phase"])?;
@@ -315,21 +299,9 @@ fn an_unphased_run_mentions_no_phasing() -> Result<()> {
     Ok(())
 }
 
-/// The htslib backend cannot capture observations, so it refuses the flag.
-#[test]
-#[cfg(not(feature = "experimental-seqair"))]
-fn phasing_needs_the_seqair_backend() -> Result<()> {
-    let output = rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML, "--phase"]).output()?;
-    assert!(!output.status.success(), "--phase must fail on an htslib build");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--phase needs the `experimental-seqair` backend"), "{stderr}");
-    Ok(())
-}
-
 /// CpG-only output drops the variant sites phasing links, so the run is
 /// refused rather than paying for observations it throws away.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn phasing_refuses_cpg_only_output() -> Result<()> {
     let output = rastair()
         .args(CALL_TEST_BAM)
@@ -342,7 +314,6 @@ fn phasing_refuses_cpg_only_output() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn pair_hmm_expansion_phases_a_chain_that_requires_pruning() -> Result<()> {
     let positions: Vec<_> = (0..10).map(|index| 120 + index * 150).collect();
     let mut scenario = Scenario::new(2200);
@@ -360,7 +331,6 @@ fn pair_hmm_expansion_phases_a_chain_that_requires_pruning() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn fetching_the_same_fragment_in_byte_budget_subdivisions_does_not_change_phase() -> Result<()> {
     let scenario = two_sites_in_trans();
     let ordinary = scenario.check_phasing(&call_scenario(&scenario, &["--phase"])?)?;

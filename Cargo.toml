@@ -59,7 +59,7 @@ tracing = { workspace = true }
 
 seqair-types = { workspace = true }
 seqair = { workspace = true }
-compair = "0.2.0"
+compair = { version = "0.2.0", features = ["gpu"] }
 
 # bio tools
 bio-types = "1"
@@ -128,10 +128,6 @@ pastey = { workspace = true }
 
 [features]
 external-tool-tests = []
-# seqair is now a core dependency (VCF writer); this flag only toggles the
-# experimental seqair-backed pileup *reading* path, and with it the pair-HMM
-# indel caller (compair aligns reads at column time, which needs seqair's reads).
-experimental-seqair = ["compair/gpu"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

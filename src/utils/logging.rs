@@ -106,10 +106,6 @@ fn hook_builder(verbose: bool) -> color_eyre::config::HookBuilder {
         .panic_section(BUG_MESSAGE)
         .issue_url(ISSUE_URL)
         .add_issue_metadata("version", env!("CARGO_PKG_VERSION"))
-        .add_issue_metadata(
-            "pileup backend",
-            if cfg!(feature = "experimental-seqair") { "seqair" } else { "htslib" },
-        )
         // Only defects get a link: a user error like "BAM not found" is not
         // worth an issue, and its message is full of the user's paths.
         .issue_filter(|kind| match kind {

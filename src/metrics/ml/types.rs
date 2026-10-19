@@ -152,10 +152,9 @@ impl RastairFlatModel {
 pub enum MlFeatureSet {
     #[default]
     Standard,
-    Simple,
     /// The Standard layouts with the molecular SNV features appended; the
     /// model's metadata selects full read capture and regional pair-HMM
-    /// scoring on both backends.
+    /// scoring.
     Haplotypes,
 }
 
@@ -169,7 +168,6 @@ impl fmt::Display for MlFeatureSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MlFeatureSet::Standard => write!(f, "standard"),
-            MlFeatureSet::Simple => write!(f, "simple"),
             MlFeatureSet::Haplotypes => write!(f, "haplotypes"),
         }
     }

@@ -15,12 +15,10 @@
 //!   3. Convert to the output format
 //!   4. Write to file in order
 
-#[cfg(any(not(feature = "experimental-seqair"), test))]
+#[cfg(test)]
 use crate::call::pileup::Pileup;
-#[cfg(any(not(feature = "experimental-seqair"), test))]
+#[cfg(test)]
 use crate::call::process::calculate_pileup_metrics;
-#[cfg(not(feature = "experimental-seqair"))]
-use crate::call::process::get_pileups;
 use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
@@ -30,9 +28,7 @@ use crate::{
     },
     io::vcf_writer,
     metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
-    sequence::{
-        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Segment, SegmentationParams,
-    },
+    sequence::{ChunkRegion, ReaderParams, Segment, SegmentationParams, SeqairReaders},
     utils::{cli, map_surrounding},
 };
 use clio::ClioPath;
@@ -91,11 +87,10 @@ pub struct CallParams {
     #[command(flatten)]
     pub ml: ml::MachineLearningParams,
 
-    /// Link heterozygous variants that share read pairs into phase blocks
+    /// Link heterozygous SNVs that share read pairs into phase blocks
     ///
-    /// Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are
-    /// phased, and indels too with `--experimental-indels`. Requires a build
-    /// with the `experimental-seqair` backend.
+    /// Phased genotypes are written as `0|1` with a `PS` phase set. Indel
+    /// records are not phased.
     #[arg(long, default_value_t = false)]
     #[arg(help_heading = cli::sections::PHASING)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -114,10 +109,6 @@ pub struct CallParams {
     #[arg(skip)]
     #[serde(skip)]
     pub(crate) phase_mask: phasing::PhaseMask,
-
-    #[arg(skip)]
-    #[serde(skip)]
-    pub(crate) indel_gap_profile: Option<std::sync::Arc<haplotypes::ErrorProfile>>,
 
     // --- Output parameters ---
     #[command(flatten)]
@@ -193,25 +184,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     params.segmentation.sanitize();
 
-    #[cfg(not(feature = "experimental-seqair"))]
-    if params.methylation.rescue_soft_clip_cpg {
-        warn!(
-            "--rescue-soft-clip-cpg has no effect on the default (htslib) backend; \
-             build with the `experimental-seqair` feature to use it"
-        );
-    }
-
-    #[cfg(not(feature = "experimental-seqair"))]
-    ensure!(
-        !params.phase,
-        "--phase needs the `experimental-seqair` backend, which this build does not include"
-    );
-    #[cfg(not(feature = "experimental-seqair"))]
-    ensure!(
-        !params.indel.experimental_indels,
-        "--experimental-indels needs the `experimental-seqair` backend, which this build does \
-         not include: the pair-HMM scores reads while their column is built"
-    );
     // `figure_out_outputs` turns BED-only output into `--cpgs-only`, so this
     // also catches `--phase --bed out.bed`.
     ensure!(
@@ -221,19 +193,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
     );
 
     params.phase_mask = phasing::PhaseMask::load(&params.phase_masks)?;
-    params.indel_gap_profile = params
-        .indel
-        .indel_error_profile
-        .as_ref()
-        .map(|path| -> Result<_> {
-            let profile: haplotypes::ErrorProfile =
-                serde_json::from_reader(std::fs::File::open(path).wrap_err_with(|| {
-                    format!("Failed to open the indel error profile {}", path.display())
-                })?)?;
-            profile.validate()?;
-            Ok(std::sync::Arc::new(profile))
-        })
-        .transpose()?;
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
@@ -253,7 +212,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     debug!("Going to process {} segments", regions.len());
 
-    let readers = ReaderSource::from(readers);
     let readers = &readers;
 
     progress::register_signal_handler();
@@ -322,7 +280,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 #[instrument(level = "info", skip_all, fields(region=%region.region))]
 fn process_region_wrapper(
     region: &ChunkRegion,
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     params: &CallParams,
     ml: &MachineLearning,
     failed_segments: &segments::FailedSegments,
@@ -340,7 +298,7 @@ fn process_region_wrapper(
 
 /// The actual processing of a segment
 fn process_segment(
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     region: &ChunkRegion,
     params: &CallParams,
     ml: &MachineLearning,
@@ -359,26 +317,11 @@ fn process_segment(
             .then(|| params.record_filters.clone()),
         phase: params.phase || ml.feature_set.needs_molecular_evidence(),
         gpu: params.ml.gpu,
-        indel_gap_profile: params.indel_gap_profile.clone(),
     };
 
-    #[cfg(not(feature = "experimental-seqair"))]
-    {
-        let evidence = if ml.feature_set.needs_molecular_evidence() {
-            let segment = readers.segment(region, 2)?;
-            haplotypes::reads::fetch_hts(&params.segments, &segment, &pileup_mapping_params)?
-        } else {
-            Vec::new()
-        };
-        let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
-        process_region(segment, pileups, evidence, params, ml)
-    }
-    #[cfg(feature = "experimental-seqair")]
-    {
-        let (segment, metrics, phase_reads) =
-            process::get_pileups_with_phase(readers, region, &pileup_mapping_params)?;
-        process_pre_built_metrics(segment, metrics, phase_reads, params, ml)
-    }
+    let (segment, metrics, phase_reads) =
+        process::get_pileups_with_phase(readers, region, &pileup_mapping_params)?;
+    process_pre_built_metrics(segment, metrics, phase_reads, params, ml)
 }
 
 macro_rules! log_failed_and_skip {
@@ -393,8 +336,9 @@ macro_rules! log_failed_and_skip {
     };
 }
 
-#[cfg(any(not(feature = "experimental-seqair"), test))]
-/// Analyse pileups in a region
+/// The pipeline over the tests' `pileups!` fixtures, which are read lists
+/// rather than finished columns.
+#[cfg(test)]
 fn process_region(
     segment: Rc<Segment>,
     pileups_iter: impl Iterator<Item = Pileup>,
@@ -402,26 +346,12 @@ fn process_region(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    // One per covered position, as on the seqair path — see the note in
-    // `process::pileups::get_pileups`. Doubling into a vec of 592-byte entries
-    // both copies and overshoots.
-    let mut pileups: Vec<PileupMetrics> =
-        Vec::with_capacity(usize::try_from(segment.range.len()).unwrap_or(0));
-    pileups.extend(
-        calculate_pileup_metrics(pileups_iter, &segment)
-            .filter_map(log_failed_and_skip!("failed to calculate metric, skipping")),
-    );
-    map_surrounding(
-        &mut pileups,
-        process::set_denovo_adj,
-        "failed to set denovo adjacency, skipping",
-    );
-    set_strand_info_and_prefilter(&mut pileups, params, ml, &segment, &phase_reads)?;
-
-    process_collected_pileups(segment, pileups, phase_reads, params, ml)
+    let pileups: Vec<PileupMetrics> = calculate_pileup_metrics(pileups_iter, &segment)
+        .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
+        .collect();
+    process_pre_built_metrics(segment, pileups.into_iter(), phase_reads, params, ml)
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn process_pre_built_metrics(
     segment: Rc<Segment>,
     pileups: impl Iterator<Item = PileupMetrics>,
@@ -439,9 +369,8 @@ fn process_pre_built_metrics(
     process_collected_pileups(segment, pileups, phase_reads, params, ml)
 }
 
-/// The step both backends run between de-novo adjacency and the shared
-/// pipeline: strand info depends on the adjacency flags just set, and the
-/// pre-filter on the alts, so the order matters.
+/// Strand info depends on the adjacency flags just set, and the pre-filter on
+/// the alts, so the order matters.
 fn set_strand_info_and_prefilter(
     pileups: &mut Vec<PileupMetrics>,
     params: &CallParams,
@@ -483,8 +412,6 @@ fn process_collected_pileups(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    #[cfg(not(feature = "experimental-seqair"))]
-    drop(phase_reads);
     let threshold_filters = process::ThresholdFilterParams {
         variant_calling: params.variant_calling.clone(),
         methylation: params.methylation.thresholds.clone(),
@@ -544,7 +471,6 @@ fn process_collected_pileups(
 
     // Before the overlap is trimmed: a site in it links reads reaching into
     // the core.
-    #[cfg(feature = "experimental-seqair")]
     if params.phase {
         let default_profile = haplotypes::ErrorProfile::default();
         let profile = ml

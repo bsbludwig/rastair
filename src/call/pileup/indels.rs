@@ -38,7 +38,6 @@ impl IndelCounts {
         self.alleles.iter().map(|a| a.total).sum()
     }
 
-    #[cfg(feature = "experimental-seqair")]
     pub(crate) fn aggregate(observations: &[IndelAllele]) -> Self {
         let mut alleles: SmallVec<IndelAlleleCounts, 2> = SmallVec::new();
         for observed in observations {

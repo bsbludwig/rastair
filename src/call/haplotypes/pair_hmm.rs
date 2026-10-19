@@ -472,7 +472,6 @@ pub(super) struct Prepared {
     padding: u32,
     reference_bounds: std::ops::Range<u32>,
     fragments: Vec<Option<MolecularEvidence>>,
-    localized: bool,
     /// The total indel length on the most edited candidate chromosome. A read can carry
     /// edits that its CIGAR does not show, so every band reaches this far,
     /// whatever the template it scores against holds.
@@ -553,7 +552,6 @@ impl Prepared {
             padding: flank,
             reference_bounds: reference.start..reference_end,
             fragments: prepared,
-            localized: false,
             indel_reach: indel.map_or(0, Indel::len),
         })
     }
@@ -571,12 +569,6 @@ impl Prepared {
         Ok(self)
     }
 
-    pub(super) fn localize(mut self) -> Self {
-        self.localized = true;
-        self
-    }
-
-    #[cfg(any(feature = "experimental-seqair", test))]
     pub(super) fn signature(
         &self,
         haplotype: &Haplotype,
@@ -613,7 +605,7 @@ impl Prepared {
             .alleles
             .iter()
             .filter(|(pos, _)| {
-                if self.localized && !intervals.is_empty() {
+                if !intervals.is_empty() {
                     intervals.iter().any(|&(start, end)| {
                         start.saturating_sub(self.padding + 1).max(self.start.saturating_sub(1))
                             <= *pos
@@ -629,10 +621,6 @@ impl Prepared {
 
     pub(super) fn realigned_fragments(&self) -> usize {
         self.fragments.iter().filter(|fragment| fragment.is_some()).count()
-    }
-
-    pub(super) fn fallback_fragments(&self) -> usize {
-        self.fragments.len() - self.realigned_fragments()
     }
 
     pub(super) fn template(
@@ -670,14 +658,12 @@ impl Prepared {
         }
         bases.retain(|base| (self.start..self.end).contains(&base.position.pos));
         let mut windows = BTreeSet::new();
-        if self.localized {
-            for molecule in self.fragments.iter().flatten() {
-                for &(start, end) in &molecule.intervals {
-                    windows.insert((
-                        start.saturating_sub(self.padding).max(self.start),
-                        end.saturating_add(self.padding).min(self.end),
-                    ));
-                }
+        for molecule in self.fragments.iter().flatten() {
+            for &(start, end) in &molecule.intervals {
+                windows.insert((
+                    start.saturating_sub(self.padding).max(self.start),
+                    end.saturating_add(self.padding).min(self.end),
+                ));
             }
         }
         let mut template = Template { bases, local: BTreeMap::new() };
@@ -755,36 +741,28 @@ impl Prepared {
                     tracks.push(None);
                     continue;
                 }
-                let bases = if self.localized {
-                    let &(start, end) = molecule
-                        .intervals
-                        .get(profile_index)
-                        .ok_or_eyre("Missing molecular interval")?;
-                    template
-                        .local_bases((
-                            start.saturating_sub(self.padding).max(self.start),
-                            end.saturating_add(self.padding).min(self.end),
-                        ))
-                        .ok_or_eyre("Missing read-local haplotype template")?
-                } else {
-                    &template.bases
-                };
+                let &(start, end) = molecule
+                    .intervals
+                    .get(profile_index)
+                    .ok_or_eyre("Missing molecular interval")?;
+                let bases = template
+                    .local_bases((
+                        start.saturating_sub(self.padding).max(self.start),
+                        end.saturating_add(self.padding).min(self.end),
+                    ))
+                    .ok_or_eyre("Missing read-local haplotype template")?;
                 let track = template_track(bases, orientation, scoring, params)?;
                 let span = molecule
                     .spans
                     .get(profile_index)
                     .ok_or_eyre("Missing molecular profile span")?;
                 let offset = bases.partition_point(|base| base.position < span.first);
-                let band = if self.localized {
-                    band(
-                        offset,
-                        span.indel_bases
-                            .saturating_add(track.indel_bases.max(self.indel_reach))
-                            .max(self.padding as usize),
-                    )?
-                } else {
-                    band(0, profile.len().max(bases.len()))?
-                };
+                let band = band(
+                    offset,
+                    span.indel_bases
+                        .saturating_add(track.indel_bases.max(self.indel_reach))
+                        .max(self.padding as usize),
+                )?;
                 plan.templates.push(track);
                 tracks.push(Some((plan.templates.len() - 1, band)));
             }
@@ -1167,8 +1145,11 @@ fn molecular_evidence(
 ) -> Result<Option<MolecularEvidence>> {
     let mut reads = Vec::new();
     for read in &fragment.reads {
-        let sequence =
-            read.sequence.as_ref().ok_or_eyre("PairHMM requires CIGAR-ordered read sequences")?;
+        // A read whose sequence was not captured is scored at its observed
+        // bases by the aligned model.
+        let Some(sequence) = read.sequence.as_ref() else {
+            return Ok(None);
+        };
         ensure!(
             sequence.bases.iter().all(|base| base.quality != Some(255)),
             "Missing base quality must be None"

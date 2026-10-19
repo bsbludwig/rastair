@@ -215,7 +215,7 @@ impl PileupMetrics {
             before_counts,
             after_counts,
             tags: RecordTags::default(),
-            // Indels are collected on the seqair path only.
+            // The read-list fixtures carry no indel observations.
             indel_data: None,
             phase: None,
         })
@@ -423,7 +423,7 @@ pub struct AlleleMetrics {
 
 /// Would observing `base` where the reference has `ref_base` create a CpG?
 ///
-/// The seqair backend answers this from a column's alt bases alone, before any
+/// The column builder answers this from a column's alt bases alone, before any
 /// allele metrics exist, so it has to be one definition and not two.
 pub fn alt_forms_denovo(base: Base, ref_base: Base, context: &SequenceContext) -> FormsDenovo {
     use Base::*;
@@ -656,7 +656,6 @@ impl PerBaseAccumulators {
         self.0[idx].add(read, qual_sq, mapq_sq);
     }
 
-    #[cfg(feature = "experimental-seqair")]
     pub(crate) fn accumulate_fields(
         &mut self,
         base: Base,

@@ -3,85 +3,13 @@
 //! scored jointly with shared CpG rates and local `PairHMM` realignment.
 
 use crate::metrics::{PileupMetrics, methylation::CpgSide};
-#[cfg(test)]
-use crate::utils::logging::ThisIsABug as _;
-#[cfg(any(feature = "experimental-seqair", test))]
 use color_eyre::eyre::OptionExt as _;
-use seqair_types::{Base, BaseQuality, Pos0, Pos1, Strand};
+use seqair_types::{Base, Pos0, Pos1};
 use std::num::{NonZeroU8, NonZeroU64};
-#[cfg(any(feature = "experimental-seqair", test))]
 use tracing::debug;
-#[cfg(test)]
-use tracing::warn;
 
 mod mask;
-#[cfg(test)]
-mod problem;
-#[cfg(test)]
-mod solver;
 pub use mask::PhaseMask;
-
-#[cfg(test)]
-use problem::{SiteAllele, build_problem};
-#[cfg(test)]
-use solver::solve;
-
-/// Observations on one alternative base a column needs before its reads are
-/// kept for phasing.
-const MIN_ALT_READS: u32 = 2;
-/// Mapping quality a read needs to contribute a phase observation.
-const MIN_MAPQ: u8 = 20;
-/// Base quality a read needs to contribute a phase observation.
-const MIN_BASEQ: u8 = 20;
-
-/// Is this read good enough to contribute a phase observation?
-///
-/// Stricter than the calling filters, so a read can count towards depth and
-/// genotype without carrying phase.
-#[must_use]
-pub fn accepts_read(mapq: u8, baseq: BaseQuality) -> bool {
-    mapq >= MIN_MAPQ && baseq.get().is_some_and(|baseq| baseq >= MIN_BASEQ)
-}
-
-/// What a haplotype is charged for disagreeing with one observation: the
-/// observation's base quality, or at an indel the read's preference between
-/// its two haplotypes, Phred-scaled; capped either way.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Cost(u8);
-
-#[cfg(test)]
-impl Cost {
-    /// Most a single observation can be charged.
-    const CAP: u8 = 40;
-
-    const fn of(qual: BaseQuality) -> Self {
-        match qual.get() {
-            Some(qual) if qual < Self::CAP => Self(qual),
-            Some(_) => Self(Self::CAP),
-            None => Self(0),
-        }
-    }
-
-    /// A read's log10 likelihood ratio between two haplotypes, as a Phred
-    /// cost: ten times its size, rounded; an infinite ratio is the cap.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "non-negative and below the cap; NaN becomes 0"
-    )]
-    fn of_log10_ratio(ratio: f32) -> Self {
-        let phred = (10.0 * ratio.abs()).round();
-        if phred >= f32::from(Self::CAP) { Self(Self::CAP) } else { Self(phred as u8) }
-    }
-}
-
-#[cfg(test)]
-impl From<Cost> for i32 {
-    fn from(cost: Cost) -> Self {
-        Self::from(cost.0)
-    }
-}
 
 /// The template a read belongs to: seqair's seed-fixed hash of its qname.
 ///
@@ -138,25 +66,6 @@ pub enum GtAllele {
     Alt(NonZeroU8),
 }
 
-/// One read's base at a column that might take part in phasing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhaseObservation {
-    pub fragment: FragmentId,
-    pub base: Base,
-    /// Needed to tell a converted base from a variant.
-    pub strand: Strand,
-    /// Already past [`accepts_read`].
-    pub qual: BaseQuality,
-}
-
-/// Which of a column's records a phase site is: the SNV record or the indel
-/// record. One column can hold one of each, the SNV record written first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SiteKind {
-    Snv,
-    Indel,
-}
-
 /// Where a heterozygous site sits in its phase block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseCall {
@@ -166,117 +75,48 @@ pub struct PhaseCall {
     pub first: GtAllele,
 }
 
-/// What phasing keeps on one column: its reads' observations until the segment
-/// is phased, then each record's place in a block, if it has one.
+/// What the molecular models keep on one column: the regional SNV evidence
+/// until the genotype is assigned, then the record's place in a phase block,
+/// if it has one. Indel records are never phased.
 #[derive(Debug, Clone)]
 #[expect(
     clippy::large_enum_variant,
     reason = "Columns already box phase data; inline features avoid another allocation per ML candidate"
 )]
 pub enum ColumnPhase {
-    Observed(Box<[PhaseObservation]>),
-    Phased(RecordPhases),
+    /// A count-genotyped column's phase.
+    Phased(PhaseCall),
     Likelihood(crate::call::haplotypes::features::ColumnEvidence),
     /// A molecular genotype's column: its phase, once phased.
-    Genotyped(RecordPhases),
-}
-
-/// The phase of each of a column's records.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RecordPhases {
-    pub snv: Option<PhaseCall>,
-    pub indel: Option<PhaseCall>,
-}
-
-impl RecordPhases {
-    const fn get(&self, kind: SiteKind) -> Option<PhaseCall> {
-        match kind {
-            SiteKind::Snv => self.snv,
-            SiteKind::Indel => self.indel,
-        }
-    }
-
-    #[cfg(any(feature = "experimental-seqair", test))]
-    const fn slot(&mut self, kind: SiteKind) -> &mut Option<PhaseCall> {
-        match kind {
-            SiteKind::Snv => &mut self.snv,
-            SiteKind::Indel => &mut self.indel,
-        }
-    }
+    Genotyped(Option<PhaseCall>),
 }
 
 impl ColumnPhase {
-    /// Record `call` for the column's `kind` record, replacing any
-    /// observations still held.
-    #[cfg(any(feature = "experimental-seqair", test))]
-    fn set_call(slot: &mut Option<Box<Self>>, kind: SiteKind, call: PhaseCall) {
+    /// Record `call` for the column's SNV record.
+    fn set_call(slot: &mut Option<Box<Self>>, call: PhaseCall) {
         // A molecular genotype's column keeps saying so: `GTM` reads it.
-        let (mut phases, genotyped) = match slot.take().map(|phase| *phase) {
-            Some(Self::Phased(phases)) => (phases, false),
-            Some(Self::Genotyped(phases)) => (phases, true),
-            Some(Self::Observed(_) | Self::Likelihood(_)) | None => {
-                (RecordPhases::default(), false)
-            }
-        };
-        *phases.slot(kind) = Some(call);
-        *slot =
-            Some(Box::new(if genotyped { Self::Genotyped(phases) } else { Self::Phased(phases) }));
+        let genotyped = matches!(slot.as_deref(), Some(Self::Genotyped(_)));
+        *slot = Some(Box::new(if genotyped {
+            Self::Genotyped(Some(call))
+        } else {
+            Self::Phased(call)
+        }));
     }
 }
 
-/// The phase call a column's `kind` record carries, if any.
-pub(crate) fn call_of(pileup: &PileupMetrics, kind: SiteKind) -> Option<PhaseCall> {
+/// The phase call a column's SNV record carries, if any.
+pub(crate) fn call_of(pileup: &PileupMetrics) -> Option<PhaseCall> {
     match pileup.phase.as_deref() {
-        Some(ColumnPhase::Phased(phases) | ColumnPhase::Genotyped(phases)) => phases.get(kind),
-        Some(ColumnPhase::Observed(_) | ColumnPhase::Likelihood(_)) | None => None,
+        Some(ColumnPhase::Phased(call)) => Some(*call),
+        Some(ColumnPhase::Genotyped(call)) => *call,
+        Some(ColumnPhase::Likelihood(_)) | None => None,
     }
 }
 
 #[cfg(test)]
-fn observations_of(pileup: &PileupMetrics) -> Option<&[PhaseObservation]> {
-    match pileup.phase.as_deref() {
-        Some(ColumnPhase::Observed(observations)) => Some(observations),
-        _ => None,
-    }
-}
+pub(crate) mod fixtures;
 
-/// Could TAPS conversion alone explain this mismatch against the reference?
-///
-/// Deliberately blind to sequence context: it decides which columns are
-/// collected, before anything knows where the de-novo CpGs are.
-fn taps_explains_mismatch(reference_base: Base, base: Base, strand: Strand) -> bool {
-    [CpgSide::C, CpgSide::G].into_iter().any(|side| {
-        reference_base == side.unmod_base() && base == side.mod_base() && strand == side.strand()
-    })
-}
-
-/// Keep a column's observations only where it may be heterozygous: at least
-/// [`MIN_ALT_READS`] mismatches on one base that TAPS conversion cannot
-/// explain. The whole column is kept, TAPS-ambiguous reads included.
-///
-/// `Some` always carries at least one observation.
-#[must_use]
-pub fn candidate_observations(
-    observations: &[PhaseObservation],
-    reference_base: Base,
-) -> Option<Box<[PhaseObservation]>> {
-    // An `N` in the reference can never be genotyped.
-    reference_base.known_index()?;
-
-    let mut informative = [0u32; Base::KNOWN.len()];
-    for obs in observations.iter().filter(|obs| {
-        obs.base != reference_base && !taps_explains_mismatch(reference_base, obs.base, obs.strand)
-    }) {
-        if let Some(count) = obs.base.known_index().and_then(|idx| informative.get_mut(idx)) {
-            *count += 1;
-        }
-    }
-
-    informative.iter().any(|&count| count >= MIN_ALT_READS).then(|| observations.into())
-}
-
-/// Phase a segment in place, and drop the observations, which nothing reads
-/// after this.
+/// Phase a segment in place.
 ///
 /// Runs before the overlap is trimmed, since a site in the overlap links reads
 /// reaching into the core, but only the sites the segment emits (`is_core`)
@@ -285,67 +125,6 @@ pub fn candidate_observations(
 /// one emitted site loses its phase. Each block is oriented so that haplotype
 /// 1 carries the lower allele at that site, which makes its first record
 /// `0|1` rather than `1|0`.
-#[cfg(test)]
-fn legacy_phase_segment(pileups: &mut [PileupMetrics], is_core: impl Fn(u64) -> bool) {
-    let problem = build_problem(pileups);
-    let solution = solve(&problem);
-
-    let mut calls: Vec<(usize, SiteKind, PhaseCall)> = Vec::new();
-    for block in &solution.blocks {
-        let emitted: Vec<_> = block
-            .iter()
-            .filter(|&&(index, _)| is_core(problem.sites[index].pos.as_u64()))
-            .collect();
-        let (Some(&&(anchor, anchor_allele)), true) = (emitted.first(), emitted.len() >= 2) else {
-            continue;
-        };
-        let pos = problem.sites[anchor].pos;
-        // Fails only at i32::MAX, which no BAM contig reaches.
-        let set = match PhaseSet::at(pos).ok_or_eyre("No 1-based position").this_is_a_bug() {
-            Ok(set) => set,
-            Err(error) => {
-                warn!(?error, %pos, "Skipping a phase block whose anchor has no PS");
-                continue;
-            }
-        };
-        let flip = anchor_allele == SiteAllele::Second;
-        for &&(index, allele) in &emitted {
-            let site = &problem.sites[index];
-            let allele = if flip { allele.flipped() } else { allele };
-            let call = PhaseCall { set, first: site.allele(allele) };
-            calls.push((site.pileup, site.kind, call));
-        }
-    }
-
-    for pileup in pileups.iter_mut() {
-        pileup.phase = None;
-    }
-    for (index, kind, call) in calls {
-        // Sites index the slice they were built from.
-        match pileups.get_mut(index).ok_or_eyre("Phase site outside its segment").this_is_a_bug() {
-            Ok(pileup) => ColumnPhase::set_call(&mut pileup.phase, kind, call),
-            Err(error) => warn!(?error, index, "Dropping a phase call"),
-        }
-    }
-
-    let stats = solution.stats;
-    debug!(
-        sites = stats.sites,
-        phased_sites = stats.phased_sites,
-        blocks = stats.blocks,
-        largest_block = stats.largest_block,
-        mec_cost = stats.mec_cost,
-        "Phased segment"
-    );
-}
-
-#[cfg(test)]
-pub(crate) mod fixtures;
-
-#[cfg(test)]
-mod tests;
-
-#[cfg(feature = "experimental-seqair")]
 pub fn phase_segment(
     pileups: &mut [PileupMetrics],
     segment: &crate::sequence::Segment,
@@ -353,7 +132,6 @@ pub fn phase_segment(
     mask: &PhaseMask,
     profile: &crate::call::haplotypes::ErrorProfile,
 ) -> color_eyre::eyre::Result<()> {
-    use color_eyre::eyre::OptionExt as _;
     let end = segment
         .start
         .checked_add(u64::try_from(segment.sequence.len())?)
@@ -375,20 +153,19 @@ pub fn phase_segment(
         calls.extend(phase_unmasked(pileups, segment, fragments, region, profile)?);
     }
     for pileup in pileups.iter_mut() {
-        if let Some(ColumnPhase::Genotyped(phases)) = pileup.phase.as_deref_mut() {
-            *phases = RecordPhases::default();
+        if let Some(ColumnPhase::Genotyped(phase)) = pileup.phase.as_deref_mut() {
+            *phase = None;
         } else {
             pileup.phase = None;
         }
     }
     for (index, call) in calls {
         let pileup = pileups.get_mut(index).ok_or_eyre("Phase call outside segment")?;
-        ColumnPhase::set_call(&mut pileup.phase, SiteKind::Snv, call);
+        ColumnPhase::set_call(&mut pileup.phase, call);
     }
     Ok(())
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn phase_unmasked(
     pileups: &[PileupMetrics],
     segment: &crate::sequence::Segment,
@@ -711,7 +488,6 @@ fn phase_unmasked(
     Ok(calls)
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn root(parents: &[usize], mut index: usize) -> color_eyre::eyre::Result<usize> {
     loop {
         let parent = *parents.get(index).ok_or_eyre("Phase component index outside segment")?;
@@ -722,28 +498,23 @@ fn root(parents: &[usize], mut index: usize) -> color_eyre::eyre::Result<usize> 
     }
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn unite(parents: &mut [usize], a: usize, b: usize) -> color_eyre::eyre::Result<()> {
-    use color_eyre::eyre::OptionExt as _;
     let a = root(parents, a)?;
     let b = root(parents, b)?;
     *parents.get_mut(a.max(b)).ok_or_eyre("Missing phase component root")? = a.min(b);
     Ok(())
 }
 
-#[cfg(feature = "experimental-seqair")]
 use crate::{
     call::variant_calling::GenotypeTag,
     metrics::{AltCall, methylation::cpg_origin},
 };
-#[cfg(feature = "experimental-seqair")]
 #[derive(Debug, Clone, Copy)]
 struct HetAllele {
     allele: GtAllele,
     base: Base,
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn het_alleles(pileup: &PileupMetrics) -> Option<[HetAllele; 2]> {
     let alt = |n: NonZeroU8| {
         let alt = pileup.alts.get(usize::from(n.get()) - 1)?;
@@ -768,11 +539,10 @@ fn het_alleles(pileup: &PileupMetrics) -> Option<[HetAllele; 2]> {
     (first.base != second.base).then_some(alleles)
 }
 
-/// A heterozygous column a solver can phase.
-#[cfg(feature = "experimental-seqair")]
+/// A heterozygous column the phaser can place.
 #[derive(Debug, Clone)]
 struct CalledSite {
-    /// Where the column sits in the slice [`build_problem`] was given.
+    /// Where the column sits in the slice it was built from.
     pub pileup: usize,
     pub pos: Pos0,
     /// The genotype's two alleles, ascending.
@@ -782,7 +552,6 @@ struct CalledSite {
     methylable: Option<CpgSide>,
 }
 
-#[cfg(feature = "experimental-seqair")]
 impl CalledSite {
     fn of(pileup: &PileupMetrics, pileup_idx: usize) -> Option<Self> {
         let alleles = het_alleles(pileup)?;
@@ -795,5 +564,16 @@ impl CalledSite {
                 && cpg_origin(pileup, side).is_some()
         });
         Some(Self { pileup: pileup_idx, pos: Pos0::new(pileup.pos)?, alleles, methylable })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_hash_is_no_fragment() {
+        assert!(FragmentId::new(0).is_none());
+        assert!(FragmentId::new(7).is_some());
     }
 }

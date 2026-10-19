@@ -21,8 +21,9 @@ This representation follows VCF specification standards where allele indices sta
 Passing a variant filter makes an allele eligible for genotyping; it does not determine its copy number.
 
 Models trained with `--ml-features haplotypes` automatically enable molecular
-genotyping for SNPs and indels. No `--phase` flag is needed for this step.
-Models using the Standard or Canonical feature sets retain count-based genotyping.
+genotyping for SNPs. No `--phase` flag is needed for this step. Models using
+the Standard feature set retain count-based genotyping. Indels are genotyped
+by the [pair-HMM indel caller](indels.md) from its own haplotypes.
 
 For molecular genotyping, PairHMM scores each captured fragment against candidate
 chromosome sequences. A diploid pair mixes the two chromosome likelihoods with
@@ -30,19 +31,15 @@ equal weight, and independent fragments contribute to the joint likelihood.
 Overlapping mates represent one molecule: disagreement reduces the consensus
 quality rather than contributing two independent votes.
 
-The genotype posterior combines these likelihoods with the existing SNP/indel
-priors and marginalizes over retained neighboring haplotypes. SNPs consider all
-ten unordered A/C/G/T genotypes. A biallelic indel considers zero, one or two
-alternate copies. Competing indels at the same canonical anchor are scored
-together, including `1/2` hypotheses; a candidate SNP at that anchor is included
-in the joint search. This search supports up to seven alternate indels per
-anchor. Connected candidates share a bounded regional search (32 sites, 2 kb,
-64 retained haplotypes, 32 buffered alternatives). Compatible indels at several
-anchors can coexist on one chromosome. One molecular likelihood matrix supplies
-all site marginals in the region. The best pair for every local genotype and the
+The genotype posterior combines these likelihoods with the SNP prior and
+marginalizes over retained neighboring haplotypes. SNPs consider all ten
+unordered A/C/G/T genotypes over the observed alleles. Connected candidates
+share a bounded regional search (32 sites, 2 kb, 64 retained haplotypes, 32
+buffered alternatives). One molecular likelihood matrix supplies all site
+marginals in the region. The best pair for every local genotype and the
 all-reference chromosome are protected during pruning. If those protections
-exceed the budget, or a deletion spans the next candidate, inference splits into
-separate regions without removing the earlier candidate's alternatives.
+exceed the budget, inference splits into separate regions without removing the
+earlier candidate's alternatives.
 
 The forest remains an allele filter. Its score is not multiplied into the
 molecular genotype posterior, since the forest already sees molecular features.
@@ -133,99 +130,25 @@ rastair call --phase --phase-mask centromeres.txt --phase-mask blacklist.bed.gz 
 Indel records are not phased: the likelihood phaser links called heterozygous SNVs, and the pair-HMM indel caller's records (`--experimental-indels`, see [indels](indels.md)) carry no `PS`.
 
 ```admonish warning
-Phasing requires the `experimental-seqair` backend and cannot be combined with `--cpgs-only` or BED output alone. Inference is bounded to 32 heterozygous sites and a 2 kb span. Blocks also stop at processing-segment boundaries; overlap sites contribute evidence, but each phase set is anchored on its first emitted site. The production phasing model currently assumes TAPS chemistry with the defaults above.
+Phasing cannot be combined with `--cpgs-only` or BED output alone. Inference is bounded to 32 heterozygous sites and a 2 kb span. Blocks also stop at processing-segment boundaries; overlap sites contribute evidence, but each phase set is anchored on its first emitted site. The production phasing model currently assumes TAPS chemistry with the defaults above.
 ```
-
-Runtime can vary substantially with local variant density, coverage and nearby indels. Use `scripts/benchmark_phasing.py` to compare unphased, PairHMM and an optional archived legacy binary on the same BAM, reference and regions. It records caller wall time, CPU time, peak memory and phase-block statistics, and verifies that every non-phase VCF field is identical. The caller timing excludes the script's subsequent VCF inspection. The HG001 GIAB benchmark is unphased and therefore cannot measure switch-error accuracy.
-
-The benchmark accepts repeated `--phase-mask` arguments or a `phase_masks` list in its input JSON. These apply to the new phasing arm; archived legacy binaries do not support the mask flag. Accuracy comparisons should exclude masked intervals from both outputs.
 
 `scripts/assess_phasing.py` compares called SNP phase with independent phased truth, such as the [Illumina Platinum Genomes NA12878 calls](https://github.com/illumina/platinumgenomes). Supply its confident-region BED and any masks with `--exclude-bed`. Genotype errors are reported separately; switch errors are orientation changes between adjacent genotype-matched phased SNPs sharing both query and truth phase sets. A chromosome-wide orientation flip is irrelevant, while an isolated erroneous SNP orientation contributes two switches. Singleton intersections cannot assess phase. Report phase coverage alongside error rates, since conservative thresholds can improve the rate by leaving difficult links unphased.
 
-## Experimental haplotype likelihoods
+## The molecular likelihood model
 
-The `ml haplotypes` diagnostic calculates SNP likelihoods before final variant or genotype calls. It requires the `experimental-seqair` backend:
+The regional SNV features, molecular genotyping and phasing share one likelihood model over the captured read pairs. Every focal position is evaluated against the observed alleles at its site and its neighbours'; the regional search is described under [machine-learning models](ml.md#haplotype-likelihood-features). Conversion of methylated and unmethylated cytosines defaults to `0.95` and `0.003`; these are separate from base-quality sequencing errors, and the lambda spike-in is not used to fit them, since incomplete lambda conversion can underestimate conversion efficiency by 2–5 percentage points.
 
-```bash
-cargo run --features experimental-seqair -- ml haplotypes \
-  --fasta-file reference.fa reads.bam --region chr12:20028995-20030086 \
-  --output snps.tsv --pair-output pairs.tsv
-```
-
-Use `--non-taps` for ordinary WGS reads. For TAPS, `--conversion-rate` defaults to `0.95` and `--false-conversion-rate` to `0.003`. These describe conversion of methylated and unmethylated cytosines respectively; they are separate from base-quality sequencing errors. The lambda spike-in is not used to fit these parameters automatically: incomplete lambda conversion can underestimate conversion efficiency by 2–5 percentage points.
-
-Every focal position is evaluated against all four genetic bases. Shared per-CpG shrinkage is the sole methylation-rate model. Both mates share a chromosome assignment, and overlapping bases form one molecular consensus observation and share a conversion event. There is no depth cap; configured flag, quality and read-end filters still apply.
-
-The default `--likelihood-engine aligned` conditions on the input CIGAR alignment. A conversion-neutral pilot gives C/T identical emissions on OT at potential CpG C positions, and G/A identical emissions on OB at potential CpG G positions. Potential positions are the union across candidate sequences, including de-novo and indel-created CpGs. Other genetic alleles and opposite-strand observations remain informative. The pilot is internal; `--methylation-model` and the integrated-model path have been removed.
-
-The pilot supplies genotype and molecular chromosome probabilities for estimating one methylation rate per candidate CpG, shared across haplotypes that contain it. A symmetric Beta prior shrinks low-information rates toward 0.5 (`--methylation-prior-strength 4`, corresponding to Beta(2,2)). Base and mapping quality enter a separate one-dimensional rate estimate. Only molecules with pilot CpG-carrier probability at least `--methylation-min-cpg-probability 0.9` can fit the rate. Each fragment is scored with its own conversion observation's contribution removed. Estimates use CIGAR coordinates, including insertion coordinates; ambiguous orientations do not fit rates. Candidate CpGs without usable observations retain the prior mean. These are approximate plug-in scores and do not model allele-specific methylation. `--quadrature-order` controls the one-dimensional rate estimate, not a joint haplotype-rate integral.
-
-No CpG-count limit removes neighboring SNPs. `--non-taps` bypasses conversion and rate estimation. Conversion defaults remain 0.95 and 0.003; the spike-in is not used to estimate them. No benchmark truth alleles or WGS genotypes enter TAPS inference.
-
-### Bounded haplotype expansion
-
-The initial candidate radius is 150 bases in either direction (`--window-radius 150`). Fragment connections can extend the context to `--expansion-radius 1000` bases in either direction. A 150-base read cannot necessarily reach 150 bases from a SNP it covers: reach depends on where the SNP lies within that read. Paired reads and chains of overlapping fragments can link positions farther apart than one read's length.
-
-A neighbor can extend the region when at least two independent molecules provide quality-qualified, conversion-unconfounded alternate evidence there, and at least `--min-linking-fragments 2` molecules link it to an active site. Linking bases require consensus base quality and source mapping quality at least 20. Converted observations at biallelic C/T or G/A CpGs on the confounded strand cannot establish a phase connection. Reference-only and conversion-only candidate positions do not bridge otherwise disconnected genetic regions. Candidate SNPs that jointly determine one CpG are also included together, including latent converted C/G candidates and partners adjacent after a deletion. At least two quality-qualified molecules covering either partner suffice for this context dependency; it does not supply a genetic bridge to distant variants. Joint partner hypotheses prevent a genetic A/T at one base from falsely implying a de-novo CpG at an uncovered neighbor. All passing fragments covering the selected loci remain available for final scoring, including observations unsuitable for establishing links.
-
-The tree starts with every focal A/C/G/T hypothesis and, for PairHMM, the eligible nuisance indel. Sites within the initial radius are considered first, followed by connected extensions. Each extension branches the retained and buffered haplotypes over the next site's alleles. When proposals exceed `--max-haplotypes 64`, their fragment likelihoods, shared rates and diploid-pair posteriors are recomputed. Haplotype rank is its posterior chromosome occupancy summed across diploid pairs. The reference haplotype, the best pair for every focal genotype, and a carrier of every retained site's allele are protected. If protection cannot fit the budget, extension stops and reports the excluded sites.
-
-Up to `--haplotype-holdout 32` discarded candidates are buffered and reconsidered at the next extension. This provides bounded recovery, not exhaustive backtracking. `--max-sites 32` is a safety limit rather than the former three-SNP enumeration limit; it accepts 1–64. The scoring pool is bounded by four times the retained-plus-holdout budgets. The single nuisance-indel limit remains.
-
-Each iteration scores the current molecular observations once; it does not multiply overlapping-window likelihoods or reuse the old posterior as a prior. A genotype's prior is divided among its surviving phase assignments after pruning. Posteriors are conditional on the retained candidate set. `maximum_pruned_mass` reports the largest pair-posterior mass discarded at one expansion step, conditional on that step's proposals; it is not an upper bound on all omitted genomic hypotheses.
-
-`SnpEvidence::genotypes_at` projects any selected site from the same joint diploid posterior. These are focal-rooted inference contexts for SNP diagnostics. Overlapping focal contexts are not reconciled into a single chromosome-wide posterior or emitted as VCF phase sets. Production molecular genotyping uses the regional search described above; the diagnostic retains these focal-rooted contexts. Final `--phase` inference remains conditioned on called SNP genotypes.
+Both mates share a chromosome assignment, and overlapping bases form one molecular consensus observation and share a conversion event. Agreement retains the better base quality, without adding qualities. Disagreement retains the better-quality base and reduces its Phred quality by the competing quality: Q40 versus Q30 becomes Q10, while equal-quality conflicts become Q0 and carry no allele preference. Unknown bases carry no competing evidence. Mapping quality breaks ties between equal base qualities. A conversion-neutral pilot pass gives C/T identical emissions on OT at potential CpG C positions, and G/A identical emissions on OB at potential CpG G positions; potential positions are the union across candidate sequences, including de-novo and indel-created CpGs. The pilot supplies genotype and molecular chromosome probabilities for estimating one methylation rate per candidate CpG, shared across haplotypes that contain it. A symmetric Beta(2,2) prior shrinks low-information rates toward 0.5, only molecules with pilot CpG-carrier probability at least 0.9 can fit a rate, each fragment is scored with its own conversion observation's contribution removed, and candidate CpGs without usable observations retain the prior mean. These are approximate plug-in scores and do not model allele-specific methylation.
 
 ### Local PairHMM realignment
 
-Use `--likelihood-engine pair-hmm` to sum over alternative alignments:
+The forward algorithm has match, insertion and deletion states and runs on the banded SIMD kernels of [compair](https://github.com/Softleif/seqair/tree/main/crates/compair). It uses the GATK forward convention: insertion emission one, a uniform template-start prior, and no division by a separate read-length-dependent path mass. These are likelihood scores used to compare candidate sequences, not probabilities normalized over all possible read strings. Match emissions combine TAPS conversion and sequencing error; unknown template bases are uninformative.
 
-```bash
-cargo run --release --features experimental-seqair -- ml haplotypes \
-  --fasta-file reference.fa reads.bam --region chr12:20028995-20030086 \
-  --likelihood-engine pair-hmm --output snps.tsv --pair-output pairs.tsv
-```
+Non-repeat gaps default to Phred 45 opening and Phred 10 extension. Repeat-dependent insertion opening, deletion opening and extension qualities come from the library's error profile, evaluated on the reference repeat context at the positions a read aligns to and projected into compair's read transition arrays using the original alignment coordinates; this is not a path-dependent transition model at every possible alignment column. Original coordinates set the band and context projection; the forward sum still includes alternative alignments.
 
-The forward algorithm has match, insertion and deletion states and runs on the banded SIMD kernels of [compair](https://github.com/Softleif/seqair/tree/main/crates/compair). It uses the GATK forward convention: insertion emission one, a uniform template-start prior, and no division by a separate read-length-dependent path mass. These are likelihood scores used to compare candidate sequences, not probabilities normalized over all possible read strings. Match emissions combine TAPS conversion and sequencing error; overlapping mates contribute one consensus observation to one conversion draw. Unknown template bases are uninformative.
+Molecular profiles retain the sequenced bases within the unmasked inference domain. Each mate or joint overlap profile is aligned against its CIGAR-coordinate footprint padded by 12 bp plus the maximum total indel length of a candidate chromosome, in a band widened for observed and candidate indels; all compared chromosomes use the same reference interval, and soft clips are excluded. Paths outside the band remain an approximation. This is candidate-based regional realignment, without a de Bruijn graph assembler. For concordant overlapping CIGAR paths, mates form one molecular profile with a consensus observation at each shared base. Disjoint mates remain separate profiles assigned to the same chromosome. Discordant overlapping CIGAR paths and reference skips fall back to aligned SNP emissions at the observed bases, with the same consensus policy and the candidate's edited CpG context. A mate outside the unmasked reference domain contributes no sequence or orientation evidence.
 
-Non-repeat gaps default to Phred 45 opening and Phred 10 extension. Repeat-dependent insertion opening, deletion opening and extension qualities come from the library's error profile. The profile is evaluated on the edited candidate DNA before conversion. Context qualities are projected into compair's read transition arrays using the original alignment coordinates; this is not a path-dependent transition model at every possible alignment column. Original coordinates set the band and context projection; the forward sum still includes alternative alignments.
+The regional SNV model proposes no indels: a read carrying one is scored through its gap against chromosomes that differ by SNVs only. The phaser proposes the one nearest CIGAR insertion or deletion of at most 20 bp with two supporting reads as a nuisance allele, left-normalized against the local reference, with a genotype prior of `1 - 0.0001` for reference and `0.0001` spread over the alternate genotypes, and marginalizes over its presence and phase without emitting it. Candidate sequence adjacency determines CpGs after SNPs or that indel create or destroy them, and the shared shrinkage also estimates rates for CpGs in realignment flanks.
 
-Molecular profiles retain the sequenced bases within the unmasked inference domain. Templates extend beyond those profiles by 12 bp plus the maximum total indel length of a candidate chromosome. All compared chromosomes use that same reference interval. Soft clips remain excluded. Production aligns each mate or joint overlap profile in a local band widened for observed and candidate indels; the diagnostic uses a wider band. Paths outside the band remain an approximation. This is candidate-based regional realignment, without a de Bruijn graph assembler.
-
-Shared CpG shrinkage uses this same interval for candidate CpG context and rate estimation, including when a nuisance indel extends beyond the SNP window. One additional partner base at either edge can establish CpG context, but observations outside the scoring interval cannot fit a methylation rate.
-
-CIGAR insertions and deletions passing the read filters seed competing genetic sequences, without using called genotypes or truth alleles. Proposals are left-normalized against the local reference. The nearest eligible simple indel is retained as a biallelic nuisance site. Indels outside the initial radius require at least the configured number of fragments spanning both the focal position and the indel anchor, with a default maximum length of 20 bases (`--max-indel-length`). Deletions covering a selected SNP and other indel proposals are omitted; `omitted_indels` reports their count. Its genotype prior is `1 - --indel-prior` for reference/reference and `--indel-prior / 2` for reference/indel and indel/indel (default prior `0.0001`). Compatible phase assignments share the joint SNP/indel genotype prior. The SNP probabilities marginalize over the indel's presence and phase, rather than committing to an indel call first. Candidate sequence adjacency determines CpGs after either SNPs or indels create or destroy them.
-
-For each molecule, both the neutral CpG pilot and final likelihood matrix apply the same symmetric floor: no candidate can score more than `min(MAPQ, maximum_evidence_phred)` below that molecule's best candidate, in Phred units. The cap applies once after combining the mates. Missing mapping quality or wholly uninformative observations neutralize the molecule. It limits outliers in either allele direction; it does not replace the repeat error model.
-
-For concordant overlapping CIGAR paths, mates form one molecular profile with a consensus observation at each shared base. Disjoint mates remain separate profiles assigned to the same chromosome. Discordant overlapping CIGAR paths and reference skips use aligned SNP emissions, with the same base-consensus policy and the candidate's edited CpG context; deleted partner positions are skipped, and indel alignment evidence is not scored. `realigned_fragments` and `aligned_fallback_fragments` make that fallback visible. A mate outside the unmasked reference domain contributes no sequence or orientation evidence. Domain boundaries clip template flanks as well as observations.
-
-Shared shrinkage also estimates rates for CpGs in realignment flanks, using the same candidate sequence adjacency and authoritative scoring interval. Richer indel candidates, allele-specific methylation and full-read assembly remain future steps. These bounds and fallback behavior need to be considered when interpreting diagnostic probabilities.
-
-`snps.tsv` contains alternate-presence, heterozygous and homozygous-alternate posteriors, expected allele fraction, genotype entropy and natural-log Bayes factors. The window and site-only Bayes factors compare the expanded context, including the nuisance indel, with the focal-site calculation. `pairs.tsv` contains every candidate diploid haplotype pair's natural-log likelihood, prior and posterior. Its `haplotype_a/b` strings give SNP bases at the listed 1-based positions; `indel_a/b` give an unanchored `0-based-start:deleted>inserted` replacement, or `.` for reference. The SNP prior assigns `1 - --snp-prior` to the reference genotype and distributes the remaining mass uniformly across the other genotypes at each site; compatible phase assignments share that mass equally. These model probabilities are not empirically calibrated ML call scores.
-
-By default, focal candidates come from observed alternate bases and potential de-novo CpG alleles whose converted base resembles the reference. Potential CpG partners include the reference, neighboring observed SNP alleles and, for PairHMM, indel proposals. Thus an indel-created CpG can seed a C/G hypothesis even when conversion leaves only reference-looking T/A observations. `--sites-bed` instead scores supplied positions regardless of alternate evidence or coverage; it accepts plain BED with one-base, 0-based half-open intervals and no allele information. This allows matched libraries to be compared at identical positions. Input chunk size does not change each SNP's window.
-
-`scripts/validate_haplotype_likelihoods.py` compares matched WGS/TAPS diagnostics with a truth VCF and GATK calls in confident regions. Its input JSON names `reference`, `truth`, `confidence_bed`, `gatk`, `taps`, `wgs` and `region`. Truth alleles are used only for scoring; common focal positions include the discovery union and truth SNP positions. It also evaluates TAPS reads under the ordinary model and compares 16- versus 32-node quadrature. Add `--pair-hmm` for matched realignment arms, and `--include-indel-neighborhoods` to include and separately score positions within `--indel-padding` bases of truth indels. The diagnostic does not select the caller's model. The `haplotypes` ML feature set supports pre-filter PairHMM evidence in `call`; it requires retraining and is described in [Machine-learning models](ml.md#haplotype-likelihood-features).
-
-### Assessing model limitations
-
-`--candidates-only` writes `chrom`, 1-based `pos` and `ref` without evaluating likelihoods. It cannot be combined with supplied sites or pair output. This separates candidate discovery sensitivity from inference at forced truth positions.
-
-The diagnostic also reports `genotype_posteriors` and `site_genotype_posteriors`: ten unphased base-pair probabilities in the order A/A, A/C, C/C, A/G, C/G, G/G, A/T, C/T, G/T, T/T. These use genetic bases rather than the input VCF's REF/ALT indices. `site_posterior` scores the focal SNP without neighboring SNPs or the nuisance indel.
-
-`disconnected_sites` counts candidates excluded by the fragment-link requirements. `resource_limited_sites` counts reachable candidates excluded by site or haplotype-protection budgets; their sum is `omitted_sites`. `pruned_haplotypes`, `rescued_haplotypes`, `expansion_steps`, `maximum_pruned_mass` and the 1-based `context_start`/`context_end` expose the actual search. `offered_linking_fragments` counts fragments covering the focal site and any offered candidate; `retained_linking_fragments` counts those reaching selected neighbors. These support counts include passing observations that cannot establish a genetic link. A fragment can appear in several focal windows, so summed counts are fragment-to-window incidences, not unique molecules.
-
-`scripts/benchmark_haplotype_likelihoods.py` assesses predefined windows with a shared target panel. Its manifest contains `inputs`, a `regions` list of `region`/`split` objects, `negative_sites_per_region`, `seed`, and optional `known_sites`. It retains all confident truth SNPs, near-indel candidate positions and specified disagreements; other negative candidate positions are sampled by SHA-256. Inverse sampling weights estimate calibration over that target population. Reported TP/FP/FN counts refer to the evaluated panel; separately labelled estimates account for unsampled negative candidates. Genotype scoring excludes indels and compares unphased base pairs at truth SNP sites. The script records per-arm commands, runtime and peak memory, along with context strata, reliability bins, genotype errors and the focal-site ablation.
-
-An optional `arms` list selects custom comparisons. Each entry names `name`, `library` (`wgs` or `taps`), `engine` (`aligned` or `pair-hmm`), and optional `arguments`, such as `["--max-haplotypes", "32"]`. Without it, the original four library/engine arms run. `--panel-source <earlier-suite>` reuses byte-identical targets for matching inputs, regions and sampling choices, recording the discovery provenance. This supports parameter sensitivity checks without changing the evaluated positions.
-
-```bash
-python3 scripts/benchmark_haplotype_likelihoods.py \
-  --manifest assessment.json --rastair target/release/rastair \
-  --output-dir tmp/haplotypes-assessment --tabix tabix
-```
-
-Both likelihood engines resolve overlapping measurements before scoring haplotypes. Agreement retains the better base quality, without adding qualities. Disagreement retains the better-quality base and reduces its Phred quality by the competing quality: Q40 versus Q30 becomes Q10, while equal-quality conflicts become Q0 and carry no allele preference. Unknown bases carry no competing evidence. The consensus base contributes one sequencing emission and one conversion draw. Mapping quality breaks ties between equal base qualities. The final evidence cap uses the minimum mapping quality among mates with aligned observations in the unmasked domain.
-
-`observations` now counts molecular base observations at the focal position. `read_observations` retains the number of filtered read measurements; `overlapping_fragments` counts fragments contributing two measurements there, and `discordant_fragments` counts their base disagreements. A fragment spanning a deletion may contribute realignment evidence without an aligned focal base, so molecular observations can be fewer than fragments. The TSV model identifiers are `aligned_snp_v4` and `local_pair_hmm_v4`; v3 used length-conditioned alignment scores and an explicit mapping mixture, while v2 reports used the bounded three-SNP search and optional methylation models, while v1 also used independent overlapping sequencing measurements. Existing read filters are applied before consensus, and a quality reduced to Q0 remains an uninformative observation.
+For each molecule, both the neutral CpG pilot and the final likelihood matrix apply the same symmetric floor: no candidate can score more than `min(MAPQ, maximum_evidence_phred)` below that molecule's best candidate, in Phred units. The cap applies once after combining the mates. Missing mapping quality or wholly uninformative observations neutralize the molecule. It limits outliers in either allele direction; it does not replace the repeat error model.

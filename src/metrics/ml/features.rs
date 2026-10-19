@@ -205,7 +205,6 @@ impl MlFeatureSet {
     pub fn get_calculator(&self) -> FeatureCalculatorBox {
         match self {
             MlFeatureSet::Standard => Box::new(StandardFeatures),
-            MlFeatureSet::Simple => Box::new(SimpleFeatures),
             MlFeatureSet::Haplotypes => Box::new(haplotypes::HaplotypeFeatures),
         }
     }
@@ -263,81 +262,6 @@ impl FeatureCalculator for StandardFeatures {
         after: Option<&PileupMetrics>,
     ) -> Result<Array2<f32>> {
         row_to_array(standard::OthersFeatures::extract(current, before, after)?.as_row())
-    }
-}
-
-/// Very basic feature calculation using small subset of features
-#[derive(Debug, Clone, Copy)]
-pub struct SimpleFeatures;
-
-impl SimpleFeatures {
-    /// `SimpleFeatures` uses all of [`CommonFeatures`] except `region_entropy`.
-    const FEATURES: usize = shared::CommonSectionA::FEATURES - 1 + shared::CommonSectionB::FEATURES;
-
-    fn calculate_basic(&self, current: &MetricsForAlt) -> Result<Array2<f32>> {
-        let common = shared::CommonFeatures::extract(current);
-        let mut features = Vec::with_capacity(Self::FEATURES);
-        features.extend_from_slice(&common.base_encoding);
-        features.extend_from_slice(&common.position_metrics);
-        features.extend_from_slice(&common.context_encoding);
-        features.extend_from_slice(&common.depth_ratios);
-        features.extend_from_slice(&common.base_quality_metrics);
-        features.extend_from_slice(&common.mapping_quality_metrics);
-        features.extend_from_slice(&common.read_metrics);
-        Array2::from_shape_vec((1, features.len()), features)
-            .wrap_err("Failed to create basic feature array")
-    }
-
-    /// Names mirroring [`calculate_basic`](Self::calculate_basic): all of
-    /// [`CommonFeatures`] except `region_entropy`.
-    fn basic_names() -> Vec<&'static str> {
-        shared::CommonSectionA::names()
-            .into_iter()
-            .filter(|name| *name != "region_entropy")
-            .chain(shared::CommonSectionB::names())
-            .collect()
-    }
-}
-
-impl FeatureCalculator for SimpleFeatures {
-    fn feature_num(&self) -> FeatureNum {
-        let n = Self::FEATURES;
-        FeatureNum { cpg: n, denovo_cpg: n, others: n }
-    }
-
-    fn feature_names(&self) -> FeatureNames {
-        FeatureNames {
-            cpg: Self::basic_names(),
-            denovo_cpg: Self::basic_names(),
-            others: Self::basic_names(),
-        }
-    }
-
-    fn calculate_cpg(
-        &self,
-        current: &MetricsForAlt,
-        _before: Option<&PileupMetrics>,
-        _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        self.calculate_basic(current)
-    }
-
-    fn calculate_denovo_cpg(
-        &self,
-        current: &MetricsForAlt,
-        _before: Option<&PileupMetrics>,
-        _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        self.calculate_basic(current)
-    }
-
-    fn calculate_others(
-        &self,
-        current: &MetricsForAlt,
-        _before: Option<&PileupMetrics>,
-        _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        self.calculate_basic(current)
     }
 }
 

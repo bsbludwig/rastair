@@ -43,6 +43,5 @@ On chr12 of NA12878 (~26x) against Platinum Genomes, this reached an F1 of 0.905
 There is no strand filter: an allele seen on one bisulfite strand only is called like any other.
 Under `--all`, an allele the pair-HMM looked at but did not call is written as `0/0` with the `low_indel_qual` filter.
 
-Indel calling needs a build with the `experimental-seqair` backend, since it aligns reads while their position is built; other builds refuse `--experimental-indels`.
 No @ML model is involved, so `--ml` and `--no-ml` do not affect indel calls.
 With `--phase`, SNVs are phased; indel records are not (see [genotyping](genotyping.md#phasing)).

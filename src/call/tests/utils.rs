@@ -506,7 +506,6 @@ pub(crate) fn test_call(
         phase: false,
         phase_masks: default(),
         phase_mask: default(),
-        indel_gap_profile: None,
         vcf: default(),
         bed: default(),
         total_threads: 2,

@@ -10,22 +10,6 @@ use color_eyre::{
 };
 use seqair_types::Probability;
 
-#[cfg(not(feature = "experimental-seqair"))]
-fn build_test_pileups(
-    pileups: impl Iterator<Item = crate::call::pileup::Pileup>,
-    segment: &Segment,
-    threshold_filters: &process::ThresholdFilterParams,
-) -> Vec<PileupMetrics> {
-    process::calculate_pileup_metrics(pileups, segment)
-        .map(|x| {
-            let mut x = x.unwrap();
-            process::apply_threshold_filters(&mut x, threshold_filters).unwrap();
-            x
-        })
-        .collect()
-}
-
-#[cfg(feature = "experimental-seqair")]
 fn build_test_pileups(
     pileups: impl Iterator<Item = PileupMetrics>,
     _segment: &Segment,

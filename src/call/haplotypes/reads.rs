@@ -3,11 +3,8 @@ use super::{
     SequencePosition,
 };
 use crate::call::process::PileupMappingParams;
-#[cfg(not(feature = "experimental-seqair"))]
-use color_eyre::eyre::WrapErr as _;
 use color_eyre::eyre::{OptionExt as _, Result, bail, ensure};
 use seqair::bam::cigar::{CigarOp, CigarOpType};
-#[cfg(feature = "experimental-seqair")]
 use seqair::bam::record_store::RecordStore;
 use seqair_types::{Base, Strand};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,7 +29,6 @@ struct Alignment<'a> {
 }
 
 impl Collector {
-    #[cfg(feature = "experimental-seqair")]
     pub fn capture(
         &mut self,
         store: &RecordStore<crate::sequence::RastairReadExtras>,
@@ -128,68 +124,13 @@ impl Collector {
     }
 }
 
-pub(crate) fn warn_nameless(nameless: bool) {
+/// A missing read name is a property of the whole file (a CRAM written with
+/// `RN=false`), so once per run says all there is to say.
+fn warn_nameless(nameless: bool) {
     static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if nameless && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         tracing::warn!("Reads without names cannot contribute molecular haplotype evidence");
     }
-}
-
-#[cfg(not(feature = "experimental-seqair"))]
-pub(crate) fn fetch_hts(
-    params: &crate::sequence::ReaderParams,
-    segment: &crate::sequence::Segment,
-    mapping: &PileupMappingParams,
-) -> Result<Vec<Fragment>> {
-    use rust_htslib::bam::{self, Read as _, record::Aux};
-    let mut reader = bam::IndexedReader::from_path(params.bam_file.path())?;
-    reader.set_reference(params.fasta_file.path())?;
-    reader.fetch((segment.contig.as_str(), segment.start, segment.end.saturating_add(1)))?;
-    let reference = Reference {
-        start: u32::try_from(segment.start)?,
-        bases: segment.sequence.iter().copied().map(Base::from).collect(),
-    };
-    let mut collector = Collector::default();
-    for record in reader.records() {
-        let record = record.wrap_err("Cannot read BAM for haplotype features")?;
-        if !mapping.read_flags.filter_flags(record.flags(), mapping.unpaired) {
-            continue;
-        }
-        // SAFETY: The record owns the BAM allocation for the lifetime of this view.
-        let view = unsafe { bam::RecordView::from_raw(record.inner() as *const _) };
-        if !mapping.require_tags.allows(&view) {
-            continue;
-        }
-        let group = match record.aux(b"RG") {
-            Ok(Aux::String(group)) => group.as_bytes().to_vec(),
-            Err(rust_htslib::bam::BamError::AuxTagNotFound) => Vec::new(),
-            Ok(_) => bail!("BAM read-group tag is not a string"),
-            Err(error) => return Err(error.into()),
-        };
-        let bases: Vec<_> = record.seq().as_bytes().into_iter().map(Base::from).collect();
-        let cigar: Vec<_> = record.raw_cigar().iter().copied().map(CigarOp::from_bam_u32).collect();
-        let strand = if mapping.guess_read_orientation {
-            crate::call::pileup::hts_utils::infer_strand_from_mismatch_motifs(&record, segment)
-        } else {
-            Strand::from(seqair_types::BamFlags::from(record.flags()))
-        };
-        collector.add(
-            Alignment {
-                name: record.qname(),
-                group,
-                start: u32::try_from(record.pos())?,
-                flags: record.flags(),
-                mapq: record.mapq(),
-                strand,
-                bases: &bases,
-                qualities: record.qual(),
-                cigar: &cigar,
-            },
-            &reference,
-            mapping,
-        )?;
-    }
-    collector.finish()
 }
 
 fn evidence(

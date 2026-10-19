@@ -124,8 +124,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Aligners often soft-clip a read's fringe base(s) when that mismatches the reference. But in TAPS, a methylated C reads as T, so a leading C→T mismatch might get soft-clipped, discarding real methylation evidence (and same for a trailing G->A). With this flag, a single soft-clipped base immediately next to an aligned base is "rescued" when it is the missing partner of a reference CpG (ref C on OT, ref G on OB) and counted as a normal observation.
 
    Recovered bases bypass read-end masking (`--nOT`/`--nOB`) since they are fringe bases by definition, but still go through base-quality, mapping-quality and methylation read-position filters.
-
-   (Only takes effect on the seqair backend.)
 * `--no-ml` — Only use hard thresholds to call variants and methylation events.
 
    This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
@@ -151,15 +149,12 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--experimental-indels` — Enable experimental indel calling
 
-   Indels are called by a TAPS-aware pair-HMM, which needs the seqair backend.
+   Indels are called by a TAPS-aware pair-HMM over the reads spanning each cluster of candidate columns.
 * `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations for an indel allele to be scored
 
    Reads (one per fragment) whose alignment carries the allele; at least 5% of the column's depth is required in any case. Of the alleles reaching it in a cluster of neighbouring columns, the three most reads carry are scored, at most two per column, and a scored allele is called only if the pair-HMM finds it present.
 
   Default value: `2`
-* `--indel-error-profile <FILE>` — Score indel reads with the gap qualities of a calibrated library error profile instead of GATK's conservative PCR model (experimental)
-
-   A JSON profile written by `scripts/calibrate_haplotype_errors.py`: per repeat period and copy count, the insertion-open, deletion-open and extension qualities measured on the library. Evaluated on each read's own tandem repeats, as the PCR model is.
 
 ###### **Input Options:**
 
@@ -231,9 +226,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Phasing Options:**
 
-* `--phase` — Link heterozygous variants that share read pairs into phase blocks
+* `--phase` — Link heterozygous SNVs that share read pairs into phase blocks
 
-   Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are phased, and indels too with `--experimental-indels`. Requires a build with the `experimental-seqair` backend.
+   Phased genotypes are written as `0|1` with a `PS` phase set. Indel records are not phased.
 
   Default value: `false`
 * `--phase-mask <FILE>` — Exclude BED intervals from phasing and molecular ML evidence
@@ -254,7 +249,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   Default value: `200`
 * `--segment-max-bytes <SEGMENT_MAX_BYTES>` — Maximum estimated compressed bytes to load per segment (memory budget)
 
-   seqair backend only. A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
+   A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
 
   Default value: `268435456`
 * `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
@@ -288,13 +283,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
-* `--linear-dedup-threshold <LINEAR_DEDUP_THRESHOLD>` — Depth threshold below which linear name dedup is used instead of a hashmap
-
-   At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an `FxHashMap`. Set to 0 to always use the hashmap.
-
-   Only affects the htslib pileup path. The seqair path deduplicates overlapping mates from seqair's per-store mate links and never matches read names, so it ignores this.
-
-  Default value: `30`
 * `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead. With `--experimental-indels` the pair-HMM indel scoring runs on the GPU too.
 
    Requires a Metal/Vulkan/DX12-capable GPU.

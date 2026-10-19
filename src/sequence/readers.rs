@@ -19,10 +19,8 @@ use tracing::{debug, instrument, trace};
 
 // ── seqair path ───────────────────────────────────────────────────────────────
 
-#[cfg(feature = "experimental-seqair")]
 pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
 
-#[cfg(feature = "experimental-seqair")]
 mod seqair_readers {
     use crate::{
         call::{
@@ -108,8 +106,8 @@ mod seqair_readers {
             match &self.tag_requirement {
                 TagRequirement::All => true,
                 TagRequirement::AllOf(filters) => {
-                    // Parity with the htslib path: a record whose aux block can't
-                    // be read fails a tag *requirement* (fail closed, not open).
+                    // A record whose aux block can't be read fails a tag
+                    // *requirement* (fail closed, not open).
                     let Ok(aux) = rec.aux(store) else { return false };
                     filters
                         .iter()
@@ -421,8 +419,9 @@ impl ReaderParams {
         Ok(Readers { fasta, bam, params: self.clone() })
     }
 
-    #[cfg(feature = "experimental-seqair")]
-    pub fn open_seqair(&self) -> Result<SeqairReaders> {
+    /// The readers `call` and `ml train` pile up with; [`Self::readers`]
+    /// opens htslib's for the per-read and BAM-rewriting commands.
+    pub fn pileup_readers(&self) -> Result<SeqairReaders> {
         use color_eyre::eyre::WrapErr as _;
         let inner = seqair::Readers::open_customized(
             self.bam_file.path(),
@@ -433,23 +432,6 @@ impl ReaderParams {
             format!("Failed to open alignment file {}", self.bam_file.path().display())
         })?;
         Ok(SeqairReaders::new(inner, self.regions.clone()))
-    }
-
-    #[cfg(feature = "experimental-seqair")]
-    pub fn pileup_readers(&self) -> Result<SeqairReaders> {
-        self.open_seqair()
-    }
-
-    #[cfg(not(feature = "experimental-seqair"))]
-    pub fn pileup_readers(&self) -> Result<Readers> {
-        self.readers()
-    }
-
-    /// Opens a worker thread's readers, named after `SeqairReaders::fork` so
-    /// the two backends' [`ReaderSource`](crate::sequence::ReaderSource) read alike.
-    #[cfg(not(feature = "experimental-seqair"))]
-    pub fn fork(&self) -> Result<Readers> {
-        self.readers()
     }
 }
 
@@ -821,7 +803,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "experimental-seqair")]
     mod seqair_fasta_filtering {
         use super::*;
 
@@ -832,7 +813,7 @@ mod tests {
             let params =
                 ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let chunks: Vec<ChunkRegion> = readers.segments(u64::MAX, 0)?.collect();
 
             let contigs: std::collections::HashSet<&str> =
@@ -853,7 +834,7 @@ mod tests {
             let params =
                 ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let result = readers.segments(u64::MAX, 0).map(Iterator::count);
             assert!(result.is_err(), "expected an error when no BAM contig is in the FASTA");
             Ok(())
@@ -873,7 +854,7 @@ mod tests {
                 regions: Some(regions),
             };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let result = readers.segments(u64::MAX, 0).map(Iterator::count);
             assert!(result.is_err(), "explicit region absent from FASTA must be a hard error");
             Ok(())

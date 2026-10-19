@@ -4,54 +4,35 @@ use color_eyre::eyre::{OptionExt as _, Result, ensure};
 use rustc_hash::FxHashMap;
 use seqair_types::{Base, Probability, Strand};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
-pub enum LikelihoodEngine {
-    Aligned,
-    PairHmm,
-}
-
-#[derive(Debug, Clone, clap::Args, serde::Serialize)]
+/// The molecular likelihood model's parameters: the regional SNV features
+/// and the phaser build theirs in `features::parameters` and
+/// `phase::parameters`.
+#[derive(Debug, Clone)]
 pub struct LikelihoodParams {
-    #[arg(skip)]
     pub error_profile: super::ErrorProfile,
-    /// Read likelihood engine; `PairHMM` sums over local alignments
-    #[arg(long, value_enum, default_value = "aligned")]
-    pub likelihood_engine: LikelihoodEngine,
     /// Strength of the symmetric Beta prior for estimated CpG methylation rates
-    #[arg(long, default_value_t = 4.0)]
     pub methylation_prior_strength: f64,
     /// Minimum pilot probability that a molecule carries a CpG before estimating its rate
-    #[arg(long, default_value = "0.9")]
     pub methylation_min_cpg_probability: Probability,
     /// Conversion probability for methylated cytosines in TAPS libraries
-    #[arg(long, default_value = "0.95")]
     pub conversion_rate: Probability,
     /// Conversion probability for unmethylated cytosines in TAPS libraries
-    #[arg(long, default_value = "0.003")]
     pub false_conversion_rate: Probability,
     /// Score ordinary sequencing reads without TAPS conversion
-    #[arg(long)]
     pub non_taps: bool,
     /// Prior probability of a non-reference genotype at each candidate site
-    #[arg(long, default_value = "0.001")]
     pub snp_prior: Probability,
     /// Gauss-Legendre nodes for estimating each shared CpG methylation rate
-    #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u16).range(2..=64))]
     pub quadrature_order: u16,
     /// Probability of opening each insertion or deletion in the `PairHMM`
-    #[arg(long, default_value = "0.00003162277660168379")]
     pub gap_open: Probability,
     /// Probability of extending an insertion or deletion in the `PairHMM`
-    #[arg(long, default_value = "0.1")]
     pub gap_extend: Probability,
-    /// Prior probability of a non-reference genotype at the nuisance indel site
-    #[arg(long, default_value = "0.0001")]
+    /// Prior probability of a non-reference genotype at a nuisance indel site
     pub indel_prior: Probability,
-    /// Local realignment flank around selected SNPs and the nuisance indel
-    #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u16).range(2..=100))]
+    /// Local realignment flank around the scored sites and nuisance indels
     pub realignment_flank: u16,
     /// Maximum length of a CIGAR insertion/deletion proposed as a nuisance allele
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
     pub max_indel_length: u16,
 }
 
@@ -197,10 +178,8 @@ pub(super) struct MolecularBase {
     pub base: Base,
     pub quality: Option<u8>,
     pub source: Option<usize>,
-    #[cfg_attr(
-        not(any(feature = "experimental-seqair", test)),
-        expect(dead_code, reason = "Focal diagnostic overlap counter")
-    )]
+    /// Known mate observations behind the consensus.
+    #[cfg_attr(not(test), expect(dead_code, reason = "Checked by the consensus tests"))]
     pub measurements: usize,
     pub discordant: bool,
 }

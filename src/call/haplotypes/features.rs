@@ -1,13 +1,8 @@
-use super::{
-    ExpansionParams, Fragment, Indel, LikelihoodParams, Reference, Site, likelihood::log_add,
-};
+use super::{ExpansionParams, Fragment, LikelihoodParams, Reference, Site, likelihood::log_add};
 use crate::metrics::AlleleMetrics;
 use crate::utils::IntoF32 as _;
 use crate::{
-    call::{
-        phasing::{ColumnPhase, PhaseMask},
-        pileup::indels::IndelAllele,
-    },
+    call::phasing::{ColumnPhase, PhaseMask},
     metrics::{MetricsForAlt, PileupMetrics, ml::features::HaplotypeEvidence},
     sequence::Segment,
 };
@@ -18,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A column's molecular SNV evidence: the forest's features for each
 /// alternate base and the diploid posterior its genotype comes from. Indels
-/// are the pair-HMM indel caller's; here they are only context.
+/// are the pair-HMM indel caller's and take no part here: a read carrying one
+/// is scored through its gap against chromosomes that differ by SNVs only.
 #[derive(Debug, Clone, Default)]
 pub struct ColumnEvidence {
     snps: [HaplotypeEvidence; 4],
@@ -48,7 +44,6 @@ pub(crate) fn parameters() -> Result<LikelihoodParams> {
     use seqair_types::Probability;
     Ok(LikelihoodParams {
         error_profile: super::ErrorProfile::default(),
-        likelihood_engine: super::LikelihoodEngine::PairHmm,
         conversion_rate: Probability::new(0.95)?,
         false_conversion_rate: Probability::new(0.003)?,
         non_taps: false,
@@ -83,7 +78,7 @@ pub(crate) fn add_likelihoods_with_profile(
     profile.validate()?;
     let mut params = parameters()?;
     params.error_profile = profile.clone();
-    let search = ExpansionParams { read_local: true, ..ExpansionParams::default() };
+    let search = ExpansionParams::default();
     let reference_end = segment
         .start
         .checked_add(u64::try_from(segment.sequence.len())?)
@@ -105,20 +100,6 @@ pub(crate) fn add_likelihoods_with_profile(
                 .map(Base::from)
                 .collect(),
         };
-        let observed_sites = columns
-            .iter()
-            .filter(|column| domain.contains(&u64::from(column.pos)))
-            .filter_map(|column| {
-                let alts: Vec<_> = column
-                    .alts
-                    .iter()
-                    .filter(|alt| alt.metrics.depth >= 2)
-                    .map(|alt| alt.base)
-                    .collect();
-                (!alts.is_empty() && column.reference_base != Base::Unknown)
-                    .then(|| Site::new(column.pos, column.reference_base, alts))
-            })
-            .collect::<Result<Vec<_>>>()?;
         let mut candidates = Vec::new();
         for (index, column) in columns.iter().enumerate().filter(|(_, column)| {
             domain.contains(&u64::from(column.pos)) && column.reference_base != Base::Unknown
@@ -140,40 +121,12 @@ pub(crate) fn add_likelihoods_with_profile(
                     .alt_metrics(alt.base)
                     .is_some_and(|candidate| crate::call::process::pre_ml_filter(&candidate));
             }
-            let mut indels = Vec::new();
-            if let Some(data) = &column.indel_data {
-                for allele in data.counts.alleles.iter().filter(|allele| allele.total >= 2) {
-                    let (deleted, inserted) = match &allele.allele {
-                        IndelAllele::Insertion(bases) => (Vec::new(), bases.to_vec()),
-                        IndelAllele::Deletion(bases) => (bases.to_vec(), Vec::new()),
-                    };
-                    let edit = Indel {
-                        start: column.pos.checked_add(1).ok_or_eyre("Indel overflow")?,
-                        deleted,
-                        inserted,
-                    };
-                    if edit.len() > usize::from(params.max_indel_length)
-                        || reference.base_at(edit.start).is_none()
-                        || edit
-                            .start
-                            .checked_add(u32::try_from(edit.deleted.len())?)
-                            .is_none_or(|end| reference.base_at(end).is_none())
-                        || observed_sites.iter().any(|site| edit.deletes(site.pos))
-                    {
-                        continue;
-                    }
-                    indels.push(edit);
-                }
-            }
-            if indels.len() >= 8 {
-                indels.clear();
-            }
-            if snps || !indels.is_empty() || alleles.len() > 1 {
+            if snps || alleles.len() > 1 {
                 candidates.push((
                     index,
                     super::regional::Candidate {
                         site: Site { pos: column.pos, reference: column.reference_base, alleles },
-                        indels,
+                        indels: Vec::new(),
                     },
                     snps,
                 ));
@@ -184,11 +137,11 @@ pub(crate) fn add_likelihoods_with_profile(
         // its own it would only shorten regions.
         let scored_positions: Vec<u32> = candidates
             .iter()
-            .filter(|(_, candidate, snps)| *snps || !candidate.indels.is_empty())
+            .filter(|(_, _, snps)| *snps)
             .map(|(_, candidate, _)| candidate.site.pos)
             .collect();
         candidates.retain(|(_, candidate, snps)| {
-            *snps || !candidate.indels.is_empty() || {
+            *snps || {
                 let next = scored_positions.partition_point(|&pos| pos < candidate.site.pos);
                 [next.checked_sub(1), Some(next)]
                     .into_iter()
@@ -228,14 +181,8 @@ pub(crate) fn add_likelihoods_with_profile(
                 .flatten()
                 .filter_map(|&i| fragments.get(i))
                 .filter(|fragment| {
-                    fragment
-                        .reads
-                        .iter()
-                        .any(|read| read.covers(previous.pos, params.likelihood_engine))
-                        && fragment
-                            .reads
-                            .iter()
-                            .any(|read| read.covers(site.pos, params.likelihood_engine))
+                    fragment.reads.iter().any(|read| read.covers(previous.pos))
+                        && fragment.reads.iter().any(|read| read.covers(site.pos))
                 })
                 .take(usize::from(search.min_linking_fragments))
                 .count()
@@ -258,18 +205,8 @@ pub(crate) fn add_likelihoods_with_profile(
                     candidates.get(range.clone()).ok_or_eyre("Invalid regional candidate range")?;
                 let mut ids = BTreeSet::new();
                 for (_, candidate, _) in offered {
-                    let end = candidate
-                        .indels
-                        .iter()
-                        .map(|edit| edit.equivalent_end(&reference))
-                        .collect::<Result<Vec<_>>>()?
-                        .into_iter()
-                        .max()
-                        .unwrap_or(candidate.site.pos);
-                    for bucket in candidate.site.pos / 1024..=end / 1024 {
-                        if let Some(indices) = by_position.get(&bucket) {
-                            ids.extend(indices);
-                        }
+                    if let Some(indices) = by_position.get(&(candidate.site.pos / 1024)) {
+                        ids.extend(indices);
                     }
                 }
                 // Fragments are in position order, so the buckets' members
@@ -281,20 +218,11 @@ pub(crate) fn add_likelihoods_with_profile(
                     }
                     None => return Ok((0usize, Vec::new())),
                 };
-                let mut prepared = Vec::new();
-                for (index, candidate, snps) in offered {
-                    let mut candidate = candidate.clone();
-                    let mut safe = Vec::new();
-                    for edit in candidate.indels {
-                        if !complex_repeat_context(&reference, &edit, &observed_sites, local)? {
-                            safe.push(edit);
-                        }
-                    }
-                    candidate.indels = safe;
-                    if candidate.site.alleles.len() > 1 || !candidate.indels.is_empty() {
-                        prepared.push((*index, candidate, *snps));
-                    }
-                }
+                let prepared: Vec<_> = offered
+                    .iter()
+                    .filter(|(_, candidate, _)| candidate.site.alleles.len() > 1)
+                    .map(|(index, candidate, snps)| (*index, candidate.clone(), *snps))
+                    .collect();
                 let mut scorer = super::Scorer::new(&params)?;
                 let mut offset = 0;
                 let mut result = Vec::new();
@@ -312,7 +240,7 @@ pub(crate) fn add_likelihoods_with_profile(
                     )?;
                     blocks += 1;
                     for (index, candidate, snps) in prepared.iter().skip(offset).take(region.used) {
-                        if !snps && candidate.indels.is_empty() {
+                        if !snps {
                             continue;
                         }
                         let mut evidence = ColumnEvidence::default();
@@ -337,7 +265,9 @@ pub(crate) fn add_likelihoods_with_profile(
                                     &region,
                                     local,
                                     candidate.site.pos,
-                                    |haplotype| haplotype.allele_at(candidate.site.pos) == Some(base),
+                                    |haplotype| {
+                                        haplotype.allele_at(candidate.site.pos) == Some(base)
+                                    },
                                 )?;
                                 slot.haplotype_genotype_entropy = evidence
                                     .snp_genotype
@@ -462,9 +392,7 @@ fn regional_feature(
     // here may scale with coverage: the Bayes factor, a sum over molecules,
     // becomes a mean over the fragments covering the site, and the counts
     // below become fractions of the molecules that could have produced them.
-    let covers = |fragment: &Fragment, at: u32| {
-        fragment.reads.iter().any(|read| read.covers(at, super::LikelihoodEngine::PairHmm))
-    };
+    let covers = |fragment: &Fragment, at: u32| fragment.reads.iter().any(|read| read.covers(at));
     let (mut covering, mut linking) = (0usize, 0usize);
     for fragment in fragments.iter().filter(|fragment| covers(fragment, pos)) {
         covering += 1;
@@ -527,55 +455,6 @@ fn regional_feature(
     })
 }
 
-fn complex_repeat_context(
-    reference: &Reference,
-    indel: &Indel,
-    sites: &[Site],
-    fragments: &[Fragment],
-) -> Result<bool> {
-    // A normalized gap stands for every placement up to its reference-
-    // equivalent end; a SNP inside that span is on an unknown chromosome.
-    let end = indel.equivalent_end(reference)?;
-    let can_be = |pos, base| {
-        reference.base_at(pos) == Some(base)
-            || sites.iter().any(|site| site.pos == pos && site.alleles.contains(&base))
-    };
-    for site in sites.iter().filter(|site| (indel.start..end).contains(&site.pos)) {
-        let mut support = 0;
-        for fragment in fragments {
-            let observed = super::likelihood::consensus_at(fragment, site.pos)?;
-            let Some(read) = observed.source.and_then(|source| fragment.reads.get(source)) else {
-                continue;
-            };
-            if observed.base == site.reference
-                || !observed.quality.is_some_and(|q| q >= 20)
-                || !read.mapq.is_some_and(|q| q >= 20)
-            {
-                continue;
-            }
-            let converted = (site.alleles.contains(&Base::C)
-                && observed.base == Base::T
-                && read.strand != Strand::OB
-                && site.pos.checked_add(1).is_some_and(|pos| can_be(pos, Base::G)))
-                || (site.alleles.contains(&Base::G)
-                    && observed.base == Base::A
-                    && read.strand != Strand::OT
-                    && site.pos.checked_sub(1).is_some_and(|pos| can_be(pos, Base::C)));
-            if converted {
-                continue;
-            }
-            support += 1;
-            // Reference-equivalent gap shifts are not necessarily equivalent
-            // on a SNP-bearing chromosome. This caller has no complex-allele
-            // assembler, so it must not invent that chromosome's likelihood.
-            if support >= 2 {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::reads::fixture_read;
@@ -624,10 +503,12 @@ mod tests {
             .collect();
         assert_eq!(available(het)?, 1.0);
         // Too few OB reads to rule a heterozygote out: still scored.
-        let thin = read(b"GATGAATG", Strand::OT, 10).chain(read(b"GACGAATG", Strand::OB, 2)).collect();
+        let thin =
+            read(b"GATGAATG", Strand::OT, 10).chain(read(b"GACGAATG", Strand::OB, 2)).collect();
         assert_eq!(available(thin)?, 1.0);
         // One mismatching read is no site at all.
-        let single = read(b"GATGAATG", Strand::OB, 1).chain(read(b"GACGAATG", Strand::OB, 9)).collect();
+        let single =
+            read(b"GATGAATG", Strand::OB, 1).chain(read(b"GACGAATG", Strand::OB, 9)).collect();
         assert_eq!(available(single)?, 0.0);
         Ok(())
     }
@@ -673,26 +554,6 @@ mod tests {
         let candidate = focal.alt_metrics(Base::T).ok_or_eyre("candidate")?;
         assert_eq!(ColumnEvidence::snp(&candidate).haplotype_available, 0.0);
         assert_eq!(candidate.alt.depth, 2);
-        Ok(())
-    }
-
-    #[test]
-    fn conversion_cannot_mark_a_repeat_as_genetically_broken() -> Result<()> {
-        let reference = reference(b"ACGCGT");
-        let indel = Indel { start: 1001, deleted: vec![Base::C, Base::G], inserted: Vec::new() };
-        let read = fixture_read(&reference, b"ATGCGT", &[(Match, 6)])?;
-        let sites = [Site::new(1001, Base::C, [Base::T])?];
-        let mut fragments = vec![Fragment { reads: vec![read.clone()] }; 2];
-        assert!(!complex_repeat_context(&reference, &indel, &sites, &fragments)?);
-        for fragment in &mut fragments {
-            for read in &mut fragment.reads {
-                read.strand = Strand::OB;
-            }
-        }
-        assert!(complex_repeat_context(&reference, &indel, &sites, &fragments)?);
-        let mut only_one = fragments.first().ok_or_eyre("fragment")?.clone();
-        only_one.reads.push(read);
-        assert!(!complex_repeat_context(&reference, &indel, &sites, &[only_one])?);
         Ok(())
     }
 }

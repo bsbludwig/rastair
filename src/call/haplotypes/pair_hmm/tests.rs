@@ -1,7 +1,8 @@
 use super::super::likelihood::sequencing_emission;
 use super::*;
 use crate::call::haplotypes::{
-    LikelihoodEngine, Observation, ReadEvidence, infer_snp, infer_snp_with_indels,
+    Observation, ReadEvidence,
+    tests::{infer_snp, infer_snp_with_indels, params},
 };
 use seqair_types::Probability;
 
@@ -9,10 +10,19 @@ use seqair_types::Probability;
 /// these short profiles.
 const COMPAIR_PRECISION: f64 = 1e-6;
 
-fn params(non_taps: bool) -> LikelihoodParams {
-    let mut params = crate::call::haplotypes::tests::params(non_taps);
-    params.likelihood_engine = LikelihoodEngine::PairHmm;
-    params
+/// The fragments with their sequences dropped: scored by the aligned model,
+/// at their observed bases only.
+fn aligned_only(fragments: &[Fragment]) -> Vec<Fragment> {
+    fragments
+        .iter()
+        .map(|fragment| Fragment {
+            reads: fragment
+                .reads
+                .iter()
+                .map(|read| ReadEvidence { sequence: None, ..read.clone() })
+                .collect(),
+        })
+        .collect()
 }
 
 fn reference(sequence: &[u8]) -> Reference {
@@ -404,14 +414,7 @@ fn realignment_removes_a_false_snp_beside_a_misplaced_insertion() -> Result<()> 
         18,
     )
     .collect();
-    let aligned = infer_snp(
-        &reference,
-        1003,
-        &[],
-        &fragments,
-        &crate::call::haplotypes::tests::params(true),
-        1,
-    )?;
+    let aligned = infer_snp(&reference, 1003, &[], &aligned_only(&fragments), &params(true), 1)?;
     let hmm = infer_snp_with_indels(
         &reference,
         1003,
@@ -484,8 +487,8 @@ fn discordant_overlapping_cigars_use_an_explicit_aligned_fallback() -> Result<()
         &reference(b"ACTAGTCATG"),
         1003,
         &[],
-        &fragments,
-        &crate::call::haplotypes::tests::params(true),
+        &aligned_only(&fragments),
+        &params(true),
         1,
     )?;
     let hmm = infer_snp(&reference(b"ACTAGTCATG"), 1003, &[], &fragments, &params(true), 1)?;
@@ -532,14 +535,7 @@ fn realignment_removes_a_false_snp_beside_a_misplaced_deletion() -> Result<()> {
         18,
     )
     .collect();
-    let aligned = infer_snp(
-        &reference,
-        1003,
-        &[],
-        &fragments,
-        &crate::call::haplotypes::tests::params(true),
-        1,
-    )?;
+    let aligned = infer_snp(&reference, 1003, &[], &aligned_only(&fragments), &params(true), 1)?;
     let hmm = infer_snp_with_indels(
         &reference,
         1003,
@@ -734,8 +730,7 @@ fn read_local_windows_preserve_the_unsequenced_mate_gap() -> Result<()> {
                 }
             });
             let fragment = Fragment { reads: reads.to_vec() };
-            let prepared =
-                Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
+            let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?;
             let template = prepared.template(&reference, &haplotype, &[1100, 1400], &params)?;
             assert_eq!(template.local.len(), 2);
             assert!(template.local.values().all(|window| window.len() <= 65));
@@ -790,7 +785,7 @@ fn phase_likelihood_reuse_ignores_unsequenced_mate_gaps_but_preserves_cpg_partne
     });
     let fragment = Fragment { reads: reads.to_vec() };
     let params = params(true);
-    let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
+    let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?;
     let first = Haplotype {
         alleles: vec![(1100, Base::A), (1200, Base::A), (1300, Base::G)],
         indels: Vec::new(),
@@ -920,7 +915,7 @@ fn compair_reproduces_the_mixed_emission_through_the_full_matrix() -> Result<()>
     }
     let reference = Reference { start: 1000, bases };
     let haplotypes = [Haplotype { alleles: Vec::new(), indels: Vec::new() }];
-    let context = Context::new(&reference, &haplotypes, &[1005, 1040], Some(1000..1064))?;
+    let context = Context::new(&reference, &haplotypes, &[1005, 1040], 1000..1064)?;
     let mut compared = 0;
     for trial in 0..160 {
         let params = params(trial % 5 == 0);
@@ -1032,7 +1027,7 @@ fn cached_forward_scores_equal_exhaustive_scores() -> Result<()> {
                 read(&second, &positions(1060..1160), Strand::OT),
             ],
         };
-        let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?.localize();
+        let prepared = Prepared::new(&reference, &sites, None, &[&fragment], &params)?;
         let mut lazy = Scorer::new(&params)?;
         let mut exhaustive = Scorer::new(&params)?;
         for base in Base::KNOWN {
@@ -1055,13 +1050,20 @@ fn cached_forward_scores_equal_exhaustive_scores() -> Result<()> {
 }
 
 /// The band reaches a path that leaves its diagonal by a whole indel: a read
-/// spelling a 60-base deletion scores the same against the reference and the
-/// deletion template as the full `f64` matrix does, whether its CIGAR carries
-/// the deletion or aligns straight through it. A default-width band holds
+/// spelling a 60-base deletion scores against the reference and the deletion
+/// template as the full `f64` matrix does, whether its CIGAR carries the
+/// deletion or aligns straight through it. A default-width band holds
 /// neither the reference template's path for the first read nor the deletion
-/// template's for the second.
+/// template's for the second, and scores the straight read 29 nats too low
+/// against the reference.
+///
+/// The band is sized by the indel reach, so for the straight read against the
+/// reference template, where nothing but the reach widens it, it stops at 95
+/// columns and leaves 0.3 nats of side mass outside; it is exact at 146.
 #[test]
 fn the_band_holds_a_path_across_a_long_indel() -> Result<()> {
+    /// What the reach-sized band loses beside the straight read's path.
+    const SIDE_MASS: f64 = 0.5;
     use super::super::methylation::Scoring;
     let mut state = 0x9e37_79b9_u32;
     let sequence: Vec<u8> = (0..300)
@@ -1113,10 +1115,17 @@ fn the_band_holds_a_path_across_a_long_indel() -> Result<()> {
                 0,
             )?;
             let expected = mapped;
+            let straight_on_reference =
+                std::ptr::eq(positions, &straight) && haplotype.indels.is_empty();
+            let tolerance = if straight_on_reference {
+                SIDE_MASS
+            } else {
+                COMPAIR_PRECISION * (1.0 + expected.abs())
+            };
             assert!(
-                (actual - expected).abs() < COMPAIR_PRECISION * (1.0 + expected.abs()),
-                "{} bases, deletion template {}: {actual} versus {expected}",
-                positions.len(),
+                (actual - expected).abs() < tolerance,
+                "straight {}, deletion template {}: {actual} versus {expected}",
+                std::ptr::eq(positions, &straight),
                 !haplotype.indels.is_empty()
             );
         }

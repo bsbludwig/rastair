@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::{
     call::pileup::Pileup,
     metrics::{PileupMetrics, entropy::SlidingEntropy},

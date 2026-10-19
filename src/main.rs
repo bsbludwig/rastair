@@ -103,8 +103,6 @@ enum Subcommand {
 enum MlSubcommand {
     /// Train machine learning models
     Train(TrainModelParams),
-    /// Inspect experimental alignment-conditioned haplotype likelihoods
-    Haplotypes(rastair::call::haplotypes::HaplotypeDiagnosticParams),
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -132,11 +130,6 @@ enum Generate {
 fn main() -> Result<()> {
     let args = Cli::parse();
     setup_logging(args.verbose);
-
-    #[cfg(feature = "experimental-seqair")]
-    {
-        info!("Using experimental seqair backend.");
-    }
 
     #[cfg(unix)]
     // make sure we quit when the pipe closes
@@ -174,7 +167,6 @@ fn main() -> Result<()> {
             info!(?duration, "Bam rewrite finished");
         }
         Subcommand::Ml { command } => match command {
-            MlSubcommand::Haplotypes(params) => rastair::call::haplotypes::diagnose(&params)?,
             MlSubcommand::Train(params) => {
                 // track execution time
                 let start = std::time::Instant::now();

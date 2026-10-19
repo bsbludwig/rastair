@@ -32,7 +32,6 @@ fn call_default_bed() -> Result<()> {
         phase: false,
         phase_masks: default(),
         phase_mask: default(),
-        indel_gap_profile: None,
         vcf: default(),
         bed: default(),
         total_threads: 2,

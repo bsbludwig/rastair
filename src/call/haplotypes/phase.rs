@@ -1,5 +1,5 @@
 use super::{
-    Fragment, Haplotype, LikelihoodEngine, LikelihoodParams, Reference, Site,
+    Fragment, Haplotype, LikelihoodParams, Reference, Site,
     likelihood::{log_add, log_sum},
     methylation, pair_hmm,
 };
@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 pub(crate) fn parameters() -> Result<LikelihoodParams> {
     Ok(LikelihoodParams {
         error_profile: super::ErrorProfile::default(),
-        likelihood_engine: LikelihoodEngine::PairHmm,
         conversion_rate: Probability::new(0.95)?,
         false_conversion_rate: Probability::new(0.003)?,
         non_taps: false,
@@ -139,23 +138,17 @@ pub(crate) fn score(
         .ok_or_eyre("Missing phase end")?
         .saturating_add(u32::from(params.realignment_flank))
         .min(reference_end);
-    let context = methylation::Context::new(reference, &haplotypes, &loci, Some(start..end))?;
+    let context = methylation::Context::new(reference, &haplotypes, &loci, start..end)?;
     let local: Vec<_> = fragments
         .iter()
         .map(|fragment| {
             let selected: Vec<_> = sites
                 .iter()
-                .filter(|site| {
-                    fragment
-                        .reads
-                        .iter()
-                        .any(|read| read.covers(site.pos, LikelihoodEngine::PairHmm))
-                })
+                .filter(|site| fragment.reads.iter().any(|read| read.covers(site.pos)))
                 .cloned()
                 .collect();
             ensure!(!selected.is_empty(), "Fragment does not cover phase block");
             pair_hmm::Prepared::new(reference, &selected, indel.as_ref(), &[*fragment], params)
-                .map(pair_hmm::Prepared::localize)
         })
         .collect::<Result<_>>()?;
     let matrix = |rates: Option<&methylation::Rates>,
@@ -301,10 +294,6 @@ pub(crate) struct Linkage {
     pub counts: Vec<[usize; 2]>,
     /// Per site, ascending, the fragments with an observation there on any
     /// read: what a block's scoring selects from.
-    #[cfg_attr(
-        not(feature = "experimental-seqair"),
-        expect(dead_code, reason = "Read by phasing, which only the seqair backend runs")
-    )]
     pub covering: Vec<Vec<usize>>,
 }
 
@@ -371,7 +360,6 @@ pub(crate) fn links(
     Ok(Linkage { edges: result, counts, covering })
 }
 
-#[cfg(feature = "experimental-seqair")]
 impl Linkage {
     /// The fragments observing any of these sites, ascending: the order the
     /// fragment slice has them in.

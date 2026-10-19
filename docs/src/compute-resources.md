@@ -17,10 +17,6 @@ and the coverage:
 |      16 |      1.1 GB |      1.4 GB |      2.3 GB |
 |      32 |      1.9 GB |      2.6 GB |      4.2 GB |
 
-```admonish note
-These numbers are for the experimental seqair backend.
-The default (htslib) backend needs about twice as much per thread, independent of coverage.
-```
 
 To reduce memory usage, lower `--threads` or `--segment-max-length`.
 

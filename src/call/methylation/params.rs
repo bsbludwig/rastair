@@ -19,8 +19,6 @@ pub struct MethylationCallingParams {
     /// Recovered bases bypass read-end masking (`--nOT`/`--nOB`) since they are
     /// fringe bases by definition, but still go through base-quality,
     /// mapping-quality and methylation read-position filters.
-    ///
-    /// (Only takes effect on the seqair backend.)
     #[arg(long)]
     #[arg(help_heading = cli::sections::FILTER)]
     pub rescue_soft_clip_cpg: bool,

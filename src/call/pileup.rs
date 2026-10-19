@@ -4,17 +4,11 @@ use seqair_types::{SmallVec, SmolStr};
 pub mod indels;
 mod read;
 pub use read::*;
-pub(crate) mod from_hts;
-#[cfg(feature = "experimental-seqair")]
 pub(crate) mod from_seqair;
 pub(crate) mod hts_utils;
-// The mate-overlap dedup of the seqair path is driven by seqair's own mate
-// links (see `from_seqair::drops_overlapping_mate`); the name-based collector
-// only serves the htslib path and goes away with it.
-#[cfg(not(feature = "experimental-seqair"))]
-pub(crate) mod overlapping_reads;
 
-/// Rastair's representation of a pileup at a specific position in the genome
+/// A pileup column as a list of reads, for the tests' `pileups!` fixtures;
+/// production columns are built from seqair's engine in `from_seqair`.
 #[derive(Debug, Clone)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to

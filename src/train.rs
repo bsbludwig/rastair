@@ -10,8 +10,6 @@
 
 mod reservoir;
 
-#[cfg(not(feature = "experimental-seqair"))]
-use crate::call::process::calculate_pileup_metrics;
 use crate::{
     call::process::PileupMappingParams,
     metrics::{
@@ -22,9 +20,7 @@ use crate::{
         },
     },
     regions::ConfidentRegions,
-    sequence::{
-        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Region, Segment, SegmentationParams,
-    },
+    sequence::{ChunkRegion, ReaderParams, Region, Segment, SegmentationParams, SeqairReaders},
     utils::{cli, map_surrounding},
     verify::for_each_record_in_regions,
 };
@@ -351,7 +347,6 @@ fn collect(
     let calculator = params.ml_features.get_calculator();
     let phase_mask = crate::call::phasing::PhaseMask::load(&params.phase_masks)?;
     let collector = SegmentCollector {
-        reader_params: &params.reader,
         feature_set: params.ml_features,
         phase_mask: &phase_mask,
         error_profile,
@@ -360,7 +355,6 @@ fn collect(
         feature_num: calculator.feature_num(),
         request,
     };
-    let readers = ReaderSource::from(readers);
     let completed = std::sync::atomic::AtomicUsize::new(0);
     // Reduced rather than collected: holding every segment's sample until a
     // final merge would keep `segments x cap` examples alive.
@@ -439,9 +433,8 @@ fn collect(
 /// The columns of one segment, overlaps included, as the feature extractors
 /// read them.
 fn segment_columns(
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     segment: &ChunkRegion,
-    reader_params: &ReaderParams,
     feature_set: MlFeatureSet,
     phase_mask: &crate::call::phasing::PhaseMask,
     error_profile: &crate::call::haplotypes::ErrorProfile,
@@ -449,37 +442,10 @@ fn segment_columns(
     let mapping =
         PileupMappingParams { phase: feature_set.needs_molecular_evidence(), ..Default::default() };
 
-    #[cfg(feature = "experimental-seqair")]
-    let (segment, mut columns, fragments) = {
-        let (segment, columns, fragments) =
-            crate::call::process::get_pileups_with_phase(readers, segment, &mapping)
-                .wrap_err("Failed to build pileups")?;
-        (segment, columns.collect::<Vec<_>>(), fragments)
-    };
-    #[cfg(not(feature = "experimental-seqair"))]
-    let (segment, mut columns, fragments) = {
-        let fragments = if feature_set.needs_molecular_evidence() {
-            let reference = readers.segment(segment, 2)?;
-            crate::call::haplotypes::reads::fetch_hts(reader_params, &reference, &mapping)?
-        } else {
-            Vec::new()
-        };
-        let (segment, pileups) = crate::call::process::get_pileups(readers, segment, &mapping)
+    let (segment, columns, fragments) =
+        crate::call::process::get_pileups_with_phase(readers, segment, &mapping)
             .wrap_err("Failed to build pileups")?;
-        let columns = calculate_pileup_metrics(pileups, &segment)
-            .filter_map(|metrics| {
-                metrics
-                    .inspect_err(|e| {
-                        warn!(error = format!("{e:#}"), "Failed to calculate pileup metrics");
-                    })
-                    .ok()
-            })
-            .collect::<Vec<_>>();
-        (segment, columns, fragments)
-    };
-
-    #[cfg(feature = "experimental-seqair")]
-    let _reader_params = reader_params;
+    let mut columns = columns.collect::<Vec<_>>();
     map_surrounding(
         &mut columns,
         crate::call::process::set_denovo_adj,
@@ -504,7 +470,6 @@ fn segment_columns(
 
 /// Turns one segment's candidates into labelled examples.
 struct SegmentCollector<'a> {
-    reader_params: &'a ReaderParams,
     feature_set: MlFeatureSet,
     phase_mask: &'a crate::call::phasing::PhaseMask,
     error_profile: &'a crate::call::haplotypes::ErrorProfile,
@@ -525,7 +490,7 @@ impl SegmentCollector<'_> {
     /// fixes which of them the reservoirs keep.
     fn segment(
         &self,
-        readers: &mut PileupReaders,
+        readers: &mut SeqairReaders,
         segment: &ChunkRegion,
         keys: &mut ByModel<KeySource>,
     ) -> Result<Collected> {
@@ -535,7 +500,6 @@ impl SegmentCollector<'_> {
         let (segment, mut columns) = segment_columns(
             readers,
             segment,
-            self.reader_params,
             self.feature_set,
             self.phase_mask,
             self.error_profile,
@@ -1142,7 +1106,6 @@ mod tests {
 
     /// Neighbouring segments share their overlap, and each of its candidates
     /// must be offered once, by the segment whose core holds it.
-    #[cfg(feature = "experimental-seqair")]
     #[test]
     fn overlapping_segments_offer_every_candidate_once() -> Result<()> {
         let truth = Truth {
@@ -1150,10 +1113,8 @@ mod tests {
             confident: None,
         };
         let calculator = MlFeatureSet::Standard.get_calculator();
-        let reader_params = ReaderParams::test_data();
         let phase_mask = crate::call::phasing::PhaseMask::default();
         let collector = SegmentCollector {
-            reader_params: &reader_params,
             feature_set: MlFeatureSet::Standard,
             phase_mask: &phase_mask,
             error_profile: &crate::call::haplotypes::ErrorProfile::default(),

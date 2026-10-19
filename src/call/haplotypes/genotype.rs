@@ -1,6 +1,6 @@
 use super::{Haplotype, PairEvidence};
 use crate::call::{
-    phasing::{ColumnPhase, RecordPhases},
+    phasing::ColumnPhase,
     variant_calling::{ErrorModel, EstimatedGenotype, GenotypeTag},
 };
 use crate::metrics::{AltCall, PileupMetrics};
@@ -169,7 +169,7 @@ pub(crate) fn assign_snp(
     pileup.pos_metrics.extended.genotype =
         estimate.or_else(|| pileup.estimate_genotype(threshold, error));
     if molecular {
-        pileup.phase = Some(Box::new(ColumnPhase::Genotyped(RecordPhases::default())));
+        pileup.phase = Some(Box::new(ColumnPhase::Genotyped(None)));
     } else if matches!(pileup.phase.as_deref(), Some(ColumnPhase::Likelihood(_))) {
         pileup.phase = None;
     }

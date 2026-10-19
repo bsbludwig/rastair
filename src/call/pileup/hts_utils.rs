@@ -1,9 +1,10 @@
-#![cfg_attr(feature = "experimental-seqair", allow(unused, reason = "seqair integration WIP"))]
+//! Read orientation from mismatch motifs on an htslib record, for `per-read`;
+//! `call` makes the same decision inside seqair's record filter.
 
-use crate::{call::process::PileupMappingParams, sequence::Segment};
-use rust_htslib::bam::{Record, ext::BamRecordExtensions as _, pileup::Alignment};
-use rustc_hash::{FxHashMap, FxHasher};
-use seqair_types::{BamFlags, Base, Strand};
+use crate::sequence::Segment;
+use rust_htslib::bam::{Record, ext::BamRecordExtensions as _};
+use rustc_hash::FxHasher;
+use seqair_types::{Base, Strand};
 use std::hash::{Hash as _, Hasher as _};
 use tracing::trace;
 
@@ -94,70 +95,6 @@ fn reference_base(segment: &Segment, pos_in_ref: i64) -> Option<Base> {
     segment.sequence.get(idx).copied().map(Base::from)
 }
 
-/// Calculate matches and indels from a packed CIGAR array.
-///
-/// Lower 4 bits encode the operation; upper 28 bits encode the length.
-pub fn calc_cigar_data(cigar: &[u32]) -> (u32, u32) {
-    let mut matches = 0;
-    let mut indels = 0;
-    for c in cigar {
-        let len = c >> 4;
-        match c & 0b1111 {
-            0 => matches += len,
-            1 | 2 => indels += len,
-            _ => {}
-        }
-    }
-    (matches, indels)
-}
-
-#[derive(Default)]
-pub(crate) struct ReadOrientationCache {
-    strands: FxHashMap<ReadOrientationCacheKey, Strand>,
-}
-
-impl ReadOrientationCache {
-    pub fn strand_for_alignment(
-        &mut self,
-        alignment: &Alignment<'_>,
-        segment: &Segment,
-        params: &PileupMappingParams,
-    ) -> Option<Strand> {
-        let record = alignment.record_view();
-        if !params.guess_read_orientation {
-            let flags = BamFlags::from(record.flags());
-            return Strand::from(flags).ok();
-        }
-
-        let key = ReadOrientationCacheKey::from_alignment(alignment);
-        if let Some(&strand) = self.strands.get(&key) {
-            return Some(strand);
-        }
-
-        let strand = infer_strand_from_mismatch_motifs(&alignment.record(), segment);
-        self.strands.insert(key, strand);
-        Some(strand)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ReadOrientationCacheKey {
-    name_hash: u64,
-    start: i64,
-    flags: u16,
-}
-
-impl ReadOrientationCacheKey {
-    fn from_alignment(alignment: &Alignment<'_>) -> Self {
-        let record = alignment.record_view();
-        Self {
-            name_hash: hash_bytes(record.qname()),
-            start: alignment.record().pos(),
-            flags: record.flags(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ReadOrientationEvidence {
     tg: u32,
@@ -171,8 +108,98 @@ impl ReadOrientationEvidence {
     }
 }
 
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut hasher = FxHasher::default();
-    bytes.hash(&mut hasher);
-    hasher.finish()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sequence::{ChunkRegion, Region, Segment};
+    use rust_htslib::bam::Record;
+    use rust_htslib::bam::record::{Cigar, CigarString};
+
+    fn test_segment(sequence: &[u8]) -> Segment {
+        let start = 100u64;
+        let end = start + u64::try_from(sequence.len()).expect("sequence length fits") - 1;
+        Segment {
+            range: std::sync::Arc::new(ChunkRegion {
+                region: Region { contig: "chrTest".into(), start, end },
+                last_position: end,
+                overlap_start: 0,
+                overlap_end: 0,
+            }),
+            sequence: sequence.to_vec(),
+            overlap_start: 0,
+            overlap_end: 0,
+        }
+    }
+
+    fn test_record(qname: &[u8], flags: u16, start: i64, sequence: &[u8]) -> Record {
+        let mut record = Record::new();
+        let cigar = CigarString(
+            vec![Cigar::Match(u32::try_from(sequence.len()).expect("sequence length fits in u32"))]
+                .into(),
+        );
+        record.set(qname, Some(&cigar), sequence, &vec![40; sequence.len()]);
+        record.set_flags(flags);
+        record.set_pos(start);
+        record
+    }
+
+    #[test]
+    fn mismatch_motifs_forward_tg_is_ot() {
+        let segment = test_segment(b"ACGT");
+        let record = test_record(b"forward-tg", 99, 100, b"ATGT");
+
+        assert_eq!(infer_strand_from_mismatch_motifs(&record, &segment), Strand::OT);
+    }
+
+    #[test]
+    fn mismatch_motifs_forward_ca_is_ob() {
+        let segment = test_segment(b"CCGT");
+        let record = test_record(b"forward-ca", 99, 100, b"CAGT");
+
+        assert_eq!(infer_strand_from_mismatch_motifs(&record, &segment), Strand::OB);
+    }
+
+    #[test]
+    fn mismatch_motifs_reverse_ca_is_ob() {
+        let segment = test_segment(b"CCGT");
+        let record = test_record(b"reverse-ca", 83, 100, b"CAGT");
+
+        assert_eq!(infer_strand_from_mismatch_motifs(&record, &segment), Strand::OB);
+    }
+
+    #[test]
+    fn mismatch_motifs_reverse_tg_is_ot() {
+        let segment = test_segment(b"AAGA");
+        let record = test_record(b"reverse-tg", 83, 100, b"ATGA");
+
+        assert_eq!(infer_strand_from_mismatch_motifs(&record, &segment), Strand::OT);
+    }
+
+    #[test]
+    fn mismatch_motifs_use_next_base_window_for_denovo_like_tg() {
+        let segment = test_segment(b"AAGA");
+        let record = test_record(b"denovo-next", 99, 100, b"ATGA");
+
+        assert_eq!(infer_strand_from_mismatch_motifs(&record, &segment), Strand::OT);
+    }
+
+    #[test]
+    fn mismatch_motifs_use_previous_base_window_for_denovo_like_ca() {
+        let segment = test_segment(b"CTGT");
+        let record = test_record(b"denovo-prev", 99, 100, b"CAGT");
+
+        assert_eq!(infer_strand_from_mismatch_motifs(&record, &segment), Strand::OB);
+    }
+
+    #[test]
+    fn mismatch_motif_tie_break_is_reproducible() {
+        let segment = test_segment(b"AAAA");
+        let record = test_record(b"no-evidence", 99, 100, b"CCCC");
+
+        let first = infer_strand_from_mismatch_motifs(&record, &segment);
+        let second = infer_strand_from_mismatch_motifs(&record, &segment);
+
+        assert_eq!(first, second);
+        assert!(matches!(first, Strand::OT | Strand::OB));
+    }
 }

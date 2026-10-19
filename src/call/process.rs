@@ -10,11 +10,11 @@ mod set_alt_calls;
 mod threshold_filters;
 
 // First off, let's build Rastair-specific pileups from the BAM file
-#[cfg(feature = "experimental-seqair")]
 pub(crate) use pileups::get_pileups_with_phase;
 pub use pileups::{PileupMappingParams, get_pileups};
 
-// Next, we calculate various metrics based on the generated pileups
+// The tests' `pileups!` fixtures are reduced to metrics the same way
+#[cfg(test)]
 pub use pileup_metrics::calculate_pileup_metrics;
 // and set de-novo adjacency information now that we know where de-novo candidates are
 pub use denovo::set_denovo_adj;

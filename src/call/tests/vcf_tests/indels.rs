@@ -3,10 +3,7 @@
 
 use crate::call::{
     pair_hmm::fixtures::*,
-    phasing::{
-        ColumnPhase, PhaseCall, RecordPhases,
-        fixtures::{allele, call, column, with_indels},
-    },
+    phasing::fixtures::{column, with_indels},
     pileup::indels::IndelAllele,
     tests::utils::*,
 };
@@ -19,7 +16,7 @@ fn deletion(bases: &[Base]) -> IndelAllele {
 /// A column at reference `A` whose indel calls the pair-HMM makes from `reads`
 /// scored against `alleles`, as the pipeline would.
 fn called(alleles: &[IndelAllele], reads: &[([f32; 3], usize)]) -> crate::metrics::PileupMetrics {
-    with_indels(column(1000, A, &[], None, &[]), alleles, &rows(reads))
+    with_indels(column(1000, A, &[], None), alleles, &rows(reads))
 }
 
 /// Each data line as `(REF, ALT, QUAL, FILTER, GT, GC)`.
@@ -100,29 +97,13 @@ fn phases(pileup: crate::metrics::PileupMetrics) -> Vec<(String, Option<String>)
         .collect()
 }
 
-fn with_indel_phase(
-    mut pileup: crate::metrics::PileupMetrics,
-    first: u8,
-) -> crate::metrics::PileupMetrics {
-    let phase = PhaseCall { set: call(901, 0).set, first: allele(first) };
-    pileup.phase =
-        Some(Box::new(ColumnPhase::Phased(RecordPhases { snv: None, indel: Some(phase) })));
-    pileup
-}
-
-/// Phasing made a site of the column's one passing het indel record, so the
-/// phase goes on that record, and not on a filtered one beside it.
+/// Indel records are never phased, so a column phased for its SNV record
+/// writes its indel records unphased and without `PS`.
 #[test]
-fn a_phased_pair_hmm_het_carries_its_phase_and_a_rejected_neighbour_does_not() {
-    let pileup = called(&[deletion(&[T]), deletion(&[T, T])], &[(REF_READ, 3), (ALT1_READ, 3)]);
-    assert_eq!(
-        phases(with_indel_phase(pileup, 1)),
-        [("1|0".to_owned(), Some("901".to_owned())), ("0/0".to_owned(), None)]
-    );
-}
-
-#[test]
-fn a_phased_pair_hmm_compound_het_is_one_phased_record() {
-    let pileup = called(&[deletion(&[T]), deletion(&[T, T])], &[(ALT1_READ, 3), (ALT2_READ, 3)]);
-    assert_eq!(phases(with_indel_phase(pileup, 2)), [("2|1".to_owned(), Some("901".to_owned()))]);
+fn indel_records_carry_no_phase() {
+    use crate::call::phasing::{ColumnPhase, fixtures::call};
+    let mut pileup =
+        called(&[deletion(&[T]), deletion(&[T, T])], &[(ALT1_READ, 3), (ALT2_READ, 3)]);
+    pileup.phase = Some(Box::new(ColumnPhase::Phased(call(901, 0))));
+    assert_eq!(phases(pileup), [("1/2".to_owned(), None)]);
 }

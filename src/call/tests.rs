@@ -26,7 +26,6 @@ mod figure_out_outputs_tests {
             phase: false,
             phase_masks: default(),
             phase_mask: default(),
-            indel_gap_profile: None,
             vcf: default(),
             bed: default(),
             record_filters: RecordFilters { vcf_all: false, cpgs_only: false },

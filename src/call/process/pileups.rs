@@ -1,44 +1,25 @@
 use crate::{
-    call::{RecordFilters, require_tags::TagRequirement, variant_calling::VariantCallingParams},
-    sequence::{ChunkRegion, Segment},
-};
-use color_eyre::eyre::Result;
-use std::{ops::Deref, rc::Rc};
-
-#[cfg(not(feature = "experimental-seqair"))]
-use crate::{
-    call::pileup::{Pileup, from_hts::PileupScratch},
-    sequence::Readers,
-    utils::logging::ThisIsABug,
-};
-#[cfg(not(feature = "experimental-seqair"))]
-use color_eyre::eyre::WrapErr;
-#[cfg(not(feature = "experimental-seqair"))]
-use rust_htslib::bam::{FetchDefinition, Read as _};
-#[cfg(not(feature = "experimental-seqair"))]
-use tracing::{Level, debug, instrument, trace, warn};
-
-#[cfg(feature = "experimental-seqair")]
-use crate::{
-    call::pileup::from_seqair::{
-        ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, flush_indel_clusters,
-        plain_reference_column, score_indel_cluster,
+    call::{
+        RecordFilters,
+        pileup::from_seqair::{
+            ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, flush_indel_clusters,
+            plain_reference_column, score_indel_cluster,
+        },
+        require_tags::TagRequirement,
+        variant_calling::VariantCallingParams,
     },
     metrics::{PileupMetrics, entropy::SlidingEntropy},
-    sequence::{PileupReaders, ReferenceWindow},
+    sequence::{ChunkRegion, ReferenceWindow, Segment, SeqairReaders},
 };
-#[cfg(feature = "experimental-seqair")]
-use color_eyre::eyre::WrapErr as _;
-#[cfg(feature = "experimental-seqair")]
+use color_eyre::eyre::{Result, WrapErr as _};
 use seqair::reader::{DepthLimit, SegmentOptions};
-#[cfg(feature = "experimental-seqair")]
 use seqair_types::{Base, Pos0};
-#[cfg(feature = "experimental-seqair")]
 use std::{
     num::{NonZeroU32, NonZeroU64},
+    ops::Deref,
+    rc::Rc,
     sync::Arc,
 };
-#[cfg(feature = "experimental-seqair")]
 use tracing::{debug, instrument, warn};
 
 #[derive(better_default::Default)]
@@ -49,26 +30,23 @@ pub struct PileupMappingParams {
     /// Support an indel allele needs to be scored; see `IndelParams::min_indel_ao`.
     #[default(2)]
     pub min_indel_ao: u32,
-    /// Per-segment compressed-byte budget for the seqair backend; segments
-    /// estimated above this are subdivided. `0` disables the budget.
+    /// Per-segment compressed-byte budget; segments estimated above this are
+    /// subdivided. `0` disables the budget.
     #[default(32 * 1024 * 1024)]
     pub segment_max_bytes: u64,
-    /// Rescue the soft-clipped CpG-partner base adjacent to each alignment
-    /// (seqair backend only). See `MethylationCallingParams::rescue_soft_clip_cpg`.
+    /// Rescue the soft-clipped CpG-partner base adjacent to each alignment.
+    /// See `MethylationCallingParams::rescue_soft_clip_cpg`.
     pub rescue_soft_clip_cpg: bool,
-    /// Which columns are worth finishing (seqair backend only).
+    /// Which columns are worth finishing.
     ///
     /// `None` finishes every column the reader emits, for a caller that wants
     /// the raw pileup. Production passes the record filters, so the seven
     /// columns in eight they drop never become a `PileupMetrics` at all.
     pub early_reject: Option<RecordFilters>,
-    /// Keep per-read phase observations at the columns that can use them
-    /// (seqair backend only).
+    /// Capture the full reads of each sub-segment for the molecular models
+    /// (phasing, the regional SNV features).
     pub phase: bool,
-    /// Gap qualities for the indel pair-HMM's reads from this library profile
-    /// rather than GATK's PCR model; see `IndelParams::indel_error_profile`.
-    pub indel_gap_profile: Option<std::sync::Arc<crate::call::haplotypes::ErrorProfile>>,
-    /// Score the pair-HMM on the GPU (seqair backend only).
+    /// Score the pair-HMM on the GPU.
     pub gpu: bool,
 }
 
@@ -80,90 +58,8 @@ impl Deref for PileupMappingParams {
     }
 }
 
-#[cfg(not(feature = "experimental-seqair"))]
-#[instrument(level = "info", skip_all)]
 pub fn get_pileups(
-    readers: &mut Readers,
-    region: &ChunkRegion,
-    params: &PileupMappingParams,
-) -> Result<(Rc<Segment>, impl Iterator<Item = Pileup>)> {
-    let segment = readers.segment(region, 2).wrap_err("Failed to fetch segment")?;
-    debug!(len = segment.sequence.len(), "Processing region");
-
-    // Fetch the pileups for the segment
-    FetchDefinition::try_from(&segment.region)
-        .wrap_err("Could not convert region string")
-        .this_is_a_bug()
-        .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
-        .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
-
-    // Install a pileup-level filter so that reads can be rejected once at read
-    // time instead of once per pileup column they span.
-    {
-        let read_flags = params.read_flags.clone();
-        let unpaired = params.unpaired;
-        let tag_filter = params.require_tags.clone();
-        readers.bam.set_pileup_filter(move |record| {
-            read_flags.filter_flags(record.flags(), unpaired) && tag_filter.allows(&record)
-        });
-    }
-
-    let segment = Rc::new(segment);
-    let segment_clone = segment.clone();
-
-    // Go over each column in the pileup from htslib and build our own pileup
-    let mut pileup = readers.bam.pileup();
-    // htslib's own cap only bounds memory (the real cap is applied to filtered
-    // reads per column, see `MaxCoverage::load_ceiling`); `0` there means "use
-    // the default", not "unlimited", so an unlimited run asks for the largest
-    // cap htslib can take instead. `set_max_depth` panics above `i32::MAX`
-    // (it hands the value to `bam_plp_set_maxcnt`, which takes a C `int`), so
-    // both the unlimited sentinel and a huge `--max-coverage` have to be
-    // clamped down to it rather than passed through.
-    pileup.set_max_depth(
-        params
-            .max_coverage
-            .load_ceiling()
-            .map_or(i32::MAX as u32, std::num::NonZeroU32::get)
-            .min(i32::MAX as u32),
-    );
-    let mut scratch = PileupScratch::new(params);
-    let piles = pileup
-        .filter_map(|p| match p {
-            Ok(p) => Some(p),
-            Err(e) => {
-                if tracing::enabled!(Level::TRACE) {
-                    trace!(%e, "Failed to read pileup, skipping");
-                }
-                None
-            }
-        })
-        .filter(|p| {
-            // We might get pileups from htslib that are not in the region of
-            // interest (but actually before it). Since our segments only cover
-            // the specified region, we can just skip these (we won't have the
-            // reference sequence for this anyway). They'll be part of the
-            // next/previous segment anyway.
-            region.contains(u64::from(p.pos()))
-        })
-        .map(move |pile| {
-            Pileup::from_hts(&pile, segment.clone(), params, &mut scratch).wrap_err_with(|| {
-                format!("Failed to get candidate from pileup at position {}", pile.pos())
-            })
-        })
-        .filter_map(|res| match res {
-            Ok(x) => Some(x),
-            Err(error) => {
-                warn!(error = format!("{error:#}"), "Failed to get pileup, skipping");
-                None
-            }
-        });
-    Ok((segment_clone, piles))
-}
-
-#[cfg(feature = "experimental-seqair")]
-pub fn get_pileups(
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     region: &ChunkRegion,
     params: &PileupMappingParams,
 ) -> Result<(Rc<Segment>, impl Iterator<Item = PileupMetrics>)> {
@@ -171,10 +67,9 @@ pub fn get_pileups(
     Ok((segment, pileups))
 }
 
-#[cfg(feature = "experimental-seqair")]
 #[instrument(level = "info", skip_all)]
 pub fn get_pileups_with_phase(
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     region: &ChunkRegion,
     params: &PileupMappingParams,
 ) -> Result<(
@@ -184,7 +79,7 @@ pub fn get_pileups_with_phase(
 )> {
     // Build the rastair Segment (FASTA fetch only) and extract ref window.
     let segment = readers.segment(region, 2).wrap_err("Failed to fetch segment")?;
-    debug!(len = segment.sequence.len(), "Processing region (seqair)");
+    debug!(len = segment.sequence.len(), "Processing region");
 
     let ref_window = {
         let bases: Arc<[Base]> =
@@ -385,12 +280,6 @@ pub fn get_pileups_with_phase(
         keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
     }
 
-    // A missing read name is a property of the whole file (a CRAM written
-    // with `RN=false`), so once per run says all there is to say.
-    crate::call::haplotypes::reads::warn_nameless(
-        scratch.saw_nameless_read || phase_reads.nameless,
-    );
-
     Ok((segment, pileup_metrics.into_iter(), phase_reads.finish()?))
 }
 
@@ -405,7 +294,6 @@ pub fn get_pileups_with_phase(
 /// column makes a de-novo CpG) is finished after its reads are gone, so it
 /// cannot be scored. Outside CpG-only output an indel column is always kept at
 /// once, so only CpG-only output loses scores this way.
-#[cfg(feature = "experimental-seqair")]
 fn keep<'a>(
     pileup_metrics: &'a mut Vec<PileupMetrics>,
     sliding_entropy: &mut SlidingEntropy<'_>,
@@ -464,7 +352,6 @@ mod tests {
     /// evidence of its own is kept when its genomic neighbour carries an alt
     /// that would create the other half of a CpG, so the reference run has to
     /// go through `map_surrounding` before it filters.
-    #[cfg(feature = "experimental-seqair")]
     #[test]
     fn early_rejection_keeps_exactly_what_the_pre_filter_would() -> Result<()> {
         use crate::{call::RecordFilters, utils::map_surrounding};
@@ -511,10 +398,7 @@ mod tests {
 
     /// Byte-aware sub-segmentation must be transparent: a tiny budget (which
     /// forces the region to be split into many sub-segments) yields exactly the
-    /// same pileups as an effectively-unlimited budget. Only meaningful on the
-    /// seqair backend; on htslib the budget is ignored and both runs are
-    /// trivially identical.
-    #[cfg(feature = "experimental-seqair")]
+    /// same pileups as an effectively-unlimited budget.
     #[test]
     fn byte_budget_subdivision_is_transparent() -> Result<()> {
         let params = ReaderParams {
@@ -527,8 +411,7 @@ mod tests {
         // Everything a boundary read could move: depth, the ALT list *in order*
         // (it becomes the VCF ALT column), per-allele depth and strand split,
         // and the indel observation count. A read fetched twice, or dropped at
-        // a sub-segment edge, shows up in one of these. Types stay inferred so
-        // this compiles on both the htslib and seqair backends.
+        // a sub-segment edge, shows up in one of these.
         #[allow(clippy::type_complexity)]
         fn fingerprint(
             pileups: impl Iterator<Item = PileupMetrics>,

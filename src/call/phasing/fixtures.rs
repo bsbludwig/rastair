@@ -1,9 +1,9 @@
-//! Hand-built columns for the phasing tests.
+//! Hand-built columns for the phasing and indel record tests.
 
-use super::{ColumnPhase, FragmentId, GtAllele, PhaseCall, PhaseObservation, PhaseSet};
+use super::{GtAllele, PhaseCall, PhaseSet};
 use crate::{
     call::{
-        pair_hmm::{self, Cluster, Event, HaplotypeScores, ReadScores},
+        pair_hmm::{Cluster, Event, HaplotypeScores, ReadScores},
         pileup::indels::{IndelAllele, IndelAlleleCounts, IndelCounts, IndelData, Scored},
         variant_calling::{EstimatedGenotype, GenotypeTag},
     },
@@ -12,11 +12,8 @@ use crate::{
     utils::default,
 };
 use seqair_types::Pos1;
-use seqair_types::{Base, BaseQuality, Probability, Strand};
+use seqair_types::{Base, Probability};
 use std::{num::NonZeroU8, sync::Arc};
-
-pub(crate) const ALT_1: NonZeroU8 = NonZeroU8::MIN;
-pub(crate) const ALT_2: NonZeroU8 = NonZeroU8::new(2).expect("2 > 0");
 
 /// A `0/1` het's phase call in the shorthand the tests use: `set` as the VCF
 /// prints it (`1001` for a block anchored on the 0-based column 1000), `first`
@@ -29,27 +26,13 @@ pub(crate) fn allele(index: u8) -> GtAllele {
     NonZeroU8::new(index).map_or(GtAllele::Ref, GtAllele::Alt)
 }
 
-pub(crate) fn obs(fragment: u64, base: Base, strand: Strand) -> PhaseObservation {
-    graded(fragment, base, strand, 30)
-}
-
-pub(crate) fn graded(fragment: u64, base: Base, strand: Strand, qual: u8) -> PhaseObservation {
-    PhaseObservation {
-        fragment: FragmentId::new(fragment).expect("non-zero test fragment id"),
-        base,
-        strand,
-        qual: BaseQuality::from_byte(qual),
-    }
-}
-
-/// A column with whatever genotype, alts and observations a test needs, and
-/// defaults everywhere else.
+/// A column with whatever genotype and alts a test needs, and defaults
+/// everywhere else.
 pub(crate) fn column(
     pos: u32,
     reference: Base,
     alts: &[(Base, AltCall)],
     genotype: Option<GenotypeTag>,
-    observations: &[PhaseObservation],
 ) -> PileupMetrics {
     let mut metrics = PileupMetrics {
         region: Arc::new(ChunkRegion {
@@ -77,8 +60,7 @@ pub(crate) fn column(
         after_counts: default(),
         tags: default(),
         indel_data: None,
-        phase: (!observations.is_empty())
-            .then(|| Box::new(ColumnPhase::Observed(observations.into()))),
+        phase: None,
     };
     metrics.pos_metrics.extended.genotype = genotype.map(|genotype| EstimatedGenotype {
         genotype,
@@ -86,48 +68,6 @@ pub(crate) fn column(
         confidence: Probability::ONE,
     });
     metrics
-}
-
-/// The ordinary case: a `0/1` site whose single alt was called.
-pub(crate) fn het(
-    pos: u32,
-    reference: Base,
-    alt: Base,
-    observations: &[PhaseObservation],
-) -> PileupMetrics {
-    column(
-        pos,
-        reference,
-        &[(alt, AltCall::RealVariant)],
-        Some(GenotypeTag::RefHet(ALT_1)),
-        observations,
-    )
-}
-
-/// A read the pair-HMM scored: `log10` is its likelihood under the reference
-/// and each scored allele's haplotype.
-pub(crate) fn scored(fragment: u64, log10: [f32; 3]) -> ReadScores {
-    ReadScores { fragment: FragmentId::new(fragment), mapq: 60, log10: pair_hmm::row(log10) }
-}
-
-/// Reads that make the pair-HMM genotype a column as a confident
-/// heterozygote of `haplotypes`, and pass the indel site gate: six votes each.
-/// Their fragments, from 1000 up, reach no other site, so they link nothing.
-pub(crate) fn confirming(haplotypes: [usize; 2]) -> Vec<ReadScores> {
-    haplotypes
-        .into_iter()
-        .flat_map(|hap| {
-            let mut log10 = [-4.0; 3];
-            if let Some(likeliest) = log10.get_mut(hap) {
-                *likeliest = -1.0;
-            }
-            (0..6).map(move |i| scored(1000 + 10 * hap as u64 + i, log10))
-        })
-        .collect()
-}
-
-pub(crate) fn insertion(bases: &[Base]) -> IndelAllele {
-    IndelAllele::Insertion(bases.iter().copied().collect())
 }
 
 /// Give `column` the pair-HMM's scores of `reads` against the reference and

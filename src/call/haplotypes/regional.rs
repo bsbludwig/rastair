@@ -1,9 +1,37 @@
-use super::{
-    ExpansionParams, Fragment, Haplotype, Indel, LikelihoodParams, PairEvidence, Reference, Scorer,
-    Site,
-};
+use super::{Fragment, Haplotype, Indel, LikelihoodParams, PairEvidence, Reference, Scorer, Site};
 use color_eyre::eyre::{OptionExt as _, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The bounds of one regional search.
+#[derive(Debug, Clone)]
+pub struct ExpansionParams {
+    /// How far from a scored candidate an observed site is kept as context.
+    pub window_radius: u32,
+    /// Half the span a region may cover.
+    pub expansion_radius: u32,
+    /// Sites a region holds at most.
+    pub max_sites: u16,
+    /// Chromosomes retained for diploid inference.
+    pub max_haplotypes: u16,
+    /// Pruned chromosomes buffered for reconsideration at the next candidate.
+    pub haplotype_holdout: u16,
+    /// Independent fragments that must link two consecutive candidates for
+    /// them to share a region.
+    pub min_linking_fragments: u16,
+}
+
+impl Default for ExpansionParams {
+    fn default() -> Self {
+        Self {
+            window_radius: 150,
+            expansion_radius: 1000,
+            max_sites: 32,
+            max_haplotypes: 64,
+            haplotype_holdout: 32,
+            min_linking_fragments: 2,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct Candidate {
@@ -98,7 +126,6 @@ pub(super) fn infer(
             indel,
             fragments,
             params,
-            true,
             scorer,
         )?;
         let pairs = super::posterior_pairs(
@@ -194,7 +221,6 @@ pub(super) fn infer(
         indel,
         fragments,
         params,
-        true,
         scorer,
     )?;
     let pairs =
@@ -485,69 +511,6 @@ mod tests {
             .map(|p| *p.posterior)
             .sum::<f64>();
         assert!(correct > 0.99, "TAPS multi-indel posterior: {correct}");
-        Ok(())
-    }
-
-    #[test]
-    fn a_stutter_mixture_reads_a_lone_reference_molecule_as_a_stuttered_alt() -> Result<()> {
-        let mut dna = b"GTTCTGGAACGCGCTTCT".to_vec();
-        dna.extend(std::iter::repeat_n(b'A', 12));
-        dna.extend(b"GTTAGGTACCGT");
-        let local = Reference { start: 1100, bases: dna.iter().copied().map(Base::from).collect() };
-        let mut padded = vec![Base::C; 100];
-        padded.extend(&local.bases);
-        padded.extend(vec![Base::G; 100]);
-        let reference = Reference { start: 1000, bases: padded };
-        let alternate = [&dna[..18], &dna[19..]].concat();
-        let alt = super::super::reads::fixture_read(
-            &local,
-            &alternate,
-            &[(Match, 18), (Deletion, 1), (Match, 23)],
-        )?;
-        let wt = super::super::reads::fixture_read(&local, &dna, &[(Match, 42)])?;
-        let edit = Indel { start: 1118, deleted: vec![Base::A], inserted: vec![] };
-        let anchor = reference.base_at(1117).ok_or_eyre("anchor")?;
-        let candidates = [Candidate {
-            site: Site { pos: 1117, reference: anchor, alleles: vec![anchor] },
-            indels: vec![edit],
-        }];
-        let mut params = super::super::features::parameters()?;
-        params.non_taps = true;
-        params.error_profile.stutter = (2..=20)
-            .map(|copies| super::super::error_model::StutterRate {
-                period: 1,
-                minimum_copies: copies,
-                steps: [0.01, 0.1, 0.05, 0.005],
-            })
-            .collect();
-        params.validate()?;
-        let posterior = |alt_molecules: usize, wt_molecules: usize| -> Result<[f64; 3]> {
-            let mut fragments = vec![Fragment { reads: vec![alt.clone()] }; alt_molecules];
-            fragments.extend(vec![Fragment { reads: vec![wt.clone()] }; wt_molecules]);
-            let inferred = infer(
-                &reference,
-                &candidates,
-                &fragments,
-                &params,
-                &ExpansionParams::default(),
-                &mut Scorer::new(&params)?,
-            )?;
-            let mut copies = [0.0; 3];
-            for pair in &inferred.pairs {
-                let count = [pair.first, pair.second]
-                    .into_iter()
-                    .filter(|&i| inferred.haplotypes.get(i).is_some_and(|h| !h.indels.is_empty()))
-                    .count();
-                *copies.get_mut(count).ok_or_eyre("copies")? += *pair.posterior;
-            }
-            Ok(copies)
-        };
-        // Dosage, conditional on the allele: the per-locus prior still weighs
-        // on presence, which the forest decides in production.
-        let [_, het, hom] = posterior(20, 1)?;
-        assert!(hom / (het + hom) > 0.95, "lone reference molecule: het {het} hom {hom}");
-        let [_, het, hom] = posterior(10, 10)?;
-        assert!(het / (het + hom) > 0.99, "balanced: het {het} hom {hom}");
         Ok(())
     }
 

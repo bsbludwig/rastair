@@ -65,9 +65,7 @@ fn model_metadata_activates_pair_hmm_features_without_a_phase_flag() -> Result<(
     haplotype_feature_model(&model, "haplotype_available", 0.0, 1.0)?;
     let mask = dir.path().join("mask.bed");
     std::fs::write(&mask, "scenario\t120\t121\n")?;
-    for (masked, phased) in
-        [(false, false), (true, false), (false, cfg!(feature = "experimental-seqair"))]
-    {
+    for (masked, phased) in [(false, false), (true, false), (false, true)] {
         let vcf = dir.path().join(format!("masked-{masked}-phased-{phased}.vcf"));
         let mut command = rastair();
         command
@@ -433,16 +431,6 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
     //     summary.unmod_diff_positions,
     //     summary.shared_calls,
     // );
-    // The `--guess-read-orientation` motif heuristic is mildly engine-sensitive
-    // (seqair walks aligned pairs via `matches_only()`, htslib via
-    // `aligned_pairs_full()`), so a handful of low-coverage unmod counts differ.
-    // Both stay within the closeness assertions above; snapshot each engine
-    // separately so both builds pass.
-    #[cfg(feature = "experimental-seqair")]
-    insta::with_settings!({snapshot_suffix => "seqair"}, {
-        assert_compact_debug_snapshot!(summary);
-    });
-    #[cfg(not(feature = "experimental-seqair"))]
     assert_compact_debug_snapshot!(summary);
 
     Ok(())
@@ -455,7 +443,6 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
 /// formed (stale mate coordinates, a reader that stopped linking) would leave
 /// both runs identical.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
     const REGION: &str = "--region=chr19:6103000-6106000";
 
@@ -503,7 +490,6 @@ fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
     // A region wide enough to contain soft-clips that land on CpG partners.
     const REGION: &str = "--region=chr19:6100000-6120000";
@@ -540,7 +526,7 @@ fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
     };
     let changed = off.iter().filter(|(key, off_call)| on.get(key) != Some(off_call)).count();
 
-    assert!(changed > 0, "rescue should change at least one CpG on the seqair backend");
+    assert!(changed > 0, "rescue should change at least one CpG");
     assert!(
         evidence(&on) > evidence(&off),
         "rescue should add net methylation observations ({} -> {})",
@@ -1472,7 +1458,6 @@ fn write_bam_with_zero_mapq_overlapping(
 /// `tests/data/test.bam` has 86 indel-carrying reads but no two of them agree
 /// on an allele, so it produces no indel call at any threshold — which is why
 /// nothing here exercised the indel path.
-#[cfg(feature = "experimental-seqair")]
 fn write_deletion_bam(
     output: &std::path::Path,
     contig: &str,
@@ -1540,7 +1525,7 @@ fn write_deletion_bam(
 
 /// A deletion's REF allele must be the reference *at the deletion*.
 ///
-/// The seqair backend read it from the start of the enclosing segment instead,
+/// The column builder once read it from the start of the enclosing segment instead,
 /// so 82.6% of multi-base REF alleles on chr12 were real-looking sequence from
 /// the wrong locus and `bcftools norm` refused the file. Nothing caught it: no
 /// CLI test enabled indel calling, and no snapshot held a multi-base REF.
@@ -1549,7 +1534,6 @@ fn write_deletion_bam(
 /// index and the right one coincide, which is also why the `from_seqair` unit
 /// fixtures could not see this.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
     use rust_htslib::faidx;
 
@@ -1606,29 +1590,10 @@ fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
     Ok(())
 }
 
-/// Indels are called by the pair-HMM, which scores reads while their column
-/// is built and so needs the seqair backend; an htslib build says so.
-#[test]
-#[cfg(not(feature = "experimental-seqair"))]
-fn indel_calling_needs_the_seqair_backend() -> Result<()> {
-    let output = rastair()
-        .args(CALL_TEST_BAM)
-        .args([CHR19_SMALL, NO_ML, "--experimental-indels"])
-        .output()?;
-    assert!(!output.status.success(), "indel calling must fail on an htslib build");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--experimental-indels needs the `experimental-seqair` backend"),
-        "{stderr}"
-    );
-    Ok(())
-}
-
 /// A compound het, an insertion on one haplotype and a deletion on the other
 /// at one anchor, is one `1/2` record whose REF spans the deletion; a deletion
 /// on both haplotypes is a PASS `1/1`.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn the_pair_hmm_calls_a_compound_het_and_a_homozygous_indel() -> Result<()> {
     use utils::scenario::{Hap, Scenario};
     const COMPOUND: usize = 150;
@@ -1673,7 +1638,6 @@ fn the_pair_hmm_calls_a_compound_het_and_a_homozygous_indel() -> Result<()> {
 /// are each a PASS `1/1`, which needs a haplotype carrying both; a deletion
 /// on one haplotype and an insertion 10 bp on, on the other, are each `0/1`.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn the_pair_hmm_calls_two_events_of_one_cluster() -> Result<()> {
     use utils::scenario::{Hap, Scenario};
     const FIRST: usize = 150;
@@ -1729,7 +1693,6 @@ fn the_pair_hmm_calls_two_events_of_one_cluster() -> Result<()> {
 /// rejected: absent from the output, and written `0/0` with the
 /// `low_indel_qual` FILTER under `--all`.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn the_pair_hmm_calls_indels_on_a_scenario() -> Result<()> {
     use utils::scenario::{Hap, Scenario, Strand};
     const INSERTION: usize = 150;

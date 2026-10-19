@@ -786,7 +786,6 @@ fn ref_base_at(fasta: &rust_htslib::faidx::Reader, chrom: &str, pos: usize) -> O
 
 /// `bcftools` must read the phased records: `GT` with a `|` and an integer `PS`.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn bcftools_reads_phased_genotypes() -> Result<()> {
     use utils::scenario::{Hap, Scenario};
     require_tool!("bcftools");

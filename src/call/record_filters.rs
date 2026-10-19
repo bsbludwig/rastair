@@ -43,7 +43,7 @@ pub struct RecordFilters {
 /// Everything [`RecordFilters::keeps`] asks about a position.
 ///
 /// A column is answerable before it becomes a [`PileupMetrics`] — which is how
-/// the seqair backend rejects one before finishing it — so the question is
+/// the column builder rejects one before finishing it — so the question is
 /// asked of these three bits and not of the finished record.
 #[derive(Debug, Clone, Copy)]
 pub struct PreFilterInputs {

@@ -7,15 +7,12 @@
 //! cluster's indel [`Event`]s applied. `PileupMetrics` keeps no reads, so what
 //! is stored is one row of log10 likelihoods per read, with the [`Verdict`]
 //! they add up to: the diploid pair of haplotypes and each event's [`Margin`]
-//! of presence. The scoring needs compair and so only exists on the seqair
-//! backend; the stored scores are plain data.
+//! of presence.
 
 use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
 use seqair_types::{Phred, SmallVec};
 
-#[cfg(feature = "experimental-seqair")]
 mod scoring;
-#[cfg(feature = "experimental-seqair")]
 pub use scoring::{HaplotypeRead, HaplotypeScratch, Prepared, prepare, score};
 
 /// Indel events a cluster scores at most: every subset of them is a
