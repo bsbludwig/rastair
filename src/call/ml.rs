@@ -135,14 +135,47 @@ pub fn load_combined_model(path: Option<&Path>, built_in: &[u8]) -> Result<Rasta
         rmp_serde::from_read(decompress).wrap_err("Failed to deserialize combined model")
     }
 
-    if let Some(path) = path {
+    let model = if let Some(path) = path {
         let model = load_model_from_file(path)
-            .wrap_err_with(|| format!("Failed to load combined model from {path:?}"));
+            .wrap_err_with(|| format!("Failed to load combined model from {path:?}"))?;
         debug!(?path, "Loaded combined model from file");
+        model.check_feature_layout().wrap_err_with(|| format!("Cannot use model {path:?}"))?;
         model
     } else {
-        let model = load_combined(built_in);
+        let model = load_combined(built_in)?;
         debug!("Loaded built-in combined model");
+        model.check_feature_layout().wrap_err("Cannot use the bundled model")?;
         model
+    };
+    Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use color_eyre::eyre::ContextCompat as _;
+
+    const BUNDLED: &[u8] = include_bytes!("../../models/rastair_default.rff.mpk.lz4");
+
+    #[test]
+    fn the_bundled_model_matches_the_feature_layout() -> Result<()> {
+        load_combined_model(None, BUNDLED)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_model_fitted_on_another_layout_is_refused() -> Result<()> {
+        let mut model = load_combined_model(None, BUNDLED)?;
+        let layout = model.feature_layout.as_mut().wrap_err("bundled model has a layout")?;
+        layout.denovo ^= 1;
+        let error = model.check_feature_layout().expect_err("a changed layout is refused");
+        let message = format!("{error:#}");
+        assert!(message.contains("denovo forest"), "{message}");
+        assert!(message.contains("rastair ml train"), "{message}");
+
+        model.feature_layout = None;
+        let error = model.check_feature_layout().expect_err("a missing layout is refused");
+        assert!(format!("{error:#}").contains("rastair ml train"));
+        Ok(())
     }
 }

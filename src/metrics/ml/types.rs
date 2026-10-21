@@ -47,6 +47,50 @@ pub struct RastairFlatModel {
     pub others_platt: PlattScaling,
     #[serde(default)]
     pub feature_set: MlFeatureSet,
+    /// `None` in a model written before layouts were recorded.
+    #[serde(default)]
+    pub feature_layout: Option<FeatureLayout>,
+}
+
+/// A fingerprint of each forest's feature names, in layout order.
+///
+/// A forest reads a row by position, so one fitted on another layout would
+/// score the wrong features without failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FeatureLayout {
+    pub cpg: u64,
+    pub denovo: u64,
+    pub others: u64,
+}
+
+impl FeatureLayout {
+    pub fn of(feature_set: MlFeatureSet) -> Self {
+        let names = feature_set.get_calculator().feature_names();
+        Self {
+            cpg: fingerprint(&names.cpg),
+            denovo: fingerprint(&names.denovo_cpg),
+            others: fingerprint(&names.others),
+        }
+    }
+
+    fn get(self, model: MlModel) -> u64 {
+        match model {
+            MlModel::Others => self.others,
+            MlModel::Cpg => self.cpg,
+            MlModel::DenovoCpg => self.denovo,
+        }
+    }
+}
+
+/// 64-bit FNV-1a over the names, each terminated by a NUL: stable across
+/// builds and platforms, unlike `std`'s hashers.
+fn fingerprint(names: &[&str]) -> u64 {
+    names
+        .iter()
+        .flat_map(|name| name.bytes().chain([0]))
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
 }
 
 /// One value per [`MlModel`], addressed by the model itself.
@@ -117,7 +161,40 @@ impl RastairFlatModel {
             assert!(matches!(MlModel::ALL, [MlModel::Others, MlModel::Cpg, MlModel::DenovoCpg]));
         }
         let [(others, others_platt), (cpg, cpg_platt), (denovo, denovo_platt)] = trained.0;
-        Self { cpg, denovo, others, cpg_platt, denovo_platt, others_platt, feature_set }
+        Self {
+            cpg,
+            denovo,
+            others,
+            cpg_platt,
+            denovo_platt,
+            others_platt,
+            feature_set,
+            feature_layout: Some(FeatureLayout::of(feature_set)),
+        }
+    }
+
+    /// Refuse a model whose forests were not fitted on the features this
+    /// build computes.
+    pub fn check_feature_layout(&self) -> color_eyre::Result<()> {
+        let Some(recorded) = self.feature_layout else {
+            color_eyre::eyre::bail!(
+                "The model records no feature layout, so it predates the current features; \
+                 retrain it with `rastair ml train`"
+            );
+        };
+        let current = FeatureLayout::of(self.feature_set);
+        let differing: Vec<&str> = MlModel::ALL
+            .into_iter()
+            .filter(|&model| recorded.get(model) != current.get(model))
+            .map(MlModel::name)
+            .collect();
+        color_eyre::eyre::ensure!(
+            differing.is_empty(),
+            "The model's {} forest(s) were trained on a different feature layout than this \
+             rastair computes; retrain it with `rastair ml train`",
+            differing.join(", ")
+        );
+        Ok(())
     }
 
     pub fn forest(&self, model: MlModel) -> &FlatForest {

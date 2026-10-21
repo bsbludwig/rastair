@@ -32,7 +32,7 @@
 mod reservoir;
 
 use crate::{
-    call::process::{PileupMappingParams, get_pileups},
+    call::{SegmentColumns, process::PileupMappingParams, segment_columns},
     metrics::{
         PileupMetrics,
         ml::{
@@ -41,7 +41,7 @@ use crate::{
         },
     },
     regions::ConfidentRegions,
-    sequence::{ChunkRegion, ReaderParams, Region, Segment, SegmentationParams, SeqairReaders},
+    sequence::{ChunkRegion, ReaderParams, Region, SegmentationParams, SeqairReaders},
     utils::{cli, map_surrounding},
     verify::for_each_record_in_regions,
 };
@@ -60,7 +60,6 @@ use std::{
     fs::File,
     io::{BufWriter, Write},
     path::Path,
-    rc::Rc,
     thread::available_parallelism,
 };
 use tracing::{debug, info, instrument, trace, warn};
@@ -398,19 +397,6 @@ fn collect(
     Ok((collected, failed_segments))
 }
 
-/// The columns of one segment, overlaps included, as the feature extractors
-/// read them.
-fn segment_columns(
-    readers: &mut SeqairReaders,
-    segment: &ChunkRegion,
-) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
-    let mapping = PileupMappingParams::default();
-
-    let (segment, columns) =
-        get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-    Ok((segment, columns.collect()))
-}
-
 /// Turns one segment's candidates into labelled examples.
 struct SegmentCollector<'a> {
     truth: &'a Truth,
@@ -437,7 +423,8 @@ impl SegmentCollector<'_> {
         let Some(truth) = self.truth.contigs.get(&segment.contig) else {
             return Ok(self.empty());
         };
-        let (segment, mut columns) = segment_columns(readers, segment)?;
+        let SegmentColumns { segment, mut columns } =
+            segment_columns(readers, segment, &PileupMappingParams::default())?;
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
         // The overlap columns stay in as neighbours, as in `call`, but only
@@ -940,6 +927,53 @@ mod tests {
         .train;
         let error = create_output_dirs(&params).expect_err("a directory is not a model file");
         assert!(error.to_string().contains("is a directory"), "{error}");
+        Ok(())
+    }
+
+    /// `call` scores the columns `ml train` labels, so a candidate's shared
+    /// features are the same on both paths.
+    #[test]
+    fn training_and_calling_see_the_same_common_features() -> Result<()> {
+        use crate::metrics::ml::features::shared::{
+            CommonFeatures, CommonSectionA, CommonSectionB,
+        };
+
+        #[derive(clap::Parser)]
+        struct CallCli {
+            #[command(flatten)]
+            call: crate::CallParams,
+        }
+        let call = CallCli::try_parse_from([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=bacteriophage_lambda_CpG:1001-4000",
+        ])?
+        .call;
+        let common = |column: &PileupMetrics, alt: Base| -> Option<Vec<f32>> {
+            let features = CommonFeatures::extract(&column.alt_metrics(alt)?);
+            let mut row = CommonSectionA::from_common(&features).as_row().to_vec();
+            row.extend_from_slice(CommonSectionB::from_common(&features).as_row());
+            Some(row)
+        };
+
+        let mut readers = call.segments.pileup_readers()?;
+        let segment = readers.segments(10_000, 0)?.next().wrap_err("no segment")?;
+        let training =
+            segment_columns(&mut readers, &segment, &PileupMappingParams::default())?.columns;
+        let mut calling = segment_columns(&mut readers, &segment, &call.pileup_mapping())?.columns;
+        calling.retain(|column| call.record_filters.pre_filter(column));
+
+        let training: HashMap<_, _> = training.iter().map(|column| (column.pos, column)).collect();
+        let mut compared = 0;
+        for column in &calling {
+            let trained = training.get(&column.pos).wrap_err("call column missing in training")?;
+            for alt in column.alts() {
+                assert_eq!(common(trained, alt), common(column, alt), "{} {alt}", column.pos);
+                compared += 1;
+            }
+        }
+        assert!(compared > 100, "only {compared} candidates compared");
         Ok(())
     }
 
