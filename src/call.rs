@@ -480,11 +480,20 @@ fn process_collected_pileups(
         .map(|mut pileup| {
             // Finally, set the actual variant calls based on all metrics and filters
             process::set_alt_calls(&mut pileup, params.ml.threshold())?;
-            process::add_position_tags(&mut pileup);
             Ok(pileup)
         })
         .filter_map(log_failed_and_skip!("failed to set alt calls, skipping"))
+        .collect();
+    map_surrounding(
+        &mut pileups,
+        process::mark_variant_pair_cpgs,
+        "failed to mark CpGs of two variants, skipping",
+    );
+
+    let mut pileups: Vec<PileupMetrics> = pileups
+        .into_iter()
         .map(|mut pileup| {
+            process::add_position_tags(&mut pileup);
             // Set "extended" metrics that depend on the segment and params. This is
             // done in a separate step since it uses the pileup as well as the ML score.
             pileup.pos_metrics.extended.genotype =

@@ -555,10 +555,14 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
         "failed to propagate CpG pass flags",
     );
 
+    for current in &mut records {
+        process::set_alt_calls(current, Some(ML_THRESHOLD))?;
+    }
+    map_surrounding(&mut records, process::mark_variant_pair_cpgs, "failed to mark CpGs");
+
     records
         .into_iter()
         .map(|mut current| {
-            process::set_alt_calls(&mut current, Some(ML_THRESHOLD))?;
             process::add_position_tags(&mut current);
 
             // Recalculate methylation strand info (needed for genotype estimation)

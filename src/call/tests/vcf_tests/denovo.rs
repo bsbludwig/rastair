@@ -124,31 +124,6 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_a_and_t_cant_form_denovo() -> Result<()> {
-    // Test that A and T reference bases don't produce methylation evidence rows
-    // Currently, de-novo CpG creation is only considered when one of the C or G is in the reference
-    let (segment, pileups) = pileups!(
-        [ A T ] Ref,
-        [ C G ] OT,
-        [ C G ] OT,
-        [ C G ] OB,
-        [ C G ] OB,
-    );
-
-    let records = test_call(segment, pileups, RecordFilters::all())?;
-
-    let expected_vcf = vcf_assert![
-        (A C) PASS M5mC=None,
-        (T G) PASS M5mC=None,
-    ];
-
-    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
-    expected_vcf.matches(vcf_records)?;
-
-    Ok(())
-}
-
 /// C[G>C]G scenario: position 1 (G-ref) is both the G-side of the original CpG (C-G at
 /// positions 0-1) and the new de-novo CpG C-side (G->C SNP creates C-G at positions 1-2).
 #[test]
@@ -267,6 +242,39 @@ fn test_accepted_denovo_candidate_reports_methylation() -> Result<()> {
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// `TA>CG` on both chromosomes: two variants that form a CpG together, as at chr12:20,868,616
+/// in NA12878. The reference context alone sees no CpG, so the methylated `C` (read `T` on OT)
+/// and `G` (read `A` on OB) used to count as reference reads and make both sites `0/1`.
+#[test]
+fn two_variants_forming_a_cpg_are_a_denovo_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T A ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C G ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (T C) PASS GT="1/1" M5mC=0.75,
+        (A G) PASS GT="1/1" M5mC=0.75,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    set_pass(&mut records[1], G);
+    let records = reprocess(records)?;
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

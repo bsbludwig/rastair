@@ -35,5 +35,7 @@ pub use denovo::propagate_denovo_pass_flags;
 
 // Finally, we set the actual variant calls based on all the metrics and filters
 pub use set_alt_calls::set_alt_calls;
+// and mark CpGs that two called variants form together
+pub use denovo::mark_variant_pair_cpgs;
 // and add tags for positions based on the alt calls
 pub use position_tags::add_position_tags;

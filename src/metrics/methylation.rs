@@ -1,6 +1,6 @@
 use crate::{
     call::variant_calling::GenotypeTag,
-    metrics::{AltCall, DenovoAdjecent, PileupMetrics, ReadKey},
+    metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics, ReadKey},
     utils::{Base::*, IntoF64, logging::ThisIsABug},
     vcf::{CpgBeta, CpgOrigin, InCpG, Methylated},
 };
@@ -132,19 +132,21 @@ pub(crate) fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOri
     }
 
     let cpg_base = side.unmod_base();
-    let has_denovo_alt =
-        record.alts.iter().any(|a| a.base == cpg_base && a.call == AltCall::RealVariant);
-
-    let adjacent_present = match side {
-        CpgSide::C => record.context.after_1 == Some(G),
-        CpgSide::G => record.context.before_1 == Some(C),
+    let denovo_alt =
+        record.alts.iter().find(|a| a.base == cpg_base && a.call == AltCall::RealVariant)?;
+    // The partner is the reference's, or a called variant's next door
+    // (`process::mark_variant_pair_cpgs`).
+    let partner_present = match side {
+        CpgSide::C => {
+            record.context.after_1 == Some(G)
+                || denovo_alt.metrics.denovo == FormsDenovo::ThisBecomesC
+        }
+        CpgSide::G => {
+            record.context.before_1 == Some(C)
+                || denovo_alt.metrics.denovo == FormsDenovo::ThisBecomesG
+        }
     };
-
-    if has_denovo_alt && adjacent_present {
-        return Some(CpgOrigin::DeNovo);
-    }
-
-    None
+    partner_present.then_some(CpgOrigin::DeNovo)
 }
 
 /// Look up the mod and unmod read counts for the given CpG side.
