@@ -233,18 +233,13 @@ impl PileupMetrics {
         AltEvidence { ref_count, alt_count, ref_error, alt_error, confounded: None }
     }
 
-    /// The chance that one of `base`'s reads shows a base its fragment does not carry:
-    /// `1 − (1 − 10^(−MQ/10)) · (1 − 10^(−BQ/10))` from the allele's RMS mapping and base
-    /// quality, between `error_rate` and ½ (a read no better than a coin).
-    ///
-    /// Only the per-allele RMS survives to this stage, which overstates a mixed allele's
-    /// quality (MAPQ 60 and 0 give 42), so this catches an allele whose reads are uniformly
-    /// poor, not one bad read among good ones.
+    /// The chance that one of `base`'s reads shows a base its fragment does not carry, read by
+    /// read ([`crate::metrics::AlleleMetrics::read_error`]), between `error_rate` and ½ (a read no better than a
+    /// coin).
     fn read_error(&self, base: Base, error_rate: f64) -> f64 {
-        self.allele(base).filter(|a| a.depth > 0).map_or(error_rate, |a| {
-            let correct = |phred: f64| 1.0 - 10f64.powf(-phred / 10.0);
-            (1.0 - correct(a.mapq.f()) * correct(a.baseq.f())).clamp(error_rate, 0.5)
-        })
+        self.allele(base)
+            .filter(|a| a.depth > 0)
+            .map_or(error_rate, |a| f64::from(a.read_error).clamp(error_rate, 0.5))
     }
 }
 
