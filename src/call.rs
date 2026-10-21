@@ -23,7 +23,7 @@ use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams, process::get_pileups,
+        methylation::params::MethylationCallingParams,
         require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
@@ -36,6 +36,7 @@ use color_eyre::{
     Section,
     eyre::{Result, WrapErr, ensure},
 };
+use seqair_types::Base;
 use std::{rc::Rc, thread::available_parallelism};
 use tracing::{Level, debug, instrument, trace, warn};
 
@@ -314,12 +315,17 @@ fn process_region_wrapper(
     records
 }
 
-/// Score the alts with the forests, on the inference thread if there is one.
-fn score_forest(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Result<()> {
+/// Score the alts `only` takes with the forests, on the inference thread if
+/// there is one.
+fn score_forest(
+    pileups: &mut [PileupMetrics],
+    ml: &MachineLearning,
+    only: impl Fn(&PileupMetrics, Base) -> bool + Copy,
+) -> Result<()> {
     // One batch per model either way; see `score_on_cpu` for why that
     // matters on the CPU.
-    if !process::score_on_gpu(pileups, ml) {
-        process::score_on_cpu(pileups, ml)?;
+    if !process::score_on_gpu(pileups, ml, only) {
+        process::score_on_cpu(pileups, ml, only)?;
     }
     Ok(())
 }
@@ -334,9 +340,17 @@ fn process_segment(
     fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
 
     let mapping = params.pileup_mapping();
-    let SegmentColumns { segment, mut columns } = segment_columns(readers, region, &mapping)?;
+    let SegmentColumns { segment, mut columns, held } = segment_columns(readers, region, &mapping)?;
     columns.retain(|p| params.record_filters.pre_filter(p));
-    score_forest(&mut columns, ml)?;
+    score_forest(&mut columns, ml, |_, _| true)?;
+    // The cascade: the engine scores the alts the forest kept, and the
+    // engine forests score exactly those again with the engine's features.
+    // The others keep their first score: the engine forests read an alt
+    // without an engine verdict as one the gate refused, and reject it.
+    if let Some(engine_ml) = ml.snv_engine.as_deref() {
+        held.score_snv_clusters(&segment, &mut columns, &mapping);
+        score_forest(&mut columns, engine_ml, |p, alt| p.engine_scored(alt))?;
+    }
     let depth_scale = readers.depth_scale(region.len()).map(phasing::DepthScale);
     process_collected_pileups(segment, columns, params, depth_scale)
 }
@@ -354,6 +368,8 @@ impl CallParams {
             early_reject: Some(self.record_filters.clone()),
             phase: self.phase,
             gpu: self.ml.gpu,
+            // Without forests there is no cascade to hold the reads for.
+            snv_engine: self.ml.snv_engine && !self.ml.no_ml,
         }
     }
 }
@@ -364,6 +380,9 @@ impl CallParams {
 pub(crate) struct SegmentColumns {
     pub segment: Rc<Segment>,
     pub columns: Vec<PileupMetrics>,
+    /// The reads the SNV engine scores the columns' SNV clusters on, under
+    /// `snv_engine`.
+    pub held: process::HeldReads,
 }
 
 pub(crate) fn segment_columns(
@@ -371,11 +390,10 @@ pub(crate) fn segment_columns(
     region: &ChunkRegion,
     mapping: &process::PileupMappingParams,
 ) -> Result<SegmentColumns> {
-    let (segment, pileups) =
-        get_pileups(readers, region, mapping).wrap_err("Failed to build pileups")?;
-    let mut columns: Vec<PileupMetrics> = pileups.collect();
+    let (segment, mut columns, held) =
+        process::get_pileups_held(readers, region, mapping).wrap_err("Failed to build pileups")?;
     finish_columns(&mut columns);
-    Ok(SegmentColumns { segment, columns })
+    Ok(SegmentColumns { segment, columns, held })
 }
 
 macro_rules! log_failed_and_skip {
@@ -401,7 +419,7 @@ fn process_region(
     let mut pileups = metrics_of(pileups_iter, &segment);
     finish_columns(&mut pileups);
     pileups.retain(|p| params.record_filters.pre_filter(p));
-    score_forest(&mut pileups, ml)?;
+    score_forest(&mut pileups, ml, |_, _| true)?;
     process_collected_pileups(segment, pileups, params, None)
 }
 

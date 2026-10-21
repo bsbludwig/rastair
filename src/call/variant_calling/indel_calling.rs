@@ -89,13 +89,13 @@ pub fn call_on_pair_hmm(scores: &HaplotypeScores, pos: u32) -> IndelRecords {
     const TWO: NonZeroU8 = NonZeroU8::new(2).expect("nonzero");
     let verdict = &scores.verdict;
     let call = |event: EventIdx, genotype: GenotypeTag, quality: Phred| {
-        let allele = scores.event(event)?.allele.clone();
+        let allele = scores.event(event)?.allele.as_indel()?.clone();
         Some(IndelCall { allele, genotype, quality, event })
     };
 
     // Events are in record order, so a compound het's two alleles are ALT 1
     // and 2 as they stand.
-    let here: SmallVec<EventIdx, MAX_EVENTS> = scores.events_at(pos).collect();
+    let here: SmallVec<EventIdx, MAX_EVENTS> = scores.indel_events_at(pos).collect();
     let compound = || {
         let [first, second] = *here.as_ref() else { return None };
         if verdict.copies_of(first) == 0 || verdict.copies_of(second) == 0 {
@@ -217,7 +217,7 @@ mod tests {
     /// over the three events).
     fn cluster(haps: &[(usize, usize)]) -> HaplotypeScores {
         use crate::call::pair_hmm::{Cluster, Event, MAX_HAPLOTYPES, ReadScores};
-        let at = |anchor, seq| Event { anchor, allele: deletion(seq) };
+        let at = |anchor, seq| Event { anchor, allele: deletion(seq).into() };
         let events = [at(A, "A"), at(A, "AA"), at(B, "C")].into_iter().collect();
         let reads: Vec<ReadScores> = haps
             .iter()

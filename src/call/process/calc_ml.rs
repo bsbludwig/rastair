@@ -81,7 +81,8 @@ pub fn add_ml_metrics(
     Ok(())
 }
 
-/// Build one feature row per ML candidate, and tag the alts not worth scoring.
+/// Build one feature row per ML candidate `only` takes, and tag the alts not
+/// worth scoring.
 ///
 /// Reads `pileups[i - 1]` and `pileups[i + 1]`, so this has to run where the
 /// region's `Vec` lives. Candidates whose features fail to compute or come out
@@ -90,6 +91,7 @@ pub fn extract_ml_rows(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     model: &RastairFlatModel,
+    only: impl Fn(&PileupMetrics, Base) -> bool,
 ) -> Result<MlBatch> {
     let calc = &ml.feature_calculator;
     let feature_num = calc.feature_num();
@@ -103,6 +105,9 @@ pub fn extract_ml_rows(
         let Some(current) = pileups.get(i) else { continue };
 
         for alt_base in current.alts() {
+            if !only(current, alt_base) {
+                continue;
+            }
             let Some(alt) = current.alt_metrics(alt_base) else { continue };
 
             if !pre_ml_filter(&alt) {
@@ -154,8 +159,12 @@ fn usable_features(features: Result<Array2<f32>>, kind: &'static str) -> Option<
 /// Every candidate in the region goes into one `predict` call per model. That
 /// batch is what lets biosphere walk 16 samples per tree in lockstep, which is
 /// ~5x faster than scoring candidates one at a time as [`add_ml_metrics`]
-/// does.
-pub fn score_on_cpu(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Result<()> {
+/// does. Only the alts `only` takes are scored.
+pub fn score_on_cpu(
+    pileups: &mut [PileupMetrics],
+    ml: &MachineLearning,
+    only: impl Fn(&PileupMetrics, Base) -> bool,
+) -> Result<()> {
     let Some(model) = ml.model.as_ref() else {
         return Ok(());
     };
@@ -163,7 +172,7 @@ pub fn score_on_cpu(pileups: &mut [PileupMetrics], ml: &MachineLearning) -> Resu
         return Ok(());
     }
 
-    let (rows, targets) = extract_ml_rows(pileups, ml, model)?.split()?;
+    let (rows, targets) = extract_ml_rows(pileups, ml, model, only)?.split()?;
     let scores = MlScores::from_fn(|m| {
         let rows = rows[m].view();
         if rows.nrows() == 0 {
@@ -223,7 +232,8 @@ pub fn apply_ml_scores(
 
             if let Some(filters) = pileup.alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);
-                filters.filters.add(RastairFilter::LowMlScore, move || calibrated < threshold);
+                // A second scoring (the SNV cascade) replaces the first.
+                filters.filters.set(RastairFilter::LowMlScore, calibrated < threshold);
             }
         }
     }
@@ -310,4 +320,33 @@ pub struct Pending {
     pileup_idx: usize,
     alt_base: Base,
     platt: PlattScaling,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call::{RecordFilters, ml::MachineLearningParams, tests::utils::test_call};
+    use crate::pileups;
+    use seqair_types::Base::{G, T};
+
+    #[test]
+    fn only_the_alts_the_predicate_takes_are_scored() -> Result<()> {
+        let (segment, pileups) = pileups!(
+            [ A ] Ref,
+            [ T ] OT, [ T ] OB, [ T ] OT,
+            [ G ] OT, [ G ] OB, [ G ] OT,
+            [ A ] OT, [ A ] OB,
+        );
+        let mut columns = test_call(segment, pileups, RecordFilters::all())?;
+        let column = columns.first_mut().wrap_err("one column")?;
+        for base in [T, G] {
+            column.alt_filters_mut(base).wrap_err("both alts")?.ml = None;
+        }
+        let ml = MachineLearningParams::default().init(1)?;
+        score_on_cpu(&mut columns, &ml, |_, alt| alt == T)?;
+        let score = |base| columns.first()?.alt_filters(base)?.ml;
+        assert!(score(T).is_some(), "the alt the predicate takes is scored");
+        assert!(score(G).is_none(), "the alt it refuses keeps its score");
+        Ok(())
+    }
 }

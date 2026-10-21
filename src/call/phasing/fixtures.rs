@@ -86,6 +86,7 @@ pub(crate) fn column(
         after_counts: default(),
         tags: default(),
         indel_data: None,
+        snv_scores: None,
         phase: (!observations.is_empty())
             .then(|| Box::new(ColumnPhase::Observed(observations.into()))),
     };
@@ -170,7 +171,8 @@ pub(crate) fn with_indels(
     scored: &[IndelAllele],
     reads: &[ReadScores],
 ) -> PileupMetrics {
-    let events = scored.iter().map(|a| Event { anchor: column.pos, allele: a.clone() }).collect();
+    let events =
+        scored.iter().map(|a| Event { anchor: column.pos, allele: a.clone().into() }).collect();
     let cluster = Cluster::new(events).expect("a cluster");
     let scores = HaplotypeScores::new(cluster, reads.into()).expect("reads the haplotypes explain");
     let alleles = scored

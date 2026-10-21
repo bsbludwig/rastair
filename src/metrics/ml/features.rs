@@ -292,6 +292,7 @@ impl SimpleFeatures {
         features.extend_from_slice(&common.base_quality_metrics);
         features.extend_from_slice(&common.mapping_quality_metrics);
         features.extend_from_slice(&common.read_metrics);
+        features.extend_from_slice(&common.engine);
         Array2::from_shape_vec((1, features.len()), features)
             .wrap_err("Failed to create basic feature array")
     }
@@ -371,10 +372,10 @@ mod tests {
     #[test]
     fn feature_counts_are_stable() {
         assert_eq!(CommonSectionA::FEATURES, 33);
-        assert_eq!(CommonSectionB::FEATURES, 18);
-        assert_eq!(CpgFeatures::FEATURES, 55);
-        assert_eq!(DenovoCpgFeatures::FEATURES, 56);
-        assert_eq!(OthersFeatures::FEATURES, 54);
+        assert_eq!(CommonSectionB::FEATURES, 24);
+        assert_eq!(CpgFeatures::FEATURES, 61);
+        assert_eq!(DenovoCpgFeatures::FEATURES, 62);
+        assert_eq!(OthersFeatures::FEATURES, 60);
     }
 
     /// Snapshot the full name→index layout of every model: reordering a field

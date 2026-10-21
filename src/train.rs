@@ -32,12 +32,16 @@
 mod reservoir;
 
 use crate::{
-    call::{SegmentColumns, process::PileupMappingParams, segment_columns},
+    call::{
+        SegmentColumns, ml::MachineLearningParams, process::PileupMappingParams, segment_columns,
+    },
     metrics::{
         PileupMetrics,
         ml::{
             features::{FeatureCalculator, FeatureNum},
-            types::{ByModel, MlFeatureSet, MlModel, PlattScaling, RastairFlatModel},
+            types::{
+                ByModel, MachineLearning, MlFeatureSet, MlModel, PlattScaling, RastairFlatModel,
+            },
         },
     },
     regions::ConfidentRegions,
@@ -108,6 +112,16 @@ pub struct TrainModelParams {
 
     #[arg(long, default_value_t = MlFeatureSet::Standard)]
     ml_features: MlFeatureSet,
+
+    /// Also fit the forests `call --snv-engine` re-scores SNV candidates
+    /// with; the model file then carries both sets.
+    ///
+    /// The candidates are collected a second time the way the cascade hands
+    /// them on: the forests fitted first score every candidate, the pair-HMM
+    /// engine scores the ones they keep on the clusters
+    /// `call --experimental-indels` builds, and only those are fitted on.
+    #[arg(long, help_heading = cli::sections::TRAINING)]
+    snv_engine: bool,
 
     /// Number of threads to use
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
@@ -250,33 +264,7 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
 
     create_output_dirs(params)?;
 
-    let (collected, failed_segments) = collect(params, request, seed)?;
-    for (model, data) in collected.iter() {
-        let (seen, kept) = (data.seen(), data.kept());
-        let draw = request.draw_from(kept);
-        info!(
-            model = model.name(),
-            pool_positive = seen.positive,
-            pool_negative = seen.negative,
-            kept_positive = kept.positive,
-            kept_negative = kept.negative,
-            requested_positive = request.positive,
-            requested_negative = request.negative,
-            draw_positive = draw.positive,
-            draw_negative = draw.negative,
-            rejected = data.rejected(),
-            "Collected training examples"
-        );
-        ensure!(
-            kept.positive >= 2 && kept.negative >= 2,
-            "The {} model collected {} positive and {} negative examples ({failed_segments} \
-             segments failed); it needs at least two of each, one to fit on and one to \
-             calibrate with",
-            model.name(),
-            kept.positive,
-            kept.negative,
-        );
-    }
+    let collected = collect(params, request, seed, None)?;
 
     if let Some(dir) = params.export_features.as_ref() {
         info!(dir = %dir.display(), "Exporting features as TSV");
@@ -286,7 +274,16 @@ pub fn train_model(params: &TrainModelParams) -> Result<()> {
         }
     }
 
-    let model = fit(params, request, seed, collected)?;
+    let mut model = fit(params, request, seed, &collected, "")?;
+    if params.snv_engine {
+        // The engine forests are fitted on what the cascade hands them: the
+        // alts these forests keep, with the engine's features from their
+        // clusters. Fitted on every gated alt instead, they would learn
+        // `ev_scored` 0 as "the gate refused".
+        let stage1 = MachineLearningParams::default().with_forests(model.clone(), 1)?;
+        let collected = collect(params, request, seed, Some(&stage1))?;
+        model.snv_engine = Some(Box::new(fit(params, request, seed, &collected, "snv_engine_")?));
+    }
     serialize_model(&model, params.output.clone())
         .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
     info!(path=%params.output, "Saved model");
@@ -314,13 +311,15 @@ fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
     Ok(())
 }
 
-/// Label every candidate in the requested regions and file it under its model,
-/// and count the segments that failed.
+/// Label every candidate in the requested regions and file it under its model.
+/// With `stage1`, only the candidates the cascade re-scores after those
+/// forests (the engine forests' rows).
 fn collect(
     params: &TrainModelParams,
     request: SamplingRequest,
     seed: u64,
-) -> Result<(Collected, usize)> {
+    stage1: Option<&MachineLearning>,
+) -> Result<Collected> {
     let segmentation = SegmentationParams::default();
     let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
     let segments: Vec<ChunkRegion> = readers
@@ -334,6 +333,7 @@ fn collect(
     let calculator = params.ml_features.get_calculator();
     let collector = SegmentCollector {
         truth: &truth,
+        stage1,
         calculator: &*calculator,
         feature_num: calculator.feature_num(),
         request,
@@ -394,12 +394,42 @@ fn collect(
     for model in MlModel::ALL {
         collected[model].finish();
     }
-    Ok((collected, failed_segments))
+    for (model, data) in collected.iter() {
+        let (seen, kept) = (data.seen(), data.kept());
+        let draw = request.draw_from(kept);
+        info!(
+            model = model.name(),
+            forests = if stage1.is_some() { "snv_engine_" } else { "" },
+            pool_positive = seen.positive,
+            pool_negative = seen.negative,
+            kept_positive = kept.positive,
+            kept_negative = kept.negative,
+            requested_positive = request.positive,
+            requested_negative = request.negative,
+            draw_positive = draw.positive,
+            draw_negative = draw.negative,
+            rejected = data.rejected(),
+            "Collected training examples"
+        );
+        ensure!(
+            kept.positive >= 2 && kept.negative >= 2,
+            "The {} model collected {} positive and {} negative examples ({failed_segments} \
+             segments failed); it needs at least two of each, one to fit on and one to \
+             calibrate with",
+            model.name(),
+            kept.positive,
+            kept.negative,
+        );
+    }
+    Ok(collected)
 }
 
 /// Turns one segment's candidates into labelled examples.
 struct SegmentCollector<'a> {
     truth: &'a Truth,
+    /// With the forests of the cascade's first stage, the candidates are the
+    /// ones the SNV engine scores after them, as in `call --snv-engine`.
+    stage1: Option<&'a MachineLearning>,
     calculator: &'a dyn FeatureCalculator,
     feature_num: FeatureNum,
     request: SamplingRequest,
@@ -423,8 +453,21 @@ impl SegmentCollector<'_> {
         let Some(truth) = self.truth.contigs.get(&segment.contig) else {
             return Ok(self.empty());
         };
-        let SegmentColumns { segment, mut columns } =
-            segment_columns(readers, segment, &PileupMappingParams::default())?;
+        // With the first stage, the columns `call --snv-engine
+        // --experimental-indels` builds, scored as it scores them; training
+        // has no indel flag of its own.
+        let cascade = self.stage1.is_some();
+        let mapping = PileupMappingParams {
+            snv_engine: cascade,
+            call_indels: cascade,
+            ..PileupMappingParams::default()
+        };
+        let SegmentColumns { segment, mut columns, held } =
+            segment_columns(readers, segment, &mapping)?;
+        if let Some(stage1) = self.stage1 {
+            crate::call::process::score_on_cpu(&mut columns, stage1, |_, _| true)?;
+            held.score_snv_clusters(&segment, &mut columns, &mapping);
+        }
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
         // The overlap columns stay in as neighbours, as in `call`, but only
@@ -456,6 +499,9 @@ impl SegmentCollector<'_> {
         for alt in &column.alts {
             let alt_base = alt.base;
             if ref_base == Base::Unknown || alt_base == Base::Unknown {
+                continue;
+            }
+            if self.stage1.is_some() && !column.engine_scored(alt_base) {
                 continue;
             }
             let Some(candidate) = column.alt_metrics(alt_base) else { continue };
@@ -634,22 +680,24 @@ fn strip_common_suffix<'a>(mut left: &'a [u8], mut right: &'a [u8]) -> (&'a [u8]
 }
 
 /// Fit every model's forest, one after the other: biosphere parallelises
-/// each fit over `--threads` in a pool of its own.
+/// each fit over `--threads` in a pool of its own. `prefix` names the forest
+/// set in the feature importance files.
 fn fit(
     params: &TrainModelParams,
     request: SamplingRequest,
     seed: u64,
-    collected: Collected,
+    collected: &Collected,
+    prefix: &str,
 ) -> Result<RastairFlatModel> {
     let seeds = forest_seeds(seed);
     let calculator = params.ml_features.get_calculator();
     let (counts, names) = (calculator.feature_num(), calculator.feature_names());
 
-    let trained = collected.try_map(|model, data| -> Result<_> {
-        let (forest, platt) = fit_model(model, &data, params, request, seeds[model])
+    let trained = ByModel::from_fn(|model| model).try_map(|model, _| -> Result<_> {
+        let (forest, platt) = fit_model(model, &collected[model], params, request, seeds[model])
             .wrap_err_with(|| format!("Failed to train the {} model", model.name()))?;
         if let Some(dir) = params.feature_analytics.as_ref() {
-            let path = dir.path().join(format!("{}_feature_importances.csv", model.name()));
+            let path = dir.path().join(format!("{prefix}{}_feature_importances.csv", model.name()));
             export_feature_importances(&forest, names.get(model), &path).wrap_err_with(|| {
                 format!("Failed to export {} feature importances", model.name())
             })?;
@@ -668,7 +716,7 @@ fn fit(
             (model.name(), ModelReport { forest: &forest.meta, scaling: *scaling })
         })
         .collect();
-    info!(report = ?report, "Trained models");
+    info!(report = ?report, forests = prefix, "Trained models");
 
     Ok(RastairFlatModel::from_trained(params.ml_features, trained))
 }
@@ -1080,6 +1128,7 @@ mod tests {
         let calculator = MlFeatureSet::Standard.get_calculator();
         let collector = SegmentCollector {
             truth: &truth,
+            stage1: None,
             calculator: &*calculator,
             feature_num: calculator.feature_num(),
             request: model_parameters(&[]).sampling_request(),
@@ -1106,6 +1155,44 @@ mod tests {
         let whole = offered(10_000, 0)?;
         assert!(whole > 0);
         assert_eq!(offered(1_000, 200)?, whole);
+        Ok(())
+    }
+
+    /// With the first stage's forests, a candidate is offered only when the
+    /// SNV engine scored it after them: fewer than every alt, more than none.
+    #[test]
+    fn the_engine_forests_see_only_what_the_cascade_rescores() -> Result<()> {
+        let truth = Truth {
+            contigs: HashMap::from([("bacteriophage_lambda_CpG".into(), ContigTruth::default())]),
+            confident: None,
+        };
+        let calculator = MlFeatureSet::Standard.get_calculator();
+        let stage1 = MachineLearningParams::default().init(1)?;
+        let params = ReaderParams::test_data();
+        let offered = |stage1: Option<&MachineLearning>| -> Result<u64> {
+            let collector = SegmentCollector {
+                truth: &truth,
+                stage1,
+                calculator: &*calculator,
+                feature_num: calculator.feature_num(),
+                request: model_parameters(&[]).sampling_request(),
+            };
+            let mut readers = params.pileup_readers()?;
+            let segments: Vec<ChunkRegion> = readers.segments(100_000, 0)?.collect();
+            let mut offered = 0;
+            for (index, segment) in segments.iter().enumerate() {
+                let collected = collector.segment(
+                    &mut readers,
+                    segment,
+                    &mut ByModel::from_fn(|model| KeySource::for_segment(0, index, model)),
+                )?;
+                offered += collected.iter().map(|(_, data)| data.seen().negative).sum::<u64>();
+            }
+            Ok(offered)
+        };
+        let (every_alt, rescored) = (offered(None)?, offered(Some(&stage1))?);
+        assert!(rescored > 0, "the engine scored nothing on the test BAM");
+        assert!(rescored < every_alt, "{rescored} of {every_alt} alts were rescored");
         Ok(())
     }
 

@@ -1,17 +1,17 @@
-//! Pair-HMM scores of a cluster of indel columns' reads against its local
+//! Pair-HMM scores of a cluster of variant columns' reads against its local
 //! haplotypes.
 //!
 //! Once a sub-segment's columns are drafted, the reads spanning a cluster of
-//! indel columns are aligned by a TAPS-aware pair-HMM against the reference
-//! window and against the window with every compatible subset of the
-//! cluster's indel [`Event`]s applied. `PileupMetrics` keeps no reads, so what
+//! indel and SNV columns are aligned by a TAPS-aware pair-HMM against the
+//! reference window and against the window with every compatible subset of
+//! the cluster's [`Event`]s applied. `PileupMetrics` keeps no reads, so what
 //! is stored is one row of log10 likelihoods per read, with the [`Verdict`]
 //! they add up to: the diploid pair of haplotypes and each event's [`Margin`]
 //! of presence. The scoring needs compair and so only exists on the seqair
 //! backend; the stored scores are plain data.
 
 use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
-use seqair_types::{Phred, SmallVec};
+use seqair_types::{Base, Phred, SmallVec};
 
 mod scoring;
 pub use scoring::{HaplotypeRead, HaplotypeScratch, Prepared, prepare, score};
@@ -37,23 +37,54 @@ pub(crate) const fn row(three: [f32; 3]) -> [f32; MAX_HAPLOTYPES] {
     log10
 }
 
-/// An indel allele at the column it is anchored on.
+/// What an event changes: the base at its anchor, or an indel after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Allele {
+    Base(Base),
+    Indel(IndelAllele),
+}
+
+impl Allele {
+    #[must_use]
+    pub fn as_indel(&self) -> Option<&IndelAllele> {
+        match self {
+            Self::Indel(indel) => Some(indel),
+            Self::Base(_) => None,
+        }
+    }
+
+    /// Diagonals a read carrying this allele sits off the reference.
+    #[must_use]
+    pub fn shift(&self) -> usize {
+        self.as_indel().map_or(0, IndelAllele::len)
+    }
+}
+
+impl From<IndelAllele> for Allele {
+    fn from(indel: IndelAllele) -> Self {
+        Self::Indel(indel)
+    }
+}
+
+/// An allele at the column it is anchored on: a substitution's own column,
+/// or the base before an indel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub anchor: u32,
-    pub allele: IndelAllele,
+    pub allele: Allele,
 }
 
 impl Event {
     /// Whether one chromosome can carry both: not at one anchor, and neither
-    /// a deletion over the other's anchor.
+    /// a deletion over the other's anchor, which for a substitution is the
+    /// base it changes.
     fn compatible(&self, other: &Self) -> bool {
         let deletes_over = |a: &Self, b: &Self| match &a.allele {
-            IndelAllele::Deletion(deleted) => {
+            Allele::Indel(IndelAllele::Deletion(deleted)) => {
                 let end = u64::from(a.anchor).saturating_add(deleted.len() as u64);
                 u64::from(b.anchor) > u64::from(a.anchor) && u64::from(b.anchor) <= end
             }
-            IndelAllele::Insertion(_) => false,
+            Allele::Indel(IndelAllele::Insertion(_)) | Allele::Base(_) => false,
         };
         self.anchor != other.anchor && !deletes_over(self, other) && !deletes_over(other, self)
     }
@@ -333,7 +364,8 @@ impl HaplotypeScores {
         alleles: SmallVec<IndelAllele, MAX_EVENTS>,
         reads: Box<[ReadScores]>,
     ) -> Option<Self> {
-        let events = alleles.into_iter().map(|allele| Event { anchor: 0, allele }).collect();
+        let events =
+            alleles.into_iter().map(|allele| Event { anchor: 0, allele: allele.into() }).collect();
         Self::new(Cluster::new(events)?, reads)
     }
 
@@ -354,6 +386,46 @@ impl HaplotypeScores {
             .enumerate()
             .filter(move |(_, event)| event.anchor == pos)
             .filter_map(|(position, _)| EventIdx::new(position))
+    }
+
+    /// The indel events anchored at `pos`, in record order: the ones an
+    /// indel record writes.
+    pub fn indel_events_at(&self, pos: u32) -> impl Iterator<Item = EventIdx> + '_ {
+        self.events_at(pos)
+            .filter(|&e| self.event(e).is_some_and(|e| e.allele.as_indel().is_some()))
+    }
+
+    /// The substitution events anchored at `pos`, in record order.
+    pub fn base_events_at(&self, pos: u32) -> impl Iterator<Item = EventIdx> + '_ {
+        self.events_at(pos)
+            .filter(|&e| self.event(e).is_some_and(|e| e.allele.as_indel().is_none()))
+    }
+
+    /// The substitution of `base` anchored at `pos`, if the cluster scored it.
+    pub fn base_event_at(&self, pos: u32, base: Base) -> Option<EventIdx> {
+        self.base_events_at(pos)
+            .find(|&e| self.event(e).is_some_and(|e| e.allele == Allele::Base(base)))
+    }
+
+    /// `P(0, 1 or 2 copies of event | reads)` under a flat prior over the
+    /// pairs on their own, artefact accounts aside.
+    #[must_use]
+    pub fn copy_posteriors(&self, event: EventIdx) -> [f64; 3] {
+        let pairs: SmallVec<(HapPair, f64), 36> = HapPair::all(&self.cluster.haplotypes)
+            .map(|pair| (pair, self.reads.iter().map(|read| read.log10_under(pair)).sum()))
+            .collect();
+        let best = pairs.iter().map(|&(_, l)| l).fold(f64::NEG_INFINITY, f64::max);
+        let mut by_copies = [0.0; 3];
+        if !best.is_finite() {
+            return by_copies;
+        }
+        for (pair, log10) in pairs {
+            if let Some(slot) = by_copies.get_mut(usize::from(pair.copies_of(event))) {
+                *slot += 10f64.powf(log10 - best);
+            }
+        }
+        let total: f64 = by_copies.iter().sum();
+        by_copies.map(|p| p / total)
     }
 
     /// Reads assigned to `hap`: its `AD`. Reads assigned to no haplotype are
@@ -690,7 +762,7 @@ mod tests {
     /// anchors they can, unless one deletes over the other's anchor.
     #[test]
     fn haplotypes_are_the_compatible_subsets() {
-        let at = |anchor, allele| Event { anchor, allele };
+        let at = |anchor, allele: IndelAllele| Event { anchor, allele: allele.into() };
         let same_anchor = [at(10, deletion(1)), at(10, deletion(2))];
         assert_eq!(HapIdx::all_valid(&same_anchor).as_ref(), [HapIdx(0), HapIdx(1), HapIdx(2)]);
         let apart = [at(10, deletion(1)), at(20, deletion(2))];
@@ -705,10 +777,48 @@ mod tests {
         assert_eq!(valid, [0, 1, 2, 3, 4, 5]);
     }
 
+    /// A substitution shares a chromosome with any event not at its own base,
+    /// and with no deletion of it: the base a deletion removes cannot also be
+    /// changed. At the deletion's anchor (the base it keeps) the two are at one
+    /// anchor and so apart as any two events there are.
+    #[test]
+    fn a_substitution_is_incompatible_inside_a_deleted_span() {
+        let snv = |anchor| Event { anchor, allele: Allele::Base(Base::A) };
+        let del = Event { anchor: 10, allele: deletion(3).into() };
+        let valid = |events: &[Event]| -> Vec<u8> {
+            HapIdx::all_valid(events).iter().map(|h| h.0).collect()
+        };
+        for inside in 11..=13 {
+            assert_eq!(valid(&[del.clone(), snv(inside)]), [0, 1, 2], "SNV at {inside}");
+        }
+        for outside in [9, 14, 30] {
+            assert_eq!(valid(&[del.clone(), snv(outside)]), [0, 1, 2, 3], "SNV at {outside}");
+        }
+        assert_eq!(valid(&[del.clone(), snv(10)]), [0, 1, 2], "one anchor");
+        let ins = Event {
+            anchor: 12,
+            allele: IndelAllele::Insertion([Base::G].into_iter().collect()).into(),
+        };
+        assert_eq!(valid(&[snv(12), ins.clone()]), [0, 1, 2], "one anchor");
+        assert_eq!(valid(&[snv(13), ins]), [0, 1, 2, 3]);
+        assert_eq!(valid(&[snv(5), snv(6)]), [0, 1, 2, 3]);
+    }
+
+    /// Two substitutions at one base are a multi-allelic site: never one
+    /// chromosome, and at most two of them.
+    #[test]
+    fn substitutions_at_one_base_follow_the_anchor_limits() {
+        let snv = |base| Event { anchor: 7, allele: Allele::Base(base) };
+        let two: SmallVec<Event, MAX_EVENTS> = [snv(Base::A), snv(Base::C)].into_iter().collect();
+        let cluster = Cluster::new(two).expect("two at one anchor");
+        assert_eq!(cluster.haplotypes(), [HapIdx(0), HapIdx(1), HapIdx(2)]);
+        assert!(!Cluster::admits(cluster.events(), &snv(Base::G)));
+    }
+
     /// A third event at one anchor, or a fourth in all, makes no cluster.
     #[test]
     fn a_cluster_holds_two_events_per_anchor_and_three_in_all() {
-        let at = |anchor, n| Event { anchor, allele: deletion(n) };
+        let at = |anchor, n| Event { anchor, allele: deletion(n).into() };
         let cluster = |events: &[Event]| Cluster::new(events.iter().cloned().collect());
         assert!(cluster(&[at(10, 1), at(10, 2), at(20, 1)]).is_some());
         assert!(cluster(&[at(10, 1), at(10, 2), at(10, 3)]).is_none());
@@ -721,7 +831,7 @@ mod tests {
     /// that haplotype with itself, and each event two copies.
     #[test]
     fn two_events_apart_can_be_one_haplotype() {
-        let at = |anchor, allele| Event { anchor, allele };
+        let at = |anchor, allele: IndelAllele| Event { anchor, allele: allele.into() };
         let events = [at(10, deletion(1)), at(20, deletion(2))].into_iter().collect();
         let both = [-9.0, -5.0, -5.0, -1.0, NO, NO, NO, NO];
         let reads: Vec<ReadScores> =

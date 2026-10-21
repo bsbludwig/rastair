@@ -1,6 +1,7 @@
 use crate::metrics::ml::features::FeatureCalculatorBox;
 use biosphere::FlatForest;
 use biosphere::gpu::GpuForest;
+use color_eyre::eyre::WrapErr as _;
 use ndarray::Array1;
 use seqair_types::{Probability, SmolStr};
 use std::fmt;
@@ -50,6 +51,11 @@ pub struct RastairFlatModel {
     /// `None` in a model written before layouts were recorded.
     #[serde(default)]
     pub feature_layout: Option<FeatureLayout>,
+    /// The forests `--snv-engine` re-scores the engine's alts with, fitted on
+    /// the alts the forests above keep, with the engine's features from their
+    /// clusters. `None` in a model trained without the engine.
+    #[serde(default)]
+    pub snv_engine: Option<Box<RastairFlatModel>>,
 }
 
 /// A fingerprint of each forest's feature names, in layout order.
@@ -170,6 +176,7 @@ impl RastairFlatModel {
             others_platt,
             feature_set,
             feature_layout: Some(FeatureLayout::of(feature_set)),
+            snv_engine: None,
         }
     }
 
@@ -194,6 +201,9 @@ impl RastairFlatModel {
              rastair computes; retrain it with `rastair ml train`",
             differing.join(", ")
         );
+        if let Some(engine) = &self.snv_engine {
+            engine.check_feature_layout().wrap_err("The model's SNV engine forests")?;
+        }
         Ok(())
     }
 
@@ -263,6 +273,9 @@ pub struct MachineLearning {
     /// The thread that owns the GPU forests, when `--gpu` is on. Workers hand
     /// it feature rows rather than each forking a copy of the forests.
     pub inference: Option<crate::call::process::InferenceStage>,
+    /// The forests that re-score the alts the SNV engine scored, under
+    /// `--snv-engine`.
+    pub snv_engine: Option<Box<MachineLearning>>,
 }
 
 impl MachineLearning {
@@ -275,6 +288,7 @@ impl MachineLearning {
             feature_set,
             feature_calculator: feature_set.get_calculator(),
             inference: None,
+            snv_engine: None,
         }
     }
 

@@ -10,7 +10,7 @@ use seqair_types::Base;
 ///
 /// The fields appear in two sections separated by per-model features:
 /// - Section A (33): `base_encoding` + `position_metrics` + `context_encoding` + `region_entropy` + `depth_ratios`
-/// - Section B (18): `base_quality_metrics` + `mapping_quality_metrics` + `read_metrics`
+/// - Section B (24): `base_quality_metrics` + `mapping_quality_metrics` + `read_metrics` + `engine`
 pub struct CommonFeatures {
     /// One-hot encoding of reference and alt bases (8 features)
     pub base_encoding: [f32; 8],
@@ -28,6 +28,9 @@ pub struct CommonFeatures {
     pub mapping_quality_metrics: [f32; 6],
     /// Read position and alignment metrics (6 features)
     pub read_metrics: [f32; 6],
+    /// The pair-HMM's verdict on this alt as a substitution event (6
+    /// features), zero when no cluster scored it
+    pub engine: [f32; 6],
     // FIXME: consider adding `homopolymer_run` and `soft_clip_rate`
 }
 
@@ -90,8 +93,36 @@ impl CommonFeatures {
                 r.num_indels.f(),
                 alt.num_indels.f(),
             ],
+            engine: engine_features(current.metrics, alt.base),
         }
     }
+}
+
+/// `ev_scored`, `ev_presence` (1 − P(no copy)), `ev_margin`, `ev_ad_ref`,
+/// `ev_ad_alt` and `ev_events` of `alt`'s substitution event, or zeros when
+/// no cluster scored it (the engine off, or an alt the cascade did not hand
+/// it).
+fn engine_features(column: &PileupMetrics, alt: Base) -> [f32; 6] {
+    // Margins are log10 likelihood ratios; an infinite one (no account
+    // without the event) would make the row non-finite, which training drops.
+    const MARGIN_CAP: f64 = 100.0;
+    let Some(scores) = column.snv_scores.as_deref() else { return [0.0; 6] };
+    let Some(event) = scores.base_event_at(column.pos, alt) else { return [0.0; 6] };
+    // 1 − P(no copy), written as the sum of the others because all three
+    // are zero when no pair explains the reads.
+    let [_, one, two] = scores.copy_posteriors(event);
+    let presence = one + two;
+    let margin = scores.verdict.margin(event).map_or(0.0, |m| m.log10());
+    let support = scores.support_over(&[event]);
+    let reads = |i: usize| support.get(i).copied().unwrap_or(0).f();
+    [
+        1.0,
+        presence.f(),
+        margin.clamp(-MARGIN_CAP, MARGIN_CAP).f(),
+        reads(0),
+        reads(1),
+        scores.cluster().events().len().f(),
+    ]
 }
 
 define_features! {
@@ -136,6 +167,9 @@ define_features! {
             "num_aligned_ref", "num_aligned_alt",
             "num_indels_ref", "num_indels_alt",
         ];
+        array engine: 6 = [
+            "ev_scored", "ev_presence", "ev_margin", "ev_ad_ref", "ev_ad_alt", "ev_events",
+        ];
     }
 }
 
@@ -157,6 +191,7 @@ impl CommonSectionB {
             base_quality_metrics: c.base_quality_metrics,
             mapping_quality_metrics: c.mapping_quality_metrics,
             read_metrics: c.read_metrics,
+            engine: c.engine,
         }
     }
 }

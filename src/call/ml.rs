@@ -28,7 +28,7 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
     Result, Section,
-    eyre::{Context, ensure},
+    eyre::{Context, ensure, eyre},
 };
 use seqair_types::Probability;
 use std::{fs, io::Read, path::Path, sync::Arc};
@@ -72,21 +72,55 @@ pub struct MachineLearningParams {
     #[arg(help_heading = cli::sections::FILTER)]
     #[serde(skip)]
     model: Option<ClioPath>,
+    /// Re-score the forest's SNV candidates with the pair-HMM engine that
+    /// calls indels
+    ///
+    /// Alts the forest scores at 0.005 or more are scored as events of the
+    /// engine's haplotypes, and a second set of forests in the model scores
+    /// them again with that evidence. On by default; `--snv-engine=false`
+    /// scores with the first forests alone.
+    #[arg(long, default_value_t = true)]
+    #[arg(action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(help_heading = cli::sections::FILTER)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[default(true)]
+    pub snv_engine: bool,
 }
 
 impl MachineLearningParams {
+    /// The forests that score every alt, and under `--snv-engine` the
+    /// model's second set, which scores the alts the engine has scored.
     #[instrument(name = "init_ml", skip(self))]
     pub fn init(&self, workers: usize) -> Result<MachineLearning> {
         if self.no_ml {
             return Ok(MachineLearning::disabled());
         };
 
-        let model = load_combined_model(
+        let mut model = load_combined_model(
             self.model.as_ref().map(|x| x.path()),
             &include_bytes!("../../models/rastair_default.rff.mpk.lz4")[..],
         )
         .wrap_err("Failed to load combined RF model")?;
+        let engine_forests = model.snv_engine.take();
+        let mut ml = self.with_forests(model, workers)?;
+        if self.snv_engine {
+            let forests = engine_forests.ok_or_else(|| {
+                eyre!(
+                    "The model has no SNV engine forests; train one with \
+                     `rastair ml train --snv-engine`, or pass `--snv-engine=false`"
+                )
+            })?;
+            ml.snv_engine = Some(Box::new(self.with_forests(*forests, workers)?));
+        }
+        Ok(ml)
+    }
 
+    /// One set of forests, ignoring the model's SNV engine forests.
+    pub(crate) fn with_forests(
+        &self,
+        model: RastairFlatModel,
+        workers: usize,
+    ) -> Result<MachineLearning> {
         let gpu = if self.gpu {
             let ctx = GpuContext::new()
                 .wrap_err("Failed to initialise GPU context")
@@ -114,6 +148,7 @@ impl MachineLearningParams {
             feature_calculator: model.feature_set.get_calculator(),
             model: Some(Box::new(model)),
             inference,
+            snv_engine: None,
         })
     }
 

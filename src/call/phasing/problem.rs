@@ -1176,8 +1176,11 @@ mod tests {
         let reads: Vec<ReadScores> =
             (1..=6).map(|f| read(f, 0)).chain((7..=12).map(|f| read(f, 3))).collect();
         let events = [
-            Event { anchor: 1040, allele: insertion(&[T, T]) },
-            Event { anchor: 1050, allele: IndelAllele::Deletion([C, A].into_iter().collect()) },
+            Event { anchor: 1040, allele: insertion(&[T, T]).into() },
+            Event {
+                anchor: 1050,
+                allele: IndelAllele::Deletion([C, A].into_iter().collect()).into(),
+            },
         ];
         let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
         let scores = HaplotypeScores::new(cluster, reads.into()).expect("a verdict");

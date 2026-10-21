@@ -137,6 +137,14 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--model <MODEL>` — Path to the combined model file containing CpG, denovo, and others models
 
    Default is the bundled model in the Rastair binary.
+* `--snv-engine <SNV_ENGINE>` — Re-score the forest's SNV candidates with the pair-HMM engine that calls indels
+
+   Alts the forest scores at 0.005 or more are scored as events of the engine's haplotypes, and a second set of forests in the model scores them again with that evidence. On by default with the `experimental-seqair` backend, which it needs; `--snv-engine=false` scores with the first forests alone.
+
+  Default value: `true`
+
+  Possible values: `true`, `false`
+
 * `-c`, `--cpgs-only` — Report CpGs only and default to BED output
 
    Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.

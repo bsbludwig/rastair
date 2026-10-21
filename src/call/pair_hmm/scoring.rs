@@ -1,7 +1,9 @@
 //! The compair side: haplotypes built from indel alleles, reads with their
 //! gap model, and one batched alignment per column.
 
-use super::{Cluster, Event, HapIdx, HaplotypeScores, MAX_EVENTS, MAX_HAPLOTYPES, ReadScores};
+use super::{
+    Allele, Cluster, Event, HapIdx, HaplotypeScores, MAX_EVENTS, MAX_HAPLOTYPES, ReadScores,
+};
 use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
 use compair::{
     Band, Betas, ConversionModel, Haplotype, Log10Likelihood, PcrIndelModel, Probability, Read,
@@ -37,13 +39,29 @@ const MISSING_QUAL: BaseQuality = BaseQuality::from_byte(20);
 /// prior, measured below the uniform level on every row.
 const UNKNOWN_BETA: Probability = Probability::new_panicky(0.5);
 
-/// `haplotype` with `allele` after the base at `anchor`; `None` when a
-/// deletion runs past the window.
-fn apply(allele: &IndelAllele, haplotype: &Haplotype, anchor: usize) -> Option<Haplotype> {
+/// `haplotype` with `allele` at `anchor`: a base in place of the anchor's,
+/// or an indel after it. `None` when it runs past the window.
+fn apply(allele: &Allele, haplotype: &Haplotype, anchor: usize) -> Option<Haplotype> {
     match allele {
-        IndelAllele::Insertion(inserted) => haplotype.with_insertion(anchor, inserted),
-        IndelAllele::Deletion(deleted) => haplotype.with_deletion(anchor, deleted.len()),
+        Allele::Base(base) => with_substitution(haplotype, anchor, *base),
+        Allele::Indel(IndelAllele::Insertion(inserted)) => {
+            haplotype.with_insertion(anchor, inserted)
+        }
+        Allele::Indel(IndelAllele::Deletion(deleted)) => {
+            haplotype.with_deletion(anchor, deleted.len())
+        }
     }
+}
+
+/// `haplotype` with `base` at `at`. compair recomputes the `CpG` roles, so a
+/// substitution creates or destroys a `CpG` on this haplotype alone. Built
+/// here rather than in compair: the scoring never puts methylation levels on
+/// a haplotype ([`UNKNOWN_BETA`] is uniform), which is the one thing an edit
+/// inside compair would have to carry over.
+fn with_substitution(haplotype: &Haplotype, at: usize, base: Base) -> Option<Haplotype> {
+    let mut bases = haplotype.bases().to_vec();
+    *bases.get_mut(at)? = base;
+    Some(Haplotype::new(bases))
 }
 
 /// One read as the pair-HMM sees it, placed on the window.
@@ -135,7 +153,7 @@ pub fn prepare(
                     ?event,
                     window_start,
                     window = reference.len(),
-                    "Indel event runs past the haplotype window; not scored"
+                    "Event runs past the haplotype window; not scored"
                 );
             }
             fits
@@ -157,7 +175,7 @@ pub fn prepare(
         for event in &carried {
             haplotype = apply(&event.allele, &haplotype, window_anchor(event)?)?;
         }
-        longest = longest.max(carried.iter().map(|event| event.allele.len()).sum());
+        longest = longest.max(carried.iter().map(|event| event.allele.shift()).sum());
         haplotypes.push(haplotype);
     }
     let width = band_width(longest);
@@ -328,7 +346,7 @@ mod tests {
     fn indels(alleles: &[IndelAllele], reads: &[HaplotypeRead]) -> Option<HaplotypeScores> {
         let window: Vec<Base> = WINDOW.iter().map(|&b| Base::from(b)).collect();
         let anchor = u32::try_from(anchor()).expect("fits");
-        let events = alleles.iter().map(|allele| Event { anchor, allele: allele.clone() });
+        let events = alleles.iter().map(|allele| Event { anchor, allele: allele.clone().into() });
         score(&window, 0, events, reads.to_vec(), &mut HaplotypeScratch::default())
     }
 
@@ -446,7 +464,7 @@ mod tests {
         let window: Vec<Base> = WINDOW.iter().map(|&b| Base::from(b)).collect();
         let at = |anchor: usize, deleted: &[u8]| Event {
             anchor: u32::try_from(anchor).expect("fits"),
-            allele: IndelAllele::Deletion(deleted.iter().map(|&b| Base::from(b)).collect()),
+            allele: IndelAllele::Deletion(deleted.iter().map(|&b| Base::from(b)).collect()).into(),
         };
         let events =
             [at(FIRST, &WINDOW[FIRST + 1..FIRST + 3]), at(SECOND, &WINDOW[SECOND + 1..SECOND + 2])];
@@ -466,7 +484,7 @@ mod tests {
         assert!(indels(&[deletion(500)], &reads).is_none());
         let scores = indels(&[deletion(500), deletion(1)], &reads).expect("the one that fits");
         assert_eq!(scores.cluster().events().len(), 1);
-        assert_eq!(scores.cluster().events()[0].allele, deletion(1));
+        assert_eq!(scores.cluster().events()[0].allele, deletion(1).into());
     }
 
     /// Two insertions equal under a C->T collapse are two haplotypes, and the
@@ -481,6 +499,71 @@ mod tests {
         let reads: Vec<_> = (0..10).map(|i| read_of(&window, i * 3, 70, Strand::OB)).collect();
         let scores = indels(&[insertion("TCAC"), insertion("TTAC")], &reads).expect("scores");
         assert_eq!(best(&scores), (2, 2), "the unconverted twin");
+    }
+
+    /// A substitution is the window with one base changed, and reads carrying
+    /// it on one chromosome make a het; with every read on the reference the
+    /// reference pair wins.
+    #[test]
+    fn a_substitution_is_a_one_base_haplotype() {
+        const AT: usize = 40;
+        let mut alt = WINDOW.to_vec();
+        alt[AT] = if WINDOW[AT] == b'A' { b'G' } else { b'A' };
+        let snv = Event {
+            anchor: u32::try_from(AT).expect("fits"),
+            allele: Allele::Base(Base::from(alt[AT])),
+        };
+        let window: Vec<Base> = WINDOW.iter().map(|&b| Base::from(b)).collect();
+        let reference = Haplotype::new(window.as_slice());
+        let edited = apply(&snv.allele, &reference, AT).expect("inside the window");
+        assert_eq!(edited.len(), reference.len());
+        let changed: Vec<usize> =
+            (0..edited.len()).filter(|&i| edited.bases()[i] != reference.bases()[i]).collect();
+        assert_eq!(changed, [AT]);
+        assert!(apply(&snv.allele, &reference, WINDOW.len()).is_none());
+
+        let mut reads: Vec<_> = (0..6).map(|i| read_of(WINDOW, i * 4, 70, Strand::OT)).collect();
+        reads.extend((0..6).map(|i| read_of(&alt, 2 + i * 4, 70, Strand::OB)));
+        let scores = score(&window, 0, [snv.clone()], reads, &mut HaplotypeScratch::default())
+            .expect("scores");
+        let event = EventIdx::new(0).expect("event");
+        assert_eq!(
+            scores.verdict.called_pair(),
+            HapPair::new(HapIdx::REFERENCE, HapIdx::of_event(event))
+        );
+        let [p_ref, p_het, p_hom] = scores.copy_posteriors(event);
+        assert!(p_het > 0.99 && p_ref < 0.01 && p_hom < 0.01, "{p_ref} {p_het} {p_hom}");
+
+        let reads: Vec<_> = (0..8).map(|i| read_of(WINDOW, i * 4, 70, Strand::OT)).collect();
+        let scores =
+            score(&window, 0, [snv], reads, &mut HaplotypeScratch::default()).expect("scores");
+        assert_eq!(
+            scores.verdict.called_pair(),
+            HapPair::new(HapIdx::REFERENCE, HapIdx::REFERENCE)
+        );
+        assert!(!scores.verdict.margin(event).expect("scored").is_present());
+    }
+
+    /// A `C>T` that destroys a `CpG`: an OT `T` there is what methylation
+    /// makes of the reference `C`, so OT reads alone barely move the margin,
+    /// while the same reads on OB, where TAPS converts no `C`, call it.
+    #[test]
+    fn a_cpg_substitution_is_scored_by_the_emission() {
+        let cg = WINDOW.windows(2).position(|w| w == b"CG").expect("a CpG");
+        let mut alt = WINDOW.to_vec();
+        alt[cg] = b'T';
+        let snv = Event { anchor: u32::try_from(cg).expect("fits"), allele: Allele::Base(Base::T) };
+        let window: Vec<Base> = WINDOW.iter().map(|&b| Base::from(b)).collect();
+        let margin = |strand| {
+            let reads: Vec<_> =
+                (0..6).map(|i| read_of(&alt, cg.saturating_sub(10 + i * 3), 60, strand)).collect();
+            let scores = score(&window, 0, [snv.clone()], reads, &mut HaplotypeScratch::default())
+                .expect("scores");
+            scores.verdict.margin(EventIdx::new(0).expect("event")).expect("scored").log10()
+        };
+        let (ot, ob) = (margin(Strand::OT), margin(Strand::OB));
+        assert!(ob > 5.0, "unconverted strand: {ob}");
+        assert!(ot < ob / 2.0, "a converted read is half explained by methylation: {ot} vs {ob}");
     }
 
     /// The emission has no strand to score such a read on.

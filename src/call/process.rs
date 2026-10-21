@@ -11,6 +11,7 @@ mod set_alt_calls;
 mod threshold_filters;
 
 // First off, let's build Rastair-specific pileups from the BAM file
+pub use pileups::{HeldReads, get_pileups_held};
 pub use pileups::{PileupMappingParams, get_pileups};
 
 // Next, we calculate various metrics based on the generated pileups

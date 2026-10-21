@@ -1736,6 +1736,69 @@ fn the_pair_hmm_calls_two_events_of_one_cluster() -> Result<()> {
     Ok(())
 }
 
+/// SNV events never change an indel call: the scenario of
+/// `the_pair_hmm_calls_two_events_of_one_cluster` with het SNVs inside both
+/// clusters gives byte-identical indel records with `--snv-engine` on and
+/// off, though with the bundled model the engine scores those SNVs against
+/// the indels' haplotypes.
+#[test]
+fn snv_events_leave_the_indel_records_alone() -> Result<()> {
+    use utils::scenario::{Hap, Scenario};
+    const FIRST: usize = 150;
+    const SECOND: usize = FIRST + 13;
+    const DELETION: usize = 400;
+    const INSERTION: usize = DELETION + 10;
+    let mut scenario = Scenario::new(1000)
+        .reference_at(FIRST, b"CTAG")
+        .reference_at(SECOND, b"AGTC")
+        .reference_at(DELETION, b"AGTC")
+        .reference_at(INSERTION, b"AT");
+    for hap in [Hap::One, Hap::Two] {
+        scenario = scenario.deletion(FIRST, 2, hap).deletion(SECOND, 2, hap);
+    }
+    let scenario = scenario
+        .deletion(DELETION, 2, Hap::One)
+        .insertion(INSERTION, b"GG", Hap::Two)
+        .snv(FIRST - 6, Hap::One)
+        .snv(FIRST + 8, Hap::Two)
+        .snv(SECOND + 9, Hap::One)
+        .snv(DELETION + 6, Hap::Two)
+        .snv(INSERTION + 7, Hap::One)
+        .balanced(120, 370, 5)
+        .balanced(370, 620, 5);
+
+    let dir = TempDir::new()?;
+    let fasta = scenario.write_fasta(dir.path())?;
+    let bam = dir.path().join("reads.bam");
+    scenario.write_bam(&bam)?;
+    let call = |engine: bool| -> Result<Vec<String>> {
+        let vcf = dir.path().join(format!("out-{engine}.vcf"));
+        rastair()
+            .arg("call")
+            .arg(format!("--snv-engine={engine}"))
+            .arg("--fasta-file")
+            .arg(&fasta)
+            .arg(&bam)
+            .args([scenario.region().as_str(), "--experimental-indels", "--all", "--vcf"])
+            .arg(&vcf)
+            .succeeds()?;
+        Ok(std::fs::read_to_string(&vcf)?
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter(|line| {
+                let columns: Vec<&str> = line.split('\t').collect();
+                columns.get(3).is_some_and(|r| r.len() > 1)
+                    || columns.get(4).is_some_and(|a| a.split(',').any(|a| a.len() > 1))
+            })
+            .map(str::to_owned)
+            .collect())
+    };
+    let (off, on) = (call(false)?, call(true)?);
+    assert_eq!(off.len(), 4, "{off:#?}");
+    assert_eq!(on, off);
+    Ok(())
+}
+
 /// Indel calling end to end on a scenario: a het insertion and a het
 /// deletion are called `0/1`, PASS, with `QUAL` of at least 10 and a `GC`.
 /// An insertion only two of forty-two fragments carry is scored and

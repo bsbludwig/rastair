@@ -77,6 +77,9 @@ pub struct PileupMetrics {
     /// Phase observations and results, only under `--phase` and only on
     /// columns that can take part in phasing.
     pub phase: Option<Box<ColumnPhase>>,
+    /// The pair-HMM's scores of the cluster holding this column's
+    /// substitution events, when SNV events are on (experimental).
+    pub snv_scores: Option<Arc<crate::call::pair_hmm::HaplotypeScores>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -217,6 +220,7 @@ impl PileupMetrics {
             tags: RecordTags::default(),
             // Indels are collected on the seqair path only.
             indel_data: None,
+            snv_scores: None,
             phase: None,
         })
     }
@@ -273,6 +277,11 @@ impl PileupMetrics {
 
     pub fn alt_filters_mut(&mut self, alt: Base) -> Option<&mut AltFilters> {
         self.alts.iter_mut().find(|a| a.base == alt).map(|a| &mut a.filters)
+    }
+
+    /// Whether the SNV engine scored `alt`'s substitution at this column.
+    pub fn engine_scored(&self, alt: Base) -> bool {
+        self.snv_scores.as_deref().is_some_and(|s| s.base_event_at(self.pos, alt).is_some())
     }
 
     /// Get all alternative bases in the pileup (for lookup with mutation)
@@ -504,6 +513,15 @@ impl Filters {
         }
     }
 
+    /// Insert `filter` when `on`, remove it otherwise.
+    pub fn set(&mut self, filter: RastairFilter, on: bool) {
+        if on {
+            self.filters.insert(filter);
+        } else {
+            self.filters.remove(filter);
+        }
+    }
+
     pub fn merge(&mut self, other: Filters) {
         self.filters |= other.filters;
     }
@@ -725,7 +743,7 @@ mod size_tests {
     fn pileup_metrics_stays_small() {
         let size = std::mem::size_of::<PileupMetrics>();
         assert_eq!(
-            size, 528,
+            size, 536,
             "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
              (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
         );

@@ -9,18 +9,26 @@ use color_eyre::eyre::Result;
 use std::{ops::Deref, rc::Rc};
 
 use crate::{
-    call::pileup::from_seqair::{
-        ClusterContext, ColumnDraft, ColumnScratch, DenovoNeighbour, flush_indel_clusters,
-        plain_reference_column, score_indel_cluster,
+    call::{
+        pair_hmm::{Event, MAX_EVENTS},
+        pileup::from_seqair::{
+            ClusterContext, ClusterPass, ColumnDraft, ColumnScratch, DenovoNeighbour,
+            cascade_events, cluster_candidates, cluster_chains, flush_clusters,
+            plain_reference_column, score_cluster, snv_clusters,
+        },
     },
     metrics::{PileupMetrics, entropy::SlidingEntropy},
-    sequence::{ReferenceWindow, SeqairReaders},
+    sequence::{RastairReadExtras, ReferenceWindow, SeqairReaders},
 };
 use color_eyre::eyre::WrapErr as _;
-use seqair::reader::SegmentOptions;
-use seqair_types::{Base, Pos0};
+use seqair::{
+    bam::pileup::PileupEngine,
+    reader::SegmentOptions,
+};
+use seqair_types::{Base, Pos0, SmallVec};
 use std::{
     num::{NonZeroU32, NonZeroU64},
+    ops::RangeInclusive,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -41,9 +49,9 @@ pub struct PileupMappingParams {
     #[default(32 * 1024 * 1024)]
     pub segment_max_bytes: u64,
     /// Rescue the soft-clipped CpG-partner base adjacent to each alignment
-    /// See `MethylationCallingParams::rescue_soft_clip_cpg`.
+    /// (seqair backend only). See `MethylationCallingParams::rescue_soft_clip_cpg`.
     pub rescue_soft_clip_cpg: bool,
-    /// Which columns are worth finishing.
+    /// Which columns are worth finishing (seqair backend only).
     ///
     /// `None` finishes every column the reader emits, for a caller that wants
     /// the raw pileup. Production passes the record filters, so the seven
@@ -54,6 +62,9 @@ pub struct PileupMappingParams {
     pub phase: bool,
     /// Score the pair-HMM on the GPU (seqair backend only).
     pub gpu: bool,
+    /// Keep each sub-segment's reads for [`HeldReads::score_snv_clusters`], the
+    /// SNV engine's half of the cascade (seqair backend only).
+    pub snv_engine: bool,
 }
 
 impl Deref for PileupMappingParams {
@@ -64,15 +75,102 @@ impl Deref for PileupMappingParams {
     }
 }
 
-#[instrument(level = "info", skip_all)]
 pub fn get_pileups(
     readers: &mut SeqairReaders,
     region: &ChunkRegion,
     params: &PileupMappingParams,
 ) -> Result<(Rc<Segment>, impl Iterator<Item = PileupMetrics> + use<>)> {
+    let (segment, columns, _held) = get_pileups_held(readers, region, params)?;
+    Ok((segment, columns.into_iter()))
+}
+
+/// A region's sub-segment reads, kept past [`get_pileups_held`] under
+/// `snv_engine` so its SNV clusters can be scored once the forest has ranked
+/// their alts. Each sub-segment keeps its own engine: the reader can only lend
+/// its store to one pileup at a time.
+#[derive(Default)]
+pub struct HeldReads {
+    parts: Vec<HeldPart>,
+}
+
+struct HeldPart {
+    engine: PileupEngine<RastairReadExtras>,
+    /// First and last position of the sub-segment's kept columns.
+    columns: RangeInclusive<u32>,
+    /// Positions of its indel columns, which give an SNV cluster its context.
+    indels: Vec<u32>,
+}
+
+impl HeldReads {
+    /// Score the SNV clusters of the alts the forest scored at
+    /// [`CASCADE_MIN_SCORE`](crate::call::pileup::from_seqair::CASCADE_MIN_SCORE)
+    /// or more, sub-segment by sub-segment. Columns are found by position, so
+    /// `columns` may have lost some since they were built.
+    pub fn score_snv_clusters(
+        self,
+        segment: &Segment,
+        columns: &mut [PileupMetrics],
+        params: &PileupMappingParams,
+    ) {
+        let mut scratch = ColumnScratch::default();
+        for part in self.parts {
+            let lo = columns.partition_point(|p| p.pos < *part.columns.start());
+            let hi = columns.partition_point(|p| p.pos <= *part.columns.end());
+            let context = ClusterContext::new(
+                part.engine.store(),
+                segment,
+                params,
+                columns.get(lo..hi).unwrap_or_default(),
+            );
+            let indels: Vec<usize> = part
+                .indels
+                .iter()
+                .filter_map(|pos| columns.binary_search_by_key(pos, |p| p.pos).ok())
+                .collect();
+            let snvs: Vec<_> = (lo..hi)
+                .filter_map(|i| Some((i, cascade_events(columns.get(i)?))))
+                .filter(|(_, events)| !events.is_empty())
+                .collect();
+            for cluster in snv_clusters(columns, &indels, &snvs, params.min_indel_ao) {
+                let (indices, events) = (cluster.columns, cluster.events);
+                let pass = ClusterPass::Snvs;
+                score_on(columns, &indices, events, pass, &part.engine, &context, &mut scratch);
+            }
+            flush_clusters(columns, &mut scratch);
+        }
+    }
+}
+
+/// Score a cluster of `indices` (into `pileups`) against the reads `engine`
+/// holds over them.
+fn score_on(
+    pileups: &mut [PileupMetrics],
+    indices: &[usize],
+    events: SmallVec<Event, MAX_EVENTS>,
+    pass: ClusterPass,
+    engine: &PileupEngine<RastairReadExtras>,
+    context: &ClusterContext<'_>,
+    scratch: &mut ColumnScratch,
+) {
+    let pos = |i: &usize| Pos0::new(pileups.get(*i)?.pos);
+    let (Some(start), Some(end)) = (indices.first().and_then(pos), indices.last().and_then(pos))
+    else {
+        return;
+    };
+    let spanning = engine.records_overlapping(start, end);
+    score_cluster(pileups, indices, events, pass, spanning, context, scratch);
+}
+
+/// [`get_pileups`], and under `snv_engine` the reads its SNV clusters need.
+#[instrument(level = "info", skip_all)]
+pub fn get_pileups_held(
+    readers: &mut SeqairReaders,
+    region: &ChunkRegion,
+    params: &PileupMappingParams,
+) -> Result<(Rc<Segment>, Vec<PileupMetrics>, HeldReads)> {
     // Build the rastair Segment (FASTA fetch only) and extract ref window.
     let segment = readers.segment(region, 2).wrap_err("Failed to fetch segment")?;
-    debug!(len = segment.sequence.len(), "Processing region");
+    debug!(len = segment.sequence.len(), "Processing region (seqair)");
 
     let ref_window = {
         let bases: Arc<[Base]> =
@@ -96,8 +194,8 @@ pub fn get_pileups(
     // Build the seqair Segment covering [region.start .. region.end + overfetch].
     // seqair's segment `end` is an *inclusive* 0-based position and must be
     // `<= contig_last_pos` (= contig length − 1). `region.last_position` is the
-    // contig length, so clamp to `last_position - 1`: seqair rejects ends one
-    // past the contig.
+    // contig length, so clamp to `last_position - 1`; htslib tolerates ends one
+    // past the contig, seqair rejects them.
     let overfetch: u64 = 2;
     let contig_last_pos = region.last_position.saturating_sub(1);
     let last = region.end.saturating_add(overfetch).min(contig_last_pos);
@@ -128,6 +226,7 @@ pub fn get_pileups(
     let mut columns = Columns::new(&segment, region, params);
     // Reused across every column of every sub-segment; see `ColumnDraft::accumulate`.
     let mut scratch = ColumnScratch::default();
+    let mut held = HeldReads::default();
 
     for seqair_seg in &seqair_segments {
         // Fetch BAM records + FASTA into PileupEngine (compute() runs here).
@@ -174,32 +273,31 @@ pub fn get_pileups(
             params,
             pileup_metrics.get(sub_segment_start..).unwrap_or_default(),
         );
-        // Columns closer than this are one cluster: their alleles are often
-        // the aligner's different spellings of one tract event, or two events
-        // one chromosome carries, and either needs them scored together. 6,
-        // 12 and 20 bp are alike on chr12 at both depths, 20 a shade better
-        // at 73x; 25 lost recall before subsets of events were haplotypes.
-        const CLUSTER_GAP: u32 = 20;
-        let clusters: Vec<&[usize]> = pending_indels
-            .chunk_by(|&a, &b| {
-                let pos = |i: usize| pileup_metrics.get(i).map(|p| p.pos);
-                pos(a).zip(pos(b)).is_some_and(|(a, b)| b.saturating_sub(a) <= CLUSTER_GAP)
-            })
-            .collect();
-        for cluster in clusters {
-            let pos = |i: &usize| Pos0::new(pileup_metrics.get(*i)?.pos);
-            let (Some(start), Some(end)) =
-                (cluster.first().and_then(pos), cluster.last().and_then(pos))
-            else {
-                continue;
-            };
-            let spanning = guard.records_overlapping(start, end);
-            score_indel_cluster(pileup_metrics, cluster, spanning, &context, &mut scratch);
+        for chain in cluster_chains(pileup_metrics, &pending_indels) {
+            let columns = chain.iter().filter_map(|&i| pileup_metrics.get(i));
+            let events = cluster_candidates(columns, params.min_indel_ao);
+            let pass = ClusterPass::Indels;
+            score_on(pileup_metrics, chain, events, pass, &guard, &context, &mut scratch);
         }
         // Before the next sub-segment's reads are loaded: a launch's prepared
         // reads held across that load cost 100 MB at 73x, and almost every
         // region is one sub-segment, so there is nothing to overlap with.
-        flush_indel_clusters(pileup_metrics, &mut scratch);
+        flush_clusters(pileup_metrics, &mut scratch);
+        drop(context);
+
+        if params.snv_engine
+            && let (Some(first), Some(last)) =
+                (pileup_metrics.get(sub_segment_start), pileup_metrics.last())
+        {
+            held.parts.push(HeldPart {
+                columns: first.pos..=last.pos,
+                indels: pending_indels
+                    .iter()
+                    .filter_map(|&i| pileup_metrics.get(i).map(|p| p.pos))
+                    .collect(),
+                engine: guard.into_inner(),
+            });
+        }
     }
 
     // A missing read name is a property of the whole file (a CRAM written
@@ -213,7 +311,7 @@ pub fn get_pileups(
     }
 
     let kept = columns.finish(region.end)?;
-    Ok((segment, kept.into_iter()))
+    Ok((segment, kept, held))
 }
 
 /// A region's columns, in ascending position, each kept or rejected as soon as
@@ -445,9 +543,69 @@ mod tests {
         Ok(())
     }
 
+    /// The cascade hands the engine only the alts the forest scored high
+    /// enough: the column loop scores no SNV cluster, and once every gated alt
+    /// has a stage-1 score, those at `CASCADE_MIN_SCORE` or more get an engine
+    /// verdict (`ev_scored` 1) and those below none.
+    #[test]
+    fn the_cascade_scores_only_alts_the_forest_kept() -> Result<()> {
+        use crate::{
+            call::{
+                pair_hmm::Allele,
+                pileup::from_seqair::{CASCADE_MIN_SCORE, snv_events},
+            },
+            metrics::{MetricsForAlt, ml::features::shared::CommonFeatures},
+        };
+        use seqair_types::Probability;
+
+        let params =
+            PileupMappingParams { snv_engine: true, call_indels: true, ..Default::default() };
+        let ev_scored = |column: &PileupMetrics, base: Base| {
+            column.alts.iter().find(|alt| alt.base == base).map(|alt| {
+                CommonFeatures::extract(&MetricsForAlt { metrics: column, alt: &alt.metrics })
+                    .engine[0]
+            })
+        };
+        let mut readers = ReaderParams::test_data().pileup_readers()?;
+        let regions: Vec<_> = readers.segments(100_000, 0)?.collect();
+        let (mut inside, mut outside) = (0usize, 0usize);
+        for region in &regions {
+            let (segment, mut columns, held) = get_pileups_held(&mut readers, region, &params)?;
+            assert!(columns.iter().all(|c| c.snv_scores.is_none()), "the loop scored an SNV");
+            let mut gated = Vec::new();
+            for (i, column) in columns.iter_mut().enumerate() {
+                for (k, event) in snv_events(column).into_iter().enumerate() {
+                    let Allele::Base(base) = event.allele else { continue };
+                    let kept = (i + k) % 2 == 0;
+                    let score = if kept { 0.5 } else { CASCADE_MIN_SCORE / 2.0 };
+                    if let Some(alt) = column.alts.iter_mut().find(|alt| alt.base == base) {
+                        alt.filters.ml = Some(Probability::try_from(score)?);
+                        gated.push((i, base, kept));
+                    }
+                }
+            }
+            held.score_snv_clusters(&segment, &mut columns, &params);
+            for (i, base, kept) in gated {
+                let scored = columns.get(i).and_then(|column| ev_scored(column, base));
+                if kept {
+                    inside += usize::from(scored == Some(1.0));
+                } else {
+                    assert_eq!(scored, Some(0.0), "an alt under the floor was scored");
+                    outside += 1;
+                }
+            }
+            if inside > 0 && outside > 0 {
+                return Ok(());
+            }
+        }
+        panic!("the fixture has no gated alt on both sides of the floor: {inside} / {outside}");
+    }
+
     /// Byte-aware sub-segmentation must be transparent: a tiny budget (which
     /// forces the region to be split into many sub-segments) yields exactly the
-    /// same pileups as an effectively-unlimited budget.
+    /// same pileups as an effectively-unlimited budget. Only meaningful on the
+    /// seqair backend; on htslib the budget is ignored and both runs are
+    /// trivially identical.
     #[test]
     fn byte_budget_subdivision_is_transparent() -> Result<()> {
         let params = ReaderParams {
@@ -460,7 +618,8 @@ mod tests {
         // Everything a boundary read could move: depth, the ALT list *in order*
         // (it becomes the VCF ALT column), per-allele depth and strand split,
         // and the indel observation count. A read fetched twice, or dropped at
-        // a sub-segment edge, shows up in one of these.
+        // a sub-segment edge, shows up in one of these. Types stay inferred so
+        // this compiles on both the htslib and seqair backends.
         #[allow(clippy::type_complexity)]
         fn fingerprint(
             pileups: impl Iterator<Item = PileupMetrics>,

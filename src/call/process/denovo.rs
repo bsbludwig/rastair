@@ -34,20 +34,21 @@ pub fn propagate_denovo_pass_flags(
     after: Option<&PileupMetrics>,
     ml_threshold: Option<Probability>,
 ) -> Result<()> {
-    if let Some(before) = before
-        && let Some(denovo) =
-            before.alts.iter().find(|alt| alt.metrics.denovo == FormsDenovo::ThisBecomesC)
-        && current.pos_metrics.extended.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG
-        && denovo.filters.pass(ml_threshold)
-    {
-        current.pos_filters.other_pos_in_denovo_passes = true;
-    } else if let Some(after) = after
-        && let Some(denovo) =
-            after.alts.iter().find(|alt| alt.metrics.denovo == FormsDenovo::ThisBecomesG)
-        && current.pos_metrics.extended.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC
-        && denovo.filters.pass(ml_threshold)
-    {
-        current.pos_filters.other_pos_in_denovo_passes = true;
-    }
+    // Assigned, not only raised: a re-run after a neighbour's verdict changed must be able to clear it.
+    current.pos_filters.other_pos_in_denovo_passes = before.is_some_and(|before| {
+        current.pos_metrics.extended.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG
+            && before
+                .alts
+                .iter()
+                .find(|alt| alt.metrics.denovo == FormsDenovo::ThisBecomesC)
+                .is_some_and(|denovo| denovo.filters.pass(ml_threshold))
+    }) || after.is_some_and(|after| {
+        current.pos_metrics.extended.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC
+            && after
+                .alts
+                .iter()
+                .find(|alt| alt.metrics.denovo == FormsDenovo::ThisBecomesG)
+                .is_some_and(|denovo| denovo.filters.pass(ml_threshold))
+    });
     Ok(())
 }

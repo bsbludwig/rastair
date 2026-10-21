@@ -43,8 +43,8 @@ use crate::{
     call::{
         PreFilterInputs,
         pair_hmm::{
-            self, Cluster, Event, HaplotypeRead, HaplotypeScores, HaplotypeScratch, MAX_EVENTS,
-            Prepared,
+            self, Allele, Cluster, Event, HaplotypeRead, HaplotypeScores, HaplotypeScratch,
+            MAX_EVENTS, Prepared,
         },
         phasing::{self, ColumnPhase, FragmentId, PhaseObservation},
         process::PileupMappingParams,
@@ -466,6 +466,7 @@ impl ColumnDraft {
             tags: RecordTags::default(),
             indel_data,
             phase,
+            snv_scores: None,
         })
     }
 }
@@ -488,31 +489,218 @@ impl PileupMetrics {
         let spanning = column.records_overlapping(pos, pos);
         let context = ClusterContext::new(column.store(), &segment, params, &[]);
         let column = std::slice::from_mut(&mut metrics);
-        score_indel_cluster(column, &[0], spanning, &context, scratch);
-        flush_indel_clusters(column, scratch);
+        let events = cluster_candidates(column.iter(), params.min_indel_ao);
+        score_cluster(column, &[0], events, ClusterPass::Indels, spanning, &context, scratch);
+        flush_clusters(column, scratch);
         Ok(metrics)
     }
 }
 
-/// Score the indel alleles of a cluster of neighbouring columns (`indices`
-/// into `pileups`) together, against the reads `spanning` the cluster, and
-/// give each column its records. One set of haplotypes for the cluster: a
-/// column's allele that is only the aligner's other spelling of a
-/// neighbour's event then loses to that event's haplotype instead of
-/// collecting its reads.
-pub(crate) fn score_indel_cluster(
+/// Columns closer than this are one cluster: their alleles are often the
+/// aligner's different spellings of one tract event, or two events one
+/// chromosome carries, and either needs them scored together. 6, 12 and 20 bp
+/// are alike on chr12 at both depths, 20 a shade better at 73x.
+const CLUSTER_GAP: u32 = 20;
+
+/// Which of a column's results a cluster's scores become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClusterPass {
+    /// The indel records: a cluster of indel events only.
+    Indels,
+    /// The SNV engine's features: a cluster with substitution events, and any
+    /// indel events in it only as context. It never writes an indel record, so
+    /// an SNV event cannot change an indel call.
+    Snvs,
+}
+
+/// `columns` (indices into `pileups`, ascending) cut into chains of
+/// neighbours within [`CLUSTER_GAP`].
+pub(crate) fn cluster_chains<'a>(
+    pileups: &[PileupMetrics],
+    columns: &'a [usize],
+) -> Vec<&'a [usize]> {
+    let pos = |i: usize| pileups.get(i).map(|p| p.pos);
+    columns
+        .chunk_by(|&a, &b| pos(a).zip(pos(b)).is_some_and(|(a, b)| b.abs_diff(a) <= CLUSTER_GAP))
+        .collect()
+}
+
+/// An SNV cluster to score: its columns (indices into the pileups,
+/// ascending) and its events in record order, the indel events first.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SnvCluster {
+    pub(crate) columns: Vec<usize>,
+    pub(crate) events: SmallVec<Event, MAX_EVENTS>,
+}
+
+/// The SNV clusters of a sub-segment. An SNV column within [`CLUSTER_GAP`] of
+/// a chain of indel columns joins the chain's indel events while they admit
+/// its events, so it is scored against the haplotypes of its indel
+/// neighbours; the other SNV columns chain among themselves, cut wherever a
+/// column's events no longer fit. `snvs` are SNV columns with their events,
+/// ascending; a column's events stay together.
+pub(crate) fn snv_clusters(
+    pileups: &[PileupMetrics],
+    indel_columns: &[usize],
+    snvs: &[(usize, SmallVec<Event, 2>)],
+    min_indel_ao: u32,
+) -> Vec<SnvCluster> {
+    let pos = |i: usize| pileups.get(i).map(|p| p.pos);
+    let near =
+        |a: usize, b: usize| pos(a).zip(pos(b)).is_some_and(|(a, b)| b.abs_diff(a) <= CLUSTER_GAP);
+    let mut joined = vec![false; snvs.len()];
+    let mut clusters = Vec::new();
+    for chain in cluster_chains(pileups, indel_columns) {
+        let (Some(&first), Some(&last)) = (chain.first(), chain.last()) else { continue };
+        let indels = cluster_candidates(chain.iter().filter_map(|&i| pileups.get(i)), min_indel_ao);
+        let mut cluster = SnvCluster { columns: chain.to_vec(), events: indels };
+        let mut any = false;
+        for ((column, snv), joined) in snvs.iter().zip(&mut joined) {
+            let fits = |events: &SmallVec<Event, MAX_EVENTS>| {
+                let mut trial = events.clone();
+                snv.iter().all(|event| {
+                    let admitted = Cluster::admits(&trial, event);
+                    trial.push(event.clone());
+                    admitted
+                })
+            };
+            if !*joined
+                && (near(first, *column) || near(*column, last) || (first..=last).contains(column))
+                && fits(&cluster.events)
+            {
+                cluster.events.extend(snv.iter().cloned());
+                if !cluster.columns.contains(column) {
+                    cluster.columns.push(*column);
+                }
+                *joined = true;
+                any = true;
+            }
+        }
+        if any {
+            cluster.columns.sort_unstable();
+            clusters.push(cluster);
+        }
+    }
+
+    let rest: Vec<&(usize, SmallVec<Event, 2>)> =
+        snvs.iter().zip(&joined).filter(|(_, joined)| !**joined).map(|(snv, _)| snv).collect();
+    for chain in rest.chunk_by(|a, b| near(a.0, b.0)) {
+        let mut current = SnvCluster::default();
+        for (column, snv) in chain {
+            if current.events.len() + snv.len() > MAX_EVENTS {
+                clusters.push(std::mem::take(&mut current));
+            }
+            current.columns.push(*column);
+            current.events.extend(snv.iter().cloned());
+        }
+        if !current.events.is_empty() {
+            clusters.push(current);
+        }
+    }
+    clusters
+}
+
+/// Allele fraction the heterozygote test uses, under one half so that an
+/// allele the informative strand under-observes still passes.
+const HET_GATE_FRACTION: f64 = 0.4;
+/// A column whose informative strand leaves a heterozygote this improbable
+/// admits no SNV event.
+const HET_GATE_P: f64 = 0.01;
+/// Fewer informative reads than this exclude nothing.
+const HET_GATE_MIN_READS: u32 = 3;
+
+/// The column's substitution events, most reads first, at most two (as for
+/// any anchor). An alt is admitted on Ben Wulf's gate: at least two reads (and
+/// 5 % of the column, as an indel allele needs), and on the strand TAPS leaves
+/// informative for it, a count a heterozygote could produce. Without the gate
+/// every methylated `CpG` and every one-read error would be a cluster.
+pub(crate) fn snv_events(column: &PileupMetrics) -> SmallVec<Event, 2> {
+    if column.reference_base.known_index().is_none() {
+        return SmallVec::new();
+    }
+    let floor = 2u32.max((column.pos_metrics.depth * 5).div_ceil(100));
+    let mut admitted: SmallVec<&Alt, 4> = column
+        .alts
+        .iter()
+        .filter(|alt| alt.base.known_index().is_some() && alt.base != column.reference_base)
+        .filter(|alt| alt.metrics.depth >= floor && admits_het(column, alt))
+        .collect();
+    admitted.sort_by_key(|alt| (Reverse(alt.metrics.depth), alt.base as u8));
+    admitted
+        .into_iter()
+        .take(2)
+        .map(|alt| Event { anchor: column.pos, allele: Allele::Base(alt.base) })
+        .collect()
+}
+
+/// The lowest first-stage forest score at which the cascade hands an alt the
+/// gate admits to the engine. The bundled forests put most true SNVs at
+/// .995-.999, so there is no upper edge; .005 keeps 70-110 % of the gain of
+/// scoring every gated alt for a quarter of its clusters on 26x slices, .01
+/// loses some.
+pub(crate) const CASCADE_MIN_SCORE: f64 = 0.005;
+
+/// [`snv_events`] of the alts the forest scored at [`CASCADE_MIN_SCORE`] or more.
+pub(crate) fn cascade_events(column: &PileupMetrics) -> SmallVec<Event, 2> {
+    let mut events = snv_events(column);
+    events.retain(|event| {
+        matches!(event.allele, Allele::Base(base) if column
+            .alt_filters(base)
+            .and_then(|filters| filters.ml)
+            .is_some_and(|ml| *ml >= CASCADE_MIN_SCORE))
+    });
+    events
+}
+
+/// Whether the strand TAPS conversion leaves informative for `alt` does not
+/// rule a heterozygote out: a `T` over a `C` may be a converted methylated
+/// `C` on OT and an `A` over a `G` on OB, and a true `C` or `G` allele is
+/// itself converted there.
+fn admits_het(column: &PileupMetrics, alt: &Alt) -> bool {
+    let informative = match (column.reference_base, alt.base) {
+        (Base::C, Base::T) | (_, Base::C) => Some(Strand::OB),
+        (Base::G, Base::A) | (_, Base::G) => Some(Strand::OT),
+        _ => None,
+    };
+    let on = |metrics: &crate::metrics::AlleleMetrics| match informative {
+        Some(Strand::OT) => metrics.strand_count.ot,
+        Some(_) => metrics.strand_count.ob,
+        None => metrics.depth,
+    };
+    let reads: u32 = column.ref_alts_metrics().map(on).sum();
+    reads < HET_GATE_MIN_READS
+        || binomial_cdf(on(&alt.metrics), reads, HET_GATE_FRACTION) >= HET_GATE_P
+}
+
+/// `P(X <= k)` for `X ~ Binomial(n, p)`, summed upwards from the zero term.
+fn binomial_cdf(k: u32, n: u32, p: f64) -> f64 {
+    let mut term = (1.0 - p).powi(i32::try_from(n).unwrap_or(i32::MAX));
+    let mut total = term;
+    for i in 1..=k.min(n) {
+        term *= f64::from(n - i + 1) / f64::from(i) * p / (1.0 - p);
+        total += term;
+    }
+    total.min(1.0)
+}
+
+/// Score `events` of a cluster of neighbouring columns (`indices` into
+/// `pileups`) together, against the reads `spanning` the cluster, and give
+/// each column its records. One set of haplotypes for the cluster: a column's
+/// allele that is only the aligner's other spelling of a neighbour's event
+/// then loses to that event's haplotype instead of collecting its reads.
+pub(crate) fn score_cluster(
     pileups: &mut [PileupMetrics],
     indices: &[usize],
+    events: SmallVec<Event, MAX_EVENTS>,
+    pass: ClusterPass,
     spanning: impl Iterator<Item = RecordIdx>,
     context: &ClusterContext<'_>,
     scratch: &mut ColumnScratch,
 ) {
-    let columns = indices.iter().filter_map(|&i| pileups.get(i));
-    let events = cluster_candidates(columns, context.params.min_indel_ao);
     let prepared = prepare_cluster(context, spanning, events);
     let prepared = match (prepared, gpu::batch(&mut scratch.gpu, context.params.gpu)) {
         (Some(prepared), Some(batch)) => {
-            match batch.push(indices, prepared, pileups, &mut scratch.haplotypes) {
+            match batch.push(indices, pass, prepared, pileups, &mut scratch.haplotypes) {
                 None => return,
                 unqueued => unqueued,
             }
@@ -520,13 +708,13 @@ pub(crate) fn score_indel_cluster(
         (prepared, _) => prepared,
     };
     let scores = prepared.and_then(|prepared| prepared.align(&mut scratch.haplotypes));
-    assign_scores(pileups, indices, scores);
+    assign_scores(pileups, indices, pass, scores);
 }
 
-/// Scores the clusters [`score_indel_cluster`] queued for the GPU; without a
+/// Scores the clusters [`score_cluster`] queued for the GPU; without a
 /// GPU, nothing is queued. `pileups` must be the slice the clusters were
 /// queued against.
-pub(crate) fn flush_indel_clusters(pileups: &mut [PileupMetrics], scratch: &mut ColumnScratch) {
+pub(crate) fn flush_clusters(pileups: &mut [PileupMetrics], scratch: &mut ColumnScratch) {
     if let Some(batch) = scratch.gpu.as_mut() {
         batch.flush(pileups, &mut scratch.haplotypes);
     }
@@ -535,22 +723,34 @@ pub(crate) fn flush_indel_clusters(pileups: &mut [PileupMetrics], scratch: &mut 
 fn assign_scores(
     pileups: &mut [PileupMetrics],
     indices: &[usize],
+    pass: ClusterPass,
     scores: Option<HaplotypeScores>,
 ) {
     let scores = scores.map(Arc::new);
     for &index in indices {
         let Some(column) = pileups.get_mut(index) else { continue };
         let pos = column.pos;
-        if let Some(indels) = column.indel_data.as_deref_mut() {
-            indels.scored = scores
-                .as_ref()
-                .filter(|scores| scores.events_at(pos).next().is_some())
-                .map(|scores| Scored::new(Arc::clone(scores), pos));
+        match pass {
+            ClusterPass::Indels => {
+                if let Some(indels) = column.indel_data.as_deref_mut() {
+                    indels.scored = scores
+                        .as_ref()
+                        .filter(|scores| scores.indel_events_at(pos).next().is_some())
+                        .map(|scores| Scored::new(Arc::clone(scores), pos));
+                }
+            }
+            ClusterPass::Snvs => {
+                if let Some(scores) =
+                    scores.as_ref().filter(|s| s.base_events_at(pos).next().is_some())
+                {
+                    column.snv_scores = Some(Arc::clone(scores));
+                }
+            }
         }
     }
 }
 
-/// What every indel cluster of one sub-segment is scored against.
+/// What every cluster of one sub-segment is scored against.
 pub(crate) struct ClusterContext<'a> {
     store: &'a RecordStore<RastairReadExtras>,
     segment: &'a Segment,
@@ -615,7 +815,7 @@ impl WindowMask {
 /// enough to be called, as many as [`Cluster::admits`], in record order. Ties
 /// go by the allele itself, so neither the choice nor the order depends on
 /// which read the engine yielded first.
-fn cluster_candidates<'a>(
+pub(crate) fn cluster_candidates<'a>(
     columns: impl Iterator<Item = &'a PileupMetrics>,
     min_ao: u32,
 ) -> SmallVec<Event, MAX_EVENTS> {
@@ -636,7 +836,7 @@ fn cluster_candidates<'a>(
     alleles.sort_by_key(|(pos, a)| (Reverse(a.total), *pos, allele_order(&a.allele)));
     let mut events: SmallVec<Event, MAX_EVENTS> = SmallVec::new();
     for (anchor, counted) in alleles {
-        let event = Event { anchor, allele: counted.allele.clone() };
+        let event = Event { anchor, allele: counted.allele.clone().into() };
         if Cluster::admits(&events, &event) {
             events.push(event);
         }
@@ -674,6 +874,12 @@ fn prepare_cluster(
         return None;
     }
     let ClusterContext { store, segment, params, mask } = context;
+    // A substitution scored as an event is no unexplained mismatch.
+    let events_here: SmallVec<u32, MAX_EVENTS> = events
+        .iter()
+        .filter(|event| event.allele.as_indel().is_none())
+        .map(|event| event.anchor)
+        .collect();
     let reads = spanning_reads(store, spanning, segment, params);
     let window_start = reads.iter().map(|r| r.start).min()?;
     let window_end = reads.iter().map(|r| r.end).max()?;
@@ -685,7 +891,14 @@ fn prepare_cluster(
     let window: Vec<Base> = reference
         .iter()
         .enumerate()
-        .map(|(i, &b)| if mask.contains(genomic(i)) { Base::Unknown } else { Base::from(b) })
+        .map(|(i, &b)| {
+            let pos = genomic(i);
+            if mask.contains(pos) && !events_here.contains(&pos) {
+                Base::Unknown
+            } else {
+                Base::from(b)
+            }
+        })
         .collect();
     let reads: Vec<_> = reads.iter().filter_map(|read| read.haplotype_read(window_start)).collect();
     pair_hmm::prepare(&window, window_start, events, reads)
@@ -1041,7 +1254,7 @@ fn build_indel_observation(
 /// The pair-HMM on the GPU: a region's clusters queued into launches, each
 /// run by the worker's own GPU thread while the worker prepares the next.
 mod gpu {
-    use super::{HaplotypeScratch, PileupMetrics, Prepared, assign_scores};
+    use super::{ClusterPass, HaplotypeScratch, PileupMetrics, Prepared, assign_scores};
     use compair::gpu::{GpuAligner, GpuContext, GpuError, GpuPairs, GpuScore, KernelOptions, Wait};
     use std::{
         cell::OnceCell,
@@ -1146,6 +1359,7 @@ mod gpu {
     /// scores land in the launch.
     struct Pending {
         columns: Vec<usize>,
+        pass: ClusterPass,
         prepared: Prepared,
         range: Range<usize>,
     }
@@ -1168,13 +1382,14 @@ mod gpu {
         pub(super) fn push(
             &mut self,
             columns: &[usize],
+            pass: ClusterPass,
             prepared: Prepared,
             pileups: &mut [PileupMetrics],
             scratch: &mut HaplotypeScratch,
         ) -> Option<Prepared> {
             match prepared.push(&mut self.filling) {
                 Ok(range) => {
-                    self.pending.push(Pending { columns: columns.to_vec(), prepared, range });
+                    self.pending.push(Pending { columns: columns.to_vec(), pass, prepared, range });
                     if self.filling.len() >= MAX_LAUNCH_PAIRS {
                         self.launch(pileups, scratch);
                     }
@@ -1275,12 +1490,12 @@ mod gpu {
         pileups: &mut [PileupMetrics],
         scratch: &mut HaplotypeScratch,
     ) {
-        for Pending { columns, prepared, range } in pending {
+        for Pending { columns, pass, prepared, range } in pending {
             let result = match scores.and_then(|scores| scores.get(range)) {
                 Some(scores) => prepared.finish_gpu(scores),
                 None => prepared.align(scratch),
             };
-            assign_scores(pileups, &columns, result);
+            assign_scores(pileups, &columns, pass, result);
         }
     }
 }
@@ -2683,7 +2898,7 @@ mod tests {
         let scores = &data.scored.as_ref().expect("scores").haplotypes;
         let inserted = IndelAllele::Insertion([Base::G, Base::A].into_iter().collect());
         assert_eq!(scores.cluster().events().len(), 1);
-        assert_eq!(scores.cluster().events()[0].allele, inserted);
+        assert_eq!(scores.cluster().events()[0].allele, inserted.into());
         let mut ids: Vec<_> = scores.reads.iter().map(|r| r.fragment).collect();
         ids.sort_unstable();
         let mut expected: Vec<_> = reads.iter().map(|r| fragment_of(&r.qname)).collect();
@@ -2725,7 +2940,10 @@ mod tests {
     }
 
     fn events_of(columns: &[PileupMetrics]) -> Vec<(u32, IndelAllele)> {
-        cluster_candidates(columns.iter(), 2).into_iter().map(|e| (e.anchor, e.allele)).collect()
+        cluster_candidates(columns.iter(), 2)
+            .into_iter()
+            .filter_map(|e| Some((e.anchor, e.allele.as_indel()?.clone())))
+            .collect()
     }
 
     /// Most reads first, then the earlier anchor, then insertions before
@@ -2757,6 +2975,105 @@ mod tests {
             events_of(&columns),
             [(100, deleted(b"T")), (100, deleted(b"TT")), (120, deleted(b"G"))]
         );
+    }
+
+    /// A column with `alt` on `ot`/`ob` reads and the reference on
+    /// `ref_ot`/`ref_ob`, depth their sum.
+    fn snv_column(
+        pos: u32,
+        reference: Base,
+        alt: Base,
+        [ot, ob]: [u32; 2],
+        [ref_ot, ref_ob]: [u32; 2],
+    ) -> PileupMetrics {
+        let mut column = mismatch_column(pos, reference, alt, ot, ob);
+        column.ref_metrics.strand_count.ot = ref_ot;
+        column.ref_metrics.strand_count.ob = ref_ob;
+        column.ref_metrics.depth = ref_ot + ref_ob;
+        column.pos_metrics.depth = ot + ob + ref_ot + ref_ob;
+        column
+    }
+
+    fn admitted(column: &PileupMetrics) -> Vec<Base> {
+        snv_events(column)
+            .iter()
+            .filter_map(|e| match e.allele {
+                Allele::Base(b) => Some(b),
+                Allele::Indel(_) => None,
+            })
+            .collect()
+    }
+
+    /// Two reads and a het the informative strand allows: a `T` over a `C`
+    /// counts on OB only, where TAPS converts nothing, so six OT `T`s are a
+    /// methylated `CpG` and no event, while three OB `T`s among twelve are.
+    #[test]
+    fn an_snv_event_needs_two_reads_and_a_possible_het() {
+        let (c, t, a) = (Base::C, Base::T, Base::A);
+        assert_eq!(admitted(&snv_column(10, c, t, [6, 0], [0, 12])), [] as [Base; 0]);
+        assert_eq!(admitted(&snv_column(10, c, t, [0, 3], [6, 9])), [t]);
+        assert_eq!(admitted(&snv_column(10, c, a, [1, 0], [6, 6])), [] as [Base; 0], "one read");
+        assert_eq!(admitted(&snv_column(10, c, a, [1, 1], [6, 6])), [a]);
+        // 3 of 70 is below 5 % of the column.
+        assert_eq!(admitted(&snv_column(10, c, a, [2, 1], [33, 34])), [] as [Base; 0]);
+        let mut unknown = snv_column(10, c, a, [3, 3], [3, 3]);
+        unknown.reference_base = Base::Unknown;
+        assert!(snv_events(&unknown).is_empty());
+    }
+
+    fn snv_at(pos: u32) -> SmallVec<Event, 2> {
+        [Event { anchor: pos, allele: Allele::Base(Base::G) }].into_iter().collect()
+    }
+
+    /// Indel columns chain while each is within `CLUSTER_GAP` of the last.
+    #[test]
+    fn indel_columns_chain_within_the_cluster_gap() {
+        let columns = [
+            indel_column(100, &[(deleted(b"T"), 5)]),
+            indel_column(115, &[(deleted(b"G"), 4)]),
+            indel_column(135, &[(deleted(b"G"), 4)]),
+            indel_column(200, &[(deleted(b"TT"), 3)]),
+        ];
+        let chains: Vec<&[usize]> = vec![&[0, 1, 2], &[3]];
+        assert_eq!(cluster_chains(&columns, &[0, 1, 2, 3]), chains);
+    }
+
+    /// An SNV near an indel chain is scored with the chain's indel events as
+    /// context; the rest chain among themselves, cut where a fourth event
+    /// would not fit, and one that would not fit beside the indels goes with
+    /// the rest.
+    #[test]
+    fn snvs_join_a_nearby_indel_chain_or_chain_on_their_own() {
+        let columns: Vec<PileupMetrics> = [90, 100, 110, 125, 135, 140, 145, 150, 400]
+            .into_iter()
+            .map(|pos| {
+                if pos == 100 {
+                    indel_column(100, &[(deleted(b"T"), 5), (deleted(b"TT"), 4)])
+                } else {
+                    mismatch_column(pos, Base::A, Base::G, 2, 2)
+                }
+            })
+            .collect();
+        let snvs: Vec<_> = [0usize, 2, 3, 4, 5, 6, 7, 8]
+            .into_iter()
+            .map(|i| (i, snv_at(columns[i].pos)))
+            .collect();
+        let clusters = snv_clusters(&columns, &[1], &snvs, 2);
+        let summary: Vec<(Vec<u32>, usize)> = clusters
+            .iter()
+            .map(|c| (c.columns.iter().map(|&i| columns[i].pos).collect(), c.events.len()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (vec![90, 100], 3),
+                (vec![110, 125, 135], 3),
+                (vec![140, 145, 150], 3),
+                (vec![400], 1),
+            ]
+        );
+        assert!(clusters[0].events[0].allele.as_indel().is_some(), "indel events rank first");
+        assert!(clusters[0].events[1].allele.as_indel().is_some());
     }
 
     /// A column with `ot` and `ob` reads of `alt` over `reference`.
@@ -2802,7 +3119,9 @@ mod tests {
         let mut engine =
             PileupEngine::new(store.prepare_for_pileup().input, span(HAPLOTYPE_START, last));
         let events: SmallVec<Event, MAX_EVENTS> =
-            [Event { anchor: HAPLOTYPE_ANCHOR, allele: deleted(b"T") }].into_iter().collect();
+            [Event { anchor: HAPLOTYPE_ANCHOR, allele: deleted(b"T").into() }]
+                .into_iter()
+                .collect();
         while let Some(col) = engine.pileups() {
             let here = col.pos();
             if here.as_u64() == u64::from(HAPLOTYPE_ANCHOR) {
