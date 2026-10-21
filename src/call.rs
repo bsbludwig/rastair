@@ -93,6 +93,16 @@ pub struct CallParams {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub phase: bool,
 
+    /// Cut a phase block where switching its two sides would cost less than this
+    ///
+    /// The cost is Phred-scaled and grows in steps of read pairs: one is worth
+    /// at most 26, two about 50. The default keeps a block together on two read
+    /// pairs; 26 on one of good base quality, 20 on most single read pairs.
+    /// Only used with `--phase`.
+    #[arg(long, value_name = "Q", default_value_t = phasing::DEFAULT_MIN_SWITCH_QUALITY)]
+    #[arg(help_heading = cli::sections::PHASING)]
+    pub phase_min_switch_quality: u8,
+
     // --- Output parameters ---
     #[command(flatten)]
     pub record_filters: record_filters::RecordFilters,
@@ -179,6 +189,11 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     // Initialize readers for BAM and FASTA files
     let readers = params.segments.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
+    let mut readers = readers;
+    if params.phase {
+        let lengths: Vec<u64> = readers.header().targets().map(|target| target.length).collect();
+        readers.run_reads_per_base = run_reads_per_base(params.segments.bam_file.path(), &lengths);
+    }
 
     // Get segments that are small enough to process in RAM
     let regions: Vec<ChunkRegion> = readers
@@ -257,6 +272,23 @@ pub fn call(mut params: CallParams) -> Result<()> {
     Ok(())
 }
 
+/// The phasing depth guard's run-wide reference, warning when the index
+/// cannot give it.
+fn run_reads_per_base(bam: &std::path::Path, contig_lengths: &[u64]) -> Option<f64> {
+    match crate::sequence::mapped_reads_per_base(bam, contig_lengths) {
+        Ok(Some(reads_per_base)) => return Some(reads_per_base),
+        Ok(None) => {}
+        Err(error) => {
+            warn!(error = format!("{error:#}"), "Failed to read the alignment index's read counts");
+        }
+    }
+    warn!(
+        "The alignment index has no read counts (a CRAM, or no .bai/.csi), so the phasing \
+         depth guard compares each segment with itself and misses repeats longer than one"
+    );
+    None
+}
+
 /// Processes one segment with the worker's readers. A segment that fails to
 /// process is counted and yields no records; the run goes on.
 #[instrument(level = "info", skip_all, fields(region=%region.region))]
@@ -301,7 +333,8 @@ fn process_segment(
     };
 
     let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
-    process_pre_built_metrics(segment, metrics, params, ml)
+    let depth_scale = readers.depth_scale(region.len()).map(phasing::DepthScale);
+    process_pre_built_metrics(segment, metrics, params, ml, depth_scale)
 }
 
 macro_rules! log_failed_and_skip {
@@ -327,7 +360,7 @@ fn process_region(
     let metrics = calculate_pileup_metrics(pileups_iter, &segment)
         .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
         .collect::<Vec<_>>();
-    process_pre_built_metrics(segment, metrics.into_iter(), params, ml)
+    process_pre_built_metrics(segment, metrics.into_iter(), params, ml, None)
 }
 
 fn process_pre_built_metrics(
@@ -335,6 +368,7 @@ fn process_pre_built_metrics(
     pileups: impl Iterator<Item = PileupMetrics>,
     params: &CallParams,
     ml: &MachineLearning,
+    depth_scale: Option<phasing::DepthScale>,
 ) -> Result<Vec<PileupMetrics>> {
     let mut pileups: Vec<PileupMetrics> = pileups.collect();
     map_surrounding(
@@ -343,7 +377,7 @@ fn process_pre_built_metrics(
         "failed to set denovo adjacency, skipping",
     );
     set_strand_info_and_prefilter(&mut pileups, params);
-    process_collected_pileups(segment, pileups, params, ml)
+    process_collected_pileups(segment, pileups, params, ml, depth_scale)
 }
 
 /// The step between de-novo adjacency and the shared pipeline: strand info
@@ -362,6 +396,7 @@ fn process_collected_pileups(
     mut pileups: Vec<PileupMetrics>,
     params: &CallParams,
     ml: &MachineLearning,
+    depth_scale: Option<phasing::DepthScale>,
 ) -> Result<Vec<PileupMetrics>> {
     let threshold_filters = process::ThresholdFilterParams {
         variant_calling: params.variant_calling.clone(),
@@ -420,7 +455,12 @@ fn process_collected_pileups(
     // Before the overlap is trimmed: a site in it links reads reaching into
     // the core.
     if params.phase {
-        phasing::phase_segment(&mut pileups, |pos| segment.is_core(pos));
+        phasing::phase_segment(
+            &mut pileups,
+            |pos| segment.is_core(pos),
+            depth_scale,
+            params.phase_min_switch_quality,
+        );
     }
     pileups.retain(|p| only_core_positions(&segment, p));
 

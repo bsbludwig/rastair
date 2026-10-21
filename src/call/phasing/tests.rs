@@ -1,5 +1,11 @@
-use super::{fixtures::obs, *};
-use crate::call::phasing::fixtures::{call, het};
+use super::{
+    fixtures::{backing, obs},
+    *,
+};
+use crate::call::phasing::{
+    DEFAULT_MIN_SWITCH_QUALITY,
+    fixtures::{call, het},
+};
 use seqair_types::Base::*;
 
 #[test]
@@ -27,14 +33,21 @@ fn t_on_the_bottom_strand_at_a_reference_c_is_a_candidate() {
     assert_eq!(kept.len(), column.len(), "the ambiguous observations are kept too");
 }
 
-/// Converted cytosines are methylation, not a second allele.
+/// Converted reads are kept: outside a CpG they are a second allele, and only
+/// the phasing gate knows the context.
 #[test]
-fn converted_reads_are_not_a_candidate() {
+fn converted_reads_are_a_candidate() {
     let column = [obs(1, T, Strand::OT), obs(2, T, Strand::OT), obs(3, C, Strand::OB)];
-    assert!(candidate_observations(&column, C).is_none());
+    assert!(candidate_observations(&column, C).is_some());
 
     let bottom = [obs(1, A, Strand::OB), obs(2, A, Strand::OB), obs(3, G, Strand::OT)];
-    assert!(candidate_observations(&bottom, G).is_none());
+    assert!(candidate_observations(&bottom, G).is_some());
+}
+
+#[test]
+fn one_converted_read_is_not_a_candidate() {
+    let column = [obs(1, T, Strand::OT), obs(2, C, Strand::OT), obs(3, C, Strand::OB)];
+    assert!(candidate_observations(&column, C).is_none());
 }
 
 #[test]
@@ -72,7 +85,6 @@ fn a_candidate_always_carries_observations() {
     assert!(candidate_observations(&[], C).is_none());
 }
 
-/// No strand means no TAPS explanation for the mismatch.
 #[test]
 fn unknown_strand_reads_count_as_evidence() {
     let column = [obs(1, T, Strand::Unknown), obs(2, T, Strand::Unknown)];
@@ -102,9 +114,12 @@ fn calls(records: &[PileupMetrics]) -> Vec<Option<PhaseCall>> {
 fn a_block_covering_the_whole_segment_is_anchored_on_its_first_site() {
     let mut records = three_hets([A, A, G], [G, G, A]);
 
-    phase_segment(&mut records, |_| true);
+    phase_segment(&mut records, |_| true, None, DEFAULT_MIN_SWITCH_QUALITY);
 
-    assert_eq!(calls(&records), [Some(call(1001, 0)), Some(call(1001, 0)), Some(call(1001, 1))]);
+    assert_eq!(
+        calls(&records),
+        [Some(call(1001, 0, 31)), Some(call(1001, 0, 31)), Some(call(1001, 1, 31))]
+    );
 }
 
 /// The solver sees every site, the overlap's included, but `PS` has to name a
@@ -114,9 +129,9 @@ fn a_block_covering_the_whole_segment_is_anchored_on_its_first_site() {
 fn a_block_is_anchored_on_its_first_emitted_site() {
     let mut records = three_hets([A, A, A], [G, G, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1040);
+    phase_segment(&mut records, |pos| pos >= 1040, None, DEFAULT_MIN_SWITCH_QUALITY);
 
-    assert_eq!(calls(&records), [None, Some(call(1041, 0)), Some(call(1041, 0))]);
+    assert_eq!(calls(&records), [None, Some(call(1041, 0, 31)), Some(call(1041, 0, 31))]);
 }
 
 /// Anchoring on a site where haplotype 1 happens to carry the alt would open
@@ -126,9 +141,9 @@ fn a_block_is_anchored_on_its_first_emitted_site() {
 fn a_block_opens_on_the_lower_allele_of_its_anchor() {
     let mut records = three_hets([A, G, A], [G, A, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1040);
+    phase_segment(&mut records, |pos| pos >= 1040, None, DEFAULT_MIN_SWITCH_QUALITY);
 
-    assert_eq!(calls(&records), [None, Some(call(1041, 0)), Some(call(1041, 1))]);
+    assert_eq!(calls(&records), [None, Some(call(1041, 0, 31)), Some(call(1041, 1, 31))]);
 }
 
 /// Nothing the lone survivor links to is emitted here; the neighbouring
@@ -137,7 +152,7 @@ fn a_block_opens_on_the_lower_allele_of_its_anchor() {
 fn a_block_with_one_emitted_site_loses_its_phase() {
     let mut records = three_hets([A, A, A], [G, G, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1080);
+    phase_segment(&mut records, |pos| pos >= 1080, None, DEFAULT_MIN_SWITCH_QUALITY);
 
     assert_eq!(calls(&records), [None, None, None]);
 }
@@ -146,14 +161,14 @@ fn a_block_with_one_emitted_site_loses_its_phase() {
 fn a_site_no_fragment_links_stays_unphased() {
     let mut records = three_hets([A, A, A], [G, G, G]);
     if let Some(lonely) = records.get_mut(2) {
-        lonely.phase = Some(Box::new(ColumnPhase::Observed(
-            [obs(7, A, Strand::OT), obs(8, G, Strand::OT)].into(),
-        )));
+        let mut observations = vec![obs(7, A, Strand::OT), obs(8, G, Strand::OT)];
+        observations.extend(backing(1080, [A, G]));
+        lonely.phase = Some(Box::new(ColumnPhase::Observed(observations.into())));
     }
 
-    phase_segment(&mut records, |_| true);
+    phase_segment(&mut records, |_| true, None, DEFAULT_MIN_SWITCH_QUALITY);
 
-    assert_eq!(calls(&records), [Some(call(1001, 0)), Some(call(1001, 0)), None]);
+    assert_eq!(calls(&records), [Some(call(1001, 0, 31)), Some(call(1001, 0, 31)), None]);
 }
 
 /// Nothing reads the observations after the segment is phased.
@@ -161,7 +176,7 @@ fn a_site_no_fragment_links_stays_unphased() {
 fn phasing_drops_the_observations() {
     let mut records = three_hets([A, A, A], [G, G, G]);
 
-    phase_segment(&mut records, |pos| pos >= 1080);
+    phase_segment(&mut records, |pos| pos >= 1080, None, DEFAULT_MIN_SWITCH_QUALITY);
 
     assert!(records.iter().all(|r| r.phase.is_none()));
 }
@@ -187,7 +202,7 @@ fn a_phased_indel_column_gets_a_phase_of_its_own() {
         ),
     ];
 
-    phase_segment(&mut columns, |_| true);
+    phase_segment(&mut columns, |_| true, None, DEFAULT_MIN_SWITCH_QUALITY);
 
     let [snv, indel] = &columns;
     assert_eq!(call_of(snv, SiteKind::Snv).map(|c| c.first), Some(GtAllele::Ref));
@@ -195,7 +210,7 @@ fn a_phased_indel_column_gets_a_phase_of_its_own() {
     assert!(call_of(indel, SiteKind::Snv).is_none());
     assert_eq!(
         call_of(indel, SiteKind::Indel).map(|c| (c.set, c.first)),
-        Some((call(1001, 0).set, fixtures::allele(1))),
+        Some((call(1001, 0, 31).set, fixtures::allele(1))),
         "fragment 1 carries the SNV's reference and the insertion"
     );
 }
@@ -223,12 +238,15 @@ fn an_indel_site_first_in_a_block_anchors_and_flips_it() {
         het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT)]),
     ];
 
-    phase_segment(&mut columns, |_| true);
+    phase_segment(&mut columns, |_| true, None, DEFAULT_MIN_SWITCH_QUALITY);
 
     let [indel, snv] = &columns;
     let pair = |call: Option<PhaseCall>| call.map(|c| (c.set, c.first));
-    assert_eq!(pair(call_of(indel, SiteKind::Indel)), Some((call(1001, 0).set, GtAllele::Ref)));
-    assert_eq!(pair(call_of(snv, SiteKind::Snv)), Some((call(1001, 0).set, fixtures::allele(1))));
+    assert_eq!(pair(call_of(indel, SiteKind::Indel)), Some((call(1001, 0, 31).set, GtAllele::Ref)));
+    assert_eq!(
+        pair(call_of(snv, SiteKind::Snv)),
+        Some((call(1001, 0, 31).set, fixtures::allele(1)))
+    );
 }
 
 /// The SNV record is written before the indel record of its column, so at a
@@ -250,7 +268,7 @@ fn at_a_shared_position_the_snv_record_opens_the_block() {
     );
     let mut columns = [both];
 
-    phase_segment(&mut columns, |_| true);
+    phase_segment(&mut columns, |_| true, None, DEFAULT_MIN_SWITCH_QUALITY);
 
     let [both] = &columns;
     let first = |kind| call_of(both, kind).map(|c| c.first);

@@ -231,6 +231,11 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are phased, and indels too with `--experimental-indels`. Requires a build with the `experimental-seqair` backend.
 
   Default value: `false`
+* `--phase-min-switch-quality <Q>` — Cut a phase block where switching its two sides would cost less than this
+
+   The cost is Phred-scaled and grows in steps of read pairs: one is worth at most 26, two about 50. The default keeps a block together on two read pairs; 26 on one of good base quality, 20 on most single read pairs. Only used with `--phase`.
+
+  Default value: `30`
 
 ###### **Processing Options:**
 

@@ -69,7 +69,7 @@ pub fn get_pileups(
     readers: &mut SeqairReaders,
     region: &ChunkRegion,
     params: &PileupMappingParams,
-) -> Result<(Rc<Segment>, impl Iterator<Item = PileupMetrics>)> {
+) -> Result<(Rc<Segment>, impl Iterator<Item = PileupMetrics> + use<>)> {
     // Build the rastair Segment (FASTA fetch only) and extract ref window.
     let segment = readers.segment(region, 2).wrap_err("Failed to fetch segment")?;
     debug!(len = segment.sequence.len(), "Processing region");
@@ -89,6 +89,7 @@ pub fn get_pileups(
     readers.inner_mut().customize_mut().tag_requirement = params.require_tags.clone();
     readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
     readers.inner_mut().customize_mut().read_masking = params.read_masking.clone();
+    readers.inner_mut().customize_mut().fetched_mapped = 0;
 
     let depth_limit = params.max_coverage.depth_limit();
 

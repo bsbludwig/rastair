@@ -15,6 +15,8 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use readers::RastairRecordFilter;
-pub use readers::{RastairReadExtras, ReaderParams, Readers, ReferenceWindow, SeqairReaders};
+pub use readers::{
+    RastairReadExtras, ReaderParams, Readers, ReferenceWindow, SeqairReaders, mapped_reads_per_base,
+};
 pub use regions::{ChunkRegion, Region, SelectedRegion};
 pub use segementation::{Segment, SegmentationParams};

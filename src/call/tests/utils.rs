@@ -328,7 +328,7 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
         }
         // Absent renders as ".", so a test can assert a record carries no
         // phase set as readily as it can assert a value.
-        "GT" | "PS" => {
+        "GT" | "PS" | "PQ" => {
             let value = record.format.get(field_id).cloned().unwrap_or_else(|| ".".to_string());
             Ok(FieldValue::String(value))
         }
@@ -504,6 +504,7 @@ pub(crate) fn test_call(
         methylation: default(),
         ml: default(),
         phase: false,
+        phase_min_switch_quality: crate::call::phasing::DEFAULT_MIN_SWITCH_QUALITY,
         vcf: default(),
         bed: default(),
         total_threads: 2,

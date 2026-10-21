@@ -6,10 +6,7 @@
 //! column is built, because `PileupMetrics` keeps no reads; only the seqair
 //! backend does that.
 
-use crate::{
-    metrics::{PileupMetrics, methylation::CpgSide},
-    utils::logging::ThisIsABug as _,
-};
+use crate::{metrics::PileupMetrics, utils::logging::ThisIsABug as _};
 use color_eyre::eyre::OptionExt as _;
 use seqair_types::{Base, BaseQuality, Pos0, Pos1, Strand};
 use std::num::{NonZeroU8, NonZeroU64};
@@ -18,11 +15,13 @@ use tracing::{debug, warn};
 mod problem;
 mod solver;
 
+pub use problem::DepthScale;
 use problem::{SiteAllele, build_problem};
-use solver::solve;
+pub use solver::DEFAULT_MIN_SWITCH_QUALITY;
+use solver::{PhasedSite, solve};
 
 /// Observations on one alternative base a column needs before its reads are
-/// kept for phasing.
+/// kept for phasing, and votes each allele of an SNV site needs.
 const MIN_ALT_READS: u32 = 2;
 /// Mapping quality a read needs to contribute a phase observation.
 const MIN_MAPQ: u8 = 20;
@@ -45,8 +44,10 @@ pub fn accepts_read(mapq: u8, baseq: BaseQuality) -> bool {
 pub struct Cost(u8);
 
 impl Cost {
-    /// Most a single observation can be charged.
-    const CAP: u8 = 40;
+    /// Most a single observation can be charged: one fragment's link is wrong
+    /// 0.26 % of the time (Phred 26) whatever its base qualities say
+    /// (chimeras, mismapped mates), so no single observation may claim more.
+    const CAP: u8 = 26;
 
     const fn of(qual: BaseQuality) -> Self {
         match qual.get() {
@@ -66,6 +67,20 @@ impl Cost {
     fn of_log10_ratio(ratio: f32) -> Self {
         let phred = (10.0 * ratio.abs()).round();
         if phred >= f32::from(Self::CAP) { Self(Self::CAP) } else { Self(phred as u8) }
+    }
+
+    /// The measured Phred error of a raw switch quality, by bucket. Fragment
+    /// errors share causes, so however many fragments add up, the error
+    /// stops falling at about Q37.
+    #[must_use]
+    pub const fn calibrated(raw: i32) -> Self {
+        Self(match raw {
+            ..10 => 3,
+            10..20 => 8,
+            20..30 => 22,
+            30..120 => 31,
+            _ => 37,
+        })
     }
 }
 
@@ -156,6 +171,8 @@ pub struct PhaseCall {
     pub set: PhaseSet,
     /// The allele haplotype 1 carries.
     pub first: GtAllele,
+    /// VCF `PQ`: how sure the block is of this site's orientation.
+    pub quality: Cost,
 }
 
 /// What phasing keeps on one column: its reads' observations until the segment
@@ -217,19 +234,12 @@ fn observations_of(pileup: &PileupMetrics) -> Option<&[PhaseObservation]> {
     }
 }
 
-/// Could TAPS conversion alone explain this mismatch against the reference?
-///
-/// Deliberately blind to sequence context: it decides which columns are
-/// collected, before anything knows where the de-novo CpGs are.
-fn taps_explains_mismatch(reference_base: Base, base: Base, strand: Strand) -> bool {
-    [CpgSide::C, CpgSide::G].into_iter().any(|side| {
-        reference_base == side.unmod_base() && base == side.mod_base() && strand == side.strand()
-    })
-}
-
 /// Keep a column's observations only where it may be heterozygous: at least
-/// [`MIN_ALT_READS`] mismatches on one base that TAPS conversion cannot
-/// explain. The whole column is kept, TAPS-ambiguous reads included.
+/// [`MIN_ALT_READS`] reads of one non-reference base, whatever their strand.
+///
+/// A `T` over a `C` on OT counts too: whether TAPS conversion explains it
+/// depends on the CpG context, which only the phasing gate knows (de-novo CpGs
+/// are not called yet). The whole column is kept.
 ///
 /// `Some` always carries at least one observation.
 #[must_use]
@@ -241,9 +251,7 @@ pub fn candidate_observations(
     reference_base.known_index()?;
 
     let mut informative = [0u32; Base::KNOWN.len()];
-    for obs in observations.iter().filter(|obs| {
-        obs.base != reference_base && !taps_explains_mismatch(reference_base, obs.base, obs.strand)
-    }) {
+    for obs in observations.iter().filter(|obs| obs.base != reference_base) {
         if let Some(count) = obs.base.known_index().and_then(|idx| informative.get_mut(idx)) {
             *count += 1;
         }
@@ -262,17 +270,24 @@ pub fn candidate_observations(
 /// one emitted site loses its phase. Each block is oriented so that haplotype
 /// 1 carries the lower allele at that site, which makes its first record
 /// `0|1` rather than `1|0`.
-pub fn phase_segment(pileups: &mut [PileupMetrics], is_core: impl Fn(u64) -> bool) {
-    let problem = build_problem(pileups);
-    let solution = solve(&problem);
+pub fn phase_segment(
+    pileups: &mut [PileupMetrics],
+    is_core: impl Fn(u64) -> bool,
+    depth_scale: Option<DepthScale>,
+    min_switch_quality: u8,
+) {
+    let problem = build_problem(pileups, depth_scale);
+    let solution = solve(&problem, min_switch_quality.into());
 
     let mut calls: Vec<(usize, SiteKind, PhaseCall)> = Vec::new();
     for block in &solution.blocks {
         let emitted: Vec<_> = block
             .iter()
-            .filter(|&&(index, _)| is_core(problem.sites[index].pos.as_u64()))
+            .filter(|phased| is_core(problem.sites[phased.site].pos.as_u64()))
             .collect();
-        let (Some(&&(anchor, anchor_allele)), true) = (emitted.first(), emitted.len() >= 2) else {
+        let (Some(&&PhasedSite { site: anchor, allele: anchor_allele, .. }), true) =
+            (emitted.first(), emitted.len() >= 2)
+        else {
             continue;
         };
         let pos = problem.sites[anchor].pos;
@@ -285,10 +300,10 @@ pub fn phase_segment(pileups: &mut [PileupMetrics], is_core: impl Fn(u64) -> boo
             }
         };
         let flip = anchor_allele == SiteAllele::Second;
-        for &&(index, allele) in &emitted {
+        for &&PhasedSite { site: index, allele, quality } in &emitted {
             let site = &problem.sites[index];
             let allele = if flip { allele.flipped() } else { allele };
-            let call = PhaseCall { set, first: site.allele(allele) };
+            let call = PhaseCall { set, first: site.allele(allele), quality };
             calls.push((site.pileup, site.kind, call));
         }
     }

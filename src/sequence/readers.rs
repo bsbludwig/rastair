@@ -101,6 +101,9 @@ mod seqair_readers {
         pub guess_orientation: bool,
         pub read_masking: ReadMaskParams,
         pub reference: Option<ReferenceWindow>,
+        /// Mapped records the reader fetched, before any of these filters:
+        /// the same count a `.bai` keeps, for the phasing depth guard.
+        pub fetched_mapped: u64,
     }
 
     impl CustomizeRecordStore for RastairRecordFilter {
@@ -110,6 +113,9 @@ mod seqair_readers {
         /// read, so a deep pile of MAPQ 0 reads cannot fill the cap and evict
         /// the usable ones.
         fn filter_raw(&mut self, fields: &FilterRawFields<'_>) -> bool {
+            if !fields.flags.is_unmapped() {
+                self.fetched_mapped = self.fetched_mapped.saturating_add(1);
+            }
             self.read_flags.filter_flags(fields.flags.raw(), self.unpaired)
                 && fields.mapq >= self.min_mapq
                 && self.tag_requirement.allows(Some(Aux::new(fields.aux_bytes)))
@@ -227,6 +233,10 @@ mod seqair_readers {
     pub struct SeqairReaders {
         pub(super) inner: seqair::Readers<RastairRecordFilter>,
         regions: Option<CliRegionInput>,
+        /// The whole file's mapped reads per covered base, from its index
+        /// ([`mapped_reads_per_base`](super::mapped_reads_per_base)); set
+        /// only when phasing asks for it.
+        pub run_reads_per_base: Option<f64>,
     }
 
     impl SeqairReaders {
@@ -234,7 +244,7 @@ mod seqair_readers {
             inner: seqair::Readers<RastairRecordFilter>,
             regions: Option<CliRegionInput>,
         ) -> Self {
-            Self { inner, regions }
+            Self { inner, regions, run_reads_per_base: None }
         }
 
         /// A handle for another thread that shares this one's parsed index and
@@ -242,7 +252,11 @@ mod seqair_readers {
         /// segments on different threads decode each slice once.
         pub fn fork(&self) -> Result<Self> {
             let inner = self.inner.fork().wrap_err("Failed to fork seqair readers")?;
-            Ok(Self { inner, regions: self.regions.clone() })
+            Ok(Self {
+                inner,
+                regions: self.regions.clone(),
+                run_reads_per_base: self.run_reads_per_base,
+            })
         }
 
         /// Produces the same `ChunkRegion` iterator as `Readers::segments()`.
@@ -338,6 +352,15 @@ mod seqair_readers {
         pub(crate) fn inner_mut(&mut self) -> &mut seqair::Readers<RastairRecordFilter> {
             &mut self.inner
         }
+
+        /// The run's mapped reads per base over those of the segment
+        /// `get_pileups` loaded last, `segment_len` bases long; `None`
+        /// without [`Self::run_reads_per_base`] or reads in the segment.
+        pub fn depth_scale(&self, segment_len: u64) -> Option<f64> {
+            let segment = self.inner.customize().fetched_mapped as f64 / segment_len as f64;
+            let run = self.run_reads_per_base?;
+            (segment.is_finite() && segment > 0.0).then(|| run / segment)
+        }
     }
 
     fn get_selected_region(
@@ -380,6 +403,163 @@ mod seqair_readers {
                 })
             })
             .collect()
+    }
+}
+
+pub use index_depth::mapped_reads_per_base;
+
+/// seqair parses the index but keeps neither its read counts nor its bins, so
+/// this reads them itself.
+mod index_depth {
+    use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
+    use noodles::csi::{BinningIndex as _, binning_index::ReferenceSequence as _};
+    use std::{ops::Range, path::Path};
+
+    /// What a BAI or CSI index says about one reference.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ReferenceCounts {
+        /// `None` when the index keeps no pseudo-bin for it.
+        mapped: Option<u64>,
+        /// Bases in the index's finest bins that hold a read: the part of a
+        /// contig a sliced BAM left out is not counted.
+        leaf_bases: u64,
+    }
+
+    /// The finest bins of a binning scheme, and the bases each spans.
+    fn leaves(min_shift: u8, depth: u8) -> (Range<u64>, u64) {
+        let first = ((1u64 << (3 * u32::from(depth))) - 1) / 7;
+        (first..first + (1u64 << (3 * u32::from(depth))), 1u64 << min_shift)
+    }
+
+    /// Mapped reads per covered base over the whole alignment file, from its
+    /// `.csi` or `.bai` (looked up as seqair does); `contig_lengths` are the
+    /// header's, by tid, and cap a short contig's last bin. `None` without
+    /// such an index (a CRAM), or when it holds no read counts.
+    pub fn mapped_reads_per_base(alignment: &Path, contig_lengths: &[u64]) -> Result<Option<f64>> {
+        let with_suffix = |suffix: &str| {
+            let mut path = alignment.as_os_str().to_owned();
+            path.push(suffix);
+            std::path::PathBuf::from(path)
+        };
+        let references = if let Some(csi) = [with_suffix(".csi"), alignment.with_extension("csi")]
+            .into_iter()
+            .find(|path| path.exists())
+        {
+            let index = noodles::csi::fs::read(&csi)
+                .wrap_err_with(|| format!("Failed to read {}", csi.display()))?;
+            csi_counts(&index)
+        } else if let Some(bai) = [with_suffix(".bai"), alignment.with_extension("bai")]
+            .into_iter()
+            .find(|path| path.exists())
+        {
+            let bytes = std::fs::read(&bai)
+                .wrap_err_with(|| format!("Failed to read {}", bai.display()))?;
+            bai_counts(&bytes).wrap_err_with(|| format!("Failed to parse {}", bai.display()))?
+        } else {
+            return Ok(None);
+        };
+        Ok(reads_per_base(&references, contig_lengths))
+    }
+
+    fn reads_per_base(references: &[ReferenceCounts], contig_lengths: &[u64]) -> Option<f64> {
+        let mut mapped = None;
+        let mut covered = 0;
+        for (tid, reference) in references.iter().enumerate() {
+            if let Some(count) = reference.mapped {
+                *mapped.get_or_insert(0) += count;
+            }
+            let length = contig_lengths.get(tid).copied().unwrap_or(u64::MAX);
+            covered += reference.leaf_bases.min(length);
+        }
+        let mapped = mapped.filter(|&mapped| mapped > 0 && covered > 0)?;
+        Some(mapped as f64 / covered as f64)
+    }
+
+    fn csi_counts(index: &noodles::csi::Index) -> Vec<ReferenceCounts> {
+        let (leaves, leaf_len) = leaves(index.min_shift(), index.depth());
+        let references = index.reference_sequences().iter();
+        references
+            .map(|reference| ReferenceCounts {
+                mapped: reference.metadata().map(|metadata| metadata.mapped_record_count()),
+                leaf_bases: leaf_len
+                    * reference.bins().keys().filter(|&&bin| leaves.contains(&(bin as u64))).count()
+                        as u64,
+            })
+            .collect()
+    }
+
+    /// SAM spec §5.2: per reference, bins with their chunks, the pseudo-bin
+    /// 37450 among them whose second chunk is (mapped, unmapped), then the
+    /// linear index.
+    fn bai_counts(bytes: &[u8]) -> Result<Vec<ReferenceCounts>> {
+        const META_BIN: u64 = 37450;
+        let mut index = LeBytes(bytes);
+        ensure!(index.u32()? == u32::from_le_bytes(*b"BAI\x01"), "Not a BAI index");
+        let (leaves, leaf_len) = leaves(14, 5);
+        let mut references = Vec::new();
+        for _ in 0..index.u32()? {
+            let mut reference = ReferenceCounts { mapped: None, leaf_bases: 0 };
+            for _ in 0..index.u32()? {
+                let bin = u64::from(index.u32()?);
+                let n_chunk = usize::try_from(index.u32()?)?;
+                let chunks = index.take(16 * n_chunk)?;
+                if bin == META_BIN {
+                    let count = chunks.get(16..24).wrap_err("Pseudo-bin lacks its counts")?;
+                    reference.mapped = Some(u64::from_le_bytes(count.try_into()?));
+                } else if leaves.contains(&bin) {
+                    reference.leaf_bases += leaf_len;
+                }
+            }
+            let n_intv = usize::try_from(index.u32()?)?;
+            index.take(8 * n_intv)?;
+            references.push(reference);
+        }
+        Ok(references)
+    }
+
+    struct LeBytes<'a>(&'a [u8]);
+
+    impl<'a> LeBytes<'a> {
+        fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+            let (head, tail) = self.0.split_at_checked(n).wrap_err("Index ends early")?;
+            self.0 = tail;
+            Ok(head)
+        }
+
+        fn u32(&mut self) -> Result<u32> {
+            Ok(u32::from_le_bytes(self.take(4)?.try_into()?))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn bai_counts_match_samtools_idxstats() -> Result<()> {
+            let bytes = std::fs::read("tests/data/test.bam.bai")?;
+            let counts = |mapped, leaves: u64| ReferenceCounts {
+                mapped: Some(mapped),
+                leaf_bases: leaves * 16_384,
+            };
+            // Mapped from `samtools idxstats tests/data/test.bam`; the leaves
+            // agree with a CSI that `samtools index -c` built.
+            assert_eq!(
+                bai_counts(&bytes)?,
+                [counts(12_297, 3), counts(2_146, 1), counts(10_500, 3)]
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_contig_shorter_than_its_bin_counts_its_length() -> Result<()> {
+            let bytes = std::fs::read("tests/data/test.bam.bai")?;
+            let lengths = [61_431_566, 2_018, 48_502];
+            let covered = 3 * 16_384 + 2_018 + 48_502;
+            let rate = reads_per_base(&bai_counts(&bytes)?, &lengths);
+            assert_eq!(rate, Some(24_943.0 / f64::from(covered)));
+            Ok(())
+        }
     }
 }
 

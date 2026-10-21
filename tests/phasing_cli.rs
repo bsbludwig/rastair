@@ -55,7 +55,11 @@ fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
         .snv(SPOKE_1, Hap::Two)
         .snv(SPOKE_2, Hap::One)
         .balanced(LEFT, 350, 5)
-        .balanced(LEFT, 460, 5);
+        .balanced(LEFT, 460, 5)
+        // Reads at the far end, outside the second segment: without them its
+        // reads per base are the run's 1.4 times, and the depth guard keeps
+        // the hub, at twice the spokes' depth, from bridging them.
+        .balanced(820, 900, 5);
 
     let vcf = call_scenario(
         &scenario,
@@ -64,6 +68,84 @@ fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SPOKE_1, SPOKE_2]]), unphased: vec![HUB] });
+    Ok(())
+}
+
+/// Two well-linked pairs of hets, `[A, B]` and `[C, D]`, and `bridges` read
+/// pairs from haplotype one reaching from `B` to `C`.
+fn two_blocks_bridged(bridges: usize) -> (Scenario, [usize; 4]) {
+    const SITES: [usize; 4] = [120, 420, 720, 970];
+    let [a, b, c, d] = SITES;
+    let scenario = Scenario::new(1300)
+        .snv(a, Hap::One)
+        .snv(b, Hap::Two)
+        .snv(c, Hap::One)
+        .snv(d, Hap::One)
+        .balanced(100, 350, 5)
+        .balanced(700, 950, 5)
+        .pairs_to(Hap::One, Strand::Top, 400, 700, bridges);
+    (scenario, SITES)
+}
+
+/// One read pair is a link wrong 0.26 % of the time, too weak to join two
+/// blocks on; two agreeing pairs are enough.
+#[test]
+fn a_block_is_cut_where_one_read_pair_is_its_only_link() -> Result<()> {
+    let (scenario, [a, b, c, d]) = two_blocks_bridged(1);
+    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let phasing = scenario.check_phasing(&vcf)?;
+    assert_eq!(phasing, Phasing { blocks: blocks([&[a, b], &[c, d]]), unphased: vec![] });
+    assert!(vcf.contains("##FORMAT=<ID=PQ,"), "PQ must be declared");
+
+    let (scenario, sites) = two_blocks_bridged(2);
+    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let phasing = scenario.check_phasing(&vcf)?;
+    assert_eq!(phasing, Phasing { blocks: blocks([&sites]), unphased: vec![] });
+    Ok(())
+}
+
+/// At Q20 a single read pair is enough to keep two blocks together.
+#[test]
+fn a_lower_switch_quality_keeps_a_one_read_pair_link() -> Result<()> {
+    let (scenario, sites) = two_blocks_bridged(1);
+    let vcf = call_scenario(&scenario, &["--phase", "--phase-min-switch-quality", "20"])?;
+    let phasing = scenario.check_phasing(&vcf)?;
+    assert_eq!(phasing, Phasing { blocks: blocks([&sites]), unphased: vec![] });
+    Ok(())
+}
+
+/// Six hets within 50 bases, between two well-linked blocks and tied to both
+/// by many read pairs: too dense to be trusted with a bridge, so the blocks
+/// stay apart and each dense site joins one of them at most.
+#[test]
+fn a_dense_run_of_hets_does_not_bridge_two_blocks() -> Result<()> {
+    const LEFT_BLOCK: [usize; 2] = [120, 300];
+    const DENSE: [usize; 6] = [500, 510, 520, 530, 540, 550];
+    const RIGHT_BLOCK: [usize; 2] = [760, 900];
+    let haps = [Hap::One, Hap::Two, Hap::Two, Hap::One, Hap::Two, Hap::One, Hap::One, Hap::Two];
+    let scenario = LEFT_BLOCK
+        .into_iter()
+        .chain(DENSE)
+        .chain(RIGHT_BLOCK)
+        .zip(haps.into_iter().cycle())
+        .fold(Scenario::new(1100), |scenario, (pos, hap)| scenario.snv(pos, hap))
+        .balanced(100, 280, 5)
+        .balanced(280, 480, 5)
+        .balanced(480, 740, 5)
+        .balanced(740, 880, 5);
+
+    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let phasing = scenario.check_phasing(&vcf)?;
+
+    let block_of = |site: usize| phasing.blocks.values().position(|block| block.contains(&site));
+    assert_eq!(phasing.blocks.len(), 2, "{phasing:?}");
+    assert!(
+        block_of(LEFT_BLOCK[0]).is_some() && block_of(LEFT_BLOCK[0]) == block_of(LEFT_BLOCK[1])
+    );
+    assert!(
+        block_of(RIGHT_BLOCK[0]).is_some() && block_of(RIGHT_BLOCK[0]) == block_of(RIGHT_BLOCK[1])
+    );
+    assert_ne!(block_of(LEFT_BLOCK[0]), block_of(RIGHT_BLOCK[0]), "{phasing:?}");
     Ok(())
 }
 
@@ -234,5 +316,142 @@ fn phasing_refuses_cpg_only_output() -> Result<()> {
     assert!(!output.status.success(), "--phase --cpgs-only must fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--phase has nothing to work with under CpG-only output"), "{stderr}");
+    Ok(())
+}
+
+/// How phasing on real reads scores against a phased truth set.
+#[derive(Debug, Default)]
+struct Accuracy {
+    /// Phased heterozygous SNVs inside the confident regions.
+    phased: usize,
+    /// Of those, the ones the truth does not have as the same het.
+    phased_wrongly: usize,
+    /// Adjacent pairs of truly heterozygous sites inside one block.
+    pairs: usize,
+    /// Of those, the pairs whose relative phase disagrees with the truth.
+    switches: usize,
+}
+
+/// The columns of a VCF data line accuracy is scored on.
+struct Genotyped<'a> {
+    /// As written, 1-based.
+    pos: usize,
+    alleles: Vec<&'a str>,
+    gt: &'a str,
+    ps: Option<&'a str>,
+    filter: &'a str,
+}
+
+impl<'a> Genotyped<'a> {
+    fn parse(line: &'a str) -> Option<Self> {
+        let columns: Vec<&str> = line.split('\t').collect();
+        let mut alleles = vec![*columns.get(3)?];
+        alleles.extend(columns.get(4)?.split(','));
+        let keys: Vec<&str> = columns.get(8)?.split(':').collect();
+        let values: Vec<&str> = columns.get(9)?.split(':').collect();
+        let value = |key: &str| values.get(keys.iter().position(|k| *k == key)?).copied();
+        Some(Self {
+            pos: columns.get(1)?.parse().ok()?,
+            alleles,
+            gt: value("GT")?,
+            ps: value("PS"),
+            filter: columns.get(6)?,
+        })
+    }
+
+    /// The two allele strings a phased GT puts on haplotypes 1 and 2, when
+    /// they differ.
+    fn haplotypes(&self) -> Option<[&'a str; 2]> {
+        let (one, two) = self.gt.split_once('|')?;
+        let allele = |index: &str| self.alleles.get(index.parse::<usize>().ok()?).copied();
+        let pair = [allele(one)?, allele(two)?];
+        (pair[0] != pair[1]).then_some(pair)
+    }
+}
+
+fn score_against_truth(vcf: &str, truth: &str, confident: &str) -> Result<Accuracy> {
+    let intervals: Vec<(usize, usize)> = confident
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t').skip(1);
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect();
+    let is_confident = |pos: usize| intervals.iter().any(|&(start, end)| start < pos && pos <= end);
+    let truth: BTreeMap<usize, [&str; 2]> = truth
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(Genotyped::parse)
+        .filter_map(|record| Some((record.pos, record.haplotypes()?)))
+        .collect();
+
+    let mut accuracy = Accuracy::default();
+    let mut blocks: BTreeMap<&str, Vec<bool>> = BTreeMap::new();
+    for record in vcf.lines().filter(|line| !line.starts_with('#')).filter_map(Genotyped::parse) {
+        let snv = record.alleles.iter().all(|allele| allele.len() == 1);
+        let Some(called) = record.haplotypes().filter(|_| snv && record.filter == "PASS") else {
+            continue;
+        };
+        if !is_confident(record.pos) {
+            continue;
+        }
+        accuracy.phased += 1;
+        let Some(&[first, second]) = truth.get(&record.pos) else {
+            accuracy.phased_wrongly += 1;
+            continue;
+        };
+        let same = called == [first, second];
+        if !same && called != [second, first] {
+            accuracy.phased_wrongly += 1;
+            continue;
+        }
+        let set = record.ps.ok_or_else(|| eyre!("phased without PS at {}", record.pos))?;
+        blocks.entry(set).or_default().push(same);
+    }
+    for orientations in blocks.values() {
+        accuracy.pairs += orientations.len().saturating_sub(1);
+        accuracy.switches +=
+            orientations.iter().zip(orientations.iter().skip(1)).filter(|(a, b)| a != b).count();
+    }
+    Ok(accuracy)
+}
+
+/// 200 kb of NA12878 chr12 TAPS reads (26x) against the Platinum Genomes
+/// phased truth, with the bundled model. Floors and ceilings sit just outside
+/// what the code measured when they were set; moving them is a decision.
+///
+/// The reads are not in git: `scripts/make_phasing_slice.py` writes the
+/// fixture, and `RASTAIR_PHASING_SLICE` names its directory. Without it the
+/// test says so and passes.
+#[test]
+fn phasing_accuracy_on_an_na12878_slice() -> Result<()> {
+    let Some(data) = std::env::var_os("RASTAIR_PHASING_SLICE") else {
+        eprintln!("skipping: set RASTAIR_PHASING_SLICE to the make_phasing_slice.py output");
+        return Ok(());
+    };
+    let data = Path::new(&data);
+    let temp_dir = TempDir::new()?;
+    let vcf = temp_dir.path().join("out.vcf");
+    rastair()
+        .arg("call")
+        .arg("--fasta-file")
+        .arg(data.join("ref.fa"))
+        .arg(data.join("reads.bam"))
+        .args(["--phase", "--vcf"])
+        .arg(&vcf)
+        .succeeds()?;
+
+    let accuracy = score_against_truth(
+        &std::fs::read_to_string(&vcf)?,
+        &std::fs::read_to_string(data.join("truth.vcf"))?,
+        &std::fs::read_to_string(data.join("confident.bed"))?,
+    )?;
+    eprintln!("{accuracy:?}");
+    // Measured: phased 311, wrongly 1, pairs 229, switches 0. The scorer
+    // agrees with `whatshap compare` on pairs and switches.
+    assert!(accuracy.phased >= 311, "fewer sites phased: {accuracy:?}");
+    assert!(accuracy.pairs >= 229, "shorter blocks: {accuracy:?}");
+    assert!(accuracy.switches == 0, "switch errors: {accuracy:?}");
+    assert!(accuracy.phased_wrongly <= 1, "non-hets phased: {accuracy:?}");
     Ok(())
 }

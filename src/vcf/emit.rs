@@ -18,7 +18,7 @@ use crate::{
     call::{
         RecordFilters,
         pair_hmm::EventIdx,
-        phasing::{self, GtAllele, SiteKind},
+        phasing::{self, GtAllele, PhaseCall, SiteKind},
         pileup::indels::{IndelAllele, Scored},
         variant_calling::{
             ErrorModel, GenotypeTag,
@@ -210,6 +210,7 @@ fn encode_indel_genotype(
     schema.format.gt.encode(enc, &[genotype])?;
     if let Some(call) = phase.filter(|_| phased) {
         schema.format.ps.encode(enc, &[call.set.as_i32()])?;
+        schema.format.pq.encode(enc, &[i32::from(call.quality)])?;
     }
     Ok(())
 }
@@ -529,9 +530,10 @@ fn encode_format(
 
     if c.gt {
         f.gt.encode(enc, &[genotype.genotype])?;
-        // An unphased record omits `PS` rather than carrying an empty value.
-        if let Some(set) = genotype.phase_set {
-            f.ps.encode(enc, &[set])?;
+        // An unphased record omits `PS` and `PQ` rather than carrying empty values.
+        if let Some(call) = genotype.phase {
+            f.ps.encode(enc, &[call.set.as_i32()])?;
+            f.pq.encode(enc, &[i32::from(call.quality)])?;
         }
     }
     if c.gl {
@@ -592,10 +594,10 @@ struct GenotypeFields {
     likelihood: f32,
     confidence: f32,
     /// Set exactly where `genotype` is phased.
-    phase_set: Option<i32>,
+    phase: Option<PhaseCall>,
 }
 
-/// The genotype plus its GL/GC values and phase set.
+/// The genotype plus its GL/GC values and phase call.
 ///
 /// The estimate is the one the calling pipeline stored, not a fresh one: an
 /// estimate re-derived here would silently ignore `--error-model` and so
@@ -607,7 +609,7 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeField
             genotype: SeqGenotype::unphased(0, 0),
             likelihood: phred_value(Probability::ZERO),
             confidence: phred_value(Probability::ZERO),
-            phase_set: None,
+            phase: None,
         };
     };
 
@@ -656,7 +658,7 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeField
         genotype,
         likelihood: phred_value(estimated.likelihood),
         confidence: phred_value(estimated.confidence),
-        phase_set: phase.filter(|_| phased).map(|call| call.set.as_i32()),
+        phase: phase.filter(|_| phased),
     }
 }
 

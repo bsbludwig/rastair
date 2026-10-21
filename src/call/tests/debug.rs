@@ -30,6 +30,7 @@ fn call_default_bed() -> Result<()> {
         methylation: default(),
         ml: default(),
         phase: false,
+        phase_min_switch_quality: crate::call::phasing::DEFAULT_MIN_SWITCH_QUALITY,
         vcf: default(),
         bed: default(),
         total_threads: 2,

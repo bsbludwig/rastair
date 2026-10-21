@@ -162,6 +162,12 @@ const PS_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
     ValueType::Integer,
     "Phase set identifier: the position of the first variant in the phase block",
 );
+const PQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "PQ",
+    Number::Count(1),
+    ValueType::Integer,
+    "Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly",
+);
 const GL_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
     "GL",
     Number::Genotypes,
@@ -244,6 +250,7 @@ const INFO_DEFS: &[&dyn FieldDescription] = &[
 const FORMAT_DEFS: &[&dyn FieldDescription] = &[
     &GT_DEF,
     &PS_DEF,
+    &PQ_DEF,
     &GL_DEF,
     &GC_DEF,
     &SAMPLE_DP_DEF,
@@ -346,8 +353,9 @@ pub(crate) struct InfoKeys {
 /// All FORMAT keys, resolved against the header.
 pub(crate) struct FormatKeys {
     pub gt: FormatGt,
-    /// Written only where the genotype is phased.
+    /// Written only where the genotype is phased, and so is `pq`.
     pub ps: FormatInt,
+    pub pq: FormatInt,
     pub gl: FormatFloat,
     pub gc: FormatFloat,
     pub dp: FormatInt,
@@ -451,6 +459,7 @@ pub fn register(
     let format = FormatKeys {
         gt: builder.register_format(&GT_DEF)?,
         ps: builder.register_format(&PS_DEF)?,
+        pq: builder.register_format(&PQ_DEF)?,
         gl: builder.register_format(&GL_DEF)?,
         gc: builder.register_format(&GC_DEF)?,
         dp: builder.register_format(&SAMPLE_DP_DEF)?,

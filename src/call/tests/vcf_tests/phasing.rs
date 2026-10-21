@@ -1,4 +1,5 @@
-//! What `--phase` puts in the VCF: `GT` with a `|` separator and a `PS` tag.
+//! What `--phase` puts in the VCF: `GT` with a `|` separator, and `PS` and
+//! `PQ` tags.
 //!
 //! These tests set the phase call by hand, which also lets them state cases
 //! the solver cannot produce, such as a call on a homozygous genotype. The
@@ -16,7 +17,7 @@ use seqair_types::Base::*;
 
 fn with_call(record: &mut PileupMetrics, set: u32, first: u8) {
     record.phase = Some(Box::new(ColumnPhase::Phased(RecordPhases {
-        snv: Some(call(set, first)),
+        snv: Some(call(set, first, 31)),
         indel: None,
     })));
 }
@@ -45,7 +46,7 @@ fn a_phased_het_lists_haplotype_one_first() -> Result<()> {
         with_call(&mut records[0], 1001, first);
 
         let expected_vcf = vcf_assert![
-            (A G) PASS GT=gt PS="1001",
+            (A G) PASS GT=gt PS="1001" PQ="31",
         ];
         expected_vcf.matches(metrics_to_vcf(&records, RecordFilters::all())?)?;
     }
@@ -53,12 +54,12 @@ fn a_phased_het_lists_haplotype_one_first() -> Result<()> {
     Ok(())
 }
 
-/// Without a phase call the record is unphased and carries no `PS` at all,
-/// rather than an empty one.
+/// Without a phase call the record is unphased and carries no `PS` or `PQ` at
+/// all, rather than empty ones.
 #[test]
 fn an_unphased_het_keeps_its_slash_and_no_phase_set() -> Result<()> {
     let expected_vcf = vcf_assert![
-        (A G) PASS GT="0/1" PS=".",
+        (A G) PASS GT="0/1" PS="." PQ=".",
     ];
     expected_vcf.matches(metrics_to_vcf(&het_record()?, RecordFilters::all())?)?;
 
@@ -82,7 +83,7 @@ fn a_homozygous_genotype_is_never_phased() -> Result<()> {
     with_call(&mut records[0], 1001, 1);
 
     let expected_vcf = vcf_assert![
-        (A G) PASS GT="1/1" PS=".",
+        (A G) PASS GT="1/1" PS="." PQ=".",
     ];
     expected_vcf.matches(metrics_to_vcf(&records, RecordFilters::all())?)?;
 

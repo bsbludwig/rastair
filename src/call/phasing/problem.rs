@@ -7,7 +7,10 @@
 //! cytosine is in a CpG, observations TAPS conversion alone explains are
 //! dropped, or methylation would read as the other allele.
 
-use super::{Cost, FragmentId, GtAllele, MIN_MAPQ, PhaseObservation, SiteKind, observations_of};
+use super::{
+    Cost, FragmentId, GtAllele, MIN_ALT_READS, MIN_MAPQ, PhaseObservation, SiteKind,
+    observations_of,
+};
 use crate::{
     call::{
         pair_hmm::{HapIdx, Margin, ReadScores},
@@ -201,6 +204,90 @@ pub struct PhaseSite {
     pub pos: Pos0,
     /// The genotype's two alleles, ascending.
     pub alleles: [GtAllele; 2],
+    /// Why the site may join a block but not link two, if it is one of those.
+    pub guard: Option<Guard>,
+}
+
+/// Why a site is kept out of the solve and only attached to a block after it:
+/// each marks sites whose reads are wrong together often enough that one
+/// such site bridging two blocks is a switch error between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Guard {
+    /// One of the SNV's alleles is carried by reads of RMS MAPQ below
+    /// [`MIN_ALLELE_MAPQ`].
+    AlleleMapq,
+    /// Over [`MAX_DEPTH_RATIO`] times the depth expected of the segment.
+    Depth,
+    /// [`MAX_NEIGHBOURS`] or more other sites within [`NEIGHBOURHOOD`] bases.
+    HetDensity,
+}
+
+/// RMS MAPQ both of an SNV's alleles need: guarding below it halves the
+/// switch errors outside chr12.
+const MIN_ALLELE_MAPQ: f64 = 50.0;
+/// Depth, relative to the segment's expected depth, above which a site is
+/// likely in a collapsed repeat.
+const MAX_DEPTH_RATIO: f64 = 2.0;
+
+/// Bases either side of a site [`Guard::HetDensity`] looks.
+const NEIGHBOURHOOD: u64 = 100;
+/// Other sites within [`NEIGHBOURHOOD`] that make a site's region too dense
+/// to trust with a link.
+const MAX_NEIGHBOURS: usize = 5;
+
+/// The run's mapped reads per base over the segment's.
+///
+/// Scales the segment's median depth to the depth expected of it, so a
+/// segment lying wholly inside a collapsed repeat is judged by the run's
+/// depth and not its own. Without it (no index counts) the median is used
+/// as it is, which misses repeats longer than a segment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthScale(pub f64);
+
+/// Each site's [`Guard`], the first that applies; it needs the whole segment's
+/// sites, for the median depth and the neighbours.
+fn guards(
+    sites: &Sites,
+    pileups: &[PileupMetrics],
+    scale: Option<DepthScale>,
+) -> SiteMap<Option<Guard>> {
+    let depth = |site: &PhaseSite| pileups.get(site.pileup).map_or(0, |p| p.pos_metrics.depth);
+    let mut depths: Vec<u32> = sites.0.iter().map(depth).collect();
+    depths.sort_unstable();
+    let median = depths.get(depths.len() / 2).copied().unwrap_or(0);
+    let expected = f64::from(median) * scale.map_or(1.0, |DepthScale(scale)| scale);
+    let positions: Vec<u64> = sites.0.iter().map(|site| site.pos.as_u64()).collect();
+
+    SiteMap::from_fn(sites, |index| {
+        let site = &sites[index];
+        let pileup = pileups.get(site.pileup)?;
+        let allele_mapq = |allele: GtAllele| match allele {
+            GtAllele::Ref => Some(*pileup.ref_metrics.mapq),
+            GtAllele::Alt(n) => {
+                pileup.alts.get(usize::from(n.get()) - 1).map(|alt| *alt.metrics.mapq)
+            }
+        };
+        let pos = site.pos.as_u64();
+        // The window holds the site itself.
+        let neighbours = positions.partition_point(|&p| p <= pos + NEIGHBOURHOOD).saturating_sub(
+            positions.partition_point(|&p| p < pos.saturating_sub(NEIGHBOURHOOD)) + 1,
+        );
+
+        if site.kind == SiteKind::Snv
+            && site
+                .alleles
+                .into_iter()
+                .any(|allele| allele_mapq(allele).is_none_or(|mapq| mapq < MIN_ALLELE_MAPQ))
+        {
+            Some(Guard::AlleleMapq)
+        } else if f64::from(depth(site)) > MAX_DEPTH_RATIO * expected {
+            Some(Guard::Depth)
+        } else if neighbours >= MAX_NEIGHBOURS {
+            Some(Guard::HetDensity)
+        } else {
+            None
+        }
+    })
 }
 
 impl PhaseSite {
@@ -270,8 +357,8 @@ impl BaseAlleles {
     }
 }
 
-/// A column's SNV record as a site, if it is a heterozygote with something to
-/// phase it on, and the votes its reads' bases cast.
+/// A column's SNV record as a site, if it is a heterozygote with
+/// [`MIN_ALT_READS`] votes on each allele, and the votes its reads' bases cast.
 fn snv_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, Vec<Vote>)> {
     let alleles = het_alleles(pileup)?;
     let site = PhaseSite {
@@ -279,10 +366,19 @@ fn snv_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, Vec
         kind: SiteKind::Snv,
         pos: Pos0::new(pileup.pos)?,
         alleles: alleles.map(|allele| allele.allele),
+        guard: None,
     };
     let observations = observations_of(pileup).filter(|observations| !observations.is_empty())?;
     let bases = BaseAlleles::of(pileup, alleles);
-    Some((site, observations.iter().filter_map(|observation| bases.vote(observation)).collect()))
+    let votes: Vec<Vote> =
+        observations.iter().filter_map(|observation| bases.vote(observation)).collect();
+    // A site with one read behind an allele is phased by that read's coin
+    // toss, and is mostly a false het: the reference allele's reads place it.
+    let backed = |allele| votes.iter().filter(|vote| vote.allele == allele).count();
+    [SiteAllele::First, SiteAllele::Second]
+        .into_iter()
+        .all(|allele| backed(allele) >= MIN_ALT_READS as usize)
+        .then_some((site, votes))
 }
 
 /// How sure the pair-HMM must be of an indel column's genotype (Phred, before
@@ -362,6 +458,7 @@ fn indel_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, V
         kind: SiteKind::Indel,
         pos: Pos0::new(pileup.pos)?,
         alleles: [low, high],
+        guard: None,
     };
     Some((site, votes))
 }
@@ -410,7 +507,7 @@ pub struct PhaseProblem {
 
 /// Collect a segment's heterozygous sites and the fragments linking them.
 #[must_use]
-pub fn build_problem(pileups: &[PileupMetrics]) -> PhaseProblem {
+pub fn build_problem(pileups: &[PileupMetrics], scale: Option<DepthScale>) -> PhaseProblem {
     let mut builder = Builder::default();
 
     'columns: for (pileup_idx, pileup) in pileups.iter().enumerate() {
@@ -429,7 +526,11 @@ pub fn build_problem(pileups: &[PileupMetrics]) -> PhaseProblem {
         }
     }
 
-    let problem = builder.finish();
+    let mut problem = builder.finish();
+    let guards = guards(&problem.sites, pileups, scale);
+    for index in problem.sites.indices() {
+        problem.sites[index].guard = guards[index];
+    }
     debug!(
         sites = problem.sites.len(),
         fragments = problem.fragments.len(),
@@ -480,7 +581,8 @@ mod tests {
         call::{
             pair_hmm::ReadScores,
             phasing::fixtures::{
-                ALT_1, ALT_2, column, confirming, graded, het, insertion, obs, scored, with_indels,
+                ALT_1, ALT_2, backing, column, confirming, graded, het, insertion, mapq, obs,
+                scored, with_indels,
             },
             variant_calling::GenotypeTag,
         },
@@ -519,18 +621,18 @@ mod tests {
             het(1040, C, G, &[obs(1, G, Strand::OT), obs(2, C, Strand::OB)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(problem.sites.len(), 2);
         assert_eq!(problem.fragments.len(), 2);
         assert_eq!(
             supports(&problem, 1),
-            [(0, SiteAllele::First, 30), (1, SiteAllele::Second, 30)],
+            [(0, SiteAllele::First, 26), (1, SiteAllele::Second, 26)],
             "fragment 1 carries reference then alt"
         );
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::Second, 30), (1, SiteAllele::First, 30)],
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::First, 26)],
             "fragment 2 is the opposite haplotype"
         );
     }
@@ -542,7 +644,7 @@ mod tests {
             het(1040, C, G, &[obs(1, G, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(problem.fragments.len(), 1, "fragment 2 links nothing");
         assert_eq!(supports(&problem, 2), []);
@@ -555,7 +657,7 @@ mod tests {
             het(1040, C, G, &[obs(3, G, Strand::OT), obs(4, C, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(problem.sites.len(), 2);
         assert!(problem.fragments.is_empty(), "no template spans both, so nothing links");
@@ -576,7 +678,7 @@ mod tests {
             column(1080, A, &[(G, AltCall::RealVariant)], None, &observations),
         ];
 
-        assert!(build_problem(&columns).sites.is_empty());
+        assert!(build_problem(&columns, None).sites.is_empty());
     }
 
     #[test]
@@ -590,14 +692,68 @@ mod tests {
             &observations,
         )];
 
-        assert!(build_problem(&columns).sites.is_empty());
+        assert!(build_problem(&columns, None).sites.is_empty());
+    }
+
+    /// One read is a coin toss: the site would be phased on it and the
+    /// reference reads, and such a site is mostly a false het.
+    #[test]
+    fn each_allele_needs_two_votes() {
+        let site = |observations: &[PhaseObservation]| {
+            let columns = [
+                column(
+                    1000,
+                    A,
+                    &[(G, AltCall::RealVariant)],
+                    Some(GenotypeTag::RefHet(ALT_1)),
+                    observations,
+                ),
+                het(1040, A, G, &[obs(1, A, Strand::OT)]),
+            ];
+            build_problem(&columns, None).sites.len()
+        };
+        let reference = [obs(1, A, Strand::OT), obs(2, A, Strand::OT), obs(3, A, Strand::OB)];
+
+        assert_eq!(site(&[reference.as_slice(), &[obs(4, G, Strand::OT)]].concat()), 1);
+        assert_eq!(
+            site(&[reference.as_slice(), &[obs(4, G, Strand::OT), obs(5, G, Strand::OB)]].concat()),
+            2
+        );
+        assert_eq!(site(&[obs(1, A, Strand::OT), obs(4, G, Strand::OT), obs(5, G, Strand::OB)]), 1);
+    }
+
+    /// The floor counts votes after the TAPS gate: at a C/T site in a CpG two
+    /// top-strand `T`s are no vote at all.
+    #[test]
+    fn converted_reads_do_not_back_an_allele() {
+        let site = |t_strand| {
+            let observations = [
+                obs(1, C, Strand::OT),
+                obs(2, C, Strand::OB),
+                obs(3, T, t_strand),
+                obs(4, T, t_strand),
+            ];
+            let mut cpg = column(
+                1000,
+                C,
+                &[(T, AltCall::RealVariant)],
+                Some(GenotypeTag::RefHet(ALT_1)),
+                &observations,
+            );
+            cpg.pos_metrics.cpg = InCpG::C;
+            let columns = [cpg, het(1040, A, G, &[obs(1, A, Strand::OT)])];
+            build_problem(&columns, None).sites.len()
+        };
+
+        assert_eq!(site(Strand::OT), 1);
+        assert_eq!(site(Strand::OB), 2);
     }
 
     #[test]
     fn a_column_without_observations_is_not_a_site() {
         let columns = [het(1000, A, G, &[])];
 
-        assert!(build_problem(&columns).sites.is_empty());
+        assert!(build_problem(&columns, None).sites.is_empty());
     }
 
     /// At a C/T site in a CpG the top-strand `T` reads may be methylated `C`s.
@@ -619,14 +775,14 @@ mod tests {
             het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT), obs(3, A, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(supports(&problem, 1), [], "one site left is one site too few");
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::Second, 30), (1, SiteAllele::Second, 30)]
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::Second, 26)]
         );
-        assert_eq!(supports(&problem, 3), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)]);
+        assert_eq!(supports(&problem, 3), [(0, SiteAllele::First, 26), (1, SiteAllele::First, 26)]);
     }
 
     /// Mirror image: at a G/A site an `A` is only evidence on an OT read.
@@ -643,14 +799,14 @@ mod tests {
             het(1040, C, G, &[obs(1, C, Strand::OB), obs(2, G, Strand::OB), obs(3, C, Strand::OB)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(supports(&problem, 1), [], "the only OB A was dropped, leaving one site");
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::Second, 30), (1, SiteAllele::Second, 30)]
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::Second, 26)]
         );
-        assert_eq!(supports(&problem, 3), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)]);
+        assert_eq!(supports(&problem, 3), [(0, SiteAllele::First, 26), (1, SiteAllele::First, 26)]);
     }
 
     /// A de-novo CpG het is a T/C site with the reference on the ambiguous
@@ -665,13 +821,13 @@ mod tests {
             het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, A, Strand::OT), obs(3, G, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(supports(&problem, 1), [], "the OT T could be a methylated C");
-        assert_eq!(supports(&problem, 2), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)]);
+        assert_eq!(supports(&problem, 2), [(0, SiteAllele::First, 26), (1, SiteAllele::First, 26)]);
         assert_eq!(
             supports(&problem, 3),
-            [(0, SiteAllele::Second, 30), (1, SiteAllele::Second, 30)]
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::Second, 26)]
         );
     }
 
@@ -688,12 +844,12 @@ mod tests {
             het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(supports(&problem, 1), [], "the T might be a methylated C");
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::First, 30), (1, SiteAllele::Second, 30)],
+            [(0, SiteAllele::First, 26), (1, SiteAllele::Second, 26)],
             "a C is unambiguous whatever strand it came from"
         );
     }
@@ -707,15 +863,15 @@ mod tests {
             het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(
             supports(&problem, 1),
-            [(0, SiteAllele::Second, 30), (1, SiteAllele::First, 30)]
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::First, 26)]
         );
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::First, 30), (1, SiteAllele::Second, 30)]
+            [(0, SiteAllele::First, 26), (1, SiteAllele::Second, 26)]
         );
     }
 
@@ -726,8 +882,8 @@ mod tests {
             [het(1000, T, C, &[obs(1, T, Strand::OT)]), het(1040, A, G, &[obs(1, A, Strand::OT)])];
 
         assert_eq!(
-            supports(&build_problem(&columns), 1),
-            [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)],
+            supports(&build_problem(&columns, None), 1),
+            [(0, SiteAllele::First, 26), (1, SiteAllele::First, 26)],
             "the OT T is the reference allele"
         );
     }
@@ -739,12 +895,12 @@ mod tests {
             het(1040, A, G, &[obs(1, G, Strand::OT), obs(2, G, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(supports(&problem, 1), [], "a third base supports neither allele");
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::First, 30), (1, SiteAllele::Second, 30)]
+            [(0, SiteAllele::First, 26), (1, SiteAllele::Second, 26)]
         );
     }
 
@@ -758,11 +914,11 @@ mod tests {
             het(1040, A, G, &[obs(1, A, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(
             supports(&problem, 1),
-            [(0, SiteAllele::Second, 22), (1, SiteAllele::First, 30)],
+            [(0, SiteAllele::Second, 22), (1, SiteAllele::First, 26)],
             "the first observation stands"
         );
     }
@@ -774,11 +930,11 @@ mod tests {
             het(1040, A, G, &[graded(1, A, Strand::OT, 41), graded(2, G, Strand::OT, 12)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(
             supports(&problem, 1),
-            [(0, SiteAllele::Second, 40), (1, SiteAllele::First, 40)]
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::First, 26)]
         );
         assert_eq!(
             supports(&problem, 2),
@@ -797,21 +953,116 @@ mod tests {
                 A,
                 &alts,
                 Some(GenotypeTag::AltHet(ALT_1, ALT_2)),
-                &[obs(1, T, Strand::OB), obs(2, G, Strand::OT), obs(3, A, Strand::OT)],
+                &[
+                    [obs(1, T, Strand::OB), obs(2, G, Strand::OT), obs(3, A, Strand::OT)]
+                        .as_slice(),
+                    &backing(1000, [T, G]),
+                ]
+                .concat(),
             ),
             het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT), obs(3, G, Strand::OT)]),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         let site = &problem.sites[SiteIndex(0)];
         assert_eq!(site.alleles, [GtAllele::Alt(ALT_1), GtAllele::Alt(ALT_2)]);
-        assert_eq!(supports(&problem, 1), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)]);
+        assert_eq!(supports(&problem, 1), [(0, SiteAllele::First, 26), (1, SiteAllele::First, 26)]);
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::Second, 30), (1, SiteAllele::Second, 30)]
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::Second, 26)]
         );
         assert_eq!(supports(&problem, 3), [], "the reference base is neither allele");
+    }
+
+    fn guards_of(columns: &[PileupMetrics]) -> Vec<Option<Guard>> {
+        build_problem(columns, None).sites.iter().map(|site| site.guard).collect()
+    }
+
+    fn lone_het(pos: u32) -> PileupMetrics {
+        het(pos, A, G, &[obs(u64::from(pos), A, Strand::OT)])
+    }
+
+    #[test]
+    fn an_snv_allele_mapped_below_mapq_50_is_guarded() {
+        let with_mapq = |reference: u8, alt: u8| {
+            let mut column = lone_het(1000);
+            column.ref_metrics.mapq = mapq(reference);
+            if let Some(alt_allele) = column.alts.first_mut() {
+                alt_allele.metrics.mapq = mapq(alt);
+            }
+            guards_of(&[column])
+        };
+
+        assert_eq!(with_mapq(50, 50), [None]);
+        assert_eq!(with_mapq(49, 60), [Some(Guard::AlleleMapq)]);
+        assert_eq!(with_mapq(60, 49), [Some(Guard::AlleleMapq)]);
+    }
+
+    #[test]
+    fn a_site_over_twice_the_median_depth_is_guarded() {
+        let with_depths = |depths: [u32; 3]| {
+            let columns = depths.into_iter().zip([1000, 2000, 3000]).map(|(depth, pos)| {
+                let mut column = lone_het(pos);
+                column.pos_metrics.depth = depth;
+                column
+            });
+            guards_of(&columns.collect::<Vec<_>>())
+        };
+
+        assert_eq!(with_depths([10, 10, 20]), [None, None, None]);
+        assert_eq!(with_depths([10, 10, 21]), [None, None, Some(Guard::Depth)]);
+    }
+
+    #[test]
+    fn the_depth_guard_scales_the_median_to_the_run() {
+        let with_scale = |scale| {
+            let columns: Vec<_> = [(10, 1000), (10, 2000), (25, 3000)]
+                .into_iter()
+                .map(|(depth, pos)| {
+                    let mut column = lone_het(pos);
+                    column.pos_metrics.depth = depth;
+                    column
+                })
+                .collect();
+            build_problem(&columns, scale).sites.iter().map(|site| site.guard).collect::<Vec<_>>()
+        };
+
+        assert_eq!(with_scale(None), [None, None, Some(Guard::Depth)]);
+        assert_eq!(with_scale(Some(DepthScale(1.0))), [None, None, Some(Guard::Depth)]);
+        // The segment holds three times the run's reads per base: its median
+        // is a repeat's, and the run expects a third of it.
+        assert_eq!(with_scale(Some(DepthScale(0.33))), [Some(Guard::Depth); 3]);
+        assert_eq!(with_scale(Some(DepthScale(1.5))), [None; 3]);
+    }
+
+    #[test]
+    fn a_site_with_five_others_within_100_bases_is_guarded() {
+        let at = |positions: &[u32]| {
+            guards_of(&positions.iter().map(|&pos| lone_het(pos)).collect::<Vec<_>>())
+        };
+
+        assert_eq!(at(&[1000, 1020, 1040, 1060, 1080]), [None; 5], "four others");
+        assert_eq!(at(&[1000, 1020, 1040, 1060, 1080, 1100]), [Some(Guard::HetDensity); 6]);
+        assert_eq!(
+            at(&[1000, 1020, 1040, 1060, 1080, 1101]),
+            [
+                None,
+                Some(Guard::HetDensity),
+                Some(Guard::HetDensity),
+                Some(Guard::HetDensity),
+                Some(Guard::HetDensity),
+                None
+            ],
+            "1000 and 1101 are 101 bases apart, so each has four others"
+        );
+    }
+
+    #[test]
+    fn an_indel_site_is_not_guarded_on_mapq() {
+        let mut indel = ref_het_indel(1040, confirming([0, 1]));
+        indel.ref_metrics.mapq = mapq(0);
+        assert_eq!(guards_of(&[indel]), [None]);
     }
 
     /// The solver writes its answer back through this index.
@@ -825,7 +1076,7 @@ mod tests {
             het(1120, A, G, &observations),
         ];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         let located: Vec<_> = problem.sites.iter().map(|s| (s.pileup, s.pos.as_u32())).collect();
         assert_eq!(located, [(1, 1040), (3, 1120)]);
@@ -876,7 +1127,7 @@ mod tests {
         let columns =
             [anchor(1..=8), ref_het_indel(1040, reads.into_iter().chain(confirming([0, 1])))];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(
             sites_of(&problem),
@@ -889,10 +1140,10 @@ mod tests {
             supports(&problem, fragment).into_iter().filter(|s| s.0 == 1).collect()
         };
         assert_eq!(at_indel(1), [(1, SiteAllele::First, 20)]);
-        assert_eq!(at_indel(2), [(1, SiteAllele::Second, 40)], "capped");
+        assert_eq!(at_indel(2), [(1, SiteAllele::Second, 26)], "capped");
         assert_eq!(
             at_indel(3),
-            [(1, SiteAllele::Second, 40)],
+            [(1, SiteAllele::Second, 26)],
             "an impossible haplotype is the cap"
         );
         assert_eq!(at_indel(5), [], "below the phasing MAPQ");
@@ -934,7 +1185,7 @@ mod tests {
         let scored = Some(Scored::new(Arc::new(scores), 1040));
         indel.indel_data = Some(Box::new(IndelData { counts: IndelCounts::default(), scored }));
 
-        let problem = build_problem(&[anchor(1..=12), indel]);
+        let problem = build_problem(&[anchor(1..=12), indel], None);
 
         assert_eq!(
             sites_of(&problem),
@@ -946,8 +1197,8 @@ mod tests {
         let at_indel = |fragment| -> Vec<_> {
             supports(&problem, fragment).into_iter().filter(|s| s.0 == 1).collect()
         };
-        assert_eq!(at_indel(1), [(1, SiteAllele::First, 30)]);
-        assert_eq!(at_indel(7), [(1, SiteAllele::Second, 30)]);
+        assert_eq!(at_indel(1), [(1, SiteAllele::First, 26)]);
+        assert_eq!(at_indel(7), [(1, SiteAllele::Second, 26)]);
     }
 
     /// The pair-HMM has to be sure of the column's het, or the site's votes
@@ -956,7 +1207,7 @@ mod tests {
     #[test]
     fn an_indel_het_the_pair_hmm_doubts_is_not_a_site() {
         let sites = |reads: Vec<ReadScores>| {
-            build_problem(&[anchor(1..=1), ref_het_indel(1040, reads)]).sites.len()
+            build_problem(&[anchor(1..=1), ref_het_indel(1040, reads)], None).sites.len()
         };
 
         assert_eq!(sites(confirming([0, 1])), 2);
@@ -977,7 +1228,7 @@ mod tests {
     fn an_indel_allele_needs_five_votes_of_its_own() {
         let sites = |alt_reads: Vec<ReadScores>| {
             let reads = (1..=5).map(|fragment| scored(fragment, [-1.0, -9.0, NO])).chain(alt_reads);
-            build_problem(&[anchor(1..=1), ref_het_indel(1040, reads)]).sites.len()
+            build_problem(&[anchor(1..=1), ref_het_indel(1040, reads)], None).sites.len()
         };
         let alt = |fragment| scored(fragment, [NO, -1.0, NO]);
         let mut low_mapq = alt(15);
@@ -1003,7 +1254,7 @@ mod tests {
         );
         let columns = [both, het(1040, C, T, &[obs(1, T, Strand::OB)])];
 
-        let problem = build_problem(&columns);
+        let problem = build_problem(&columns, None);
 
         assert_eq!(
             sites_of(&problem).into_iter().map(|(pos, kind, _)| (pos, kind)).collect::<Vec<_>>(),
@@ -1014,9 +1265,9 @@ mod tests {
         );
         assert_eq!(
             supports(&problem, 1),
-            [(0, SiteAllele::Second, 30), (1, SiteAllele::Second, 30), (2, SiteAllele::Second, 30)]
+            [(0, SiteAllele::Second, 26), (1, SiteAllele::Second, 26), (2, SiteAllele::Second, 26)]
         );
-        assert_eq!(supports(&problem, 2), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 30)]);
+        assert_eq!(supports(&problem, 2), [(0, SiteAllele::First, 26), (1, SiteAllele::First, 26)]);
     }
 
     /// A compound het's alleles are the record's `1/2`, each fragment voting
@@ -1034,16 +1285,16 @@ mod tests {
             .concat(),
         );
 
-        let problem = build_problem(&[anchor(1..=2), indel]);
+        let problem = build_problem(&[anchor(1..=2), indel], None);
 
         assert_eq!(
             sites_of(&problem).get(1),
             Some(&(1040, SiteKind::Indel, [GtAllele::Alt(ALT_1), GtAllele::Alt(ALT_2)]))
         );
-        assert_eq!(supports(&problem, 1), [(0, SiteAllele::First, 30), (1, SiteAllele::First, 40)]);
+        assert_eq!(supports(&problem, 1), [(0, SiteAllele::First, 26), (1, SiteAllele::First, 26)]);
         assert_eq!(
             supports(&problem, 2),
-            [(0, SiteAllele::First, 30), (1, SiteAllele::Second, 40)]
+            [(0, SiteAllele::First, 26), (1, SiteAllele::Second, 26)]
         );
     }
 }

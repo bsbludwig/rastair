@@ -53,6 +53,7 @@
 |----|--------|------|-------------|
 | GT | 1 | String | Genotype |
 | PS | 1 | Integer | Phase set identifier: the position of the first variant in the phase block |
+| PQ | 1 | Integer | Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly |
 | GL | G | Float | Genotype likelihoods, Phred-scaled |
 | GC | G | Float | Genotype confidence, Phred-scaled |
 | DP | 1 | Integer | Read depth |
