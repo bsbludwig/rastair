@@ -1096,11 +1096,8 @@ mod gpu {
         fn spawn(context: &Arc<GpuContext>) -> std::io::Result<Self> {
             let (submit, launches) = mpsc::channel::<GpuPairs>();
             let (results, collect) = mpsc::channel();
-            // `Wait::Block` would sleep between polls instead of spinning a
-            // core, but in compair 0.2.0 it misses the mapping callback on
-            // ~1 launch in 300 (every launch after it then fails with the
-            // scores buffer still mapped); back to it once that is fixed.
-            let options = KernelOptions { wait: Wait::Spin, ..KernelOptions::default() };
+            // Sleep between polls rather than spin a core while a launch runs.
+            let options = KernelOptions { wait: Wait::Block, ..KernelOptions::default() };
             let context = Arc::clone(context);
             let aligner = move || GpuAligner::with_options(Arc::clone(&context), options);
             let name = thread::current().name().unwrap_or("worker").to_owned();
