@@ -1,7 +1,10 @@
 // Adapted from rastair1, (c) Benjamin Schuster-Boeckler
 use crate::{
     call::variant_calling::ErrorModel,
-    metrics::{AltCall, FormsDenovo, PileupMetrics},
+    metrics::{
+        AltCall, FormsDenovo, PileupMetrics,
+        methylation::{CpgSide, cpg_origin},
+    },
     utils::{Base, Base::*, IntoF64 as _},
     vcf::InCpG,
 };
@@ -75,13 +78,7 @@ impl PileupMetrics {
         for (alt_idx, alt) in &passing_alts {
             let alt_base = alt.base;
             let forms_denovo = alt.metrics.denovo;
-            let (ref_count, alt_count) = self.get_counts_for_alt(alt_base, forms_denovo);
-
-            // Add methylation evidence to ref count for genotype calculation.
-            // This is the same adjustment for all alts at this position,
-            // because we're comparing each alt independently against the same
-            // reference.
-            let ref_count_with_methylation = ref_count;
+            let evidence = self.evidence_for_alt(alt_base, forms_denovo, *error_model.error_rate());
 
             #[allow(
                 clippy::cast_possible_truncation,
@@ -91,12 +88,7 @@ impl PileupMetrics {
                 continue;
             };
 
-            match EstimatedGenotype::calculate_for_alt(
-                ref_count_with_methylation,
-                alt_count,
-                alt_index,
-                error_model,
-            ) {
+            match EstimatedGenotype::calculate(evidence, alt_index, error_model) {
                 Ok(gt) => alt_genotypes.push(gt),
                 Err(error) => {
                     trace!(%error, alt_base=%alt_base, "Failed to calculate genotype for alt");
@@ -177,47 +169,82 @@ impl PileupMetrics {
         }
     }
 
-    /// Get reference and alt read counts for a specific alt base.
+    /// The reads a specific alt's genotype is decided on.
     ///
-    /// For CpG positions (reference C or G), uses strand-specific counting to avoid
-    /// confounding with methylation. For non-CpG positions, uses both strands.
+    /// At a C/T site whose C is in a CpG (G/A whose G is), reference or de-novo by the rule
+    /// methylation calling uses ([`cpg_origin`]), the strand that converts the CpG base is
+    /// confounded: there a T (A) is a methylated C (G) or the other allele. That strand goes
+    /// into [`ConfoundedStrand`]; the other strand is counted plainly.
     ///
-    /// De-novo CpGs (X→C or X→G that create new CpG contexts) are treated
-    /// the same as regular CpG variants:
-    /// - X→C (ThisBecomesC): Uses OB strand only (like C→T)
-    /// - X→G (ThisBecomesG): Uses OT strand only (like G→A)
-    ///
-    /// This prevents methylation evidence from confounding genotype calls.
-    fn get_counts_for_alt(&self, alt_base: Base, forms_denovo: FormsDenovo) -> (usize, usize) {
+    /// Elsewhere a converted read at a CpG base counts for the CpG base's allele, and at a
+    /// non-CpG position both strands count plainly.
+    fn evidence_for_alt(
+        &self,
+        alt_base: Base,
+        forms_denovo: FormsDenovo,
+        error_rate: f64,
+    ) -> AltEvidence {
         let ref_base = self.ref_base();
+        let ref_error = self.read_error(ref_base, error_rate);
+        let alt_error = self.read_error(alt_base, error_rate);
 
         // Per-base, per-strand counts from pre-computed AlleleMetrics.
         // Returns 0 for bases not seen in this pileup.
         let sc = |base: Base| self.allele(base).map_or(0, |a| a.depth as usize);
         let ot = |base: Base| self.allele(base).map_or(0, |a| a.strand_count.ot as usize);
         let ob = |base: Base| self.allele(base).map_or(0, |a| a.strand_count.ob as usize);
-
-        let count_all = || (sc(ref_base), sc(alt_base));
-        let count_ob = || (ob(ref_base), ob(alt_base));
-        let count_ot = || (ot(ref_base), ot(alt_base));
-
-        // For de-novo CpGs, treat them like CpG SNPs to avoid methylation confounding:
-        // - ThisBecomesC: new C can be methylated (C→T on OT strand), so use OB strand only
-        // - ThisBecomesG: partner C can be methylated (shows as A on OB strand), so use OT strand only
-        match forms_denovo {
-            FormsDenovo::ThisBecomesC if ref_base == T => count_ob(),
-            FormsDenovo::ThisBecomesC => (sc(ref_base), ob(C) + ot(C) + ot(T)),
-            FormsDenovo::ThisBecomesG if ref_base == A => count_ot(),
-            FormsDenovo::ThisBecomesG => (sc(ref_base), ot(G) + ob(G) + ob(A)),
-            // For regular variants (not de-novo CpGs), use CpG-aware counting when needed.
-            FormsDenovo::No => match self.pos_metrics.cpg {
-                InCpG::C if alt_base == T => count_ob(),
-                InCpG::C => (ob(C) + ot(C) + ot(T), sc(alt_base)),
-                InCpG::G if alt_base == A => count_ot(),
-                InCpG::G => (ot(G) + ob(G) + ob(A), sc(alt_base)),
-                InCpG::No => count_all(),
-            },
+        let side = match (ref_base, alt_base) {
+            (C, T) | (T, C) => Some(CpgSide::C),
+            (G, A) | (A, G) => Some(CpgSide::G),
+            _ => None,
+        };
+        if let Some(side) = side.filter(|&side| cpg_origin(self, side).is_some()) {
+            // (informative, confounded): C converts on OT, G on OB.
+            let split = |base: Base| match side {
+                CpgSide::C => (ob(base), ot(base)),
+                CpgSide::G => (ot(base), ob(base)),
+            };
+            return AltEvidence {
+                ref_count: split(ref_base).0,
+                alt_count: split(alt_base).0,
+                ref_error,
+                alt_error,
+                confounded: Some(ConfoundedStrand {
+                    unconverted: split(side.unmod_base()).1,
+                    converted: split(side.mod_base()).1,
+                    cpg_allele: if ref_base == side.unmod_base() {
+                        CpgAllele::Ref
+                    } else {
+                        CpgAllele::Alt
+                    },
+                }),
+            };
         }
+
+        let (ref_count, alt_count) = match forms_denovo {
+            FormsDenovo::ThisBecomesC => (sc(ref_base), ob(C) + ot(C) + ot(T)),
+            FormsDenovo::ThisBecomesG => (sc(ref_base), ot(G) + ob(G) + ob(A)),
+            FormsDenovo::No => match self.pos_metrics.cpg {
+                InCpG::C => (ob(C) + ot(C) + ot(T), sc(alt_base)),
+                InCpG::G => (ot(G) + ob(G) + ob(A), sc(alt_base)),
+                InCpG::No => (sc(ref_base), sc(alt_base)),
+            },
+        };
+        AltEvidence { ref_count, alt_count, ref_error, alt_error, confounded: None }
+    }
+
+    /// The chance that one of `base`'s reads shows a base its fragment does not carry:
+    /// `1 − (1 − 10^(−MQ/10)) · (1 − 10^(−BQ/10))` from the allele's RMS mapping and base
+    /// quality, between `error_rate` and ½ (a read no better than a coin).
+    ///
+    /// Only the per-allele RMS survives to this stage, which overstates a mixed allele's
+    /// quality (MAPQ 60 and 0 give 42), so this catches an allele whose reads are uniformly
+    /// poor, not one bad read among good ones.
+    fn read_error(&self, base: Base, error_rate: f64) -> f64 {
+        self.allele(base).filter(|a| a.depth > 0).map_or(error_rate, |a| {
+            let correct = |phred: f64| 1.0 - 10f64.powf(-phred / 10.0);
+            (1.0 - correct(a.mapq.f()) * correct(a.baseq.f())).clamp(error_rate, 0.5)
+        })
     }
 }
 
@@ -573,6 +600,65 @@ mod tests {
     }
 }
 
+/// The reads one alt's genotype is decided on.
+#[derive(Debug, Clone, Copy)]
+struct AltEvidence {
+    ref_count: usize,
+    alt_count: usize,
+    /// Rate at which a hom-alt shows a reference read, see [`PileupMetrics::read_error`].
+    ref_error: f64,
+    /// Rate at which a hom-ref shows an alt read.
+    alt_error: f64,
+    confounded: Option<ConfoundedStrand>,
+}
+
+/// Which allele carries the CpG's C (G) at a C/T (G/A) site.
+#[derive(Debug, Clone, Copy)]
+enum CpgAllele {
+    Ref,
+    Alt,
+}
+
+/// The strand of a CpG site on which TAPS converts the CpG base: C to T on OT, G to A on OB.
+///
+/// An unconverted read (C on OT) is an unmethylated CpG base, so only the allele carrying it
+/// can produce it. A converted read is a methylated CpG base or the other allele; it is
+/// evidence for neither, only the denominator of the unconverted reads' rate. With `k` of two
+/// chromosomes carrying the CpG base and methylation level β, a read is unconverted with
+/// probability `k/2 · (1 − β)`, so β is profiled out by taking that rate at its maximum
+/// likelihood, `unconverted / n`, clamped to `[ε, k/2]` (ε the error rate: with `k = 0` an
+/// unconverted read is an error). Simply adding the unconverted reads to the CpG allele's
+/// count ignores the converted ones and turns true hom-alts into hets.
+#[derive(Debug, Clone, Copy)]
+struct ConfoundedStrand {
+    unconverted: usize,
+    converted: usize,
+    cpg_allele: CpgAllele,
+}
+
+impl ConfoundedStrand {
+    /// log10 likelihood of this strand with `cpg_copies` chromosomes carrying the CpG base.
+    fn log10_likelihood(self, cpg_copies: u8, error_rate: f64) -> f64 {
+        let n = self.unconverted + self.converted;
+        if n == 0 {
+            return 0.0;
+        }
+        let cap = (f64::from(cpg_copies) / 2.0).max(error_rate).min(1.0 - error_rate);
+        let rate = (self.unconverted.f() / n.f()).max(error_rate).min(cap);
+        self.unconverted.f() * rate.log10() + self.converted.f() * (1.0 - rate).log10()
+    }
+
+    /// log10 likelihoods of (het, hom), where hom is hom-ref or hom-alt; `error_rate` is the
+    /// CpG-base allele's read error.
+    fn log10_het_and_hom(self, hom: GenotypeTag, error_rate: f64) -> (f64, f64) {
+        let hom_copies = match (hom.is_hom_ref(), self.cpg_allele) {
+            (true, CpgAllele::Ref) | (false, CpgAllele::Alt) => 2,
+            (true, CpgAllele::Alt) | (false, CpgAllele::Ref) => 0,
+        };
+        (self.log10_likelihood(1, error_rate), self.log10_likelihood(hom_copies, error_rate))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
 pub struct EstimatedGenotype {
@@ -586,13 +672,34 @@ impl EstimatedGenotype {
     ///
     /// Compares the probability of observing the read counts under different
     /// genotype hypotheses (hom ref, het, hom alt) and returns the most likely.
-    #[instrument(level = "trace", name = "calculate_genotype")]
     pub fn calculate_for_alt(
         ref_count: usize,
         alt_count: usize,
         alt_index: NonZeroU8,
         error_model: ErrorModel,
     ) -> Result<Self> {
+        Self::calculate(
+            AltEvidence {
+                ref_count,
+                alt_count,
+                ref_error: *error_model.error_rate(),
+                alt_error: *error_model.error_rate(),
+                confounded: None,
+            },
+            alt_index,
+            error_model,
+        )
+    }
+
+    /// [`Self::calculate_for_alt`] on the plain counts, each hypothesis then weighted by the
+    /// confounded strand's likelihood under it, so `GC` covers both strands.
+    #[instrument(level = "trace", name = "calculate_genotype")]
+    fn calculate(
+        evidence: AltEvidence,
+        alt_index: NonZeroU8,
+        error_model: ErrorModel,
+    ) -> Result<Self> {
+        let AltEvidence { ref_count, alt_count, ref_error, alt_error, confounded } = evidence;
         let error_rate = error_model.error_rate();
         ensure!(
             ref_count > 0 || alt_count > 0,
@@ -610,7 +717,7 @@ impl EstimatedGenotype {
         // TODO: This assumes a simple diploid sample with no purity issues. For
         // cancer samples, we could make this a setting to allow for different cancer fraction?
 
-        let mut binom = Binomial::new(ref_count + alt_count, 0.5); // 0.5 because a het position
+        let binom = Binomial::new(ref_count + alt_count, 0.5); // 0.5 because a het position
         let p_het = binom.mass(alt_count);
         #[allow(
             clippy::cast_possible_truncation,
@@ -619,11 +726,28 @@ impl EstimatedGenotype {
         let p_het_max = binom.mass(((alt_count + ref_count).f() / 2.0).round() as usize);
 
         // Then, I calculate the probability that this many or more alt_count/ref_count reads
-        // are observed by error, assuming independence of reads and errors.
-        binom = Binomial::new(ref_count + alt_count, *error_rate);
+        // are observed by error, assuming independence of reads and errors, at the error rate
+        // of the minority allele's reads.
+        let p_errors = |minority: usize, error: f64| {
+            let binom = Binomial::new(ref_count + alt_count, error);
+            binom.mass(minority) + (1.0 - binom.distribution(minority.f()))
+        };
+
+        // Scaled by the confounded strand's ratio, the winner of that strand keeping its own.
+        let weigh = |p_het: f64, p_hom: f64, hom: GenotypeTag| {
+            let Some(strand) = confounded else { return (p_het, p_hom) };
+            let cpg_error = match strand.cpg_allele {
+                CpgAllele::Ref => ref_error,
+                CpgAllele::Alt => alt_error,
+            };
+            let (l_het, l_hom) = strand.log10_het_and_hom(hom, cpg_error);
+            let best = l_het.max(l_hom);
+            (p_het * 10f64.powf(l_het - best), p_hom * 10f64.powf(l_hom - best))
+        };
 
         if ref_count >= alt_count {
-            let p_hom = binom.mass(alt_count) + (1.0 - binom.distribution(alt_count.f()));
+            let (p_het, p_hom) =
+                weigh(p_het, p_errors(alt_count, alt_error), GenotypeTag::hom_ref());
 
             if p_het < p_hom {
                 trace!("Assuming 0/0: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
@@ -645,7 +769,8 @@ impl EstimatedGenotype {
                 })
             }
         } else {
-            let p_hom = binom.mass(ref_count) + (1.0 - binom.distribution(ref_count.f()));
+            let (p_het, p_hom) =
+                weigh(p_het, p_errors(ref_count, ref_error), GenotypeTag::hom_alt(alt_index));
             if p_het < p_hom {
                 trace!(
                     "Assuming {alt_index}/{alt_index}: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})"

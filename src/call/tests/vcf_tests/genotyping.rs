@@ -1,6 +1,10 @@
 //! Tests for genotyping with ML scores
+use crate::{
+    call::pileup::{SimpleRead, SimpleReads},
+    metrics::PileupMetrics,
+};
 use crate::{call::tests::utils::*, call::variant_calling::GenotypeTag, pileups, vcf_assert};
-use seqair_types::{Base::*, Probability};
+use seqair_types::{Base, Base::*, Probability, Strand};
 use std::num::NonZeroU8;
 
 #[test]
@@ -688,5 +692,118 @@ fn vcf_genotype_is_the_stored_estimate() -> Result<()> {
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
+    Ok(())
+}
+
+/// A two-base column from `(copies, bases, strand)` groups, too deep to spell out in `pileups!`.
+fn column(
+    reference: [Base; 2],
+    groups: &[(usize, [Base; 2], Strand)],
+) -> Result<Vec<PileupMetrics>> {
+    column_with(reference, groups, |_| ())
+}
+
+/// [`column`] with every read passed through `edit` first.
+fn column_with(
+    reference: [Base; 2],
+    groups: &[(usize, [Base; 2], Strand)],
+    edit: impl Fn(&mut SimpleRead),
+) -> Result<Vec<PileupMetrics>> {
+    let reads = groups
+        .iter()
+        .flat_map(|&(n, bases, strand)| {
+            std::iter::repeat_with(move || ReadLine { bases: bases.to_vec(), strand }).take(n)
+        })
+        .collect();
+    let (segment, mut pileups) = create_pileups(reference.to_vec(), reads);
+    for pileup in &mut pileups {
+        let mut reads = pileup.reads.to_vec();
+        reads.iter_mut().for_each(&edit);
+        pileup.reads = SimpleReads(reads.into());
+    }
+    test_call(segment, pileups, RecordFilters::all())
+}
+
+fn genotype_at(records: &[PileupMetrics], idx: usize) -> Option<GenotypeTag> {
+    records.get(idx)?.pos_metrics.extended.genotype.map(|gt| gt.genotype)
+}
+
+#[test]
+fn unmethylated_reads_on_the_converting_strand_are_reference_evidence() -> Result<()> {
+    // A het C>T at a reference CpG: OB, the informative strand, shows one C in ten, which alone
+    // reads as hom-alt; the five OT C reads are unmethylated CpG Cs that only the C allele can
+    // produce.
+    let mut records = column(
+        [C, G],
+        &[
+            (5, [C, G], Strand::OT),
+            (5, [T, G], Strand::OT),
+            (1, [C, G], Strand::OB),
+            (9, [T, G], Strand::OB),
+        ],
+    )?;
+    set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
+    assert_eq!(genotype_at(&records, 0), Some(GenotypeTag::CT));
+    Ok(())
+}
+
+#[test]
+fn a_stray_unmethylated_read_does_not_break_a_hom_alt() -> Result<()> {
+    // A hom-alt C>T at a reference CpG with one OT C error among eleven: the converted reads
+    // around it say the strand is not half C allele.
+    let mut records = column(
+        [C, G],
+        &[(1, [C, G], Strand::OT), (10, [T, G], Strand::OT), (6, [T, G], Strand::OB)],
+    )?;
+    set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
+    assert_eq!(genotype_at(&records, 0), Some(GenotypeTag::TT));
+    Ok(())
+}
+
+#[test]
+fn unmethylated_reads_of_a_de_novo_c_are_alt_evidence() -> Result<()> {
+    // A het T>C forming a CpG: OB shows one C in ten, which alone reads as hom-ref; the five OT C
+    // reads are unmethylated new Cs, which only the C allele can produce.
+    let mut records = column(
+        [T, G],
+        &[
+            (5, [C, G], Strand::OT),
+            (5, [T, G], Strand::OT),
+            (1, [C, G], Strand::OB),
+            (9, [T, G], Strand::OB),
+        ],
+    )?;
+    set_pass(&mut records[0], C);
+    let records = reprocess(records)?;
+    assert_eq!(genotype_at(&records, 0), Some(GenotypeTag::CT));
+    Ok(())
+}
+
+#[test]
+fn low_mapq_reference_reads_do_not_make_a_hom_alt_het() -> Result<()> {
+    // Two MAPQ-10 A reads among twelve G: as errors at the NovaSeq rate they are a second
+    // allele, but each is misplaced one time in ten.
+    let groups = [
+        (1, [A, T], Strand::OT),
+        (1, [A, T], Strand::OB),
+        (6, [G, T], Strand::OT),
+        (6, [G, T], Strand::OB),
+    ];
+    let mut records = column_with([A, T], &groups, |read| {
+        if read.base == A {
+            read.mapq = 10;
+        }
+    })?;
+    set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
+    assert_eq!(genotype_at(&records, 0), Some(GenotypeTag::TT));
+
+    // The same reads at MAPQ 60 are a het.
+    let mut records = column([A, T], &groups)?;
+    set_pass(&mut records[0], G);
+    let records = reprocess(records)?;
+    assert_eq!(genotype_at(&records, 0), Some(GenotypeTag::CT));
     Ok(())
 }
