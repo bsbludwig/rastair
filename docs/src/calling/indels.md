@@ -4,8 +4,9 @@ As of version 2.2.0, rastair supports calling @indel:pl variants in the `call` w
 
 ```admonish warning
 This is still an experimental feature!
-The `--experimental-indels` command-line flag must be used to enable it.
 ```
+
+Indels are called in every `call` run except for CpG-only output (`--cpgs-only`, or `--bed` without `--vcf`), which has no use for them.
 
 ## How Indel Candidates Are Built
 
@@ -43,6 +44,5 @@ On chr12 of NA12878 (~26x) against Platinum Genomes, this reached an F1 of 0.905
 There is no strand filter: an allele seen on one bisulfite strand only is called like any other.
 Under `--all`, an allele the pair-HMM looked at but did not call is written as `0/0` with the `low_indel_qual` filter.
 
-Indel calling needs a build with the `experimental-seqair` backend, since it aligns reads while their position is built; other builds refuse `--experimental-indels`.
 No @ML model is involved, so `--ml` and `--no-ml` do not affect indel calls.
-With `--phase`, heterozygous indels are phased along with the SNVs (see [genotyping](genotyping.md#phasing)).
+Heterozygous indels are phased along with the SNVs (see [genotyping](genotyping.md#phasing)).

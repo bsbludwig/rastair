@@ -823,11 +823,11 @@ fn bcftools_reads_phased_genotypes() -> Result<()> {
         .arg("--fasta-file")
         .arg(&fasta)
         .arg(&bam)
-        .args([scenario.region().as_str(), "--no-ml", "--phase", "--vcf"])
+        .args([scenario.region().as_str(), "--no-ml", "--vcf"])
         .arg(&vcf)
         .silent()
         .succeeds()
-        .wrap_err("Failed to run rastair call --phase")?;
+        .wrap_err("Failed to run rastair call")?;
 
     let query = Command::new("bcftools")
         .args(["query", "-i", "PS!=\".\"", "-f", "%POS[\t%GT\t%PS]\n"])

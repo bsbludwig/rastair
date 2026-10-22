@@ -1,4 +1,4 @@
-//! `call --phase` end to end, on scenarios whose haplotypes are known: every
+//! Phasing in `call`, end to end, on scenarios whose haplotypes are known: every
 //! run is checked against the truth by [`Scenario::check_phasing`], and each
 //! test then states which sites had to end up phased together.
 
@@ -30,12 +30,11 @@ fn blocks<const N: usize>(blocks: [&[usize]; N]) -> BTreeMap<usize, Vec<usize>> 
 #[test]
 fn read_pairs_link_two_hets_into_one_block() -> Result<()> {
     let scenario = two_sites_in_trans();
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SITE_A, SITE_B]]), unphased: vec![] });
     assert!(vcf.contains("##FORMAT=<ID=PS,"), "PS must be declared");
-    assert!(vcf.contains(r#""phase":true"#), "the config names the flag");
     Ok(())
 }
 
@@ -61,10 +60,7 @@ fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
         // the hub, at twice the spokes' depth, from bridging them.
         .balanced(820, 900, 5);
 
-    let vcf = call_scenario(
-        &scenario,
-        &["--phase", "--segment-max-length=300", "--segment-overlap=200"],
-    )?;
+    let vcf = call_scenario(&scenario, &["--segment-max-length=300", "--segment-overlap=200"])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SPOKE_1, SPOKE_2]]), unphased: vec![HUB] });
@@ -92,13 +88,13 @@ fn two_blocks_bridged(bridges: usize) -> (Scenario, [usize; 4]) {
 #[test]
 fn a_block_is_cut_where_one_read_pair_is_its_only_link() -> Result<()> {
     let (scenario, [a, b, c, d]) = two_blocks_bridged(1);
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[a, b], &[c, d]]), unphased: vec![] });
     assert!(vcf.contains("##FORMAT=<ID=PQ,"), "PQ must be declared");
 
     let (scenario, sites) = two_blocks_bridged(2);
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&sites]), unphased: vec![] });
     Ok(())
@@ -108,7 +104,7 @@ fn a_block_is_cut_where_one_read_pair_is_its_only_link() -> Result<()> {
 #[test]
 fn a_lower_switch_quality_keeps_a_one_read_pair_link() -> Result<()> {
     let (scenario, sites) = two_blocks_bridged(1);
-    let vcf = call_scenario(&scenario, &["--phase", "--phase-min-switch-quality", "20"])?;
+    let vcf = call_scenario(&scenario, &["--phase-min-switch-quality", "20"])?;
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&sites]), unphased: vec![] });
     Ok(())
@@ -134,7 +130,7 @@ fn a_dense_run_of_hets_does_not_bridge_two_blocks() -> Result<()> {
         .balanced(480, 740, 5)
         .balanced(740, 880, 5);
 
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
     let phasing = scenario.check_phasing(&vcf)?;
 
     let block_of = |site: usize| phasing.blocks.values().position(|block| block.contains(&site));
@@ -177,7 +173,7 @@ fn converted_reads_at_a_reference_cpg_het_are_not_evidence() -> Result<()> {
         b'T',
         Hap::Two,
     ));
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SNV, TRANSITION]]), unphased: vec![] });
@@ -193,7 +189,7 @@ fn converted_reads_at_a_denovo_cpg_het_are_not_evidence() -> Result<()> {
         b'C',
         Hap::One,
     ));
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SNV, TRANSITION]]), unphased: vec![] });
@@ -216,16 +212,15 @@ fn converted_reads_outside_a_cpg_are_evidence() -> Result<()> {
         .pairs(Hap::One, Strand::Bottom, 40, 4)
         .pairs(Hap::One, Strand::Top, 140, 4)
         .pairs(Hap::One, Strand::Bottom, 140, 4);
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SNV, TRANSITION]]), unphased: vec![] });
     Ok(())
 }
 
-/// Only the indel links the two SNVs, so without indel calling the two stay
-/// apart. Run once with an insertion and once with a deletion, each placed so
-/// it has one alignment.
+/// Only the indel links the two SNVs. Run once with an insertion and once with
+/// a deletion, each placed so it has one alignment.
 #[test]
 fn an_indel_phased_by_the_pair_hmm_bridges_two_snvs() -> Result<()> {
     // Too far apart for any template to reach both SNVs; templates from each
@@ -244,15 +239,7 @@ fn an_indel_phased_by_the_pair_hmm_bridges_two_snvs() -> Result<()> {
     let deletion = around(|s| s.reference_at(INDEL, b"AGTC").deletion(INDEL, 2, Hap::Two));
 
     for scenario in [insertion, deletion] {
-        let vcf = call_scenario(&scenario, &["--phase"])?;
-        let phasing = scenario.check_phasing(&vcf)?;
-        assert_eq!(
-            phasing,
-            Phasing { blocks: BTreeMap::new(), unphased: vec![LEFT_SNV, RIGHT_SNV] },
-            "{vcf}"
-        );
-
-        let vcf = call_scenario(&scenario, &["--phase", "--experimental-indels"])?;
+        let vcf = call_scenario(&scenario, &[])?;
         let phasing = scenario.check_phasing(&vcf)?;
         assert_eq!(
             phasing,
@@ -269,7 +256,7 @@ fn an_indel_phased_by_the_pair_hmm_bridges_two_snvs() -> Result<()> {
 #[test]
 fn check_phasing_rejects_a_switch_and_an_unnormalised_block() -> Result<()> {
     let scenario = two_sites_in_trans();
-    let vcf = call_scenario(&scenario, &["--phase"])?;
+    let vcf = call_scenario(&scenario, &[])?;
     scenario.check_phasing(&vcf)?;
 
     let swap = |vcf: &str, pos: usize| -> String {
@@ -292,30 +279,13 @@ fn check_phasing_rejects_a_switch_and_an_unnormalised_block() -> Result<()> {
     Ok(())
 }
 
-/// Without `--phase` no record is phased and the config does not mention it.
-/// The `PS` header line is declared either way.
+/// CpG-only output drops the variant sites phasing links, so the run neither
+/// phases nor calls indels, and is not refused for it.
 #[test]
-fn an_unphased_run_mentions_no_phasing() -> Result<()> {
-    let scenario = two_sites_in_trans();
-    let vcf = call_scenario(&scenario, &[])?;
-
-    let phasing = scenario.check_phasing(&vcf)?;
-    assert_eq!(phasing, Phasing { blocks: BTreeMap::new(), unphased: vec![SITE_A, SITE_B] });
-    assert!(!vcf.contains(r#""phase""#), "no phasing config");
-    Ok(())
-}
-
-/// CpG-only output drops the variant sites phasing links, so the run is
-/// refused rather than paying for observations it throws away.
-#[test]
-fn phasing_refuses_cpg_only_output() -> Result<()> {
-    let output = rastair()
-        .args(CALL_TEST_BAM)
-        .args([CHR19_SMALL, NO_ML, "--phase", "--cpgs-only"])
-        .output()?;
-    assert!(!output.status.success(), "--phase --cpgs-only must fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--phase has nothing to work with under CpG-only output"), "{stderr}");
+fn cpg_only_output_is_not_phased() -> Result<()> {
+    let output =
+        rastair().args(CALL_TEST_BAM).args([CHR19_SMALL, NO_ML, "--cpgs-only"]).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Ok(())
 }
 
@@ -437,7 +407,7 @@ fn phasing_accuracy_on_an_na12878_slice() -> Result<()> {
         .arg("--fasta-file")
         .arg(data.join("ref.fa"))
         .arg(data.join("reads.bam"))
-        .args(["--phase", "--vcf"])
+        .args(["--vcf"])
         .arg(&vcf)
         .succeeds()?;
 

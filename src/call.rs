@@ -87,22 +87,15 @@ pub struct CallParams {
     #[command(flatten)]
     pub ml: ml::MachineLearningParams,
 
-    /// Link heterozygous variants that share read pairs into phase blocks
-    ///
-    /// Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are
-    /// phased, and indels too with `--experimental-indels`.
-
-    #[arg(long, default_value_t = false)]
-    #[arg(help_heading = cli::sections::PHASING)]
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub phase: bool,
-
     /// Cut a phase block where switching its two sides would cost less than this
+    ///
+    /// Heterozygous variants that share read pairs are linked into phase
+    /// blocks and written as phased genotypes (`0|1`) with a `PS` phase set,
+    /// SNVs and indels alike. This is not done for CpG-only output.
     ///
     /// The cost is Phred-scaled and grows in steps of read pairs: one is worth
     /// at most 26, two about 50. The default keeps a block together on two read
     /// pairs; 26 on one of good base quality, 20 on most single read pairs.
-    /// Only used with `--phase`.
     #[arg(long, value_name = "Q", default_value_t = phasing::DEFAULT_MIN_SWITCH_QUALITY)]
     #[arg(help_heading = cli::sections::PHASING)]
     pub phase_min_switch_quality: u8,
@@ -132,6 +125,12 @@ pub struct CallParams {
 }
 
 impl CallParams {
+    /// Indel calling and phasing work on variant records, which CpG-only
+    /// output (and so BED-only output) filters out before they could run.
+    pub(crate) fn calls_variants(&self) -> bool {
+        !self.record_filters.cpgs_only
+    }
+
     fn figure_out_outputs(&mut self) -> Result<()> {
         let user_chose_output = self.vcf.vcf.is_some() || self.bed.bed.is_some();
 
@@ -181,20 +180,12 @@ pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     params.segmentation.sanitize();
 
-    // `figure_out_outputs` turns BED-only output into `--cpgs-only`, so this
-    // also catches `--phase --bed out.bed`.
-    ensure!(
-        !(params.phase && params.record_filters.cpgs_only),
-        "--phase has nothing to work with under CpG-only output: the variant sites phasing \
-         links are filtered out before it runs. Write VCF output instead."
-    );
-
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
     let mut readers =
         params.segments.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
-    if params.phase {
+    if params.calls_variants() {
         let lengths: Vec<u64> = readers.header().targets().map(|target| target.length).collect();
         readers.run_reads_per_base = run_reads_per_base(params.segments.bam_file.path(), &lengths);
     }
@@ -361,12 +352,12 @@ impl CallParams {
         process::PileupMappingParams {
             variant_calling: self.variant_calling.clone(),
             require_tags: self.require_tags.filter(),
-            call_indels: self.indel.experimental_indels,
+            call_indels: self.calls_variants(),
             min_indel_ao: self.indel.min_indel_ao,
             segment_max_bytes: self.segmentation.segment_max_bytes,
             rescue_soft_clip_cpg: self.methylation.rescue_soft_clip_cpg,
             early_reject: Some(self.record_filters.clone()),
-            phase: self.phase,
+            phase: self.calls_variants(),
             gpu: self.ml.gpu,
             // Without forests there is no cascade to hold the reads for.
             snv_engine: self.ml.snv_engine && !self.ml.no_ml,
@@ -513,7 +504,7 @@ fn process_collected_pileups(
 
     // Before the overlap is trimmed: a site in it links reads reaching into
     // the core.
-    if params.phase {
+    if params.calls_variants() {
         phasing::phase_segment(
             &mut pileups,
             |pos| segment.is_core(pos),

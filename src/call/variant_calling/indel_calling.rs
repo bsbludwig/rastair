@@ -24,13 +24,6 @@ use tracing::debug;
 /// CLI parameters for indel calling.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, Default)]
 pub struct IndelParams {
-    /// Enable experimental indel calling
-    ///
-    /// Indels are called by a TAPS-aware pair-HMM.
-    #[arg(long)]
-    #[arg(help_heading = crate::utils::cli::sections::INDELS)]
-    pub experimental_indels: bool,
-
     /// Minimum alternate observations for an indel allele to be scored
     ///
     /// Reads (one per fragment) whose alignment carries the allele; at least

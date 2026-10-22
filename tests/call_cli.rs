@@ -1601,7 +1601,6 @@ fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
         .args([
             &format!("--region={CONTIG}:{}-{}", DEL_POS - 200, DEL_POS + 200),
             "--unpaired",
-            "--experimental-indels",
             NO_ML,
             "--vcf",
         ])
@@ -1656,7 +1655,7 @@ fn the_pair_hmm_calls_a_compound_het_and_a_homozygous_indel() -> Result<()> {
         .deletion(HOMOZYGOUS, 2, Hap::Two)
         .balanced(120, 370, 5);
 
-    let vcf = call_scenario(&scenario, &["--experimental-indels"])?;
+    let vcf = call_scenario(&scenario, &[])?;
     let indels: Vec<_> = vcf
         .lines()
         .filter(|line| !line.starts_with('#'))
@@ -1707,7 +1706,7 @@ fn the_pair_hmm_calls_two_events_of_one_cluster() -> Result<()> {
         .balanced(120, 370, 5)
         .balanced(370, 620, 5);
 
-    let vcf = call_scenario(&scenario, &["--experimental-indels"])?;
+    let vcf = call_scenario(&scenario, &[])?;
     let indels: Vec<_> = vcf
         .lines()
         .filter(|line| !line.starts_with('#'))
@@ -1728,8 +1727,8 @@ fn the_pair_hmm_calls_two_events_of_one_cluster() -> Result<()> {
         [
             (FIRST + 1, "CTA", "C", "PASS", "1/1"),
             (SECOND + 1, "AGT", "A", "PASS", "1/1"),
-            (DELETION + 1, "AGT", "A", "PASS", "0/1"),
-            (INSERTION + 1, "A", "AGG", "PASS", "0/1"),
+            (DELETION + 1, "AGT", "A", "PASS", "0|1"),
+            (INSERTION + 1, "A", "AGG", "PASS", "1|0"),
         ],
         "{vcf}"
     );
@@ -1779,7 +1778,7 @@ fn snv_events_leave_the_indel_records_alone() -> Result<()> {
             .arg("--fasta-file")
             .arg(&fasta)
             .arg(&bam)
-            .args([scenario.region().as_str(), "--experimental-indels", "--all", "--vcf"])
+            .args([scenario.region().as_str(), "--all", "--vcf"])
             .arg(&vcf)
             .succeeds()?;
         Ok(std::fs::read_to_string(&vcf)?
@@ -1800,7 +1799,7 @@ fn snv_events_leave_the_indel_records_alone() -> Result<()> {
 }
 
 /// Indel calling end to end on a scenario: a het insertion and a het
-/// deletion are called `0/1`, PASS, with `QUAL` of at least 10 and a `GC`.
+/// deletion are called phased, `0|1`, PASS, with `QUAL` of at least 10 and a `GC`.
 /// An insertion only two of forty-two fragments carry is scored and
 /// rejected: absent from the output, and written `0/0` with the
 /// `low_indel_qual` FILTER under `--all`.
@@ -1848,7 +1847,7 @@ fn the_pair_hmm_calls_indels_on_a_scenario() -> Result<()> {
             .collect()
     };
 
-    let vcf = call_scenario(&scenario, &["--experimental-indels", "--vcf-all-fields"])?;
+    let vcf = call_scenario(&scenario, &["--vcf-all-fields"])?;
     let called = indels(&vcf);
     let sites: Vec<_> = called
         .iter()
@@ -1856,7 +1855,7 @@ fn the_pair_hmm_calls_indels_on_a_scenario() -> Result<()> {
         .collect();
     assert_eq!(
         sites,
-        [(INSERTION + 1, "A", "AGG", "PASS", "0/1"), (DELETION + 1, "AGT", "A", "PASS", "0/1")],
+        [(INSERTION + 1, "A", "AGG", "PASS", "0|1"), (DELETION + 1, "AGT", "A", "PASS", "0|1")],
         "{vcf}"
     );
     for (pos, .., qual, _, _, gc) in &called {
@@ -1881,7 +1880,7 @@ fn the_pair_hmm_calls_indels_on_a_scenario() -> Result<()> {
         "{vcf}"
     );
 
-    let vcf = call_scenario(&scenario, &["--experimental-indels", "--vcf-all-fields", "--all"])?;
+    let vcf = call_scenario(&scenario, &["--vcf-all-fields", "--all"])?;
     let rejected: Vec<_> =
         indels(&vcf).into_iter().filter(|record| record.0 == REJECTED + 1).collect();
     let [(_, reference, alt, qual, filter, gt, _)] = rejected.as_slice() else {

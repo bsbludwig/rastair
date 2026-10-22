@@ -139,7 +139,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Default is the bundled model in the Rastair binary.
 * `--snv-engine <SNV_ENGINE>` — Re-score the forest's SNV candidates with the pair-HMM engine that calls indels
 
-   Alts the forest scores at 0.005 or more are scored as events of the engine's haplotypes, and a second set of forests in the model scores them again with that evidence. On by default with the `experimental-seqair` backend, which it needs; `--snv-engine=false` scores with the first forests alone.
+   Alts the forest scores at 0.005 or more are scored as events of the engine's haplotypes, and a second set of forests in the model scores them again with that evidence. On by default; `--snv-engine=false` scores with the first forests alone.
 
   Default value: `true`
 
@@ -155,9 +155,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Indel Options:**
 
-* `--experimental-indels` — Enable experimental indel calling
-
-   Indels are called by a TAPS-aware pair-HMM, which needs the seqair backend.
 * `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations for an indel allele to be scored
 
    Reads (one per fragment) whose alignment carries the allele; at least 5% of the column's depth is required in any case. Of the alleles reaching it in a cluster of neighbouring columns, the three most reads carry are scored, at most two per column, and a scored allele is called only if the pair-HMM finds it present.
@@ -234,14 +231,11 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Phasing Options:**
 
-* `--phase` — Link heterozygous variants that share read pairs into phase blocks
-
-   Phased genotypes are written as `0|1` with a `PS` phase set. SNVs are phased, and indels too with `--experimental-indels`. Requires a build with the `experimental-seqair` backend.
-
-  Default value: `false`
 * `--phase-min-switch-quality <Q>` — Cut a phase block where switching its two sides would cost less than this
 
-   The cost is Phred-scaled and grows in steps of read pairs: one is worth at most 26, two about 50. The default keeps a block together on two read pairs; 26 on one of good base quality, 20 on most single read pairs. Only used with `--phase`.
+   Heterozygous variants that share read pairs are linked into phase blocks and written as phased genotypes (`0|1`) with a `PS` phase set, SNVs and indels alike. This is not done for CpG-only output.
+
+   The cost is Phred-scaled and grows in steps of read pairs: one is worth at most 26, two about 50. The default keeps a block together on two read pairs; 26 on one of good base quality, 20 on most single read pairs.
 
   Default value: `30`
 
@@ -305,7 +299,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `engine`:
     The SNV engine's dosage where it scored the alt
 
-* `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead. With `--experimental-indels` the pair-HMM indel scoring runs on the GPU too.
+* `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead. The pair-HMM indel scoring runs on the GPU too.
 
    Requires a Metal/Vulkan/DX12-capable GPU.
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files

@@ -44,8 +44,8 @@ For all other variant types, both strands contribute to genotyping.
 
 ## Phasing
 
-`--phase` can be used to group heterozygous variants that share a read pair
-into phase blocks and written with a `|` separator and a `PS` field:
+Rastair groups heterozygous variants that share a read pair
+into phase blocks, written with a `|` separator and a `PS` field:
 
 ```
 chr12  20028875  .  A  G  ...  GT:PS  0|1:20028875
@@ -65,13 +65,12 @@ so it says nothing about which copy the read came from
 Such reads are not counted.
 Outside a CpG, cytosines are almost never methylated, so these reads count like any other.
 
-Heterozygous indels called by the pair-HMM (`--experimental-indels`, see [indels](indels.md)) take part too.
+Heterozygous indels called by the pair-HMM (see [indels](indels.md)) take part too.
 At an indel a read has no single base to vote with, so it votes for the allele whose local haplotype explains it better, weighted by how much better.
 An indel only becomes part of a block when the pair-HMM is confident of its heterozygous genotype: a doubtful one would mostly join two blocks the wrong way round.
 
 ```admonish warning
-Phasing only works with the `experimental-seqair` backend.
-It can not be combined with `--cpgs-only` or BED output alone.
+Phasing is not done with `--cpgs-only` or BED output alone, which drop the variants it links.
 Blocks do not cross the boundary between two processing segments,
 so a block is at most one segment long (`--segment-max-length`, 100 kb by default).
 ```

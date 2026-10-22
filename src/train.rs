@@ -127,7 +127,7 @@ pub struct TrainModelParams {
     /// The candidates are collected a second time the way the cascade hands
     /// them on: the forests fitted first score every candidate, the pair-HMM
     /// engine scores the ones they keep on the clusters
-    /// `call --experimental-indels` builds, and only those are fitted on.
+    /// `call` builds, and only those are fitted on.
     #[arg(long, help_heading = cli::sections::TRAINING)]
     snv_engine: bool,
 
@@ -461,9 +461,8 @@ impl SegmentCollector<'_> {
         let Some(truth) = self.truth.contigs.get(&segment.contig) else {
             return Ok(self.empty());
         };
-        // With the first stage, the columns `call --snv-engine
-        // --experimental-indels` builds, scored as it scores them; training
-        // has no indel flag of its own.
+        // With the first stage, the columns `call --snv-engine` builds,
+        // indels included, scored as it scores them.
         let cascade = self.stage1.is_some();
         let mapping = PileupMappingParams {
             snv_engine: cascade,

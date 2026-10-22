@@ -6,9 +6,9 @@
 //! column is built, because `PileupMetrics` keeps no reads.
 //!
 //! Per-column data sits in `PileupMetrics.phase`; thresholds are constants
-//! except the block cut, `--phase-min-switch-quality`. `--phase` is an error
-//! under CpG-only output (`--cpgs-only`, or `--bed` alone): the pre-filter
-//! drops the variant sites before phasing runs. `problem` builds the sites
+//! except the block cut, `--phase-min-switch-quality`. Phasing runs in every
+//! output but CpG-only (`--cpgs-only`, or `--bed` alone), where the pre-filter
+//! drops the variant sites before it could (`CallParams::calls_variants`). `problem` builds the sites
 //! and fragments, `solver` splits them.
 //!
 //! **Observations** are captured inside the column loop. A column keeps its

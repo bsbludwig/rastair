@@ -334,7 +334,7 @@ impl ColumnDraft {
             }
         }
 
-        // Without `--phase` nothing was collected, so nothing is a candidate.
+        // Without `phase` nothing was collected, so nothing is a candidate.
         let phase = phasing::candidate_observations(&scratch.phase_observations, reference_base)
             .map(|observations| Box::new(ColumnPhase::Observed(observations)));
 

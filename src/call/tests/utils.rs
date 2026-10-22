@@ -503,7 +503,6 @@ pub(crate) fn test_call(
         denovo_cpg: default(),
         methylation: default(),
         ml: default(),
-        phase: false,
         phase_min_switch_quality: crate::call::phasing::DEFAULT_MIN_SWITCH_QUALITY,
         vcf: default(),
         bed: default(),

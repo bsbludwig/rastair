@@ -20,8 +20,8 @@
 //!   reason.
 //! - `ml train --snv-engine` collects twice, engine off and then as `call`
 //!   scores (`call_indels` on), and fits the engine forests on the alts the
-//!   engine scored. Run `call --snv-engine` with `--experimental-indels`, or
-//!   the `ev_*` features come from other clusters than the forests saw.
+//!   engine scored. `call --snv-engine` builds the same clusters, indel calling being on
+//!   in every output but CpG-only, so the `ev_*` features agree with the forests.
 //! - A second scoring replaces the first, so `apply_ml_scores` sets
 //!   `low_ml_score` rather than adding it, and `propagate_denovo_pass_flags`
 //!   assigns its flag rather than only raising it.
