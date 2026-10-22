@@ -575,24 +575,27 @@ impl Verdict {
                     artefact: None,
                     log10: reads.iter().map(|read| read.log10_under(cluster, pair)).sum(),
                 };
-                let contaminated = event_indices()
+                // The reference is a contaminant too, of a pair without it: a
+                // stray reference read at a homozygous alt is the same kind of
+                // artefact as a stray alt read at a homozygous reference.
+                let artefacts = event_indices()
                     .filter(move |event| !pair.carries(*event))
-                    .flat_map(move |event| {
-                        let hap = HapIdx::of_event(event);
-                        ARTEFACT_FRACTIONS.iter().map(move |&fraction| {
-                            let log10: f64 = reads
-                                .iter()
-                                .map(|read| {
-                                    read.log10_under_contaminated(cluster, pair, hap, fraction)
-                                })
-                                .sum();
-                            Account {
-                                pair,
-                                artefact: Some(event),
-                                log10: log10 - ARTEFACT_PRIOR_LOG10,
-                            }
-                        })
-                    });
+                    .map(Artefact::Event)
+                    .chain((pair.low != HapIdx::REFERENCE).then_some(Artefact::Reference));
+                let contaminated = artefacts.flat_map(move |artefact| {
+                    let hap = artefact.haplotype();
+                    ARTEFACT_FRACTIONS.iter().map(move |&fraction| {
+                        let log10: f64 = reads
+                            .iter()
+                            .map(|read| read.log10_under_contaminated(cluster, pair, hap, fraction))
+                            .sum();
+                        Account {
+                            pair,
+                            artefact: Some(artefact),
+                            log10: log10 - ARTEFACT_PRIOR_LOG10,
+                        }
+                    })
+                });
                 std::iter::once(pure).chain(contaminated)
             })
             .collect();
@@ -639,16 +642,37 @@ impl Verdict {
 }
 
 /// Pairs over [`MAX_HAPLOTYPES`] haplotypes, each on its own and with each of
-/// up to [`MAX_EVENTS`] events it lacks as an artefact at every fraction.
-const MAX_ACCOUNTS: usize =
-    MAX_HAPLOTYPES * (MAX_HAPLOTYPES + 1) / 2 * (1 + MAX_EVENTS * ARTEFACT_FRACTIONS.len());
+/// up to [`MAX_EVENTS`] events it lacks, and the reference, as an artefact at
+/// every fraction.
+const MAX_ACCOUNTS: usize = MAX_PAIRS * (1 + (MAX_EVENTS + 1) * ARTEFACT_FRACTIONS.len());
+
+/// Unordered pairs over [`MAX_HAPLOTYPES`] haplotypes.
+const MAX_PAIRS: usize = MAX_HAPLOTYPES * (MAX_HAPLOTYPES + 1) / 2;
+
+/// The haplotype an artefact account draws its stray reads from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Artefact {
+    /// The haplotype carrying this event alone, for a pair without it.
+    Event(EventIdx),
+    /// The reference, for a pair without it.
+    Reference,
+}
+
+impl Artefact {
+    fn haplotype(self) -> HapIdx {
+        match self {
+            Self::Event(event) => HapIdx::of_event(event),
+            Self::Reference => HapIdx::REFERENCE,
+        }
+    }
+}
 
 /// One explanation of a cluster's reads: `pair` on its own, or with the reads
-/// of the `artefact` event mixed in at an [`ARTEFACT_FRACTIONS`] entry, its
+/// of an `artefact` haplotype mixed in at an [`ARTEFACT_FRACTIONS`] entry, its
 /// prior already paid in `log10`.
 struct Account {
     pair: HapPair,
-    artefact: Option<EventIdx>,
+    artefact: Option<Artefact>,
     log10: f64,
 }
 
@@ -844,6 +868,29 @@ mod tests {
         assert!((reference + 1.0).abs() < 0.05, "{reference}");
         let unmapped = ReadScores::new(None, 0, row([-1.0, -4.0, NO]));
         assert!((unmapped.log10_under(&cluster, hom) + 1.0).abs() < 1e-9);
+    }
+
+    /// One stray reference read among twelve alt reads, every read Q40-like:
+    /// at face value the stray read costs the homozygote more than the het's
+    /// halving costs the twelve, but the homozygote with the reference as a
+    /// 10 % artefact explains both.
+    #[test]
+    fn a_stray_reference_read_is_an_artefact_of_a_homozygote() {
+        const STRAY: [f32; 3] = [0.0, -4.5, NO];
+        const ALT: [f32; 3] = [-4.5, 0.0, NO];
+        let scores = scores(1, &[(STRAY, 1), (ALT, 12)]).expect("scores");
+        let under = |p: HapPair| -> f64 {
+            scores.reads.iter().map(|read| read.log10_under(scores.cluster(), p)).sum()
+        };
+        assert!(under(pair(0, 1)) > under(pair(1, 1)), "pure: the het wins");
+        assert_eq!(scores.verdict.best, pair(1, 1));
+        assert_eq!(scores.verdict.called_pair(), pair(1, 1));
+    }
+
+    #[test]
+    fn a_clean_het_stays_het_beside_the_reference_artefact() {
+        let verdict = verdict(scores(1, &[([0.0, -4.5, NO], 6), ([-4.5, 0.0, NO], 6)]));
+        assert_eq!(verdict.called_pair(), pair(0, 1));
     }
 
     #[test]
