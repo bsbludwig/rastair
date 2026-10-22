@@ -295,7 +295,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--snv-genotype <SNV_GENOTYPE>` — How an SNV's zygosity is decided
 
-   `counts` weighs the reads of each allele per strand. `engine` takes the copy count of the pair-HMM's likeliest diploid pair carrying the alt, and its GQ as `GC`, wherever `--snv-engine` scored the alt; elsewhere the counts decide. Whether the alt is called stays the forests' decision. `engine` needs the `experimental-seqair` backend.
+   `counts` weighs the reads of each allele per strand. `engine` takes the copy count of the pair-HMM's likeliest diploid pair carrying the alt, and its GQ as `GC`, wherever `--snv-engine` scored the alt; elsewhere the counts decide. Whether the alt is called stays the forests' decision.
 
   Default value: `counts`
 

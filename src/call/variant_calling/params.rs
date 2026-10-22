@@ -73,7 +73,7 @@ pub struct VariantCallingParams {
     /// copy count of the pair-HMM's likeliest diploid pair carrying the alt,
     /// and its GQ as `GC`, wherever `--snv-engine` scored the alt; elsewhere
     /// the counts decide. Whether the alt is called stays the forests'
-    /// decision. `engine` needs the `experimental-seqair` backend.
+    /// decision.
     #[arg(long, value_enum, default_value_t = SnvGenotype::Counts)]
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[serde(skip_serializing_if = "SnvGenotype::is_counts")]
