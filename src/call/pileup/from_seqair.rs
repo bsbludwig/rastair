@@ -835,7 +835,24 @@ mod tests {
     use seqair::bam::cigar::{CigarOp, CigarOpType};
     use seqair::bam::pileup::PileupEngine;
     use seqair::bam::record_store::{CustomizeRecordStore, RecordStore, SlimRecord};
+    use seqair::bam::{BamHeader, MateFields};
+    use seqair::reader::{ResolveTid, Tid};
     use seqair_types::{BamFlags, Pos0, Strand};
+
+    /// The only reference the test reads are on; mates are only linked when
+    /// both records name the same one.
+    fn tid0() -> Tid {
+        0u32.resolve_tid(&BamHeader::synthetic(1, 1_000)).unwrap()
+    }
+
+    /// A mate on the test reference at `pos`; a negative `pos` means no mate position.
+    fn mate_at(pos: i32) -> MateFields {
+        MateFields {
+            tid: Some(tid0()),
+            pos: u32::try_from(pos).ok().and_then(Pos0::new),
+            template_len: None,
+        }
+    }
 
     /// The parts of `RastairRecordFilter::compute` these tests need: strand
     /// from the flags, soft-clip detection, and the read-end mask window.
@@ -946,10 +963,8 @@ mod tests {
                     &read.bases,
                     &read.quals,
                     &[],
-                    0,
-                    0,
-                    mate_pos,
-                    0,
+                    Some(tid0()),
+                    mate_at(mate_pos),
                     &mut extras,
                 )
                 .unwrap();
@@ -1420,10 +1435,8 @@ mod tests {
                 &[Base::A, Base::A, Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
                 &[40u8; 8],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1484,10 +1497,8 @@ mod tests {
                     &[Base::T, Base::G, Base::T, Base::T],
                     &[40u8; 4],
                     &[],
-                    0,
-                    -1,
-                    0,
-                    0,
+                    Some(tid0()),
+                    MateFields::default(),
                     &mut extras,
                 )
                 .unwrap();
@@ -1550,10 +1561,8 @@ mod tests {
                     &[Base::T, Base::T, Base::C, Base::A],
                     &[40u8; 4],
                     &[],
-                    0,
-                    -1,
-                    0,
-                    0,
+                    Some(tid0()),
+                    MateFields::default(),
                     &mut extras,
                 )
                 .unwrap();
@@ -1615,10 +1624,8 @@ mod tests {
                 &[Base::T, Base::T, Base::C, Base::A],
                 &[40u8; 4],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1663,10 +1670,8 @@ mod tests {
                 &[Base::T, Base::A, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1716,10 +1721,8 @@ mod tests {
                 &[Base::G, Base::G, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1769,10 +1772,8 @@ mod tests {
                 &[Base::C, Base::G, Base::T],
                 &[40u8; 3],
                 &[],
-                0,
-                0,
-                3,
-                0,
+                Some(tid0()),
+                mate_at(3),
                 &mut extras,
             )
             .unwrap();
@@ -1791,10 +1792,8 @@ mod tests {
                 &[Base::T, Base::G, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                0,
-                2,
-                0,
+                Some(tid0()),
+                mate_at(2),
                 &mut extras,
             )
             .unwrap();
@@ -1859,10 +1858,8 @@ mod tests {
                 &[Base::C, Base::G, Base::T],
                 &[40u8; 3],
                 &[],
-                0,
-                0,
-                3,
-                0,
+                Some(tid0()),
+                mate_at(3),
                 &mut extras,
             )
             .unwrap();
@@ -1882,10 +1879,8 @@ mod tests {
                 &[Base::T, Base::G, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                0,
-                2,
-                0,
+                Some(tid0()),
+                mate_at(2),
                 &mut extras,
             )
             .unwrap();
