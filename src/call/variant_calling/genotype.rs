@@ -207,11 +207,10 @@ impl PileupMetrics {
         }
     }
 
-    /// `counted` with the SNV engine's dosage at the alt's site ([`HaplotypeScores::site_dosage`])
-    /// where it scored `alt`, and `GC` its GQ. Whether the alt is present stays the forest's
-    /// decision.
+    /// `counted` with the SNV engine's dosage ([`Verdict::dosage`]) where it scored `alt`, and
+    /// `GC` its GQ. Whether the alt is present stays the forest's decision.
     ///
-    /// [`HaplotypeScores::site_dosage`]: crate::call::pair_hmm::HaplotypeScores::site_dosage
+    /// [`Verdict::dosage`]: crate::call::pair_hmm::Verdict::dosage
     fn with_engine_dosage(
         &self,
         counted: EstimatedGenotype,
@@ -220,7 +219,7 @@ impl PileupMetrics {
     ) -> EstimatedGenotype {
         let Some(scores) = self.snv_scores.as_deref() else { return counted };
         let Some(event) = scores.base_event_at(self.pos, alt) else { return counted };
-        let Some(dosage) = scores.site_dosage(event) else { return counted };
+        let Some(dosage) = scores.verdict.dosage(event) else { return counted };
         let genotype = if dosage.copies >= 2 {
             GenotypeTag::hom_alt(alt_index)
         } else {
@@ -529,11 +528,11 @@ mod tests {
     }
 
     /// The SNV shares its cluster with a het deletion, and every read covering
-    /// it carries the deletion as well: pairs of whole haplotypes cannot say
-    /// whether the other chromosome carries the SNV and tie, while at its own
-    /// site the SNV has only alt reads. The engine genotype is read there.
+    /// it carries the deletion as well: no read says whether the other
+    /// chromosome carries the SNV, so `(ref, del+SNV)` and `(SNV, del+SNV)`
+    /// tie and the het prior writes a het, at a `GC` that admits the tie.
     #[test]
-    fn the_engine_genotype_is_read_at_the_snvs_own_site() {
+    fn a_linked_snv_the_reads_cannot_place_is_a_low_quality_het() {
         use crate::call::{
             pair_hmm::{Allele, Cluster, Event, HaplotypeScores, ReadScores, fixtures::NO},
             pileup::indels::IndelAllele,
@@ -556,7 +555,9 @@ mod tests {
         let engine = site
             .estimate_genotype(None, ErrorModel::default(), SnvGenotype::Engine)
             .expect("a genotype");
-        assert_eq!(engine.genotype, GenotypeTag::hom_alt(ALT_INDEX_1));
+        assert_eq!(engine.genotype, GenotypeTag::ref_het(ALT_INDEX_1));
+        let gc = -10.0 * engine.confidence.log10();
+        assert!(gc <= 5.0, "{gc}");
     }
 
     // Strategy: realistic read counts (1..=500 each, not both zero)
