@@ -10,7 +10,7 @@ use compair::{
     Read, TapsEmission, Workspace,
 };
 use seqair_types::{Base, BaseQuality, SmallVec, Strand};
-use std::{borrow::Cow, sync::LazyLock};
+use std::borrow::Cow;
 
 /// GATK's conservative PCR indel model, but with the gap-open quality in a
 /// tandem repeat floored at Q20 rather than Q10: the library's PCR stutter
@@ -391,33 +391,11 @@ impl Conversions {
 }
 
 /// Uniform for haplotypes without levels, which is every haplotype but those
-/// Experiment switch: the least error a read base is charged at, whatever its
-/// quality, so one stray high-quality read cannot cost a pair more than the
-/// counts genotyper's error rate would.
-static ARTIFACT_FLOOR: LazyLock<Option<Probability>> = LazyLock::new(|| {
-    let value = std::env::var("RASTAIR_ARTIFACT_FLOOR").ok()?;
-    match value.parse::<f64>().ok().and_then(|p| Probability::new(p).ok()) {
-        Some(floor) => {
-            tracing::warn!(%value, "RASTAIR_ARTIFACT_FLOOR: the pair-HMM floors every base error");
-            Some(floor)
-        }
-        None => {
-            tracing::warn!(%value, "RASTAIR_ARTIFACT_FLOOR is not a probability; ignored");
-            None
-        }
-    }
-});
-
 /// Uniform for haplotypes without levels, which is every haplotype but those
 /// [`with_profiled_cpgs`] built. The CPU kernel, the GPU plan and its CPU
 /// rescore all take this one.
 fn emission() -> TapsEmission<'static> {
-    let emission =
-        TapsEmission::new(ConversionModel::taps_default(), Betas::OfHaplotype(UNKNOWN_BETA));
-    match *ARTIFACT_FLOOR {
-        Some(floor) => emission.with_artifact_floor(floor),
-        None => emission,
-    }
+    TapsEmission::new(ConversionModel::taps_default(), Betas::OfHaplotype(UNKNOWN_BETA))
 }
 
 impl Prepared {
