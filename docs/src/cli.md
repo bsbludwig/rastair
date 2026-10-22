@@ -124,8 +124,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Aligners often soft-clip a read's fringe base(s) when that mismatches the reference. But in TAPS, a methylated C reads as T, so a leading C→T mismatch might get soft-clipped, discarding real methylation evidence (and same for a trailing G->A). With this flag, a single soft-clipped base immediately next to an aligned base is "rescued" when it is the missing partner of a reference CpG (ref C on OT, ref G on OB) and counted as a normal observation.
 
    Recovered bases bypass read-end masking (`--nOT`/`--nOB`) since they are fringe bases by definition, but still go through base-quality, mapping-quality and methylation read-position filters.
-
-   (Only takes effect on the seqair backend.)
 * `--no-ml` — Only use hard thresholds to call variants and methylation events.
 
    This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
@@ -264,12 +262,12 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   Default value: `200`
 * `--segment-max-bytes <SEGMENT_MAX_BYTES>` — Maximum estimated compressed bytes to load per segment (memory budget)
 
-   seqair backend only. A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
+   A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
 
   Default value: `268435456`
 * `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
 
-   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the htslib/reference-oriented read sequence. `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
+   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the read sequence as the BAM stores it (reference-oriented). `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
 
    Useful for non-directional libraries, commonly from tagmentation prep.
 
@@ -298,13 +296,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
-* `--linear-dedup-threshold <LINEAR_DEDUP_THRESHOLD>` — Depth threshold below which linear name dedup is used instead of a hashmap
-
-   At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an `FxHashMap`. Set to 0 to always use the hashmap.
-
-   Only affects the htslib pileup path. The seqair path deduplicates overlapping mates from seqair's per-store mate links and never matches read names, so it ignores this.
-
-  Default value: `30`
 * `--indel-error-rate <INDEL_ERROR_RATE>` — Error rate for indel genotyping (higher than SNV due to alignment uncertainty)
 
   Default value: `0.05`
@@ -402,7 +393,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
   Default value: `500`
 * `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
 
-   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the htslib/reference-oriented read sequence. `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
+   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the read sequence as the BAM stores it (reference-oriented). `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
 
   Default value: `false`
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.

@@ -12,7 +12,7 @@ At each mismatch, it inspects both 2 bp windows that include the mismatch base:
 - current + next base
 - previous + current base
 
-Motifs are counted on the read sequence as represented by htslib/reference orientation:
+Motifs are counted on the read sequence as the BAM stores it (reference orientation):
 
 - `TG` evidence supports OT
 - `CA` evidence supports OB

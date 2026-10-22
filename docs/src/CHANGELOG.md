@@ -4,6 +4,9 @@ This is the changelog for Rastair 2.
 
 ## Unreleased
 
+- Pileups are read by [seqair](https://github.com/Softleif/seqair) instead of htslib.
+  Along with some other changes, this should be another great performance improvement for Rastair.
+- Removed `--linear-dedup-threshold`: it only tuned the htslib pileup path.
 - `M5mC` (and `DPM5mC`, `ADM5mC`) are now written exactly where `CPG` or `CPGnovo` is set ([#12](https://github.com/bsbludwig/rastair/issues/12)).
 - Reference-only records (`ALT=.`) are only written at CpG and de-novo CpG positions.
 - Progress is shown in the terminal tab/taskbar (OSC 9;4) in terminals that support it, e.g. Windows Terminal, Ghostty, WezTerm, iTerm2 and Konsole.
