@@ -1,4 +1,4 @@
-use crate::{call::pileup::SimpleRead, utils::cli};
+use crate::utils::cli;
 use better_default::Default;
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
@@ -21,7 +21,8 @@ impl QualityFilterParams {
         mapq >= self.min_mapq && baseq >= self.min_baseq
     }
 
-    pub fn filter(&self, read: &SimpleRead) -> bool {
+    #[cfg(test)]
+    pub fn filter(&self, read: &crate::call::pileup::SimpleRead) -> bool {
         self.filter_fields(read.mapq, read.qual)
     }
 }

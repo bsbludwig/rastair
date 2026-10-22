@@ -128,7 +128,7 @@ fn gpu_thread_panic_falls_back_to_the_cpu() -> Result<()> {
     let (cpu, crashed) = (dir.path().join("cpu.vcf"), dir.path().join("crashed.vcf"));
 
     // More workers than the GPU thread keeps up with, so jobs are queued when it
-    // crashes: those used to wait forever.
+    // crashes: those must fall back to the CPU, not wait forever.
     let threads = ["--threads", "4"];
     let fault = &[(INJECT_PANIC, "gpu-dispatch@2")];
     let output = call(&crashed, &[&threads[..], &["--gpu"]].concat(), fault)?;

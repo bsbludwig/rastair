@@ -1,3 +1,29 @@
+//! `rastair mbias`: the QC report.
+//!
+//! This module has no analysis logic: it shells out to `scripts/mbias.R`,
+//! which renders `scripts/QC_report.Rmd`. Cutoffs, plots and the per-contig
+//! `{chrom}_cutoffs.txt` files are computed there, so fixes to them go in the
+//! `.Rmd`. Things the R code relies on:
+//!
+//! - OT/OB in the M-bias table matches the Rust pair orientation: OT if
+//!   `bitwAnd(flag, 96) == 96` (F1R2) or `bitwAnd(flag, 144) == 144` (R2F1),
+//!   OB otherwise (`80/160` swaps them). Read 5'→3' positions are flipped for
+//!   OT `Second` and OB `First` only.
+//! - Cutoffs are per `(chr, read_pair, strand)` group, which needs at least
+//!   `MIN_MBIAS_OBS` (3) covered positions. A genome-wide run skips a sparse
+//!   contig with a `warning()`; an explicitly requested one is a `stop()`.
+//! - `plot_fp` is `isTRUE(args$plot_fp)`: argparser flags default to `FALSE`,
+//!   not `NA`. A `--bed`-only render skips the V-bias/GC/FP chunks, and this
+//!   module adds `--no-vbias`/`--no-gc` when there is no `--reference`.
+//!
+//! `tests/mbias_report.rs` renders a synthetic per-read BED (behind
+//! `external-tool-tests`, skipped without R and its packages, `tabix` or
+//! `bgzip`). On macOS the `.Rmd`'s `zcat` only reads `.Z`, so put a `zcat`
+//! shim running `gzip -dc` first on `PATH`. To render without `mbias.R`:
+//! `Rscript -e "rmarkdown::render('scripts/QC_report.Rmd', params=list(input_bgz=...,
+//! output_dir=..., region=NA, plot_vbias=FALSE, plot_gc=FALSE))"` (`region=NA`,
+//! not NULL).
+
 use crate::utils::cli;
 use clap::{ArgGroup, value_parser};
 use clio::ClioPath;

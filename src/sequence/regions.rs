@@ -31,18 +31,18 @@ impl Region {
     /// How many positions this region covers.
     ///
     /// Both ends are inclusive, so a region whose start and end are the same
-    /// base is one base long. This used to return `end - start`, which is one
-    /// short of what [`contains`](Self::contains) accepts — enough to make a
-    /// caller that sizes a buffer from it grow that buffer exactly once, at
-    /// the end, having already filled it.
+    /// base is one base long, matching what [`contains`](Self::contains)
+    /// accepts. `end - start` would be one short — enough to make a caller that
+    /// sizes a buffer from it grow that buffer exactly once, at the end, having
+    /// already filled it.
     pub fn len(&self) -> u64 {
         self.end.checked_sub(self.start).map_or(0, |span| span.saturating_add(1))
     }
 
     /// True only for a malformed region whose end precedes its start. A
-    /// well-formed one covers at least its own start, so it is never empty —
-    /// this used to report `start >= end`, calling every single-base region
-    /// empty while `contains` accepted its one position.
+    /// well-formed one covers at least its own start, so it is never empty, and
+    /// a single-base region is not empty either: `contains` accepts its one
+    /// position.
     pub fn is_empty(&self) -> bool {
         self.end < self.start
     }

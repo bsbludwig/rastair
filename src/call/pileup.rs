@@ -1,18 +1,15 @@
+#[cfg(test)]
 use crate::{sequence::ChunkRegion, utils::Base, vcf::SequenceContext};
+#[cfg(test)]
 use seqair_types::{SmallVec, SmolStr};
 
 pub mod indels;
+#[cfg(test)]
 mod read;
+#[cfg(test)]
 pub use read::*;
-pub(crate) mod from_hts;
-#[cfg(feature = "experimental-seqair")]
 pub(crate) mod from_seqair;
 pub(crate) mod hts_utils;
-// The mate-overlap dedup of the seqair path is driven by seqair's own mate
-// links (see `from_seqair::drops_overlapping_mate`); the name-based collector
-// only serves the htslib path and goes away with it.
-#[cfg(not(feature = "experimental-seqair"))]
-pub(crate) mod overlapping_reads;
 pub(crate) mod ref_features;
 
 /// Reference bases kept upstream / downstream of the anchor for indel slippage
@@ -41,11 +38,8 @@ pub(crate) const DINUCLEOTIDE_UNITS: usize = 3;
 /// terminal homopolymer occurs ~3% of the time and a 3-unit dinucleotide repeat
 /// ~0.8%.
 ///
-/// One definition for both backends. They had two, and disagreed: the seqair
-/// path measured the period-2 arm over 4 bases (2 units, ~6% of read ends)
-/// instead of 6. The sequence is passed as a length plus an indexer because the
-/// htslib path holds a 4-bit packed `Seq` and the seqair path a `&[Base]`;
-/// neither is decoded or copied.
+/// The sequence is passed as a length plus an indexer so a caller's `&[Base]`
+/// is neither decoded nor copied.
 pub(crate) fn has_terminal_repeat<T: PartialEq>(
     len: usize,
     base_at: impl Fn(usize) -> Option<T>,
@@ -75,7 +69,9 @@ fn periodic_terminus<T: PartialEq>(
     periodic(0) || periodic(len - window)
 }
 
-/// Rastair's representation of a pileup at a specific position in the genome
+/// A hand-built pileup column: the reads at one position, for tests to turn
+/// into [`PileupMetrics`](crate::metrics::PileupMetrics) without a BAM.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
@@ -89,11 +85,6 @@ pub struct Pileup {
     /// Reference base at this position
     pub reference_base: Base,
     /// Indel observations collected from reads at this position.
-    ///
-    /// Empty at most positions. The inline capacity of 3 is 248 bytes of this
-    /// (per-column, htslib-path) temporary; `0` would make it 24 and cost a
-    /// heap allocation only where an indel actually is. Unmeasured — histogram
-    /// `indel_observations.len()` in `Pileup::from_hts` before changing it.
     pub indel_observations: SmallVec<indels::IndelObservation, 3>,
     /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
     /// for indel depth adjustment.
@@ -109,6 +100,7 @@ pub struct Pileup {
     pub indel_ref_anchor: u8,
 }
 
+#[cfg(test)]
 impl Pileup {
     /// Chromosome name of the segment
     pub fn contig(&self) -> SmolStr {
@@ -152,11 +144,10 @@ mod tests {
     use insta::assert_debug_snapshot;
     use seqair_types::Strand;
 
-    /// The flag must fire on an unusual read, not a typical one. The seqair
-    /// path used to measure the period-2 arm over 4 bases — two repeat units,
-    /// ~6% of random read ends — where the htslib path required three units
-    /// over 6 bases. `ACAC` is exactly that boundary: two units, and not a
-    /// terminal repeat.
+    /// The flag must fire on an unusual read, not a typical one, so the
+    /// period-2 arm needs three units over 6 bases: two units over 4 bases
+    /// would match ~6% of random read ends. `ACAC` is exactly that boundary:
+    /// two units, and not a terminal repeat.
     #[test]
     fn terminal_repeat_needs_whole_units_at_both_periods() {
         let repeat = |seq: &[u8]| has_terminal_repeat(seq.len(), |i| seq.get(i));

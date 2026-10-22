@@ -15,22 +15,18 @@
 //!   3. Convert to the output format
 //!   4. Write to file in order
 
-#[cfg(any(not(feature = "experimental-seqair"), test))]
-use crate::call::pileup::Pileup;
-#[cfg(any(not(feature = "experimental-seqair"), test))]
-use crate::call::process::calculate_pileup_metrics;
+#[cfg(test)]
+use crate::call::{pileup::Pileup, process::calculate_pileup_metrics};
 use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams, pileup::SimpleRead, process::get_pileups,
+        methylation::params::MethylationCallingParams, process::get_pileups,
         require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
     metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
-    sequence::{
-        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Segment, SegmentationParams,
-    },
+    sequence::{ChunkRegion, ReaderParams, Segment, SegmentationParams, SeqairReaders},
     utils::{cli, map_surrounding},
 };
 use clio::ClioPath;
@@ -160,14 +156,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     params.segmentation.sanitize();
 
-    #[cfg(not(feature = "experimental-seqair"))]
-    if params.methylation.rescue_soft_clip_cpg {
-        warn!(
-            "--rescue-soft-clip-cpg has no effect on the default (htslib) backend; \
-             build with the `experimental-seqair` feature to use it"
-        );
-    }
-
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
@@ -187,7 +175,6 @@ pub fn call(mut params: CallParams) -> Result<()> {
 
     debug!("Going to process {} segments", regions.len());
 
-    let readers = ReaderSource::from(readers);
     let readers = &readers;
 
     progress::register_signal_handler();
@@ -256,7 +243,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
 #[instrument(level = "info", skip_all, fields(region=%region.region))]
 fn process_region_wrapper(
     region: &ChunkRegion,
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     params: &CallParams,
     ml: &MachineLearning,
     failed_segments: &segments::FailedSegments,
@@ -274,7 +261,7 @@ fn process_region_wrapper(
 
 /// The actual processing of a segment
 fn process_segment(
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     region: &ChunkRegion,
     params: &CallParams,
     ml: &MachineLearning,
@@ -294,16 +281,8 @@ fn process_segment(
         ..Default::default()
     };
 
-    #[cfg(not(feature = "experimental-seqair"))]
-    {
-        let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
-        process_region(segment, pileups, params, ml)
-    }
-    #[cfg(feature = "experimental-seqair")]
-    {
-        let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
-        process_pre_built_metrics(segment, metrics, params, ml)
-    }
+    let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
+    process_pre_built_metrics(segment, metrics, params, ml)
 }
 
 macro_rules! log_failed_and_skip {
@@ -318,34 +297,20 @@ macro_rules! log_failed_and_skip {
     };
 }
 
-#[cfg(any(not(feature = "experimental-seqair"), test))]
-/// Analyse pileups in a region
+/// Analyse hand-built pileups in a region, as `call` does the reader's.
+#[cfg(test)]
 fn process_region(
     segment: Rc<Segment>,
     pileups_iter: impl Iterator<Item = Pileup>,
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    // One per covered position, as on the seqair path — see the note in
-    // `process::pileups::get_pileups`. Doubling into a vec of 592-byte entries
-    // both copies and overshoots.
-    let mut pileups: Vec<PileupMetrics> =
-        Vec::with_capacity(usize::try_from(segment.range.len()).unwrap_or(0));
-    pileups.extend(
-        calculate_pileup_metrics(pileups_iter, &segment)
-            .filter_map(log_failed_and_skip!("failed to calculate metric, skipping")),
-    );
-    map_surrounding(
-        &mut pileups,
-        process::set_denovo_adj,
-        "failed to set denovo adjacency, skipping",
-    );
-    set_strand_info_and_prefilter(&mut pileups, params);
-
-    process_collected_pileups(segment, pileups, params, ml)
+    let metrics = calculate_pileup_metrics(pileups_iter, &segment)
+        .filter_map(log_failed_and_skip!("failed to calculate metric, skipping"))
+        .collect::<Vec<_>>();
+    process_pre_built_metrics(segment, metrics.into_iter(), params, ml)
 }
 
-#[cfg(feature = "experimental-seqair")]
 fn process_pre_built_metrics(
     segment: Rc<Segment>,
     pileups: impl Iterator<Item = PileupMetrics>,
@@ -362,9 +327,9 @@ fn process_pre_built_metrics(
     process_collected_pileups(segment, pileups, params, ml)
 }
 
-/// The step both backends run between de-novo adjacency and the shared
-/// pipeline: strand info depends on the adjacency flags just set, and the
-/// pre-filter on the alts, so the order matters.
+/// The step between de-novo adjacency and the shared pipeline: strand info
+/// depends on the adjacency flags just set, and the pre-filter on the alts, so
+/// the order matters.
 fn set_strand_info_and_prefilter(pileups: &mut Vec<PileupMetrics>, params: &CallParams) {
     for pileup in pileups.iter_mut() {
         pileup.pos_metrics.extended.methylation_strand_info =
@@ -467,10 +432,8 @@ fn process_collected_pileups(
             debug!("No relevant pileups found in region");
         } else {
             let count_piles = readable::num::Unsigned::from(pileups.len());
-            let pile_size = pileups.len() * std::mem::size_of::<PileupMetrics>();
-            let read_size = pileups.iter().map(|p| p.pos_metrics.depth as usize).sum::<usize>()
-                * std::mem::size_of::<SimpleRead>();
-            let bytes = readable::byte::Byte::from(pile_size + read_size);
+            let bytes =
+                readable::byte::Byte::from(pileups.len() * std::mem::size_of::<PileupMetrics>());
             debug!(%count_piles, %bytes, "Collected pileup metrics");
         }
     }

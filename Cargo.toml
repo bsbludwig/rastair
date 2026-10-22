@@ -32,11 +32,8 @@ members = ["tools/*"]
 color-eyre = { version = "0.6.5", features = ["issue-url"] }
 serde = { version = "1.0.219", features = ["derive"] }
 cstr8 = "0.1.4"
-# `serde` is a default feature of seqair-types 0.3, but named explicitly: rastair
-# serializes `Probability` (CLI params, into `##rastairConfig`), and a later
-# `default-features = false` here would silently drop the impls rather than fail to resolve.
 seqair-types = { version = "0.3.1", features = ["hts-compat", "serde"] }
-seqair = "0.4.0"
+seqair = "0.7.0"
 rust-htslib = { version = "1.0.0", git = "https://github.com/Softleif/rust-htslib.git", default-features = false, features = [
     "libdeflate",
     "bzip2",
@@ -127,9 +124,6 @@ pastey = { workspace = true }
 
 [features]
 external-tool-tests = []
-# seqair is now a core dependency (VCF writer); this flag only toggles the
-# experimental seqair-backed pileup *reading* path.
-experimental-seqair = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

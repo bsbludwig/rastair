@@ -1,9 +1,6 @@
 use crate::{
-    call::{
-        pileup::{Pileup, SimpleRead, indels},
-        variant_calling::EstimatedGenotype,
-    },
-    metrics::{MethylationEvidenceStrandInfo, PairedCounts, ReadKey},
+    call::{pileup::indels, variant_calling::EstimatedGenotype},
+    metrics::{MethylationEvidenceStrandInfo, PairedCounts},
     sequence::ChunkRegion,
     utils::{ByStrand, IntoF64, SequenceContext, default, logging::ThisIsABug},
     vcf::{InCpG, Methylated, RastairFilter},
@@ -16,7 +13,7 @@ use color_eyre::{
 use enumset::EnumSet;
 use seqair_types::SmallVec;
 use seqair_types::SmolStr;
-use seqair_types::{Base, Probability, RmsAccumulator, RootMeanSquare, Strand, SumOfSquares};
+use seqair_types::{Base, Probability, RootMeanSquare, Strand, SumOfSquares};
 use std::ops::Deref;
 use std::sync::Arc;
 use tracing::{trace, warn};
@@ -119,8 +116,11 @@ impl PileupMetrics {
     ///
     /// NOTE: The extended metrics in `PositionMetrics` are not set here and
     /// need to be set later using `set_extended_metrics`.
-    pub fn new(pileup: Pileup) -> Result<Self> {
-        let Pileup {
+    #[cfg(test)]
+    pub fn new(pileup: crate::call::pileup::Pileup) -> Result<Self> {
+        use crate::metrics::ReadKey;
+        use seqair_types::RmsAccumulator;
+        let crate::call::pileup::Pileup {
             region,
             pos,
             reference_base,
@@ -327,12 +327,10 @@ impl PileupMetrics {
 /// Alternate alleles are listed by support, deepest first; equal support
 /// keeps the order they were observed in.
 ///
-/// Observation order is the pileup engine's read order, which differs between
-/// engines at equal start positions — and the ALT column, `AD`, `ML` and the
-/// genotype indices all follow this order, so leaving it to the engine made
-/// `T G,A 0/1` on one backend `T A,G 0/2` on the other. Ties are left alone
-/// on purpose: genotyping and methylation break their own ties by this order,
-/// and the sort must not decide those differently from before.
+/// Observation order is the pileup engine's read order at equal start
+/// positions, an accident of the engine, while the ALT column, `AD`, `ML` and
+/// the genotype indices all follow this order. Ties are left alone on purpose:
+/// genotyping and methylation break their own ties by this order.
 pub fn order_alts(alts: &mut [Alt]) {
     alts.sort_by_key(|alt| std::cmp::Reverse(alt.metrics.depth));
 }
@@ -447,7 +445,7 @@ pub struct AlleleMetrics {
 
 /// Would observing `base` where the reference has `ref_base` create a CpG?
 ///
-/// The seqair backend answers this from a column's alt bases alone, before any
+/// The column loop answers this from a column's alt bases alone, before any
 /// allele metrics exist, so it has to be one definition and not two.
 pub fn alt_forms_denovo(base: Base, ref_base: Base, context: &SequenceContext) -> FormsDenovo {
     use Base::*;
@@ -580,7 +578,13 @@ const fn strand_slot(strand: Strand) -> Option<usize> {
 }
 
 impl AlleleAccumulator {
-    pub(crate) fn add(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
+    #[cfg(test)]
+    pub(crate) fn add(
+        &mut self,
+        read: &crate::call::pileup::SimpleRead,
+        qual_sq: f64,
+        mapq_sq: f64,
+    ) {
         self.add_fields(
             qual_sq,
             mapq_sq,
@@ -675,12 +679,17 @@ impl AlleleAccumulator {
 pub(crate) struct PerBaseAccumulators([AlleleAccumulator; 4]);
 
 impl PerBaseAccumulators {
-    pub(crate) fn accumulate(&mut self, read: &SimpleRead, qual_sq: f64, mapq_sq: f64) {
+    #[cfg(test)]
+    pub(crate) fn accumulate(
+        &mut self,
+        read: &crate::call::pileup::SimpleRead,
+        qual_sq: f64,
+        mapq_sq: f64,
+    ) {
         let Some(idx) = read.base.known_index() else { return };
         self.0[idx].add(read, qual_sq, mapq_sq);
     }
 
-    #[cfg(feature = "experimental-seqair")]
     pub(crate) fn accumulate_fields(
         &mut self,
         base: Base,
@@ -789,6 +798,7 @@ pub(crate) fn aggregate_indels(
 #[cfg(test)]
 mod size_tests {
     use super::*;
+    use seqair_types::RmsAccumulator;
 
     /// A region holds one of these per covered base — 100,401 at the default
     /// `--segment-max-length` — and the pipeline walks that vec six or seven

@@ -87,7 +87,7 @@ pub struct PerReadParams {
     ///
     /// Scans read mismatches against the reference and counts `TG` versus `CA`
     /// motifs in a 2 bp window anchored at each mismatch (current+next and
-    /// previous+current), using the htslib/reference-oriented read sequence.
+    /// previous+current), using the read sequence as the BAM stores it (reference-oriented).
     /// `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads
     /// are split pseudo-randomly but reproducibly per read.
     #[arg(long, default_value_t = false)]
@@ -528,7 +528,7 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1, 4]);
         assert!(row.unmod_cpgs.is_empty());
     }
 
@@ -545,7 +545,7 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2, 5]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[2, 5]);
         assert!(row.unmod_cpgs.is_empty());
     }
 
@@ -568,7 +568,7 @@ mod tests {
                 .unwrap();
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1, 4]);
     }
 
     #[test]
@@ -590,7 +590,7 @@ mod tests {
                 .unwrap();
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2, 5]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[2, 5]);
     }
 
     #[test]
@@ -626,8 +626,8 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 1);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[4]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1]);
+        assert_eq!(row.unmod_cpgs.as_ref(), &[4]);
         assert!(row.snp_cpgs.is_empty());
     }
 
@@ -645,8 +645,8 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 1);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[5]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[2]);
+        assert_eq!(row.unmod_cpgs.as_ref(), &[5]);
         assert!(row.snp_cpgs.is_empty());
     }
 
@@ -665,8 +665,8 @@ mod tests {
 
         assert_eq!(row.cpg_count, 3);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[7]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1, 4]);
+        assert_eq!(row.unmod_cpgs.as_ref(), &[7]);
         assert!(row.snp_cpgs.is_empty());
     }
 

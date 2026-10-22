@@ -205,9 +205,9 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
 
 /// Rewritten BAM must be sorted by position and contain no duplicate reads,
 /// even when `--segment-max-length` forces processing across multiple segments.
-/// Reads overlapping a segment boundary used to be emitted by both the segment
-/// they start in and the next one, causing duplicates and sort-order violations
-/// that made `samtools index` fail.
+/// A read overlapping a segment boundary is emitted by the segment it starts
+/// in only; emitting it from the next one too would duplicate it and break the
+/// sort order, and `samtools index` would fail.
 #[test]
 fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
     apply_common_filters!();
@@ -454,7 +454,7 @@ fn bam_rewrite_xm_content_matches_calls() -> Result<()> {
     Ok(())
 }
 
-/// Regression test for mixed-methylation sites in legacy XM output.
+/// Mixed-methylation sites in legacy XM output.
 ///
 /// At chr19:6103215 (1-based), the CpG C base is at 0-based position 6103214.
 /// In `tests/data/test.bam` there are 18 OT reads with evidence split:

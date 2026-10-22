@@ -171,10 +171,9 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
     Ok(())
 }
 
-/// `--max-coverage 0` means "no limit", and used to mean two opposite things
-/// two lines apart: the seqair depth cap read it as `Unlimited` and loaded
-/// every read, while the per-column code read it as a cap of zero and counted
-/// none of them. The run produced an empty VCF at unbounded memory.
+/// `--max-coverage 0` means "no limit", both to the seqair depth cap, which
+/// loads every read, and to the per-column count. Read as a cap of zero there,
+/// it would count none of them: an empty VCF at unbounded memory.
 #[test]
 fn max_coverage_zero_means_no_limit() -> Result<()> {
     let unlimited =
@@ -291,16 +290,6 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
     //     summary.unmod_diff_positions,
     //     summary.shared_calls,
     // );
-    // The `--guess-read-orientation` motif heuristic is mildly engine-sensitive
-    // (seqair walks aligned pairs via `matches_only()`, htslib via
-    // `aligned_pairs_full()`), so a handful of low-coverage unmod counts differ.
-    // Both stay within the closeness assertions above; snapshot each engine
-    // separately so both builds pass.
-    #[cfg(feature = "experimental-seqair")]
-    insta::with_settings!({snapshot_suffix => "seqair"}, {
-        assert_compact_debug_snapshot!(summary);
-    });
-    #[cfg(not(feature = "experimental-seqair"))]
     assert_compact_debug_snapshot!(summary);
 
     Ok(())
@@ -313,7 +302,6 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
 /// formed (stale mate coordinates, a reader that stopped linking) would leave
 /// both runs identical.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
     const REGION: &str = "--region=chr19:6103000-6106000";
 
@@ -361,7 +349,6 @@ fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
     // A region wide enough to contain soft-clips that land on CpG partners.
     const REGION: &str = "--region=chr19:6100000-6120000";
@@ -398,7 +385,7 @@ fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
     };
     let changed = off.iter().filter(|(key, off_call)| on.get(key) != Some(off_call)).count();
 
-    assert!(changed > 0, "rescue should change at least one CpG on the seqair backend");
+    assert!(changed > 0, "rescue should change at least one CpG");
     assert!(
         evidence(&on) > evidence(&off),
         "rescue should add net methylation observations ({} -> {})",
@@ -1395,16 +1382,14 @@ fn write_deletion_bam(
     Ok(())
 }
 
-/// A deletion's REF allele must be the reference *at the deletion*.
+/// A deletion's REF allele must be the reference *at the deletion*, not at the
+/// start of the enclosing segment; a wrong REF is real-looking sequence from
+/// another locus, and `bcftools norm` refuses the file. This is the CLI test
+/// that holds a multi-base REF.
 ///
-/// The seqair backend read it from the start of the enclosing segment instead,
-/// so 82.6% of multi-base REF alleles on chr12 were real-looking sequence from
-/// the wrong locus and `bcftools norm` refused the file. Nothing caught it: no
-/// CLI test enabled indel calling, and no snapshot held a multi-base REF.
-///
-/// The contig position is load-bearing. At a segment starting at 0 the wrong
-/// index and the right one coincide, which is also why the `from_seqair` unit
-/// fixtures could not see this.
+/// The contig position is load-bearing. At a segment starting at 0 the
+/// segment-relative and the genomic index coincide, which is also why the
+/// `from_seqair` unit fixtures cannot see this.
 #[test]
 fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
     use rust_htslib::faidx;

@@ -1,8 +1,19 @@
-//! Feature calculation implementations for ML models
+//! Feature vectors of the ML models.
 //!
-//! Trait-based abstraction for calculating features from variant metrics.
-//! Different implementations can be swapped to support various feature sets and
-//! model variants.
+//! Each model's vector is a `#[repr(C)]` struct of `f32` / `[f32; N]` fields
+//! built with `define_features!`: **field order is the feature order**. The
+//! macro generates `FEATURES`, `names()`/`extend_names()` and a zero-copy
+//! `as_row()`. Field kinds: `scalar name;`, `array name: N = ["..", ..];` and
+//! `flatten name: Type;` (a nested feature struct). `CommonFeatures` is split
+//! into `CommonSectionA` and `CommonSectionB` because the alt-based models put
+//! their own scalars (e.g. `alt_score`) between the two halves.
+//!
+//! **Every trained model freezes the order**: reordering a field silently
+//! corrupts predictions. `feature_counts_are_stable` pins the counts and
+//! `feature_name_layout` snapshots every `name→index` mapping; update the
+//! snapshot only for an intended layout change, which needs a retrained
+//! model. The same names head the `--feature-analytics` and
+//! `--export-features` outputs of `ml train`.
 
 use super::types::{MlFeatureSet, MlModel};
 use crate::metrics::{MetricsForAlt, MetricsForIndel, PileupMetrics};
@@ -411,9 +422,8 @@ mod tests {
         assert_eq!(DeletionFeatures::FEATURES, 17);
     }
 
-    /// Snapshot the full name→index layout of every model. This is the
-    /// human-checkable replacement for the old "never change the order"
-    /// comments: reordering a field changes the snapshot and fails the test.
+    /// Snapshot the full name→index layout of every model: reordering a field
+    /// changes the snapshot and fails the test.
     #[test]
     fn feature_name_layout() {
         let render = |name: &str, names: Vec<&str>| {

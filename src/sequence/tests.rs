@@ -208,11 +208,11 @@ fn test_sequence_slice() -> Result<()> {
 
     // Test valid slice
     let slice = segment.sequence_slice::<5>(1, 4)?;
-    assert_eq!(slice.as_slice(), &[Base::T, Base::C, Base::G]);
+    assert_eq!(slice.as_ref(), &[Base::T, Base::C, Base::G]);
 
     // Test out-of-bounds slice
     let slice = segment.sequence_slice::<5>(0, 10)?;
-    assert_eq!(slice.as_slice(), &[Base::A, Base::T, Base::C, Base::G, Base::G]);
+    assert_eq!(slice.as_ref(), &[Base::A, Base::T, Base::C, Base::G, Base::G]);
 
     Ok(())
 }

@@ -3,6 +3,7 @@
 mod calc_ml;
 mod denovo;
 mod inference;
+#[cfg(test)]
 mod pileup_metrics;
 mod pileups;
 mod position_tags;
@@ -13,6 +14,7 @@ mod threshold_filters;
 pub use pileups::{PileupMappingParams, get_pileups};
 
 // Next, we calculate various metrics based on the generated pileups
+#[cfg(test)]
 pub use pileup_metrics::calculate_pileup_metrics;
 // and set de-novo adjacency information now that we know where de-novo candidates are
 pub use denovo::set_denovo_adj;

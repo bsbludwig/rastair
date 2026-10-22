@@ -4,10 +4,9 @@
 //! that comes from the fringes of the read. You can mask out specific areas
 //! from reads to reduce this.
 
-use crate::{
-    call::pileup::SimpleRead,
-    utils::{Strand, cli},
-};
+#[cfg(test)]
+use crate::call::pileup::SimpleRead;
+use crate::utils::{Strand, cli};
 use seqair_types::SmallVec;
 use std::{num::ParseIntError, ops::Range, str::FromStr};
 
@@ -43,6 +42,7 @@ impl ReadMaskParams {
         Self { n_ot, n_ob }
     }
 
+    #[cfg(test)]
     pub fn filter(&self, read: &SimpleRead) -> bool {
         self.filter_fields(read.strand, read.reverse, read.position.pos, read.position.read_length)
     }
@@ -138,8 +138,8 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// The masking rule as originally written, in i64 so the subtractions
-    /// cannot wrap: an independent oracle for `keep_range`.
+    /// The masking rule written out position by position, in i64 so the
+    /// subtractions cannot wrap: an independent oracle for `keep_range`.
     fn masked_oracle(
         p: &ReadMaskParams,
         strand: Strand,

@@ -1,3 +1,22 @@
+//! `rastair bam`: rewrite a BAM with per-read methylation tags.
+//!
+//! Two modes: `legacy` writes XR/XG/XM and leaves SEQ alone; `standard` writes
+//! MM/ML and rewrites SEQ (T→C on OT, A→G on OB). Tags are built in
+//! [`base_modification`].
+//!
+//! **XM and MM/ML encode per-read methylation, not position-level calls.** A
+//! CpG with beta 0.3 (`methylated: false` in [`RastairCall::Cpg`]) still has
+//! methylated reads that must show `Z` in XM and appear in MM/ML; `methylated`
+//! only decides whether the position is a CpG site. Per-read methylation
+//! comes from the observed base alone: T at an OT C, A at an OB G.
+//!
+//! **MM/ML and XM count different reads.** MM/ML only encode modifications at
+//! C bases of the stored SEQ, and of two mates overlapping a CpG only one has
+//! a C there (the other has the G), while XM annotates both. So MM/ML readers
+//! such as modkit see about half the reads XM counting does: fractions agree,
+//! counts differ ~2:1. Compare the two modes by fraction, at a minimum
+//! coverage.
+
 use crate::{
     bed::reader::{RastairBedReader, RastairCall},
     sequence::{ChunkRegion, ReaderParams},

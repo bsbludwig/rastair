@@ -1,8 +1,7 @@
 //! Direct VCF/BCF emission from [`PileupMetrics`].
 //!
-//! This replaces the old `to_vcf_records` → intermediate `Record` → htslib
-//! pipeline: per emitted line we build typed [`Alleles`] from the pileup's
-//! `Base`s and drive seqair's typestate encoder straight from the metrics — no
+//! Per emitted line we build typed [`Alleles`] from the pileup's `Base`s and
+//! drive seqair's typestate encoder straight from the metrics — no
 //! intermediate record struct, no string round-trips.
 
 use std::io::Write;
@@ -64,7 +63,7 @@ pub fn emit_pileup<W: Write>(
         }
     }
 
-    // Line selection, ported from `VcfRecordSet::to_vec`.
+    // Line selection.
     let t = &pileup.tags;
     let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
     // A reference-only record (no real variants) is only emitted when it is a
@@ -592,7 +591,7 @@ fn phred_value(p: Probability) -> f32 {
     Phred::from(p).as_int() as f32
 }
 
-/// The genotype plus its GL/GC values, ported from the old `build_format`.
+/// The genotype plus its GL/GC values.
 ///
 /// The estimate is the one the calling pipeline stored, not a fresh one: an
 /// estimate re-derived here would silently ignore `--error-model` and so
@@ -655,7 +654,7 @@ fn counts(values: &SmallVec<Option<u32>, 2>) -> SmallVec<i32, 2> {
 ///
 /// `origins()` only reports a de-novo partner as a CpG once its partner's alt
 /// was actually called (`other_pos_in_denovo_passes`), so a rejected de-novo
-/// candidate no longer yields a zero `M5mC` without the `CPG`/`CPGnovo` tags set.
+/// candidate never yields a zero `M5mC` without the `CPG`/`CPGnovo` tags set.
 fn effective_methylation(pileup: &PileupMetrics) -> Methylated {
     let observed = &pileup.pos_metrics.methylated;
     if !observed.is_empty() {

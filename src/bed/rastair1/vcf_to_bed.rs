@@ -74,7 +74,7 @@ impl Rastair1BedFormat {
             .wrap_err("Failed to read methylation evidence strand info")?;
 
         let genotype_alleles: SmallVec<_, 2> = if let Ok(gs) = r.genotypes() {
-            // No more genotype remapping needed since VCF no longer mixes '.' with real variants
+            // Taken as written: a record never mixes '.' with real alleles.
             gs.get(0).iter().map(|x| (*x).into()).collect()
         } else {
             SmallVec::new()

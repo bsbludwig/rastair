@@ -7,6 +7,16 @@
 //! tables. [`crate::vcf::emit`] drives the encoder directly from
 //! [`PileupMetrics`](crate::metrics::PileupMetrics) using these keys — there is
 //! no intermediate record struct.
+//!
+//! Output is `##fileformat=VCFv4.5`, which seqair writes unconditionally: it is
+//! the version that defines `M5mC`, `DPM5mC` and `ADM5mC` (aliases of the
+//! ChEBI-numbered `M27551C` family). From 4.4 on the first allele's `GT` phase
+//! bit is read, so seqair sets it, or htslib renders a phased `0|1` as `/0|1`.
+//!
+//! Those three keep `Number=.` rather than 4.5's `Number=M`: noodles rejects
+//! `M` whatever the declared version, and the error rejects the whole file in
+//! every noodles-based tool (`aardvark` included). Revisit when noodles
+//! implements the 4.5 cardinalities; two tests here pin both halves.
 
 use std::io::Write;
 

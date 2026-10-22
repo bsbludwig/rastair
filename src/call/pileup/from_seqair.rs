@@ -1,4 +1,42 @@
-#![cfg(feature = "experimental-seqair")]
+//! Columns from seqair's pileup engine, accumulated into
+//! [`PileupMetrics`].
+//!
+//! [`ColumnDraft::accumulate`] counts a column's reads; [`ColumnDraft::finish`]
+//! turns a draft the record filters keep into metrics. Nothing skips a column
+//! with zero reads or an `N` reference (`Base::Unknown`) before it is
+//! finished, so both are real paths: return default metrics, not an error.
+//!
+//! **Driving the engine.** `PileupEngine::new` takes a `PileupInput`, and only
+//! `store.prepare_for_pileup()` makes one, sorted by position with mates
+//! linked; without either, columns go missing or overlap dedup silently does
+//! nothing. `PileupColumn::mate_of` gives a view's linked mate in the column,
+//! all `counted_mate` needs; pairwise rules stay on this side of the boundary.
+//! `PileupEngine::reclaim_allocation` returns an *empty* store that keeps its
+//! capacity for the next region.
+//!
+//! **Indel observations.** Each rule guards a class of mistake:
+//!
+//! - A deletion's REF comes from the deletion site: `view.qpos()` is a read
+//!   offset, not the column's genomic `pos` (seqair's `QPos` keeps them apart).
+//! - Tract runs are measured one base past the anchor, where a left-aligned
+//!   indel starts; only `ref_features::indel_tract_runs_at` knows this.
+//! - Overlap dedup keeps one read per fragment and can keep the mate that does
+//!   not span the indel, so the dropped mate stands in:
+//!   `build_indel_observation(view).or_else(mate)`. The fallback is keyed on
+//!   the observation, because `build_indel_observation` rejects indels near a
+//!   read end or on reads with too many non-TAPS mismatches; seqair's
+//!   `pair_indel` ("own indel wins") cannot express that, so it is not used.
+//!   On chr12 this is worth +2.3 insertion / +1.5 deletion F1.
+//! - `soft_clip_count` and the noisy-reference count describe a fragment:
+//!   whatever either mate shows counts once, and a fragment is noisy
+//!   reference only when it contributed no observation and a mate that is a
+//!   reference alignment slips (terminal repeat or soft clip).
+//!
+//! Testing: `tests/data/test.bam` cannot produce an indel call (no two of its
+//! indel reads agree on an allele), so indel tests build their own reads; a
+//! fixture segment must not start at 0, where position bugs and the right
+//! answer coincide (use `segment_at`); and a unit test must set
+//! `params.call_indels` to reach the indel branch at all.
 
 use super::{
     indels::{IndelAllele, IndelObservation},
@@ -148,8 +186,8 @@ impl ColumnDraft {
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
 
-        // Counted where `from_hts` counts: reads that passed the filters,
-        // before an overlapping mate is collapsed into its fragment.
+        // Counted over reads that passed the filters, before an overlapping
+        // mate is collapsed into its fragment.
         let mut passed: usize = 0;
         for (slot, view) in column.alignments().enumerate() {
             if passed >= max_reads {
@@ -221,8 +259,7 @@ impl ColumnDraft {
                 let extras = view.extra();
                 // Every count below describes the *fragment*, not the read that
                 // happened to survive dedup, so the dropped mate's shape has to
-                // be OR'd in — `from_hts` accumulates these over both mates
-                // before it deduplicates.
+                // be OR'd in.
                 let mate = dedup_overlaps
                     .then(|| {
                         counted_mate(
@@ -247,12 +284,9 @@ impl ColumnDraft {
                 // read is not necessarily the one carrying the fragment's
                 // indel: when the mates disagree the rule can drop exactly the
                 // mate that spans it, and the fragment's only indel observation
-                // would go with it. `from_hts` never had this problem because
-                // it votes per fragment *before* deduplicating — every mate
-                // gets a turn, and the first surviving observation is the
-                // fragment's.
+                // would go with it, so the dropped mate stands in.
                 //
-                // So the fallback is on the *observation*, not on the indel:
+                // The fallback is on the *observation*, not on the indel:
                 // this read's own indel may exist and still be rejected by
                 // `build_indel_observation`'s end-of-read and mismatch filters,
                 // and the mate then still speaks for the fragment. Testing the
@@ -274,9 +308,7 @@ impl ColumnDraft {
                 // slips. That mate's shape is judged on its own: a mate whose
                 // indel was rejected is not a reference alignment, and the
                 // soft clip or repeat it carries says nothing about the mate
-                // that is. `from_hts` reaches the same rule through
-                // per-fragment votes, where `saw_reference` only ever sees
-                // indel-free mates.
+                // that is.
                 let slipped = |view: &AlignmentView<'_, '_, RastairReadExtras>| {
                     let extras = view.extra();
                     matches!(view.alignment().indel_after(), Indel::None)
@@ -648,10 +680,9 @@ impl MateObservations {
 /// right.
 ///
 /// Deduplication keeps one read per fragment, but the soft-clip and
-/// noisy-reference counts are properties of the *fragment*: `from_hts` votes
-/// per fragment before it deduplicates, so whatever either mate shows counts
-/// once. Reading them off the surviving read alone loses whatever only the
-/// dropped mate showed.
+/// noisy-reference counts are properties of the *fragment*: whatever either
+/// mate shows counts once. Reading them off the surviving read alone loses
+/// whatever only the dropped mate showed.
 ///
 /// The mate must clear [`observed`], the same bar the kept read cleared, so it
 /// cannot contribute evidence a read in its own right would have been denied.
@@ -804,7 +835,24 @@ mod tests {
     use seqair::bam::cigar::{CigarOp, CigarOpType};
     use seqair::bam::pileup::PileupEngine;
     use seqair::bam::record_store::{CustomizeRecordStore, RecordStore, SlimRecord};
+    use seqair::bam::{BamHeader, MateFields};
+    use seqair::reader::{ResolveTid, Tid};
     use seqair_types::{BamFlags, Pos0, Strand};
+
+    /// The only reference the test reads are on; mates are only linked when
+    /// both records name the same one.
+    fn tid0() -> Tid {
+        0u32.resolve_tid(&BamHeader::synthetic(1, 1_000)).unwrap()
+    }
+
+    /// A mate on the test reference at `pos`; a negative `pos` means no mate position.
+    fn mate_at(pos: i32) -> MateFields {
+        MateFields {
+            tid: Some(tid0()),
+            pos: u32::try_from(pos).ok().and_then(Pos0::new),
+            template_len: None,
+        }
+    }
 
     /// The parts of `RastairRecordFilter::compute` these tests need: strand
     /// from the flags, soft-clip detection, and the read-end mask window.
@@ -915,24 +963,21 @@ mod tests {
                     &read.bases,
                     &read.quals,
                     &[],
-                    0,
-                    0,
-                    mate_pos,
-                    0,
+                    Some(tid0()),
+                    mate_at(mate_pos),
                     &mut extras,
                 )
                 .unwrap();
         }
         // Linking (and sorting) is `prepare_for_pileup`'s job at the point the
-        // engine is built, so this fixture no longer has to remember either —
-        // reads may be listed in any order.
+        // engine is built, so reads may be listed in any order.
         store
     }
 
-    /// The overlapping-pair rule as it was before mate links: group the
-    /// column's surviving alignments by qname and, on the second one, drop
-    /// whichever `resolve_pair` chose. An independent oracle — it reaches the
-    /// answer by matching names, which is exactly what the new code does not do.
+    /// The overlapping-pair rule by read name: group the column's surviving
+    /// alignments by qname and, on the second one, drop whichever
+    /// `resolve_pair` chose. An independent oracle — it reaches the answer by
+    /// matching names, which is exactly what the mate links do not do.
     fn kept_by_name_collector(
         column: &PileupColumn<'_, RastairReadExtras>,
         params: &PileupMappingParams,
@@ -1079,9 +1124,7 @@ mod tests {
 
     /// Overlap dedup keeps one read per fragment, and the rule can keep the
     /// mate that does *not* span the indel. The fragment's indel evidence must
-    /// survive that: `from_hts` votes per fragment before deduplicating, so it
-    /// never lost one, and the seqair path has to reach the same answer through
-    /// the column's `pair_indel`.
+    /// survive that: the dropped mate stands in.
     ///
     /// Fixture: mates agree on the anchor base, so the rule drops the right
     /// mate — which is the one carrying the deletion.
@@ -1168,9 +1211,8 @@ mod tests {
     /// caller owns. A rule keyed on the indel alone (seqair's
     /// `PileupColumn::pair_indel`: "own indel wins, the mate is never
     /// consulted") therefore short-circuits on a read whose own indel is about
-    /// to be thrown away, and the fragment contributes nothing. `from_hts` gets
-    /// this right by giving every mate a turn and taking the first observation
-    /// that survives.
+    /// to be thrown away, and the fragment contributes nothing. The right answer
+    /// gives every mate a turn and takes the first observation that survives.
     ///
     /// Fixture: the mates disagree on the anchor base and the *right* mate is
     /// first-in-template, so the rule drops the left one — and the surviving
@@ -1323,9 +1365,9 @@ mod tests {
     /// is actually a reference alignment. Here the kept mate carries the
     /// deletion 1 bp into itself — rejected by the end-of-read cutoff, so the
     /// fragment casts no vote — and the dropped mate is an indel-free alignment
-    /// that was soft-clipped. `from_hts` counts that fragment as noisy
-    /// reference; judging the kept read's own indel status instead counted it
-    /// as clean reference, one read more in every such indel's depth.
+    /// that was soft-clipped. That fragment is noisy reference; judging the kept
+    /// read's own indel status instead would count it as clean reference, one
+    /// read more in every such indel's depth.
     #[test]
     fn a_soft_clipped_mate_makes_a_voteless_fragment_noisy_reference() {
         let (reads, params) = noisy_reference_fixture(true);
@@ -1340,7 +1382,7 @@ mod tests {
     /// dropped mate carries the rejected deletion behind its soft clip. A mate
     /// with an indel is not a reference alignment, so its clip says nothing
     /// about the fragment's reference support — OR-ing the shapes over both
-    /// mates counted this fragment as noisy, one read fewer than `from_hts`.
+    /// mates would count this fragment as noisy, one clean read too few.
     #[test]
     fn a_soft_clipped_indel_mate_does_not_make_a_clean_fragment_noisy() {
         let (reads, params) = noisy_reference_fixture(false);
@@ -1354,11 +1396,11 @@ mod tests {
     /// A deletion's REF bases must come from the reference *at the deletion*,
     /// which is `genomic_pos + 1 - segment.start` into the segment's sequence.
     ///
-    /// The regression this guards: the loop's genomic `pos` was shadowed by
-    /// `view.qpos()`, a read-local offset, so the subtraction saturated to 0 and
-    /// the allele became the segment's opening bases — real-looking sequence
-    /// from the wrong locus. A segment starting at 0 cannot see this, because
-    /// there the clamp and the correct answer coincide for a read at offset 0.
+    /// Reading it at `view.qpos()`, a read-local offset, instead of the genomic
+    /// `pos` saturates the subtraction to 0 and returns the segment's opening
+    /// bases — real-looking sequence from the wrong locus. A segment starting
+    /// at 0 cannot see this, because there the clamp and the correct answer
+    /// coincide for a read at offset 0.
     #[test]
     fn deletion_allele_reads_the_reference_at_the_deletion_site() {
         const START: u64 = 1000;
@@ -1393,10 +1435,8 @@ mod tests {
                 &[Base::A, Base::A, Base::A, Base::A, Base::T, Base::T, Base::G, Base::G],
                 &[40u8; 8],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1457,10 +1497,8 @@ mod tests {
                     &[Base::T, Base::G, Base::T, Base::T],
                     &[40u8; 4],
                     &[],
-                    0,
-                    -1,
-                    0,
-                    0,
+                    Some(tid0()),
+                    MateFields::default(),
                     &mut extras,
                 )
                 .unwrap();
@@ -1523,10 +1561,8 @@ mod tests {
                     &[Base::T, Base::T, Base::C, Base::A],
                     &[40u8; 4],
                     &[],
-                    0,
-                    -1,
-                    0,
-                    0,
+                    Some(tid0()),
+                    MateFields::default(),
                     &mut extras,
                 )
                 .unwrap();
@@ -1588,10 +1624,8 @@ mod tests {
                 &[Base::T, Base::T, Base::C, Base::A],
                 &[40u8; 4],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1636,10 +1670,8 @@ mod tests {
                 &[Base::T, Base::A, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1689,10 +1721,8 @@ mod tests {
                 &[Base::G, Base::G, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                -1,
-                0,
-                0,
+                Some(tid0()),
+                MateFields::default(),
                 &mut extras,
             )
             .unwrap();
@@ -1742,10 +1772,8 @@ mod tests {
                 &[Base::C, Base::G, Base::T],
                 &[40u8; 3],
                 &[],
-                0,
-                0,
-                3,
-                0,
+                Some(tid0()),
+                mate_at(3),
                 &mut extras,
             )
             .unwrap();
@@ -1764,10 +1792,8 @@ mod tests {
                 &[Base::T, Base::G, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                0,
-                2,
-                0,
+                Some(tid0()),
+                mate_at(2),
                 &mut extras,
             )
             .unwrap();
@@ -1832,10 +1858,8 @@ mod tests {
                 &[Base::C, Base::G, Base::T],
                 &[40u8; 3],
                 &[],
-                0,
-                0,
-                3,
-                0,
+                Some(tid0()),
+                mate_at(3),
                 &mut extras,
             )
             .unwrap();
@@ -1855,10 +1879,8 @@ mod tests {
                 &[Base::T, Base::G, Base::T, Base::T],
                 &[40u8; 4],
                 &[],
-                0,
-                0,
-                2,
-                0,
+                Some(tid0()),
+                mate_at(2),
                 &mut extras,
             )
             .unwrap();
@@ -1890,7 +1912,7 @@ mod tests {
         assert!(checked, "CpG-C column must be produced");
     }
 
-    // ── differential: mate links vs. the old name-collector rule ────────────
+    // ── differential: mate links vs. pairing by read name ───────────────────
 
     const OT_FIRST: u16 = 99; // paired, proper, mate reverse, first in template
     const OT_SECOND: u16 = 147; // paired, proper, reverse, second in template
@@ -2079,8 +2101,8 @@ mod tests {
     }
 
     /// `--max-coverage` counts reads that pass the filters. Two MAPQ 0 reads
-    /// arrive first at the column; with a cap of 2 they used to be the two the
-    /// engine kept, and the column came out empty.
+    /// arrive first at the column; with a cap of 2 they must not be the two the
+    /// engine keeps, or the column comes out empty.
     #[test]
     fn coverage_cap_counts_filtered_reads_only() {
         let reads = vec![

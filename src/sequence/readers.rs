@@ -1,3 +1,14 @@
+//! BAM/CRAM and FASTA readers: [`SeqairReaders`] for `call` and `ml train`, the
+//! htslib [`Readers`] for `call-reads` and the BAM rewrite.
+//!
+//! Each record's OT/OB strand is assigned once, when seqair loads it
+//! (`RastairRecordFilter::compute`), and kept in [`RastairReadExtras`]: from
+//! the SAM flags, or with `--guess-read-orientation` from the read's mismatch
+//! motifs (the rule is in `docs/src/calling/strand-guesser.md`; `call-reads`
+//! applies it to htslib records in `hts_utils`). To compare strand modes on a
+//! BAM, `tests/call_cli.rs` writes `call --cpgs-only --bed` and compares the
+//! per-CpG `beta_est`, `unmod` and `mod` columns.
+
 use crate::{
     sequence::{
         ChunkRegion, Region, SelectedRegion, chunked::ChunkedRegions, segementation::Segment,
@@ -17,12 +28,8 @@ use rust_htslib::bam::{self, HeaderView, Read as _};
 use seqair_types::SmolStr;
 use tracing::{debug, instrument, trace};
 
-// ── seqair path ───────────────────────────────────────────────────────────────
-
-#[cfg(feature = "experimental-seqair")]
 pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
 
-#[cfg(feature = "experimental-seqair")]
 mod seqair_readers {
     use crate::{
         call::{
@@ -113,17 +120,7 @@ mod seqair_readers {
             if rec.extra(store).is_ok_and(|extra| extra.mask.is_empty()) {
                 return false;
             }
-            match &self.tag_requirement {
-                TagRequirement::All => true,
-                TagRequirement::AllOf(filters) => {
-                    // Parity with the htslib path: a record whose aux block can't
-                    // be read fails a tag *requirement* (fail closed, not open).
-                    let Ok(aux) = rec.aux(store) else { return false };
-                    filters
-                        .iter()
-                        .all(|f| aux.get::<&[u8]>(f.tag()).is_ok_and(|v| v == f.value_bytes()))
-                }
-            }
+            self.tag_requirement.allows(rec.aux(store).ok())
         }
 
         fn compute(
@@ -173,7 +170,7 @@ mod seqair_readers {
         }
     }
 
-    /// Walk aligned pairs counting non-TAPS mismatches (same logic as `from_hts.rs`).
+    /// Walk aligned pairs counting non-TAPS mismatches.
     fn count_taps_aware_mismatches<U>(
         rec: &SlimRecord,
         store: &RecordStore<U>,
@@ -208,7 +205,8 @@ mod seqair_readers {
         count
     }
 
-    /// Infer OT/OB strand from mismatch-motif evidence (same logic as `from_hts.rs`).
+    /// Infer OT/OB strand from mismatch-motif evidence (the logic `call-reads`
+    /// applies to htslib records in `hts_utils::infer_strand_from_mismatch_motifs`).
     fn infer_strand_from_motifs<U>(
         rec: &SlimRecord,
         store: &RecordStore<U>,
@@ -234,7 +232,7 @@ mod seqair_readers {
             std::cmp::Ordering::Greater => Some(Strand::OT),
             std::cmp::Ordering::Less => Some(Strand::OB),
             std::cmp::Ordering::Equal => {
-                // Tie: pseudo-random from qname+pos+flags (same approach as from_hts.rs)
+                // Tie: pseudo-random from qname+pos+flags
                 let name = rec.qname(store).unwrap_or(&[]);
                 Some(pseudo_random_strand_from_bytes(name, rec.pos.as_u64(), rec.flags.raw()))
             }
@@ -279,10 +277,9 @@ mod seqair_readers {
         if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
     }
 
-    /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` that exposes
-    /// the same `segments()` / `segment()` interface as the htslib `Readers`,
-    /// so the `call` path can switch between backends with minimal call-site
-    /// changes.
+    /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` with the
+    /// `segments()` / `segment()` interface the htslib `Readers` of `call-reads`
+    /// and the BAM rewrite also have.
     pub struct SeqairReaders {
         pub(super) inner: seqair::Readers<RastairRecordFilter>,
         regions: Option<CliRegionInput>,
@@ -304,7 +301,7 @@ mod seqair_readers {
             Ok(Self { inner, regions: self.regions.clone() })
         }
 
-        /// Produces the same `ChunkRegion` iterator as the htslib `Readers::segments()`.
+        /// Produces the same `ChunkRegion` iterator as `Readers::segments()`.
         #[instrument(level = "debug", skip_all)]
         pub fn segments(
             &self,
@@ -353,15 +350,14 @@ mod seqair_readers {
         }
 
         /// Fetches the FASTA sequence for `region`, returning a rastair `Segment`.
-        /// Mirrors the htslib `Readers::segment()` signature.
         #[instrument(level = "debug", skip_all)]
         pub fn segment(&mut self, region: &ChunkRegion, overfetch: u64) -> Result<Segment> {
             let last_position_to_fetch =
                 region.end.wrapping_add(overfetch).min(region.last_position);
             let start = Pos0::try_from(region.start)
                 .wrap_err_with(|| format!("region start {} is out of range", region.start))?;
-            // `last_position_to_fetch` is an exclusive bound here, as it is in the
-            // htslib arm (`FastaReader::fetch_seq` takes `[start, stop)`), while
+            // `last_position_to_fetch` is an exclusive bound here, as it is for
+            // `Readers::segment` (`FastaReader::fetch_seq` takes `[start, stop)`), while
             // seqair's span is closed on both ends — hence the `- 1`. A region
             // whose bound coincides with its start names no base at all, and a
             // closed span cannot say that, so it short-circuits to an empty
@@ -485,8 +481,7 @@ impl ReaderParams {
         Ok(Readers { fasta, bam, params: self.clone() })
     }
 
-    #[cfg(feature = "experimental-seqair")]
-    pub fn open_seqair(&self) -> Result<SeqairReaders> {
+    pub fn pileup_readers(&self) -> Result<SeqairReaders> {
         use color_eyre::eyre::WrapErr as _;
         let inner = seqair::Readers::open_customized(
             self.bam_file.path(),
@@ -498,37 +493,12 @@ impl ReaderParams {
         })?;
         Ok(SeqairReaders::new(inner, self.regions.clone()))
     }
-
-    #[cfg(feature = "experimental-seqair")]
-    pub fn pileup_readers(&self) -> Result<SeqairReaders> {
-        self.open_seqair()
-    }
-
-    #[cfg(not(feature = "experimental-seqair"))]
-    pub fn pileup_readers(&self) -> Result<Readers> {
-        self.readers()
-    }
-
-    /// Opens a worker thread's readers, named after `SeqairReaders::fork` so
-    /// the two backends' [`ReaderSource`](crate::sequence::ReaderSource) read alike.
-    #[cfg(not(feature = "experimental-seqair"))]
-    pub fn fork(&self) -> Result<Readers> {
-        self.readers()
-    }
 }
 
 pub struct Readers {
     pub fasta: FastaReader,
     pub bam: bam::IndexedReader,
     params: ReaderParams,
-}
-
-/// htslib readers cannot be shared between threads, so workers keep only what
-/// opened them.
-impl From<Readers> for ReaderParams {
-    fn from(readers: Readers) -> Self {
-        readers.params
-    }
 }
 
 impl Readers {
@@ -885,7 +855,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "experimental-seqair")]
     mod seqair_fasta_filtering {
         use super::*;
 
@@ -896,7 +865,7 @@ mod tests {
             let params =
                 ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let chunks: Vec<ChunkRegion> = readers.segments(u64::MAX, 0)?.collect();
 
             let contigs: std::collections::HashSet<&str> =
@@ -917,7 +886,7 @@ mod tests {
             let params =
                 ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let result = readers.segments(u64::MAX, 0).map(Iterator::count);
             assert!(result.is_err(), "expected an error when no BAM contig is in the FASTA");
             Ok(())
@@ -937,7 +906,7 @@ mod tests {
                 regions: Some(regions),
             };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let result = readers.segments(u64::MAX, 0).map(Iterator::count);
             assert!(result.is_err(), "explicit region absent from FASTA must be a hard error");
             Ok(())
