@@ -92,9 +92,9 @@ impl IndelRecords {
 /// An event is called when its margin reaches
 /// [`Margin::PRESENT`](crate::call::pair_hmm::Margin::PRESENT). Two called
 /// events at one anchor make a compound het, genotyped by the cluster's called
-/// pair ([`crate::call::pair_hmm::Verdict::called_pair`]). Any other called
-/// event takes its copies and `GC` from
-/// [`crate::call::pair_hmm::Verdict::dosage`], as SNVs do. A scored event that is not
+/// pair ([`crate::call::pair_hmm::Verdict::called_pair`]), as is any other
+/// called event, its `GC` the event's own GQ
+/// ([`crate::call::pair_hmm::Verdict::dosage`]), as SNVs have. A scored event that is not
 /// called stays as a `0/0` call. There is no model and no strand gate; on
 /// chr12 no strand test did better than none. An allele the pair-HMM did not
 /// score, past the cluster's leading events or without a read to score it on,
@@ -132,19 +132,18 @@ pub fn call_on_pair_hmm(scores: &HaplotypeScores, pos: u32) -> IndelRecords {
 
     let separate = here.iter().filter_map(|&event| {
         let quality = verdict.margin(event)?.qual();
-        let pair_copies = verdict.copies_of(event);
-        if pair_copies == 0 {
-            return call(event, GenotypeTag::hom_ref(), quality, verdict.quality);
-        }
-        let (copies, genotype_quality) = match verdict.dosage(event) {
-            Some(dosage) => (dosage.copies, dosage.gq),
-            None => {
-                debug!(pos, ?event, "no dosage for a called indel, keeping the called pair");
-                (pair_copies, verdict.quality)
-            }
+        let genotype = match verdict.copies_of(event) {
+            0 => return call(event, GenotypeTag::hom_ref(), quality, verdict.quality),
+            1 => GenotypeTag::ref_het(ONE),
+            _ => GenotypeTag::hom_alt(ONE),
         };
-        let genotype =
-            if copies >= 2 { GenotypeTag::hom_alt(ONE) } else { GenotypeTag::ref_het(ONE) };
+        let genotype_quality = verdict.dosage(event).map_or_else(
+            || {
+                debug!(pos, ?event, "no dosage for a called indel, GC is the pair's");
+                verdict.quality
+            },
+            |dosage| dosage.gq,
+        );
         call(event, genotype, quality, genotype_quality)
     });
     IndelRecords::Separate(separate.collect())
@@ -224,17 +223,15 @@ mod tests {
     }
 
     /// The best pair holds the second allele, but too weakly to call it, so
-    /// the second is a `0/0`. The first takes its dosage, the likeliest pair
-    /// carrying it, which still holds the second: a het either way, though
-    /// the called pair without the second is a homozygote when no read
-    /// carries the reference.
+    /// the second is a `0/0` and the first takes the zygosity the reads give
+    /// it without the second: a homozygote when no read carries the
+    /// reference, a het when one does.
     #[test]
     fn an_uncalled_half_of_a_compound_leaves_the_other_alone() {
         let hom = scores(&["A", "AA"], &[([-9.0, -1.0, -9.0], 2), ([-9.0, -1.5, -1.0], 4)]);
-        assert_eq!(hom.verdict.copies_of(EventIdx::new(0).expect("event")), 2);
         assert_eq!(
             on_pair_hmm(&hom),
-            [(deletion("A"), GenotypeTag::RefHet(ALT_1)), (deletion("AA"), GenotypeTag::HomRef)]
+            [(deletion("A"), GenotypeTag::HomAlt(ALT_1)), (deletion("AA"), GenotypeTag::HomRef)]
         );
         let het = scores(
             &["A", "AA"],

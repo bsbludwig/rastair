@@ -823,13 +823,13 @@ pub struct Verdict {
     pair_scores: SmallVec<(HapPair, f64), MAX_PAIRS>,
 }
 
-/// How many chromosomes carry an event, given that it is present.
+/// How many chromosomes of the called pair carry an event.
 #[derive(Debug, Clone, Copy)]
 pub struct Dosage {
     /// 1 or 2.
     pub copies: u8,
     /// Phred of the chance the other count is right, under a flat prior over
-    /// the pairs carrying the event.
+    /// the pairs consistent with the presence calls.
     pub gq: Phred,
 }
 
@@ -860,27 +860,33 @@ impl Verdict {
         self.called.copies_of(event)
     }
 
-    /// `event`'s copy count, given that it is present: that of the likeliest
-    /// pair carrying it, each pair scored by its best account, a tie going to
-    /// the earlier pair in `GL` order. `None` when no pair carrying it
-    /// explains the reads.
+    /// `event`'s copies in the called pair, and their GQ: the posterior of
+    /// the other copy count under a flat prior over the pairs consistent with
+    /// the presence calls, each at its best account. So every record of the
+    /// cluster writes one genotype, the called pair. `None` when the called
+    /// pair lacks the event.
     ///
     /// No genotype prior: a het prior of 0.184 log10 (GIAB's het:hom ratio)
     /// is finer than the likelihood's tie margins are calibrated, so it does
     /// not compose with them; it cost both SNV and indel records on chr12.
     #[must_use]
     pub fn dosage(&self, event: EventIdx) -> Option<Dosage> {
-        let carrying = || self.pair_scores.iter().filter(|(pair, _)| pair.carries(event)).copied();
-        let (best_pair, best) = carrying().fold(None, |best, (pair, log10)| match best {
-            Some((_, top)) if top >= log10 => best,
-            _ => Some((pair, log10)),
-        })?;
+        let copies = self.called.copies_of(event);
+        if copies == 0 {
+            return None;
+        }
+        let consistent = |pair: &HapPair| {
+            self.margins.iter().enumerate().all(|(i, margin)| {
+                EventIdx::new(i).is_some_and(|e| margin.is_present() == pair.carries(e))
+            })
+        };
+        let scores = || self.pair_scores.iter().filter(|(pair, _)| consistent(pair));
+        let best = scores().map(|&(_, log10)| log10).fold(f64::NEG_INFINITY, f64::max);
         if !best.is_finite() {
             return None;
         }
-        let copies = best_pair.copies_of(event);
         let (mut same, mut other) = (0.0, 0.0);
-        for (pair, log10) in carrying() {
+        for &(pair, log10) in scores() {
             let weight = 10f64.powf(log10 - best);
             if pair.copies_of(event) == copies {
                 same += weight;
