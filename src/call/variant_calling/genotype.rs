@@ -530,9 +530,10 @@ mod tests {
     /// The SNV shares its cluster with a het deletion, and every read covering
     /// it carries the deletion as well: no read says whether the other
     /// chromosome carries the SNV, so `(ref, del+SNV)` and `(SNV, del+SNV)`
-    /// tie and the het prior writes a het, at a `GC` that admits the tie.
+    /// all but tie. The carriers' mismatches against the SNV alone tip it,
+    /// by a hair, to the homozygote, at a `GC` that admits the tie.
     #[test]
-    fn a_linked_snv_the_reads_cannot_place_is_a_low_quality_het() {
+    fn a_linked_snv_the_reads_cannot_place_has_a_low_quality() {
         use crate::call::{
             pair_hmm::{Allele, Cluster, Event, HaplotypeScores, ReadScores, fixtures::NO},
             pileup::indels::IndelAllele,
@@ -555,7 +556,7 @@ mod tests {
         let engine = site
             .estimate_genotype(None, ErrorModel::default(), SnvGenotype::Engine)
             .expect("a genotype");
-        assert_eq!(engine.genotype, GenotypeTag::ref_het(ALT_INDEX_1));
+        assert_eq!(engine.genotype, GenotypeTag::hom_alt(ALT_INDEX_1));
         let gc = -10.0 * engine.confidence.log10();
         assert!(gc <= 5.0, "{gc}");
     }
