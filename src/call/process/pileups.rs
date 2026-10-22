@@ -1,3 +1,35 @@
+//! The segment's column loop, and the reads the SNV engine holds on to.
+//!
+//! **The SNV engine** (`--snv-engine`, on by default; the flag takes `=`, so a
+//! positional can follow it) is a cascade:
+//!
+//! 1. The column loop scores only the indel clusters and keeps each
+//!    sub-segment's engine (`PileupGuard::into_inner`) in [`HeldReads`],
+//!    returned with the columns by `call::segment_columns`.
+//! 2. `process_segment` scores every alt with the model's top-level forests.
+//! 3. [`HeldReads::score_snv_clusters`] scores, as pair-HMM substitution
+//!    events, the alts `from_seqair::snv_events` admits whose first score is at
+//!    least `CASCADE_MIN_SCORE`.
+//! 4. The model's engine forests (`RastairFlatModel.snv_engine`) score exactly
+//!    the alts the engine scored (`PileupMetrics::engine_scored`) again,
+//!    reading its verdict as the six `ev_*` features.
+//!
+//! - Only engine-scored alts are rescored: the engine forests read
+//!   `ev_scored` 0 as "the gate refused", so an alt rescored without a verdict
+//!   is rejected. The first stage must be engine-off forests for the same
+//!   reason.
+//! - `ml train --snv-engine` collects twice, engine off and then as `call`
+//!   scores (`call_indels` on), and fits the engine forests on the alts the
+//!   engine scored. Run `call --snv-engine` with `--experimental-indels`, or
+//!   the `ev_*` features come from other clusters than the forests saw.
+//! - A second scoring replaces the first, so `apply_ml_scores` sets
+//!   `low_ml_score` rather than adding it, and `propagate_denovo_pass_flags`
+//!   assigns its flag rather than only raising it.
+//! - `snv_events_leave_the_indel_records_alone` (`tests/call_cli.rs`) and
+//!   `the_engine_forests_see_only_what_the_cascade_rescores` (`train.rs`)
+//!   guard the two invariants. `models/PROVENANCE.md` records how the bundled
+//!   model was trained.
+
 use crate::{
     call::{
         PreFilterInputs, RecordFilters, require_tags::TagRequirement,

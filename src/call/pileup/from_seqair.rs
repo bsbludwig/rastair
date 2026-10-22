@@ -18,25 +18,57 @@
 //!
 //! - A deletion's REF comes from the deletion site: `view.qpos()` is a read
 //!   offset, not the column's genomic `pos` (seqair's `QPos` keeps them apart).
-//! - Tract runs are measured one base past the anchor, where a left-aligned
-//!   indel starts; only `ref_features::indel_tract_runs_at` knows this.
 //! - Overlap dedup keeps one read per fragment and can keep the mate that does
 //!   not span the indel, so the dropped mate stands in:
-//!   `build_indel_observation(view).or_else(mate)`. The fallback is keyed on
-//!   the observation, because `build_indel_observation` rejects indels near a
-//!   read end or on reads with too many non-TAPS mismatches; seqair's
-//!   `pair_indel` ("own indel wins") cannot express that, so it is not used.
-//!   On chr12 this is worth +2.3 insertion / +1.5 deletion F1.
-//! - `soft_clip_count` and the noisy-reference count describe a fragment:
-//!   whatever either mate shows counts once, and a fragment is noisy
-//!   reference only when it contributed no observation and a mate that is a
-//!   reference alignment slips (terminal repeat or soft clip).
+//!   `build_indel_observation(view).or_else(mate)`. seqair's `pair_indel`
+//!   ("own indel wins, the mate is never consulted") is not used.
+//! - The CIGAR counts only pick candidates: `IndelCounts` holds, per allele,
+//!   the fragments whose alignment carries it, and nothing reads it for a
+//!   call. There are no read-level indel filters; the pair-HMM weighs each
+//!   read's alignment itself.
+//!
+//! **Clusters.** Indel columns are not scored while they are built. After a
+//! sub-segment's column loop, kept indel columns within `CLUSTER_GAP` of the
+//! previous one form a cluster (chained, so it can be longer), scored once by
+//! `score_cluster` through the sub-segment's `ClusterContext` over the reads
+//! `records_overlapping(first, last)` returns; the engine's store stays valid
+//! until it is reclaimed. Every column of a cluster shares its
+//! `Arc<HaplotypeScores>`.
+//!
+//! - `WindowMask`: positions of the sub-segment's kept columns with at least
+//!   `MIN_READS` reads of a base TAPS cannot explain are `Base::Unknown` in the
+//!   haplotype window, which compair matches to any base. A `T` over a `C`
+//!   counts only on OB and an `A` over a `G` only on OT, so methylation never
+//!   masks. Without it a nearby SNV absent from every haplotype is charged to
+//!   the reads carrying it, and a stray indel allele that absorbs the mismatch
+//!   gets the credit.
+//! - `cluster_candidates`: a cluster's events are its columns' alleles with
+//!   at least `--min-indel-ao` reads, ranked by read count, then anchor, then
+//!   `allele_order` (insertions first), as many as `Cluster::admits`: at most
+//!   `MAX_EVENTS`, and two per anchor, since a third could not share a pair
+//!   with the other two and would take a neighbour's slot without ever being
+//!   called. That ranking is record order: `Cluster::events`, `EventIdx`, the
+//!   calls and the `ALT` column keep it. An allele not ranked in is never
+//!   called.
+//! - The reads are not the column's counted ones: one per fragment (the mate
+//!   reaching further), MAPQ at least the column minimum, a known strand, soft
+//!   clips included where the segment's reference reaches them, thinned evenly
+//!   to `--max-coverage`.
+//! - `snv_events` admits an SNV alt to the SNV engine (see
+//!   `call::process::pileups`): two reads and 5 % of the column, and a count a
+//!   het could produce on the strand TAPS leaves informative. An SNV within
+//!   `CLUSTER_GAP` of an indel chain joins the chain's events as context
+//!   (`snv_clusters`); such a cluster (`ClusterPass::Snvs`) fills `snv_scores`
+//!   and never writes an indel record.
 //!
 //! Testing: `tests/data/test.bam` cannot produce an indel call (no two of its
-//! indel reads agree on an allele), so indel tests build their own reads; a
-//! fixture segment must not start at 0, where position bugs and the right
-//! answer coincide (use `segment_at`); and a unit test must set
-//! `params.call_indels` to reach the indel branch at all.
+//! indel reads agree on an allele), so indel tests build their own reads or a
+//! `Scenario`; a fixture segment must not start at 0, where position bugs and
+//! the right answer coincide (use `segment_at`); and a unit test must set
+//! `params.call_indels` to reach the indel branch at all. The cluster pieces
+//! have unit tests here and in `pair_hmm`; the CLI scenario
+//! `the_pair_hmm_calls_two_events_of_one_cluster` fails with one event per
+//! haplotype.
 
 use super::indels::{IndelAllele, IndelAlleleCounts, IndelCounts, Scored};
 use crate::{
@@ -1329,8 +1361,38 @@ fn build_indel_observation(
     }
 }
 
-/// The pair-HMM on the GPU: a region's clusters queued into launches, each
-/// run by the worker's own GPU thread while the worker prepares the next.
+/// The pair-HMM on the GPU (`--gpu`): a region's clusters queued into
+/// launches, each run by the worker's own GPU thread while the worker prepares
+/// the next.
+///
+/// The calls equal the CPU path's: the kernel is bit-identical to compair's
+/// CPU kernels, and a pair whose `f32` score falls under its precision floor is
+/// rescored in `f64` on the CPU (`GpuScore::or_rescore`).
+///
+/// - `pair_hmm::prepare` builds a cluster's haplotypes, reads and bands;
+///   `Prepared::align` runs the CPU kernel, `Prepared::push` adds the pairs to
+///   a `GpuPairs` plan and `Prepared::finish_gpu` turns a launch's scores back
+///   through the same `rows`. Keep the arms sharing everything but the kernel
+///   call.
+/// - One GPU thread per worker (`Lane`, a `thread_local`): the worker sends a
+///   plan, keeps preparing, and collects later. The aligner's buffers live on
+///   that thread and grow to the largest launch once. The wait is compair's
+///   `Wait::Block`; "Buffer with 'scores' label is still mapped" on every
+///   launch after the first means a lost mapping callback there. A failed
+///   launch rebuilds the lane's aligner.
+/// - A launch is at most `MAX_LAUNCH_PAIRS` pairs (a single larger cluster
+///   launches alone), so a worker holds at most two launches' reads. The
+///   per-region `Batch` is flushed after each sub-segment's cluster loop,
+///   before the next sub-segment's reads load; a batch dropped with a launch in
+///   flight drains it in `Drop`, or the next region would collect it.
+/// - Every failure (no adapter, a plan too large, a lost thread, a failed
+///   launch) falls back to the CPU kernel for the clusters concerned, with a
+///   `warn!`. Without `--gpu` this module is never entered, and `cargo test`
+///   does not exercise it.
+/// - `RASTAIR_LOG=rastair::call::pileup::from_seqair=debug` logs a line per
+///   launch with running totals; `grep -c "Pair-HMM GPU launch"` checks that
+///   the GPU path ran. Score every arm of a comparison with `--gpu` or every
+///   arm without it: the two are not bitwise identical.
 mod gpu {
     use super::{ClusterPass, HaplotypeScratch, PileupMetrics, Prepared, assign_scores};
     use compair::gpu::{GpuAligner, GpuContext, GpuError, GpuPairs, GpuScore, KernelOptions, Wait};

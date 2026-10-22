@@ -14,6 +14,16 @@
 //! snapshot only for an intended layout change, which needs a retrained
 //! model. The same names head the `--feature-analytics` and
 //! `--export-features` outputs of `ml train`.
+//!
+//! - **One column pipeline.** `call` and `ml train` both get their columns from
+//!   `call::segment_columns`; a per-column quantity a feature reads belongs
+//!   there, or training will not see it.
+//!   `train::tests::training_and_calling_see_the_same_common_features` checks
+//!   that the two agree.
+//! - **Layout fingerprint.** `RastairFlatModel.feature_layout` holds an FNV-1a
+//!   hash of each forest's `feature_names()`; `load_combined_model` refuses a
+//!   model whose fingerprint differs from this build's, or is missing, and says
+//!   to retrain. A layout change ships a retrained bundled model.
 
 use super::types::{MlFeatureSet, MlModel};
 use crate::metrics::{MetricsForAlt, PileupMetrics};

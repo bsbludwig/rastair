@@ -5,6 +5,37 @@
 //! spanning forest gives the initial orientation and single-site flips refine
 //! it. The solver decides one bit per site: which of the site's two alleles
 //! haplotype 1 carries.
+//!
+//! The phaser trusts a link by the fragments behind it, not by base quality.
+//!
+//! - A zero-weight edge is not an edge: cancelling cis and trans evidence
+//!   would otherwise emit a coin toss as a confident phase.
+//! - Votes and links are capped. An observation costs at most `Cost::CAP` (one
+//!   fragment's link is wrong that often from chimeras and mismapped mates,
+//!   whatever its base qualities), and a site pair's link by its fragments
+//!   ([`Link::capped_weight`]): fragment errors share causes and do not
+//!   multiply out.
+//! - Blocks are cut after solving: [`switch_qualities`] gives every cut between
+//!   consecutive block sites the MEC rise of switching everything after it,
+//!   and `solve` splits the block where that is below
+//!   `--phase-min-switch-quality`. Transitive evidence (A–B, B–C, A–C) is
+//!   summed before the cut, which is why cutting beats gating links before the
+//!   solve. Refinement tests use `solve_uncut`.
+//! - `PQ` is `Cost::calibrated` of the weaker adjacent cut, an empirical table
+//!   rather than the raw sum: a cut crossed by ten fragments is not wrong once
+//!   in 10^12.
+//! - Guarded sites stay out of the solve ([`solved_supports`]).
+//!   [`attach_guarded`] then puts each into the one piece its capped links
+//!   support by at least `MIN_ATTACH` net, and [`veto_attached`] takes it out
+//!   again when three or more fragments to one site of the piece go against
+//!   the written phase and outnumber the agreeing ones two to one. Solved sites
+//!   are never vetoed, which would re-litigate the MEC; so a doubtful site can
+//!   hang on a block but never bridge two.
+//! - [`refine`] is a greedy descent run to convergence, capped at
+//!   `MAX_FLIPS_PER_SITE` flips per site; hitting the cap is a `warn!`.
+//! - Test traps: `fixtures::column` sets RMS MAPQ 60, or every fixture SNV is
+//!   MAPQ-guarded; `het()` adds backing reads that link nothing, so it passes
+//!   the two-vote floor.
 
 use super::{
     Cost,

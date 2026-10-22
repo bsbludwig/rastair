@@ -1,5 +1,13 @@
-//! The compair side: haplotypes built from indel alleles, reads with their
-//! gap model, and one batched alignment per column.
+//! The compair side: haplotypes built from a cluster's events, reads with their
+//! gap model, and one batched alignment per cluster.
+//!
+//! Gaps are scored by compair's `PcrIndelModel` (GATK's PCR indel model) with
+//! the tandem-repeat gap open floored at Q20. [`prepare`] builds the cluster,
+//! haplotypes, reads and bands; [`Prepared::align`] runs the CPU kernel and
+//! [`Prepared::push`] / [`Prepared::finish_gpu`] the GPU one, both through
+//! `rows`. In an all-substitution cluster a haplotype carrying a divergent CpG
+//! goes to the kernel twice, once per level (`Levels`), and `rows` writes each
+//! score into its array.
 
 use super::{
     Allele, Cluster, Event, HapIdx, HaplotypeScores, MAX_EVENTS, MAX_HAPLOTYPES, ReadScores,

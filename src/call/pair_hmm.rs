@@ -8,6 +8,73 @@
 //! is stored is one row of log10 likelihoods per read, with the [`Verdict`]
 //! they add up to: the diploid pair of haplotypes and each event's [`Margin`]
 //! of presence. The scoring is compair's; the stored scores are plain data.
+//!
+//! **Haplotypes are subsets of events.** [`HapIdx`] is a bitmask over
+//! [`EventIdx`]; [`Cluster::new`] keeps the subsets one chromosome can carry
+//! (`Event::compatible`: not two at one anchor, no deletion over another
+//! event's anchor), so at most eight haplotypes and alignments per read. The
+//! scoring applies a subset's events later anchor first, so an earlier
+//! anchor's window index still holds, and keeps one haplotype per sequence
+//! (`drop_respellings`, the fewest events): two subsets can spell one sequence
+//! (an inserted `T` before a run plus the deletion of the `C` after it is the
+//! `C>T`; an insertion and a deletion in one run are the reference), and
+//! identical haplotypes tie every pair over them. A dropped event is never
+//! called. Subsets matter: two homozygous deletions 13 bp apart need the
+//! haplotype carrying both, or one loses its reads to the other's mismatches.
+//!
+//! **The verdict** ([`Verdict`], once per cluster) is over pairs of
+//! haplotypes. An `Account` is a pair, or a pair with the reads of one
+//! `Artefact` mixed in at `ARTEFACT_FRACTIONS` less
+//! `ARTEFACT_PRIOR_LOG10`: an event the pair lacks, or the reference for a
+//! pair without it. That keeps 7 alt reads in 73 from being a genotype while 4
+//! in 8 stay a het, and one stray reference read from making a homozygote a
+//! het. Margins are per event, the best account whose pair carries it over the
+//! best whose pair does not; an event is called at [`Margin::PRESENT`] and
+//! QUAL is ten times the margin. [`Verdict::called_pair`], the likeliest pair
+//! carrying exactly the called events, is the indel genotype, so "present but
+//! not in GT" cannot happen while no anchor has more than two events.
+//! `quality` (`GC`) is the called pair's flat-prior quality over the pure
+//! pairs, low when it is not the best pair; the phasing gate reads it.
+//!
+//! **A read's likelihood under a pair** ([`ReadScores`]):
+//!
+//! - Each read is mixed with its mismapping chance `10^(-MAPQ/10)`, explained
+//!   by its best haplotype (`ReadScores::mapq_mixed`), so a stray low-MAPQ
+//!   read costs any pair at most `MAPQ / 10` log10.
+//! - Every CpG is scored at `UNKNOWN_BETA` (½), which cancels wherever both
+//!   haplotypes of a pair carry it. In an all-substitution cluster a CpG one
+//!   haplotype has and another lacks (a de-novo `T>C`, a `C>T` at a reference
+//!   CpG) is profiled instead: its carrier is scored at the converting strand's
+//!   level as the pair's only carrier ([`ReadScores::log10_alone`]) and as both
+//!   chromosomes (`log10_doubled`), and a pair reads the doubled score when the
+//!   partner carries all the haplotype's divergent CpGs. At ½ every converted
+//!   OT read of a methylated hom-alt de-novo CpG costs the homozygote.
+//!   Shortcuts: clusters with an indel stay at ½; `log10_alone` is what
+//!   assignment and phasing votes read, having no pair; a haplotype whose
+//!   partner carries only some of its CpGs is scored alone at all of them;
+//!   `Partner::at` judges the partner from the non-carriers' consensus, else
+//!   the reference.
+//!
+//! **`AD` and `DP`** come from the same read set: a read is assigned to its
+//! likeliest haplotype when that beats the runner-up by `INFORMATIVE_LOG10`
+//! (GATK's informative-read threshold). It is far below `Margin::PRESENT` on
+//! purpose: the pair-HMM sums a tract gap over every placement, so one read of
+//! a 1 bp deletion in a 13-base homopolymer is only ~0.9 log10 likelier under
+//! the deletion. [`HaplotypeScores::support_over`] counts a record's events;
+//! `AD` sums to `DP`.
+//!
+//! **Dosage.** [`Verdict::dosage`] is the copy count of the best pair carrying
+//! an event, each pair at its best account, with `HET_PRIOR_LOG10` for one copy
+//! and GQ over the carrying pairs. An SNV's genotype reads it at the SNV's own
+//! site ([`HaplotypeScores::site_dosage`]: each read's best haplotype with and
+//! without the event), because a pair-of-haplotypes dosage is blind where
+//! every read covering the SNV also carries a linked het event. A `0/1` at
+//! GQ 5 or less on MAPQ 0-19 reads is the model's honest output.
+//!
+//! **TAPS twin spellings.** A deletion next to a methylated CpG has two
+//! spellings whose haplotypes differ by a `C`/`T` at the CpG; converted OT
+//! reads match the wrong one for free, so at ½ it sometimes collects them. A
+//! cluster calls one of the two; which one is still open.
 
 use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
 use seqair_types::{Base, Phred, SmallVec};
@@ -181,7 +248,7 @@ impl HapIdx {
         Self(1 << event.0)
     }
 
-    /// Position in [`ReadScores::log10`].
+    /// Position in [`ReadScores::log10_alone`].
     #[must_use]
     pub fn index(self) -> usize {
         usize::from(self.0)

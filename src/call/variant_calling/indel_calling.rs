@@ -1,3 +1,15 @@
+//! Indel records from the pair-HMM's verdict: no model, no binomial genotyper,
+//! no strand gate.
+//!
+//! [`call_on_pair_hmm`] writes the records of the events anchored at one
+//! position and no other. Two called events at one anchor make one
+//! [`IndelRecords::Compound`] `1/2` record (always PASS, QUAL the weaker
+//! margin's); otherwise one biallelic record per event, its genotype from the
+//! called pair's copies. A scored event not called stays a `0/0` call, written
+//! only under `--all` with `low_indel_qual` (read off the genotype, not the
+//! margin). Emission and `phasing::problem::indel_site` match on
+//! [`IndelRecords`] rather than re-deriving it from the genotypes.
+
 use super::GenotypeTag;
 use crate::call::{
     pair_hmm::{EventIdx, HaplotypeScores, MAX_EVENTS},

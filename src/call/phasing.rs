@@ -4,6 +4,56 @@
 //! phase, so the read pairs spanning them say which alleles share a
 //! chromosome. The per-read observations have to be captured while a pileup
 //! column is built, because `PileupMetrics` keeps no reads.
+//!
+//! Per-column data sits in `PileupMetrics.phase`; thresholds are constants
+//! except the block cut, `--phase-min-switch-quality`. `--phase` is an error
+//! under CpG-only output (`--cpgs-only`, or `--bed` alone): the pre-filter
+//! drops the variant sites before phasing runs. `problem` builds the sites
+//! and fragments, `solver` splits them.
+//!
+//! **Observations** are captured inside the column loop. A column keeps its
+//! whole list when it has `MIN_ALT_READS` reads of one non-reference base on
+//! any strand (`candidate_observations`): a converted `T` over a `C` counts
+//! too, since only the phasing gate knows whether the site is in a CpG
+//! (de-novo CpGs are not known yet). An `N` reference or an empty column is
+//! excluded, so `phase.is_some()` means there is something to use.
+//! `accepts_read` (MAPQ and base quality at least 20) applies at collection,
+//! so a read can count for depth and genotype without carrying phase.
+//! `FragmentId` is a `NonZeroU64`: seqair reports "no qname" as a missing
+//! hash, and bucketing those reads together would link every het in the
+//! region. They are dropped, and `call` warns once per run, since a missing
+//! qname is a whole-file property (CRAM with `RN=false`).
+//!
+//! **Blocks.** [`phase_segment`] runs before the overlap trim, because a site
+//! in the overlap links reads reaching into the core, and takes the segment's
+//! `is_core` predicate: each block is anchored on its first emitted site, so
+//! `PS` names a record of this file and is unique across segments, and a block
+//! with fewer than two emitted sites is not written. The solver returns raw
+//! orientations, defined only up to a flip per block; `phase_segment` is the
+//! one place that normalises them, onto the anchor, so a block opens on `0|1`.
+//! `PS` and `PQ` are written only where the genotype is phased; homozygotes
+//! never are.
+//!
+//! **Testing.** `tests/phasing_cli.rs` runs `call --phase` on a `Scenario`
+//! (`tests/utils/scenario.rs`): a pseudo-random reference with no CpG unless
+//! the test writes one, het SNVs and indels per haplotype, per-haplotype
+//! methylation converted on the read's own strand, and read pairs per
+//! haplotype and strand. `check_phasing` reads the VCF back and fails on a
+//! switch error, a phased non-het, a `PS` not naming its block's first record,
+//! or a block not opening on `0|1`. Read observations through this real path
+//! rather than attaching them to a `pileups!` fixture, and make a scenario
+//! decisive: the broken code should give a different block structure, not a
+//! weaker edge (check by breaking the code it guards). A scenario linking two
+//! blocks through one read pair gets two blocks: use two or more copies to
+//! mean "linked"; a scenario whose reads all sit in one half of its contig
+//! gives the other half a `DepthScale` below 1. `tests/data/test.bam` is a
+//! poor phasing fixture (its few het calls are C>T on a fully methylated
+//! control). `phasing_accuracy_on_an_na12878_slice` scores 200 kb of a chr12
+//! NA12878 TAPS BAM against Platinum Genomes and is the only test that sees
+//! phasing get worse on real reads; its reads stay out of git, so build the
+//! fixture with `scripts/make_phasing_slice.py tmp/taps tmp/na12878_phasing`
+//! and point `RASTAIR_PHASING_SLICE` at it, or it skips. Run it before merging
+//! phasing changes.
 
 use crate::{metrics::PileupMetrics, utils::logging::ThisIsABug as _};
 use color_eyre::eyre::OptionExt as _;

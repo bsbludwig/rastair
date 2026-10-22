@@ -1,4 +1,38 @@
 // Adapted from rastair1, (c) Benjamin Schuster-Boeckler
+//! Genotype estimation: het against hom from per-allele, per-strand aggregates,
+//! with no reads at this stage (`estimate_genotype`).
+//!
+//! - **The converting strand still sees the CpG allele.** At a C/T site whose
+//!   C is in a CpG (`cpg_origin`, reference or de-novo; G/A on OB likewise) an
+//!   OT `T` is a methylated C or the T allele and counts for neither, but an
+//!   OT `C` is an unconverted C only a chromosome carrying the C produces: with
+//!   k such chromosomes it appears with probability k/2·(1−β), β profiled out
+//!   from the strand's own unconverted fraction ([`ConfoundedStrand`]).
+//!   Dropping that strand calls a het whose OB is lopsided hom-alt; adding its
+//!   `C`s to the C allele ignores the converted reads and makes hom-alts hets.
+//! - **Two variants can form a CpG together** (`TA>CG`). `FormsDenovo` reads
+//!   the reference context, so before ML neither alt forms one; once both are
+//!   called, `process::mark_variant_pair_cpgs` marks them
+//!   `ThisBecomesC`/`ThisBecomesG` and `cpg_origin` accepts that as the
+//!   partner. It assumes the two sit on one chromosome.
+//! - **Minority reads are errors at their own quality, read by read.** The hom
+//!   hypothesis charges its minority allele `AlleleMetrics::read_error`, the
+//!   geometric mean of its reads' errors (`ln_read_error`), clamped to [the
+//!   error model's rate, ½]: `read_error^k` is then the chance the k reads are
+//!   all wrong. A read counts at ½ when its fragment's mates disagree at the
+//!   column, or when it has an indel within `INDEL_NEAR` while at most a
+//!   quarter of the column's reads have one (a gap more reads share is the
+//!   sample's indel).
+//! - **`--snv-genotype engine`** replaces the dosage with the SNV engine's
+//!   ([`HaplotypeScores::site_dosage`]) where the engine scored the alt, and
+//!   `GC` with its GQ; whether the alt is called stays the forests' decision.
+//!
+//! Methylation calling reads the genotype (`GenotypeAdjustment::HomAlt`), so a
+//! genotype flip moves that site's beta too. `tests/data/test.bam` is a fully
+//! methylated, high-quality control, so no VCF snapshot exercises these rules;
+//! the fixtures in `vcf_tests/genotyping.rs` and here do.
+//!
+//! [`HaplotypeScores::site_dosage`]: crate::call::pair_hmm::HaplotypeScores::site_dosage
 use crate::{
     call::variant_calling::{ErrorModel, SnvGenotype},
     metrics::{

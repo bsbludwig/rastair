@@ -6,6 +6,49 @@
 //! bit per site saying which allele it saw; at a C/T or G/A heterozygote whose
 //! cytosine is in a CpG, observations TAPS conversion alone explains are
 //! dropped, or methylation would read as the other allele.
+//!
+//! - The TAPS gate, `PhaseSite::taps_confounds`, is allele-set-level and
+//!   CpG-only: at a C/T site whose `C` is in a CpG (`methylation::cpg_origin`,
+//!   reference or de-novo) a `T` is evidence only on OB, at G/A an `A` only on
+//!   OT. Outside a CpG every strand counts, since mammalian non-CpG methylation
+//!   is rare. It uses `methylation::CpgSide`; do not add a second copy of its
+//!   bases and strand. Fixture trap: a bare `het()` is not in a CpG, so set
+//!   `pos_metrics.cpg` or `context.after_1`; tests of anything but the gate
+//!   should use A/C or T/G sites. Both mates share the OT/OB assignment.
+//! - A site's alleles come from the stored `GenotypeTag`, never from scanning
+//!   `pileup.alts`. `GtAllele` is in genotype space (an index into
+//!   `pileup.alts`), not `ALT` column order; `compute_genotype` remaps the
+//!   genotype and the phase call with one map, so do not phase after it.
+//! - An SNV site needs `MIN_ALT_READS` votes on each allele, counted after the
+//!   gate ([`snv_site`]): a site phased on one read is mostly a false het.
+//!   Fragments reaching fewer than two sites are dropped; fragment order is
+//!   first appearance, so the result does not depend on the hasher.
+//! - Guards cap, they do not mask. [`Guard`] marks sites whose reads are wrong
+//!   together: `AlleleMapq` (SNV only, either allele's RMS MAPQ under 50),
+//!   `Depth` (more than twice the segment's phase-site median depth times
+//!   [`DepthScale`]) and `HetDensity` (five or more other sites within
+//!   ±100 bp). The solver leaves their supports out and attaches them after.
+//! - [`DepthScale`] is the run's mapped reads per base over the segment's, so a
+//!   segment inside a collapsed repeat is judged by the run's depth. The run
+//!   side is `sequence::mapped_reads_per_base` (the index's pseudo-bins over
+//!   the 16 kb leaf bins that hold reads, capped at the contig length for a
+//!   BAM sliced to a region); the segment side is
+//!   `RastairRecordFilter.fetched_mapped` over the region length. A CRAM or an
+//!   index without counts gives one `warn!` and the segment median alone.
+//! - Indel sites ([`indel_site`]): a column can hold an SNV site and an indel
+//!   site (`SiteKind`); at a shared position the SNV record, pushed first,
+//!   anchors the block. The pair-HMM's called pair must be a het (`0/1` or the
+//!   compound) and be its best pair. The site's two haplotypes are the called
+//!   pair's own (`HapPair::split`), so a read votes with the cluster's other
+//!   events included: the carrier of a `0/1` may carry a neighbouring event,
+//!   and the event's haplotype alone may explain no read. A read votes by the
+//!   sign of its log10 ratio at cost `round(10 * |ratio|)`, capped; no base
+//!   quality or TAPS gate, the emission has weighed both. The gate is GQ 100 or
+//!   more (unclamped) and five votes per allele at Phred 10 or more
+//!   (`Cost::of_margin(Margin::PRESENT)`), counted after [`scored_vote`] drops
+//!   reads without a fragment or below the phasing MAPQ. A wrong indel bridge
+//!   is an SNV switch error, so judge the gate on SNV-only switches (whatshap
+//!   `--only-snvs`) and phased non-hets, not on indel counts.
 
 use super::{
     Cost, FragmentId, GtAllele, MIN_ALT_READS, MIN_MAPQ, PhaseObservation, SiteKind,

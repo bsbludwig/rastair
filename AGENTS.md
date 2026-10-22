@@ -24,6 +24,13 @@ Area-specific knowledge lives in module doc comments; read the one for the code 
 | area                                           | read                                                            |
 | ---------------------------------------------- | --------------------------------------------------------------- |
 | columns, the seqair engine, indel observations | `src/call/pileup/from_seqair.rs`                                |
+| indel clusters, window mask, pair-HMM on GPU   | `src/call/pileup/from_seqair.rs` (its `gpu` module)             |
+| pair-HMM: haplotypes, verdict, dosage, CpGs    | `src/call/pair_hmm.rs`, `src/call/pair_hmm/scoring.rs`          |
+| indel records                                  | `src/call/variant_calling/indel_calling.rs`                     |
+| SNV engine cascade                             | `src/call/process/pileups.rs`                                   |
+| genotype rules, `--snv-genotype`               | `src/call/variant_calling/genotype.rs`                          |
+| phasing                                        | `src/call/phasing.rs`, its `problem` and `solver` modules       |
+| measuring accuracy, comparing binaries         | `docs/measuring-accuracy.md`                                    |
 | readers, strand assignment                     | `src/sequence/readers.rs`, `docs/src/calling/strand-guesser.md` |
 | BAM rewriting, XM vs MM/ML                     | `src/bam.rs`                                                    |
 | external tool tests                            | `tests/bam_external_tools.rs`, `Dockerfile.ci`                  |

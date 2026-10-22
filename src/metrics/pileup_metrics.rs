@@ -18,6 +18,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tracing::trace;
 
+/// One covered base's metrics.
+///
+/// Pinned in size (`pileup_metrics_stays_small`): a region holds one per
+/// covered base and the pipeline walks that vec many times. Per-feature data a
+/// run may not use lives behind one `Option<Box<_>>` (`phase`, `indel_data`),
+/// so an unphased run pays one pointer.
 #[derive(Debug, Clone)]
 pub struct PileupMetrics {
     /// The region this position came from, shared by every `PileupMetrics` in
