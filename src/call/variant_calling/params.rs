@@ -22,7 +22,7 @@ pub struct VariantCallingParams {
     ///
     /// Scans read mismatches against the reference and counts `TG` versus `CA`
     /// motifs in a 2 bp window anchored at each mismatch (current+next and
-    /// previous+current), using the htslib/reference-oriented read sequence.
+    /// previous+current), using the read sequence as the BAM stores it (reference-oriented).
     /// `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads
     /// are split pseudo-randomly but reproducibly per read.
     ///

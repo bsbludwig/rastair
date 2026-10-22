@@ -386,7 +386,7 @@ fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
     };
     let changed = off.iter().filter(|(key, off_call)| on.get(key) != Some(off_call)).count();
 
-    assert!(changed > 0, "rescue should change at least one CpG on the seqair backend");
+    assert!(changed > 0, "rescue should change at least one CpG");
     assert!(
         evidence(&on) > evidence(&off),
         "rescue should add net methylation observations ({} -> {})",
@@ -1383,16 +1383,14 @@ fn write_deletion_bam(
     Ok(())
 }
 
-/// A deletion's REF allele must be the reference *at the deletion*.
+/// A deletion's REF allele must be the reference *at the deletion*, not at the
+/// start of the enclosing segment; a wrong REF is real-looking sequence from
+/// another locus, and `bcftools norm` refuses the file. This is the CLI test
+/// that holds a multi-base REF.
 ///
-/// The seqair backend read it from the start of the enclosing segment instead,
-/// so 82.6% of multi-base REF alleles on chr12 were real-looking sequence from
-/// the wrong locus and `bcftools norm` refused the file. Nothing caught it: no
-/// CLI test enabled indel calling, and no snapshot held a multi-base REF.
-///
-/// The contig position is load-bearing. At a segment starting at 0 the wrong
-/// index and the right one coincide, which is also why the `from_seqair` unit
-/// fixtures could not see this.
+/// The contig position is load-bearing. At a segment starting at 0 the
+/// segment-relative and the genomic index coincide, which is also why the
+/// `from_seqair` unit fixtures cannot see this.
 #[test]
 fn indel_ref_alleles_come_from_the_deletion_site() -> Result<()> {
     use rust_htslib::faidx;

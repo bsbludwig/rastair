@@ -327,8 +327,9 @@ fn process_pre_built_metrics(
     process_collected_pileups(segment, pileups, params, ml)
 }
 
-/// The step between de-novo adjacency and the shared pipeline: strand info depends on the adjacency flags just set, and the
-/// pre-filter on the alts, so the order matters.
+/// The step between de-novo adjacency and the shared pipeline: strand info
+/// depends on the adjacency flags just set, and the pre-filter on the alts, so
+/// the order matters.
 fn set_strand_info_and_prefilter(pileups: &mut Vec<PileupMetrics>, params: &CallParams) {
     for pileup in pileups.iter_mut() {
         pileup.pos_metrics.extended.methylation_strand_info =

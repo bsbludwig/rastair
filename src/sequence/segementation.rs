@@ -31,7 +31,7 @@ pub struct SegmentationParams {
 
     /// Maximum estimated compressed bytes to load per segment (memory budget)
     ///
-    /// seqair backend only. A segment whose index-estimated compressed size
+    /// A segment whose index-estimated compressed size
     /// exceeds this is subdivided into smaller sub-segments, so peak memory
     /// per worker stays bounded regardless of local coverage. The decoded
     /// in-memory size is a few times larger than this compressed budget.

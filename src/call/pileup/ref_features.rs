@@ -24,9 +24,8 @@ pub(crate) fn indel_ref_window_at(
 /// longest, which inverts the feature.
 ///
 /// The `+ 1` and the segment-relative index live here, and the run functions
-/// are private, so the two backends cannot disagree about the convention. They
-/// did: `from_seqair` measured at the anchor while `from_hts` measured at the
-/// tract, which cost ~1 point of indel F1 on chr12.
+/// are private, so no caller can measure at the anchor instead; doing so costs
+/// ~1 point of indel F1 on chr12.
 pub(crate) fn indel_tract_runs_at(anchor: u64, segment: &Segment) -> TractRuns {
     let idx = (anchor + 1).saturating_sub(segment.range.region.start) as usize;
     TractRuns {

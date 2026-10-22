@@ -159,7 +159,7 @@ mod seqair_readers {
         }
     }
 
-    /// Walk aligned pairs counting non-TAPS mismatches (same logic as `from_hts.rs`).
+    /// Walk aligned pairs counting non-TAPS mismatches.
     fn count_taps_aware_mismatches<U>(
         rec: &SlimRecord,
         store: &RecordStore<U>,
@@ -194,7 +194,8 @@ mod seqair_readers {
         count
     }
 
-    /// Infer OT/OB strand from mismatch-motif evidence (same logic as `from_hts.rs`).
+    /// Infer OT/OB strand from mismatch-motif evidence (the logic `call-reads`
+    /// applies to htslib records in `hts_utils::infer_strand_from_mismatch_motifs`).
     fn infer_strand_from_motifs<U>(
         rec: &SlimRecord,
         store: &RecordStore<U>,
@@ -220,7 +221,7 @@ mod seqair_readers {
             std::cmp::Ordering::Greater => Some(Strand::OT),
             std::cmp::Ordering::Less => Some(Strand::OB),
             std::cmp::Ordering::Equal => {
-                // Tie: pseudo-random from qname+pos+flags (same approach as from_hts.rs)
+                // Tie: pseudo-random from qname+pos+flags
                 let name = rec.qname(store).unwrap_or(&[]);
                 Some(pseudo_random_strand_from_bytes(name, rec.pos.as_u64(), rec.flags.raw()))
             }
@@ -265,10 +266,9 @@ mod seqair_readers {
         if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
     }
 
-    /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` that exposes
-    /// the same `segments()` / `segment()` interface as the htslib `Readers`,
-    /// so the `call` path can switch between backends with minimal call-site
-    /// changes.
+    /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` with the
+    /// `segments()` / `segment()` interface the htslib `Readers` of `call-reads`
+    /// and the BAM rewrite also have.
     pub struct SeqairReaders {
         pub(super) inner: seqair::Readers<RastairRecordFilter>,
         regions: Option<CliRegionInput>,
@@ -339,15 +339,14 @@ mod seqair_readers {
         }
 
         /// Fetches the FASTA sequence for `region`, returning a rastair `Segment`.
-        /// Mirrors the htslib `Readers::segment()` signature.
         #[instrument(level = "debug", skip_all)]
         pub fn segment(&mut self, region: &ChunkRegion, overfetch: u64) -> Result<Segment> {
             let last_position_to_fetch =
                 region.end.wrapping_add(overfetch).min(region.last_position);
             let start = Pos0::try_from(region.start)
                 .wrap_err_with(|| format!("region start {} is out of range", region.start))?;
-            // `last_position_to_fetch` is an exclusive bound here, as it is in the
-            // htslib arm (`FastaReader::fetch_seq` takes `[start, stop)`), while
+            // `last_position_to_fetch` is an exclusive bound here, as it is for
+            // `Readers::segment` (`FastaReader::fetch_seq` takes `[start, stop)`), while
             // seqair's span is closed on both ends — hence the `- 1`. A region
             // whose bound coincides with its start names no base at all, and a
             // closed span cannot say that, so it short-circuits to an empty

@@ -146,8 +146,8 @@ impl ColumnDraft {
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
 
-        // Counted where `from_hts` counts: reads that passed the filters,
-        // before an overlapping mate is collapsed into its fragment.
+        // Counted over reads that passed the filters, before an overlapping
+        // mate is collapsed into its fragment.
         let mut passed: usize = 0;
         for (slot, view) in column.alignments().enumerate() {
             if passed >= max_reads {
@@ -219,8 +219,7 @@ impl ColumnDraft {
                 let extras = view.extra();
                 // Every count below describes the *fragment*, not the read that
                 // happened to survive dedup, so the dropped mate's shape has to
-                // be OR'd in — `from_hts` accumulates these over both mates
-                // before it deduplicates.
+                // be OR'd in.
                 let mate = dedup_overlaps
                     .then(|| {
                         counted_mate(
@@ -245,12 +244,9 @@ impl ColumnDraft {
                 // read is not necessarily the one carrying the fragment's
                 // indel: when the mates disagree the rule can drop exactly the
                 // mate that spans it, and the fragment's only indel observation
-                // would go with it. `from_hts` never had this problem because
-                // it votes per fragment *before* deduplicating — every mate
-                // gets a turn, and the first surviving observation is the
-                // fragment's.
+                // would go with it, so the dropped mate stands in.
                 //
-                // So the fallback is on the *observation*, not on the indel:
+                // The fallback is on the *observation*, not on the indel:
                 // this read's own indel may exist and still be rejected by
                 // `build_indel_observation`'s end-of-read and mismatch filters,
                 // and the mate then still speaks for the fragment. Testing the
@@ -272,9 +268,7 @@ impl ColumnDraft {
                 // slips. That mate's shape is judged on its own: a mate whose
                 // indel was rejected is not a reference alignment, and the
                 // soft clip or repeat it carries says nothing about the mate
-                // that is. `from_hts` reaches the same rule through
-                // per-fragment votes, where `saw_reference` only ever sees
-                // indel-free mates.
+                // that is.
                 let slipped = |view: &AlignmentView<'_, '_, RastairReadExtras>| {
                     let extras = view.extra();
                     matches!(view.alignment().indel_after(), Indel::None)
@@ -646,10 +640,9 @@ impl MateObservations {
 /// right.
 ///
 /// Deduplication keeps one read per fragment, but the soft-clip and
-/// noisy-reference counts are properties of the *fragment*: `from_hts` votes
-/// per fragment before it deduplicates, so whatever either mate shows counts
-/// once. Reading them off the surviving read alone loses whatever only the
-/// dropped mate showed.
+/// noisy-reference counts are properties of the *fragment*: whatever either
+/// mate shows counts once. Reading them off the surviving read alone loses
+/// whatever only the dropped mate showed.
 ///
 /// The mate must clear [`observed`], the same bar the kept read cleared, so it
 /// cannot contribute evidence a read in its own right would have been denied.
@@ -922,15 +915,14 @@ mod tests {
                 .unwrap();
         }
         // Linking (and sorting) is `prepare_for_pileup`'s job at the point the
-        // engine is built, so this fixture no longer has to remember either —
-        // reads may be listed in any order.
+        // engine is built, so reads may be listed in any order.
         store
     }
 
-    /// The overlapping-pair rule as it was before mate links: group the
-    /// column's surviving alignments by qname and, on the second one, drop
-    /// whichever `resolve_pair` chose. An independent oracle — it reaches the
-    /// answer by matching names, which is exactly what the new code does not do.
+    /// The overlapping-pair rule by read name: group the column's surviving
+    /// alignments by qname and, on the second one, drop whichever
+    /// `resolve_pair` chose. An independent oracle — it reaches the answer by
+    /// matching names, which is exactly what the mate links do not do.
     fn kept_by_name_collector(
         column: &PileupColumn<'_, RastairReadExtras>,
         params: &PileupMappingParams,
@@ -1077,9 +1069,7 @@ mod tests {
 
     /// Overlap dedup keeps one read per fragment, and the rule can keep the
     /// mate that does *not* span the indel. The fragment's indel evidence must
-    /// survive that: `from_hts` votes per fragment before deduplicating, so it
-    /// never lost one, and the seqair path has to reach the same answer through
-    /// the column's `pair_indel`.
+    /// survive that: the dropped mate stands in.
     ///
     /// Fixture: mates agree on the anchor base, so the rule drops the right
     /// mate — which is the one carrying the deletion.
@@ -1166,9 +1156,8 @@ mod tests {
     /// caller owns. A rule keyed on the indel alone (seqair's
     /// `PileupColumn::pair_indel`: "own indel wins, the mate is never
     /// consulted") therefore short-circuits on a read whose own indel is about
-    /// to be thrown away, and the fragment contributes nothing. `from_hts` gets
-    /// this right by giving every mate a turn and taking the first observation
-    /// that survives.
+    /// to be thrown away, and the fragment contributes nothing. The right answer
+    /// gives every mate a turn and takes the first observation that survives.
     ///
     /// Fixture: the mates disagree on the anchor base and the *right* mate is
     /// first-in-template, so the rule drops the left one — and the surviving
@@ -1321,9 +1310,9 @@ mod tests {
     /// is actually a reference alignment. Here the kept mate carries the
     /// deletion 1 bp into itself — rejected by the end-of-read cutoff, so the
     /// fragment casts no vote — and the dropped mate is an indel-free alignment
-    /// that was soft-clipped. `from_hts` counts that fragment as noisy
-    /// reference; judging the kept read's own indel status instead counted it
-    /// as clean reference, one read more in every such indel's depth.
+    /// that was soft-clipped. That fragment is noisy reference; judging the kept
+    /// read's own indel status instead would count it as clean reference, one
+    /// read more in every such indel's depth.
     #[test]
     fn a_soft_clipped_mate_makes_a_voteless_fragment_noisy_reference() {
         let (reads, params) = noisy_reference_fixture(true);
@@ -1338,7 +1327,7 @@ mod tests {
     /// dropped mate carries the rejected deletion behind its soft clip. A mate
     /// with an indel is not a reference alignment, so its clip says nothing
     /// about the fragment's reference support — OR-ing the shapes over both
-    /// mates counted this fragment as noisy, one read fewer than `from_hts`.
+    /// mates would count this fragment as noisy, one clean read too few.
     #[test]
     fn a_soft_clipped_indel_mate_does_not_make_a_clean_fragment_noisy() {
         let (reads, params) = noisy_reference_fixture(false);
@@ -1888,7 +1877,7 @@ mod tests {
         assert!(checked, "CpG-C column must be produced");
     }
 
-    // ── differential: mate links vs. the old name-collector rule ────────────
+    // ── differential: mate links vs. pairing by read name ───────────────────
 
     const OT_FIRST: u16 = 99; // paired, proper, mate reverse, first in template
     const OT_SECOND: u16 = 147; // paired, proper, reverse, second in template
@@ -2077,8 +2066,8 @@ mod tests {
     }
 
     /// `--max-coverage` counts reads that pass the filters. Two MAPQ 0 reads
-    /// arrive first at the column; with a cap of 2 they used to be the two the
-    /// engine kept, and the column came out empty.
+    /// arrive first at the column; with a cap of 2 they must not be the two the
+    /// engine keeps, or the column comes out empty.
     #[test]
     fn coverage_cap_counts_filtered_reads_only() {
         let reads = vec![

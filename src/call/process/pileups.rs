@@ -32,7 +32,8 @@ pub struct PileupMappingParams {
     /// Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
     #[default(5)]
     pub indel_max_mismatches: u32,
-    /// Per-segment compressed-byte budget; segments estimated above this are subdivided. `0` disables the budget.
+    /// Per-segment compressed-byte budget; segments estimated above this are
+    /// subdivided. `0` disables the budget.
     #[default(32 * 1024 * 1024)]
     pub segment_max_bytes: u64,
     /// Rescue the soft-clipped CpG-partner base adjacent to each alignment

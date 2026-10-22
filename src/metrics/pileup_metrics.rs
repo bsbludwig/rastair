@@ -327,12 +327,10 @@ impl PileupMetrics {
 /// Alternate alleles are listed by support, deepest first; equal support
 /// keeps the order they were observed in.
 ///
-/// Observation order is the pileup engine's read order, which differs between
-/// engines at equal start positions — and the ALT column, `AD`, `ML` and the
-/// genotype indices all follow this order, so leaving it to the engine made
-/// `T G,A 0/1` on one backend `T A,G 0/2` on the other. Ties are left alone
-/// on purpose: genotyping and methylation break their own ties by this order,
-/// and the sort must not decide those differently from before.
+/// Observation order is the pileup engine's read order at equal start
+/// positions, an accident of the engine, while the ALT column, `AD`, `ML` and
+/// the genotype indices all follow this order. Ties are left alone on purpose:
+/// genotyping and methylation break their own ties by this order.
 pub fn order_alts(alts: &mut [Alt]) {
     alts.sort_by_key(|alt| std::cmp::Reverse(alt.metrics.depth));
 }
@@ -447,7 +445,7 @@ pub struct AlleleMetrics {
 
 /// Would observing `base` where the reference has `ref_base` create a CpG?
 ///
-/// The seqair backend answers this from a column's alt bases alone, before any
+/// The column loop answers this from a column's alt bases alone, before any
 /// allele metrics exist, so it has to be one definition and not two.
 pub fn alt_forms_denovo(base: Base, ref_base: Base, context: &SequenceContext) -> FormsDenovo {
     use Base::*;
