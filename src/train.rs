@@ -11,8 +11,6 @@
 
 mod reservoir;
 
-#[cfg(not(feature = "experimental-seqair"))]
-use crate::call::process::calculate_pileup_metrics;
 use crate::{
     call::{
         pileup::indels::IndelAllele,
@@ -27,9 +25,7 @@ use crate::{
         },
     },
     regions::ConfidentRegions,
-    sequence::{
-        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Region, Segment, SegmentationParams,
-    },
+    sequence::{ChunkRegion, ReaderParams, Region, Segment, SegmentationParams, SeqairReaders},
     utils::{cli, map_surrounding},
     verify::for_each_record_in_regions,
 };
@@ -376,7 +372,6 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
             ..IndelParams::default()
         },
     };
-    let readers = ReaderSource::from(readers);
     // Reduced rather than collected: holding every segment's sample until a
     // final merge would keep `segments x cap` examples alive.
     let (mut collected, failed_segments) = rayon::ThreadPoolBuilder::new()
@@ -439,34 +434,14 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
 /// The columns of one segment, overlaps included, as the feature extractors
 /// read them.
 fn segment_columns(
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     segment: &ChunkRegion,
 ) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
     let mapping = PileupMappingParams { call_indels: true, ..Default::default() };
 
-    #[cfg(feature = "experimental-seqair")]
-    let (segment, columns) = {
-        let (segment, columns) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        (segment, columns.collect())
-    };
-    #[cfg(not(feature = "experimental-seqair"))]
-    let (segment, columns) = {
-        let (segment, pileups) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        let columns = calculate_pileup_metrics(pileups, &segment)
-            .filter_map(|metrics| {
-                metrics
-                    .inspect_err(|e| {
-                        warn!(error = format!("{e:#}"), "Failed to calculate pileup metrics");
-                    })
-                    .ok()
-            })
-            .collect();
-        (segment, columns)
-    };
-
-    Ok((segment, columns))
+    let (segment, columns) =
+        get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
+    Ok((segment, columns.collect()))
 }
 
 /// Turns one segment's candidates into labelled examples.
@@ -489,7 +464,7 @@ impl SegmentCollector<'_> {
     /// together with `keys` fixes which of them the reservoirs keep.
     fn segment(
         &self,
-        readers: &mut PileupReaders,
+        readers: &mut SeqairReaders,
         segment: &ChunkRegion,
         keys: &mut ByModel<KeySource>,
     ) -> Result<Collected> {
@@ -1190,7 +1165,6 @@ mod tests {
 
     /// Neighbouring segments share their overlap, and each of its candidates
     /// must be offered once, by the segment whose core holds it.
-    #[cfg(feature = "experimental-seqair")]
     #[test]
     fn overlapping_segments_offer_every_candidate_once() -> Result<()> {
         let truth = Truth {

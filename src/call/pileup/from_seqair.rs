@@ -1,5 +1,3 @@
-#![cfg(feature = "experimental-seqair")]
-
 use super::{
     indels::{IndelAllele, IndelObservation},
     ref_features::{indel_ref_window_at, indel_tract_runs_at},

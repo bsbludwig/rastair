@@ -1,5 +1,5 @@
 use crate::{
-    call::pileup::Pileup,
+    metrics::PileupMetrics,
     utils::{Base, Base::*},
 };
 use std::fmt;
@@ -51,18 +51,16 @@ impl Deref for InCpG {
     }
 }
 
-impl From<&Pileup> for InCpG {
-    fn from(pileup: &Pileup) -> Self {
-        InCpG::new(pileup.reference_base, pileup.ref_before(), pileup.ref_after())
+impl From<&PileupMetrics> for InCpG {
+    fn from(pileup: &PileupMetrics) -> Self {
+        InCpG::new(pileup.reference_base, pileup.context.before_1, pileup.context.after_1)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(feature = "experimental-seqair"))]
     use crate::call::test_helpers::variant_pileup;
-    #[cfg(not(feature = "experimental-seqair"))]
     use color_eyre::Result;
 
     #[test]
@@ -79,7 +77,6 @@ mod tests {
         assert_eq!(InCpG::new(C, Some(T), Some(A)), InCpG::No);
     }
 
-    #[cfg(not(feature = "experimental-seqair"))]
     #[test]
     fn test_cpg_detection() -> Result<()> {
         let (_, pileup) = variant_pileup("chr19", 6105711)?;

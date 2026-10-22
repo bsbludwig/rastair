@@ -32,13 +32,6 @@ rather than as finished archives.
   cargo-run-bin, which would recompile nextest from source on every run.
   Without `--features external-tool-tests`, the two test targets that shell
   out to third-party tools are not built here.
-* **seqair** — the whole suite again with `--features experimental-seqair`,
-  which swaps the pileup *reading* backend; the two backends are expected to
-  produce identical results, so every snapshot has to hold under both. It also
-  reruns clippy with the feature, since the gated code is invisible to the
-  `clippy` job's default build. Own cache (`shared-key: ci-seqair`) rather than
-  the `test` job's: a different feature set means different artifacts, which
-  would otherwise thrash that entry.
 * **external-tools** — the same runner (no Docker), running only
   `tests/bam_external_tools.rs` and `tests/mbias_report.rs`, which cross-check
   rastair against samtools, bismark, modkit, modbedtools and the R QC report.

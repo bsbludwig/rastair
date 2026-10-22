@@ -11,12 +11,10 @@ pub struct TagValue {
 }
 
 impl TagValue {
-    #[cfg(feature = "experimental-seqair")]
     pub(crate) fn tag(&self) -> [u8; 2] {
         self.tag
     }
 
-    #[cfg(feature = "experimental-seqair")]
     pub(crate) fn value_bytes(&self) -> &[u8] {
         self.value.as_bytes()
     }

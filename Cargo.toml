@@ -127,9 +127,6 @@ pastey = { workspace = true }
 
 [features]
 external-tool-tests = []
-# seqair is now a core dependency (VCF writer); this flag only toggles the
-# experimental seqair-backed pileup *reading* path.
-experimental-seqair = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

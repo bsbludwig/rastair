@@ -14,7 +14,8 @@ Variant calling is complicated by the fact that C->T and G->A SNPs are confounde
 Rastair uses a combination of thresholding and machine learning to determine true variants.
 Rastair's main feature is `call` which processes pileup data
 in multiple steps and produces VCF records with variant and methylation calls.
-Rastair uses htslib via rust-htslib for reading/writing BAM and VCF/BCF files.
+Rastair reads its pileups and writes VCF/BCF with seqair, our own crate (`../seqair`); rust-htslib
+remains for BAM rewriting, `call-reads` and reading VCF/BCF.
 
 ## Structure
 
@@ -204,7 +205,10 @@ Two related API notes:
 
 ## Indel parity between the two pileup backends
 
-`from_hts.rs` and `from_seqair.rs` build the same `PileupMetrics` from two
+The htslib pileup backend (`from_hts.rs`) is gone; seqair is the only one. This section is the
+record of the parity hunt that preceded the removal, and its recipe needs a commit from before it.
+
+`from_hts.rs` and `from_seqair.rs` built the same `PileupMetrics` from two
 different readers. **SNVs are byte-identical across them** — F1, recall,
 precision and both aardvark genotype-error counts — which is the control that
 makes any remaining difference attributable to indel-specific code rather than

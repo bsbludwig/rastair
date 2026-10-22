@@ -291,16 +291,6 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
     //     summary.unmod_diff_positions,
     //     summary.shared_calls,
     // );
-    // The `--guess-read-orientation` motif heuristic is mildly engine-sensitive
-    // (seqair walks aligned pairs via `matches_only()`, htslib via
-    // `aligned_pairs_full()`), so a handful of low-coverage unmod counts differ.
-    // Both stay within the closeness assertions above; snapshot each engine
-    // separately so both builds pass.
-    #[cfg(feature = "experimental-seqair")]
-    insta::with_settings!({snapshot_suffix => "seqair"}, {
-        assert_compact_debug_snapshot!(summary);
-    });
-    #[cfg(not(feature = "experimental-seqair"))]
     assert_compact_debug_snapshot!(summary);
 
     Ok(())
@@ -313,7 +303,6 @@ fn guess_read_orientation_stays_close_to_flag_strand_calls() -> Result<()> {
 /// formed (stale mate coordinates, a reader that stopped linking) would leave
 /// both runs identical.
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
     const REGION: &str = "--region=chr19:6103000-6106000";
 
@@ -361,7 +350,6 @@ fn overlapping_mate_dedup_lowers_coverage_end_to_end() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "experimental-seqair")]
 fn rescue_soft_clip_cpg_adds_methylation_evidence() -> Result<()> {
     // A region wide enough to contain soft-clips that land on CpG partners.
     const REGION: &str = "--region=chr19:6100000-6120000";
