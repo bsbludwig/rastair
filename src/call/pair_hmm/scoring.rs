@@ -213,7 +213,10 @@ fn prepare_with(
     let (haplotypes, slots) = if profile && substitutions_only {
         let anchors: SmallVec<usize, MAX_EVENTS> =
             cluster.events().iter().filter_map(window_anchor).collect();
-        with_profiled_cpgs(&mut cluster, &reference, haplotypes, &anchors, &reads)?
+        let profiled =
+            with_profiled_cpgs(cluster.haplotypes(), &reference, &haplotypes, &anchors, &reads)?;
+        cluster.divergent_cpgs = profiled.masks;
+        (profiled.kernel, profiled.slots)
     } else {
         let slots = cluster.haplotypes().iter().map(|&hap| (hap, Levels::Shared)).collect();
         (haplotypes.into(), slots)
@@ -238,22 +241,29 @@ fn prepare_with(
     Some(Prepared { cluster, haplotypes, slots, reads, bands })
 }
 
-/// What the kernel aligns against, and by each whose score it is and which.
-type KernelHaplotypes = (Vec<Haplotype>, Vec<(HapIdx, Levels)>);
+/// An all-substitution cluster's kernel haplotypes with their levels.
+struct Profiled {
+    /// What the kernel aligns against.
+    kernel: Vec<Haplotype>,
+    /// By kernel haplotype: whose score it is, and which.
+    slots: Vec<(HapIdx, Levels)>,
+    /// [`Cluster::divergent_cpgs`].
+    masks: [u32; MAX_HAPLOTYPES],
+}
 
 /// The kernel haplotypes of an all-substitution cluster, whose haplotypes
-/// share the window's coordinates: each haplotype carrying a divergent `CpG`
-/// (one some haplotypes have at that window index and others not) twice, its
-/// levels there profiled from the reads as the pair's only carrier and as
-/// both chromosomes, so a hom-alt de-novo `CpG` is not charged for being
-/// mostly methylated. Records the carriers on `cluster`.
+/// (`haplotypes`, one per entry of `subsets`) share the window's coordinates:
+/// each haplotype carrying a divergent `CpG` (one some haplotypes have at that
+/// window index and others not) twice, its levels there profiled from the
+/// reads as the pair's only carrier and as both chromosomes, so a hom-alt
+/// de-novo `CpG` is not charged for being mostly methylated.
 fn with_profiled_cpgs(
-    cluster: &mut Cluster,
+    subsets: &[HapIdx],
     reference: &Haplotype,
-    haplotypes: SmallVec<Haplotype, MAX_HAPLOTYPES>,
+    haplotypes: &[Haplotype],
     anchors: &[usize],
     reads: &[HaplotypeRead],
-) -> Option<KernelHaplotypes> {
+) -> Option<Profiled> {
     let role_at = |haplotype: &Haplotype, q: usize| haplotype.site(q).map(|site| site.cpg);
     // A substitution changes the roles of its own base and its two neighbours.
     let mut divergent: SmallVec<(usize, CpgRole), 18> = SmallVec::new();
@@ -268,7 +278,8 @@ fn with_profiled_cpgs(
 
     let mut kernel = Vec::with_capacity(haplotypes.len() * 2);
     let mut slots = Vec::with_capacity(haplotypes.len() * 2);
-    for (&hap, haplotype) in cluster.haplotypes.clone().iter().zip(&haplotypes) {
+    let mut masks = [0; MAX_HAPLOTYPES];
+    for (&hap, haplotype) in subsets.iter().zip(haplotypes) {
         let mut mask = 0u32;
         let mut alone = vec![None; haplotype.len()];
         let mut doubled = vec![None; haplotype.len()];
@@ -278,17 +289,7 @@ fn with_profiled_cpgs(
             }
             mask |= 1 << bit;
             let counts = Conversions::at(reads, q, role)?;
-            // The partner's base: the one every haplotype without this CpG
-            // agrees on, else the reference's.
-            let mut others =
-                haplotypes.iter().filter(|h| role_at(h, q) != Some(role)).map(|h| h.bases().get(q));
-            let first = others.next().flatten();
-            let partner = if others.all(|b| b == first) { first } else { reference.bases().get(q) };
-            let partner = match partner {
-                Some(&b) if b == counts.converted_base => Partner::Converted,
-                Some(&b) if b == counts.unconverted_base => Partner::Unconverted,
-                _ => Partner::Other,
-            };
+            let partner = Partner::at(haplotypes, reference, q, role, &counts);
             if let Some(slot) = alone.get_mut(q) {
                 *slot = Probability::new(counts.alone(partner)).ok();
             }
@@ -296,7 +297,7 @@ fn with_profiled_cpgs(
                 *slot = Probability::new(counts.doubled()).ok();
             }
         }
-        if let Some(slot) = cluster.divergent_cpgs.get_mut(hap.index()) {
+        if let Some(slot) = masks.get_mut(hap.index()) {
             *slot = mask;
         }
         if mask == 0 {
@@ -320,7 +321,7 @@ fn with_profiled_cpgs(
             slots.push((hap, levels));
         }
     }
-    Some((kernel, slots))
+    Some(Profiled { kernel, slots, masks })
 }
 
 /// What the partner of a divergent `CpG`'s only carrier has at its position,
@@ -335,6 +336,31 @@ enum Partner {
     Unconverted,
     /// Neither: only the carrier's reads show either.
     Other,
+}
+
+impl Partner {
+    /// The partner's base at window index `q` for the haplotypes with `role`
+    /// there. shortcut: a pair-independent guess, the base every haplotype
+    /// without the `CpG` agrees on, else the reference's.
+    fn at(
+        haplotypes: &[Haplotype],
+        reference: &Haplotype,
+        q: usize,
+        role: CpgRole,
+        counts: &Conversions,
+    ) -> Self {
+        let mut others = haplotypes
+            .iter()
+            .filter(|h| h.site(q).map(|site| site.cpg) != Some(role))
+            .map(|h| h.bases().get(q));
+        let first = others.next().flatten();
+        let base = if others.all(|b| b == first) { first } else { reference.bases().get(q) };
+        match base {
+            Some(&b) if b == counts.converted_base => Self::Converted,
+            Some(&b) if b == counts.unconverted_base => Self::Unconverted,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// A divergent `CpG`'s reads on the strand that converts it.
@@ -498,10 +524,10 @@ fn rows(
                     };
                     match levels {
                         Levels::Shared => {
-                            set(&mut scores.log10);
+                            set(&mut scores.log10_alone);
                             set(&mut scores.log10_doubled);
                         }
-                        Levels::Alone => set(&mut scores.log10),
+                        Levels::Alone => set(&mut scores.log10_alone),
                         Levels::Doubled => set(&mut scores.log10_doubled),
                     }
                 }
@@ -604,7 +630,7 @@ mod tests {
             scores
                 .reads
                 .iter()
-                .all(|r| r.mapq == 60 && r.log10[2..].iter().all(|l| *l == f32::NEG_INFINITY))
+                .all(|r| r.mapq == 60 && r.log10_alone[2..].iter().all(|l| *l == f32::NEG_INFINITY))
         );
         let alt = HapIdx::of_event(EventIdx::new(0).expect("the one scored event"));
         let preference: f32 =
@@ -892,6 +918,24 @@ mod tests {
         assert_eq!(snv(cg, b'T', &reads, true).verdict.best, reference);
         let uniform = snv(cg, b'T', &reads, false).verdict.best;
         assert_ne!(uniform, reference, "at one half the converted reads make a het");
+    }
+
+    /// A de-novo `CpG` made from a `T` leaves the partner the converted base,
+    /// one made from an `A` neither, and a `C` whose `G` is destroyed keeps
+    /// the unconverted base.
+    #[test]
+    fn the_partner_is_what_the_haplotypes_without_the_cpg_read() {
+        let hap = |bases: &[u8]| Haplotype::from_ascii(bases);
+        let counts = |role| Conversions::at(&[], 1, role).expect("a CpG role");
+        let partner = |reference: &[u8], alt: &[u8], q, role| {
+            let (reference, alt) = (hap(reference), hap(alt));
+            Partner::at(&[reference.clone(), alt], &reference, q, role, &counts(role))
+        };
+        assert_eq!(partner(b"ATGA", b"ACGA", 1, CpgRole::TopC), Partner::Converted);
+        assert_eq!(partner(b"AAGA", b"ACGA", 1, CpgRole::TopC), Partner::Other);
+        assert_eq!(partner(b"ACGA", b"ACTA", 1, CpgRole::TopC), Partner::Unconverted);
+        assert_eq!(partner(b"ACAA", b"ACGA", 2, CpgRole::BottomG), Partner::Converted);
+        assert_eq!(partner(b"ACGA", b"ATGA", 2, CpgRole::BottomG), Partner::Unconverted);
     }
 
     #[test]

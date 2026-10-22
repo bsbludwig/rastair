@@ -279,41 +279,51 @@ pub struct ReadScores {
     pub mapq: u8,
     /// `log10 P(read | haplotype)` by [`HapIdx::index`]; `-inf` for a subset
     /// that is not a haplotype, or that the read's band misses. At a
-    /// haplotype's divergent `CpG`s, the level profiled for it alone on a pair.
-    pub log10: [f32; MAX_HAPLOTYPES],
-    /// [`Self::log10`] with the divergent `CpG`s at the level profiled for
-    /// both chromosomes carrying them; equal to it for a haplotype without any.
-    pub log10_doubled: [f32; MAX_HAPLOTYPES],
+    /// haplotype's divergent `CpG`s, the level profiled for it as the pair's
+    /// only carrier.
+    log10_alone: [f32; MAX_HAPLOTYPES],
+    /// `log10_alone` with the divergent `CpG`s at the level profiled for both
+    /// chromosomes carrying them; equal to it for a haplotype without any.
+    log10_doubled: [f32; MAX_HAPLOTYPES],
 }
 
 impl ReadScores {
     /// A row whose haplotypes carry no divergent `CpG`.
     #[must_use]
     pub fn new(fragment: Option<FragmentId>, mapq: u8, log10: [f32; MAX_HAPLOTYPES]) -> Self {
-        Self { fragment, mapq, log10, log10_doubled: log10 }
+        Self { fragment, mapq, log10_alone: log10, log10_doubled: log10 }
     }
 
-    /// The likelihood under `hap` alone. shortcut: for a haplotype with a
-    /// divergent `CpG` this is its level profiled as the pair's only carrier,
-    /// whatever the partner; assignment and phasing votes read it as is.
+    /// The likelihood under `hap`, its divergent `CpG`s at the level profiled
+    /// as the pair's only carrier. shortcut: whatever the partner, so
+    /// assignment (AD/DP) and phasing votes, which have no pair, read this.
     #[must_use]
-    pub fn log10_of(&self, hap: HapIdx) -> f32 {
-        self.log10.get(hap.index()).copied().unwrap_or(f32::NEG_INFINITY)
+    pub fn log10_alone(&self, hap: HapIdx) -> f32 {
+        self.log10_alone.get(hap.index()).copied().unwrap_or(f32::NEG_INFINITY)
+    }
+
+    /// The likelihood under `hap`, its divergent `CpG`s at the level profiled
+    /// for both chromosomes.
+    fn log10_doubled(&self, hap: HapIdx) -> f32 {
+        self.log10_doubled.get(hap.index()).copied().unwrap_or(f32::NEG_INFINITY)
     }
 
     /// The likelihood under `hap` as one chromosome of a pair with `partner`.
     fn log10_beside(&self, cluster: &Cluster, hap: HapIdx, partner: HapIdx) -> f32 {
-        let log10 =
-            if cluster.shares_cpgs(hap, partner) { &self.log10_doubled } else { &self.log10 };
-        log10.get(hap.index()).copied().unwrap_or(f32::NEG_INFINITY)
+        if cluster.shares_cpgs(hap, partner) {
+            self.log10_doubled(hap)
+        } else {
+            self.log10_alone(hap)
+        }
     }
 
-    /// `log10 P(read | a) - log10 P(read | b)`: positive when the read prefers
+    /// `log10 P(read | a) - log10 P(read | b)`, each at its alone level
+    /// ([`Self::log10_alone`]): positive when the read prefers
     /// `a`, infinite when one of the two cannot have produced it. `None` when
     /// neither can, since the read then says nothing between them.
     #[must_use]
     pub fn log10_ratio(&self, a: HapIdx, b: HapIdx) -> Option<f32> {
-        let (a, b) = (self.log10_of(a), self.log10_of(b));
+        let (a, b) = (self.log10_alone(a), self.log10_alone(b));
         (a.is_finite() || b.is_finite()).then_some(a - b)
     }
 
@@ -346,7 +356,7 @@ impl ReadScores {
         let best = cluster
             .haplotypes()
             .iter()
-            .map(|&hap| f64::from(self.log10_of(hap)))
+            .map(|&hap| f64::from(self.log10_alone(hap).max(self.log10_doubled(hap))))
             .fold(f64::NEG_INFINITY, f64::max);
         log10_sum((1.0 - mismapped).log10() + log10, mismapped.log10() + best)
     }
@@ -362,7 +372,7 @@ impl ReadScores {
     ) -> f64 {
         let contaminated = log10_sum(
             self.log10_unmixed(cluster, pair) + (1.0 - fraction).log10(),
-            f64::from(self.log10_of(hap)) + fraction.log10(),
+            f64::from(self.log10_alone(hap)) + fraction.log10(),
         );
         self.mapq_mixed(cluster, contaminated)
     }
@@ -528,7 +538,7 @@ fn assignment(haplotypes: &[HapIdx], read: &ReadScores) -> Option<HapIdx> {
     let mut best: Option<(HapIdx, f32)> = None;
     let mut runner_up = f32::NEG_INFINITY;
     for &hap in haplotypes {
-        let log10 = read.log10_of(hap);
+        let log10 = read.log10_alone(hap);
         match best {
             Some((_, top)) if log10 <= top => runner_up = runner_up.max(log10),
             Some((_, top)) => {
@@ -950,6 +960,35 @@ mod tests {
     fn a_clean_het_stays_het_beside_the_reference_artefact() {
         let verdict = verdict(scores(1, &[([0.0, -4.5, NO], 6), ([-4.5, 0.0, NO], 6)]));
         assert_eq!(verdict.called_pair(), pair(0, 1));
+    }
+
+    /// Two substitutions, each making its own divergent `CpG`: a haplotype is
+    /// scored at its doubled level beside a partner carrying all its `CpG`s,
+    /// and alone beside one carrying only some, the haplotype with both beside
+    /// one with the first among them.
+    #[test]
+    fn a_pair_reads_the_doubled_level_only_beside_every_cpg() {
+        let snv = |anchor, base| Event { anchor, allele: Allele::Base(base) };
+        let mut cluster = Cluster::new([snv(10, Base::C), snv(30, Base::C)].into_iter().collect())
+            .expect("a cluster");
+        assert_eq!(cluster.haplotypes().len(), 4);
+        cluster.divergent_cpgs = [0, 0b01, 0b10, 0b11, 0, 0, 0, 0];
+        let (reference, first, second, both) = (HapIdx(0), HapIdx(1), HapIdx(2), HapIdx(3));
+        assert!(cluster.shares_cpgs(first, first));
+        assert!(cluster.shares_cpgs(first, both));
+        assert!(!cluster.shares_cpgs(both, first), "mixed: both carries a CpG first lacks");
+        assert!(!cluster.shares_cpgs(first, second));
+        assert!(!cluster.shares_cpgs(first, reference));
+        assert!(cluster.shares_cpgs(reference, both));
+
+        let mut read = ReadScores::new(None, 60, [-1.0, -2.0, -3.0, -4.0, NO, NO, NO, NO]);
+        read.log10_doubled = [-1.0, -0.5, -1.5, -2.5, NO, NO, NO, NO];
+        let beside = |h, p| read.log10_beside(&cluster, h, p);
+        assert_eq!(beside(both, first), -4.0);
+        assert_eq!(beside(first, both), -0.5);
+        assert_eq!(beside(both, both), -2.5);
+        assert_eq!(beside(second, first), -3.0);
+        assert_eq!(read.log10_alone(both), -4.0);
     }
 
     #[test]

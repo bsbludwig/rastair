@@ -1236,7 +1236,11 @@ mod tests {
         let alt = |fragment| scored(fragment, [NO, -1.0, NO]);
         let mut low_mapq = alt(15);
         low_mapq.mapq = 19;
-        let unnamed = ReadScores { fragment: None, ..alt(16) };
+        let unnamed = {
+            let mut r = alt(16);
+            r.fragment = None;
+            r
+        };
         assert_eq!(sites((11..=14).map(alt).collect()), 1);
         assert_eq!(sites((11..=15).map(alt).collect()), 2);
         assert_eq!(sites((11..=14).map(alt).chain([low_mapq, unnamed]).collect()), 1);
