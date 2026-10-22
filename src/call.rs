@@ -23,8 +23,8 @@ use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams,
-        require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
+        methylation::params::MethylationCallingParams, require_tags::RequireTagsParams,
+        variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
     metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},

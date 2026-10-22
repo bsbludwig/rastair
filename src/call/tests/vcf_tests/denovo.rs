@@ -248,8 +248,9 @@ fn test_accepted_denovo_candidate_reports_methylation() -> Result<()> {
 }
 
 /// `TA>CG` on both chromosomes: two variants that form a CpG together, as at chr12:20,868,616
-/// in NA12878. The reference context alone sees no CpG, so the methylated `C` (read `T` on OT)
-/// and `G` (read `A` on OB) used to count as reference reads and make both sites `0/1`.
+/// in NA12878. The reference context alone sees no CpG, so unless the pair is recognised the
+/// methylated `C` (read `T` on OT) and `G` (read `A` on OB) count as reference reads and make
+/// both sites `0/1`.
 #[test]
 fn two_variants_forming_a_cpg_are_a_denovo_cpg() -> Result<()> {
     let (segment, pileups) = pileups!(

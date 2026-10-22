@@ -12,8 +12,7 @@ use std::num::NonZeroU8;
 pub struct IndelParams {
     /// Enable experimental indel calling
     ///
-    /// Indels are called by a TAPS-aware pair-HMM, which needs the seqair
-    /// backend.
+    /// Indels are called by a TAPS-aware pair-HMM.
     #[arg(long)]
     #[arg(help_heading = crate::utils::cli::sections::INDELS)]
     pub experimental_indels: bool,

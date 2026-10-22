@@ -7,8 +7,7 @@
 //! the cluster's [`Event`]s applied. `PileupMetrics` keeps no reads, so what
 //! is stored is one row of log10 likelihoods per read, with the [`Verdict`]
 //! they add up to: the diploid pair of haplotypes and each event's [`Margin`]
-//! of presence. The scoring needs compair and so only exists on the seqair
-//! backend; the stored scores are plain data.
+//! of presence. The scoring is compair's; the stored scores are plain data.
 
 use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
 use seqair_types::{Base, Phred, SmallVec};

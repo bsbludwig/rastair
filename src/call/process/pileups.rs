@@ -48,22 +48,21 @@ pub struct PileupMappingParams {
     /// subdivided. `0` disables the budget.
     #[default(32 * 1024 * 1024)]
     pub segment_max_bytes: u64,
-    /// Rescue the soft-clipped CpG-partner base adjacent to each alignment
-    /// (seqair backend only). See `MethylationCallingParams::rescue_soft_clip_cpg`.
+    /// Rescue the soft-clipped CpG-partner base adjacent to each alignment.
+    /// See `MethylationCallingParams::rescue_soft_clip_cpg`.
     pub rescue_soft_clip_cpg: bool,
-    /// Which columns are worth finishing (seqair backend only).
+    /// Which columns are worth finishing.
     ///
     /// `None` finishes every column the reader emits, for a caller that wants
     /// the raw pileup. Production passes the record filters, so the seven
     /// columns in eight they drop never become a `PileupMetrics` at all.
     pub early_reject: Option<RecordFilters>,
-    /// Keep per-read phase observations at the columns that can use them
-    /// (seqair backend only).
+    /// Keep per-read phase observations at the columns that can use them.
     pub phase: bool,
-    /// Score the pair-HMM on the GPU (seqair backend only).
+    /// Score the pair-HMM on the GPU.
     pub gpu: bool,
     /// Keep each sub-segment's reads for [`HeldReads::score_snv_clusters`], the
-    /// SNV engine's half of the cascade (seqair backend only).
+    /// SNV engine's half of the cascade.
     pub snv_engine: bool,
 }
 
@@ -194,8 +193,8 @@ pub fn get_pileups_held(
     // Build the seqair Segment covering [region.start .. region.end + overfetch].
     // seqair's segment `end` is an *inclusive* 0-based position and must be
     // `<= contig_last_pos` (= contig length − 1). `region.last_position` is the
-    // contig length, so clamp to `last_position - 1`; htslib tolerates ends one
-    // past the contig, seqair rejects them.
+    // contig length, so clamp to `last_position - 1`: seqair rejects an end one
+    // past the contig.
     let overfetch: u64 = 2;
     let contig_last_pos = region.last_position.saturating_sub(1);
     let last = region.end.saturating_add(overfetch).min(contig_last_pos);
@@ -603,9 +602,7 @@ mod tests {
 
     /// Byte-aware sub-segmentation must be transparent: a tiny budget (which
     /// forces the region to be split into many sub-segments) yields exactly the
-    /// same pileups as an effectively-unlimited budget. Only meaningful on the
-    /// seqair backend; on htslib the budget is ignored and both runs are
-    /// trivially identical.
+    /// same pileups as an effectively-unlimited budget.
     #[test]
     fn byte_budget_subdivision_is_transparent() -> Result<()> {
         let params = ReaderParams {
@@ -618,8 +615,7 @@ mod tests {
         // Everything a boundary read could move: depth, the ALT list *in order*
         // (it becomes the VCF ALT column), per-allele depth and strand split,
         // and the indel observation count. A read fetched twice, or dropped at
-        // a sub-segment edge, shows up in one of these. Types stay inferred so
-        // this compiles on both the htslib and seqair backends.
+        // a sub-segment edge, shows up in one of these.
         #[allow(clippy::type_complexity)]
         fn fingerprint(
             pileups: impl Iterator<Item = PileupMetrics>,

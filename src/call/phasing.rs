@@ -3,8 +3,7 @@
 //! Two heterozygous sites carried by one DNA fragment are in known relative
 //! phase, so the read pairs spanning them say which alleles share a
 //! chromosome. The per-read observations have to be captured while a pileup
-//! column is built, because `PileupMetrics` keeps no reads; only the seqair
-//! backend does that.
+//! column is built, because `PileupMetrics` keeps no reads.
 
 use crate::{metrics::PileupMetrics, utils::logging::ThisIsABug as _};
 use color_eyre::eyre::OptionExt as _;

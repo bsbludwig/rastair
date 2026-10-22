@@ -436,8 +436,8 @@ pub struct AlleleMetrics {
 const MAX_EFFECTIVE_MAPQ: usize = 45;
 /// Base qualities above Q30 are not trusted past the platform's own error rate, which is
 /// around Q30 for every model in [`crate::call::variant_calling::ErrorModel`].
-// shortcut: a fixed floor instead of the run's `--error-model` rate, which the htslib path
-// cannot see here; the genotyper clamps the mean to that rate again.
+// shortcut: a fixed floor instead of the run's `--error-model` rate, which the accumulator
+// is not given; the genotyper clamps the mean to that rate again.
 const READ_ERROR_FLOOR: f64 = 1e-3;
 
 /// `ln` of the chance that a read shows a base its fragment does not carry: wrongly called
