@@ -206,6 +206,7 @@ fn prepare_with(
         longest = longest.max(carried.iter().map(|event| event.allele.shift()).sum());
         haplotypes.push(haplotype);
     }
+    drop_respellings(&mut cluster, &mut haplotypes);
     let width = band_width(longest);
     // shortcut: indel-made CpGs stay at β ½; extend once SNV-only clusters measure well.
     let substitutions_only =
@@ -239,6 +240,34 @@ fn prepare_with(
         return None;
     }
     Some(Prepared { cluster, haplotypes, slots, reads, bands })
+}
+
+/// Keeps one haplotype per sequence: the one with the fewest events, the
+/// earliest of equals. In a run, events of a cluster can spell one sequence
+/// two ways (an insertion of `T` before `TTTTC` and the deletion of its `C`
+/// are the `C>T`; an insertion and a deletion in one run are the reference),
+/// and two haplotypes the reads cannot tell apart make every pair over them
+/// tie, so a hom-alt `C>T` read as a het of the two spellings and its margin
+/// was zero.
+fn drop_respellings(cluster: &mut Cluster, haplotypes: &mut SmallVec<Haplotype, MAX_HAPLOTYPES>) {
+    let subsets = cluster.haplotypes.clone();
+    let keep: SmallVec<bool, MAX_HAPLOTYPES> = subsets
+        .iter()
+        .zip(haplotypes.iter())
+        .enumerate()
+        .map(|(i, (hap, haplotype))| {
+            let weight = |h: &HapIdx| h.events().count();
+            !subsets.iter().zip(haplotypes.iter()).enumerate().any(|(j, (other, sequence))| {
+                j != i
+                    && sequence.bases() == haplotype.bases()
+                    && (weight(other), j) < (weight(hap), i)
+            })
+        })
+        .collect();
+    let mut kept = keep.iter().copied();
+    haplotypes.retain(|_| kept.next().unwrap_or(true));
+    let mut kept = keep.iter().copied();
+    cluster.haplotypes.retain(|_| kept.next().unwrap_or(true));
 }
 
 /// An all-substitution cluster's kernel haplotypes with their levels.
@@ -936,6 +965,38 @@ mod tests {
         assert_eq!(partner(b"ACGA", b"ACTA", 1, CpgRole::TopC), Partner::Unconverted);
         assert_eq!(partner(b"ACAA", b"ACGA", 2, CpgRole::BottomG), Partner::Converted);
         assert_eq!(partner(b"ACGA", b"ATGA", 2, CpgRole::BottomG), Partner::Unconverted);
+    }
+
+    /// At the end of the window's T run, a `G>T` and the pair of an inserted
+    /// `T` before the run and the deleted `G` spell one sequence. Hom-alt
+    /// reads are two copies of the substitution, decisively; with both
+    /// spellings scored every pair over them tied and the dosage was a coin.
+    #[test]
+    fn a_respelled_substitution_is_one_haplotype() {
+        let g = WINDOW.windows(14).position(|w| w == b"TTTTTTTTTTTTTG").expect("the run") + 13;
+        let mut alt = WINDOW.to_vec();
+        alt[g] = b'T';
+        let window: Vec<Base> = WINDOW.iter().map(|&b| Base::from(b)).collect();
+        let at = |anchor: usize, allele: Allele| Event {
+            anchor: u32::try_from(anchor).expect("fits"),
+            allele,
+        };
+        let events = [
+            at(g, Allele::Base(Base::T)),
+            at(anchor(), insertion("T").into()),
+            at(g - 1, IndelAllele::Deletion([Base::G].into_iter().collect()).into()),
+        ];
+        let mut reads: Vec<_> =
+            (0..10).map(|i| read_of(&alt, 20 + i * 3, 60, Strand::OT)).collect();
+        reads.extend((0..10).map(|i| read_of(&alt, 21 + i * 3, 60, Strand::OB)));
+        let scores =
+            score(&window, 0, events, reads, &mut HaplotypeScratch::default()).expect("scores");
+        let snv = EventIdx::new(0).expect("event");
+        let dosage = scores.verdict.dosage(snv).expect("present");
+        assert_eq!(dosage.copies, 2);
+        assert!(*dosage.gq > 30.0, "{:?}", dosage.gq);
+        assert!(scores.verdict.margin(snv).expect("scored").is_present());
+        assert_eq!(scores.cluster().haplotypes().len(), 5, "{:?}", scores.cluster().haplotypes());
     }
 
     #[test]
