@@ -476,7 +476,7 @@ fn indel_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, V
             [(GtAllele::Alt(m), first_hap), (GtAllele::Alt(n), second_hap)]
         }
         IndelRecords::Separate(calls) => {
-            // The written genotype (the event's site dosage), not the called
+            // The written genotype (the event's dosage), not the called
             // pair: a record written `1/1` carries no `PS`, so as a site it
             // could anchor a block on a record outside it. The GQ gate below
             // stays on the pair's quality, which it was calibrated on.
