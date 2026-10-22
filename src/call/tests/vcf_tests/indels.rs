@@ -1,5 +1,5 @@
 //! Indel records: `QUAL` from the allele's margin, `GT` and `GC` from the
-//! allele's site dosage (a compound het's from the pair-HMM's called pair).
+//! allele's dosage (a compound het's from the pair-HMM's called pair).
 
 use crate::call::{
     pair_hmm::fixtures::*,
@@ -42,12 +42,12 @@ fn records(pileup: crate::metrics::PileupMetrics, filters: RecordFilters) -> Vec
 }
 
 #[test]
-fn a_pair_hmm_het_writes_its_margin_as_qual_and_its_site_dosage_as_gc() {
+fn a_pair_hmm_het_writes_its_margin_as_qual_and_its_dosage_as_gc() {
     let pileup = called(&[deletion(&[T])], &[(REF_READ, 2), (ALT1_READ, 2)]);
     let data = pileup.indel_data.as_deref().expect("indel data");
     let scored = data.scored.as_ref().expect("scores");
     let [call] = scored.records.calls() else { panic!("one call: {:?}", scored.records) };
-    let dosage = scored.haplotypes.site_dosage(call.event).expect("a dosage");
+    let dosage = scored.haplotypes.verdict.dosage(call.event).expect("a dosage");
     let (qual, gc) = (call.quality.as_int(), dosage.gq.as_int());
     assert!(qual >= 10 && gc > 0, "{qual} {gc}");
 

@@ -919,7 +919,7 @@ impl Verdict {
     /// [`HET_PRIOR_LOG10`] when it carries one copy. `None` when no pair
     /// carrying it explains the reads.
     #[must_use]
-    fn dosage(&self, event: EventIdx) -> Option<Dosage> {
+    pub fn dosage(&self, event: EventIdx) -> Option<Dosage> {
         let carrying = || {
             self.pair_scores.iter().filter(|(pair, _)| pair.carries(event)).map(|&(pair, log10)| {
                 let prior = if pair.copies_of(event) == 1 { HET_PRIOR_LOG10 } else { 0.0 };

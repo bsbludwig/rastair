@@ -1251,10 +1251,9 @@ mod tests {
         assert_eq!(at_indel(7), [(1, SiteAllele::Second, 26)]);
     }
 
-    /// The cluster's called pair is a confident het, the insertion on the
-    /// chromosome that also carries a deletion; the twenty reads of the other
-    /// chromosome barely prefer the reference at the insertion, so its own
-    /// site writes it `1/1`, and a record without `PS` is no site.
+    /// The cluster's called pair is a confident het, and as written it is a
+    /// site; written `1/1` instead, the record carries no `PS`, so it is no
+    /// site whatever the pair says.
     #[test]
     fn an_indel_written_homozygous_is_not_a_site() {
         use crate::call::{
@@ -1274,22 +1273,25 @@ mod tests {
             |f| ReadScores::new(FragmentId::new(f), 60, [0.0, -0.5, -4.5, -4.5, NO, NO, NO, NO]);
         let reads: Vec<_> = (1..=40).map(carrier).chain((41..=64).map(other)).collect();
         let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
-        let scores = HaplotypeScores::new(cluster, reads.into()).expect("a verdict");
+        let scores = Arc::new(HaplotypeScores::new(cluster, reads.into()).expect("a verdict"));
         let verdict = &scores.verdict;
         assert!(verdict.called_pair() == verdict.best && verdict.called_pair().is_heterozygous());
         assert!(*verdict.quality >= MIN_INDEL_GENOTYPE_QUALITY, "{:?}", verdict.quality);
-        let mut indel = column(1040, A, &[], Some(GenotypeTag::HomRef), &[]);
-        let scored = Scored::new(Arc::new(scores), 1040);
-        let IndelRecords::Separate(calls) = &scored.records else { panic!("separate") };
-        assert!(calls.iter().all(|c| c.genotype == GenotypeTag::HomAlt(ALT_1)), "{calls:?}");
-        indel.indel_data =
-            Some(Box::new(IndelData { counts: IndelCounts::default(), scored: Some(scored) }));
+        let indel_sites = |written: Option<GenotypeTag>| {
+            let mut scored = Scored::new(Arc::clone(&scores), 1040);
+            if let (Some(genotype), IndelRecords::Separate(calls)) = (written, &mut scored.records)
+            {
+                calls.iter_mut().for_each(|call| call.genotype = genotype);
+            }
+            let mut indel = column(1040, A, &[], Some(GenotypeTag::HomRef), &[]);
+            indel.indel_data =
+                Some(Box::new(IndelData { counts: IndelCounts::default(), scored: Some(scored) }));
+            let problem = build_problem(&[anchor(1..=64), indel], None);
+            problem.sites.iter().filter(|site| site.kind == SiteKind::Indel).count()
+        };
 
-        let problem = build_problem(&[anchor(1..=64), indel], None);
-        assert_eq!(
-            sites_of(&problem),
-            [(1000, SiteKind::Snv, [GtAllele::Ref, GtAllele::Alt(ALT_1)])]
-        );
+        assert_eq!(indel_sites(None), 1, "written 0/1");
+        assert_eq!(indel_sites(Some(GenotypeTag::HomAlt(ALT_1))), 0);
     }
 
     /// The pair-HMM has to be sure of the column's het, or the site's votes
