@@ -29,7 +29,9 @@ rastair ml train --snv-engine \
 - The top-level forests come from the engine-off collection. The engine forests are fitted on
   the second, cascade-shaped collection, whose negative pools are small (other 18.7k, cpg
   10.6k, denovo 3.0k), so their fits take seconds.
-- Cost on an M4 Pro: 386 s wall, 2,269 CPU-s, 11.0 GiB peak RSS. File 30.9 MB.
+- Cost on an M4 Pro: 321 s wall, 2,248 CPU-s, 11.8 GiB peak RSS. File 30.3 MB.
 
-The file was trained at `a9e929d1` (`feature/snv-events-e2`), whose training code this branch
-reworks without changing what it collects; it has not been retrained here.
+The file was trained at `9d8392fa` (`feature/engine-beta`), whose SNV engine profiles the level
+of a `CpG` a substitution creates or destroys and mixes each read with its mismapping chance, so
+the `ev_*` features differ from the previous model's; `RASTAIR_ARTIFACT_FLOOR` unset. The engine
+pools were other 18,673, cpg 10,559, denovo 3,035 negatives. md5 `876347408ca50443dfd073be7d9a52d4`.
