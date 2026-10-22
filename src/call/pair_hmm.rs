@@ -757,6 +757,14 @@ pub struct Verdict {
     pair_scores: SmallVec<(HapPair, f64), MAX_PAIRS>,
 }
 
+/// Prior odds of one copy over two for a present event, as `log10`: a flat
+/// prior over the pairs was never a statement about genotype frequencies, and
+/// a called SNV is heterozygous about 1.5 times as often as homozygous (GIAB
+/// HG001 chr12: 96,713 het against 63,275 hom-alt SNVs, log10 0.184).
+/// [`Verdict::dosage`] only; indel records keep `called_pair` until they
+/// adopt it.
+const HET_PRIOR_LOG10: f64 = 0.184;
+
 /// How many chromosomes carry an event, given that it is present.
 #[derive(Debug, Clone, Copy)]
 pub struct Dosage {
@@ -795,12 +803,18 @@ impl Verdict {
     }
 
     /// `event`'s copy count, given that it is present: that of the likeliest
-    /// pair carrying it, each pair scored by its best account. `None` when no
-    /// pair carrying it explains the reads.
+    /// pair carrying it, each pair scored by its best account plus
+    /// [`HET_PRIOR_LOG10`] when it carries one copy. `None` when no pair
+    /// carrying it explains the reads.
     #[must_use]
     pub fn dosage(&self, event: EventIdx) -> Option<Dosage> {
-        let carrying = || self.pair_scores.iter().filter(|(pair, _)| pair.carries(event));
-        let (best_pair, best) = carrying().fold(None, |best, &(pair, log10)| match best {
+        let carrying = || {
+            self.pair_scores.iter().filter(|(pair, _)| pair.carries(event)).map(|&(pair, log10)| {
+                let prior = if pair.copies_of(event) == 1 { HET_PRIOR_LOG10 } else { 0.0 };
+                (pair, log10 + prior)
+            })
+        };
+        let (best_pair, best) = carrying().fold(None, |best, (pair, log10)| match best {
             Some((_, top)) if top >= log10 => best,
             _ => Some((pair, log10)),
         })?;
@@ -809,7 +823,7 @@ impl Verdict {
         }
         let copies = best_pair.copies_of(event);
         let (mut same, mut other) = (0.0, 0.0);
-        for &(pair, log10) in carrying() {
+        for (pair, log10) in carrying() {
             let weight = 10f64.powf(log10 - best);
             if pair.copies_of(event) == copies {
                 same += weight;
