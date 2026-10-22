@@ -372,9 +372,9 @@ mod tests {
         }
     }
 
-    /// Regression test for issue #15: an aligner (or an earlier rastair run) may
-    /// already have written XR/XG/XM, and re-annotating must overwrite them rather
-    /// than fail on the read.
+    /// An aligner (or an earlier rastair run) may already have written XR/XG/XM,
+    /// and re-annotating must overwrite them rather than fail on the read
+    /// (issue #15).
     #[test]
     fn legacy_tags_overwrite_existing_ones() -> Result<()> {
         let mut record = Record::new();

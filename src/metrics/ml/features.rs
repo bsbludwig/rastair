@@ -411,9 +411,8 @@ mod tests {
         assert_eq!(DeletionFeatures::FEATURES, 17);
     }
 
-    /// Snapshot the full name→index layout of every model. This is the
-    /// human-checkable replacement for the old "never change the order"
-    /// comments: reordering a field changes the snapshot and fails the test.
+    /// Snapshot the full name→index layout of every model: reordering a field
+    /// changes the snapshot and fails the test.
     #[test]
     fn feature_name_layout() {
         let render = |name: &str, names: Vec<&str>| {

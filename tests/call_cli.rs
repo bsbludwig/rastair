@@ -171,10 +171,9 @@ fn simple_call_gives_you_vcf_on_stdout() -> Result<()> {
     Ok(())
 }
 
-/// `--max-coverage 0` means "no limit", and used to mean two opposite things
-/// two lines apart: the seqair depth cap read it as `Unlimited` and loaded
-/// every read, while the per-column code read it as a cap of zero and counted
-/// none of them. The run produced an empty VCF at unbounded memory.
+/// `--max-coverage 0` means "no limit", both to the seqair depth cap, which
+/// loads every read, and to the per-column count. Read as a cap of zero there,
+/// it would count none of them: an empty VCF at unbounded memory.
 #[test]
 fn max_coverage_zero_means_no_limit() -> Result<()> {
     let unlimited =

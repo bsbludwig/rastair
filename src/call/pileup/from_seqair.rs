@@ -1341,11 +1341,11 @@ mod tests {
     /// A deletion's REF bases must come from the reference *at the deletion*,
     /// which is `genomic_pos + 1 - segment.start` into the segment's sequence.
     ///
-    /// The regression this guards: the loop's genomic `pos` was shadowed by
-    /// `view.qpos()`, a read-local offset, so the subtraction saturated to 0 and
-    /// the allele became the segment's opening bases — real-looking sequence
-    /// from the wrong locus. A segment starting at 0 cannot see this, because
-    /// there the clamp and the correct answer coincide for a read at offset 0.
+    /// Reading it at `view.qpos()`, a read-local offset, instead of the genomic
+    /// `pos` saturates the subtraction to 0 and returns the segment's opening
+    /// bases — real-looking sequence from the wrong locus. A segment starting
+    /// at 0 cannot see this, because there the clamp and the correct answer
+    /// coincide for a read at offset 0.
     #[test]
     fn deletion_allele_reads_the_reference_at_the_deletion_site() {
         const START: u64 = 1000;

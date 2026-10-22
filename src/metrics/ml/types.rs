@@ -56,8 +56,8 @@ pub struct RastairFlatModel {
 /// One value per [`MlModel`], addressed by the model itself.
 ///
 /// The five models are always handled together — a feature block, a dispatch
-/// and a score vector each — so this replaces the five parallel fields that
-/// shape would otherwise grow.
+/// and a score vector each — so they are one array rather than five parallel
+/// fields.
 #[derive(Debug, Clone)]
 pub struct ByModel<T>([T; MlModel::COUNT]);
 
@@ -203,13 +203,11 @@ pub struct FlatRastairModel {
 /// The five forests on one shared [`biosphere::gpu::GpuContext`], owned by the
 /// inference thread.
 ///
-/// They used to sit on five devices, because biosphere's UMA upload waited on
-/// the device's most recent submission from any source, which on a shared
-/// device was the previous model's dispatch. Biosphere now uploads with
-/// `write_buffer` everywhere, and with that fixed one device measures the same
-/// as five on Metal (chr12:20-30Mb, 1.87 s vs 1.90 s) while being what a
-/// discrete GPU wants: one queue pipelines the five dispatches that separate
-/// devices would time-slice.
+/// One queue pipelines the five dispatches, which separate devices would
+/// time-slice, and on Metal one device measures the same as five
+/// (chr12:20-30Mb, 1.87 s vs 1.90 s). Sharing relies on biosphere uploading
+/// with `write_buffer`: an upload that waited on the device's most recent
+/// submission would wait on the previous model's dispatch.
 pub struct GpuRastairModel {
     pub cpg: GpuForest,
     pub denovo: GpuForest,

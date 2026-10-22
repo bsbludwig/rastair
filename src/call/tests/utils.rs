@@ -215,8 +215,8 @@ impl FieldValue {
     /// Compare field values with special handling for GT field
     fn matches_field(&self, other: &Self, field_name: &str, epsilon: f64) -> bool {
         if field_name == "GT" {
-            // Both expected and actual are now VCF-style genotype strings ("0/1").
-            // Normalize separator order is not needed; compare directly.
+            // Both expected and actual are VCF-style genotype strings ("0/1"),
+            // compared directly.
             match (self, other) {
                 (Self::String(expected), Self::String(actual)) => expected == actual,
                 _ => self.matches(other, epsilon),

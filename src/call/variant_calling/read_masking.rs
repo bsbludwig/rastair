@@ -138,8 +138,8 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// The masking rule as originally written, in i64 so the subtractions
-    /// cannot wrap: an independent oracle for `keep_range`.
+    /// The masking rule written out position by position, in i64 so the
+    /// subtractions cannot wrap: an independent oracle for `keep_range`.
     fn masked_oracle(
         p: &ReadMaskParams,
         strand: Strand,

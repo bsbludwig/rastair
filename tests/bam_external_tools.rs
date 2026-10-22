@@ -744,7 +744,7 @@ fn legacy_standard_per_position_agreement() -> Result<()> {
 /// Verify that modbedtools bam2mod does not crash on our standard modBAM output.
 ///
 /// Empty ML:B:C arrays (written for reads with no methylated positions) cause modbedtools
-/// to segfault. This test ensures we no longer produce empty ML arrays.
+/// to segfault, so rastair must not write them.
 #[test]
 fn modbedtools_bam2mod_does_not_crash() -> Result<()> {
     require_tool!("uvx");

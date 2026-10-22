@@ -5,8 +5,8 @@ const HALF_WINDOW: usize = 50;
 
 pub struct SlidingEntropy<'a> {
     sequence: &'a [u8],
-    // Order: [C, T, A, G] — matches the original Counter::entries() iteration order to preserve
-    // floating-point summation order and keep entropy values numerically identical to the old code.
+    // Order: [C, T, A, G]. The entropy is summed in this order, and the trained
+    // models saw exactly those floating-point values, so it must not change.
     counts: [usize; 4],
     unknown_count: usize,
     window_start: usize,

@@ -220,10 +220,10 @@ fn can_tabix_files() -> Result<()> {
     Ok(())
 }
 
-/// Reads starting exactly at a segment boundary used to be reported twice: the
-/// BAM fetch is one base wider than the segment, and only the lower bound was
-/// checked. Small segments put many reads on a boundary, so the output must
-/// still match a run that processes everything in one segment.
+/// Reads starting exactly at a segment boundary are reported once: the BAM
+/// fetch is one base wider than the segment, so both bounds are checked.
+/// Small segments put many reads on a boundary, so the output must still match
+/// a run that processes everything in one segment.
 #[test]
 fn reads_at_segment_boundaries_are_reported_once() -> Result<()> {
     let run = |segment_max_length: &str| -> Result<Vec<String>> {
