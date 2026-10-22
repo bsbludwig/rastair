@@ -492,6 +492,20 @@ impl HaplotypeScores {
         by_copies.map(|p| p / total)
     }
 
+    /// log10 likelihood of the likeliest pair carrying 0, 1 or 2 copies of `event`.
+    #[must_use]
+    pub fn best_by_copies(&self, event: EventIdx) -> [f64; 3] {
+        let mut best = [f64::NEG_INFINITY; 3];
+        for pair in HapPair::all(&self.cluster.haplotypes) {
+            let log10: f64 =
+                self.reads.iter().map(|read| read.log10_under(&self.cluster, pair)).sum();
+            if let Some(slot) = best.get_mut(usize::from(pair.copies_of(event))) {
+                *slot = slot.max(log10);
+            }
+        }
+        best
+    }
+
     /// Reads assigned to `hap`: its `AD`. Reads assigned to no haplotype are
     /// left out of every count, so the supports add up to [`Self::depth`].
     #[must_use]

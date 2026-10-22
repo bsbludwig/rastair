@@ -15,6 +15,16 @@ use seqair_types::{Probability, SmallVec};
 use std::num::{NonZeroI32, NonZeroU8};
 use tracing::{instrument, trace};
 
+/// Experiment switch: where the SNV engine scored a passing alt, its likeliest
+/// pair's dosage replaces the counted genotype's.
+static ENGINE_DOSAGE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    let set = std::env::var_os("RASTAIR_ENGINE_DOSAGE").is_some_and(|value| value == "1");
+    if set {
+        tracing::warn!("RASTAIR_ENGINE_DOSAGE=1: SNV genotypes take the pair-HMM's dosage");
+    }
+    set
+});
+
 impl PileupMetrics {
     /// Estimate genotype using ML scores and variant calls.
     ///
@@ -89,6 +99,9 @@ impl PileupMetrics {
             };
 
             match EstimatedGenotype::calculate(evidence, alt_index, error_model) {
+                Ok(gt) if *ENGINE_DOSAGE => {
+                    alt_genotypes.push(self.with_engine_dosage(gt, alt_base, alt_index));
+                }
                 Ok(gt) => alt_genotypes.push(gt),
                 Err(error) => {
                     trace!(%error, alt_base=%alt_base, "Failed to calculate genotype for alt");
@@ -167,6 +180,31 @@ impl PileupMetrics {
                 alt_genotypes.into_iter().next()
             }
         }
+    }
+
+    /// `counted` with the SNV engine's dosage where it scored `alt`: one copy or two, whichever
+    /// the likelier pair carrying the alt has, and `GC` from the ratio of the two. Whether the
+    /// alt is present stays the forest's decision.
+    fn with_engine_dosage(
+        &self,
+        counted: EstimatedGenotype,
+        alt: Base,
+        alt_index: NonZeroU8,
+    ) -> EstimatedGenotype {
+        let Some(scores) = self.snv_scores.as_deref() else { return counted };
+        let Some(event) = scores.base_event_at(self.pos, alt) else { return counted };
+        let [_, one, two] = scores.best_by_copies(event);
+        if !one.is_finite() || !two.is_finite() {
+            return counted;
+        }
+        let genotype = if one >= two {
+            GenotypeTag::ref_het(alt_index)
+        } else {
+            GenotypeTag::hom_alt(alt_index)
+        };
+        let error = 1.0 / (1.0 + 10f64.powf((one - two).abs()));
+        let Ok(confidence) = Probability::new(error.max(1e-10)) else { return counted };
+        EstimatedGenotype { genotype, confidence, ..counted }
     }
 
     /// The reads a specific alt's genotype is decided on.
@@ -418,6 +456,53 @@ mod tests {
     use proptest::prelude::*;
 
     const ALT_INDEX_1: NonZeroU8 = NonZeroU8::new(1).unwrap();
+
+    /// Three reads of each allele, which the counts call `0/1`, and an engine whose reads all
+    /// fit the alt haplotype, which calls it `1/1`.
+    fn het_by_counts_hom_by_engine(alt: Base, forms_denovo: FormsDenovo) -> PileupMetrics {
+        use crate::call::{
+            pair_hmm::{
+                Allele, Cluster, Event, HaplotypeScores,
+                fixtures::{NO, rows},
+            },
+            phasing::fixtures::{column, mapq},
+        };
+        use std::sync::Arc;
+
+        let mut site = column(1500, A, &[(alt, AltCall::RealVariant)], None, &[]);
+        // On OT, the strand an A/G site's G does not convert on.
+        site.ref_metrics.depth = 3;
+        site.ref_metrics.strand_count.ot = 3;
+        site.ref_metrics.baseq = mapq(30);
+        if let Some(alt) = site.alts.first_mut() {
+            alt.metrics.depth = 3;
+            alt.metrics.strand_count.ot = 3;
+            alt.metrics.baseq = mapq(30);
+            alt.metrics.denovo = forms_denovo;
+        }
+        let snv = Event { anchor: site.pos, allele: Allele::Base(alt) };
+        let cluster = Cluster::new([snv].into_iter().collect()).expect("a cluster");
+        let scores =
+            HaplotypeScores::new(cluster, rows(&[([-4.0, -1.0, NO], 6)]).into()).expect("scores");
+        site.snv_scores = Some(Arc::new(scores));
+        site
+    }
+
+    /// `RASTAIR_ENGINE_DOSAGE` is read once per process, so this calls the
+    /// override the switch turns on directly.
+    #[test]
+    fn the_engine_decides_the_dosage_where_it_scored() {
+        for forms_denovo in [FormsDenovo::No, FormsDenovo::ThisBecomesG] {
+            let mut site = het_by_counts_hom_by_engine(G, forms_denovo);
+            let counted = site.estimate_genotype(None, ErrorModel::default()).expect("a genotype");
+            assert_eq!(counted.genotype, GenotypeTag::ref_het(ALT_INDEX_1));
+            let engine = site.with_engine_dosage(counted, G, ALT_INDEX_1);
+            assert_eq!(engine.genotype, GenotypeTag::hom_alt(ALT_INDEX_1));
+            site.snv_scores = None;
+            let without = site.with_engine_dosage(counted, G, ALT_INDEX_1);
+            assert_eq!(without.genotype, GenotypeTag::ref_het(ALT_INDEX_1));
+        }
+    }
 
     // Strategy: realistic read counts (1..=500 each, not both zero)
     fn read_counts() -> impl Strategy<Value = (usize, usize)> {
