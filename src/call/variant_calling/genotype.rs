@@ -182,9 +182,10 @@ impl PileupMetrics {
         }
     }
 
-    /// `counted` with the SNV engine's dosage where it scored `alt`: one copy or two, whichever
-    /// the likelier pair carrying the alt has, and `GC` from the ratio of the two. Whether the
-    /// alt is present stays the forest's decision.
+    /// `counted` with the SNV engine's dosage ([`Verdict::dosage`]) where it scored `alt`, and
+    /// `GC` its GQ. Whether the alt is present stays the forest's decision.
+    ///
+    /// [`Verdict::dosage`]: crate::call::pair_hmm::Verdict::dosage
     fn with_engine_dosage(
         &self,
         counted: EstimatedGenotype,
@@ -193,17 +194,16 @@ impl PileupMetrics {
     ) -> EstimatedGenotype {
         let Some(scores) = self.snv_scores.as_deref() else { return counted };
         let Some(event) = scores.base_event_at(self.pos, alt) else { return counted };
-        let [_, one, two] = scores.best_by_copies(event);
-        if !one.is_finite() || !two.is_finite() {
-            return counted;
-        }
-        let genotype = if one >= two {
-            GenotypeTag::ref_het(alt_index)
-        } else {
+        let Some(dosage) = scores.verdict.dosage(event) else { return counted };
+        let genotype = if dosage.copies >= 2 {
             GenotypeTag::hom_alt(alt_index)
+        } else {
+            GenotypeTag::ref_het(alt_index)
         };
-        let error = 1.0 / (1.0 + 10f64.powf((one - two).abs()));
-        let Ok(confidence) = Probability::new(error.max(1e-10)) else { return counted };
+        // `GC` is written as the Phred of this, so it is the dosage's GQ.
+        let Ok(confidence) = Probability::new(10f64.powf(-*dosage.gq / 10.0)) else {
+            return counted;
+        };
         EstimatedGenotype { genotype, confidence, ..counted }
     }
 

@@ -492,20 +492,6 @@ impl HaplotypeScores {
         by_copies.map(|p| p / total)
     }
 
-    /// log10 likelihood of the likeliest pair carrying 0, 1 or 2 copies of `event`.
-    #[must_use]
-    pub fn best_by_copies(&self, event: EventIdx) -> [f64; 3] {
-        let mut best = [f64::NEG_INFINITY; 3];
-        for pair in HapPair::all(&self.cluster.haplotypes) {
-            let log10: f64 =
-                self.reads.iter().map(|read| read.log10_under(&self.cluster, pair)).sum();
-            if let Some(slot) = best.get_mut(usize::from(pair.copies_of(event))) {
-                *slot = slot.max(log10);
-            }
-        }
-        best
-    }
-
     /// Reads assigned to `hap`: its `AD`. Reads assigned to no haplotype are
     /// left out of every count, so the supports add up to [`Self::depth`].
     #[must_use]
@@ -637,7 +623,23 @@ impl Verdict {
         // The called account may be contaminated; its quality is its pair's
         // on its own.
         let called_pure = pure().find(|account| account.pair == called.pair)?;
-        Some(Self { best, called: called.pair, quality: quality_of(called_pure), margins })
+        let pair_scores = HapPair::all(haplotypes)
+            .map(|pair| {
+                let best = accounts
+                    .iter()
+                    .filter(|account| account.pair == pair)
+                    .map(|account| account.log10)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                (pair, best)
+            })
+            .collect();
+        Some(Self {
+            best,
+            called: called.pair,
+            quality: quality_of(called_pure),
+            margins,
+            pair_scores,
+        })
     }
 }
 
@@ -741,6 +743,18 @@ pub struct Verdict {
     pub quality: Phred,
     /// By [`EventIdx`].
     margins: SmallVec<Margin, MAX_EVENTS>,
+    /// Each pair's best account, pure or with an artefact, in `GL` order.
+    pair_scores: SmallVec<(HapPair, f64), MAX_PAIRS>,
+}
+
+/// How many chromosomes carry an event, given that it is present.
+#[derive(Debug, Clone, Copy)]
+pub struct Dosage {
+    /// 1 or 2.
+    pub copies: u8,
+    /// Phred of the chance the other count is right, under a flat prior over
+    /// the pairs carrying the event.
+    pub gq: Phred,
 }
 
 impl Verdict {
@@ -768,6 +782,33 @@ impl Verdict {
     #[must_use]
     pub fn copies_of(&self, event: EventIdx) -> u8 {
         self.called.copies_of(event)
+    }
+
+    /// `event`'s copy count, given that it is present: that of the likeliest
+    /// pair carrying it, each pair scored by its best account. `None` when no
+    /// pair carrying it explains the reads.
+    #[must_use]
+    pub fn dosage(&self, event: EventIdx) -> Option<Dosage> {
+        let carrying = || self.pair_scores.iter().filter(|(pair, _)| pair.carries(event));
+        let (best_pair, best) = carrying().fold(None, |best, &(pair, log10)| match best {
+            Some((_, top)) if top >= log10 => best,
+            _ => Some((pair, log10)),
+        })?;
+        if !best.is_finite() {
+            return None;
+        }
+        let copies = best_pair.copies_of(event);
+        let (mut same, mut other) = (0.0, 0.0);
+        for &(pair, log10) in carrying() {
+            let weight = 10f64.powf(log10 - best);
+            if pair.copies_of(event) == copies {
+                same += weight;
+            } else {
+                other += weight;
+            }
+        }
+        let gq = phred_of_log10((other / (same + other)).log10());
+        Some(Dosage { copies, gq })
     }
 }
 
@@ -885,6 +926,24 @@ mod tests {
         assert!(under(pair(0, 1)) > under(pair(1, 1)), "pure: the het wins");
         assert_eq!(scores.verdict.best, pair(1, 1));
         assert_eq!(scores.verdict.called_pair(), pair(1, 1));
+    }
+
+    /// One copy or two by the best pair carrying the event, each pair at its
+    /// best account, so the stray reference read leaves the homozygote; GQ
+    /// grows with the reads and is low on a near tie.
+    #[test]
+    fn dosage_is_the_best_carrying_pair_at_its_best_account() {
+        let dosage =
+            |reads: &[([f32; 3], usize)]| verdict(scores(1, reads)).dosage(ev(0)).expect("present");
+        let stray = dosage(&[([0.0, -4.5, NO], 1), ([-4.5, 0.0, NO], 12)]);
+        assert_eq!(stray.copies, 2);
+        let het = dosage(&[([0.0, -4.5, NO], 6), ([-4.5, 0.0, NO], 6)]);
+        assert_eq!(het.copies, 1);
+        assert!(*het.gq > 30.0, "{:?}", het.gq);
+        let hom = dosage(&[([-4.5, 0.0, NO], 3)]);
+        let deeper = dosage(&[([-4.5, 0.0, NO], 12)]);
+        assert_eq!((hom.copies, deeper.copies), (2, 2));
+        assert!(*deeper.gq > *hom.gq, "{:?} {:?}", hom.gq, deeper.gq);
     }
 
     #[test]
