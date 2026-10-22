@@ -600,6 +600,21 @@ pub(crate) struct AlleleAccumulator {
     ln_indel_doubt: f32,
 }
 
+/// One read's contribution to its allele's accumulator.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReadFields {
+    pub qual_sq: f64,
+    pub mapq_sq: f64,
+    pub strand: Strand,
+    pub matching_bases: u32,
+    pub indels: u32,
+    pub pos_in_read: u32,
+    pub read_length: u32,
+    /// `ln` of the read's error at this base ([`ln_read_error`]).
+    pub ln_error: f32,
+    pub near_indel: bool,
+}
+
 /// The `[OT, OB]` slot a known strand accumulates into.
 const fn strand_slot(strand: Strand) -> Option<usize> {
     match strand {
@@ -617,31 +632,31 @@ impl AlleleAccumulator {
         qual_sq: f64,
         mapq_sq: f64,
     ) {
-        self.add_fields(
+        self.add_fields(ReadFields {
             qual_sq,
             mapq_sq,
-            read.strand,
-            read.matching_bases,
-            read.indels,
-            read.position.pos,
-            read.position.read_length,
-            ln_read_error(read.qual, read.mapq),
-            false,
-        );
+            strand: read.strand,
+            matching_bases: read.matching_bases,
+            indels: read.indels,
+            pos_in_read: read.position.pos,
+            read_length: read.position.read_length,
+            ln_error: ln_read_error(read.qual, read.mapq),
+            near_indel: false,
+        });
     }
 
-    pub(crate) fn add_fields(
-        &mut self,
-        qual_sq: f64,
-        mapq_sq: f64,
-        strand: Strand,
-        matching_bases: u32,
-        indels: u32,
-        pos_in_read: u32,
-        read_length: u32,
-        ln_error: f32,
-        near_indel: bool,
-    ) {
+    pub(crate) fn add_fields(&mut self, read: ReadFields) {
+        let ReadFields {
+            qual_sq,
+            mapq_sq,
+            strand,
+            matching_bases,
+            indels,
+            pos_in_read,
+            read_length,
+            ln_error,
+            near_indel,
+        } = read;
         self.depth += 1;
         self.ln_error += ln_error;
         if near_indel {
@@ -728,35 +743,15 @@ impl PerBaseAccumulators {
         qual_sq: f64,
         mapq_sq: f64,
     ) {
-        let Some(idx) = read.base.known_index() else { return };
-        self.0[idx].add(read, qual_sq, mapq_sq);
+        if let Some(allele) = read.base.known_index().and_then(|idx| self.0.get_mut(idx)) {
+            allele.add(read, qual_sq, mapq_sq);
+        }
     }
 
-    pub(crate) fn accumulate_fields(
-        &mut self,
-        base: Base,
-        qual_sq: f64,
-        mapq_sq: f64,
-        strand: Strand,
-        matching_bases: u32,
-        indels: u32,
-        pos_in_read: u32,
-        read_length: u32,
-        ln_error: f32,
-        near_indel: bool,
-    ) {
-        let Some(idx) = base.known_index() else { return };
-        self.0[idx].add_fields(
-            qual_sq,
-            mapq_sq,
-            strand,
-            matching_bases,
-            indels,
-            pos_in_read,
-            read_length,
-            ln_error,
-            near_indel,
-        );
+    pub(crate) fn accumulate_fields(&mut self, base: Base, read: ReadFields) {
+        if let Some(allele) = base.known_index().and_then(|idx| self.0.get_mut(idx)) {
+            allele.add_fields(read);
+        }
     }
 
     /// Count the reads near an indel at their own quality after all.
@@ -767,8 +762,7 @@ impl PerBaseAccumulators {
     }
 
     pub(crate) fn take(&mut self, base: Base) -> Option<AlleleAccumulator> {
-        let idx = base.known_index()?;
-        Some(std::mem::take(&mut self.0[idx]))
+        self.0.get_mut(base.known_index()?).map(std::mem::take)
     }
 }
 

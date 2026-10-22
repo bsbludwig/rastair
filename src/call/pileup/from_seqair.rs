@@ -236,19 +236,21 @@ impl ColumnDraft {
             let mapq_sq = f64::from(view.mapq).powi(2);
             accumulators.accumulate_fields(
                 base,
-                qual_sq,
-                mapq_sq,
-                strand,
-                view.matching_bases,
-                view.indel_bases,
-                qpos.get(),
-                view.seq_len,
-                if overlap == Overlap::KeepDisagreeing {
-                    -std::f32::consts::LN_2
-                } else {
-                    crate::metrics::ln_read_error(baseq, view.mapq)
+                crate::metrics::ReadFields {
+                    qual_sq,
+                    mapq_sq,
+                    strand,
+                    matching_bases: view.matching_bases,
+                    indels: view.indel_bases,
+                    pos_in_read: qpos.get(),
+                    read_length: view.seq_len,
+                    ln_error: if overlap == Overlap::KeepDisagreeing {
+                        -std::f32::consts::LN_2
+                    } else {
+                        crate::metrics::ln_read_error(baseq, view.mapq)
+                    },
+                    near_indel,
                 },
-                near_indel,
             );
             pos_baseq.add_squared(qual_sq);
             pos_mapq.add_squared(mapq_sq);
