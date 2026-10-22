@@ -4,10 +4,9 @@
 //! that comes from the fringes of the read. You can mask out specific areas
 //! from reads to reduce this.
 
-use crate::{
-    call::pileup::SimpleRead,
-    utils::{Strand, cli},
-};
+#[cfg(test)]
+use crate::call::pileup::SimpleRead;
+use crate::utils::{Strand, cli};
 use seqair_types::SmallVec;
 use std::{num::ParseIntError, ops::Range, str::FromStr};
 
@@ -43,6 +42,7 @@ impl ReadMaskParams {
         Self { n_ot, n_ob }
     }
 
+    #[cfg(test)]
     pub fn filter(&self, read: &SimpleRead) -> bool {
         self.filter_fields(read.strand, read.reverse, read.position.pos, read.position.read_length)
     }

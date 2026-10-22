@@ -21,7 +21,7 @@ use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams, pileup::SimpleRead, process::get_pileups,
+        methylation::params::MethylationCallingParams, process::get_pileups,
         require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
@@ -431,10 +431,8 @@ fn process_collected_pileups(
             debug!("No relevant pileups found in region");
         } else {
             let count_piles = readable::num::Unsigned::from(pileups.len());
-            let pile_size = pileups.len() * std::mem::size_of::<PileupMetrics>();
-            let read_size = pileups.iter().map(|p| p.pos_metrics.depth as usize).sum::<usize>()
-                * std::mem::size_of::<SimpleRead>();
-            let bytes = readable::byte::Byte::from(pile_size + read_size);
+            let bytes =
+                readable::byte::Byte::from(pileups.len() * std::mem::size_of::<PileupMetrics>());
             debug!(%count_piles, %bytes, "Collected pileup metrics");
         }
     }

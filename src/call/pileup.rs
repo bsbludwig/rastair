@@ -1,8 +1,12 @@
+#[cfg(test)]
 use crate::{sequence::ChunkRegion, utils::Base, vcf::SequenceContext};
+#[cfg(test)]
 use seqair_types::{SmallVec, SmolStr};
 
 pub mod indels;
+#[cfg(test)]
 mod read;
+#[cfg(test)]
 pub use read::*;
 pub(crate) mod from_seqair;
 pub(crate) mod hts_utils;
@@ -68,7 +72,9 @@ fn periodic_terminus<T: PartialEq>(
     periodic(0) || periodic(len - window)
 }
 
-/// Rastair's representation of a pileup at a specific position in the genome
+/// A hand-built pileup column: the reads at one position, for tests to turn
+/// into [`PileupMetrics`](crate::metrics::PileupMetrics) without a BAM.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
@@ -102,6 +108,7 @@ pub struct Pileup {
     pub indel_ref_anchor: u8,
 }
 
+#[cfg(test)]
 impl Pileup {
     /// Chromosome name of the segment
     pub fn contig(&self) -> SmolStr {
