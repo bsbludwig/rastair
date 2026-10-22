@@ -1,3 +1,14 @@
+//! BAM/CRAM and FASTA readers: [`SeqairReaders`] for `call` and `ml train`, the
+//! htslib [`Readers`] for `call-reads` and the BAM rewrite.
+//!
+//! Each record's OT/OB strand is assigned once, when seqair loads it
+//! (`RastairRecordFilter::compute`), and kept in [`RastairReadExtras`]: from
+//! the SAM flags, or with `--guess-read-orientation` from the read's mismatch
+//! motifs (the rule is in `docs/src/calling/strand-guesser.md`; `call-reads`
+//! applies it to htslib records in `hts_utils`). To compare strand modes on a
+//! BAM, `tests/call_cli.rs` writes `call --cpgs-only --bed` and compares the
+//! per-CpG `beta_est`, `unmod` and `mod` columns.
+
 use crate::{
     sequence::{
         ChunkRegion, Region, SelectedRegion, chunked::ChunkedRegions, segementation::Segment,

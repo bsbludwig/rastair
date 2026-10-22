@@ -1,3 +1,43 @@
+//! Columns from seqair's pileup engine, accumulated into
+//! [`PileupMetrics`].
+//!
+//! [`ColumnDraft::accumulate`] counts a column's reads; [`ColumnDraft::finish`]
+//! turns a draft the record filters keep into metrics. Nothing skips a column
+//! with zero reads or an `N` reference (`Base::Unknown`) before it is
+//! finished, so both are real paths: return default metrics, not an error.
+//!
+//! **Driving the engine.** `PileupEngine::new` takes a `PileupInput`, and only
+//! `store.prepare_for_pileup()` makes one, sorted by position with mates
+//! linked; without either, columns go missing or overlap dedup silently does
+//! nothing. `PileupColumn::mate_of` gives a view's linked mate in the column,
+//! all `counted_mate` needs; pairwise rules stay on this side of the boundary.
+//! `PileupEngine::reclaim_allocation` returns an *empty* store that keeps its
+//! capacity for the next region.
+//!
+//! **Indel observations.** Each rule guards a class of mistake:
+//!
+//! - A deletion's REF comes from the deletion site: `view.qpos()` is a read
+//!   offset, not the column's genomic `pos` (seqair's `QPos` keeps them apart).
+//! - Tract runs are measured one base past the anchor, where a left-aligned
+//!   indel starts; only `ref_features::indel_tract_runs_at` knows this.
+//! - Overlap dedup keeps one read per fragment and can keep the mate that does
+//!   not span the indel, so the dropped mate stands in:
+//!   `build_indel_observation(view).or_else(mate)`. The fallback is keyed on
+//!   the observation, because `build_indel_observation` rejects indels near a
+//!   read end or on reads with too many non-TAPS mismatches; seqair's
+//!   `pair_indel` ("own indel wins") cannot express that, so it is not used.
+//!   On chr12 this is worth +2.3 insertion / +1.5 deletion F1.
+//! - `soft_clip_count` and the noisy-reference count describe a fragment:
+//!   whatever either mate shows counts once, and a fragment is noisy
+//!   reference only when it contributed no observation and a mate that is a
+//!   reference alignment slips (terminal repeat or soft clip).
+//!
+//! Testing: `tests/data/test.bam` cannot produce an indel call (no two of its
+//! indel reads agree on an allele), so indel tests build their own reads; a
+//! fixture segment must not start at 0, where position bugs and the right
+//! answer coincide (use `segment_at`); and a unit test must set
+//! `params.call_indels` to reach the indel branch at all.
+
 use super::{
     indels::{IndelAllele, IndelObservation},
     ref_features::{indel_ref_window_at, indel_tract_runs_at},

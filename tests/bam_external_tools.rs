@@ -1,3 +1,25 @@
+//! Cross-checks of rastair's output against samtools, Bismark, modkit and
+//! modbedtools. Behind `--features external-tool-tests`; each test skips
+//! itself when its tool is missing. CI runs these (and `mbias_report.rs`) in
+//! the `external-tools` job, apart from `test` so third-party drift does not
+//! redden the main signal. On Linux:
+//!
+//! ```bash
+//! export PATH="$(.github/scripts/install-external-tools.sh):$PATH"
+//! cargo test --features external-tool-tests
+//! ```
+//!
+//! On macOS neither modkit nor the Bismark tarball has a build; `Dockerfile.ci`
+//! is the fallback, and its header says how it differs from CI. Two tool
+//! versions matter, both pinned in `install-external-tools.sh`: the **Perl**
+//! Bismark (`v0.25.x`), since the `bismark-rust-v3.x` rewrite aborts on
+//! paired-end extraction and the test BAM is paired; and `modkit summary`
+//! takes `--sampling-frac 1` (it has no `--no-sampling`).
+//!
+//! `RASTAIR_TEST_MIN_COVERAGE` (default 5) is the coverage at which positions
+//! are compared between tools, by fraction (see the `rastair::bam` module's note on
+//! MM/ML and XM counts). Lower values check more positions but are noisier.
+
 #![cfg(feature = "external-tool-tests")]
 
 mod utils;

@@ -8,6 +8,27 @@
 //!    `--indel-n-positive`/`--indel-n-negative` per indel model.
 //! 3. Fit: a random forest per model, Platt-scaled on examples it did not see.
 //! 4. Export: write the `RastairFlatModel`.
+//!
+//! ```bash
+//! rastair ml train -r hg38.fa.gz taps.bam HG001_benchmark.vcf.gz \
+//!   -R HG001_benchmark.bed -l "chr1 chr6 chr11" --seed <n> -o models/mymodel.rff.mpk.lz4 -@ 8
+//! ```
+//!
+//! - Positionals are BAM first, then the truth VCF. The defaults are the
+//!   recipe of the bundled model (`models/rastair_with_indels.rff.mpk.lz4`),
+//!   so a bare command line retrains it.
+//! - The truth VCF needs a `.csi` (a `.tbi` alone is refused), and `-R` is a
+//!   plain-text BED. Without `-R`, candidates outside the truth set's
+//!   confident regions are labelled negative.
+//! - Train on GIAB HG001 and evaluate against Platinum Genomes on a held-out
+//!   chromosome. All five forests must train, or no model is written.
+//! - The sample is a keyed reservoir per model and class, seeded per segment
+//!   and model from `--seed` by `KeySource`, so it depends neither on
+//!   scheduling nor on other models' pools. The draw takes at most four fifths
+//!   of a class; the holdout keeps the population's class ratio, or Platt
+//!   scaling would shift what an ML threshold means.
+//! - The `Collected training examples` log line reports pool, kept, requested
+//!   and drawn per model. `--export-features` writes a 1-based `pos`.
 
 mod reservoir;
 

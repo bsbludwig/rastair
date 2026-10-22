@@ -12,6 +12,20 @@
 //! an output change: `RastairFilter as usize` indexes the resolved-`FilterId`
 //! table in [`crate::vcf::schema`], and a set iterates in discriminant order,
 //! which is what the FILTER column prints.
+//!
+//! Rejected records are only written under `--all`, and every committed VCF
+//! snapshot is all `PASS`, so no test looks at a non-PASS FILTER column. When
+//! changing filter emission, look at it directly:
+//!
+//! ```bash
+//! cargo run -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --all \
+//!   | grep -v '^#' | awk -F'\t' '$7!="PASS"{print $7}' | sort | uniq -c | sort -rn
+//! ```
+//!
+//! Open: `emit_rejected_record` adds `low_ml_score` when
+//! `alt.filters.ml < ml_threshold`, and `None < Some(_)`, so a record whose ML
+//! was skipped (`pre_ml`) is labelled `low_ml_score` too. Fixing it changes
+//! `--all` output.
 
 /// A VCF FILTER code. `PASS` is implicit (an empty filter set), so it is not a
 /// variant here.
