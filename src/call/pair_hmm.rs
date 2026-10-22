@@ -327,11 +327,28 @@ impl ReadScores {
     /// `log10 P(read | pair)`, the read drawn from either haplotype of the pair
     /// with equal chance.
     fn log10_under(&self, cluster: &Cluster, pair: HapPair) -> f64 {
+        self.mapq_mixed(cluster, self.log10_unmixed(cluster, pair))
+    }
+
+    fn log10_unmixed(&self, cluster: &Cluster, pair: HapPair) -> f64 {
         let (a, b) = pair.haplotypes();
         log10_mean(
             f64::from(self.log10_beside(cluster, a, b)),
             f64::from(self.log10_beside(cluster, b, a)),
         )
+    }
+
+    /// `log10` under a genotype, mixed with the read's mismapping chance
+    /// `10^(-MAPQ/10)`: a mismapped read is explained by whichever haplotype
+    /// fits it best, so it costs no genotype more than `MAPQ / 10` log10.
+    fn mapq_mixed(&self, cluster: &Cluster, log10: f64) -> f64 {
+        let mismapped = 10f64.powf(-f64::from(self.mapq) / 10.0);
+        let best = cluster
+            .haplotypes()
+            .iter()
+            .map(|&hap| f64::from(self.log10_of(hap)))
+            .fold(f64::NEG_INFINITY, f64::max);
+        log10_sum((1.0 - mismapped).log10() + log10, mismapped.log10() + best)
     }
 
     /// `log10 P(read | pair contaminated by hap)`: the read drawn from `hap`
@@ -343,10 +360,11 @@ impl ReadScores {
         hap: HapIdx,
         fraction: f64,
     ) -> f64 {
-        log10_sum(
-            self.log10_under(cluster, pair) + (1.0 - fraction).log10(),
+        let contaminated = log10_sum(
+            self.log10_unmixed(cluster, pair) + (1.0 - fraction).log10(),
             f64::from(self.log10_of(hap)) + fraction.log10(),
-        )
+        );
+        self.mapq_mixed(cluster, contaminated)
     }
 }
 
@@ -793,6 +811,25 @@ mod tests {
 
     fn verdict(scores: Option<HaplotypeScores>) -> Verdict {
         scores.expect("a verdict").verdict
+    }
+
+    /// A strong reference read at MAPQ 10 costs the homozygote of the alt at
+    /// most its MAPQ once mixed; unmixed it costs the full three log10.
+    #[test]
+    fn a_low_mapq_read_costs_a_pair_at_most_its_mapq() {
+        let cluster =
+            Cluster::new([Event { anchor: 0, allele: deletion(1).into() }].into_iter().collect())
+                .expect("a cluster");
+        let read = ReadScores::new(None, 10, row([-1.0, -4.0, NO]));
+        let hom = pair(1, 1);
+        let unmixed = read.log10_unmixed(&cluster, hom);
+        assert!((unmixed + 4.0).abs() < 1e-9);
+        let mixed = read.log10_under(&cluster, hom);
+        assert!((-2.0..-1.0).contains(&mixed), "{mixed}");
+        let reference = read.log10_under(&cluster, pair(0, 0));
+        assert!((reference + 1.0).abs() < 0.05, "{reference}");
+        let unmapped = ReadScores::new(None, 0, row([-1.0, -4.0, NO]));
+        assert!((unmapped.log10_under(&cluster, hom) + 1.0).abs() < 1e-9);
     }
 
     #[test]
