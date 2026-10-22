@@ -30,8 +30,7 @@ impl SequenceContext {
                 [b1] => (None, Some(*b1)),
                 _ => (None, None),
             };
-        let (after_1, after_2) = match segment.sequence_slice::<2>(idx + 1, idx + N + 1)?.as_ref()
-        {
+        let (after_1, after_2) = match segment.sequence_slice::<2>(idx + 1, idx + N + 1)?.as_ref() {
             [a1, a2] => (Some(*a1), Some(*a2)),
             [a1] => (Some(*a1), None),
             _ => (None, None),
