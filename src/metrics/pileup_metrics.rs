@@ -760,7 +760,6 @@ impl PerBaseAccumulators {
     }
 
     /// Count the reads near an indel at their own quality after all.
-    #[cfg(feature = "experimental-seqair")]
     pub(crate) fn trust_nearby_indels(&mut self) {
         for allele in &mut self.0 {
             allele.ln_indel_doubt = 0.0;
