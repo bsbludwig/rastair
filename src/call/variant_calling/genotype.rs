@@ -494,6 +494,37 @@ mod tests {
         }
     }
 
+    /// The SNV shares its cluster with a het deletion, and every read covering
+    /// it carries the deletion as well: pairs of whole haplotypes cannot say
+    /// whether the other chromosome carries the SNV and tie, while at its own
+    /// site the SNV has only alt reads. The engine genotype is read there.
+    #[test]
+    fn the_engine_genotype_is_read_at_the_snvs_own_site() {
+        use crate::call::{
+            pair_hmm::{Allele, Cluster, Event, HaplotypeScores, ReadScores, fixtures::NO},
+            pileup::indels::IndelAllele,
+        };
+        use std::sync::Arc;
+
+        let mut site = het_by_counts_hom_by_engine(G, FormsDenovo::No);
+        let deletion = IndelAllele::Deletion(std::iter::once(T).collect());
+        let events = [
+            Event { anchor: site.pos + 14, allele: deletion.into() },
+            Event { anchor: site.pos, allele: Allele::Base(G) },
+        ];
+        let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
+        // By haplotype: reference, deletion, SNV, both.
+        let both = ReadScores::new(None, 60, [-9.0, -4.5, -4.5, 0.0, NO, NO, NO, NO]);
+        let other = ReadScores::new(None, 60, [0.0, -4.5, 0.0, -4.5, NO, NO, NO, NO]);
+        let reads: Vec<_> = std::iter::repeat_n(both, 6).chain(std::iter::once(other)).collect();
+        site.snv_scores =
+            Some(Arc::new(HaplotypeScores::new(cluster, reads.into()).expect("scores")));
+        let engine = site
+            .estimate_genotype(None, ErrorModel::default(), SnvGenotype::Engine)
+            .expect("a genotype");
+        assert_eq!(engine.genotype, GenotypeTag::hom_alt(ALT_INDEX_1));
+    }
+
     // Strategy: realistic read counts (1..=500 each, not both zero)
     fn read_counts() -> impl Strategy<Value = (usize, usize)> {
         (1usize..=500, 0usize..=500)
