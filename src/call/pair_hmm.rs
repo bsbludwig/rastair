@@ -502,6 +502,53 @@ impl HaplotypeScores {
         by_copies.map(|p| p / total)
     }
 
+    /// `event`'s copy count from its own site: each read's likelihood with
+    /// the event is its best over the haplotypes carrying it, without the
+    /// event over the rest (GATK's per-allele marginal), and
+    /// [`Verdict::dosage`] runs on that biallelic site.
+    ///
+    /// Not the cluster's own dosage: there, reads that also carry a second
+    /// event come from one chromosome only, so they cannot say whether the
+    /// other carries this one. Where no read of the other chromosome covers
+    /// the anchor, a het and a homozygote of the event tie and the het prior
+    /// decides: on chr20 at 73x, `0/1` at GC 4 with no reference read.
+    #[must_use]
+    pub fn site_dosage(&self, event: EventIdx) -> Option<Dosage> {
+        let allele = self.event(event)?.allele.clone();
+        let mut site = Cluster::new(
+            [Event { anchor: 0, allele }].into_iter().collect::<SmallVec<_, MAX_EVENTS>>(),
+        )?;
+        // Each side scores its pair with the other at the alone level and
+        // with itself at the doubled one.
+        site.divergent_cpgs = [0b10, 0b01, 0, 0, 0, 0, 0, 0];
+        let best = |read: &ReadScores, carries: bool, level: fn(&ReadScores, HapIdx) -> f32| {
+            self.cluster
+                .haplotypes
+                .iter()
+                .filter(|hap| hap.carries(event) == carries)
+                .map(|&hap| level(read, hap))
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let reads: Box<[ReadScores]> = self
+            .reads
+            .iter()
+            .map(|read| {
+                let mut log10_alone = [f32::NEG_INFINITY; MAX_HAPLOTYPES];
+                let mut log10_doubled = [f32::NEG_INFINITY; MAX_HAPLOTYPES];
+                for (slot, carries) in [(0, false), (1, true)] {
+                    if let Some(alone) = log10_alone.get_mut(slot) {
+                        *alone = best(read, carries, ReadScores::log10_alone);
+                    }
+                    if let Some(doubled) = log10_doubled.get_mut(slot) {
+                        *doubled = best(read, carries, ReadScores::log10_doubled);
+                    }
+                }
+                ReadScores { fragment: read.fragment, mapq: read.mapq, log10_alone, log10_doubled }
+            })
+            .collect();
+        Verdict::of(&site, &reads)?.dosage(EventIdx::new(0)?)
+    }
+
     /// Reads assigned to `hap`: its `AD`. Reads assigned to no haplotype are
     /// left out of every count, so the supports add up to [`Self::depth`].
     #[must_use]
@@ -968,6 +1015,31 @@ mod tests {
         let deeper = dosage(&[([-4.5, 0.0, NO], 12)]);
         assert_eq!((hom.copies, deeper.copies), (2, 2));
         assert!(*deeper.gq > *hom.gq, "{:?} {:?}", hom.gq, deeper.gq);
+    }
+
+    /// Six reads carry a deletion and the SNV next to it, one read lacks the
+    /// deletion and ends before the SNV: the deletion is a het, and the reads
+    /// covering the SNV all come from its chromosome, so the cluster cannot
+    /// tell whether the other carries the SNV: `{SNV}` and the reference tie
+    /// as its partner and the het prior calls a coin. At its own site the SNV
+    /// has six alt reads and no reference read, a homozygote.
+    #[test]
+    fn an_snv_linked_to_a_het_is_genotyped_at_its_site() {
+        let snv = |anchor, allele| Event { anchor, allele };
+        let events = [snv(20, deletion(1).into()), snv(5, Allele::Base(Base::A))];
+        let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
+        // By haplotype: reference, deletion, SNV, both.
+        let both = ReadScores::new(None, 60, [-9.0, -4.5, -4.5, 0.0, NO, NO, NO, NO]);
+        let other = ReadScores::new(None, 60, [0.0, -4.5, 0.0, -4.5, NO, NO, NO, NO]);
+        let reads: Vec<_> = std::iter::repeat_n(both, 6).chain(std::iter::once(other)).collect();
+        let scores = HaplotypeScores::new(cluster, reads.into()).expect("scores");
+        let snv = ev(1);
+        let tied = scores.verdict.dosage(snv).expect("present");
+        assert!(*tied.gq < 10.0, "the cluster cannot tell: {tied:?}");
+        let site = scores.site_dosage(snv).expect("present");
+        assert_eq!(site.copies, 2);
+        // Six reads at half the het's chance each, less the het prior: Phred 16.
+        assert!(*site.gq > 15.0, "{site:?}");
     }
 
     #[test]

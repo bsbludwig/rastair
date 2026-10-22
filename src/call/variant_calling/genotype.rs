@@ -173,10 +173,11 @@ impl PileupMetrics {
         }
     }
 
-    /// `counted` with the SNV engine's dosage ([`Verdict::dosage`]) where it scored `alt`, and
-    /// `GC` its GQ. Whether the alt is present stays the forest's decision.
+    /// `counted` with the SNV engine's dosage at the alt's site ([`HaplotypeScores::site_dosage`])
+    /// where it scored `alt`, and `GC` its GQ. Whether the alt is present stays the forest's
+    /// decision.
     ///
-    /// [`Verdict::dosage`]: crate::call::pair_hmm::Verdict::dosage
+    /// [`HaplotypeScores::site_dosage`]: crate::call::pair_hmm::HaplotypeScores::site_dosage
     fn with_engine_dosage(
         &self,
         counted: EstimatedGenotype,
@@ -185,7 +186,7 @@ impl PileupMetrics {
     ) -> EstimatedGenotype {
         let Some(scores) = self.snv_scores.as_deref() else { return counted };
         let Some(event) = scores.base_event_at(self.pos, alt) else { return counted };
-        let Some(dosage) = scores.verdict.dosage(event) else { return counted };
+        let Some(dosage) = scores.site_dosage(event) else { return counted };
         let genotype = if dosage.copies >= 2 {
             GenotypeTag::hom_alt(alt_index)
         } else {
