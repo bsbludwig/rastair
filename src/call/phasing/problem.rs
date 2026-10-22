@@ -1170,7 +1170,7 @@ mod tests {
             if let Some(likeliest) = log10.get_mut(hap) {
                 *likeliest = -1.0;
             }
-            ReadScores { fragment: FragmentId::new(fragment), mapq: 60, log10 }
+            ReadScores::new(FragmentId::new(fragment), 60, log10)
         };
         // Haplotype 0 is the reference, 3 carries both events.
         let reads: Vec<ReadScores> =

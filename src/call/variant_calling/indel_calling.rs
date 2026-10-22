@@ -224,7 +224,7 @@ mod tests {
             .flat_map(|&(hap, n)| {
                 let mut log10 = [-9.0; MAX_HAPLOTYPES];
                 log10[hap] = -1.0;
-                std::iter::repeat_n(ReadScores { fragment: None, mapq: 60, log10 }, n)
+                std::iter::repeat_n(ReadScores::new(None, 60, log10), n)
             })
             .collect();
         let cluster = Cluster::new(events).expect("a cluster");

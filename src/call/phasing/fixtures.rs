@@ -140,7 +140,7 @@ pub(crate) fn backing(pos: u32, bases: [Base; 2]) -> Vec<PhaseObservation> {
 /// A read the pair-HMM scored: `log10` is its likelihood under the reference
 /// and each scored allele's haplotype.
 pub(crate) fn scored(fragment: u64, log10: [f32; 3]) -> ReadScores {
-    ReadScores { fragment: FragmentId::new(fragment), mapq: 60, log10: pair_hmm::row(log10) }
+    ReadScores::new(FragmentId::new(fragment), 60, pair_hmm::row(log10))
 }
 
 /// Reads that make the pair-HMM genotype a column as a confident

@@ -105,6 +105,10 @@ pub struct Cluster {
     events: SmallVec<Event, MAX_EVENTS>,
     /// The subsets of `events` one chromosome can carry, ascending.
     haplotypes: SmallVec<HapIdx, MAX_HAPLOTYPES>,
+    /// By [`HapIdx::index`], a bitmask over the divergent `CpG` positions
+    /// (a role at a window index some haplotypes have and others not) the
+    /// haplotype carries; all zero unless the scoring profiled their levels.
+    divergent_cpgs: [u32; MAX_HAPLOTYPES],
 }
 
 impl Cluster {
@@ -115,7 +119,18 @@ impl Cluster {
             .iter()
             .enumerate()
             .all(|(i, event)| events.get(..i).is_some_and(|before| Self::admits(before, event)));
-        admitted.then(|| Self { haplotypes: HapIdx::all_valid(&events), events })
+        admitted.then(|| Self {
+            haplotypes: HapIdx::all_valid(&events),
+            events,
+            divergent_cpgs: [0; MAX_HAPLOTYPES],
+        })
+    }
+
+    /// Whether `partner` carries every divergent `CpG` `hap` does, so a pair
+    /// of the two scores `hap` with the levels profiled over both chromosomes.
+    fn shares_cpgs(&self, hap: HapIdx, partner: HapIdx) -> bool {
+        let mask = |h: HapIdx| self.divergent_cpgs.get(h.index()).copied().unwrap_or(0);
+        mask(hap) & !mask(partner) == 0
     }
 
     /// Whether `candidate` can join a cluster of `events`.
@@ -263,14 +278,34 @@ pub struct ReadScores {
     pub fragment: Option<FragmentId>,
     pub mapq: u8,
     /// `log10 P(read | haplotype)` by [`HapIdx::index`]; `-inf` for a subset
-    /// that is not a haplotype, or that the read's band misses.
+    /// that is not a haplotype, or that the read's band misses. At a
+    /// haplotype's divergent `CpG`s, the level profiled for it alone on a pair.
     pub log10: [f32; MAX_HAPLOTYPES],
+    /// [`Self::log10`] with the divergent `CpG`s at the level profiled for
+    /// both chromosomes carrying them; equal to it for a haplotype without any.
+    pub log10_doubled: [f32; MAX_HAPLOTYPES],
 }
 
 impl ReadScores {
+    /// A row whose haplotypes carry no divergent `CpG`.
+    #[must_use]
+    pub fn new(fragment: Option<FragmentId>, mapq: u8, log10: [f32; MAX_HAPLOTYPES]) -> Self {
+        Self { fragment, mapq, log10, log10_doubled: log10 }
+    }
+
+    /// The likelihood under `hap` alone. shortcut: for a haplotype with a
+    /// divergent `CpG` this is its level profiled as the pair's only carrier,
+    /// whatever the partner; assignment and phasing votes read it as is.
     #[must_use]
     pub fn log10_of(&self, hap: HapIdx) -> f32 {
         self.log10.get(hap.index()).copied().unwrap_or(f32::NEG_INFINITY)
+    }
+
+    /// The likelihood under `hap` as one chromosome of a pair with `partner`.
+    fn log10_beside(&self, cluster: &Cluster, hap: HapIdx, partner: HapIdx) -> f32 {
+        let log10 =
+            if cluster.shares_cpgs(hap, partner) { &self.log10_doubled } else { &self.log10 };
+        log10.get(hap.index()).copied().unwrap_or(f32::NEG_INFINITY)
     }
 
     /// `log10 P(read | a) - log10 P(read | b)`: positive when the read prefers
@@ -291,16 +326,25 @@ impl ReadScores {
 
     /// `log10 P(read | pair)`, the read drawn from either haplotype of the pair
     /// with equal chance.
-    fn log10_under(&self, pair: HapPair) -> f64 {
+    fn log10_under(&self, cluster: &Cluster, pair: HapPair) -> f64 {
         let (a, b) = pair.haplotypes();
-        log10_mean(f64::from(self.log10_of(a)), f64::from(self.log10_of(b)))
+        log10_mean(
+            f64::from(self.log10_beside(cluster, a, b)),
+            f64::from(self.log10_beside(cluster, b, a)),
+        )
     }
 
     /// `log10 P(read | pair contaminated by hap)`: the read drawn from `hap`
     /// with chance `fraction`, else from the pair.
-    fn log10_under_contaminated(&self, pair: HapPair, hap: HapIdx, fraction: f64) -> f64 {
+    fn log10_under_contaminated(
+        &self,
+        cluster: &Cluster,
+        pair: HapPair,
+        hap: HapIdx,
+        fraction: f64,
+    ) -> f64 {
         log10_sum(
-            self.log10_under(pair) + (1.0 - fraction).log10(),
+            self.log10_under(cluster, pair) + (1.0 - fraction).log10(),
             f64::from(self.log10_of(hap)) + fraction.log10(),
         )
     }
@@ -412,7 +456,9 @@ impl HaplotypeScores {
     #[must_use]
     pub fn copy_posteriors(&self, event: EventIdx) -> [f64; 3] {
         let pairs: SmallVec<(HapPair, f64), 36> = HapPair::all(&self.cluster.haplotypes)
-            .map(|pair| (pair, self.reads.iter().map(|read| read.log10_under(pair)).sum()))
+            .map(|pair| {
+                (pair, self.reads.iter().map(|read| read.log10_under(&self.cluster, pair)).sum())
+            })
             .collect();
         let best = pairs.iter().map(|&(_, l)| l).fold(f64::NEG_INFINITY, f64::max);
         let mut by_copies = [0.0; 3];
@@ -495,7 +541,7 @@ impl Verdict {
                 let pure = Account {
                     pair,
                     artefact: None,
-                    log10: reads.iter().map(|read| read.log10_under(pair)).sum(),
+                    log10: reads.iter().map(|read| read.log10_under(cluster, pair)).sum(),
                 };
                 let contaminated = event_indices()
                     .filter(move |event| !pair.carries(*event))
@@ -504,7 +550,9 @@ impl Verdict {
                         ARTEFACT_FRACTIONS.iter().map(move |&fraction| {
                             let log10: f64 = reads
                                 .iter()
-                                .map(|read| read.log10_under_contaminated(pair, hap, fraction))
+                                .map(|read| {
+                                    read.log10_under_contaminated(cluster, pair, hap, fraction)
+                                })
                                 .sum();
                             Account {
                                 pair,
@@ -706,9 +754,7 @@ pub(crate) mod fixtures {
     /// `n` anonymous reads of each `log10` row, at MAPQ 60.
     pub(crate) fn rows(rows: &[([f32; 3], usize)]) -> Vec<ReadScores> {
         rows.iter()
-            .flat_map(|&(log10, n)| {
-                std::iter::repeat_n(ReadScores { fragment: None, mapq: 60, log10: row(log10) }, n)
-            })
+            .flat_map(|&(log10, n)| std::iter::repeat_n(ReadScores::new(None, 60, row(log10)), n))
             .collect()
     }
 }
@@ -724,7 +770,7 @@ mod tests {
     }
 
     fn read(log10: [f32; 3]) -> ReadScores {
-        ReadScores { fragment: None, mapq: 60, log10: row(log10) }
+        ReadScores::new(None, 60, row(log10))
     }
 
     /// `alts` scored alleles at one anchor, over `reads` of each kind.
@@ -835,7 +881,7 @@ mod tests {
         let events = [at(10, deletion(1)), at(20, deletion(2))].into_iter().collect();
         let both = [-9.0, -5.0, -5.0, -1.0, NO, NO, NO, NO];
         let reads: Vec<ReadScores> =
-            std::iter::repeat_n(ReadScores { fragment: None, mapq: 60, log10: both }, 8).collect();
+            std::iter::repeat_n(ReadScores::new(None, 60, both), 8).collect();
         let cluster = Cluster::new(events).expect("a cluster");
         let s = HaplotypeScores::new(cluster, reads.into()).expect("a verdict");
         assert_eq!(s.verdict.called_pair(), pair(3, 3));

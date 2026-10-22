@@ -6,8 +6,8 @@ use super::{
 };
 use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
 use compair::{
-    Band, Betas, ConversionModel, Haplotype, Log10Likelihood, PcrIndelModel, Probability, Read,
-    TapsEmission, Workspace,
+    Band, Betas, ConversionModel, CpgRole, Haplotype, Log10Likelihood, PcrIndelModel, Probability,
+    Read, TapsEmission, Workspace,
 };
 use seqair_types::{Base, BaseQuality, SmallVec, Strand};
 use std::borrow::Cow;
@@ -36,7 +36,8 @@ const MISSING_QUAL: BaseQuality = BaseQuality::from_byte(20);
 /// methylated CpG) the column's own level would be the right one, and compair
 /// can carry it on the haplotype, but on chr12 at 26x and 73x the column
 /// estimate, raw or shrunk towards one half with up to sixteen reads of
-/// prior, measured below the uniform level on every row.
+/// prior, measured below the uniform level on every row. A substitution's
+/// `CpG`s are the exception, profiled per pair ([`with_profiled_cpgs`]).
 const UNKNOWN_BETA: Probability = Probability::new_panicky(0.5);
 
 /// `haplotype` with `allele` at `anchor`: a base in place of the anchor's,
@@ -55,9 +56,8 @@ fn apply(allele: &Allele, haplotype: &Haplotype, anchor: usize) -> Option<Haplot
 
 /// `haplotype` with `base` at `at`. compair recomputes the `CpG` roles, so a
 /// substitution creates or destroys a `CpG` on this haplotype alone. Built
-/// here rather than in compair: the scoring never puts methylation levels on
-/// a haplotype ([`UNKNOWN_BETA`] is uniform), which is the one thing an edit
-/// inside compair would have to carry over.
+/// here rather than in compair: levels go on a haplotype only once all its
+/// events are applied, so there are none an edit would have to carry over.
 fn with_substitution(haplotype: &Haplotype, at: usize, base: Base) -> Option<Haplotype> {
     let mut bases = haplotype.bases().to_vec();
     *bases.get_mut(at)? = base;
@@ -122,12 +122,27 @@ pub fn score(
     prepare(reference, window_start, events, reads)?.align(scratch)
 }
 
+/// Which of a haplotype's scores a kernel haplotype gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Levels {
+    /// No divergent `CpG`: both.
+    Shared,
+    /// Divergent `CpG`s at the level profiled for the pair's only carrier.
+    Alone,
+    /// Divergent `CpG`s at the level profiled for both chromosomes.
+    Doubled,
+}
+
 /// A cluster ready for the kernel: everything [`score`] needs before the
 /// alignment and after it.
 #[derive(Debug)]
 pub struct Prepared {
     cluster: Cluster,
-    haplotypes: SmallVec<Haplotype, MAX_HAPLOTYPES>,
+    /// What the kernel aligns against: each cluster haplotype once, or twice
+    /// when it carries a divergent `CpG`.
+    haplotypes: Vec<Haplotype>,
+    /// By kernel haplotype: whose score it is, and which.
+    slots: Vec<(HapIdx, Levels)>,
     reads: Vec<HaplotypeRead>,
     bands: Vec<Band>,
 }
@@ -138,6 +153,19 @@ pub fn prepare(
     window_start: u64,
     events: impl IntoIterator<Item = Event>,
     reads: Vec<HaplotypeRead>,
+) -> Option<Prepared> {
+    prepare_with(reference, window_start, events, reads, true)
+}
+
+/// [`prepare`], with the divergent `CpG`s' levels profiled per pair when
+/// `profile` holds; without, every `CpG` is at [`UNKNOWN_BETA`], for tests
+/// to compare against.
+fn prepare_with(
+    reference: &[Base],
+    window_start: u64,
+    events: impl IntoIterator<Item = Event>,
+    reads: Vec<HaplotypeRead>,
+    profile: bool,
 ) -> Option<Prepared> {
     let reference = Haplotype::new(reference);
     let window_anchor =
@@ -162,7 +190,7 @@ pub fn prepare(
     if kept.is_empty() {
         return None;
     }
-    let cluster = Cluster::new(kept)?;
+    let mut cluster = Cluster::new(kept)?;
     // Later anchors first, so an earlier event's window index still holds
     // after the edit.
     let mut haplotypes: SmallVec<Haplotype, MAX_HAPLOTYPES> = SmallVec::new();
@@ -179,6 +207,17 @@ pub fn prepare(
         haplotypes.push(haplotype);
     }
     let width = band_width(longest);
+    // shortcut: indel-made CpGs stay at β ½; extend once SNV-only clusters measure well.
+    let substitutions_only =
+        cluster.events().iter().all(|event| matches!(event.allele, Allele::Base(_)));
+    let (haplotypes, slots) = if profile && substitutions_only {
+        let anchors: SmallVec<usize, MAX_EVENTS> =
+            cluster.events().iter().filter_map(window_anchor).collect();
+        with_profiled_cpgs(&mut cluster, &reference, haplotypes, &anchors, &reads)?
+    } else {
+        let slots = cluster.haplotypes().iter().map(|&hap| (hap, Levels::Shared)).collect();
+        (haplotypes.into(), slots)
+    };
 
     let bands = reads
         .iter()
@@ -196,11 +235,165 @@ pub fn prepare(
     if bands.is_empty() {
         return None;
     }
-    Some(Prepared { cluster, haplotypes, reads, bands })
+    Some(Prepared { cluster, haplotypes, slots, reads, bands })
 }
 
+/// What the kernel aligns against, and by each whose score it is and which.
+type KernelHaplotypes = (Vec<Haplotype>, Vec<(HapIdx, Levels)>);
+
+/// The kernel haplotypes of an all-substitution cluster, whose haplotypes
+/// share the window's coordinates: each haplotype carrying a divergent `CpG`
+/// (one some haplotypes have at that window index and others not) twice, its
+/// levels there profiled from the reads as the pair's only carrier and as
+/// both chromosomes, so a hom-alt de-novo `CpG` is not charged for being
+/// mostly methylated. Records the carriers on `cluster`.
+fn with_profiled_cpgs(
+    cluster: &mut Cluster,
+    reference: &Haplotype,
+    haplotypes: SmallVec<Haplotype, MAX_HAPLOTYPES>,
+    anchors: &[usize],
+    reads: &[HaplotypeRead],
+) -> Option<KernelHaplotypes> {
+    let role_at = |haplotype: &Haplotype, q: usize| haplotype.site(q).map(|site| site.cpg);
+    // A substitution changes the roles of its own base and its two neighbours.
+    let mut divergent: SmallVec<(usize, CpgRole), 18> = SmallVec::new();
+    for q in anchors.iter().flat_map(|&a| a.saturating_sub(1)..=a.saturating_add(1)) {
+        for role in [CpgRole::TopC, CpgRole::BottomG] {
+            let carriers = haplotypes.iter().filter(|h| role_at(h, q) == Some(role)).count();
+            if carriers > 0 && carriers < haplotypes.len() && !divergent.contains(&(q, role)) {
+                divergent.push((q, role));
+            }
+        }
+    }
+
+    let mut kernel = Vec::with_capacity(haplotypes.len() * 2);
+    let mut slots = Vec::with_capacity(haplotypes.len() * 2);
+    for (&hap, haplotype) in cluster.haplotypes.clone().iter().zip(&haplotypes) {
+        let mut mask = 0u32;
+        let mut alone = vec![None; haplotype.len()];
+        let mut doubled = vec![None; haplotype.len()];
+        for (bit, &(q, role)) in divergent.iter().enumerate() {
+            if role_at(haplotype, q) != Some(role) {
+                continue;
+            }
+            mask |= 1 << bit;
+            let counts = Conversions::at(reads, q, role)?;
+            // The partner's base: the one every haplotype without this CpG
+            // agrees on, else the reference's.
+            let mut others =
+                haplotypes.iter().filter(|h| role_at(h, q) != Some(role)).map(|h| h.bases().get(q));
+            let first = others.next().flatten();
+            let partner = if others.all(|b| b == first) { first } else { reference.bases().get(q) };
+            let partner = match partner {
+                Some(&b) if b == counts.converted_base => Partner::Converted,
+                Some(&b) if b == counts.unconverted_base => Partner::Unconverted,
+                _ => Partner::Other,
+            };
+            if let Some(slot) = alone.get_mut(q) {
+                *slot = Probability::new(counts.alone(partner)).ok();
+            }
+            if let Some(slot) = doubled.get_mut(q) {
+                *slot = Probability::new(counts.doubled()).ok();
+            }
+        }
+        if let Some(slot) = cluster.divergent_cpgs.get_mut(hap.index()) {
+            *slot = mask;
+        }
+        if mask == 0 {
+            kernel.push(haplotype.clone());
+            slots.push((hap, Levels::Shared));
+            continue;
+        }
+        for (betas, levels) in [(alone, Levels::Alone), (doubled, Levels::Doubled)] {
+            let with = haplotype
+                .clone()
+                .with_betas(betas)
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        %error,
+                        "Methylation levels do not fit their haplotype; this cluster is not \
+                         scored. This is a bug in rastair, please report it."
+                    );
+                })
+                .ok()?;
+            kernel.push(with);
+            slots.push((hap, levels));
+        }
+    }
+    Some((kernel, slots))
+}
+
+/// What the partner of a divergent `CpG`'s only carrier has at its position,
+/// as the converting strand reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Partner {
+    /// The converted base (a de-novo `T>C` on OT): every unconverted read is
+    /// the carrier's.
+    Converted,
+    /// The unconverted base, outside a `CpG`: every converted read is the
+    /// carrier's.
+    Unconverted,
+    /// Neither: only the carrier's reads show either.
+    Other,
+}
+
+/// A divergent `CpG`'s reads on the strand that converts it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Conversions {
+    converted: f64,
+    unconverted: f64,
+    converted_base: Base,
+    unconverted_base: Base,
+}
+
+impl Conversions {
+    /// Reads covering window index `q` on the strand that converts `role`,
+    /// a read's own indels ignored. `None` for [`CpgRole::None`].
+    fn at(reads: &[HaplotypeRead], q: usize, role: CpgRole) -> Option<Self> {
+        let (strand, converted_base, unconverted_base) = match role {
+            CpgRole::TopC => (Strand::OT, Base::T, Base::C),
+            CpgRole::BottomG => (Strand::OB, Base::A, Base::G),
+            CpgRole::None => return None,
+        };
+        let q = i64::try_from(q).ok()?;
+        let mut counts =
+            Self { converted: 0.0, unconverted: 0.0, converted_base, unconverted_base };
+        for read in reads.iter().filter(|read| read.read.strand() == strand) {
+            let base = usize::try_from(q - i64::from(read.offset))
+                .ok()
+                .and_then(|i| read.read.bases().get(i));
+            match base {
+                Some(&b) if b == converted_base => counts.converted += 1.0,
+                Some(&b) if b == unconverted_base => counts.unconverted += 1.0,
+                _ => {}
+            }
+        }
+        Some(counts)
+    }
+
+    /// The level with both chromosomes carrying the `CpG`: the MAP under a
+    /// Beta(2, 2) prior.
+    fn doubled(self) -> f64 {
+        (self.converted + 1.0) / (self.converted + self.unconverted + 2.0)
+    }
+
+    /// The level with the carrier alone: half the reads are its, and what the
+    /// partner's base can produce is taken out.
+    fn alone(self, partner: Partner) -> f64 {
+        let n = self.converted + self.unconverted;
+        let (converted, n) = match partner {
+            Partner::Converted => ((n / 2.0 - self.unconverted).max(0.0), n / 2.0),
+            Partner::Unconverted => (self.converted.min(n / 2.0), n / 2.0),
+            Partner::Other => (self.converted, n),
+        };
+        (converted + 1.0) / (n + 2.0)
+    }
+}
+
+/// Uniform for haplotypes without levels, which is every haplotype but those
+/// [`with_profiled_cpgs`] built.
 fn emission() -> TapsEmission<'static> {
-    TapsEmission::new(ConversionModel::taps_default(), Betas::Uniform(UNKNOWN_BETA))
+    TapsEmission::new(ConversionModel::taps_default(), Betas::OfHaplotype(UNKNOWN_BETA))
 }
 
 impl Prepared {
@@ -220,7 +413,7 @@ impl Prepared {
     }
 
     fn finish(self, scores: &[Log10Likelihood]) -> Option<HaplotypeScores> {
-        let reads = rows(scores, self.cluster.haplotypes(), &self.reads)?;
+        let reads = rows(scores, &self.slots, &self.reads)?;
         HaplotypeScores::new(self.cluster, reads)
     }
 
@@ -263,18 +456,18 @@ fn band_width(longest_indel: usize) -> u32 {
 }
 
 /// One row per read from compair's read-major buffer (read `r` against the
-/// `h`th of `subsets` at `r * subsets.len() + h`), without the reads outside
+/// `h`th of `slots` at `r * slots.len() + h`), without the reads outside
 /// the band on every haplotype. `None` when the buffer is not one score per
 /// read and haplotype: it has then lost track of which read is which.
 #[expect(clippy::cast_possible_truncation, reason = "likelihoods are stored as f32")]
 fn rows(
     scores: &[Log10Likelihood],
-    subsets: &[HapIdx],
+    slots: &[(HapIdx, Levels)],
     reads: &[HaplotypeRead],
 ) -> Option<Box<[ReadScores]>> {
-    let haplotypes = subsets.len();
+    let haplotypes = slots.len();
     if haplotypes == 0
-        || haplotypes > MAX_HAPLOTYPES
+        || haplotypes > 2 * MAX_HAPLOTYPES
         || Some(scores.len()) != reads.len().checked_mul(haplotypes)
     {
         tracing::warn!(
@@ -292,13 +485,25 @@ fn rows(
             .zip(reads)
             .filter(|(row, _)| row.iter().any(|l| l.get().is_finite()))
             .map(|(row, read)| {
-                let mut log10 = [f32::NEG_INFINITY; MAX_HAPLOTYPES];
-                for (subset, l) in subsets.iter().zip(row) {
-                    if let Some(slot) = log10.get_mut(subset.index()) {
-                        *slot = l.get() as f32;
+                let mut scores =
+                    ReadScores::new(read.fragment, read.mapq, [f32::NEG_INFINITY; MAX_HAPLOTYPES]);
+                for (&(hap, levels), l) in slots.iter().zip(row) {
+                    let l = l.get() as f32;
+                    let set = |log10: &mut [f32; MAX_HAPLOTYPES]| {
+                        if let Some(slot) = log10.get_mut(hap.index()) {
+                            *slot = l;
+                        }
+                    };
+                    match levels {
+                        Levels::Shared => {
+                            set(&mut scores.log10);
+                            set(&mut scores.log10_doubled);
+                        }
+                        Levels::Alone => set(&mut scores.log10),
+                        Levels::Doubled => set(&mut scores.log10_doubled),
                     }
                 }
-                ReadScores { fragment: read.fragment, mapq: read.mapq, log10 }
+                scores
             })
             .collect(),
     )
@@ -566,6 +771,144 @@ mod tests {
         assert!(ot < ob / 2.0, "a converted read is half explained by methylation: {ot} vs {ob}");
     }
 
+    /// `bases` over the window with the base at `at` replaced by `alt`.
+    fn with_base(at: usize, alt: u8) -> Vec<u8> {
+        let mut edited = WINDOW.to_vec();
+        edited[at] = alt;
+        edited
+    }
+
+    /// A read of `haplotype` around `at` showing `shown` there, at Q30, its
+    /// own fragment.
+    fn read_showing(
+        haplotype: &[u8],
+        at: usize,
+        shown: u8,
+        i: usize,
+        strand: Strand,
+    ) -> HaplotypeRead {
+        let mut bases = haplotype.to_vec();
+        bases[at] = shown;
+        let fragment = 1000 + u64::try_from(i).expect("fits");
+        let mut read = read_of(&bases, at - 20 + i % 10, 50, strand);
+        read.fragment = FragmentId::new(fragment);
+        read
+    }
+
+    /// The substitution of `alt` at `at` scored over `reads`, with the
+    /// divergent `CpG`s profiled or at one half.
+    fn snv(at: usize, alt: u8, reads: &[HaplotypeRead], profile: bool) -> HaplotypeScores {
+        let window: Vec<Base> = WINDOW.iter().map(|&b| Base::from(b)).collect();
+        let event = Event {
+            anchor: u32::try_from(at).expect("fits"),
+            allele: Allele::Base(Base::from(alt)),
+        };
+        prepare_with(&window, 0, [event], reads.to_vec(), profile)
+            .expect("prepared")
+            .align(&mut HaplotypeScratch::default())
+            .expect("scores")
+    }
+
+    /// `log10` of how much likelier the reads are under the homozygote of the
+    /// pair's carrier than under the het.
+    fn hom_over_het(scores: &HaplotypeScores, hom: HapIdx) -> f64 {
+        let het = HapPair::new(HapIdx::REFERENCE, HapIdx::of_event(EventIdx::new(0).expect("e")));
+        let under = |pair| -> f64 {
+            scores.reads.iter().map(|read| read.log10_under(scores.cluster(), pair)).sum()
+        };
+        under(HapPair::new(hom, hom)) - under(het)
+    }
+
+    /// A `T` before a `G` in the window, not after a `C`.
+    fn tg() -> usize {
+        (30..WINDOW.len() - 1)
+            .find(|&i| WINDOW[i] == b'T' && WINDOW[i + 1] == b'G' && WINDOW[i - 1] != b'C')
+            .expect("a TG")
+    }
+
+    /// A homozygous `T>C` making a de-novo `CpG` that is 90 % methylated: on
+    /// OT nine of ten reads show the converted `T`, which the reference
+    /// explains for free, and a few OB reads show the `C`. At one half every
+    /// converted read costs the homozygote 0.3 log10 and the het a third of
+    /// that, so the het wins; the level profiled over both chromosomes makes
+    /// the converted reads nearly free and the homozygote wins.
+    #[test]
+    fn a_methylated_hom_alt_denovo_cpg_is_homozygous() {
+        let at = tg();
+        let alt = with_base(at, b'C');
+        let mut reads: Vec<_> = (0..10)
+            .map(|i| read_showing(&alt, at, if i < 9 { b'T' } else { b'C' }, i, Strand::OT))
+            .collect();
+        reads.extend((10..13).map(|i| read_showing(&alt, at, b'C', i, Strand::OB)));
+        let hom = HapIdx::of_event(EventIdx::new(0).expect("event"));
+        let profiled = snv(at, b'C', &reads, true);
+        let uniform = snv(at, b'C', &reads, false);
+        assert_eq!(profiled.verdict.best, HapPair::new(hom, hom));
+        assert_eq!(uniform.verdict.best, HapPair::new(HapIdx::REFERENCE, hom));
+        let (p, u) = (hom_over_het(&profiled, hom), hom_over_het(&uniform, hom));
+        assert!(p > 0.5 && u < 0.0, "profiled {p}, uniform {u}");
+
+        // With ten OB reads both call the homozygote, the profile by more.
+        reads.extend((13..20).map(|i| read_showing(&alt, at, b'C', i, Strand::OB)));
+        let (p, u) = (
+            hom_over_het(&snv(at, b'C', &reads, true), hom),
+            hom_over_het(&snv(at, b'C', &reads, false), hom),
+        );
+        assert!(p > u + 1.0 && u > 0.0, "profiled {p}, uniform {u}");
+    }
+
+    /// An unmethylated het `T>C`: the alt's OT reads show the `C`, so the
+    /// profile has nothing to explain away.
+    #[test]
+    fn an_unmethylated_denovo_het_stays_het() {
+        let at = tg();
+        let alt = with_base(at, b'C');
+        let mut reads = Vec::new();
+        for (i, strand) in (0..20).zip([Strand::OT, Strand::OB].into_iter().flat_map(|s| [s; 10])) {
+            let (haplotype, shown) =
+                if i % 2 == 0 { (WINDOW, b'T') } else { (alt.as_slice(), b'C') };
+            reads.push(read_showing(haplotype, at, shown, i, strand));
+        }
+        let het = HapPair::new(HapIdx::REFERENCE, HapIdx::of_event(EventIdx::new(0).expect("e")));
+        for profile in [true, false] {
+            assert_eq!(snv(at, b'C', &reads, profile).verdict.called_pair(), het, "{profile}");
+        }
+    }
+
+    /// A `C>T` destroying a reference `CpG` that is 90 % methylated, on a
+    /// homozygous reference: the mirror of the de-novo case.
+    #[test]
+    fn a_methylated_reference_cpg_is_homozygous_reference() {
+        let cg = (30..WINDOW.len() - 1)
+            .find(|&i| WINDOW[i] == b'C' && WINDOW[i + 1] == b'G')
+            .expect("a CpG");
+        let mut reads: Vec<_> = (0..10)
+            .map(|i| read_showing(WINDOW, cg, if i < 9 { b'T' } else { b'C' }, i, Strand::OT))
+            .collect();
+        reads.extend((10..13).map(|i| read_showing(WINDOW, cg, b'C', i, Strand::OB)));
+        let reference = HapPair::new(HapIdx::REFERENCE, HapIdx::REFERENCE);
+        assert_eq!(snv(cg, b'T', &reads, true).verdict.best, reference);
+        let uniform = snv(cg, b'T', &reads, false).verdict.best;
+        assert_ne!(uniform, reference, "at one half the converted reads make a het");
+    }
+
+    #[test]
+    fn the_levels_take_out_what_the_partner_can_produce() {
+        let counts = Conversions {
+            converted: 9.0,
+            unconverted: 1.0,
+            converted_base: Base::T,
+            unconverted_base: Base::C,
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(close(counts.doubled(), 10.0 / 12.0));
+        assert!(close(counts.alone(Partner::Converted), 5.0 / 7.0));
+        assert!(close(counts.alone(Partner::Unconverted), 6.0 / 7.0));
+        assert!(close(counts.alone(Partner::Other), 10.0 / 12.0));
+        let all_unconverted = Conversions { converted: 0.0, unconverted: 10.0, ..counts };
+        assert!(close(all_unconverted.alone(Partner::Converted), 1.0 / 7.0));
+    }
+
     /// The emission has no strand to score such a read on.
     #[test]
     fn a_read_without_a_strand_is_refused() {
@@ -586,8 +929,9 @@ mod tests {
     fn a_short_score_buffer_gives_no_scores() {
         let scores = [Log10Likelihood::new(-1.0); 3];
         let reads = [read_of(WINDOW, 0, 60, Strand::OT), read_of(WINDOW, 3, 60, Strand::OT)];
-        let subsets = [HapIdx::REFERENCE, HapIdx::of_event(EventIdx::new(0).expect("event"))];
-        assert!(rows(&scores, &subsets, &reads).is_none());
-        assert_eq!(rows(&[scores[0]; 4], &subsets, &reads).map(|r| r.len()), Some(2));
+        let slots = [HapIdx::REFERENCE, HapIdx::of_event(EventIdx::new(0).expect("event"))]
+            .map(|hap| (hap, Levels::Shared));
+        assert!(rows(&scores, &slots, &reads).is_none());
+        assert_eq!(rows(&[scores[0]; 4], &slots, &reads).map(|r| r.len()), Some(2));
     }
 }
