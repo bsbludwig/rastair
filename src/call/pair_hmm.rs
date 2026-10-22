@@ -31,10 +31,11 @@
 //! het. Margins are per event, the best account whose pair carries it over the
 //! best whose pair does not; an event is called at [`Margin::PRESENT`] and
 //! QUAL is ten times the margin. [`Verdict::called_pair`], the likeliest pair
-//! carrying exactly the called events, is the indel genotype, so "present but
-//! not in GT" cannot happen while no anchor has more than two events.
-//! `quality` (`GC`) is the called pair's flat-prior quality over the pure
-//! pairs, low when it is not the best pair; the phasing gate reads it.
+//! carrying exactly the called events, is the cluster's one genotype, so
+//! "present but not in GT" cannot happen while no anchor has more than two
+//! events. `quality` is the called pair's flat-prior quality over the pure
+//! pairs, low when it is not the best pair; the phasing gate reads it, and it
+//! is the `GC` of a compound and of a `0/0` record.
 //!
 //! **A read's likelihood under a pair** ([`ReadScores`]):
 //!
@@ -63,13 +64,18 @@
 //! the deletion. [`HaplotypeScores::support_over`] counts a record's events;
 //! `AD` sums to `DP`.
 //!
-//! **Dosage.** [`Verdict::dosage`] is the copy count of the best pair carrying
-//! an event, each pair at its best account, with `HET_PRIOR_LOG10` for one copy
-//! and GQ over the carrying pairs. An SNV's genotype reads it at the SNV's own
-//! site ([`HaplotypeScores::site_dosage`]: each read's best haplotype with and
-//! without the event), because a pair-of-haplotypes dosage is blind where
-//! every read covering the SNV also carries a linked het event. A `0/1` at
-//! GQ 5 or less on MAPQ 0-19 reads is the model's honest output.
+//! **Dosage.** [`Verdict::dosage`] projects the called pair onto one event: its
+//! copies, and a GQ of Phred(1 − P(those copies)) under a flat prior over the
+//! pairs consistent with the presence calls, each at its best account; `None`
+//! where the called pair lacks the event. Every record, SNV or indel, writes
+//! that genotype. It carries no genotype prior (finer than the likelihood's
+//! tie margins are calibrated), and it is not a per-site marginal: that one's
+//! "without" is a free best-of-N over the cluster's other alleles, so at a hom
+//! indel beside a stutter or twin-spelling candidate every read is neutral and
+//! one copy wins. Where no read without a linked het deletion reaches an SNV,
+//! `(ref, del+SNV)` and `(SNV, del+SNV)` tie and the earlier in GL order, the
+//! het, is written at GQ 5 or less: the model's honest tie, as is such a call
+//! on MAPQ 0-19 reads.
 //!
 //! **TAPS twin spellings.** A deletion next to a methylated CpG has two
 //! spellings whose haplotypes differ by a `C`/`T` at the CpG; converted OT

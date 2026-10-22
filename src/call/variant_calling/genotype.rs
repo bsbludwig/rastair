@@ -24,15 +24,16 @@
 //!   quarter of the column's reads have one (a gap more reads share is the
 //!   sample's indel).
 //! - **`--snv-genotype engine`** replaces the dosage with the SNV engine's
-//!   ([`HaplotypeScores::site_dosage`]) where the engine scored the alt, and
-//!   `GC` with its GQ; whether the alt is called stays the forests' decision.
+//!   ([`Verdict::dosage`]) where the engine scored the alt and its called pair
+//!   carries it, and `GC` with its GQ; whether the alt is called stays the
+//!   forests' decision.
 //!
 //! Methylation calling reads the genotype (`GenotypeAdjustment::HomAlt`), so a
 //! genotype flip moves that site's beta too. `tests/data/test.bam` is a fully
 //! methylated, high-quality control, so no VCF snapshot exercises these rules;
 //! the fixtures in `vcf_tests/genotyping.rs` and here do.
 //!
-//! [`HaplotypeScores::site_dosage`]: crate::call::pair_hmm::HaplotypeScores::site_dosage
+//! [`Verdict::dosage`]: crate::call::pair_hmm::Verdict::dosage
 use crate::{
     call::variant_calling::{ErrorModel, SnvGenotype},
     metrics::{

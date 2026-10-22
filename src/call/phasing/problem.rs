@@ -41,7 +41,10 @@
 //!   compound) and be its best pair. The site's two haplotypes are the called
 //!   pair's own (`HapPair::split`), so a read votes with the cluster's other
 //!   events included: the carrier of a `0/1` may carry a neighbouring event,
-//!   and the event's haplotype alone may explain no read. A read votes by the
+//!   and the event's haplotype alone may explain no read. The gate reads the
+//!   verdict (`quality`, `called_pair`), not the record's `GC`, but a
+//!   biallelic site needs its written `GT` to be the het: a record written
+//!   `1/1` carries no `PS`, so it must not anchor a block. A read votes by the
 //!   sign of its log10 ratio at cost `round(10 * |ratio|)`, capped; no base
 //!   quality or TAPS gate, the emission has weighed both. The gate is GQ 100 or
 //!   more (unclamped) and five votes per allele at Phred 10 or more
