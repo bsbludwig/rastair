@@ -476,6 +476,10 @@ fn indel_site(pileup: &PileupMetrics, pileup_idx: usize) -> Option<(PhaseSite, V
             [(GtAllele::Alt(m), first_hap), (GtAllele::Alt(n), second_hap)]
         }
         IndelRecords::Separate(calls) => {
+            // The written genotype (the event's site dosage), not the called
+            // pair: a record written `1/1` carries no `PS`, so as a site it
+            // could anchor a block on a record outside it. The GQ gate below
+            // stays on the pair's quality, which it was calibrated on.
             let call = calls.iter().find(|call| call.genotype.is_heterozygous())?;
             let GenotypeTag::RefHet(n) = call.genotype else { return None };
             let (carrier, other) = called.split(call.event)?;
@@ -1245,6 +1249,47 @@ mod tests {
         };
         assert_eq!(at_indel(1), [(1, SiteAllele::First, 26)]);
         assert_eq!(at_indel(7), [(1, SiteAllele::Second, 26)]);
+    }
+
+    /// The cluster's called pair is a confident het, the insertion on the
+    /// chromosome that also carries a deletion; the twenty reads of the other
+    /// chromosome barely prefer the reference at the insertion, so its own
+    /// site writes it `1/1`, and a record without `PS` is no site.
+    #[test]
+    fn an_indel_written_homozygous_is_not_a_site() {
+        use crate::call::{
+            pair_hmm::{Cluster, Event, HaplotypeScores},
+            pileup::indels::{IndelAllele, IndelCounts, IndelData, Scored},
+            variant_calling::indel_calling::IndelRecords,
+        };
+        use std::sync::Arc;
+        let events = [
+            Event { anchor: 1040, allele: insertion(&[T]).into() },
+            Event { anchor: 1060, allele: IndelAllele::Deletion([C].into_iter().collect()).into() },
+        ];
+        // By haplotype: reference, insertion, deletion, both.
+        let carrier =
+            |f| ReadScores::new(FragmentId::new(f), 60, [-9.0, -4.5, -4.5, 0.0, NO, NO, NO, NO]);
+        let other =
+            |f| ReadScores::new(FragmentId::new(f), 60, [0.0, -0.5, -4.5, -4.5, NO, NO, NO, NO]);
+        let reads: Vec<_> = (1..=40).map(carrier).chain((41..=64).map(other)).collect();
+        let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
+        let scores = HaplotypeScores::new(cluster, reads.into()).expect("a verdict");
+        let verdict = &scores.verdict;
+        assert!(verdict.called_pair() == verdict.best && verdict.called_pair().is_heterozygous());
+        assert!(*verdict.quality >= MIN_INDEL_GENOTYPE_QUALITY, "{:?}", verdict.quality);
+        let mut indel = column(1040, A, &[], Some(GenotypeTag::HomRef), &[]);
+        let scored = Scored::new(Arc::new(scores), 1040);
+        let IndelRecords::Separate(calls) = &scored.records else { panic!("separate") };
+        assert!(calls.iter().all(|c| c.genotype == GenotypeTag::HomAlt(ALT_1)), "{calls:?}");
+        indel.indel_data =
+            Some(Box::new(IndelData { counts: IndelCounts::default(), scored: Some(scored) }));
+
+        let problem = build_problem(&[anchor(1..=64), indel], None);
+        assert_eq!(
+            sites_of(&problem),
+            [(1000, SiteKind::Snv, [GtAllele::Ref, GtAllele::Alt(ALT_1)])]
+        );
     }
 
     /// The pair-HMM has to be sure of the column's het, or the site's votes
