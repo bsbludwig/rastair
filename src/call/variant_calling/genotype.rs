@@ -1,6 +1,6 @@
 // Adapted from rastair1, (c) Benjamin Schuster-Boeckler
 use crate::{
-    call::variant_calling::ErrorModel,
+    call::variant_calling::{ErrorModel, SnvGenotype},
     metrics::{
         AltCall, FormsDenovo, PileupMetrics,
         methylation::{CpgSide, cpg_origin},
@@ -15,16 +15,6 @@ use seqair_types::{Probability, SmallVec};
 use std::num::{NonZeroI32, NonZeroU8};
 use tracing::{instrument, trace};
 
-/// Experiment switch: where the SNV engine scored a passing alt, its likeliest
-/// pair's dosage replaces the counted genotype's.
-static ENGINE_DOSAGE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    let set = std::env::var_os("RASTAIR_ENGINE_DOSAGE").is_some_and(|value| value == "1");
-    if set {
-        tracing::warn!("RASTAIR_ENGINE_DOSAGE=1: SNV genotypes take the pair-HMM's dosage");
-    }
-    set
-});
-
 impl PileupMetrics {
     /// Estimate genotype using ML scores and variant calls.
     ///
@@ -37,6 +27,7 @@ impl PileupMetrics {
         &self,
         ml_threshold: Option<Probability>,
         error_model: ErrorModel,
+        snv_genotype: SnvGenotype,
     ) -> Option<EstimatedGenotype> {
         // Filter to only real variants
         let real_variant_alts: SmallVec<_, 2> = self
@@ -99,7 +90,7 @@ impl PileupMetrics {
             };
 
             match EstimatedGenotype::calculate(evidence, alt_index, error_model) {
-                Ok(gt) if *ENGINE_DOSAGE => {
+                Ok(gt) if snv_genotype == SnvGenotype::Engine => {
                     alt_genotypes.push(self.with_engine_dosage(gt, alt_base, alt_index));
                 }
                 Ok(gt) => alt_genotypes.push(gt),
@@ -488,19 +479,17 @@ mod tests {
         site
     }
 
-    /// `RASTAIR_ENGINE_DOSAGE` is read once per process, so this calls the
-    /// override the switch turns on directly.
     #[test]
     fn the_engine_decides_the_dosage_where_it_scored() {
+        let genotype = |site: &PileupMetrics, mode| {
+            site.estimate_genotype(None, ErrorModel::default(), mode).expect("a genotype").genotype
+        };
         for forms_denovo in [FormsDenovo::No, FormsDenovo::ThisBecomesG] {
             let mut site = het_by_counts_hom_by_engine(G, forms_denovo);
-            let counted = site.estimate_genotype(None, ErrorModel::default()).expect("a genotype");
-            assert_eq!(counted.genotype, GenotypeTag::ref_het(ALT_INDEX_1));
-            let engine = site.with_engine_dosage(counted, G, ALT_INDEX_1);
-            assert_eq!(engine.genotype, GenotypeTag::hom_alt(ALT_INDEX_1));
+            assert_eq!(genotype(&site, SnvGenotype::Counts), GenotypeTag::ref_het(ALT_INDEX_1));
+            assert_eq!(genotype(&site, SnvGenotype::Engine), GenotypeTag::hom_alt(ALT_INDEX_1));
             site.snv_scores = None;
-            let without = site.with_engine_dosage(counted, G, ALT_INDEX_1);
-            assert_eq!(without.genotype, GenotypeTag::ref_het(ALT_INDEX_1));
+            assert_eq!(genotype(&site, SnvGenotype::Engine), GenotypeTag::ref_het(ALT_INDEX_1));
         }
     }
 

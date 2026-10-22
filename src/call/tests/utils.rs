@@ -570,8 +570,11 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
                 MethylationEvidenceStrandInfo::from_pileup(&current);
 
             // Recalculate genotype and methylation after changing alt calls
-            current.pos_metrics.extended.genotype =
-                current.estimate_genotype(Some(ML_THRESHOLD), ErrorModel::default());
+            current.pos_metrics.extended.genotype = current.estimate_genotype(
+                Some(ML_THRESHOLD),
+                ErrorModel::default(),
+                crate::call::variant_calling::SnvGenotype::Counts,
+            );
             current.pos_metrics.extended.methylated =
                 metrics::methylation::call(&current)?.unwrap_or_default();
 

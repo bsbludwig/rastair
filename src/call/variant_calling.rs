@@ -1,5 +1,5 @@
 mod params;
-pub use params::{MaxCoverage, VariantCallingParams};
+pub use params::{MaxCoverage, SnvGenotype, VariantCallingParams};
 mod error_model;
 pub use error_model::ErrorModel;
 mod genotype;

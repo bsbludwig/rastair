@@ -496,8 +496,11 @@ fn process_collected_pileups(
             process::add_position_tags(&mut pileup);
             // Set "extended" metrics that depend on the segment and params. This is
             // done in a separate step since it uses the pileup as well as the ML score.
-            pileup.pos_metrics.extended.genotype =
-                pileup.estimate_genotype(params.ml.threshold(), params.variant_calling.error_model);
+            pileup.pos_metrics.extended.genotype = pileup.estimate_genotype(
+                params.ml.threshold(),
+                params.variant_calling.error_model,
+                params.variant_calling.snv_genotype,
+            );
             pileup.pos_metrics.extended.methylated =
                 metrics::methylation::call(&pileup)?.unwrap_or_default();
             pileup.pos_metrics.extended.methylation_strand_info =
