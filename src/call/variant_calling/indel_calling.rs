@@ -18,6 +18,7 @@ use crate::call::{
 use better_default::Default;
 use seqair_types::{Phred, SmallVec};
 use std::num::NonZeroU8;
+use tracing::debug;
 
 /// CLI parameters for indel calling.
 #[derive(Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, Default)]
@@ -49,6 +50,8 @@ pub struct IndelCall {
     pub genotype: GenotypeTag,
     /// The pair-HMM's margin of presence for the allele; its `QUAL`.
     pub quality: Phred,
+    /// The genotype's quality; its `GC`.
+    pub genotype_quality: Phred,
     /// The event the allele is in the cluster's `HaplotypeScores`.
     pub event: EventIdx,
 }
@@ -87,26 +90,29 @@ impl IndelRecords {
 /// cluster.
 ///
 /// An event is called when its margin reaches
-/// [`Margin::PRESENT`](crate::call::pair_hmm::Margin::PRESENT), and its
-/// genotype is how many chromosomes of the cluster's called pair carry it
-/// ([`crate::call::pair_hmm::Verdict::called_pair`]): one makes a het, two a
-/// homozygote, and two called events at one anchor a compound het. A scored
-/// event that is not called stays as a `0/0` call. There is no model and no
-/// strand gate; on chr12 no strand test did better than none. An allele the
-/// pair-HMM did not score, past the cluster's leading events or without a
-/// read to score it on, is not called: nothing speaks for it.
+/// [`Margin::PRESENT`](crate::call::pair_hmm::Margin::PRESENT). Two called
+/// events at one anchor make a compound het, genotyped by the cluster's called
+/// pair ([`crate::call::pair_hmm::Verdict::called_pair`]). Any other called
+/// event takes its copies and `GC` from its own site
+/// ([`HaplotypeScores::site_dosage`]), as SNVs do. A scored event that is not
+/// called stays as a `0/0` call. There is no model and no strand gate; on
+/// chr12 no strand test did better than none. An allele the pair-HMM did not
+/// score, past the cluster's leading events or without a read to score it on,
+/// is not called: nothing speaks for it.
 pub fn call_on_pair_hmm(scores: &HaplotypeScores, pos: u32) -> IndelRecords {
     const ONE: NonZeroU8 = NonZeroU8::new(1).expect("nonzero");
     const TWO: NonZeroU8 = NonZeroU8::new(2).expect("nonzero");
     let verdict = &scores.verdict;
-    let call = |event: EventIdx, genotype: GenotypeTag, quality: Phred| {
+    let call = |event: EventIdx, genotype: GenotypeTag, quality: Phred, genotype_quality| {
         let allele = scores.event(event)?.allele.as_indel()?.clone();
-        Some(IndelCall { allele, genotype, quality, event })
+        Some(IndelCall { allele, genotype, quality, genotype_quality, event })
     };
 
     // Events are in record order, so a compound het's two alleles are ALT 1
     // and 2 as they stand.
     let here: SmallVec<EventIdx, MAX_EVENTS> = scores.indel_events_at(pos).collect();
+    // The called pair, not the site dosage: each event's own site can say two
+    // copies, and two events at one anchor cannot both be on both chromosomes.
     let compound = || {
         let [first, second] = *here.as_ref() else { return None };
         if verdict.copies_of(first) == 0 || verdict.copies_of(second) == 0 {
@@ -115,19 +121,31 @@ pub fn call_on_pair_hmm(scores: &HaplotypeScores, pos: u32) -> IndelRecords {
         // One record standing for both alleles is as sure as the less certain.
         let quality = verdict.margin(first)?.min(verdict.margin(second)?).qual();
         let genotype = GenotypeTag::alt_het(ONE, TWO);
-        Some([call(first, genotype, quality)?, call(second, genotype, quality)?])
+        Some([
+            call(first, genotype, quality, verdict.quality)?,
+            call(second, genotype, quality, verdict.quality)?,
+        ])
     };
     if let Some(calls) = compound() {
         return IndelRecords::Compound(calls);
     }
 
     let separate = here.iter().filter_map(|&event| {
-        let genotype = match verdict.copies_of(event) {
-            0 => GenotypeTag::hom_ref(),
-            1 => GenotypeTag::ref_het(ONE),
-            _ => GenotypeTag::hom_alt(ONE),
+        let quality = verdict.margin(event)?.qual();
+        let pair_copies = verdict.copies_of(event);
+        if pair_copies == 0 {
+            return call(event, GenotypeTag::hom_ref(), quality, verdict.quality);
+        }
+        let (copies, genotype_quality) = match scores.site_dosage(event) {
+            Some(dosage) => (dosage.copies, dosage.gq),
+            None => {
+                debug!(pos, ?event, "no site dosage for a called indel, keeping the called pair");
+                (pair_copies, verdict.quality)
+            }
         };
-        call(event, genotype, verdict.margin(event)?.qual())
+        let genotype =
+            if copies >= 2 { GenotypeTag::hom_alt(ONE) } else { GenotypeTag::ref_het(ONE) };
+        call(event, genotype, quality, genotype_quality)
     });
     IndelRecords::Separate(separate.collect())
 }
@@ -160,7 +178,8 @@ mod tests {
     }
 
     /// A het, a homozygote and the reference, each as the best pair has it,
-    /// with `QUAL` from the margin; under the reference
+    /// with `QUAL` from the margin and a called allele's `GC` from its site
+    /// dosage; under the reference
     /// the allele stays as a `0/0` call for `--all` to show.
     #[test]
     fn a_called_allele_takes_its_copies_in_the_best_pair() {
@@ -179,6 +198,11 @@ mod tests {
                 assert_eq!(call.event, EventIdx::new(0).expect("event"));
                 let margin = verdict.margin(call.event).expect("a margin");
                 assert_eq!(*call.quality, *margin.qual());
+                let gc = match scores.site_dosage(call.event) {
+                    Some(dosage) if call.is_called() => dosage.gq,
+                    _ => verdict.quality,
+                };
+                assert_eq!(*call.genotype_quality, *gc);
             }
         }
     }
@@ -200,15 +224,17 @@ mod tests {
     }
 
     /// The best pair holds the second allele, but too weakly to call it, so
-    /// the second is a `0/0` and the first takes the zygosity the reads give
-    /// it without the second: a homozygote when no read carries the
-    /// reference, a het when one does.
+    /// the second is a `0/0`. The first is genotyped at its own site, where a
+    /// read preferring the second allele lacks the first as much as a
+    /// reference read does: a het either way, though the pair without the
+    /// second was a homozygote when no read carried the reference.
     #[test]
     fn an_uncalled_half_of_a_compound_leaves_the_other_alone() {
         let hom = scores(&["A", "AA"], &[([-9.0, -1.0, -9.0], 2), ([-9.0, -1.5, -1.0], 4)]);
+        assert_eq!(hom.verdict.copies_of(EventIdx::new(0).expect("event")), 2);
         assert_eq!(
             on_pair_hmm(&hom),
-            [(deletion("A"), GenotypeTag::HomAlt(ALT_1)), (deletion("AA"), GenotypeTag::HomRef)]
+            [(deletion("A"), GenotypeTag::RefHet(ALT_1)), (deletion("AA"), GenotypeTag::HomRef)]
         );
         let het = scores(
             &["A", "AA"],
@@ -218,6 +244,37 @@ mod tests {
             on_pair_hmm(&het),
             [(deletion("A"), GenotypeTag::RefHet(ALT_1)), (deletion("AA"), GenotypeTag::HomRef)]
         );
+    }
+
+    /// Eight reads carry an insertion at 5 and a deletion at 20; one lacks
+    /// the deletion and, ending at the insertion, barely prefers the
+    /// reference there. The cluster puts that read on the second chromosome,
+    /// so its called pair makes the insertion a het; at the insertion's own
+    /// site the eight alt reads against one indifferent read make it a
+    /// homozygote.
+    #[test]
+    fn a_linked_indel_is_genotyped_at_its_own_site() {
+        use crate::call::pair_hmm::{Cluster, Event, ReadScores};
+        const NO: f32 = f32::NEG_INFINITY;
+        let events = [
+            Event { anchor: 5, allele: IndelAllele::Insertion([Base::T].into()).into() },
+            Event { anchor: 20, allele: deletion("A").into() },
+        ];
+        let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
+        // By haplotype: reference, insertion, deletion, both.
+        let both = ReadScores::new(None, 60, [-9.0, -4.5, -4.5, 0.0, NO, NO, NO, NO]);
+        let other = ReadScores::new(None, 60, [0.0, -0.3, -4.5, -4.5, NO, NO, NO, NO]);
+        let reads: Vec<_> = std::iter::repeat_n(both, 8).chain(std::iter::once(other)).collect();
+        let scores = HaplotypeScores::new(cluster, reads.into()).expect("scores");
+        let insertion = EventIdx::new(0).expect("event");
+        assert_eq!(scores.verdict.copies_of(insertion), 1, "the pair calls a het");
+
+        let records = call_on_pair_hmm(&scores, 5);
+        let [call] = records.calls() else { panic!("one record") };
+        assert_eq!(call.genotype, GenotypeTag::HomAlt(ALT_1));
+        let site = scores.site_dosage(insertion).expect("present");
+        assert_eq!(*call.genotype_quality, *site.gq);
+        assert!(*call.genotype_quality > 10.0, "{call:?}");
     }
 
     const A: u32 = 10;

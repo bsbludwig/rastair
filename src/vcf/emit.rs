@@ -180,7 +180,7 @@ fn emit_compound_het_record<W: Write>(
     if config.format.gt {
         encode_indel_genotype(&mut enc, schema, pileup, first.genotype, true)?;
     }
-    encode_genotype_quality(&mut enc, schema, config, scored)?;
+    encode_genotype_quality(&mut enc, schema, config, first.genotype_quality)?;
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
     }
@@ -215,16 +215,16 @@ fn encode_indel_genotype(
     Ok(())
 }
 
-/// The pair-HMM's genotype quality as `GC`, the field SNV records carry
+/// An indel call's genotype quality as `GC`, the field SNV records carry
 /// theirs in.
 fn encode_genotype_quality(
     enc: &mut seqair::vcf::RecordEncoder<'_, seqair::vcf::WithSamples>,
     schema: &Schema,
     config: &FieldConfig,
-    scored: &Scored,
+    genotype_quality: Phred,
 ) -> Result<()> {
     if config.format.gc {
-        schema.format.gc.encode(enc, &[scored.haplotypes.verdict.quality.as_int() as f32])?;
+        schema.format.gc.encode(enc, &[genotype_quality.as_int() as f32])?;
     }
     Ok(())
 }
@@ -364,7 +364,7 @@ fn emit_indel_record<W: Write>(
     if config.format.gt {
         encode_indel_genotype(&mut enc, schema, pileup, call.genotype, call.is_called())?;
     }
-    encode_genotype_quality(&mut enc, schema, config, scored)?;
+    encode_genotype_quality(&mut enc, schema, config, call.genotype_quality)?;
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
     }

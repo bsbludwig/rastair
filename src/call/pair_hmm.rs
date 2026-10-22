@@ -874,8 +874,7 @@ pub struct Verdict {
 /// prior over the pairs was never a statement about genotype frequencies, and
 /// a called SNV is heterozygous about 1.5 times as often as homozygous (GIAB
 /// HG001 chr12: 96,713 het against 63,275 hom-alt SNVs, log10 0.184).
-/// [`Verdict::dosage`] only; indel records keep `called_pair` until they
-/// adopt it.
+/// [`Verdict::dosage`] only.
 const HET_PRIOR_LOG10: f64 = 0.184;
 
 /// How many chromosomes carry an event, given that it is present.
@@ -920,7 +919,7 @@ impl Verdict {
     /// [`HET_PRIOR_LOG10`] when it carries one copy. `None` when no pair
     /// carrying it explains the reads.
     #[must_use]
-    pub fn dosage(&self, event: EventIdx) -> Option<Dosage> {
+    fn dosage(&self, event: EventIdx) -> Option<Dosage> {
         let carrying = || {
             self.pair_scores.iter().filter(|(pair, _)| pair.carries(event)).map(|&(pair, log10)| {
                 let prior = if pair.copies_of(event) == 1 { HET_PRIOR_LOG10 } else { 0.0 };
