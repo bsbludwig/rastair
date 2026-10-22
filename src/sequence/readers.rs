@@ -109,17 +109,7 @@ mod seqair_readers {
             if rec.extra(store).is_ok_and(|extra| extra.mask.is_empty()) {
                 return false;
             }
-            match &self.tag_requirement {
-                TagRequirement::All => true,
-                TagRequirement::AllOf(filters) => {
-                    // Parity with the htslib path: a record whose aux block can't
-                    // be read fails a tag *requirement* (fail closed, not open).
-                    let Ok(aux) = rec.aux(store) else { return false };
-                    filters
-                        .iter()
-                        .all(|f| aux.get::<&[u8]>(f.tag()).is_ok_and(|v| v == f.value_bytes()))
-                }
-            }
+            self.tag_requirement.allows(rec.aux(store).ok())
         }
 
         fn compute(
