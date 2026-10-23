@@ -11,6 +11,12 @@
 //! the same number an indel record carries from the pair-HMM; and for a
 //! reference-only record its hom-ref genotype confidence, the value of `GC`.
 //! A record whose decider gave no number has `QUAL` missing.
+//!
+//! `DP` and `AD` are the decider's reads by the same rule: an SNV record
+//! counts the column's reads per base, an indel record the reads the pair-HMM
+//! assigned to each haplotype over its window. The two are not interchanged:
+//! a window holds reads with no base at the anchor column, so an indel's `AD`
+//! against the column's depth could sum to more than `DP`.
 
 use std::{
     io::Write,
