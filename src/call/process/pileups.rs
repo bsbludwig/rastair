@@ -45,8 +45,8 @@ use crate::{
     call::{
         pair_hmm::{Event, MAX_EVENTS},
         pileup::from_seqair::{
-            ClusterContext, ClusterPass, ColumnDraft, ColumnScratch, DenovoNeighbour,
-            cascade_events, cluster_candidates, cluster_chains, flush_clusters,
+            CandidateFloor, ClusterContext, ClusterPass, ColumnDraft, ColumnScratch,
+            DenovoNeighbour, cascade_events, cluster_candidates, cluster_chains, flush_clusters,
             plain_reference_column, score_cluster, snv_clusters,
         },
     },
@@ -71,8 +71,8 @@ pub struct PileupMappingParams {
     pub require_tags: TagRequirement,
     pub call_indels: bool,
     /// Support an indel allele needs to be scored; see `IndelParams::min_indel_ao`.
-    #[default(2)]
-    pub min_indel_ao: u32,
+    #[default(CandidateFloor { min_reads: 2 })]
+    pub indel_floor: CandidateFloor,
     /// Per-segment compressed-byte budget; segments estimated above this are
     /// subdivided. `0` disables the budget.
     #[default(32 * 1024 * 1024)]
@@ -154,7 +154,7 @@ impl HeldReads {
                 .filter_map(|i| Some((i, cascade_events(columns.get(i)?, forests))))
                 .filter(|(_, events)| !events.is_empty())
                 .collect();
-            for cluster in snv_clusters(columns, &indels, &snvs, params.min_indel_ao) {
+            for cluster in snv_clusters(columns, &indels, &snvs, params.indel_floor) {
                 let (indices, events) = (cluster.columns, cluster.events);
                 let pass = ClusterPass::Snvs;
                 score_on(columns, &indices, events, pass, &part.engine, &context, &mut scratch);
@@ -284,7 +284,7 @@ pub fn get_pileups_held(
         );
         for chain in cluster_chains(pileup_metrics, &pending_indels) {
             let columns = chain.iter().filter_map(|&i| pileup_metrics.get(i));
-            let events = cluster_candidates(columns, params.min_indel_ao);
+            let events = cluster_candidates(columns, params.indel_floor);
             let pass = ClusterPass::Indels;
             score_on(pileup_metrics, chain, events, pass, &guard, &context, &mut scratch);
         }

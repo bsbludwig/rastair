@@ -354,7 +354,7 @@ impl CallParams {
             variant_calling: self.variant_calling.clone(),
             require_tags: self.require_tags.filter(),
             call_indels: self.calls_variants(),
-            min_indel_ao: self.indel.min_indel_ao,
+            indel_floor: pileup::from_seqair::CandidateFloor { min_reads: self.indel.min_indel_ao },
             segment_max_bytes: self.segmentation.segment_max_bytes,
             early_reject: Some(self.record_filters.clone()),
             gpu: self.ml.gpu,

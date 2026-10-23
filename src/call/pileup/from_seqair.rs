@@ -42,9 +42,10 @@
 //!   masks. Without it a nearby SNV absent from every haplotype is charged to
 //!   the reads carrying it, and a stray indel allele that absorbs the mismatch
 //!   gets the credit.
-//! - `cluster_candidates`: a cluster's events are its columns' alleles with
-//!   at least `--min-indel-ao` reads, ranked by read count, then anchor, then
-//!   `allele_order` (insertions first), as many as `Cluster::admits`: at most
+//! - `cluster_candidates`: a cluster's events are its columns' alleles
+//!   `CandidateFloor` admits (`--min-indel-ao`), ranked by read count, then
+//!   anchor, then `allele_order` (insertions first), as many as
+//!   `Cluster::admits`: at most
 //!   `MAX_EVENTS`, and two per anchor, since a third could not share a pair
 //!   with the other two and would take a neighbour's slot without ever being
 //!   called. That ranking is record order: `Cluster::events`, `EventIdx`, the
@@ -56,9 +57,9 @@
 //!   to `--max-coverage`.
 //! - `cascade_events` admits an SNV alt to the SNV engine (see
 //!   `call::process::pileups`): every alt the first-stage forest scores at
-//!   `CASCADE_MIN_SCORE` or more; without forests, `snv_events`: two reads and
-//!   5 % of the column, and a count a het could produce on the strand TAPS
-//!   leaves informative. An SNV within
+//!   `CASCADE_MIN_SCORE` or more; without forests, `snv_events`:
+//!   `CandidateFloor::SNV`, and a count a het could produce on the strand
+//!   TAPS leaves informative. An SNV within
 //!   `CLUSTER_GAP` of an indel chain joins the chain's events as context
 //!   (`snv_clusters`); such a cluster (`ClusterPass::Snvs`) fills `snv_scores`
 //!   and never writes an indel record.
@@ -489,7 +490,7 @@ impl PileupMetrics {
         let spanning = column.records_overlapping(pos, pos);
         let context = ClusterContext::new(column.store(), &segment, params, &[]);
         let column = std::slice::from_mut(&mut metrics);
-        let events = cluster_candidates(column.iter(), params.min_indel_ao);
+        let events = cluster_candidates(column.iter(), params.indel_floor);
         score_cluster(column, &[0], events, ClusterPass::Indels, spanning, &context, scratch);
         flush_clusters(column, scratch);
         Ok(metrics)
@@ -543,7 +544,7 @@ pub(crate) fn snv_clusters(
     pileups: &[PileupMetrics],
     indel_columns: &[usize],
     snvs: &[(usize, SmallVec<Event, 2>)],
-    min_indel_ao: u32,
+    indel_floor: CandidateFloor,
 ) -> Vec<SnvCluster> {
     let pos = |i: usize| pileups.get(i).map(|p| p.pos);
     let near =
@@ -552,7 +553,7 @@ pub(crate) fn snv_clusters(
     let mut clusters = Vec::new();
     for chain in cluster_chains(pileups, indel_columns) {
         let (Some(&first), Some(&last)) = (chain.first(), chain.last()) else { continue };
-        let indels = cluster_candidates(chain.iter().filter_map(|&i| pileups.get(i)), min_indel_ao);
+        let indels = cluster_candidates(chain.iter().filter_map(|&i| pileups.get(i)), indel_floor);
         let mut cluster = SnvCluster { columns: chain.to_vec(), events: indels };
         let mut any = false;
         for ((column, snv), joined) in snvs.iter().zip(&mut joined) {
@@ -610,8 +611,8 @@ const HET_GATE_P: f64 = 0.01;
 const HET_GATE_MIN_READS: u32 = 3;
 
 /// The column's substitution events, most reads first, at most two (as for
-/// any anchor). An alt is admitted on Ben Wulf's gate: at least two reads (and
-/// 5 % of the column, as an indel allele needs), and on the strand TAPS leaves
+/// any anchor). An alt is admitted on Ben Wulf's gate: [`CandidateFloor::SNV`],
+/// and on the strand TAPS leaves
 /// informative for it, a count a heterozygote could produce. Without the gate
 /// every methylated `CpG` and every one-read error would be a cluster.
 pub(crate) fn snv_events(column: &PileupMetrics) -> SmallVec<Event, 2> {
@@ -619,8 +620,8 @@ pub(crate) fn snv_events(column: &PileupMetrics) -> SmallVec<Event, 2> {
 }
 
 fn gate_admits(column: &PileupMetrics, alt: &Alt) -> bool {
-    let floor = 2u32.max((column.pos_metrics.depth * 5).div_ceil(100));
-    alt.metrics.depth >= floor && admits_het(column, alt)
+    CandidateFloor::SNV.admits(alt.metrics.depth, column.pos_metrics.depth)
+        && admits_het(column, alt)
 }
 
 /// The column's substitution events `admit` takes, most reads first, at most
@@ -819,22 +820,41 @@ impl WindowMask {
     }
 }
 
-/// The cluster's events: the alleles the most reads carry, of those with
-/// enough to be called, as many as [`Cluster::admits`], in record order. Ties
+/// Reads a candidate allele needs to become a pair-HMM event: `min_reads`, and
+/// 5 % of the column's depth. Two reads of a stutter allele are noise at 73x
+/// and the only evidence at 14x, so the floor grows with the column: for
+/// indels, 5 % drops a quarter of the candidate events and 17 % of the
+/// pair-HMM cells at 73x and changes no column of the chr12 scores at either
+/// depth; 2 % drops nothing. Indel alleles count fragments, SNV alts reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateFloor {
+    pub min_reads: u32,
+}
+
+impl CandidateFloor {
+    /// The SNV gate's floor without forests (`snv_events`).
+    pub(crate) const SNV: Self = Self { min_reads: 2 };
+
+    pub(crate) fn at(self, depth: u32) -> u32 {
+        self.min_reads.max((depth * 5).div_ceil(100))
+    }
+
+    pub(crate) fn admits(self, reads: u32, depth: u32) -> bool {
+        reads >= self.at(depth)
+    }
+}
+
+/// The cluster's events: the alleles the most reads carry, of those
+/// [`CandidateFloor`] admits, as many as [`Cluster::admits`], in record order. Ties
 /// go by the allele itself, so neither the choice nor the order depends on
 /// which read the engine yielded first.
 pub(crate) fn cluster_candidates<'a>(
     columns: impl Iterator<Item = &'a PileupMetrics>,
-    min_ao: u32,
+    floor: CandidateFloor,
 ) -> SmallVec<Event, MAX_EVENTS> {
     let mut alleles: SmallVec<(u32, &IndelAlleleCounts), 8> = columns
         .filter_map(|column| {
-            // Two reads of a stutter allele are noise at 73x and the only
-            // evidence at 14x, so the floor also grows with the column: 5 %
-            // of its depth drops a quarter of the candidate events and 17 %
-            // of the pair-HMM cells at 73x and changes no column of the chr12
-            // scores at either depth; 2 % drops nothing.
-            let floor = min_ao.max((column.pos_metrics.depth * 5).div_ceil(100));
+            let floor = floor.at(column.pos_metrics.depth);
             Some((column.pos, floor, &column.indel_data.as_deref()?.counts))
         })
         .flat_map(|(pos, floor, counts)| {
@@ -2310,7 +2330,7 @@ mod tests {
     }
 
     fn events_of(columns: &[PileupMetrics]) -> Vec<(u32, IndelAllele)> {
-        cluster_candidates(columns.iter(), 2)
+        cluster_candidates(columns.iter(), CandidateFloor { min_reads: 2 })
             .into_iter()
             .filter_map(|e| Some((e.anchor, e.allele.as_indel()?.clone())))
             .collect()
@@ -2384,7 +2404,7 @@ mod tests {
         assert_eq!(admitted(&snv_column(10, c, t, [0, 3], [6, 9])), [t]);
         assert_eq!(admitted(&snv_column(10, c, a, [1, 0], [6, 6])), [] as [Base; 0], "one read");
         assert_eq!(admitted(&snv_column(10, c, a, [1, 1], [6, 6])), [a]);
-        // 3 of 70 is below 5 % of the column.
+        // 3 of 70 is below `CandidateFloor::SNV`.
         assert_eq!(admitted(&snv_column(10, c, a, [2, 1], [33, 34])), [] as [Base; 0]);
         let mut unknown = snv_column(10, c, a, [3, 3], [3, 3]);
         unknown.reference_base = Base::Unknown;
@@ -2428,7 +2448,7 @@ mod tests {
             .into_iter()
             .map(|i| (i, snv_at(columns[i].pos)))
             .collect();
-        let clusters = snv_clusters(&columns, &[1], &snvs, 2);
+        let clusters = snv_clusters(&columns, &[1], &snvs, CandidateFloor { min_reads: 2 });
         let summary: Vec<(Vec<u32>, usize)> = clusters
             .iter()
             .map(|c| (c.columns.iter().map(|&i| columns[i].pos).collect(), c.events.len()))

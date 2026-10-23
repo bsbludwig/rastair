@@ -144,7 +144,7 @@ pub(crate) fn score_snv_lines(
 ) {
     use crate::call::{
         pair_hmm::{Allele, Event, HaplotypeScratch, score},
-        pileup::from_seqair::snv_clusters,
+        pileup::from_seqair::{CandidateFloor, snv_clusters},
     };
     use std::{cmp::Reverse, sync::Arc};
 
@@ -167,7 +167,7 @@ pub(crate) fn score_snv_lines(
         .collect();
     let reference: Vec<Base> = segment.sequence.iter().map(|&b| Base::from(b)).collect();
     let mut scratch = HaplotypeScratch::default();
-    for cluster in snv_clusters(columns, &[], &snvs, 2) {
+    for cluster in snv_clusters(columns, &[], &snvs, CandidateFloor { min_reads: 2 }) {
         let scored =
             score(&reference, segment.range.start, cluster.events, reads.to_vec(), &mut scratch);
         let Some(scores) = scored.map(Arc::new) else { continue };
