@@ -473,7 +473,7 @@ impl SegmentCollector<'_> {
             segment_columns(readers, segment, &mapping)?;
         if let Some(stage1) = self.stage1 {
             crate::call::process::score_on_cpu(&mut columns, stage1, |_, _| true)?;
-            held.score_snv_clusters(&segment, &mut columns, &mapping);
+            held.score_snv_clusters(&segment, &mut columns, &mapping, true);
         }
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };

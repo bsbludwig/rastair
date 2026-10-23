@@ -339,7 +339,7 @@ fn process_segment(
     // The others keep their first score: the engine forests read an alt
     // without an engine verdict as one the gate refused, and reject it.
     if let Some(engine_ml) = ml.snv_engine.as_deref() {
-        held.score_snv_clusters(&segment, &mut columns, &mapping);
+        held.score_snv_clusters(&segment, &mut columns, &mapping, true);
         score_forest(&mut columns, engine_ml, |p, alt| p.engine_scored(alt))?;
     }
     let depth_scale = readers.depth_scale(region.len()).map(phasing::DepthScale);

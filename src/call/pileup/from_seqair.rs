@@ -54,9 +54,11 @@
 //!   reaching further), MAPQ at least the column minimum, a known strand, soft
 //!   clips included where the segment's reference reaches them, thinned evenly
 //!   to `--max-coverage`.
-//! - `snv_events` admits an SNV alt to the SNV engine (see
-//!   `call::process::pileups`): two reads and 5 % of the column, and a count a
-//!   het could produce on the strand TAPS leaves informative. An SNV within
+//! - `cascade_events` admits an SNV alt to the SNV engine (see
+//!   `call::process::pileups`): every alt the first-stage forest scores at
+//!   `CASCADE_MIN_SCORE` or more; without forests, `snv_events`: two reads and
+//!   5 % of the column, and a count a het could produce on the strand TAPS
+//!   leaves informative. An SNV within
 //!   `CLUSTER_GAP` of an indel chain joins the chain's events as context
 //!   (`snv_clusters`); such a cluster (`ClusterPass::Snvs`) fills `snv_scores`
 //!   and never writes an indel record.
@@ -672,15 +674,25 @@ const HET_GATE_MIN_READS: u32 = 3;
 /// informative for it, a count a heterozygote could produce. Without the gate
 /// every methylated `CpG` and every one-read error would be a cluster.
 pub(crate) fn snv_events(column: &PileupMetrics) -> SmallVec<Event, 2> {
+    substitution_events(column, |alt| gate_admits(column, alt))
+}
+
+fn gate_admits(column: &PileupMetrics, alt: &Alt) -> bool {
+    let floor = 2u32.max((column.pos_metrics.depth * 5).div_ceil(100));
+    alt.metrics.depth >= floor && admits_het(column, alt)
+}
+
+/// The column's substitution events `admit` takes, most reads first, at most
+/// two; none at an unknown reference base.
+fn substitution_events(column: &PileupMetrics, admit: impl Fn(&Alt) -> bool) -> SmallVec<Event, 2> {
     if column.reference_base.known_index().is_none() {
         return SmallVec::new();
     }
-    let floor = 2u32.max((column.pos_metrics.depth * 5).div_ceil(100));
     let mut admitted: SmallVec<&Alt, 4> = column
         .alts
         .iter()
         .filter(|alt| alt.base.known_index().is_some() && alt.base != column.reference_base)
-        .filter(|alt| alt.metrics.depth >= floor && admits_het(column, alt))
+        .filter(|alt| admit(alt))
         .collect();
     admitted.sort_by_key(|alt| (Reverse(alt.metrics.depth), alt.base as u8));
     admitted
@@ -690,23 +702,21 @@ pub(crate) fn snv_events(column: &PileupMetrics) -> SmallVec<Event, 2> {
         .collect()
 }
 
-/// The lowest first-stage forest score at which the cascade hands an alt the
-/// gate admits to the engine. The bundled forests put most true SNVs at
-/// .995-.999, so there is no upper edge; .005 keeps 70-110 % of the gain of
-/// scoring every gated alt for a quarter of its clusters on 26x slices, .01
-/// loses some.
+/// The lowest first-stage forest score at which the cascade hands an alt to
+/// the engine. The bundled forests put most true SNVs at .995-.999, so there
+/// is no upper edge; .005 keeps 70-110 % of the gain of scoring every gated
+/// alt for a quarter of its clusters on 26x slices, .01 loses some.
 pub(crate) const CASCADE_MIN_SCORE: f64 = 0.005;
 
-/// [`snv_events`] of the alts the forest scored at [`CASCADE_MIN_SCORE`] or more.
-pub(crate) fn cascade_events(column: &PileupMetrics) -> SmallVec<Event, 2> {
-    let mut events = snv_events(column);
-    events.retain(|event| {
-        matches!(event.allele, Allele::Base(base) if column
-            .alt_filters(base)
-            .and_then(|filters| filters.ml)
-            .is_some_and(|ml| *ml >= CASCADE_MIN_SCORE))
-    });
-    events
+/// The events the cascade scores: with `forests`, every alt the first stage
+/// scored at [`CASCADE_MIN_SCORE`] or more, whatever its reads, so every alt
+/// the forests can pass carries the engine's genotype; without, the alts
+/// [`snv_events`] admits.
+pub(crate) fn cascade_events(column: &PileupMetrics, forests: bool) -> SmallVec<Event, 2> {
+    if !forests {
+        return snv_events(column);
+    }
+    substitution_events(column, |alt| alt.filters.ml.is_some_and(|ml| *ml >= CASCADE_MIN_SCORE))
 }
 
 /// Whether the strand TAPS conversion leaves informative for `alt` does not

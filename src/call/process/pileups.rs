@@ -8,8 +8,9 @@
 //!    returned with the columns by `call::segment_columns`.
 //! 2. `process_segment` scores every alt with the model's top-level forests.
 //! 3. [`HeldReads::score_snv_clusters`] scores, as pair-HMM substitution
-//!    events, the alts `from_seqair::snv_events` admits whose first score is at
-//!    least `CASCADE_MIN_SCORE`.
+//!    events, the alts whose first score is at least `CASCADE_MIN_SCORE`
+//!    (`from_seqair::cascade_events`), whatever their read count, so every
+//!    alt the forests pass carries a verdict.
 //! 4. The model's engine forests (`RastairFlatModel.snv_engine`) score exactly
 //!    the alts the engine scored (`PileupMetrics::engine_scored`) again,
 //!    reading its verdict as the six `ev_*` features.
@@ -133,15 +134,15 @@ struct HeldPart {
 }
 
 impl HeldReads {
-    /// Score the SNV clusters of the alts the forest scored at
-    /// [`CASCADE_MIN_SCORE`](crate::call::pileup::from_seqair::CASCADE_MIN_SCORE)
-    /// or more, sub-segment by sub-segment. Columns are found by position, so
-    /// `columns` may have lost some since they were built.
+    /// Score the SNV clusters of the alts
+    /// [`cascade_events`] admits, sub-segment by sub-segment. Columns are found
+    /// by position, so `columns` may have lost some since they were built.
     pub fn score_snv_clusters(
         self,
         segment: &Segment,
         columns: &mut [PileupMetrics],
         params: &PileupMappingParams,
+        forests: bool,
     ) {
         let mut scratch = ColumnScratch::default();
         for part in self.parts {
@@ -159,7 +160,7 @@ impl HeldReads {
                 .filter_map(|pos| columns.binary_search_by_key(pos, |p| p.pos).ok())
                 .collect();
             let snvs: Vec<_> = (lo..hi)
-                .filter_map(|i| Some((i, cascade_events(columns.get(i)?))))
+                .filter_map(|i| Some((i, cascade_events(columns.get(i)?, forests))))
                 .filter(|(_, events)| !events.is_empty())
                 .collect();
             for cluster in snv_clusters(columns, &indels, &snvs, params.min_indel_ao) {
@@ -615,7 +616,7 @@ mod tests {
                     }
                 }
             }
-            held.score_snv_clusters(&segment, &mut columns, &params);
+            held.score_snv_clusters(&segment, &mut columns, &params, true);
             for (i, base, kept) in gated {
                 let scored = columns.get(i).and_then(|column| ev_scored(column, base));
                 if kept {
@@ -630,6 +631,52 @@ mod tests {
             }
         }
         panic!("the fixture has no gated alt on both sides of the floor: {inside} / {outside}");
+    }
+
+    /// `PASS ⇒ engine-scored`: an alt the first stage scores high enough to
+    /// pass carries an engine verdict whatever its reads, the one-read and
+    /// strand-skewed alts the gate refuses included, so its genotype is the
+    /// engine's. Only an unknown reference base is never scored.
+    #[test]
+    fn every_alt_the_forest_can_pass_is_engine_scored() -> Result<()> {
+        use crate::call::{pair_hmm::Allele, pileup::from_seqair::snv_events};
+        use seqair_types::Probability;
+
+        let params =
+            PileupMappingParams { snv_engine: true, call_indels: true, ..Default::default() };
+        let reader_params = ReaderParams {
+            regions: Some("chr19:6105000-6107000".parse()?),
+            ..ReaderParams::test_data()
+        };
+        let mut readers = reader_params.pileup_readers()?;
+        let regions: Vec<_> = readers.segments(100_000, 0)?.collect();
+        let (mut scored, mut refused_by_gate) = (0usize, 0usize);
+        for region in &regions {
+            let (segment, mut columns, held) = get_pileups_held(&mut readers, region, &params)?;
+            let mut passing = Vec::new();
+            for (i, column) in columns.iter_mut().enumerate() {
+                let gated = snv_events(column);
+                let known = column.reference_base.known_index().is_some();
+                let mut alts: Vec<_> = column.alts.iter_mut().collect();
+                alts.sort_by_key(|alt| (std::cmp::Reverse(alt.metrics.depth), alt.base as u8));
+                for alt in alts.into_iter().filter(|alt| alt.base.known_index().is_some()).take(2) {
+                    alt.filters.ml = Some(Probability::try_from(0.9)?);
+                    let by_gate = gated.iter().any(|e| e.allele == Allele::Base(alt.base));
+                    passing.push((i, alt.base, known, by_gate));
+                }
+            }
+            held.score_snv_clusters(&segment, &mut columns, &params, true);
+            for (i, base, known, by_gate) in passing {
+                let engine = columns.get(i).is_some_and(|column| column.engine_scored(base));
+                assert_eq!(engine, known, "alt {base:?} at column {i}");
+                scored += usize::from(engine);
+                refused_by_gate += usize::from(engine && !by_gate);
+            }
+            if scored > 0 && refused_by_gate > 0 {
+                return Ok(());
+            }
+        }
+        panic!("no alt the gate refuses was passed: {scored} scored, {refused_by_gate} refused");
     }
 
     /// Byte-aware sub-segmentation must be transparent: a tiny budget (which
