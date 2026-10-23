@@ -1,4 +1,4 @@
-//! What `--phase` puts in the VCF: `GT` with a `|` separator, and `PS` and
+//! What phasing puts in the VCF: `GT` with a `|` separator, and `PS` and
 //! `PQ` tags.
 //!
 //! These tests set the phase call by hand, which also lets them state cases

@@ -111,7 +111,7 @@ mod seqair_readers {
     }
 
     /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` with the
-    /// `segments()` / `segment()` interface the htslib `Readers` of `call-reads`
+    /// `segments()` / `segment()` interface the htslib `Readers` of `per-read`
     /// and the BAM rewrite also have.
     pub struct SeqairReaders {
         pub(super) inner: seqair::Readers<RastairRecordFilter>,

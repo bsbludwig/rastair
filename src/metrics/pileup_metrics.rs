@@ -84,7 +84,7 @@ pub struct PileupMetrics {
     /// the columns it phased.
     pub phase: Option<Box<RecordPhases>>,
     /// The pair-HMM's scores of the cluster holding this column's
-    /// substitution events, when SNV events are on (experimental).
+    /// substitution events, if it has any.
     pub snv_scores: Option<Arc<crate::call::pair_hmm::HaplotypeScores>>,
 }
 
@@ -734,7 +734,7 @@ mod size_tests {
     /// case rather than the tail (see `alts`, `PairedCounts`, and `region`),
     /// and from 568 by making `Filters` a bitset instead of a list; pinning it
     /// exactly means growing it again is a decision someone makes on purpose,
-    /// with a measurement, rather than a field that slipped in. `--phase` adds
+    /// with a measurement, rather than a field that slipped in. Phasing adds
     /// one pointer, behind which all of its per-column data lives.
     #[test]
     fn pileup_metrics_stays_small() {
