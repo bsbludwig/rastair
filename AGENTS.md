@@ -28,7 +28,7 @@ Area-specific knowledge lives in module doc comments; read the one for the code 
 | pair-HMM: haplotypes, verdict, dosage, CpGs    | `src/call/pair_hmm.rs`, `src/call/pair_hmm/scoring.rs`          |
 | indel records                                  | `src/call/variant_calling/indel_calling.rs`                     |
 | SNV engine cascade                             | `src/call/process/pileups.rs`                                   |
-| genotype rules, `--snv-genotype`               | `src/call/variant_calling/genotype.rs`                          |
+| genotype rules, GQ                             | `src/call/variant_calling/genotype.rs`                          |
 | phasing                                        | `src/call/phasing.rs`, its `problem` and `solver` modules       |
 | measuring accuracy, comparing binaries         | `docs/measuring-accuracy.md`                                    |
 | readers, strand assignment                     | `src/sequence/readers.rs`, `docs/src/calling/strand-guesser.md` |
