@@ -476,7 +476,7 @@ Convert between different file formats
 
    This does nothing if the input data does not contain ML scores.
 
-  Default value: `0.50`
+  Default value: `0.40`
 
 ###### **Input Options:**
 
