@@ -23,8 +23,8 @@ Area-specific knowledge lives in module doc comments; read the one for the code 
 
 | area                                           | read                                                            |
 | ---------------------------------------------- | --------------------------------------------------------------- |
-| columns, the seqair engine, indel observations | `src/call/pileup/from_seqair.rs`                                |
-| indel clusters, window mask, pair-HMM on GPU   | `src/call/pileup/from_seqair.rs` (its `gpu` module)             |
+| columns, the seqair engine, indel observations | `src/call/pileup/from_seqair/column.rs` (index: `from_seqair.rs`) |
+| candidates, clusters, window mask, GPU lane    | `src/call/pileup/from_seqair/{candidates,cluster,gpu}.rs`       |
 | pair-HMM: haplotypes, verdict, dosage, CpGs    | `src/call/pair_hmm.rs`, `src/call/pair_hmm/scoring.rs`          |
 | indel records                                  | `src/call/variant_calling/indel_calling.rs`                     |
 | SNV engine cascade                             | `src/call/process/pileups.rs`                                   |
@@ -39,7 +39,7 @@ Area-specific knowledge lives in module doc comments; read the one for the code 
 | VCF version and field cardinality              | `src/vcf/schema.rs`                                             |
 | FILTER codes                                   | `src/vcf/filter.rs`                                             |
 | QC report                                      | `src/mbias.rs`                                                  |
-| VCF tests and `pileups!`                       | `src/call/tests/vcf_tests.rs`                                   |
+| VCF tests and `pileups!`                       | `src/call/tests/vcf_tests.rs`, `src/call/pileup.rs` (`Pileup::metrics`) |
 | CI and release secrets                         | `.github/workflows/README.md`                                   |
 
 User documentation is in `docs/src`; `docs/src/cli.md` is generated from the clap doc comments
