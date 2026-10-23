@@ -1,7 +1,7 @@
 //! The closed set of VCF FILTER codes rastair can emit.
 //!
 //! Filters are modelled as a `#[repr(u8)]` enum rather than carried around as
-//! strings. FILTER is a set, and there are only 14 codes, so a whole set is a
+//! strings. FILTER is a set, and there are only 12 codes, so a whole set is a
 //! `u16` bitset ([`Filters`](crate::metrics::Filters)) rather than a list.
 //! This enum is the single source of truth: the VCF header is registered from
 //! [`RastairFilter::ALL`] (in declaration order) and each filter resolves to
@@ -51,8 +51,6 @@ pub enum RastairFilter {
     MBqRatio,
     /// `m_pos`
     MPos,
-    /// `m_highDp`
-    MHighDp,
     /// `pre_ml`
     PreMl,
     /// `low_ml_score`
@@ -67,7 +65,7 @@ impl RastairFilter {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every filter, in registration (header / dictionary) order.
-    pub const ALL: [RastairFilter; 13] = [
+    pub const ALL: [RastairFilter; 12] = [
         Self::LowDp,
         Self::DnCpgLowDp,
         Self::DnCpgBq,
@@ -77,7 +75,6 @@ impl RastairFilter {
         Self::MVaf,
         Self::MBqRatio,
         Self::MPos,
-        Self::MHighDp,
         Self::PreMl,
         Self::LowMlScore,
         Self::LowIndelQual,
@@ -95,7 +92,6 @@ impl RastairFilter {
             Self::MVaf => "m_vaf",
             Self::MBqRatio => "m_bq_ratio",
             Self::MPos => "m_pos",
-            Self::MHighDp => "m_highDp",
             Self::PreMl => "pre_ml",
             Self::LowMlScore => "low_ml_score",
             Self::LowIndelQual => "low_indel_qual",
@@ -116,7 +112,6 @@ impl RastairFilter {
             Self::MVaf => "Low variant allele frequency for methylation candidate",
             Self::MBqRatio => "Low quality ratio for methylation candidate",
             Self::MPos => "Alt allele evidence from read edges for methylation candidate",
-            Self::MHighDp => "Excessive coverage for methylation candidate",
             Self::PreMl => "Low amount of usable evidence, skipping ML",
             Self::LowMlScore => "Machine Learning module prediction below threshold",
             Self::LowIndelQual => "Indel allele the pair-HMM does not call present",

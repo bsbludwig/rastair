@@ -14,7 +14,6 @@
 | m_vaf | Low variant allele frequency for methylation candidate |
 | m_bq_ratio | Low quality ratio for methylation candidate |
 | m_pos | Alt allele evidence from read edges for methylation candidate |
-| m_highDp | Excessive coverage for methylation candidate |
 | pre_ml | Low amount of usable evidence, skipping ML |
 | low_ml_score | Machine Learning module prediction below threshold |
 | low_indel_qual | Indel allele the pair-HMM does not call present |

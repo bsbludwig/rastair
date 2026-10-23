@@ -178,9 +178,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--m-read-position-max <M_READ_POSITION_MAX>` — The maximum relative position in read for alt allele evidence
 
   Default value: `0.8`
-* `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
-
-  Default value: `1000`
 
 ###### **Output Options:**
 

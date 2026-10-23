@@ -512,7 +512,7 @@ fn max_coverage_filter_affects_output() -> Result<()> {
         .args(CALL_TEST_BAM)
         .args([CHR19_SMALL, NO_ML, "--vcf"])
         .arg(&filtered_vcf)
-        .arg("--m-max-coverage=5")
+        .arg("--max-coverage=5")
         .succeeds()?;
 
     let default_content = std::fs::read_to_string(&default_vcf)?;

@@ -38,10 +38,4 @@ pub struct ThresholdParams {
     #[arg(help_heading = cli::sections::METHYLATION)]
     #[default(0.8)]
     pub m_read_position_max: f64,
-
-    /// The maximum coverage depth for methylation calling
-    #[arg(long, default_value_t = 1000)]
-    #[arg(help_heading = cli::sections::METHYLATION)]
-    #[default(1000)]
-    pub m_max_coverage: u32,
 }

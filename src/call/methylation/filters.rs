@@ -27,7 +27,6 @@ pub fn add_filters(config: &ThresholdParams, current: &MetricsForAlt) -> Result<
         alt.position_in_read.f() < config.m_read_position_min
             || alt.position_in_read.f() > config.m_read_position_max
     });
-    filters.add(RastairFilter::MHighDp, || alt.depth > config.m_max_coverage);
 
     Ok(filters)
 }
