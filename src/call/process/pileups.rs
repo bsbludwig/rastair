@@ -77,9 +77,6 @@ pub struct PileupMappingParams {
     /// subdivided. `0` disables the budget.
     #[default(32 * 1024 * 1024)]
     pub segment_max_bytes: u64,
-    /// Rescue the soft-clipped CpG-partner base adjacent to each alignment.
-    /// See `MethylationCallingParams::rescue_soft_clip_cpg`.
-    pub rescue_soft_clip_cpg: bool,
     /// Which columns are worth finishing.
     ///
     /// `None` finishes every column the reader emits, for a caller that wants
@@ -253,10 +250,6 @@ pub fn get_pileups_held(
             .pileup(seqair_seg, depth_limit)
             .run()
             .wrap_err("Failed to start seqair pileup")?;
-        if params.rescue_soft_clip_cpg {
-            // Recover exactly the single CpG-partner base the aligner clipped.
-            guard.set_soft_clip_overhang(1);
-        }
 
         // Indel columns are scored once the sub-segment's columns are all
         // drafted, so the haplotype window knows the variants around them.

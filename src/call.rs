@@ -356,7 +356,6 @@ impl CallParams {
             call_indels: self.calls_variants(),
             min_indel_ao: self.indel.min_indel_ao,
             segment_max_bytes: self.segmentation.segment_max_bytes,
-            rescue_soft_clip_cpg: self.methylation.rescue_soft_clip_cpg,
             early_reject: Some(self.record_filters.clone()),
             gpu: self.ml.gpu,
             // The engine genotypes every called SNV, forests or not, and in

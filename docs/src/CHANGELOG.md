@@ -27,6 +27,7 @@ This is the changelog for Rastair 2.
 - The bundled model no longer contains indel models.
 - Removed `--guess-read-orientation` from `call` and `per-read`: strands always come from the SAM flags.
 - Removed `--keep-overlapping-reads`: overlapping mates always count once per fragment.
+- Removed `--rescue-soft-clip-cpg`.
 
 ## Version 2.2.0 (2026-08-24)
 

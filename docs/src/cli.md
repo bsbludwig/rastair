@@ -114,11 +114,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--cpg-novo-min-vaf <CPG_NOVO_MIN_VAF>` — Minimum variant allele frequency for de-novo CpGs
 
   Default value: `0.2`
-* `--rescue-soft-clip-cpg` — Rescue soft-clipped CpG-partner bases
-
-   Aligners often soft-clip a read's fringe base(s) when that mismatches the reference. But in TAPS, a methylated C reads as T, so a leading C→T mismatch might get soft-clipped, discarding real methylation evidence (and same for a trailing G->A). With this flag, a single soft-clipped base immediately next to an aligned base is "rescued" when it is the missing partner of a reference CpG (ref C on OT, ref G on OB) and counted as a normal observation.
-
-   Recovered bases bypass read-end masking (`--nOT`/`--nOB`) since they are fringe bases by definition, but still go through base-quality, mapping-quality and methylation read-position filters.
 * `--no-ml` — Only use hard thresholds to call variants and methylation events.
 
    This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
