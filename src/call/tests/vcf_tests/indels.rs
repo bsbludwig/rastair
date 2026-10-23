@@ -4,7 +4,7 @@
 use crate::call::{
     pair_hmm::fixtures::*,
     phasing::{
-        ColumnPhase, PhaseCall, RecordPhases,
+        PhaseCall, RecordPhases,
         fixtures::{allele, call, column, with_indels},
     },
     pileup::indels::IndelAllele,
@@ -109,8 +109,7 @@ fn with_indel_phase(
     first: u8,
 ) -> crate::metrics::PileupMetrics {
     let phase = PhaseCall { first: allele(first), ..call(901, 0, 31) };
-    pileup.phase =
-        Some(Box::new(ColumnPhase::Phased(RecordPhases { snv: None, indel: Some(phase) })));
+    pileup.phase = Some(Box::new(RecordPhases { snv: None, indel: Some(phase) }));
     pileup
 }
 

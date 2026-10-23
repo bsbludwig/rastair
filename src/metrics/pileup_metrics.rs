@@ -1,5 +1,5 @@
 use crate::{
-    call::{phasing::ColumnPhase, pileup::indels, variant_calling::EstimatedGenotype},
+    call::{phasing::RecordPhases, pileup::indels, variant_calling::EstimatedGenotype},
     metrics::{MethylationEvidenceStrandInfo, PairedCounts},
     sequence::ChunkRegion,
     utils::{ByStrand, IntoF64, SequenceContext, default, logging::ThisIsABug},
@@ -80,9 +80,9 @@ pub struct PileupMetrics {
     /// "Tags" for this positions, which will become calls
     pub tags: RecordTags,
     pub indel_data: Option<Box<indels::IndelData>>,
-    /// Phase observations and results, only under `--phase` and only on
-    /// columns that can take part in phasing.
-    pub phase: Option<Box<ColumnPhase>>,
+    /// Each record's place in its phase block, set by `phase_segment` on
+    /// the columns it phased.
+    pub phase: Option<Box<RecordPhases>>,
     /// The pair-HMM's scores of the cluster holding this column's
     /// substitution events, when SNV events are on (experimental).
     pub snv_scores: Option<Arc<crate::call::pair_hmm::HaplotypeScores>>,

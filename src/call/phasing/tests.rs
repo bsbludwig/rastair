@@ -1,12 +1,12 @@
 use super::{
-    fixtures::{backing, obs},
+    fixtures::{ALT1_READ, REF_READ, scored},
     *,
 };
 use crate::call::phasing::{
     DEFAULT_MIN_SWITCH_QUALITY,
     fixtures::{call, het},
 };
-use seqair_types::Base::*;
+use seqair_types::Base::{self, *};
 
 #[test]
 fn a_zero_hash_is_no_fragment() {
@@ -14,84 +14,12 @@ fn a_zero_hash_is_no_fragment() {
     assert!(FragmentId::new(7).is_some());
 }
 
-#[test]
-fn all_reference_column_is_not_a_candidate() {
-    let column = [obs(1, A, Strand::OT), obs(2, A, Strand::OB), obs(3, A, Strand::OT)];
-    assert!(candidate_observations(&column, A).is_none());
-}
-
-/// The same column with T on the *unconverted* strand is SNP evidence.
-#[test]
-fn t_on_the_bottom_strand_at_a_reference_c_is_a_candidate() {
-    let column = [
-        obs(1, T, Strand::OT),
-        obs(2, T, Strand::OB),
-        obs(3, T, Strand::OB),
-        obs(4, C, Strand::OT),
-    ];
-    let kept = candidate_observations(&column, C).expect("candidate");
-    assert_eq!(kept.len(), column.len(), "the ambiguous observations are kept too");
-}
-
-/// Converted reads are kept: outside a CpG they are a second allele, and only
-/// the phasing gate knows the context.
-#[test]
-fn converted_reads_are_a_candidate() {
-    let column = [obs(1, T, Strand::OT), obs(2, T, Strand::OT), obs(3, C, Strand::OB)];
-    assert!(candidate_observations(&column, C).is_some());
-
-    let bottom = [obs(1, A, Strand::OB), obs(2, A, Strand::OB), obs(3, G, Strand::OT)];
-    assert!(candidate_observations(&bottom, G).is_some());
-}
-
-#[test]
-fn one_converted_read_is_not_a_candidate() {
-    let column = [obs(1, T, Strand::OT), obs(2, C, Strand::OT), obs(3, C, Strand::OB)];
-    assert!(candidate_observations(&column, C).is_none());
-}
-
-#[test]
-fn evidence_must_land_on_one_alternative_base() {
-    let spread = [obs(1, C, Strand::OT), obs(2, G, Strand::OT), obs(3, A, Strand::OB)];
-    assert!(
-        candidate_observations(&spread, A).is_none(),
-        "one mismatch on each of two bases is noise, not an allele"
-    );
-
-    let agreeing = [obs(1, C, Strand::OT), obs(2, C, Strand::OT), obs(3, A, Strand::OB)];
-    assert!(candidate_observations(&agreeing, A).is_some());
-}
-
-#[test]
-fn a_single_mismatch_is_not_enough() {
-    let column = [obs(1, G, Strand::OT), obs(2, A, Strand::OB)];
-    assert!(candidate_observations(&column, A).is_none());
-}
-
-#[test]
-fn unknown_bases_are_not_evidence() {
-    let column = [obs(1, Unknown, Strand::OT), obs(2, Unknown, Strand::OB)];
-    assert!(candidate_observations(&column, A).is_none());
-}
-
-#[test]
-fn an_unknown_reference_base_is_never_a_candidate() {
-    let column = [obs(1, A, Strand::OT), obs(2, A, Strand::OB), obs(3, C, Strand::OT)];
-    assert!(candidate_observations(&column, Unknown).is_none());
-}
-
-#[test]
-fn a_candidate_always_carries_observations() {
-    assert!(candidate_observations(&[], C).is_none());
-}
-
-#[test]
-fn unknown_strand_reads_count_as_evidence() {
-    let column = [obs(1, T, Strand::Unknown), obs(2, T, Strand::Unknown)];
-    assert!(candidate_observations(&column, C).is_some());
-}
-
 // ── phase_segment: anchoring on what the segment emits ─────────────────────
+
+/// The row of a read showing `base` at an `A/G` het.
+fn showing(base: Base) -> [f32; 3] {
+    if base == A { REF_READ } else { ALT1_READ }
+}
 
 /// Three `A/G` hets at 1000, 1040 and 1080, linked by two templates. Which
 /// base each template shows at each site is given per site, in that order.
@@ -101,7 +29,7 @@ fn three_hets(template_1: [Base; 3], template_2: [Base; 3]) -> Vec<PileupMetrics
         .zip(template_1)
         .zip(template_2)
         .map(|((pos, first), second)| {
-            het(pos, A, G, &[obs(1, first, Strand::OT), obs(2, second, Strand::OT)])
+            het(pos, A, G, &[scored(1, showing(first)), scored(2, showing(second))])
         })
         .collect()
 }
@@ -161,9 +89,7 @@ fn a_block_with_one_emitted_site_loses_its_phase() {
 fn a_site_no_fragment_links_stays_unphased() {
     let mut records = three_hets([A, A, A], [G, G, G]);
     if let Some(lonely) = records.get_mut(2) {
-        let mut observations = vec![obs(7, A, Strand::OT), obs(8, G, Strand::OT)];
-        observations.extend(backing(1080, [A, G]));
-        lonely.phase = Some(Box::new(ColumnPhase::Observed(observations.into())));
+        *lonely = het(1080, A, G, &[scored(7, REF_READ), scored(8, ALT1_READ)]);
     }
 
     phase_segment(&mut records, |_| true, None, DEFAULT_MIN_SWITCH_QUALITY);
@@ -171,26 +97,15 @@ fn a_site_no_fragment_links_stays_unphased() {
     assert_eq!(calls(&records), [Some(call(1001, 0, 31)), Some(call(1001, 0, 31)), None]);
 }
 
-/// Nothing reads the observations after the segment is phased.
-#[test]
-fn phasing_drops_the_observations() {
-    let mut records = three_hets([A, A, A], [G, G, G]);
-
-    phase_segment(&mut records, |pos| pos >= 1080, None, DEFAULT_MIN_SWITCH_QUALITY);
-
-    assert!(records.iter().all(|r| r.phase.is_none()));
-}
-
-/// An indel column carries no base observations, so phasing has to give it a
-/// place for its call.
+/// An indel column carries no SNV scores, so phasing has to give it a place
+/// for its call.
 #[test]
 fn a_phased_indel_column_gets_a_phase_of_its_own() {
-    use super::fixtures::{column, confirming, het, insertion, scored, with_indels};
+    use super::fixtures::{NO, column, confirming, het, insertion, with_indels};
     use crate::call::variant_calling::GenotypeTag;
-    const NO: f32 = f32::NEG_INFINITY;
 
     let mut columns = [
-        het(1000, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT)]),
+        het(1000, A, G, &[scored(1, REF_READ), scored(2, ALT1_READ)]),
         with_indels(
             column(1040, A, &[], Some(GenotypeTag::HomRef), &[]),
             &[insertion(&[T, T])],
@@ -219,9 +134,8 @@ fn a_phased_indel_column_gets_a_phase_of_its_own() {
 /// open on its `0|1`.
 #[test]
 fn an_indel_site_first_in_a_block_anchors_and_flips_it() {
-    use super::fixtures::{column, confirming, het, insertion, scored, with_indels};
+    use super::fixtures::{NO, column, confirming, het, insertion, with_indels};
     use crate::call::variant_calling::GenotypeTag;
-    const NO: f32 = f32::NEG_INFINITY;
 
     // Fragment 1 carries the insertion and fragment 2 the reference, so
     // fragment 1's `A` and fragment 2's `G` put the SNV's alleles trans to it.
@@ -235,7 +149,7 @@ fn an_indel_site_first_in_a_block_anchors_and_flips_it() {
             ]
             .concat(),
         ),
-        het(1040, A, G, &[obs(1, A, Strand::OT), obs(2, G, Strand::OT)]),
+        het(1040, A, G, &[scored(1, REF_READ), scored(2, ALT1_READ)]),
     ];
 
     phase_segment(&mut columns, |_| true, None, DEFAULT_MIN_SWITCH_QUALITY);
@@ -253,12 +167,11 @@ fn an_indel_site_first_in_a_block_anchors_and_flips_it() {
 /// shared position it is the one that opens on `0|1`.
 #[test]
 fn at_a_shared_position_the_snv_record_opens_the_block() {
-    use super::fixtures::{confirming, insertion, scored, with_indels};
-    const NO: f32 = f32::NEG_INFINITY;
+    use super::fixtures::{NO, confirming, insertion, with_indels};
 
     // Fragment 1 shows the SNV's alt and the indel's reference: trans.
     let both = with_indels(
-        het(1000, A, G, &[obs(1, G, Strand::OT), obs(2, A, Strand::OT)]),
+        het(1000, A, G, &[scored(1, ALT1_READ), scored(2, REF_READ)]),
         &[insertion(&[T, T])],
         &[
             [scored(1, [-1.0, -4.0, NO]), scored(2, [-4.0, -1.0, NO])].as_slice(),

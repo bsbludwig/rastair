@@ -1,9 +1,9 @@
 //! Hand-built columns for the phasing tests.
 
-use super::{ColumnPhase, Cost, FragmentId, GtAllele, PhaseCall, PhaseObservation, PhaseSet};
+use super::{Cost, FragmentId, GtAllele, PhaseCall, PhaseSet};
 use crate::{
     call::{
-        pair_hmm::{self, Cluster, Event, HaplotypeScores, ReadScores},
+        pair_hmm::{self, Allele, Cluster, Event, HaplotypeScores, ReadScores},
         pileup::indels::{IndelAllele, IndelAlleleCounts, IndelCounts, IndelData, Scored},
         variant_calling::{EstimatedGenotype, GenotypeTag},
     },
@@ -12,8 +12,10 @@ use crate::{
     utils::default,
 };
 use seqair_types::Pos1;
-use seqair_types::{Base, BaseQuality, Probability, RootMeanSquare, Strand};
+use seqair_types::{Base, Probability, RootMeanSquare};
 use std::{num::NonZeroU8, sync::Arc};
+
+pub(crate) use pair_hmm::fixtures::{ALT1_READ, ALT2_READ, NO, REF_READ};
 
 pub(crate) const ALT_1: NonZeroU8 = NonZeroU8::MIN;
 pub(crate) const ALT_2: NonZeroU8 = NonZeroU8::new(2).expect("2 > 0");
@@ -38,28 +40,23 @@ pub(crate) fn allele(index: u8) -> GtAllele {
     NonZeroU8::new(index).map_or(GtAllele::Ref, GtAllele::Alt)
 }
 
-pub(crate) fn obs(fragment: u64, base: Base, strand: Strand) -> PhaseObservation {
-    graded(fragment, base, strand, 30)
-}
-
-pub(crate) fn graded(fragment: u64, base: Base, strand: Strand, qual: u8) -> PhaseObservation {
-    PhaseObservation {
-        fragment: FragmentId::new(fragment).expect("non-zero test fragment id"),
-        base,
-        strand,
-        qual: BaseQuality::from_byte(qual),
-    }
-}
-
-/// A column with whatever genotype, alts and observations a test needs, and
-/// defaults everywhere else.
+/// A column with whatever genotype and alts a test needs, scored by the
+/// pair-HMM over `reads` against the reference and each alt's haplotype in
+/// that record order (so `scored(f, [ref, alt1, alt2])` rows), and defaults
+/// everywhere else. Without reads nothing was scored.
 pub(crate) fn column(
     pos: u32,
     reference: Base,
     alts: &[(Base, AltCall)],
     genotype: Option<GenotypeTag>,
-    observations: &[PhaseObservation],
+    reads: &[ReadScores],
 ) -> PileupMetrics {
+    let snv_scores = (!reads.is_empty() && !alts.is_empty()).then(|| {
+        let events =
+            alts.iter().map(|(base, _)| Event { anchor: pos, allele: Allele::Base(*base) });
+        let cluster = Cluster::new(events.collect()).expect("a cluster");
+        Arc::new(HaplotypeScores::new(cluster, reads.into()).expect("reads the haplotypes explain"))
+    });
     let mut metrics = PileupMetrics {
         region: Arc::new(ChunkRegion {
             region: Region { contig: "chr_test".into(), start: 1000, end: 2000 },
@@ -86,9 +83,8 @@ pub(crate) fn column(
         after_counts: default(),
         tags: default(),
         indel_data: None,
-        snv_scores: None,
-        phase: (!observations.is_empty())
-            .then(|| Box::new(ColumnPhase::Observed(observations.into()))),
+        snv_scores,
+        phase: None,
     };
     // Mapped well enough that no site is guarded unless a test says so.
     metrics.ref_metrics.mapq = mapq(60);
@@ -104,37 +100,35 @@ pub(crate) fn column(
 }
 
 /// The ordinary case: a `0/1` site whose single alt was called. Unless it has
-/// no observations, it also gets [`backing`], so it passes the votes-per-allele
+/// no reads, it also gets [`backing`], so it passes the votes-per-allele
 /// floor whatever reads the test gives it.
-pub(crate) fn het(
-    pos: u32,
-    reference: Base,
-    alt: Base,
-    observations: &[PhaseObservation],
-) -> PileupMetrics {
-    let mut observations = observations.to_vec();
-    if !observations.is_empty() {
-        observations.extend(backing(pos, [reference, alt]));
+pub(crate) fn het(pos: u32, reference: Base, alt: Base, reads: &[ReadScores]) -> PileupMetrics {
+    let mut reads = reads.to_vec();
+    if !reads.is_empty() {
+        reads.extend(backing(pos, [0, 1]));
     }
-    column(
-        pos,
-        reference,
-        &[(alt, AltCall::RealVariant)],
-        Some(GenotypeTag::RefHet(ALT_1)),
-        &observations,
-    )
+    column(pos, reference, &[(alt, AltCall::RealVariant)], Some(GenotypeTag::RefHet(ALT_1)), &reads)
 }
 
-/// Two votes for each of `bases` at the column at `pos`, from fragments that
-/// reach no other column and so link nothing. A `T` is on OB and an `A` on OT,
-/// where conversion cannot have made them.
-pub(crate) fn backing(pos: u32, bases: [Base; 2]) -> Vec<PhaseObservation> {
+/// Two confident votes for each of `haplotypes` at the column at `pos`, from
+/// fragments that reach no other column and so link nothing.
+pub(crate) fn backing(pos: u32, haplotypes: [usize; 2]) -> Vec<ReadScores> {
     let id = |k: u64| 1_000_000 + 4 * u64::from(pos) + k;
-    let strand = |base| if base == Base::T { Strand::OB } else { Strand::OT };
-    (0..2u64)
-        .flat_map(|copy| bases.iter().enumerate().map(move |(i, &base)| (copy, i as u64, base)))
-        .map(|(copy, i, base)| obs(id(2 * i + copy), base, strand(base)))
+    haplotypes
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, hap)| (0..2u64).map(move |copy| (id(2 * i as u64 + copy), hap)))
+        .map(|(fragment, hap)| scored(fragment, explained_by(hap)))
         .collect()
+}
+
+/// A row the haplotype at `hap` explains and the other two do not.
+fn explained_by(hap: usize) -> [f32; 3] {
+    let mut log10 = [-4.0; 3];
+    if let Some(likeliest) = log10.get_mut(hap) {
+        *likeliest = -1.0;
+    }
+    log10
 }
 
 /// A read the pair-HMM scored: `log10` is its likelihood under the reference
@@ -149,13 +143,7 @@ pub(crate) fn scored(fragment: u64, log10: [f32; 3]) -> ReadScores {
 pub(crate) fn confirming(haplotypes: [usize; 2]) -> Vec<ReadScores> {
     haplotypes
         .into_iter()
-        .flat_map(|hap| {
-            let mut log10 = [-4.0; 3];
-            if let Some(likeliest) = log10.get_mut(hap) {
-                *likeliest = -1.0;
-            }
-            (0..6).map(move |i| scored(1000 + 10 * hap as u64 + i, log10))
-        })
+        .flat_map(|hap| (0..6).map(move |i| scored(1000 + 10 * hap as u64 + i, explained_by(hap))))
         .collect()
 }
 

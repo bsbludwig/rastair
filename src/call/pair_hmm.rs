@@ -231,6 +231,9 @@ impl Cluster {
 pub struct EventIdx(u8);
 
 impl EventIdx {
+    /// The one event of a biallelic site.
+    pub const FIRST: Self = Self(0);
+
     #[must_use]
     pub fn new(position: usize) -> Option<Self> {
         (position < MAX_EVENTS).then(|| u8::try_from(position).ok()).flatten().map(Self)
@@ -574,6 +577,24 @@ impl HaplotypeScores {
         }
         let total: f64 = by_copies.iter().sum();
         by_copies.map(|p| p / total)
+    }
+
+    /// `read`'s best likelihood over the haplotypes without `event` and over
+    /// those with it, at the alone level: the read's own say at the event's
+    /// site, its other events marginalised out.
+    ///
+    /// For phasing votes only; a genotype read from it is blind where every
+    /// read carrying the event also carries a linked one.
+    #[must_use]
+    pub fn marginal(&self, read: &ReadScores, event: EventIdx) -> [f32; 2] {
+        [false, true].map(|carries| {
+            self.cluster
+                .haplotypes
+                .iter()
+                .filter(|hap| hap.carries(event) == carries)
+                .map(|&hap| read.log10_alone(hap))
+                .fold(f32::NEG_INFINITY, f32::max)
+        })
     }
 
     /// Reads assigned to `hap`: its `AD`. Reads assigned to no haplotype are

@@ -57,7 +57,7 @@
 
 use crate::{metrics::PileupMetrics, utils::logging::ThisIsABug as _};
 use color_eyre::eyre::OptionExt as _;
-use seqair_types::{Base, BaseQuality, Pos0, Pos1, Strand};
+use seqair_types::{Pos0, Pos1};
 use std::num::{NonZeroU8, NonZeroU64};
 use tracing::{debug, warn};
 
@@ -69,42 +69,21 @@ use problem::{SiteAllele, build_problem};
 pub use solver::DEFAULT_MIN_SWITCH_QUALITY;
 use solver::{PhasedSite, solve};
 
-/// Observations on one alternative base a column needs before its reads are
-/// kept for phasing, and votes each allele of an SNV site needs.
+/// Votes each allele of an SNV site needs.
 const MIN_ALT_READS: u32 = 2;
-/// Mapping quality a read needs to contribute a phase observation.
+/// Mapping quality a read needs to vote.
 const MIN_MAPQ: u8 = 20;
-/// Base quality a read needs to contribute a phase observation.
-const MIN_BASEQ: u8 = 20;
 
-/// Is this read good enough to contribute a phase observation?
-///
-/// Stricter than the calling filters, so a read can count towards depth and
-/// genotype without carrying phase.
-#[must_use]
-pub fn accepts_read(mapq: u8, baseq: BaseQuality) -> bool {
-    mapq >= MIN_MAPQ && baseq.get().is_some_and(|baseq| baseq >= MIN_BASEQ)
-}
-
-/// What a haplotype is charged for disagreeing with one observation: the
-/// observation's base quality, or at an indel the read's preference between
-/// its two haplotypes, Phred-scaled; capped either way.
+/// What a haplotype is charged for disagreeing with one vote: the read's
+/// preference between its two haplotypes, Phred-scaled and capped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Cost(u8);
 
 impl Cost {
-    /// Most a single observation can be charged: one fragment's link is wrong
+    /// Most a single vote can be charged: one fragment's link is wrong
     /// 0.26 % of the time (Phred 26) whatever its base qualities say
-    /// (chimeras, mismapped mates), so no single observation may claim more.
+    /// (chimeras, mismapped mates), so no single read may claim more.
     const CAP: u8 = 26;
-
-    const fn of(qual: BaseQuality) -> Self {
-        match qual.get() {
-            Some(qual) if qual < Self::CAP => Self(qual),
-            Some(_) => Self(Self::CAP),
-            None => Self(0),
-        }
-    }
 
     /// A read's log10 likelihood ratio between two haplotypes, as a Phred
     /// cost: ten times its size, rounded; an infinite ratio is the cap.
@@ -194,17 +173,6 @@ pub enum GtAllele {
     Alt(NonZeroU8),
 }
 
-/// One read's base at a column that might take part in phasing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhaseObservation {
-    pub fragment: FragmentId,
-    pub base: Base,
-    /// Needed to tell a converted base from a variant.
-    pub strand: Strand,
-    /// Already past [`accepts_read`].
-    pub qual: BaseQuality,
-}
-
 /// Which of a column's records a phase site is: the SNV record or the indel
 /// record. One column can hold one of each, the SNV record written first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,15 +192,7 @@ pub struct PhaseCall {
     pub quality: Cost,
 }
 
-/// What phasing keeps on one column: its reads' observations until the segment
-/// is phased, then each record's place in a block, if it has one.
-#[derive(Debug, Clone)]
-pub enum ColumnPhase {
-    Observed(Box<[PhaseObservation]>),
-    Phased(RecordPhases),
-}
-
-/// The phase of each of a column's records.
+/// The phase of each of a column's records, once the segment is phased.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RecordPhases {
     pub snv: Option<PhaseCall>,
@@ -255,62 +215,12 @@ impl RecordPhases {
     }
 }
 
-impl ColumnPhase {
-    /// Record `call` for the column's `kind` record, replacing any
-    /// observations still held.
-    fn set_call(slot: &mut Option<Box<Self>>, kind: SiteKind, call: PhaseCall) {
-        let mut phases = match slot.take().map(|phase| *phase) {
-            Some(Self::Phased(phases)) => phases,
-            Some(Self::Observed(_)) | None => RecordPhases::default(),
-        };
-        *phases.slot(kind) = Some(call);
-        *slot = Some(Box::new(Self::Phased(phases)));
-    }
-}
-
 /// The phase call a column's `kind` record carries, if any.
 pub(crate) fn call_of(pileup: &PileupMetrics, kind: SiteKind) -> Option<PhaseCall> {
-    match pileup.phase.as_deref() {
-        Some(ColumnPhase::Phased(phases)) => phases.get(kind),
-        Some(ColumnPhase::Observed(_)) | None => None,
-    }
+    pileup.phase.as_deref()?.get(kind)
 }
 
-fn observations_of(pileup: &PileupMetrics) -> Option<&[PhaseObservation]> {
-    match pileup.phase.as_deref() {
-        Some(ColumnPhase::Observed(observations)) => Some(observations),
-        _ => None,
-    }
-}
-
-/// Keep a column's observations only where it may be heterozygous: at least
-/// [`MIN_ALT_READS`] reads of one non-reference base, whatever their strand.
-///
-/// A `T` over a `C` on OT counts too: whether TAPS conversion explains it
-/// depends on the CpG context, which only the phasing gate knows (de-novo CpGs
-/// are not called yet). The whole column is kept.
-///
-/// `Some` always carries at least one observation.
-#[must_use]
-pub fn candidate_observations(
-    observations: &[PhaseObservation],
-    reference_base: Base,
-) -> Option<Box<[PhaseObservation]>> {
-    // An `N` in the reference can never be genotyped.
-    reference_base.known_index()?;
-
-    let mut informative = [0u32; Base::KNOWN.len()];
-    for obs in observations.iter().filter(|obs| obs.base != reference_base) {
-        if let Some(count) = obs.base.known_index().and_then(|idx| informative.get_mut(idx)) {
-            *count += 1;
-        }
-    }
-
-    informative.iter().any(|&count| count >= MIN_ALT_READS).then(|| observations.into())
-}
-
-/// Phase a segment in place, and drop the observations, which nothing reads
-/// after this.
+/// Phase a segment in place.
 ///
 /// Runs before the overlap is trimmed, since a site in the overlap links reads
 /// reaching into the core, but only the sites the segment emits (`is_core`)
@@ -363,7 +273,7 @@ pub fn phase_segment(
     for (index, kind, call) in calls {
         // Sites index the slice they were built from.
         match pileups.get_mut(index).ok_or_eyre("Phase site outside its segment").this_is_a_bug() {
-            Ok(pileup) => ColumnPhase::set_call(&mut pileup.phase, kind, call),
+            Ok(pileup) => *pileup.phase.get_or_insert_default().slot(kind) = Some(call),
             Err(error) => warn!(?error, index, "Dropping a phase call"),
         }
     }

@@ -358,7 +358,6 @@ impl CallParams {
             segment_max_bytes: self.segmentation.segment_max_bytes,
             rescue_soft_clip_cpg: self.methylation.rescue_soft_clip_cpg,
             early_reject: Some(self.record_filters.clone()),
-            phase: self.calls_variants(),
             gpu: self.ml.gpu,
             // The engine genotypes every called SNV, forests or not, and in
             // CpG-only output too: methylation calling reads the genotype.

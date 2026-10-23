@@ -59,9 +59,12 @@ fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
         // Reads at the far end, outside the second segment: without them its
         // reads per base are the run's 1.4 times, and the depth guard keeps
         // the hub, at twice the spokes' depth, from bridging them.
-        .balanced(820, 900, 5);
+        .balanced(860, 900, 5);
 
-    let vcf = call_scenario(&scenario, &["--segment-max-length=300", "--segment-overlap=210"])?;
+    // The overlap reaches back past the hub's reads at `LEFT`: the pair-HMM
+    // skips a read that leaves the segment, and a het none of whose reads it
+    // scores casts no votes.
+    let vcf = call_scenario(&scenario, &["--segment-max-length=300", "--segment-overlap=250"])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SPOKE_1, SPOKE_2]]), unphased: vec![HUB] });
@@ -153,27 +156,31 @@ const TRANSITION: usize = 160;
 
 /// Haplotype one carries a methylated `C` in a CpG at `TRANSITION`, so its
 /// top-strand reads show `T` there — the allele haplotype two carries. Those
-/// reads say nothing about the haplotype and must be dropped. Counted, they
-/// would cancel the bottom-strand evidence exactly and leave both sites
-/// unphased.
-fn methylated_cpg_het(scenario: Scenario) -> Scenario {
+/// reads say nothing about the haplotype and must cast no vote: the `C`
+/// haplotype, its CpG profiled at the strand's own conversion level, explains
+/// them as well as the `T` one does. Scored against a `C` at beta 1/2 instead,
+/// each would vote `T` at a cost of 3, so `converted` of them against the
+/// eight bottom-strand reads at 26 flip the link once there are more than
+/// seventy.
+fn methylated_cpg_het(scenario: Scenario, converted: usize) -> Scenario {
     scenario
         .snv(SNV, Hap::One)
         .methylated(Hap::One)
-        .pairs(Hap::One, Strand::Top, LEFT, 8)
+        .pairs(Hap::One, Strand::Top, LEFT, converted)
         .pairs(Hap::One, Strand::Bottom, LEFT, 4)
         .pairs(Hap::Two, Strand::Bottom, LEFT, 4)
         // Balances the SNV without reaching the CpG.
-        .pairs(Hap::Two, Strand::Top, 40, 8)
+        .pairs(Hap::Two, Strand::Top, 40, converted)
 }
 
+/// Decisive: with the CpG profile off (`with_profiled_cpgs`) the eighty
+/// converted reads flip the link into a switch error.
 #[test]
 fn converted_reads_at_a_reference_cpg_het_are_not_evidence() -> Result<()> {
-    let scenario = methylated_cpg_het(Scenario::new(1000).reference_at(TRANSITION, b"CG").het(
-        TRANSITION,
-        b'T',
-        Hap::Two,
-    ));
+    let scenario = methylated_cpg_het(
+        Scenario::new(1000).reference_at(TRANSITION, b"CG").het(TRANSITION, b'T', Hap::Two),
+        80,
+    );
     let vcf = call_scenario(&scenario, &[])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
@@ -182,14 +189,16 @@ fn converted_reads_at_a_reference_cpg_het_are_not_evidence() -> Result<()> {
 }
 
 /// The `C` alt before a reference `G` makes a CpG on haplotype one only, and
-/// its methylated top-strand reads show the reference `T`.
+/// its methylated top-strand reads show the reference `T`. Those reads count
+/// against the `C`'s allele fraction, so the thresholds allow only a few, too
+/// few to flip the link at a cost of 3 each: this one passes with the CpG
+/// profile off too, and guards only that the site is phased at all.
 #[test]
 fn converted_reads_at_a_denovo_cpg_het_are_not_evidence() -> Result<()> {
-    let scenario = methylated_cpg_het(Scenario::new(1000).reference_at(TRANSITION, b"TG").het(
-        TRANSITION,
-        b'C',
-        Hap::One,
-    ));
+    let scenario = methylated_cpg_het(
+        Scenario::new(1000).reference_at(TRANSITION, b"TG").het(TRANSITION, b'C', Hap::One),
+        8,
+    );
     let vcf = call_scenario(&scenario, &[])?;
 
     let phasing = scenario.check_phasing(&vcf)?;

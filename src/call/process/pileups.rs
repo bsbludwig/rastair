@@ -62,10 +62,7 @@ use seqair_types::{Base, Pos0, SmallVec};
 use std::{
     num::{NonZeroU32, NonZeroU64},
     ops::RangeInclusive,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 use tracing::{debug, instrument, warn};
 
@@ -90,12 +87,10 @@ pub struct PileupMappingParams {
     /// the raw pileup. Production passes the record filters, so the seven
     /// columns in eight they drop never become a `PileupMetrics` at all.
     pub early_reject: Option<RecordFilters>,
-    /// Keep per-read phase observations at the columns that can use them.
-    pub phase: bool,
     /// Score the pair-HMM on the GPU.
     pub gpu: bool,
     /// Keep each sub-segment's reads for [`HeldReads::score_snv_clusters`], the
-    /// SNV engine's half of the cascade.
+    /// SNV engine's half of the cascade and the source of phasing votes.
     pub snv_engine: bool,
 }
 
@@ -330,16 +325,6 @@ pub fn get_pileups_held(
                 engine: guard.into_inner(),
             });
         }
-    }
-
-    // A missing read name is a property of the whole file (a CRAM written
-    // with `RN=false`), so once per run says all there is to say.
-    static WARNED_NAMELESS: AtomicBool = AtomicBool::new(false);
-    if scratch.saw_nameless_read && !WARNED_NAMELESS.swap(true, Ordering::Relaxed) {
-        warn!(
-            "Reads without a read name (e.g. a CRAM written with RN=false) cannot be linked \
-             into phase blocks and were left out of phasing"
-        );
     }
 
     let kept = columns.finish(region.end)?;

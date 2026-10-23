@@ -7,7 +7,7 @@
 
 use crate::{
     call::{
-        phasing::{ColumnPhase, RecordPhases, fixtures::call},
+        phasing::{RecordPhases, fixtures::call},
         tests::utils::*,
     },
     metrics::PileupMetrics,
@@ -16,10 +16,7 @@ use crate::{
 use seqair_types::Base::*;
 
 fn with_call(record: &mut PileupMetrics, set: u32, first: u8) {
-    record.phase = Some(Box::new(ColumnPhase::Phased(RecordPhases {
-        snv: Some(call(set, first, 31)),
-        indel: None,
-    })));
+    record.phase = Some(Box::new(RecordPhases { snv: Some(call(set, first, 31)), indel: None }));
 }
 
 /// A `0/1` het, unphased.
