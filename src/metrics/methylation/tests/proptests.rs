@@ -192,10 +192,7 @@ impl MethylationScenario {
             GenotypeScenario::HetNonConfounding => self.build_het_non_confounding(metrics),
             GenotypeScenario::HomAlt => GenotypeTag::HomAlt(NonZeroU8::new(1).unwrap()),
         };
-        Some(EstimatedGenotype {
-            genotype: gt,
-            confidence: Probability::new(0.99).unwrap(),
-        })
+        Some(EstimatedGenotype { genotype: gt, confidence: Probability::new(0.99).unwrap() })
     }
 
     /// Build a het genotype that does NOT involve the confounding base.

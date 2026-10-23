@@ -28,10 +28,7 @@ impl Rastair1BedFormat {
             gt
         } else {
             debug!("No genotype for record");
-            EstimatedGenotype {
-                genotype: GenotypeTag::hom_ref(),
-                confidence: Probability::ZERO,
-            }
+            EstimatedGenotype { genotype: GenotypeTag::hom_ref(), confidence: Probability::ZERO }
         };
 
         let counts = pileup.pos_metrics.extended.methylation_strand_info;

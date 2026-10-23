@@ -221,15 +221,7 @@ impl SeqairVcfWriter {
 
         let writer =
             self.writer.as_mut().wrap_err("VCF writer already finished").this_is_a_bug()?;
-        emit_pileup(
-            pileup,
-            &self.schema,
-            contig,
-            &self.config,
-            ml_threshold,
-            record_filter,
-            writer,
-        )
+        emit_pileup(pileup, &self.schema, contig, &self.config, ml_threshold, record_filter, writer)
     }
 
     /// Flush the BGZF EOF block / finalize the stream, then write the `.csi`

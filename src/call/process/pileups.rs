@@ -54,10 +54,7 @@ use crate::{
     sequence::{RastairReadExtras, SeqairReaders},
 };
 use color_eyre::eyre::WrapErr as _;
-use seqair::{
-    bam::pileup::PileupEngine,
-    reader::SegmentOptions,
-};
+use seqair::{bam::pileup::PileupEngine, reader::SegmentOptions};
 use seqair_types::{Pos0, SmallVec};
 use std::{
     num::{NonZeroU32, NonZeroU64},

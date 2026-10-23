@@ -584,15 +584,9 @@ impl FieldConfig {
             *f = true;
         }
         let m = &mut self.format;
-        for f in [
-            &mut m.gt,
-            &mut m.gc,
-            &mut m.dp,
-            &mut m.m5mc,
-            &mut m.dpm5mc,
-            &mut m.adm5mc,
-            &mut m.ml,
-        ] {
+        for f in
+            [&mut m.gt, &mut m.gc, &mut m.dp, &mut m.m5mc, &mut m.dpm5mc, &mut m.adm5mc, &mut m.ml]
+        {
             *f = true;
         }
         self

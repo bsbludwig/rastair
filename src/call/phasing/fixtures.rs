@@ -91,10 +91,8 @@ pub(crate) fn column(
     for alt in &mut metrics.alts {
         alt.metrics.mapq = mapq(60);
     }
-    metrics.pos_metrics.extended.genotype = genotype.map(|genotype| EstimatedGenotype {
-        genotype,
-        confidence: Probability::ONE,
-    });
+    metrics.pos_metrics.extended.genotype =
+        genotype.map(|genotype| EstimatedGenotype { genotype, confidence: Probability::ONE });
     metrics
 }
 
