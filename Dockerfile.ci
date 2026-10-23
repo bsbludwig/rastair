@@ -50,11 +50,13 @@ RUN channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\(.*\)".*
     && rustup component add llvm-tools-preview \
     && rustc --version
 
-# Install bioinformatics tools
+# Install bioinformatics tools. Bismark and modkit carry the versions pinned
+# in .github/scripts/install-external-tools.sh: an unpinned `bismark` is the
+# `bismark-rust-v3.x` rewrite, which aborts on the paired test BAM.
 RUN mamba install -y -c bioconda -c conda-forge \
     samtools \
-    bismark \
-    ont-modkit \
+    bismark=0.25.1 \
+    ont-modkit=0.6.4 \
     && mamba clean -afy
 
 # Install uv (Python package manager); pre-cache modbedtools so uvx works offline.
@@ -65,7 +67,6 @@ RUN pip install uv && uvx modbedtools --help
 # Prepopulate cargo registry and dependency build cache:
 # copy only manifests + dep sources, build deps once, then copy real source.
 COPY Cargo.toml Cargo.lock LICENSE.txt ./
-COPY crates/ crates/
 COPY tools/ tools/
 # Create stub src so cargo can resolve the workspace and fetch+build deps
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
