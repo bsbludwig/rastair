@@ -33,13 +33,15 @@ impl Iterator for ChunkedRegions {
             let logical_end =
                 self.current_start.saturating_add(self.max_length).min(full_region.end);
 
-            let chunk_start =
-                self.current_start.saturating_sub(self.overlap).max(full_region.start);
-            let chunk_end = self
-                .current_start
-                .saturating_add(self.max_length)
-                .saturating_add(self.overlap)
-                .min(full_region.end);
+            let last_position = match full_region {
+                SelectedRegion::EntireContig(region) => region.end,
+                SelectedRegion::UserDefinedSubset { last_position, .. } => *last_position,
+            };
+            // The overlap reaches past the region's own ends, as far as the
+            // contig goes, so the bases on a requested region's edges have the
+            // same context as those on a chunk boundary inside it.
+            let chunk_start = self.current_start.saturating_sub(self.overlap);
+            let chunk_end = logical_end.saturating_add(self.overlap).min(last_position);
 
             let overlap_start = logical_start - chunk_start;
             let overlap_end = chunk_end - logical_end;
@@ -50,10 +52,7 @@ impl Iterator for ChunkedRegions {
                     start: chunk_start,
                     end: chunk_end,
                 },
-                last_position: match full_region {
-                    SelectedRegion::EntireContig(region) => region.end,
-                    SelectedRegion::UserDefinedSubset { last_position, .. } => *last_position,
-                },
+                last_position,
                 overlap_start,
                 overlap_end,
             };
@@ -75,17 +74,18 @@ mod tests {
         #[test]
         fn chunks_cover_full_region(
             // Generate reasonable chromosome lengths and chunk parameters
-            start in 1u64..1000u64,
+            start in 0u64..1000u64,
             length in 100u64..10000u64,
+            tail in 0u64..500u64,
             max_length in 300u64..1000u64,
             overlap in 10u64..100u64
         ) {
             let end = start + length;
-            let full_regions = vec![SelectedRegion::EntireContig(Region {
-                contig: "chr1".into(),
-                start,
-                end,
-            })];
+            let last_position = end + tail;
+            let full_regions = vec![SelectedRegion::UserDefinedSubset {
+                region: Region { contig: "chr1".into(), start, end },
+                last_position,
+            }];
 
             let chunked = ChunkedRegions {
                 full_regions,
@@ -95,53 +95,32 @@ mod tests {
                 overlap,
             };
 
-            // Collect all chunks
             let chunks: Vec<_> = chunked.collect();
-
-            // Property 1: There should be at least one chunk
             prop_assert!(!chunks.is_empty());
 
-            // Property 2: First chunk should start at the beginning
-            prop_assert_eq!(chunks[0].region.start, start);
-
-            // Property 3: Last chunk should end at the end
-            prop_assert_eq!(chunks.last().unwrap().region.end, end);
-
-            // Property 4: No chunk should exceed max_length + 2*overlap
+            // The cores tile the region exactly: each position is one
+            // chunk's, in order, with no gap.
+            let mut next_core = start;
             for chunk in &chunks {
+                let core_start = chunk.region.start + chunk.overlap_start;
+                let core_end = chunk.region.end - chunk.overlap_end;
+                prop_assert_eq!(core_start, next_core);
+                prop_assert!(core_end > core_start);
+                next_core = core_end;
+            }
+            prop_assert_eq!(next_core, end);
+
+            for chunk in &chunks {
+                // The overlap reaches past the region on both sides, as far as
+                // the contig and `overlap` allow.
+                prop_assert_eq!(chunk.overlap_start, overlap.min(chunk.region.start + chunk.overlap_start));
+                prop_assert!(chunk.overlap_end <= overlap);
+                prop_assert!(chunk.region.end <= last_position);
                 prop_assert!(chunk.region.end - chunk.region.start <= max_length + 2 * overlap);
+                prop_assert_eq!(chunk.last_position, last_position);
             }
-
-            // Property 5: Adjacent chunks should overlap by at least the specified amount
-            for pair in chunks.windows(2) {
-                let current = &pair[0];
-                let next = &pair[1];
-
-                // The overlap between chunks
-                if current.region.end > next.region.start {
-                    let actual_overlap = current.region.end - next.region.start;
-                    // With overlap on both sides, overlap should be at least the specified amount
-                    // (could be more near boundaries)
-                    prop_assert!(actual_overlap >= overlap,
-                        "Overlap {} is less than required {}", actual_overlap, overlap);
-                }
-            }
-
-            // Property 6: No gaps between chunks
-            let mut covered = HashSet::new();
-            for chunk in &chunks {
-                for pos in chunk.region.start..chunk.region.end {
-                    covered.insert(pos);
-                }
-            }
-            for pos in start..end {
-                prop_assert!(covered.contains(&pos), "Position {} not covered by any chunk", pos);
-            }
-
-            // Property 7: All chunks should have the correct last_position
-            for chunk in &chunks {
-                prop_assert_eq!(chunk.last_position, end);
-            }
+            let last = chunks.last().unwrap();
+            prop_assert_eq!(last.overlap_end, overlap.min(last_position - end));
         }
 
         #[test]

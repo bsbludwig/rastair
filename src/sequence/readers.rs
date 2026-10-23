@@ -409,12 +409,13 @@ mod seqair_readers {
         header: &seqair::bam::BamHeader,
     ) -> Result<SelectedRegion> {
         let chromosome = region.chromosome.as_str();
-        let start = region.start.map(|p| p.as_u64()).unwrap_or(1);
+        let start = region.start.map(|p| p.to_zero_based().as_u64()).unwrap_or(0);
 
         let contig_info = header.resolve_contig(chromosome).wrap_err_with(|| {
             format!("Failed to resolve chromosome {} from header", region.chromosome)
         })?;
         let last_position = contig_info.len;
+        // A closed 1-based end is the same number as a half-open 0-based one.
         let end = region.end.map(|p| p.as_u64()).unwrap_or(last_position);
 
         ensure!(
@@ -438,7 +439,7 @@ mod seqair_readers {
             .map(|target| {
                 SelectedRegion::EntireContig(Region {
                     contig: target.name,
-                    start: 1,
+                    start: 0,
                     end: target.length,
                 })
             })
@@ -587,7 +588,7 @@ impl Readers {
 fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result<SelectedRegion> {
     let chromosome = region.chromosome.as_str();
     // If no start position is specified, default to beginning of chromosome
-    let start = region.start.map(to_u64).unwrap_or(1);
+    let start = region.start.map(|p| p.to_zero_based().as_u64()).unwrap_or(0);
 
     let target_id = bam_header
         .tid(region.chromosome.as_bytes())
@@ -603,7 +604,8 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
     let last_position =
         bam_header.target_len(target_id).wrap_err("Failed to fetch header length")?;
     // If no end specified, use chromosome length from BAM header
-    let end = region.end.map(to_u64).unwrap_or(last_position);
+    // A closed 1-based end is the same number as a half-open 0-based one.
+    let end = region.end.map(|p| p.as_u64()).unwrap_or(last_position);
 
     ensure!(
         start <= last_position,
@@ -619,10 +621,6 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
         region: Region { contig: region.chromosome.clone(), start, end },
         last_position,
     })
-}
-
-fn to_u64(value: seqair_types::Pos1) -> u64 {
-    value.as_u64()
 }
 
 #[instrument(level = "debug", skip(header))]
@@ -644,7 +642,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
 
             Ok(SelectedRegion::EntireContig(Region {
                 contig: chr,
-                start: 1, // 1-based coordinates
+                start: 0,
                 end: length,
             }))
         })
@@ -798,7 +796,7 @@ mod tests {
         let full_region = get_selected_region(&region_chr_only, header)?;
 
         assert_eq!(full_region.contig, "chr19");
-        assert_eq!(full_region.start, 1); // Should default to 1
+        assert_eq!(full_region.start, 0); // Should default to the first base
 
         // The end should be the chromosome length from the header
         let chr19_tid = header.tid(b"chr19").unwrap();
@@ -810,7 +808,7 @@ mod tests {
         let full_region = get_selected_region(&region_with_start, header)?;
 
         assert_eq!(full_region.contig, "chr19");
-        assert_eq!(full_region.start, 100);
+        assert_eq!(full_region.start, 99); // 1-based 100, 0-based 99
         assert_eq!(full_region.end, chr19_len); // Should default to chromosome length
 
         Ok(())
@@ -895,8 +893,8 @@ mod tests {
             let target_name = std::str::from_utf8(header.target_names()[i]).unwrap();
             assert_eq!(region.contig, target_name);
 
-            // Start should be 1 (1-based)
-            assert_eq!(region.start, 1);
+            // The contig's first base, 0-based
+            assert_eq!(region.start, 0);
 
             // End should match the chromosome length
             let tid = u32::try_from(i).unwrap();

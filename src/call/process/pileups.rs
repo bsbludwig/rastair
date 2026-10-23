@@ -157,9 +157,7 @@ pub fn get_pileups(
         }
     }
 
-    // The region's end may be the contig's length, one past its last base.
-    let last = region.end.min(region.last_position.saturating_sub(1));
-    let kept = columns.finish(last)?;
+    let kept = columns.finish(region.end)?;
     Ok((segment, kept.into_iter()))
 }
 
@@ -262,9 +260,9 @@ impl<'p, 's> Columns<'p, 's> {
         Ok(())
     }
 
-    /// The kept columns, once every position up to `last` has been reached.
-    fn finish(mut self, last: u64) -> Result<Vec<PileupMetrics>> {
-        self.reach(last.saturating_add(1))?;
+    /// The kept columns, once every position before `end` has been reached.
+    fn finish(mut self, end: u64) -> Result<Vec<PileupMetrics>> {
+        self.reach(end)?;
         // Nothing follows the last column, so a still-deferred draft was only
         // ever waiting for a rescue that cannot come.
         if let Some((waiting, before)) = self.deferred.take()
@@ -303,7 +301,8 @@ mod tests {
 
     #[test]
     fn test_reading_bounds() -> Result<()> {
-        // check that we can read exactly the right positions
+        // The region is 1-based and closed; the segment's core is exactly it,
+        // 0-based, while its overlap reaches past both ends.
         let params = ReaderParams {
             regions: Some("chr19:6105700-6105800".parse().unwrap()),
             ..ReaderParams::test_data()
@@ -313,12 +312,12 @@ mod tests {
         readers.segment(&segments[0], 0)?;
 
         let pileup_mapping_params = PileupMappingParams::default();
-        let (_segment, pileups) = get_pileups(&mut readers, &segments[0], &pileup_mapping_params)?;
-        let pileups: Vec<_> = pileups.collect();
+        let (segment, pileups) = get_pileups(&mut readers, &segments[0], &pileup_mapping_params)?;
+        let core: Vec<_> = pileups.filter(|p| segment.is_core(u64::from(p.pos))).collect();
 
-        assert!(!pileups.is_empty());
-        assert_eq!(pileups.first().unwrap().pos, 6_105_700);
-        assert_eq!(pileups.last().unwrap().pos, 6_105_800);
+        assert!(!core.is_empty());
+        assert_eq!(core.first().unwrap().pos, 6_105_699);
+        assert_eq!(core.last().unwrap().pos, 6_105_799);
 
         Ok(())
     }

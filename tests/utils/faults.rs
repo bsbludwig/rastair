@@ -15,7 +15,7 @@ pub const INJECT_ERROR: &str = "RASTAIR_INJECT_ERROR";
 pub const INJECT_SIGNAL: &str = "RASTAIR_INJECT_SIGNAL";
 /// Its first three segments have no reads, so faults are injected at the sixth
 /// segment (`worker@6`) to have records before and after it
-pub const REGION: &str = "--region=chr19:6100000-6120000";
+pub const REGION: &str = "--region=chr19:6100001-6120000";
 /// Many small segments, so a fault lands in the middle of the run
 pub const SMALL_SEGMENTS: &str = "--segment-max-length=1000";
 /// What [`REGION`] is split into with [`SMALL_SEGMENTS`], in every pipeline

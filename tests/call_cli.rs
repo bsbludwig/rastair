@@ -1257,6 +1257,131 @@ fn all_reports_cpgs_in_a_region_without_reads() -> Result<()> {
     Ok(())
 }
 
+/// The CpG halves `--all --cpgs-only` reports for `seq` (from 0-based
+/// position `offset`) over the 0-based, inclusive `first..=last`: a CpG
+/// straddling an edge contributes only its half inside.
+fn reference_cpgs(seq: &[u8], offset: u32, first: u32, last: u32) -> BTreeSet<(u32, char)> {
+    seq.windows(2)
+        .zip(offset..)
+        .filter(|(pair, _)| pair.eq_ignore_ascii_case(b"CG"))
+        .flat_map(|(_, c)| [(c, '+'), (c + 1, '-')])
+        .filter(|&(pos, _)| (first..=last).contains(&pos))
+        .collect()
+}
+
+fn reported_cpgs(
+    fasta: &std::path::Path,
+    bam: &std::path::Path,
+    region: &str,
+) -> Result<BTreeSet<(u32, char)>> {
+    let temp_dir = TempDir::new()?;
+    let bed = temp_dir.path().join("all.bed");
+    rastair()
+        .args(["call", "--fasta-file"])
+        .arg(fasta)
+        .arg(bam)
+        .args([region, NO_ML, "--all", "--cpgs-only", "--bed"])
+        .arg(&bed)
+        .succeeds()?;
+    Ok(parse_cpg_bed(&bed)?.keys().copied().collect())
+}
+
+/// A `--region` is 1-based and inclusive at both ends, and a CpG half on
+/// either edge is reported: the C at the first base, the G at the last.
+#[test]
+fn region_edges_are_reported_under_all_cpgs_only() -> Result<()> {
+    use rust_htslib::faidx;
+
+    apply_common_filters!();
+
+    let fasta_path = std::path::Path::new("tests/data/test.fasta.gz");
+    let fasta = faidx::Reader::from_path(fasta_path)?;
+    // 0-based 6105711 and 6105743 are the Cs of the region's two CpGs.
+    let (offset, seq) = (6_105_700u32, fasta.fetch_seq("chr19", 6_105_700, 6_105_760)?.to_vec());
+    for (region, first, last) in [
+        // Starts on a CpG's C, ends on another's G: both CpGs whole.
+        ("--region=chr19:6105712-6105745", 6_105_711, 6_105_744),
+        // Starts on a CpG's G, ends on another's C: one half of each.
+        ("--region=chr19:6105713-6105744", 6_105_712, 6_105_743),
+    ] {
+        let expected = reference_cpgs(&seq, offset, first, last);
+        let reported =
+            reported_cpgs(fasta_path, std::path::Path::new("tests/data/test.bam"), region)?;
+        assert_eq!(reported, expected, "{region}");
+    }
+
+    // The same first region as BED: 0-based, half-open.
+    let temp_dir = TempDir::new()?;
+    let bed = temp_dir.path().join("region.bed");
+    std::fs::write(&bed, "chr19\t6105711\t6105745\n")?;
+    let region = format!("--region=@{}", bed.display());
+    let reported = reported_cpgs(fasta_path, std::path::Path::new("tests/data/test.bam"), &region)?;
+    assert_eq!(reported, reference_cpgs(&seq, offset, 6_105_711, 6_105_744), "{region}");
+
+    Ok(())
+}
+
+/// A contig that starts and ends with a CpG and that no read reaches: `--all
+/// --cpgs-only` over the whole contig lists every CpG, both ends included,
+/// and a `--region` on either end reports its edge half.
+#[test]
+fn contig_ends_are_reported_under_all_cpgs_only() -> Result<()> {
+    apply_common_filters!();
+
+    const SEQ: &[u8] = b"CGATTACAGCGTTTACCGGATACATTGACGGCATACG";
+    let last = u32::try_from(SEQ.len())? - 1;
+    let temp_dir = TempDir::new()?;
+    let (fasta, bam) = write_reference_without_reads(temp_dir.path(), "ctg", SEQ)?;
+
+    let whole = reported_cpgs(&fasta, &bam, "--region=ctg")?;
+    assert_eq!(whole, reference_cpgs(SEQ, 0, 0, last), "the whole contig");
+    assert!(whole.contains(&(0, '+')) && whole.contains(&(last, '-')), "both ends are CpGs");
+
+    // 1-based: the second base is the first CpG's G, the second-to-last the
+    // last CpG's C.
+    let inner = format!("--region=ctg:2-{}", SEQ.len() - 1);
+    assert_eq!(
+        reported_cpgs(&fasta, &bam, &inner)?,
+        reference_cpgs(SEQ, 0, 1, last - 1),
+        "{inner}"
+    );
+
+    Ok(())
+}
+
+/// A plain FASTA holding `seq` as `contig`, and an indexed BAM whose header
+/// names it but which holds no read.
+fn write_reference_without_reads(
+    dir: &std::path::Path,
+    contig: &str,
+    seq: &[u8],
+) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    use rust_htslib::bam::{self, header::HeaderRecord};
+
+    let fasta = dir.join("ref.fa");
+    let header_line = format!(">{contig}\n");
+    let mut text = header_line.clone().into_bytes();
+    text.extend_from_slice(seq);
+    text.push(b'\n');
+    std::fs::write(&fasta, text)?;
+    std::fs::write(
+        dir.join("ref.fa.fai"),
+        format!(
+            "{contig}\t{len}\t{offset}\t{len}\t{width}\n",
+            len = seq.len(),
+            offset = header_line.len(),
+            width = seq.len() + 1
+        ),
+    )?;
+
+    let bam_path = dir.join("empty.bam");
+    let mut header = bam::Header::new();
+    header.push_record(HeaderRecord::new(b"SQ").push_tag(b"SN", contig).push_tag(b"LN", seq.len()));
+    drop(bam::Writer::from_path(&bam_path, &header, bam::Format::Bam)?);
+    bam::index::build(&bam_path, None, bam::index::Type::Bai, 1)?;
+    Ok((fasta, bam_path))
+}
+
 #[test]
 fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Result<()> {
     apply_common_filters!();
