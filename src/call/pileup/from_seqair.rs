@@ -798,7 +798,11 @@ impl WindowMask {
     /// The masked positions of `columns`, ascending.
     fn new(columns: &[PileupMetrics]) -> Self {
         // A `T` over a `C` on the top strand, or an `A` over a `G` on the
-        // bottom, is what TAPS makes of a methylated base, not a variant.
+        // bottom, is what TAPS makes of a methylated base, not a variant. In
+        // any context, not only a reference CpG: a neighbouring alt can
+        // create the CpG (a `T>C` before this `G`), and masking its partner
+        // hides the CpG from the haplotype, which then reads the converted
+        // bases as reference (SNV F1 -0.008 at 26x, -0.017 at 73x).
         let unexplained = |reference: Base, alt: &crate::metrics::Alt| match (reference, alt.base) {
             (Base::C, Base::T) => alt.metrics.strand_count.ob,
             (Base::G, Base::A) => alt.metrics.strand_count.ot,
