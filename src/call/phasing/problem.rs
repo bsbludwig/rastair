@@ -3,25 +3,22 @@
 //! Two lists come out of a segment: the *sites*, heterozygous columns whose two
 //! alleles have to be split across haplotypes, and the *fragments*, templates
 //! whose alleles at several sites share a chromosome. A fragment carries one
-//! bit per site saying which allele it saw; at a C/T or G/A heterozygote whose
-//! cytosine is in a CpG, observations TAPS conversion alone explains are
-//! dropped, or methylation would read as the other allele.
+//! bit per site saying which allele it saw, read off the pair-HMM's scores of
+//! the read.
 //!
-//! - The TAPS gate, `PhaseSite::taps_confounds`, is allele-set-level and
-//!   CpG-only: at a C/T site whose `C` is in a CpG (`methylation::cpg_origin`,
-//!   reference or de-novo) a `T` is evidence only on OB, at G/A an `A` only on
-//!   OT. Outside a CpG every strand counts, since mammalian non-CpG methylation
-//!   is rare. It uses `methylation::CpgSide`; do not add a second copy of its
-//!   bases and strand. Fixture trap: a bare `het()` is not in a CpG, so set
-//!   `pos_metrics.cpg` or `context.after_1`; tests of anything but the gate
-//!   should use A/C or T/G sites. Both mates share the OT/OB assignment.
 //! - A site's alleles come from the stored `GenotypeTag`, never from scanning
 //!   `pileup.alts`. `GtAllele` is in genotype space (an index into
 //!   `pileup.alts`), not `ALT` column order; `compute_genotype` remaps the
 //!   genotype and the phase call with one map, so do not phase after it.
-//! - An SNV site needs `MIN_ALT_READS` votes on each allele, counted after the
-//!   gate ([`snv_site`]): a site phased on one read is mostly a false het.
-//!   Fragments reaching fewer than two sites are dropped; fragment order is
+//! - SNV sites ([`snv_site`]): the reads vote between the reference and the
+//!   alt event's haplotypes (`HaplotypeScores::marginal`, the read's best with
+//!   and without the event), a `1/2` between the best carrying each alt. A
+//!   read votes only if one of the two explains it (`MIN_READ_LOG10`) and it
+//!   prefers one at Phred 10 or more ([`snv_vote`]); the site needs
+//!   `MIN_ALT_READS` votes on each allele: a site phased on one read is mostly
+//!   a false het. Judge changes on raw SNV switches across chromosomes and
+//!   libraries; the slice test sees none.
+//! - Fragments reaching fewer than two sites are dropped; fragment order is
 //!   first appearance, so the result does not depend on the hasher.
 //! - Guards cap, they do not mask. [`Guard`] marks sites whose reads are wrong
 //!   together: `AlleleMapq` (SNV only, either allele's RMS MAPQ under 50),

@@ -61,17 +61,19 @@ Both records carry `PS=20028875`, the position of the block's first heterozygous
 Within a block, the alleles written first all sit on the same chromosome copy: above, the reference `A` and the alternate `T` are on one copy, the alternate `G` and the reference `C` on the other.
 Each block opens with `0|1`; nothing relates one block to another, and heterozygous sites no read pair links stay `0/1` without `PS`.
 
+Each read votes with the same pair-HMM that called the genotype:
+for the allele whose local haplotype explains the read better, weighted by how much better.
+A read needs a clear preference (ten times likelier under one allele) to vote,
+and a read neither haplotype explains (one with a soft clip or an indel the pair-HMM does not hold) does not vote.
+
 Since Rastair operates on @TAPS and @5Base data,
 it has to take methylation artifacts into account.
 In a @CpG site with alleles `C` and `T`,
-the `T` on the converted strand may be a methylated `C`,
-so it says nothing about which copy the read came from
-(same for `G>A`).
-Such reads are not counted.
-Outside a CpG, cytosines are almost never methylated, so these reads count like any other.
+the `T` on the converted strand may be a methylated `C`.
+The pair-HMM scores such a read as about equally likely under both alleles,
+so it casts no vote (same for `G>A`).
 
-Heterozygous indels called by the pair-HMM (see [indels](indels.md)) take part too.
-At an indel a read has no single base to vote with, so it votes for the allele whose local haplotype explains it better, weighted by how much better.
+Heterozygous indels called by the pair-HMM (see [indels](indels.md)) take part the same way.
 An indel only becomes part of a block when the pair-HMM is confident of its heterozygous genotype: a doubtful one would mostly join two blocks the wrong way round.
 
 ```admonish warning

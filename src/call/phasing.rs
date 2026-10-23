@@ -2,26 +2,25 @@
 //!
 //! Two heterozygous sites carried by one DNA fragment are in known relative
 //! phase, so the read pairs spanning them say which alleles share a
-//! chromosome. The per-read observations have to be captured while a pileup
-//! column is built, because `PileupMetrics` keeps no reads.
+//! chromosome. Each read's say comes from the pair-HMM: the reads a column's
+//! cluster scored vote between the haplotypes of its het, the scores its
+//! genotype was read from.
 //!
 //! Per-column data sits in `PileupMetrics.phase`; thresholds are constants
 //! except the block cut, `--phase-min-switch-quality`. Phasing runs in every
 //! output but CpG-only (`--cpgs-only`, or `--bed` alone), where the pre-filter
-//! drops the variant sites before it could (`CallParams::calls_variants`). `problem` builds the sites
-//! and fragments, `solver` splits them.
+//! drops the variant sites before it could (`CallParams::calls_variants`).
+//! `problem` builds the sites and fragments, `solver` splits them.
 //!
-//! **Observations** are captured inside the column loop. A column keeps its
-//! whole list when it has `MIN_ALT_READS` reads of one non-reference base on
-//! any strand (`candidate_observations`): a converted `T` over a `C` counts
-//! too, since only the phasing gate knows whether the site is in a CpG
-//! (de-novo CpGs are not known yet). An `N` reference or an empty column is
-//! excluded, so `phase.is_some()` means there is something to use.
-//! `accepts_read` (MAPQ and base quality at least 20) applies at collection,
-//! so a read can count for depth and genotype without carrying phase.
+//! **Votes.** An SNV site votes on `PileupMetrics.snv_scores`, an indel site
+//! on its indel cluster's scores. A read votes by the sign of its log10 ratio
+//! between the site's two haplotypes, at cost `round(10 * |ratio|)` capped at
+//! `Cost::CAP`. No base quality or TAPS gate: the emission has weighed both,
+//! and a converted `T` over a methylated CpG `C` is as likely under either
+//! haplotype, so it casts no vote. A het the engine did not score is no site.
 //! `FragmentId` is a `NonZeroU64`: seqair reports "no qname" as a missing
 //! hash, and bucketing those reads together would link every het in the
-//! region. They are dropped, and `call` warns once per run, since a missing
+//! region. They cast no vote, and `call` warns once per run, since a missing
 //! qname is a whole-file property (CRAM with `RN=false`).
 //!
 //! **Blocks.** [`phase_segment`] runs before the overlap trim, because a site
@@ -34,14 +33,14 @@
 //! `PS` and `PQ` are written only where the genotype is phased; homozygotes
 //! never are.
 //!
-//! **Testing.** `tests/phasing_cli.rs` runs `call --phase` on a `Scenario`
+//! **Testing.** `tests/phasing_cli.rs` runs `call` on a `Scenario`
 //! (`tests/utils/scenario.rs`): a pseudo-random reference with no CpG unless
 //! the test writes one, het SNVs and indels per haplotype, per-haplotype
 //! methylation converted on the read's own strand, and read pairs per
 //! haplotype and strand. `check_phasing` reads the VCF back and fails on a
 //! switch error, a phased non-het, a `PS` not naming its block's first record,
 //! or a block not opening on `0|1`. Read observations through this real path
-//! rather than attaching them to a `pileups!` fixture, and make a scenario
+//! rather than attaching scores to a fixture, and make a scenario
 //! decisive: the broken code should give a different block structure, not a
 //! weaker edge (check by breaking the code it guards). A scenario linking two
 //! blocks through one read pair gets two blocks: use two or more copies to

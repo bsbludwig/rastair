@@ -16,7 +16,7 @@ This is the changelog for Rastair 2.
 - `call`, `per-read` and `bam` no longer accumulate finished segments without limit behind a slow one (deep coverage, a repeat); at most four segments per thread wait to be written.
 - Crashes and internal errors end with a link to open a pre-filled GitHub issue, with the error, Rastair's version and the region being processed. With `--verbose`, only crashes and internal errors show a backtrace.
 - Fixed a hang when the GPU inference thread crashes: queued regions now fall back to CPU scoring, like after any other GPU failure.
-- `call` links heterozygous variants that share read pairs into phase blocks, written as phased genotypes (`0|1`) with a new `PS` FORMAT field. This is always on, except for CpG-only output.
+- `call` links heterozygous variants that share read pairs into phase blocks, written as phased genotypes (`0|1`) with a new `PS` FORMAT field. This is always on, except for CpG-only output. Each read's vote comes from the pair-HMM's likelihoods, so a converted read at a CpG casts none.
 - `call` calls indels with a TAPS-aware pair-HMM instead of the ML model. This is always on, except for CpG-only output.
 - SNV genotypes (`GT`, `GC`) come from the same pair-HMM, which scores every alt the model can pass; the read-count genotyper and `--snv-genotype` are gone.
 - With `--gpu`, the pair-HMM scores on the GPU as well; the calls are the same as on the CPU.
