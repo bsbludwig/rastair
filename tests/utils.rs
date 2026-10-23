@@ -31,6 +31,11 @@ macro_rules! apply_common_filters {
     {} => {
         let mut settings = insta::Settings::clone_current();
         settings.add_filter(r"\w{4}-[0-9T\-:.]+Z\s", "[TIME]");
+        // A slow debug run logs a runtime estimate, with no line break before the next line.
+        settings.add_filter(
+            r"\[TIME\] INFO rastair::runtime::progress: Runtime estimate .*? done_at=\[TIME\]",
+            "",
+        );
         settings.add_filter(r"duration=[\w.]+", "[DURATION]");
         settings.add_filter(r": close time.*", " [CLOSE]");
         settings.add_filter(r#"file="/.*/*.vcf"#, "file=[PATH]");

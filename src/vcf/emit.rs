@@ -536,11 +536,15 @@ fn encode_format(
             f.pq.encode(enc, &[i32::from(call.quality)])?;
         }
     }
-    if c.gl {
-        f.gl.encode(enc, &[genotype.likelihood])?;
+    if c.gl
+        && let Some(likelihood) = genotype.likelihood
+    {
+        f.gl.encode(enc, &[likelihood])?;
     }
-    if c.gc {
-        f.gc.encode(enc, &[genotype.confidence])?;
+    if c.gc
+        && let Some(confidence) = genotype.confidence
+    {
+        f.gc.encode(enc, &[confidence])?;
     }
     if c.dp {
         f.dp.encode(enc, &[i32::try_from(pileup.pos_metrics.depth).unwrap_or(i32::MAX)])?;
@@ -591,13 +595,15 @@ fn phred_value(p: Probability) -> f32 {
 /// A record's genotype fields.
 struct GenotypeFields {
     genotype: SeqGenotype,
-    likelihood: f32,
-    confidence: f32,
+    /// `None` where `genotype` is missing.
+    likelihood: Option<f32>,
+    confidence: Option<f32>,
     /// Set exactly where `genotype` is phased.
     phase: Option<PhaseCall>,
 }
 
-/// The genotype plus its GL/GC values and phase call.
+/// The genotype plus its GL/GC values and phase call. A record with a called
+/// alt but no estimate (no engine dosage) is `./.`.
 ///
 /// The estimate is the one the calling pipeline stored, not a fresh one: an
 /// estimate re-derived here would silently ignore `--error-model` and so
@@ -605,10 +611,18 @@ struct GenotypeFields {
 /// value. The phase call names alleles the same way, so one remap serves both.
 fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeFields {
     let Some(estimated) = pileup.pos_metrics.extended.genotype else {
+        if pileup.alts.iter().any(|alt| alt.call == AltCall::RealVariant) {
+            return GenotypeFields {
+                genotype: SeqGenotype::missing_diploid(),
+                likelihood: None,
+                confidence: None,
+                phase: None,
+            };
+        }
         return GenotypeFields {
             genotype: SeqGenotype::unphased(0, 0),
-            likelihood: phred_value(Probability::ZERO),
-            confidence: phred_value(Probability::ZERO),
+            likelihood: Some(phred_value(Probability::ZERO)),
+            confidence: Some(phred_value(Probability::ZERO)),
             phase: None,
         };
     };
@@ -656,8 +670,8 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeField
 
     GenotypeFields {
         genotype,
-        likelihood: phred_value(estimated.likelihood),
-        confidence: phred_value(estimated.confidence),
+        likelihood: Some(phred_value(estimated.likelihood)),
+        confidence: Some(phred_value(estimated.confidence)),
         phase: phase.filter(|_| phased),
     }
 }

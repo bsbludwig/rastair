@@ -67,8 +67,10 @@
 //! **Dosage.** [`Verdict::dosage`] projects the called pair onto one event: its
 //! copies, and a GQ of Phred(1 − P(those copies)) under a flat prior over the
 //! pairs consistent with the presence calls, each at its best account; `None`
-//! where the called pair lacks the event. Every record, SNV or indel, writes
-//! that genotype. It carries no genotype prior (finer than the likelihood's
+//! where the called pair lacks the event. Every indel record writes that
+//! genotype. An SNV's presence is the forests' call, so its record writes
+//! [`Verdict::dosage_given`]: the same projection over the pairs that carry
+//! at least one of the column's called alts and none of its others. It carries no genotype prior (finer than the likelihood's
 //! tie margins are calibrated), and it is not a per-site marginal: that one's
 //! "without" is a free best-of-N over the cluster's other alleles, so at a hom
 //! indel beside a stutter or twin-spelling candidate every read is neutral and
@@ -877,16 +879,45 @@ impl Verdict {
     /// not compose with them; it cost both SNV and indel records on chr12.
     #[must_use]
     pub fn dosage(&self, event: EventIdx) -> Option<Dosage> {
-        let copies = self.called.copies_of(event);
+        let present = |e: EventIdx| self.margin(e).is_some_and(Margin::is_present);
+        self.dosage_of(event, self.called, |pair| {
+            (0..self.margins.len())
+                .all(|i| EventIdx::new(i).is_some_and(|e| present(e) == pair.carries(e)))
+        })
+    }
+
+    /// [`Self::dosage`] over the pairs `admits` takes instead of those the
+    /// margins call: the copies in the likeliest of them, `None` where it
+    /// lacks the event. SNV records admit the pairs the forests' calls allow.
+    #[must_use]
+    pub fn dosage_given(
+        &self,
+        event: EventIdx,
+        admits: impl Fn(HapPair) -> bool + Copy,
+    ) -> Option<Dosage> {
+        let called = self.pair_scores.iter().filter(|(pair, _)| admits(*pair)).fold(
+            None,
+            |best: Option<(HapPair, f64)>, &(pair, log10)| match best {
+                Some((_, top)) if top >= log10 => best,
+                _ => Some((pair, log10)),
+            },
+        )?;
+        self.dosage_of(event, called.0, admits)
+    }
+
+    /// `event`'s copies in `called`, and their GQ over the pairs `admits`
+    /// takes.
+    fn dosage_of(
+        &self,
+        event: EventIdx,
+        called: HapPair,
+        admits: impl Fn(HapPair) -> bool + Copy,
+    ) -> Option<Dosage> {
+        let copies = called.copies_of(event);
         if copies == 0 {
             return None;
         }
-        let consistent = |pair: &HapPair| {
-            self.margins.iter().enumerate().all(|(i, margin)| {
-                EventIdx::new(i).is_some_and(|e| margin.is_present() == pair.carries(e))
-            })
-        };
-        let scores = || self.pair_scores.iter().filter(|(pair, _)| consistent(pair));
+        let scores = || self.pair_scores.iter().filter(move |(pair, _)| admits(*pair));
         let best = scores().map(|&(_, log10)| log10).fold(f64::NEG_INFINITY, f64::max);
         if !best.is_finite() {
             return None;

@@ -606,7 +606,8 @@ fn segmentation_does_not_change_bed_output() -> Result<()> {
     rastair()
         .args(CALL_TEST_BAM)
         .args([NO_ML, REGION])
-        .args(["--segment-max-length=1001", "--segment-overlap=1", "--threads=4", "--bed"])
+        // The SNV engine's clusters and reads reach past a one-base overlap.
+        .args(["--segment-max-length=1001", "--segment-overlap=100", "--threads=4", "--bed"])
         .arg(&temp_file2)
         .succeeds()?;
 

@@ -1,309 +1,146 @@
-// Adapted from rastair1, (c) Benjamin Schuster-Boeckler
-//! Genotype estimation: het against hom from per-allele, per-strand aggregates,
-//! with no reads at this stage (`estimate_genotype`).
+//! SNV genotypes: the SNV engine's dosage for a called alt, the binomial of a
+//! CpG's reads for a column with none (`estimate_genotype`).
 //!
-//! - **The converting strand still sees the CpG allele.** At a C/T site whose
-//!   C is in a CpG (`cpg_origin`, reference or de-novo; G/A on OB likewise) an
-//!   OT `T` is a methylated C or the T allele and counts for neither, but an
-//!   OT `C` is an unconverted C only a chromosome carrying the C produces: with
-//!   k such chromosomes it appears with probability k/2·(1−β), β profiled out
-//!   from the strand's own unconverted fraction ([`ConfoundedStrand`]).
-//!   Dropping that strand calls a het whose OB is lopsided hom-alt; adding its
-//!   `C`s to the C allele ignores the converted reads and makes hom-alts hets.
+//! - **A called alt takes the engine's genotype.** The forests decide which
+//!   alts are present, so the pairs a genotype is chosen from carry at least
+//!   one of the column's called alts and none of its others; the cluster's
+//!   other events stay at their margins ([`Verdict::dosage_given`]). The
+//!   likeliest such pair gives each called alt its copies and GQ as `GC`; one
+//!   carrying both called alts is the compound `1/2`, at the lower GQ. The
+//!   cascade scores every alt the forests can pass
+//!   (`from_seqair::cascade_events`), so only a called alt at an `N`
+//!   reference has no dosage: `./.` with no `GL` or `GC`. The engine has one
+//!   number for the call, so `GL` repeats `GC`.
+//! - **Without forests** (`--no-ml`) the engine's margins decide presence too
+//!   ([`Verdict::dosage`]), and a called alt it finds absent is `0/0` at the
+//!   verdict's `quality`.
+//! - **A column with no called alt is `0/0`**, its `GL` and `GC` the binomial of
+//!   the CpG's no-SNP against SNP reads (`no_snp`/`snp`) under the error
+//!   model: no event was scored there, and this is the hom-ref likelihood.
 //! - **Two variants can form a CpG together** (`TA>CG`). `FormsDenovo` reads
 //!   the reference context, so before ML neither alt forms one; once both are
 //!   called, `process::mark_variant_pair_cpgs` marks them
 //!   `ThisBecomesC`/`ThisBecomesG` and `cpg_origin` accepts that as the
-//!   partner. It assumes the two sit on one chromosome.
-//! - **Minority reads are errors at their own quality, read by read.** The hom
-//!   hypothesis charges its minority allele `AlleleMetrics::read_error`, the
-//!   geometric mean of its reads' errors (`ln_read_error`), clamped to [the
-//!   error model's rate, ½]: `read_error^k` is then the chance the k reads are
-//!   all wrong. A read counts at ½ when its fragment's mates disagree at the
-//!   column, or when it has an indel within `INDEL_NEAR` while at most a
-//!   quarter of the column's reads have one (a gap more reads share is the
-//!   sample's indel).
-//! - **`--snv-genotype engine`** replaces the dosage with the SNV engine's
-//!   ([`Verdict::dosage`]) where the engine scored the alt and its called pair
-//!   carries it, and `GC` with its GQ; whether the alt is called stays the
-//!   forests' decision.
+//!   partner, for methylation calling. It assumes the two sit on one
+//!   chromosome.
 //!
 //! Methylation calling reads the genotype (`GenotypeAdjustment::HomAlt`), so a
-//! genotype flip moves that site's beta too. `tests/data/test.bam` is a fully
-//! methylated, high-quality control, so no VCF snapshot exercises these rules;
-//! the fixtures in `vcf_tests/genotyping.rs` and here do.
+//! genotype flip moves that site's beta too. The `pileups!` fixtures in
+//! `vcf_tests/genotyping.rs` are scored by the pair-HMM on their read lines
+//! (`tests::utils::score_snv_lines`).
 //!
 //! [`Verdict::dosage`]: crate::call::pair_hmm::Verdict::dosage
+//! [`Verdict::dosage_given`]: crate::call::pair_hmm::Verdict::dosage_given
 use crate::{
-    call::variant_calling::{ErrorModel, SnvGenotype},
-    metrics::{
-        AltCall, FormsDenovo, PileupMetrics,
-        methylation::{CpgSide, cpg_origin},
+    call::{
+        pair_hmm::{Allele, Event, EventIdx, HapPair, Margin},
+        variant_calling::ErrorModel,
     },
-    utils::{Base, Base::*, IntoF64 as _},
-    vcf::InCpG,
+    metrics::{AltCall, PileupMetrics},
+    utils::IntoF64 as _,
 };
-use color_eyre::eyre::{ContextCompat, Result, ensure};
+use color_eyre::eyre::{ContextCompat, Result};
 use probability::prelude::{Binomial, Discrete as _, Distribution as _};
 use rust_htslib::bcf::record::GenotypeAllele as HtslibGenotypeAllele;
-use seqair_types::{Probability, SmallVec};
+use seqair_types::{Base, Probability, SmallVec};
 use std::num::{NonZeroI32, NonZeroU8};
-use tracing::{instrument, trace};
 
 impl PileupMetrics {
-    /// Estimate genotype using ML scores and variant calls.
-    ///
-    /// This method implements the genotyping logic:
-    /// - If ML score < `ml_threshold`: genotype is `0/0` (`HomRef`)
-    /// - If ML score >= `ml_threshold`: use binomial model to determine `0/1`, `1/1`, or compound het (`1/2`)
-    ///
-    /// Only considers alts marked as [`AltCall::RealVariant`].
+    /// The genotype of the alts marked [`AltCall::RealVariant`], from the SNV
+    /// engine's verdict; `0/0` from the reads' binomial when there are none.
+    /// With `forests` they called the alts present; without, the engine does.
+    /// `None` for a called alt the engine did not score, and for a column with
+    /// no called alt and no reads to weigh.
     pub fn estimate_genotype(
         &self,
-        ml_threshold: Option<Probability>,
         error_model: ErrorModel,
-        snv_genotype: SnvGenotype,
+        forests: bool,
     ) -> Option<EstimatedGenotype> {
-        // Filter to only real variants
-        let real_variant_alts: SmallVec<_, 2> = self
+        let called: SmallVec<(NonZeroU8, Base), 2> = self
             .alts
             .iter()
-            .enumerate()
-            .filter(|(_, alt)| matches!(alt.call, AltCall::RealVariant))
+            .zip(1u8..)
+            .filter(|(alt, _)| alt.call == AltCall::RealVariant)
+            .filter_map(|(alt, index)| Some((NonZeroU8::new(index)?, alt.base)))
             .collect();
-
-        if real_variant_alts.is_empty() {
-            // No real variants - calculate HomRef genotype using no_snp and snp counts
-            // like rastair1 did.
-            let counts = self.pos_metrics.extended.methylation_strand_info;
-            let ref_count = counts.no_snp as usize;
-            let alt_count = counts.snp as usize;
-
-            if ref_count == 0 && alt_count == 0 {
-                return None;
+        if called.is_empty() {
+            return self.hom_ref_genotype(error_model);
+        }
+        let scores = self.snv_scores.as_deref()?;
+        let verdict = &scores.verdict;
+        // The forests decide which of this column's alts are real, so a pair
+        // carries at least one of them and no other alt here; which it carries
+        // is the reads' call, as is every other event of the cluster.
+        let here = |event: EventIdx| match scores.event(event) {
+            Some(Event { anchor, allele: Allele::Base(base) })
+                if forests && *anchor == self.pos =>
+            {
+                Some(called.iter().any(|(_, called)| called == base))
             }
-
-            const ONE: NonZeroU8 = NonZeroU8::new(1).expect("1 > 0");
-
-            return EstimatedGenotype::calculate_for_alt(ref_count, alt_count, ONE, error_model)
-                .ok()
-                .map(|mut gt| {
-                    // Force genotype to HomRef since we have no real variants
-                    gt.genotype = GenotypeTag::hom_ref();
-                    gt
-                });
-        }
-
-        // If ML threshold is set, filter by ML score
-        let passing_alts: SmallVec<_, 2> = if let Some(threshold) = ml_threshold {
-            real_variant_alts
-                .into_iter()
-                .filter(|(_, alt)| alt.filters.ml.is_some_and(|ml| ml >= threshold))
-                .collect()
-        } else {
-            real_variant_alts
-        };
-
-        // Calculate genotype for each passing alt using binomial model
-        // Note: We compare each alt independently against ref.
-        // Alternative approaches:
-        // - compare alt1 vs alt2 for compound het
-        // - compare each alt against total depth minus its count
-        let mut alt_genotypes: SmallVec<_, 2> = SmallVec::new();
-
-        for (alt_idx, alt) in &passing_alts {
-            let alt_base = alt.base;
-            let forms_denovo = alt.metrics.denovo;
-            let evidence = self.evidence_for_alt(alt_base, forms_denovo, *error_model.error_rate());
-
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "alt_idx is from enumerate() on smallvec, fits in u8"
-            )]
-            let Some(alt_index) = NonZeroU8::new((alt_idx + 1) as u8) else {
-                continue;
-            };
-
-            match EstimatedGenotype::calculate(evidence, alt_index, error_model) {
-                Ok(gt) if snv_genotype == SnvGenotype::Engine => {
-                    alt_genotypes.push(self.with_engine_dosage(gt, alt_base, alt_index));
-                }
-                Ok(gt) => alt_genotypes.push(gt),
-                Err(error) => {
-                    trace!(%error, alt_base=%alt_base, "Failed to calculate genotype for alt");
-                }
-            }
-        }
-
-        if alt_genotypes.is_empty() {
-            return None;
-        }
-
-        // Determine final genotype based on calculated genotypes
-        if alt_genotypes.len() == 1 {
-            // Single alt: return its genotype (0/1 or 1/1)
-            alt_genotypes.into_iter().next()
-        } else {
-            // Multiple alts: determine best genotype
-            // Sort by likelihood descending
-            alt_genotypes.sort_by(|a, b| {
-                b.likelihood.partial_cmp(&a.likelihood).unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            let top1 = alt_genotypes.first()?;
-            let Some(top2) = alt_genotypes.get(1) else {
-                return alt_genotypes.into_iter().next();
-            };
-
-            // Extract alt indices from genotypes
-            let (GenotypeTag::RefHet(alt1_idx) | GenotypeTag::HomAlt(alt1_idx)) = top1.genotype
-            else {
-                return alt_genotypes.into_iter().next();
-            };
-            let (GenotypeTag::RefHet(alt2_idx) | GenotypeTag::HomAlt(alt2_idx)) = top2.genotype
-            else {
-                return alt_genotypes.into_iter().next();
-            };
-
-            // Check if we should call compound heterozygous (1/2)
-            // Special case: if both are HomAlt, always call compound het
-            let should_call_compound_het = match (top1.genotype, top2.genotype) {
-                (GenotypeTag::HomAlt(_), GenotypeTag::HomAlt(_)) => {
-                    // Both alts look like hom alt (no ref reads) -> must be compound het
-                    true
-                }
-                (GenotypeTag::RefHet(_), GenotypeTag::RefHet(_)) => {
-                    // Both are het with ref reads -> only call compound het if very similar
-                    // Use a higher threshold (0.8) to be more conservative
-                    let likelihood_ratio = *top2.likelihood / *top1.likelihood;
-                    likelihood_ratio > 0.8
-                }
-                _ => {
-                    // Mixed case (one HomAlt, one RefHet) -> use moderate threshold
-                    let likelihood_ratio = *top2.likelihood / *top1.likelihood;
-                    // Handle NaN (both likelihoods are 0) as similar
-                    likelihood_ratio.is_nan() || likelihood_ratio > 0.5
-                }
-            };
-
-            if should_call_compound_het {
-                // Both alts have reasonable support, call compound het
-                // Use combined probability for likelihood and confidence
-                let combined_likelihood =
-                    Probability::new((*top1.likelihood + *top2.likelihood) / 2.0)
-                        .unwrap_or(top1.likelihood);
-                let combined_confidence =
-                    Probability::new((*top1.confidence + *top2.confidence) / 2.0)
-                        .unwrap_or(top1.confidence);
-
-                Some(EstimatedGenotype {
-                    genotype: GenotypeTag::alt_het(alt1_idx, alt2_idx),
-                    likelihood: combined_likelihood,
-                    confidence: combined_confidence,
-                })
-            } else {
-                // Top alt has much better support, use its genotype
-                alt_genotypes.into_iter().next()
-            }
-        }
-    }
-
-    /// `counted` with the SNV engine's dosage ([`Verdict::dosage`]) where it scored `alt`, and
-    /// `GC` its GQ. Whether the alt is present stays the forest's decision.
-    ///
-    /// [`Verdict::dosage`]: crate::call::pair_hmm::Verdict::dosage
-    fn with_engine_dosage(
-        &self,
-        counted: EstimatedGenotype,
-        alt: Base,
-        alt_index: NonZeroU8,
-    ) -> EstimatedGenotype {
-        let Some(scores) = self.snv_scores.as_deref() else { return counted };
-        let Some(event) = scores.base_event_at(self.pos, alt) else { return counted };
-        let Some(dosage) = scores.verdict.dosage(event) else { return counted };
-        let genotype = if dosage.copies >= 2 {
-            GenotypeTag::hom_alt(alt_index)
-        } else {
-            GenotypeTag::ref_het(alt_index)
-        };
-        // `GC` is written as the Phred of this, so it is the dosage's GQ.
-        let Ok(confidence) = Probability::new(10f64.powf(-*dosage.gq / 10.0)) else {
-            return counted;
-        };
-        EstimatedGenotype { genotype, confidence, ..counted }
-    }
-
-    /// The reads a specific alt's genotype is decided on.
-    ///
-    /// At a C/T site whose C is in a CpG (G/A whose G is), reference or de-novo by the rule
-    /// methylation calling uses ([`cpg_origin`]), the strand that converts the CpG base is
-    /// confounded: there a T (A) is a methylated C (G) or the other allele. That strand goes
-    /// into [`ConfoundedStrand`]; the other strand is counted plainly.
-    ///
-    /// Elsewhere a converted read at a CpG base counts for the CpG base's allele, and at a
-    /// non-CpG position both strands count plainly.
-    fn evidence_for_alt(
-        &self,
-        alt_base: Base,
-        forms_denovo: FormsDenovo,
-        error_rate: f64,
-    ) -> AltEvidence {
-        let ref_base = self.ref_base();
-        let ref_error = self.read_error(ref_base, error_rate);
-        let alt_error = self.read_error(alt_base, error_rate);
-
-        // Per-base, per-strand counts from pre-computed AlleleMetrics.
-        // Returns 0 for bases not seen in this pileup.
-        let sc = |base: Base| self.allele(base).map_or(0, |a| a.depth as usize);
-        let ot = |base: Base| self.allele(base).map_or(0, |a| a.strand_count.ot as usize);
-        let ob = |base: Base| self.allele(base).map_or(0, |a| a.strand_count.ob as usize);
-        let side = match (ref_base, alt_base) {
-            (C, T) | (T, C) => Some(CpgSide::C),
-            (G, A) | (A, G) => Some(CpgSide::G),
             _ => None,
         };
-        if let Some(side) = side.filter(|&side| cpg_origin(self, side).is_some()) {
-            // (informative, confounded): C converts on OT, G on OB.
-            let split = |base: Base| match side {
-                CpgSide::C => (ob(base), ot(base)),
-                CpgSide::G => (ot(base), ob(base)),
-            };
-            return AltEvidence {
-                ref_count: split(ref_base).0,
-                alt_count: split(alt_base).0,
-                ref_error,
-                alt_error,
-                confounded: Some(ConfoundedStrand {
-                    unconverted: split(side.unmod_base()).1,
-                    converted: split(side.mod_base()).1,
-                    cpg_allele: if ref_base == side.unmod_base() {
-                        CpgAllele::Ref
-                    } else {
-                        CpgAllele::Alt
-                    },
-                }),
-            };
-        }
-
-        let (ref_count, alt_count) = match forms_denovo {
-            FormsDenovo::ThisBecomesC => (sc(ref_base), ob(C) + ot(C) + ot(T)),
-            FormsDenovo::ThisBecomesG => (sc(ref_base), ot(G) + ob(G) + ob(A)),
-            FormsDenovo::No => match self.pos_metrics.cpg {
-                InCpG::C => (ob(C) + ot(C) + ot(T), sc(alt_base)),
-                InCpG::G => (ot(G) + ob(G) + ob(A), sc(alt_base)),
-                InCpG::No => (sc(ref_base), sc(alt_base)),
-            },
+        let admits = |pair: HapPair| {
+            let mut any_called = false;
+            for event in (0..scores.cluster().events().len()).filter_map(EventIdx::new) {
+                let carried = pair.carries(event);
+                match here(event) {
+                    Some(true) => any_called |= carried,
+                    Some(false) if carried => return false,
+                    Some(false) => {}
+                    None => {
+                        if verdict.margin(event).is_some_and(Margin::is_present) != carried {
+                            return false;
+                        }
+                    }
+                }
+            }
+            any_called || !forests
         };
-        AltEvidence { ref_count, alt_count, ref_error, alt_error, confounded: None }
+        let dosages: SmallVec<_, 2> = called
+            .iter()
+            .filter_map(|&(index, base)| {
+                Some((index, verdict.dosage_given(scores.base_event_at(self.pos, base)?, admits)?))
+            })
+            .collect();
+        let (genotype, gq) = match dosages.as_ref() {
+            [] if forests => return None,
+            [] => (GenotypeTag::hom_ref(), verdict.quality),
+            [(index, dosage)] if dosage.copies >= 2 => (GenotypeTag::hom_alt(*index), dosage.gq),
+            [(index, dosage)] => (GenotypeTag::ref_het(*index), dosage.gq),
+            [(first, a), (second, b), ..] => {
+                (GenotypeTag::alt_het(*first, *second), if *a.gq < *b.gq { a.gq } else { b.gq })
+            }
+        };
+        let confidence = Probability::new(10f64.powf(-*gq / 10.0)).ok()?;
+        Some(EstimatedGenotype { genotype, likelihood: confidence, confidence })
     }
 
-    /// The chance that one of `base`'s reads shows a base its fragment does not carry, read by
-    /// read ([`crate::metrics::AlleleMetrics::read_error`]), between `error_rate` and ½ (a read no better than a
-    /// coin).
-    fn read_error(&self, base: Base, error_rate: f64) -> f64 {
-        self.allele(base)
-            .filter(|a| a.depth > 0)
-            .map_or(error_rate, |a| f64::from(a.read_error).clamp(error_rate, 0.5))
+    /// `0/0`, with `GL` and `GC` from the binomial of the CpG's no-SNP
+    /// against SNP reads: het against the error rate's hom.
+    fn hom_ref_genotype(&self, error_model: ErrorModel) -> Option<EstimatedGenotype> {
+        let counts = self.pos_metrics.extended.methylation_strand_info;
+        let (ref_count, alt_count) = (counts.no_snp as usize, counts.snp as usize);
+        let reads = ref_count + alt_count;
+        if reads == 0 {
+            return None;
+        }
+        let het = Binomial::new(reads, 0.5);
+        let p_het = het.mass(alt_count);
+        let minority = ref_count.min(alt_count);
+        let errors = Binomial::new(reads, *error_model.error_rate());
+        let p_hom = errors.mass(minority) + (1.0 - errors.distribution(minority.f()));
+        let (likelihood, confidence) = if p_het < p_hom {
+            (p_hom, (p_hom - p_het) / p_hom)
+        } else {
+            #[expect(clippy::cast_possible_truncation, reason = "half a read count")]
+            let p_het_max = het.mass((reads.f() / 2.0).round() as usize);
+            (p_het / p_het_max, (p_het - p_hom) / p_het)
+        };
+        Some(EstimatedGenotype {
+            genotype: GenotypeTag::hom_ref(),
+            likelihood: Probability::new(likelihood).ok()?.inverted(),
+            confidence: Probability::new(confidence.clamp(0.0, 1.0)).ok()?.inverted(),
+        })
     }
 }
 
@@ -483,29 +320,19 @@ mod tests {
 
     const ALT_INDEX_1: NonZeroU8 = NonZeroU8::new(1).unwrap();
 
-    /// Three reads of each allele, which the counts call `0/1`, and an engine whose reads all
-    /// fit the alt haplotype, which calls it `1/1`.
-    fn het_by_counts_hom_by_engine(alt: Base, forms_denovo: FormsDenovo) -> PileupMetrics {
+    /// Three reads of each allele, and an engine whose six reads all fit the
+    /// alt haplotype.
+    fn hom_by_engine(alt: Base) -> PileupMetrics {
         use crate::call::{
             pair_hmm::{
                 Allele, Cluster, Event, HaplotypeScores,
                 fixtures::{NO, rows},
             },
-            phasing::fixtures::{column, mapq},
+            phasing::fixtures::column,
         };
         use std::sync::Arc;
 
-        let mut site = column(1500, A, &[(alt, AltCall::RealVariant)], None, &[]);
-        // On OT, the strand an A/G site's G does not convert on.
-        site.ref_metrics.depth = 3;
-        site.ref_metrics.strand_count.ot = 3;
-        site.ref_metrics.baseq = mapq(30);
-        if let Some(alt) = site.alts.first_mut() {
-            alt.metrics.depth = 3;
-            alt.metrics.strand_count.ot = 3;
-            alt.metrics.baseq = mapq(30);
-            alt.metrics.denovo = forms_denovo;
-        }
+        let mut site = column(1500, Base::A, &[(alt, AltCall::RealVariant)], None, &[]);
         let snv = Event { anchor: site.pos, allele: Allele::Base(alt) };
         let cluster = Cluster::new([snv].into_iter().collect()).expect("a cluster");
         let scores =
@@ -514,18 +341,16 @@ mod tests {
         site
     }
 
+    /// A called alt takes the engine's dosage, and is `./.` where the engine
+    /// did not score it.
     #[test]
-    fn the_engine_decides_the_dosage_where_it_scored() {
-        let genotype = |site: &PileupMetrics, mode| {
-            site.estimate_genotype(None, ErrorModel::default(), mode).expect("a genotype").genotype
-        };
-        for forms_denovo in [FormsDenovo::No, FormsDenovo::ThisBecomesG] {
-            let mut site = het_by_counts_hom_by_engine(G, forms_denovo);
-            assert_eq!(genotype(&site, SnvGenotype::Counts), GenotypeTag::ref_het(ALT_INDEX_1));
-            assert_eq!(genotype(&site, SnvGenotype::Engine), GenotypeTag::hom_alt(ALT_INDEX_1));
-            site.snv_scores = None;
-            assert_eq!(genotype(&site, SnvGenotype::Engine), GenotypeTag::ref_het(ALT_INDEX_1));
-        }
+    fn the_engine_decides_the_dosage() {
+        let mut site = hom_by_engine(Base::G);
+        let genotype = site.estimate_genotype(ErrorModel::default(), true).expect("a genotype");
+        assert_eq!(genotype.genotype, GenotypeTag::hom_alt(ALT_INDEX_1));
+        assert_eq!(genotype.likelihood, genotype.confidence);
+        site.snv_scores = None;
+        assert_eq!(site.estimate_genotype(ErrorModel::default(), true), None);
     }
 
     /// The SNV shares its cluster with a het deletion, and every read covering
@@ -541,11 +366,11 @@ mod tests {
         };
         use std::sync::Arc;
 
-        let mut site = het_by_counts_hom_by_engine(G, FormsDenovo::No);
-        let deletion = IndelAllele::Deletion(std::iter::once(T).collect());
+        let mut site = hom_by_engine(Base::G);
+        let deletion = IndelAllele::Deletion(std::iter::once(Base::T).collect());
         let events = [
             Event { anchor: site.pos + 14, allele: deletion.into() },
-            Event { anchor: site.pos, allele: Allele::Base(G) },
+            Event { anchor: site.pos, allele: Allele::Base(Base::G) },
         ];
         let cluster = Cluster::new(events.into_iter().collect()).expect("a cluster");
         // By haplotype: reference, deletion, SNV, both.
@@ -554,132 +379,30 @@ mod tests {
         let reads: Vec<_> = std::iter::repeat_n(both, 6).chain(std::iter::once(other)).collect();
         site.snv_scores =
             Some(Arc::new(HaplotypeScores::new(cluster, reads.into()).expect("scores")));
-        let engine = site
-            .estimate_genotype(None, ErrorModel::default(), SnvGenotype::Engine)
-            .expect("a genotype");
+        let engine = site.estimate_genotype(ErrorModel::default(), true).expect("a genotype");
         assert_eq!(engine.genotype, GenotypeTag::ref_het(ALT_INDEX_1));
         let gc = -10.0 * engine.confidence.log10();
         assert!(gc <= 5.0, "{gc}");
     }
 
-    // Strategy: realistic read counts (1..=500 each, not both zero)
-    fn read_counts() -> impl Strategy<Value = (usize, usize)> {
-        (1usize..=500, 0usize..=500)
-            .prop_filter("at least one read required", |&(ref_c, alt_c)| ref_c > 0 || alt_c > 0)
-    }
+    /// A column with no called alt is `0/0`, surer the fewer SNP reads it has.
+    #[test]
+    fn a_column_without_a_called_alt_is_hom_ref() {
+        use crate::call::phasing::fixtures::column;
 
-    // Strategy: a valid error rate well above f64::MIN
-    fn error_model() -> impl Strategy<Value = ErrorModel> {
-        (1u32..=100u32).prop_map(|n| {
-            ErrorModel::Custom(Probability::new(f64::from(n) / 10_000.0).expect("valid rate"))
-        })
-    }
-
-    proptest! {
-        /// Likelihood and confidence are always valid probabilities (in [0,1], not NaN).
-        #[test]
-        fn outputs_are_valid_probabilities(
-            (ref_count, alt_count) in read_counts(),
-            error in error_model(),
-        ) {
-            let result = EstimatedGenotype::calculate_for_alt(ref_count, alt_count, ALT_INDEX_1, error);
-            let Ok(gt) = result else { return Ok(()); };
-
-            prop_assert!(*gt.likelihood >= 0.0 && *gt.likelihood <= 1.0,
-                "likelihood out of range: {}", *gt.likelihood);
-            prop_assert!(*gt.confidence >= 0.0 && *gt.confidence <= 1.0,
-                "confidence out of range: {}", *gt.confidence);
-            prop_assert!(gt.likelihood.is_finite(), "likelihood is NaN/inf");
-            prop_assert!(gt.confidence.is_finite(), "confidence is NaN/inf");
-        }
-
-        /// When all reads support the reference (alt_count == 0), genotype must be HomRef.
-        #[test]
-        fn all_ref_reads_gives_hom_ref(
-            ref_count in 10usize..=500,
-            error in error_model(),
-        ) {
-            let gt = EstimatedGenotype::calculate_for_alt(ref_count, 0, ALT_INDEX_1, error)
-                .expect("should succeed with nonzero counts");
-            prop_assert_eq!(gt.genotype, GenotypeTag::HomRef,
-                "expected HomRef with ref={} alt=0", ref_count);
-        }
-
-        /// When all reads support the alt (ref_count == 0), genotype must be HomAlt.
-        #[test]
-        fn all_alt_reads_gives_hom_alt(
-            alt_count in 10usize..=500,
-            error in error_model(),
-        ) {
-            let gt = EstimatedGenotype::calculate_for_alt(0, alt_count, ALT_INDEX_1, error)
-                .expect("should succeed with nonzero counts");
-            prop_assert_eq!(gt.genotype, GenotypeTag::HomAlt(ALT_INDEX_1),
-                "expected HomAlt with ref=0 alt={}", alt_count);
-        }
-
-        /// ref > alt never produces HomAlt; alt > ref never produces HomRef.
-        ///
-        /// The majority base should always "win" — the model must not call the
-        /// minority allele as homozygous.
-        #[test]
-        fn majority_base_determines_hom_direction(
-            ref_count in 1usize..=500,
-            extra in 10usize..=200,
-            error in error_model(),
-        ) {
-            let alt_count = ref_count + extra; // alt clearly dominates
-            let gt_alt_wins = EstimatedGenotype::calculate_for_alt(ref_count, alt_count, ALT_INDEX_1, error)
-                .expect("nonzero counts");
-            prop_assert_ne!(gt_alt_wins.genotype, GenotypeTag::HomRef,
-                "got HomRef even though alt ({}) > ref ({})", alt_count, ref_count);
-
-            let gt_ref_wins = EstimatedGenotype::calculate_for_alt(alt_count, ref_count, ALT_INDEX_1, error)
-                .expect("nonzero counts");
-            prop_assert_ne!(gt_ref_wins.genotype, GenotypeTag::HomAlt(ALT_INDEX_1),
-                "got HomAlt even though ref ({}) > alt ({})", alt_count, ref_count);
-        }
-
-        /// Confidence increases as the read counts become more extreme.
-        ///
-        /// A site with 490 ref / 10 alt should have higher confidence in HomRef
-        /// than a site with 300 ref / 200 alt.
-        #[test]
-        fn more_extreme_counts_give_higher_confidence(
-            base in 100usize..=400,
-            small_imbalance in 10usize..=40,
-            large_imbalance in 80usize..=200,
-            error in error_model(),
-        ) {
-            prop_assume!(base > large_imbalance);
-            let ref_large = base + large_imbalance;
-            let alt_large = base - large_imbalance;
-            let ref_small = base + small_imbalance;
-            let alt_small = base - small_imbalance;
-
-            let gt_extreme = EstimatedGenotype::calculate_for_alt(ref_large, alt_large, ALT_INDEX_1, error)
-                .expect("nonzero counts");
-            let gt_moderate = EstimatedGenotype::calculate_for_alt(ref_small, alt_small, ALT_INDEX_1, error)
-                .expect("nonzero counts");
-
-            // Only compare when both agree on the same genotype class to avoid
-            // comparing confidence values across different decision boundaries.
-            if gt_extreme.genotype == gt_moderate.genotype {
-                prop_assert!(
-                    *gt_extreme.confidence >= *gt_moderate.confidence,
-                    "more extreme counts ({ref_large}/{alt_large}) should have confidence >= moderate ({ref_small}/{alt_small}): \
-                     extreme={:.4} moderate={:.4}",
-                    *gt_extreme.confidence,
-                    *gt_moderate.confidence,
-                );
-            }
-        }
-
-        /// Zero counts for both ref and alt must return an error.
-        #[test]
-        fn zero_counts_is_error(error in error_model()) {
-            let result = EstimatedGenotype::calculate_for_alt(0, 0, ALT_INDEX_1, error);
-            prop_assert!(result.is_err(), "expected error for (0, 0) counts");
-        }
+        let gc = |no_snp, snp| {
+            let mut site = column(1500, Base::A, &[], None, &[]);
+            site.pos_metrics.extended.methylation_strand_info.no_snp = no_snp;
+            site.pos_metrics.extended.methylation_strand_info.snp = snp;
+            let genotype = site.estimate_genotype(ErrorModel::default(), true).expect("a genotype");
+            assert_eq!(genotype.genotype, GenotypeTag::HomRef);
+            -10.0 * genotype.confidence.log10()
+        };
+        assert!(gc(20, 0) > gc(10, 0), "{} vs {}", gc(20, 0), gc(10, 0));
+        assert_eq!(
+            column(1500, Base::A, &[], None, &[]).estimate_genotype(ErrorModel::default(), true),
+            None
+        );
     }
 
     // --- GenotypeTag property tests ---
@@ -738,198 +461,10 @@ mod tests {
     }
 }
 
-/// The reads one alt's genotype is decided on.
-#[derive(Debug, Clone, Copy)]
-struct AltEvidence {
-    ref_count: usize,
-    alt_count: usize,
-    /// Rate at which a hom-alt shows a reference read, see [`PileupMetrics::read_error`].
-    ref_error: f64,
-    /// Rate at which a hom-ref shows an alt read.
-    alt_error: f64,
-    confounded: Option<ConfoundedStrand>,
-}
-
-/// Which allele carries the CpG's C (G) at a C/T (G/A) site.
-#[derive(Debug, Clone, Copy)]
-enum CpgAllele {
-    Ref,
-    Alt,
-}
-
-/// The strand of a CpG site on which TAPS converts the CpG base: C to T on OT, G to A on OB.
-///
-/// An unconverted read (C on OT) is an unmethylated CpG base, so only the allele carrying it
-/// can produce it. A converted read is a methylated CpG base or the other allele; it is
-/// evidence for neither, only the denominator of the unconverted reads' rate. With `k` of two
-/// chromosomes carrying the CpG base and methylation level β, a read is unconverted with
-/// probability `k/2 · (1 − β)`, so β is profiled out by taking that rate at its maximum
-/// likelihood, `unconverted / n`, clamped to `[ε, k/2]` (ε the error rate: with `k = 0` an
-/// unconverted read is an error). Simply adding the unconverted reads to the CpG allele's
-/// count ignores the converted ones and turns true hom-alts into hets.
-#[derive(Debug, Clone, Copy)]
-struct ConfoundedStrand {
-    unconverted: usize,
-    converted: usize,
-    cpg_allele: CpgAllele,
-}
-
-impl ConfoundedStrand {
-    /// log10 likelihood of this strand with `cpg_copies` chromosomes carrying the CpG base.
-    fn log10_likelihood(self, cpg_copies: u8, error_rate: f64) -> f64 {
-        let n = self.unconverted + self.converted;
-        if n == 0 {
-            return 0.0;
-        }
-        let cap = (f64::from(cpg_copies) / 2.0).max(error_rate).min(1.0 - error_rate);
-        let rate = (self.unconverted.f() / n.f()).max(error_rate).min(cap);
-        self.unconverted.f() * rate.log10() + self.converted.f() * (1.0 - rate).log10()
-    }
-
-    /// log10 likelihoods of (het, hom), where hom is hom-ref or hom-alt; `error_rate` is the
-    /// CpG-base allele's read error.
-    fn log10_het_and_hom(self, hom: GenotypeTag, error_rate: f64) -> (f64, f64) {
-        let hom_copies = match (hom.is_hom_ref(), self.cpg_allele) {
-            (true, CpgAllele::Ref) | (false, CpgAllele::Alt) => 2,
-            (true, CpgAllele::Alt) | (false, CpgAllele::Ref) => 0,
-        };
-        (self.log10_likelihood(1, error_rate), self.log10_likelihood(hom_copies, error_rate))
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
 pub struct EstimatedGenotype {
     pub genotype: GenotypeTag,
     pub likelihood: Probability,
     pub confidence: Probability,
-}
-
-impl EstimatedGenotype {
-    /// Calculate genotype for a specific alt allele using binomial model.
-    ///
-    /// Compares the probability of observing the read counts under different
-    /// genotype hypotheses (hom ref, het, hom alt) and returns the most likely.
-    pub fn calculate_for_alt(
-        ref_count: usize,
-        alt_count: usize,
-        alt_index: NonZeroU8,
-        error_model: ErrorModel,
-    ) -> Result<Self> {
-        Self::calculate(
-            AltEvidence {
-                ref_count,
-                alt_count,
-                ref_error: *error_model.error_rate(),
-                alt_error: *error_model.error_rate(),
-                confounded: None,
-            },
-            alt_index,
-            error_model,
-        )
-    }
-
-    /// [`Self::calculate_for_alt`] on the plain counts, each hypothesis then weighted by the
-    /// confounded strand's likelihood under it, so `GC` covers both strands.
-    #[instrument(level = "trace", name = "calculate_genotype")]
-    fn calculate(
-        evidence: AltEvidence,
-        alt_index: NonZeroU8,
-        error_model: ErrorModel,
-    ) -> Result<Self> {
-        let AltEvidence { ref_count, alt_count, ref_error, alt_error, confounded } = evidence;
-        let error_rate = error_model.error_rate();
-        ensure!(
-            ref_count > 0 || alt_count > 0,
-            "No ref or alt read counts, cannot compute likelihood"
-        );
-        ensure!(*error_rate > f64::MIN, "Error rate too small, cannot calculate likelihood");
-
-        // This is a simple estimate of genotype, based on the following consideration:
-        // A site is either het or hom, where hom could be CC or TT.
-        // If alt_count > ref_count, the latter is more likely, otherwise the former.
-
-        // First, I calculate the likelihood to observe this many alt_reads
-        // under the assumption that ref and alt are equally likely, ie this is a het position.
-
-        // TODO: This assumes a simple diploid sample with no purity issues. For
-        // cancer samples, we could make this a setting to allow for different cancer fraction?
-
-        let binom = Binomial::new(ref_count + alt_count, 0.5); // 0.5 because a het position
-        let p_het = binom.mass(alt_count);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "safe: counts are usize, division result fits in usize"
-        )]
-        let p_het_max = binom.mass(((alt_count + ref_count).f() / 2.0).round() as usize);
-
-        // Then, I calculate the probability that this many or more alt_count/ref_count reads
-        // are observed by error, assuming independence of reads and errors, at the error rate
-        // of the minority allele's reads.
-        let p_errors = |minority: usize, error: f64| {
-            let binom = Binomial::new(ref_count + alt_count, error);
-            binom.mass(minority) + (1.0 - binom.distribution(minority.f()))
-        };
-
-        // Scaled by the confounded strand's ratio, the winner of that strand keeping its own.
-        let weigh = |p_het: f64, p_hom: f64, hom: GenotypeTag| {
-            let Some(strand) = confounded else { return (p_het, p_hom) };
-            let cpg_error = match strand.cpg_allele {
-                CpgAllele::Ref => ref_error,
-                CpgAllele::Alt => alt_error,
-            };
-            let (l_het, l_hom) = strand.log10_het_and_hom(hom, cpg_error);
-            let best = l_het.max(l_hom);
-            (p_het * 10f64.powf(l_het - best), p_hom * 10f64.powf(l_hom - best))
-        };
-
-        if ref_count >= alt_count {
-            let (p_het, p_hom) =
-                weigh(p_het, p_errors(alt_count, alt_error), GenotypeTag::hom_ref());
-
-            if p_het < p_hom {
-                trace!("Assuming 0/0: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})");
-                Ok(EstimatedGenotype {
-                    genotype: GenotypeTag::hom_ref(),
-                    likelihood: Probability::new(p_hom)?.inverted(),
-                    confidence: Probability::new(((p_hom - p_het) / p_hom).clamp(0.0, 1.0))?
-                        .inverted(),
-                })
-            } else {
-                trace!(
-                    "Assuming 0/{alt_index}: ({ref_count} vs {alt_count}) -> ({p_het:.5} >= {p_hom:.5})"
-                );
-                Ok(EstimatedGenotype {
-                    genotype: GenotypeTag::ref_het(alt_index),
-                    likelihood: Probability::new(p_het / p_het_max)?.inverted(),
-                    confidence: Probability::new(((p_het - p_hom) / p_het).clamp(0.0, 1.0))?
-                        .inverted(),
-                })
-            }
-        } else {
-            let (p_het, p_hom) =
-                weigh(p_het, p_errors(ref_count, ref_error), GenotypeTag::hom_alt(alt_index));
-            if p_het < p_hom {
-                trace!(
-                    "Assuming {alt_index}/{alt_index}: ({ref_count} vs {alt_count}) -> ({p_het:.5} < {p_hom:.5})"
-                );
-                Ok(EstimatedGenotype {
-                    genotype: GenotypeTag::hom_alt(alt_index),
-                    likelihood: Probability::new(p_hom)?.inverted(),
-                    confidence: Probability::new(((p_hom - p_het) / p_hom).clamp(0.0, 1.0))?
-                        .inverted(),
-                })
-            } else {
-                trace!(
-                    "Assuming 0/{alt_index}: ({ref_count} vs {alt_count}) -> ({p_het:.5} >= {p_hom:.5})"
-                );
-                Ok(EstimatedGenotype {
-                    genotype: GenotypeTag::ref_het(alt_index),
-                    likelihood: Probability::new(p_het / p_het_max)?.inverted(),
-                    confidence: Probability::new(((p_het - p_hom) / p_het).clamp(0.0, 1.0))?
-                        .inverted(),
-                })
-            }
-        }
-    }
 }

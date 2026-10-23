@@ -334,12 +334,13 @@ fn process_segment(
     let SegmentColumns { segment, mut columns, held } = segment_columns(readers, region, &mapping)?;
     columns.retain(|p| params.record_filters.pre_filter(p));
     score_forest(&mut columns, ml, |_, _| true)?;
-    // The cascade: the engine scores the alts the forest kept, and the
-    // engine forests score exactly those again with the engine's features.
-    // The others keep their first score: the engine forests read an alt
-    // without an engine verdict as one the gate refused, and reject it.
+    // The cascade: the engine scores the alts the forest kept, which gives
+    // them their genotype, and the engine forests score exactly those again
+    // with the engine's features. The others keep their first score: the
+    // engine forests read an alt without an engine verdict as one the gate
+    // refused, and reject it.
+    held.score_snv_clusters(&segment, &mut columns, &mapping, ml.model.is_some());
     if let Some(engine_ml) = ml.snv_engine.as_deref() {
-        held.score_snv_clusters(&segment, &mut columns, &mapping, true);
         score_forest(&mut columns, engine_ml, |p, alt| p.engine_scored(alt))?;
     }
     let depth_scale = readers.depth_scale(region.len()).map(phasing::DepthScale);
@@ -359,8 +360,9 @@ impl CallParams {
             early_reject: Some(self.record_filters.clone()),
             phase: self.calls_variants(),
             gpu: self.ml.gpu,
-            // Without forests there is no cascade to hold the reads for.
-            snv_engine: self.ml.snv_engine && !self.ml.no_ml,
+            // The engine genotypes every called SNV, forests or not, and in
+            // CpG-only output too: methylation calling reads the genotype.
+            snv_engine: true,
         }
     }
 }
@@ -407,10 +409,13 @@ fn process_region(
     params: &CallParams,
     ml: &MachineLearning,
 ) -> Result<Vec<PileupMetrics>> {
-    let mut pileups = metrics_of(pileups_iter, &segment);
+    let pileups: Vec<Pileup> = pileups_iter.collect();
+    let reads = tests::utils::read_lines(&pileups);
+    let mut pileups = metrics_of(pileups.into_iter(), &segment);
     finish_columns(&mut pileups);
     pileups.retain(|p| params.record_filters.pre_filter(p));
     score_forest(&mut pileups, ml, |_, _| true)?;
+    tests::utils::score_snv_lines(&mut pileups, &reads, &segment);
     process_collected_pileups(segment, pileups, params, None)
 }
 
@@ -488,9 +493,8 @@ fn process_collected_pileups(
             // Set "extended" metrics that depend on the segment and params. This is
             // done in a separate step since it uses the pileup as well as the ML score.
             pileup.pos_metrics.extended.genotype = pileup.estimate_genotype(
-                params.ml.threshold(),
                 params.variant_calling.error_model,
-                params.variant_calling.snv_genotype,
+                params.ml.threshold().is_some(),
             );
             pileup.pos_metrics.extended.methylated =
                 metrics::methylation::call(&pileup)?.unwrap_or_default();

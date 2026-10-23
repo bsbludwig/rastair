@@ -114,6 +114,72 @@ pub(crate) fn create_pileups(
     (segment, pileups)
 }
 
+/// The read lines of `pileups!` columns as the pair-HMM sees reads: read `i`
+/// is the `i`-th read of every column, placed at the segment's start.
+pub(crate) fn read_lines(pileups: &[Pileup]) -> Vec<crate::call::pair_hmm::HaplotypeRead> {
+    use crate::call::{pair_hmm::HaplotypeRead, phasing::FragmentId};
+    use seqair_types::BaseQuality;
+
+    let Some(first) = pileups.first() else { return Vec::new() };
+    (0..first.reads.len())
+        .filter_map(|i| {
+            let reads: Vec<&SimpleRead> = pileups.iter().map(|p| &p.reads[i]).collect();
+            let bases: Vec<Base> = reads.iter().map(|r| r.base).collect();
+            let quals: Vec<BaseQuality> =
+                reads.iter().map(|r| BaseQuality::from_byte(r.qual)).collect();
+            let fragment = FragmentId::new(i as u64 + 1);
+            HaplotypeRead::new(&bases, &quals, 0, reads[0].strand, fragment, reads[0].mapq).ok()
+        })
+        .collect()
+}
+
+/// Score every column's alts (two per column, most reads first) as SNV
+/// events of the pair-HMM on `reads`, clustered as the engine clusters them.
+/// It stands in for the cascade of a forest that passes every alt, so a
+/// fixture's called alts carry the engine's genotype.
+pub(crate) fn score_snv_lines(
+    columns: &mut [PileupMetrics],
+    reads: &[crate::call::pair_hmm::HaplotypeRead],
+    segment: &Segment,
+) {
+    use crate::call::{
+        pair_hmm::{Allele, Event, HaplotypeScratch, score},
+        pileup::from_seqair::snv_clusters,
+    };
+    use std::{cmp::Reverse, sync::Arc};
+
+    let snvs: Vec<_> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.reference_base.known_index().is_some())
+        .map(|(i, column)| {
+            let mut alts: Vec<_> =
+                column.alts.iter().filter(|alt| alt.base.known_index().is_some()).collect();
+            alts.sort_by_key(|alt| (Reverse(alt.metrics.depth), alt.base as u8));
+            let events = alts
+                .into_iter()
+                .take(2)
+                .map(|alt| Event { anchor: column.pos, allele: Allele::Base(alt.base) })
+                .collect();
+            (i, events)
+        })
+        .filter(|(_, events): &(usize, seqair_types::SmallVec<Event, 2>)| !events.is_empty())
+        .collect();
+    let reference: Vec<Base> = segment.sequence.iter().map(|&b| Base::from(b)).collect();
+    let mut scratch = HaplotypeScratch::default();
+    for cluster in snv_clusters(columns, &[], &snvs, 2) {
+        let scored =
+            score(&reference, segment.range.start, cluster.events, reads.to_vec(), &mut scratch);
+        let Some(scores) = scored.map(Arc::new) else { continue };
+        for i in cluster.columns {
+            let column = &mut columns[i];
+            if scores.base_events_at(column.pos).next().is_some() {
+                column.snv_scores = Some(Arc::clone(&scores));
+            }
+        }
+    }
+}
+
 pub(crate) fn parse_strand(s: &str) -> Strand {
     match s {
         "OT" => Strand::OT,
@@ -569,11 +635,8 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
                 MethylationEvidenceStrandInfo::from_pileup(&current);
 
             // Recalculate genotype and methylation after changing alt calls
-            current.pos_metrics.extended.genotype = current.estimate_genotype(
-                Some(ML_THRESHOLD),
-                ErrorModel::default(),
-                crate::call::variant_calling::SnvGenotype::Counts,
-            );
+            current.pos_metrics.extended.genotype =
+                current.estimate_genotype(ErrorModel::default(), true);
             current.pos_metrics.extended.methylated =
                 metrics::methylation::call(&current)?.unwrap_or_default();
 

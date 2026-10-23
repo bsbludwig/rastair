@@ -1,0 +1,24 @@
+{"run_id":"1792741084-693837000","line":24,"new":{"module_name":"smoke_tests","snapshot_name":"count_bed_lines","metadata":{"source":"tests/smoke_tests.rs","assertion_line":24,"expression":"call.stderr()"},"snapshot":"[TIME] INFO rastair::runtime::progress: Runtime estimate time_left=5s done_at=[TIME][TIME] INFO rastair::runtime::partial_output: Wrote BED output file=\"-\"\n[TIME] INFO rastair: Call finished [DURATION]"},"old":{"module_name":"smoke_tests","metadata":{},"snapshot":"[TIME] INFO rastair::runtime::partial_output: Wrote BED output file=\"-\"\n[TIME] INFO rastair: Call finished [DURATION]"}}
+{"run_id":"1792741084-693837000","line":52,"new":{"module_name":"smoke_tests","snapshot_name":"count_vcf_lines","metadata":{"source":"tests/smoke_tests.rs","assertion_line":52,"expression":"call.stderr()"},"snapshot":"[TIME] INFO rastair::runtime::progress: Runtime estimate time_left=5s done_at=[TIME][TIME] INFO rastair::runtime::partial_output: Wrote VCF output file=\"-\"\n[TIME] INFO rastair: Call finished [DURATION]"},"old":{"module_name":"smoke_tests","metadata":{},"snapshot":"[TIME] INFO rastair::runtime::partial_output: Wrote VCF output file=\"-\"\n[TIME] INFO rastair: Call finished [DURATION]"}}
+{"run_id":"1792741084-693837000","line":85,"new":null,"old":null}
+{"run_id":"1792741084-693837000","line":86,"new":null,"old":null}
+{"run_id":"1792741084-693837000","line":87,"new":null,"old":null}
+{"run_id":"1792741084-693837000","line":88,"new":null,"old":null}
+{"run_id":"1792741084-693837000","line":132,"new":null,"old":null}
+{"run_id":"1792741084-693837000","line":133,"new":null,"old":null}
+{"run_id":"1792741084-693837000","line":134,"new":null,"old":null}
+{"run_id":"1792741084-693837000","line":135,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":52,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":66,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":67,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":24,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":40,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":41,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":85,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":86,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":87,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":88,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":132,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":133,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":134,"new":null,"old":null}
+{"run_id":"1792741450-436932000","line":135,"new":null,"old":null}

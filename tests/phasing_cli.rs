@@ -43,7 +43,8 @@ fn read_pairs_link_two_hets_into_one_block() -> Result<()> {
 /// the second's overlap, and `SPOKE_1` and `SPOKE_2`, in the second's core, are
 /// linked only through it. So the second segment phases the spokes as one
 /// block, and the hub, alone in its core, stays unphased. Phasing after the
-/// trim would leave all three unphased.
+/// trim would leave all three unphased. The overlap starts before the hub's
+/// reads do: the SNV engine genotypes a site only on reads inside the segment.
 #[test]
 fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
     const HUB: usize = 120;
@@ -60,7 +61,7 @@ fn a_block_is_solved_across_the_overlap_and_cut_to_the_core() -> Result<()> {
         // the hub, at twice the spokes' depth, from bridging them.
         .balanced(820, 900, 5);
 
-    let vcf = call_scenario(&scenario, &["--segment-max-length=300", "--segment-overlap=200"])?;
+    let vcf = call_scenario(&scenario, &["--segment-max-length=300", "--segment-overlap=210"])?;
 
     let phasing = scenario.check_phasing(&vcf)?;
     assert_eq!(phasing, Phasing { blocks: blocks([&[SPOKE_1, SPOKE_2]]), unphased: vec![HUB] });

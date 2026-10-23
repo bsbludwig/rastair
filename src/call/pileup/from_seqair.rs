@@ -94,7 +94,6 @@ use crate::{
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use seqair::bam::{
     RecordIdx, RecordRef,
-    cigar::CigarOpType,
     pileup::{AlignmentView, Indel, PileupColumn, PileupOp},
     record_store::RecordStore,
 };
@@ -120,8 +119,6 @@ pub(crate) struct ColumnDraft {
     pos_baseq: SumOfSquares,
     pos_mapq: SumOfSquares,
     mapq0: u32,
-    /// Reads with an insertion or deletion within [`INDEL_NEAR`] of the column.
-    near_indel_reads: usize,
     total_depth: usize,
     alt_bases: SmallVec<Base, 4>,
     indel_observations: SmallVec<IndelAllele, 3>,
@@ -215,7 +212,6 @@ impl ColumnDraft {
         let mut pos_baseq = SumOfSquares::new();
         let mut pos_mapq = SumOfSquares::new();
         let mut mapq0: u32 = 0;
-        let mut near_indel_reads: usize = 0;
         let mut total_depth: usize = 0;
         let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
         let mut indel_observations = SmallVec::new();
@@ -264,8 +260,6 @@ impl ColumnDraft {
                 }
             }
 
-            let near_indel = indel_near(&view, pos);
-            near_indel_reads += usize::from(near_indel);
             let qual_sq = f64::from(baseq).powi(2);
             let mapq_sq = f64::from(view.mapq).powi(2);
             accumulators.accumulate_fields(
@@ -278,12 +272,6 @@ impl ColumnDraft {
                     indels: view.indel_bases,
                     pos_in_read: qpos.get(),
                     read_length: view.seq_len,
-                    ln_error: if overlap == Overlap::KeepDisagreeing {
-                        -std::f32::consts::LN_2
-                    } else {
-                        crate::metrics::ln_read_error(baseq, view.mapq)
-                    },
-                    near_indel,
                 },
             );
             pos_baseq.add_squared(qual_sq);
@@ -350,7 +338,6 @@ impl ColumnDraft {
             pos_baseq,
             pos_mapq,
             mapq0,
-            near_indel_reads,
             total_depth,
             alt_bases,
             indel_observations,
@@ -387,7 +374,6 @@ impl ColumnDraft {
             pos_baseq: SumOfSquares::new(),
             pos_mapq: SumOfSquares::new(),
             mapq0: 0,
-            near_indel_reads: 0,
             total_depth: 0,
             alt_bases: SmallVec::new(),
             indel_observations: SmallVec::new(),
@@ -461,7 +447,6 @@ impl ColumnDraft {
             pos_baseq,
             pos_mapq,
             mapq0,
-            near_indel_reads,
             total_depth,
             alt_bases,
             indel_observations,
@@ -481,11 +466,6 @@ impl ColumnDraft {
             mapq0,
         );
 
-        // A gap many reads share is an indel of the sample, which the reads
-        // carrying it are no less trustworthy for.
-        if near_indel_reads.saturating_mul(NEAR_INDEL_MAX_SHARE) > total_depth {
-            accumulators.trust_nearby_indels();
-        }
         let ref_metrics = if let Some(acc) = accumulators.take(reference_base) {
             acc.finish(reference_base, total_depth, pos_u32, reference_base, &context)?
         } else {
@@ -1041,43 +1021,11 @@ fn spanning_reads<'store>(
     reads
 }
 
-/// How close an insertion or deletion in a read's alignment has to be to a
-/// column for the read's base there to be in doubt: the aligner placed the gap,
-/// and placed elsewhere it can turn the base into the other allele.
-const INDEL_NEAR: u64 = 15;
-
-/// Reads near an indel are doubted only while they are at most one in this
-/// many of the column's.
-const NEAR_INDEL_MAX_SHARE: usize = 4;
-
-/// Whether the read's alignment has an insertion or deletion within
-/// [`INDEL_NEAR`] of `pos`.
-fn indel_near(view: &AlignmentView<'_, '_, RastairReadExtras>, pos: u64) -> bool {
-    let record = view.record();
-    let mut ref_pos = record.pos.as_u64();
-    for op in record.cigar() {
-        if ref_pos > pos.saturating_add(INDEL_NEAR) {
-            break;
-        }
-        let span = if op.consumes_ref() { u64::from(op.len()) } else { 0 };
-        if matches!(op.op_type(), CigarOpType::Insertion | CigarOpType::Deletion)
-            && ref_pos.saturating_add(span).saturating_add(INDEL_NEAR) >= pos
-        {
-            return true;
-        }
-        ref_pos = ref_pos.saturating_add(span);
-    }
-    false
-}
-
 /// What the overlap rule makes of a read in this column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Overlap {
     Drop,
     Keep,
-    /// Kept for a fragment whose mates read different bases here: one of them
-    /// is wrong, so the fragment is no evidence for either.
-    KeepDisagreeing,
 }
 
 /// Decide the fate of a read that shares a mate overlap with another read in
@@ -1108,8 +1056,6 @@ fn drops_overlapping_mate(
     if this_idx > mate_idx {
         return if scratch.mate_drops.binary_search(&this_idx).is_ok() {
             Overlap::Drop
-        } else if scratch.disagreeing.binary_search(&this_idx).is_ok() {
-            Overlap::KeepDisagreeing
         } else {
             Overlap::Keep
         };
@@ -1130,15 +1076,12 @@ fn drops_overlapping_mate(
     // otherwise dropped the earlier one.
     let disagree = base != mate_base;
     if disagree && !mate.second_in_template {
-        if let Err(slot) = scratch.disagreeing.binary_search(&mate_idx) {
-            scratch.disagreeing.insert(slot, mate_idx);
-        }
         return Overlap::Drop;
     }
     if let Err(slot) = scratch.mate_drops.binary_search(&mate_idx) {
         scratch.mate_drops.insert(slot, mate_idx);
     }
-    if disagree { Overlap::KeepDisagreeing } else { Overlap::Keep }
+    Overlap::Keep
 }
 
 /// What a column requires of a read before it counts: a called base, a base
@@ -1185,9 +1128,6 @@ pub(crate) struct ColumnScratch {
     /// which is why the buffer is the caller's and not an inline `SmallVec`
     /// that would spill to the heap once per column.
     mate_drops: Vec<RecordIdx>,
-    /// Right mates kept because their left mate read a different base, in
-    /// ascending record index.
-    disagreeing: Vec<RecordIdx>,
     mates: MateObservations,
     /// The current column's phase observations, before the candidate test
     /// decides whether they are kept.
@@ -1203,7 +1143,6 @@ pub(crate) struct ColumnScratch {
 impl ColumnScratch {
     fn begin(&mut self, depth: usize) {
         self.mate_drops.clear();
-        self.disagreeing.clear();
         self.phase_observations.clear();
         self.mates.begin(depth);
     }
@@ -2804,67 +2743,16 @@ mod tests {
         assert_eq!(overlap_depth, Some(2), "both mates must survive inside the overlap");
     }
 
-    // ── per-read error ──────────────────────────────────────────────────────
-
-    fn read_error_of(pm: &PileupMetrics, base: Base) -> f32 {
-        pm.allele(base).map(|a| a.read_error).expect("an allele with reads")
-    }
-
-    /// Two mates reading different bases at one column: one of them is wrong,
-    /// so the fragment's surviving read counts as a coin toss.
+    /// Two mates reading different bases at one column keep one read: the
+    /// fragment is one observation, whichever mate is wrong.
     #[test]
-    fn a_fragment_whose_mates_disagree_is_no_evidence() {
-        let agree = [ref_read(b"pair", 2, 8, OT_FIRST), ref_read(b"pair", 6, 8, OT_SECOND)];
-        let (pm, _) = phase_column(&agree, &dedup_params(), 7);
-        assert!((read_error_of(&pm, Base::T) - 1e-3).abs() < 1e-6);
-
+    fn a_fragment_whose_mates_disagree_keeps_one_read() {
         let disagree = [
             ref_read(b"pair", 2, 8, OT_FIRST),
             ref_read(b"pair", 6, 8, OT_SECOND).with_base_at(1, Base::G),
         ];
         let (pm, _) = phase_column(&disagree, &dedup_params(), 7);
         assert_eq!(pm.pos_metrics.depth, 1);
-        let kept = if pm.allele(Base::T).is_some_and(|a| a.depth == 1) { Base::T } else { Base::G };
-        assert!((read_error_of(&pm, kept) - 0.5).abs() < 1e-6);
-    }
-
-    /// `5M1D6M` at 2: the reference with offset 7 deleted, so the gap sits
-    /// three bases from column 10.
-    fn deleting_read(qname: &[u8]) -> TestRead {
-        let mut read = ref_read(qname, 2, 12, OT_FIRST);
-        read.bases = (2..14).filter(|&i| i != 7).map(|i| Base::from(REF[i])).collect();
-        read.quals = vec![40; read.bases.len()];
-        read.cigar = vec![
-            CigarOp::new(CigarOpType::Match, 5),
-            CigarOp::new(CigarOpType::Deletion, 1),
-            CigarOp::new(CigarOpType::Match, 6),
-        ];
-        read
-    }
-
-    /// A read with a gap a few bases away is doubted while it is a stray (the
-    /// aligner may have put the base on the wrong side of the gap), not when
-    /// many reads share the gap (an indel of the sample).
-    #[test]
-    fn a_read_near_a_rare_gap_is_doubted() {
-        let plain = |name: &[u8]| ref_read(name, 4, 12, OT_FIRST);
-        let names: [&[u8]; 5] = [b"r1", b"r2", b"r3", b"r4", b"r5"];
-        let ref_base = Base::from(REF[10]);
-
-        let mut stray: Vec<_> = names.iter().take(4).map(|n| plain(n)).collect();
-        stray.push(deleting_read(b"r5"));
-        let (pm, _) = phase_column(&stray, &dedup_params(), 10);
-        assert_eq!(pm.allele(ref_base).map(|a| a.depth), Some(5));
-        let expected = (4.0 * 1e-3f64.ln() + 0.5f64.ln()) / 5.0;
-        assert!((f64::from(read_error_of(&pm, ref_base)) - expected.exp()).abs() < 1e-6);
-
-        let shared: Vec<_> = names
-            .iter()
-            .enumerate()
-            .map(|(i, n)| if i < 2 { plain(n) } else { deleting_read(n) })
-            .collect();
-        let (pm, _) = phase_column(&shared, &dedup_params(), 10);
-        assert!((read_error_of(&pm, ref_base) - 1e-3).abs() < 1e-6);
     }
 
     // ── phase observations ──────────────────────────────────────────────────

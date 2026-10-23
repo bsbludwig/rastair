@@ -78,7 +78,8 @@ pub struct MachineLearningParams {
     /// Alts the forest scores at 0.005 or more are scored as events of the
     /// engine's haplotypes, and a second set of forests in the model scores
     /// them again with that evidence. On by default; `--snv-engine=false`
-    /// scores with the first forests alone.
+    /// scores with the first forests alone. The engine genotypes the called
+    /// SNVs either way.
     #[arg(long, default_value_t = true)]
     #[arg(action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     #[arg(help_heading = cli::sections::FILTER)]

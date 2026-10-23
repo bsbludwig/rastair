@@ -430,42 +430,8 @@ pub struct AlleleMetrics {
     pub position_in_read: RootMeanSquare,
     /// Allele frequency
     pub allele_frequency: Probability,
-    /// Geometric mean of the allele's reads' [`ln_read_error`]s: the error rate at which `k` of
-    /// its reads are all wrong with the chance their own errors give, `read_error^k`.
-    pub read_error: f32,
     /// does this alt form a de-novo cpg?
     pub denovo: FormsDenovo,
-}
-
-/// Mapping qualities above this say more about the aligner than about the read (as GATK caps
-/// them for the same reason).
-const MAX_EFFECTIVE_MAPQ: usize = 45;
-/// Base qualities above Q30 are not trusted past the platform's own error rate, which is
-/// around Q30 for every model in [`crate::call::variant_calling::ErrorModel`].
-// shortcut: a fixed floor instead of the run's `--error-model` rate, which the accumulator
-// is not given; the genotyper clamps the mean to that rate again.
-const READ_ERROR_FLOOR: f64 = 1e-3;
-
-/// `ln` of the chance that a read shows a base its fragment does not carry: wrongly called
-/// (base quality) or wrongly placed (mapping quality, capped at [`MAX_EFFECTIVE_MAPQ`]).
-pub(crate) fn ln_read_error(baseq: u8, mapq: u8) -> f32 {
-    const BASEQS: usize = 64;
-    static TABLE: std::sync::LazyLock<Box<[[f32; MAX_EFFECTIVE_MAPQ + 1]; BASEQS]>> =
-        std::sync::LazyLock::new(|| {
-            let correct = |phred: usize| 1.0 - 10f64.powf(-(phred as f64) / 10.0);
-            let mut table = Box::new([[0.0; MAX_EFFECTIVE_MAPQ + 1]; BASEQS]);
-            for (baseq, row) in table.iter_mut().enumerate() {
-                for (mapq, cell) in row.iter_mut().enumerate() {
-                    let error = 1.0 - correct(baseq) * correct(mapq);
-                    #[expect(clippy::cast_possible_truncation, reason = "a log probability")]
-                    let ln = error.max(READ_ERROR_FLOOR).ln() as f32;
-                    *cell = ln;
-                }
-            }
-            table
-        });
-    let row = TABLE.get(usize::from(baseq).min(BASEQS - 1));
-    row.and_then(|row| row.get(usize::from(mapq).min(MAX_EFFECTIVE_MAPQ))).copied().unwrap_or(0.0)
 }
 
 /// Would observing `base` where the reference has `ref_base` create a CpG?
@@ -600,10 +566,6 @@ pub(crate) struct AlleleAccumulator {
     aligned: SumOfSquares,
     indels: SumOfSquares,
     pos_in_read: SumOfSquares,
-    ln_error: f32,
-    /// What reads near an indel add to `ln_error` when they count as a coin
-    /// toss rather than at their own quality.
-    ln_indel_doubt: f32,
 }
 
 /// One read's contribution to its allele's accumulator.
@@ -616,9 +578,6 @@ pub(crate) struct ReadFields {
     pub indels: u32,
     pub pos_in_read: u32,
     pub read_length: u32,
-    /// `ln` of the read's error at this base ([`ln_read_error`]).
-    pub ln_error: f32,
-    pub near_indel: bool,
 }
 
 /// The `[OT, OB]` slot a known strand accumulates into.
@@ -646,8 +605,6 @@ impl AlleleAccumulator {
             indels: read.indels,
             pos_in_read: read.position.pos,
             read_length: read.position.read_length,
-            ln_error: ln_read_error(read.qual, read.mapq),
-            near_indel: false,
         });
     }
 
@@ -660,14 +617,8 @@ impl AlleleAccumulator {
             indels,
             pos_in_read,
             read_length,
-            ln_error,
-            near_indel,
         } = read;
         self.depth += 1;
-        self.ln_error += ln_error;
-        if near_indel {
-            self.ln_indel_doubt += (-std::f32::consts::LN_2 - ln_error).max(0.0);
-        }
         self.baseq.add_squared(qual_sq);
         self.mapq.add_squared(mapq_sq);
         // Indexed, not matched. Whether consecutive reads are OT or OB is close
@@ -730,8 +681,6 @@ impl AlleleAccumulator {
             allele_frequency: Probability::new(self.depth.f() / total_reads.f())
                 .wrap_err("allele frequency not in [0,1]")
                 .this_is_a_bug()?,
-            #[expect(clippy::cast_precision_loss, reason = "a read count")]
-            read_error: ((self.ln_error + self.ln_indel_doubt) / self.depth as f32).exp(),
             denovo,
         })
     }
@@ -757,13 +706,6 @@ impl PerBaseAccumulators {
     pub(crate) fn accumulate_fields(&mut self, base: Base, read: ReadFields) {
         if let Some(allele) = base.known_index().and_then(|idx| self.0.get_mut(idx)) {
             allele.add_fields(read);
-        }
-    }
-
-    /// Count the reads near an indel at their own quality after all.
-    pub(crate) fn trust_nearby_indels(&mut self) {
-        for allele in &mut self.0 {
-            allele.ln_indel_doubt = 0.0;
         }
     }
 
@@ -802,7 +744,7 @@ mod size_tests {
     fn pileup_metrics_stays_small() {
         let size = std::mem::size_of::<PileupMetrics>();
         assert_eq!(
-            size, 552,
+            size, 536,
             "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
              (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
         );
@@ -845,8 +787,8 @@ mod size_tests {
     /// carried a count that `depth`/`ot_count`/`ob_count` already held.
     #[test]
     fn allele_accumulator_stays_small() {
-        assert_eq!(size_of::<AlleleAccumulator>(), 96);
-        assert_eq!(size_of::<PerBaseAccumulators>(), 384);
+        assert_eq!(size_of::<AlleleAccumulator>(), 88);
+        assert_eq!(size_of::<PerBaseAccumulators>(), 352);
     }
 
     // A `Filters` is copied into every `Alt`, so it is one of the few places

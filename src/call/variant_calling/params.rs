@@ -67,18 +67,6 @@ pub struct VariantCallingParams {
     #[default(MaxCoverage::DEFAULT)]
     pub max_coverage: MaxCoverage,
 
-    /// How an SNV's zygosity is decided
-    ///
-    /// `counts` weighs the reads of each allele per strand. `engine` takes the
-    /// copy count of the pair-HMM's likeliest diploid pair carrying the alt,
-    /// and its GQ as `GC`, wherever `--snv-engine` scored the alt; elsewhere
-    /// the counts decide. Whether the alt is called stays the forests'
-    /// decision.
-    #[arg(long, value_enum, default_value_t = SnvGenotype::Counts)]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    #[serde(skip_serializing_if = "SnvGenotype::is_counts")]
-    pub snv_genotype: SnvGenotype,
-
     #[command(flatten)]
     pub quality: QualityFilterParams,
 
@@ -87,34 +75,6 @@ pub struct VariantCallingParams {
 
     #[command(flatten)]
     pub read_flags: ReadFlags,
-}
-
-/// What decides an SNV's zygosity.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    clap::ValueEnum,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum SnvGenotype {
-    /// The binomial genotyper over each allele's reads.
-    #[default]
-    Counts,
-    /// The SNV engine's dosage where it scored the alt.
-    Engine,
-}
-
-impl SnvGenotype {
-    #[must_use]
-    pub fn is_counts(&self) -> bool {
-        *self == Self::Counts
-    }
 }
 
 /// How many reads to consider at one position, or no limit at all.
