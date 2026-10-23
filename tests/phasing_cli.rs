@@ -427,11 +427,11 @@ fn phasing_accuracy_on_an_na12878_slice() -> Result<()> {
         &std::fs::read_to_string(data.join("confident.bed"))?,
     )?;
     eprintln!("{accuracy:?}");
-    // Measured: phased 316, wrongly 2, pairs 232, switches 0. The scorer agrees
+    // Measured: phased 320, wrongly 0, pairs 237, switches 0. The scorer agrees
     // with `whatshap compare` on pairs and switches.
-    assert!(accuracy.phased >= 316, "fewer sites phased: {accuracy:?}");
-    assert!(accuracy.pairs >= 232, "shorter blocks: {accuracy:?}");
+    assert!(accuracy.phased >= 320, "fewer sites phased: {accuracy:?}");
+    assert!(accuracy.pairs >= 237, "shorter blocks: {accuracy:?}");
     assert!(accuracy.switches == 0, "switch errors: {accuracy:?}");
-    assert!(accuracy.phased_wrongly <= 2, "non-hets phased: {accuracy:?}");
+    assert!(accuracy.phased_wrongly == 0, "non-hets phased: {accuracy:?}");
     Ok(())
 }
