@@ -9,7 +9,6 @@ mod read;
 #[cfg(test)]
 pub use read::*;
 pub(crate) mod from_seqair;
-pub(crate) mod hts_utils;
 
 /// A hand-built pileup column: the reads at one position, for tests to turn
 /// into [`PileupMetrics`](crate::metrics::PileupMetrics) without a BAM.

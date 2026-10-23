@@ -256,15 +256,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
 
   Default value: `268435456`
-* `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
-
-   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the read sequence as the BAM stores it (reference-oriented). `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
-
-   Useful for non-directional libraries, commonly from tagmentation prep.
-
-   This option currently affects only the pileup-based `call` workflow.
-
-  Default value: `false`
 * `--error-model <ERROR_MODEL>` — The error model to use
 
    Accepts platform names or a custom error rate (e.g., 0.005)
@@ -379,11 +370,6 @@ This will produce a bed file that list the methylation status of all CpGs in eve
    Helpful to avoid missing variants at the edges of segments.
 
   Default value: `500`
-* `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
-
-   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the read sequence as the BAM stores it (reference-oriented). `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
-
-  Default value: `false`
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.

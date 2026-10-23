@@ -51,18 +51,17 @@ use crate::{
         },
     },
     metrics::{PileupMetrics, entropy::SlidingEntropy},
-    sequence::{RastairReadExtras, ReferenceWindow, SeqairReaders},
+    sequence::{RastairReadExtras, SeqairReaders},
 };
 use color_eyre::eyre::WrapErr as _;
 use seqair::{
     bam::pileup::PileupEngine,
     reader::SegmentOptions,
 };
-use seqair_types::{Base, Pos0, SmallVec};
+use seqair_types::{Pos0, SmallVec};
 use std::{
     num::{NonZeroU32, NonZeroU64},
     ops::RangeInclusive,
-    sync::Arc,
 };
 use tracing::{debug, instrument, warn};
 
@@ -199,20 +198,10 @@ pub fn get_pileups_held(
     let segment = readers.segment(region, 2).wrap_err("Failed to fetch segment")?;
     debug!(len = segment.sequence.len(), "Processing region (seqair)");
 
-    let ref_window = {
-        let bases: Arc<[Base]> =
-            segment.sequence.iter().map(|&b| Base::from(b)).collect::<Vec<_>>().into();
-        let start = Pos0::try_from(region.start).wrap_err("region start out of Pos0 range")?;
-        ReferenceWindow { bases, start }
-    };
-
-    // Install the reference window so compute() can do mismatch inference.
-    readers.inner_mut().customize_mut().reference = Some(ref_window);
     readers.inner_mut().customize_mut().read_flags = params.read_flags.clone();
     readers.inner_mut().customize_mut().unpaired = params.unpaired;
     readers.inner_mut().customize_mut().min_mapq = params.quality.min_mapq;
     readers.inner_mut().customize_mut().tag_requirement = params.require_tags.clone();
-    readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
     readers.inner_mut().customize_mut().read_masking = params.read_masking.clone();
     readers.inner_mut().customize_mut().fetched_mapped = 0;
 
@@ -481,6 +470,7 @@ mod tests {
     use super::*;
     use crate::sequence::ReaderParams;
     use color_eyre::eyre::Result;
+    use seqair_types::Base;
 
     #[test]
     fn test_reading_bounds() -> Result<()> {

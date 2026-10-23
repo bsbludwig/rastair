@@ -1,13 +1,8 @@
 //! BAM/CRAM and FASTA readers: [`SeqairReaders`] for `call` and `ml train`, the
-//! htslib [`Readers`] for `call-reads` and the BAM rewrite.
+//! htslib [`Readers`] for `per-read` and the BAM rewrite.
 //!
-//! Each record's OT/OB strand is assigned once, when seqair loads it
-//! (`RastairRecordFilter::compute`), and kept in [`RastairReadExtras`]: from
-//! the SAM flags, or with `--guess-read-orientation` from the read's mismatch
-//! motifs (the rule is in `docs/src/calling/strand-guesser.md`; `call-reads`
-//! applies it to htslib records in `hts_utils`). To compare strand modes on a
-//! BAM, `tests/call_cli.rs` writes `call --cpgs-only --bed` and compares the
-//! per-CpG `beta_est`, `unmod` and `mod` columns.
+//! Each record's OT/OB strand is assigned once from its SAM flags, when seqair
+//! loads it (`RastairRecordFilter::compute`), and kept in [`RastairReadExtras`].
 
 use crate::{
     sequence::{
@@ -30,7 +25,7 @@ use tracing::{debug, instrument, trace};
 
 #[cfg(test)]
 pub(crate) use seqair_readers::RastairRecordFilter;
-pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
+pub use seqair_readers::{RastairReadExtras, SeqairReaders};
 
 mod seqair_readers {
     use crate::{
@@ -48,37 +43,9 @@ mod seqair_readers {
     use seqair::bam::record_store::{
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
     };
-    use seqair_types::{Base, Pos0, Strand};
-    use std::{ops::Range, sync::Arc};
+    use seqair_types::{Pos0, Strand};
+    use std::ops::Range;
     use tracing::{debug, instrument};
-
-    /// Reference sequence window installed by the pileup driver before each
-    /// `readers.pileup()` call so that `RastairRecordFilter::compute` can do
-    /// mismatch-motif inference.
-    #[derive(Clone)]
-    pub struct ReferenceWindow {
-        pub bases: Arc<[Base]>,
-        pub start: Pos0,
-    }
-
-    impl Default for ReferenceWindow {
-        fn default() -> Self {
-            Self { bases: Arc::from([] as [Base; 0]), start: Pos0::ZERO }
-        }
-    }
-
-    impl ReferenceWindow {
-        pub fn base_at(&self, pos: u32) -> Option<Base> {
-            let offset = usize::try_from(u64::from(pos).checked_sub(self.start.as_u64())?).ok()?;
-            self.bases.get(offset).copied()
-        }
-
-        pub fn range(&self, pos: u32, len: u32) -> Option<&[Base]> {
-            let offset = usize::try_from(u64::from(pos).checked_sub(self.start.as_u64())?).ok()?;
-            let end = offset.checked_add(usize::try_from(len).ok()?)?;
-            self.bases.get(offset..end)
-        }
-    }
 
     /// Per-record data computed once at fetch time.
     #[derive(Clone)]
@@ -98,9 +65,7 @@ mod seqair_readers {
         pub unpaired: bool,
         pub min_mapq: u8,
         pub tag_requirement: TagRequirement,
-        pub guess_orientation: bool,
         pub read_masking: ReadMaskParams,
-        pub reference: Option<ReferenceWindow>,
         /// Mapped records the reader fetched, before any of these filters:
         /// the same count a `.bai` keeps, for the phasing depth guard.
         pub fetched_mapped: u64,
@@ -132,19 +97,9 @@ mod seqair_readers {
         fn compute(
             &mut self,
             rec: &SlimRecord,
-            store: &RecordStore<RastairReadExtras>,
+            _store: &RecordStore<RastairReadExtras>,
         ) -> RastairReadExtras {
-            let from_flags = Strand::from(rec.flags);
-
-            let strand = if self.guess_orientation {
-                if let Some(reference) = self.reference.as_ref() {
-                    infer_strand_from_motifs(rec, store, reference).unwrap_or(from_flags)
-                } else {
-                    from_flags
-                }
-            } else {
-                from_flags
-            };
+            let strand = Strand::from(rec.flags);
 
             let mask = self
                 .read_masking
@@ -153,78 +108,6 @@ mod seqair_readers {
 
             RastairReadExtras { strand, mask }
         }
-    }
-
-    /// Infer OT/OB strand from mismatch-motif evidence (the logic `call-reads`
-    /// applies to htslib records in `hts_utils::infer_strand_from_mismatch_motifs`).
-    fn infer_strand_from_motifs<U>(
-        rec: &SlimRecord,
-        store: &RecordStore<U>,
-        reference: &ReferenceWindow,
-    ) -> Option<Strand> {
-        let pairs = rec.aligned_pairs_with_read(store).ok()?;
-        let mut tg: u32 = 0;
-        let mut ca: u32 = 0;
-
-        for matched in pairs.matches_only() {
-            let rpos_u32 = u32::try_from(matched.rpos.as_u64()).ok()?;
-            let ref_base = reference.base_at(rpos_u32)?;
-            let observed = matched.query;
-
-            if ref_base == Base::Unknown || observed == Base::Unknown || ref_base == observed {
-                continue;
-            }
-
-            count_motifs_at_with_store(rec, store, matched.qpos.as_usize(), &mut tg, &mut ca);
-        }
-
-        match tg.cmp(&ca) {
-            std::cmp::Ordering::Greater => Some(Strand::OT),
-            std::cmp::Ordering::Less => Some(Strand::OB),
-            std::cmp::Ordering::Equal => {
-                // Tie: pseudo-random from qname+pos+flags
-                let name = rec.qname(store).unwrap_or(&[]);
-                Some(pseudo_random_strand_from_bytes(name, rec.pos.as_u64(), rec.flags.raw()))
-            }
-        }
-    }
-
-    fn count_motifs_at_with_store<U>(
-        rec: &SlimRecord,
-        store: &RecordStore<U>,
-        idx: usize,
-        tg: &mut u32,
-        ca: &mut u32,
-    ) {
-        let Ok(seq) = rec.seq(store) else { return };
-        let pair_at = |first: usize, second: usize| -> Option<[Base; 2]> {
-            Some([*seq.get(first)?, *seq.get(second)?])
-        };
-        let mut bump = |motif: [Base; 2]| match motif {
-            [Base::T, Base::G] => *tg = tg.saturating_add(1),
-            [Base::C, Base::A] => *ca = ca.saturating_add(1),
-            _ => {}
-        };
-        if let Some(next) = idx.checked_add(1)
-            && let Some(motif) = pair_at(idx, next)
-        {
-            bump(motif);
-        }
-        if let Some(prev) = idx.checked_sub(1)
-            && let Some(motif) = pair_at(prev, idx)
-        {
-            bump(motif);
-        }
-    }
-
-    fn pseudo_random_strand_from_bytes(name: &[u8], pos: u64, flags: u16) -> Strand {
-        use rustc_hash::FxHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = FxHasher::default();
-        name.hash(&mut hasher);
-        pos.hash(&mut hasher);
-        flags.hash(&mut hasher);
-        if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
     }
 
     /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` with the

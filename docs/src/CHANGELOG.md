@@ -25,6 +25,7 @@ This is the changelog for Rastair 2.
 - Removed `--min-indel-depth`, `--indel-error-rate`, `--indel-max-mismatches` and `--indel-end-of-read-cutoff`.
 - The `indel_strand` FILTER is replaced by `low_indel_qual`.
 - The bundled model no longer contains indel models.
+- Removed `--guess-read-orientation` from `call` and `per-read`: strands always come from the SAM flags.
 
 ## Version 2.2.0 (2026-08-24)
 
