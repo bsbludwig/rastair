@@ -1,7 +1,6 @@
 //! Test utilities for writing concise and readable tests for rastair call
 #![allow(clippy::cast_possible_truncation, reason = "Test code")]
 use crate::call::process_region;
-use crate::call::variant_calling::ErrorModel;
 use crate::{
     CallParams,
     call::{
@@ -677,7 +676,6 @@ pub(crate) fn metrics_to_vcf(
     let samples = [seqair_types::SmolStr::new("sample")];
     let (header, schema) = register(&contigs, &samples, &[])?;
     let config = FieldConfig::default().with_all_fields();
-    let error_model = ErrorModel::default();
 
     let mut buf = Vec::new();
     {
@@ -692,7 +690,6 @@ pub(crate) fn metrics_to_vcf(
                 contig,
                 &config,
                 Some(ML_THRESHOLD),
-                &error_model,
                 &filters,
                 &mut writer,
             )?;
@@ -713,7 +710,6 @@ pub(crate) fn metrics_to_bcf(metrics: &[PileupMetrics], filters: RecordFilters) 
     let samples = [seqair_types::SmolStr::new("sample")];
     let (header, schema) = register(&contigs, &samples, &[])?;
     let config = FieldConfig::default().with_all_fields();
-    let error_model = ErrorModel::default();
 
     let mut buf = Vec::new();
     {
@@ -728,7 +724,6 @@ pub(crate) fn metrics_to_bcf(metrics: &[PileupMetrics], filters: RecordFilters) 
                 contig,
                 &config,
                 Some(ML_THRESHOLD),
-                &error_model,
                 &filters,
                 &mut writer,
             )?;

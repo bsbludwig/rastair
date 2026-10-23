@@ -49,10 +49,16 @@ While rare, it is possible to have more than one methylation call at one positio
 
 ### Quality scores
 
-Quality scores in the vcf output reflect the ML-derived probability that a variant is "true".
+`QUAL` is the Phred-scaled probability that there is no variant at the site,
+as given by whatever decided the record:
+
+- SNV records, passing or rejected: the ML model's score (the highest over the alternates of a multi-allelic record).
+  With `--no-ml` the pair-HMM decides presence, and `QUAL` is its margin for the alternate, as for indels.
+- Indel records: the pair-HMM's margin, see [Indels](../calling/indels.md).
+- Reference-only records (`ALT=.`): the hom-ref genotype's confidence, the same number as `GC`.
+
 When we train the ML model, we calibrate it against a validation dataset
 and estimate the fraction of true SNPs called at every score cutoff.
 Based on this, we can fit a regression (["Platt scaling"](https://en.wikipedia.org/wiki/Platt_scaling))
 that converts the score into a probability $ p $ that a SNP call is true.
 For the quality score, we encode the inverse as Phred: $ -10*log_{10}(1-p) $.
-For methylated positions where no variants were observed, we record the maximum Phred, _ie._ 99.

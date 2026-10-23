@@ -3,6 +3,14 @@
 //! Per emitted line we build typed [`Alleles`] from the pileup's `Base`s and
 //! drive seqair's typestate encoder straight from the metrics — no
 //! intermediate record struct, no string round-trips.
+//!
+//! `QUAL` is the Phred-scaled probability, as given by whatever decided the
+//! record, that no variant is at this site: the forest's score for an SNV
+//! record, called or rejected (the highest over a multi-allelic record's
+//! alts); without forests (`--no-ml`) the SNV engine's margin for the alt,
+//! the same number an indel record carries from the pair-HMM; and for a
+//! reference-only record its hom-ref genotype confidence, the value of `GC`.
+//! A record whose decider gave no number has `QUAL` missing.
 
 use std::{
     io::Write,
@@ -21,7 +29,7 @@ use crate::{
         phasing::{self, GtAllele, PhaseCall, SiteKind},
         pileup::indels::{IndelAllele, Scored},
         variant_calling::{
-            ErrorModel, GenotypeTag,
+            GenotypeTag,
             indel_calling::{IndelCall, IndelRecords},
         },
     },
@@ -39,14 +47,12 @@ use crate::{
 /// a main record (real variants, or reference-only for CpG tracking), optional
 /// rejected records (methylation evidence / read errors, only with `--vcf-all`),
 /// and any indel records.
-#[expect(clippy::too_many_arguments, reason = "self-contained per-pileup encode entry point")]
 pub fn emit_pileup<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
     contig: &ContigId,
     config: &FieldConfig,
     ml_threshold: Option<Probability>,
-    error_model: &ErrorModel,
     record_filter: &RecordFilters,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
@@ -92,7 +98,8 @@ pub fn emit_pileup<W: Write>(
     };
 
     if want_main {
-        emit_main_record(pileup, schema, contig, config, &real_variants, error_model, writer)
+        let forests = ml_threshold.is_some();
+        emit_main_record(pileup, schema, contig, config, &real_variants, forests, writer)
             .wrap_err("Failed to emit main VCF record")?;
     }
 
@@ -257,7 +264,7 @@ fn emit_main_record<W: Write>(
     contig: &ContigId,
     config: &FieldConfig,
     real_variants: &[&Alt],
-    error_model: &ErrorModel,
+    forests: bool,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
     let ref_base = pileup.reference_base;
@@ -268,32 +275,18 @@ fn emit_main_record<W: Write>(
         Alleles::snv_multi(ref_base, &alts).wrap_err("Failed to build SNV alleles")?
     };
 
-    let depth = pileup.pos_metrics.depth.max(1).f();
-    let ml_qual: Option<i32> = if real_variants.is_empty() {
-        Some(Phred::from_phred(99_u8).as_int())
+    let genotype = compute_genotype(pileup, real_variants);
+    let qual = if real_variants.is_empty() {
+        genotype.confidence
     } else {
-        real_variants
-            .iter()
-            .filter_map(|alt| alt.filters.ml)
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|p| Phred::from(p.inverted()).as_int())
-    };
-    let qual = match ml_qual {
-        Some(q) => q,
-        None => Phred::from(
-            Probability::new(*error_model.error_rate() / depth)
-                .wrap_err("Failed to compute QUAL from error rate")?,
-        )
-        .as_int(),
+        real_variants.iter().filter_map(|alt| snv_qual(pileup, alt, forests)).max_by(f32::total_cmp)
     };
 
-    let main_alts: &[&Alt] = if real_variants.is_empty() { &[] } else { real_variants };
-
-    let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, Some(qual as f32))?;
+    let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, qual)?;
     let mut enc = enc.filter_pass();
-    encode_info(&mut enc, schema, config, pileup, main_alts)?;
+    encode_info(&mut enc, schema, config, pileup, real_variants)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, main_alts)?;
+    encode_format(&mut enc, schema, config, pileup, real_variants, genotype)?;
     enc.emit()?;
     Ok(())
 }
@@ -309,7 +302,7 @@ fn emit_rejected_record<W: Write>(
 ) -> Result<()> {
     let alleles = Alleles::snv(pileup.reference_base, alt.base)
         .wrap_err("Failed to build rejected SNV alleles")?;
-    let qual = alt.filters.ml.map(|ml| Phred::from(ml.inverted()).as_int() as f32);
+    let qual = snv_qual(pileup, alt, ml_threshold.is_some());
 
     // Filters: low_ml_score (if below threshold) + position + alt filters.
     let mut filters = pileup.pos_filters.as_set() | alt.filters.filters.as_set();
@@ -322,7 +315,8 @@ fn emit_rejected_record<W: Write>(
     let alts = [alt];
     encode_info(&mut enc, schema, config, pileup, &alts)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, &alts)?;
+    let genotype = compute_genotype(pileup, &alts);
+    encode_format(&mut enc, schema, config, pileup, &alts, genotype)?;
     enc.emit()?;
     Ok(())
 }
@@ -382,6 +376,18 @@ fn indel_ad(scored: &Scored, events: &[EventIdx]) -> SmallVec<i32, 3> {
         .into_iter()
         .map(|count| i32::try_from(count).unwrap_or(i32::MAX))
         .collect()
+}
+
+/// An SNV alt's `QUAL`: the forest's score with forests, the SNV engine's
+/// margin without; `None` where that decider did not score the alt.
+fn snv_qual(pileup: &PileupMetrics, alt: &Alt, forests: bool) -> Option<f32> {
+    let phred = if forests {
+        Phred::from(alt.filters.ml?.inverted())
+    } else {
+        let scores = pileup.snv_scores.as_deref()?;
+        scores.verdict.margin(scores.base_event_at(pileup.pos, alt.base)?)?.qual()
+    };
+    Some(phred.as_int() as f32)
 }
 
 /// Resolve a filter set into the encoder's `Filtered` state. Empty (or all
@@ -522,11 +528,10 @@ fn encode_format(
     config: &FieldConfig,
     pileup: &PileupMetrics,
     main_alts: &[&Alt],
+    genotype: GenotypeFields,
 ) -> Result<()> {
     let f = &schema.format;
     let c = &config.format;
-
-    let genotype = compute_genotype(pileup, main_alts);
 
     if c.gt {
         f.gt.encode(enc, &[genotype.genotype])?;
