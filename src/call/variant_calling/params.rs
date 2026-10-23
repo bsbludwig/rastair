@@ -26,14 +26,6 @@ pub struct VariantCallingParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub error_model: ErrorModel,
 
-    /// Whether to keep overlapping paired-end reads
-    ///
-    /// In unpaired (`--single-strand`) mode this is ignored because read-pair
-    /// overlap deduplication is disabled.
-    #[arg(long, default_value_t = false)]
-    #[arg(help_heading = cli::sections::FILTER)]
-    pub keep_overlapping_reads: bool,
-
     // The minimum number of reads to call a position as a variant
     #[arg(long, default_value_t = 3)]
     #[arg(help_heading = cli::sections::FILTER)]

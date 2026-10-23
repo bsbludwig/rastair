@@ -202,7 +202,6 @@ impl ColumnDraft {
         let context =
             SequenceContext::new(idx, &segment).wrap_err("failed to get sequence context")?;
 
-        let dedup_overlaps = !params.keep_overlapping_reads;
         scratch.begin(depth);
 
         let mut accumulators = PerBaseAccumulators::default();
@@ -226,19 +225,15 @@ impl ColumnDraft {
                 continue;
             };
             let strand = view.extra().strand;
-            let overlap = if dedup_overlaps {
-                drops_overlapping_mate(
-                    column,
-                    &view,
-                    base,
-                    params,
-                    reference_base,
-                    &context,
-                    scratch,
-                )
-            } else {
-                Overlap::Keep
-            };
+            let overlap = drops_overlapping_mate(
+                column,
+                &view,
+                base,
+                params,
+                reference_base,
+                &context,
+                scratch,
+            );
             if overlap == Overlap::Drop {
                 continue;
             }
@@ -283,18 +278,14 @@ impl ColumnDraft {
             }
 
             if params.call_indels {
-                let mate = dedup_overlaps
-                    .then(|| {
-                        counted_mate(
-                            column,
-                            &view,
-                            params,
-                            reference_base,
-                            &context,
-                            &mut scratch.mates,
-                        )
-                    })
-                    .flatten();
+                let mate = counted_mate(
+                    column,
+                    &view,
+                    params,
+                    reference_base,
+                    &context,
+                    &mut scratch.mates,
+                );
                 // A deduplicated column keeps one read per fragment, and that
                 // read is not necessarily the one carrying the fragment's
                 // indel: when the mates disagree the rule can drop exactly the
@@ -1933,18 +1924,8 @@ mod tests {
         let deletion = IndelAllele::Deletion([Base::C, Base::G].into_iter().collect());
         assert_eq!(
             alleles_at_anchor(&params),
-            vec![(deletion.clone(), 1)],
-            "the deduplicated column must still report the dropped mate's deletion"
-        );
-
-        // With dedup off both mates are their own fragment, and only one of
-        // them spans the deletion — so the count is unchanged, not doubled.
-        let mut kept = PileupMappingParams { call_indels: true, ..default() };
-        kept.variant_calling.keep_overlapping_reads = true;
-        assert_eq!(
-            alleles_at_anchor(&kept),
             vec![(deletion, 1)],
-            "keeping both mates must not turn one fragment's indel into two"
+            "the deduplicated column must still report the dropped mate's deletion"
         );
     }
 
@@ -2687,31 +2668,6 @@ mod tests {
             depth = Some(pm.pos_metrics.depth);
         }
         assert_eq!(depth, Some(2), "the cap applies to reads that pass the MAPQ filter");
-    }
-
-    /// With `--keep-overlapping-reads` no dedup happens at all, so every
-    /// filtered observation survives — including both halves of a pair.
-    #[test]
-    fn keeping_overlapping_reads_keeps_both_mates() {
-        let reads = vec![
-            TestRead::matching(b"pair", 2, 8, Base::A, OT_FIRST),
-            TestRead::matching(b"pair", 6, 8, Base::A, OT_SECOND),
-        ];
-        let mut params = dedup_params();
-        params.variant_calling.keep_overlapping_reads = true;
-        let seg = segment(REF);
-        let store = store_of(&reads, &params);
-        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 19));
-        let mut scratch = ColumnScratch::default();
-        let mut overlap_depth = None;
-        while let Some(col) = engine.pileups() {
-            if col.pos() == Pos0::new(7).unwrap() {
-                let pm =
-                    PileupMetrics::from_seqair(&col, seg.clone(), &params, &mut scratch).unwrap();
-                overlap_depth = Some(pm.pos_metrics.depth);
-            }
-        }
-        assert_eq!(overlap_depth, Some(2), "both mates must survive inside the overlap");
     }
 
     /// Two mates reading different bases at one column keep one read: the

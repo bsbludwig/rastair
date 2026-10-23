@@ -68,11 +68,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    In this mode, unpaired reads are accepted and strand assignment uses only the read's alignment direction (forward=OT, reverse=OB).
 
   Default value: `false`
-* `--keep-overlapping-reads` — Whether to keep overlapping paired-end reads
-
-   In unpaired (`--single-strand`) mode this is ignored because read-pair overlap deduplication is disabled.
-
-  Default value: `false`
 * `--v-min-depth <V_MIN_DEPTH>`
 
   Default value: `3`
