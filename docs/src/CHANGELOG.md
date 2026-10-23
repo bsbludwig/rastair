@@ -28,6 +28,7 @@ This is the changelog for Rastair 2.
 - Removed `--guess-read-orientation` from `call` and `per-read`: strands always come from the SAM flags.
 - Removed `--keep-overlapping-reads`: overlapping mates always count once per fragment.
 - Removed `--rescue-soft-clip-cpg`.
+- The `GL` FORMAT field is gone: on variant calls it repeated `GC`, on hom-ref records it was a second number from the same binomial test. `GC` is declared `Number=1`, matching the one value it carries. The BED `gt_p_score` column now repeats `gt_conf_score`. `--vcf-format-fields GL` is an error.
 - Removed `--m-max-coverage` and its `m_highDp` FILTER: `--max-coverage` caps the reads first.
 
 ## Version 2.2.0 (2026-08-24)

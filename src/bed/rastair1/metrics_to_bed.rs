@@ -30,7 +30,6 @@ impl Rastair1BedFormat {
             debug!("No genotype for record");
             EstimatedGenotype {
                 genotype: GenotypeTag::hom_ref(),
-                likelihood: Probability::ZERO,
                 confidence: Probability::ZERO,
             }
         };
@@ -66,7 +65,8 @@ impl Rastair1BedFormat {
             // Coverage is total read depth at this position, including all bases/alts
             coverage: pileup.pos_metrics.depth as usize,
             genotype: GenotypeString::from_genotype_tag(gt.genotype, ref_base, &alt_bases),
-            genotype_likelihood: Phred::from(gt.likelihood),
+            // The VCF has one genotype number, `GC`; the legacy column repeats it.
+            genotype_likelihood: Phred::from(gt.confidence),
             genotype_confidence: Phred::from(gt.confidence),
             de_novo,
         };

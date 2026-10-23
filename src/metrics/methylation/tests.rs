@@ -71,7 +71,6 @@ fn assert_none(result: Option<Methylated>) {
 fn ct_genotype() -> EstimatedGenotype {
     EstimatedGenotype {
         genotype: GenotypeTag::CT,
-        likelihood: Probability::new(0.99).unwrap(),
         confidence: Probability::new(0.99).unwrap(),
     }
 }

@@ -723,7 +723,7 @@ mod size_tests {
     fn pileup_metrics_stays_small() {
         let size = std::mem::size_of::<PileupMetrics>();
         assert_eq!(
-            size, 536,
+            size, 528,
             "PileupMetrics is {size} bytes. If that is deliberate, measure what it costs \
              (chr12:20–30 Mb, `--gpu -@ 8`, user CPU and peak RSS) and update this number."
         );

@@ -168,15 +168,9 @@ const PQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
     ValueType::Integer,
     "Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly",
 );
-const GL_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
-    "GL",
-    Number::Genotypes,
-    ValueType::Float,
-    "Genotype likelihoods, Phred-scaled",
-);
 const GC_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
     "GC",
-    Number::Genotypes,
+    Number::Count(1),
     ValueType::Float,
     "Genotype confidence, Phred-scaled",
 );
@@ -251,7 +245,6 @@ const FORMAT_DEFS: &[&dyn FieldDescription] = &[
     &GT_DEF,
     &PS_DEF,
     &PQ_DEF,
-    &GL_DEF,
     &GC_DEF,
     &SAMPLE_DP_DEF,
     &M5MC_DEF,
@@ -319,7 +312,7 @@ pub const ALL_INFO_IDS: &[&str] = &[
 ];
 
 /// All FORMAT field IDs. Used to validate `--vcf-format-fields` CLI input.
-pub const ALL_FORMAT_IDS: &[&str] = &["GT", "GL", "GC", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
+pub const ALL_FORMAT_IDS: &[&str] = &["GT", "GC", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
 
 // ── Resolved keys ───────────────────────────────────────────────────────
 
@@ -356,7 +349,6 @@ pub(crate) struct FormatKeys {
     /// Written only where the genotype is phased, and so is `pq`.
     pub ps: FormatInt,
     pub pq: FormatInt,
-    pub gl: FormatFloat,
     pub gc: FormatFloat,
     pub dp: FormatInt,
     pub m5mc: FormatFloats,
@@ -460,7 +452,6 @@ pub fn register(
         gt: builder.register_format(&GT_DEF)?,
         ps: builder.register_format(&PS_DEF)?,
         pq: builder.register_format(&PQ_DEF)?,
-        gl: builder.register_format(&GL_DEF)?,
         gc: builder.register_format(&GC_DEF)?,
         dp: builder.register_format(&SAMPLE_DP_DEF)?,
         m5mc: builder.register_format(&M5MC_DEF)?,
@@ -517,7 +508,6 @@ pub struct InfoSelection {
 #[derive(Debug, Clone)]
 pub struct FormatSelection {
     pub gt: bool,
-    pub gl: bool,
     pub gc: bool,
     pub dp: bool,
     pub m5mc: bool,
@@ -554,7 +544,6 @@ impl Default for FieldConfig {
             },
             format: FormatSelection {
                 gt: true,
-                gl: true,
                 gc: true,
                 dp: true,
                 m5mc: true,
@@ -597,7 +586,6 @@ impl FieldConfig {
         let m = &mut self.format;
         for f in [
             &mut m.gt,
-            &mut m.gl,
             &mut m.gc,
             &mut m.dp,
             &mut m.m5mc,
@@ -657,7 +645,6 @@ impl FieldConfig {
         let m = &mut self.format;
         match id {
             "GT" => m.gt = true,
-            "GL" => m.gl = true,
             "GC" => m.gc = true,
             "DP" => m.dp = true,
             "M5mC" => m.m5mc = true,

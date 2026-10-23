@@ -202,7 +202,6 @@ impl MethylationScenario {
         };
         Some(EstimatedGenotype {
             genotype: gt,
-            likelihood: Probability::new(0.99).unwrap(),
             confidence: Probability::new(0.99).unwrap(),
         })
     }

@@ -37,7 +37,6 @@ fn het_snp_adjustment() {
     );
     let gt = EstimatedGenotype {
         genotype: GenotypeTag::RefHet(NonZeroU8::new(1).unwrap()),
-        likelihood: Probability::new(0.8).unwrap(),
         confidence: Probability::new(0.99).unwrap(),
     };
 

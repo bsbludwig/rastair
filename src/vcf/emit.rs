@@ -536,11 +536,6 @@ fn encode_format(
             f.pq.encode(enc, &[i32::from(call.quality)])?;
         }
     }
-    if c.gl
-        && let Some(likelihood) = genotype.likelihood
-    {
-        f.gl.encode(enc, &[likelihood])?;
-    }
     if c.gc
         && let Some(confidence) = genotype.confidence
     {
@@ -586,8 +581,7 @@ fn encode_format(
     Ok(())
 }
 
-/// Phred-scaled GL/GC value as a single float (matches the previous output of
-/// one value per record).
+/// A Phred-scaled `GC` value.
 fn phred_value(p: Probability) -> f32 {
     Phred::from(p).as_int() as f32
 }
@@ -596,13 +590,12 @@ fn phred_value(p: Probability) -> f32 {
 struct GenotypeFields {
     genotype: SeqGenotype,
     /// `None` where `genotype` is missing.
-    likelihood: Option<f32>,
     confidence: Option<f32>,
     /// Set exactly where `genotype` is phased.
     phase: Option<PhaseCall>,
 }
 
-/// The genotype plus its GL/GC values and phase call. A record with a called
+/// The genotype plus its `GC` value and phase call. A record with a called
 /// alt but no estimate (no engine dosage) is `./.`.
 ///
 /// The estimate is the one the calling pipeline stored, not a fresh one: an
@@ -614,14 +607,12 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeField
         if pileup.alts.iter().any(|alt| alt.call == AltCall::RealVariant) {
             return GenotypeFields {
                 genotype: SeqGenotype::missing_diploid(),
-                likelihood: None,
                 confidence: None,
                 phase: None,
             };
         }
         return GenotypeFields {
             genotype: SeqGenotype::unphased(0, 0),
-            likelihood: Some(phred_value(Probability::ZERO)),
             confidence: Some(phred_value(Probability::ZERO)),
             phase: None,
         };
@@ -670,7 +661,6 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeField
 
     GenotypeFields {
         genotype,
-        likelihood: Some(phred_value(estimated.likelihood)),
         confidence: Some(phred_value(estimated.confidence)),
         phase: phase.filter(|_| phased),
     }

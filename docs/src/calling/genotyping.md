@@ -28,7 +28,7 @@ This representation follows VCF specification standards where allele indices sta
 `GC` is the Phred-scaled chance that the genotype is wrong:
 
 - For `0/0` calls with no passing alternate: a binomial test of the reads that show a SNP against the error rate
-- For variant calls: the posterior of the other copy count over the pairs of haplotypes consistent with the called alleles; `GL` carries the same value
+- For variant calls: the posterior of the other copy count over the pairs of haplotypes consistent with the called alleles
 
 With `--no-ml` the pair-HMM also decides which alleles are present, and a passing alternate it finds absent is written `0/0`.
 

@@ -9,14 +9,13 @@
 //!   carrying both called alts is the compound `1/2`, at the lower GQ. The
 //!   cascade scores every alt the forests can pass
 //!   (`from_seqair::cascade_events`), so only a called alt at an `N`
-//!   reference has no dosage: `./.` with no `GL` or `GC`. The engine has one
-//!   number for the call, so `GL` repeats `GC`.
+//!   reference has no dosage: `./.` with no `GC`.
 //! - **Without forests** (`--no-ml`) the engine's margins decide presence too
 //!   ([`Verdict::dosage`]), and a called alt it finds absent is `0/0` at the
 //!   verdict's `quality`.
-//! - **A column with no called alt is `0/0`**, its `GL` and `GC` the binomial of
-//!   the CpG's no-SNP against SNP reads (`no_snp`/`snp`) under the error
-//!   model: no event was scored there, and this is the hom-ref likelihood.
+//! - **A column with no called alt is `0/0`**, its `GC` the binomial of the
+//!   CpG's no-SNP against SNP reads (`no_snp`/`snp`) under the error model: no
+//!   event was scored there.
 //! - **Two variants can form a CpG together** (`TA>CG`). `FormsDenovo` reads
 //!   the reference context, so before ML neither alt forms one; once both are
 //!   called, `process::mark_variant_pair_cpgs` marks them
@@ -112,10 +111,10 @@ impl PileupMetrics {
             }
         };
         let confidence = Probability::new(10f64.powf(-*gq / 10.0)).ok()?;
-        Some(EstimatedGenotype { genotype, likelihood: confidence, confidence })
+        Some(EstimatedGenotype { genotype, confidence })
     }
 
-    /// `0/0`, with `GL` and `GC` from the binomial of the CpG's no-SNP
+    /// `0/0`, with `GC` from the binomial of the CpG's no-SNP
     /// against SNP reads: het against the error rate's hom.
     fn hom_ref_genotype(&self, error_model: ErrorModel) -> Option<EstimatedGenotype> {
         let counts = self.pos_metrics.extended.methylation_strand_info;
@@ -129,16 +128,10 @@ impl PileupMetrics {
         let minority = ref_count.min(alt_count);
         let errors = Binomial::new(reads, *error_model.error_rate());
         let p_hom = errors.mass(minority) + (1.0 - errors.distribution(minority.f()));
-        let (likelihood, confidence) = if p_het < p_hom {
-            (p_hom, (p_hom - p_het) / p_hom)
-        } else {
-            #[expect(clippy::cast_possible_truncation, reason = "half a read count")]
-            let p_het_max = het.mass((reads.f() / 2.0).round() as usize);
-            (p_het / p_het_max, (p_het - p_hom) / p_het)
-        };
+        let confidence =
+            if p_het < p_hom { (p_hom - p_het) / p_hom } else { (p_het - p_hom) / p_het };
         Some(EstimatedGenotype {
             genotype: GenotypeTag::hom_ref(),
-            likelihood: Probability::new(likelihood).ok()?.inverted(),
             confidence: Probability::new(confidence.clamp(0.0, 1.0)).ok()?.inverted(),
         })
     }
@@ -348,7 +341,6 @@ mod tests {
         let mut site = hom_by_engine(Base::G);
         let genotype = site.estimate_genotype(ErrorModel::default(), true).expect("a genotype");
         assert_eq!(genotype.genotype, GenotypeTag::hom_alt(ALT_INDEX_1));
-        assert_eq!(genotype.likelihood, genotype.confidence);
         site.snv_scores = None;
         assert_eq!(site.estimate_genotype(ErrorModel::default(), true), None);
     }
@@ -356,7 +348,7 @@ mod tests {
     /// The SNV shares its cluster with a het deletion, and every read covering
     /// it carries the deletion as well: no read says whether the other
     /// chromosome carries the SNV, so `(ref, del+SNV)` and `(SNV, del+SNV)`
-    /// tie: the earlier in `GL` order, the het, is written, at a `GC` that
+    /// tie: the earlier in VCF genotype order, the het, is written, at a `GC` that
     /// admits the tie.
     #[test]
     fn a_linked_snv_the_reads_cannot_place_is_a_low_quality_het() {
@@ -465,6 +457,5 @@ mod tests {
 #[must_use]
 pub struct EstimatedGenotype {
     pub genotype: GenotypeTag,
-    pub likelihood: Probability,
     pub confidence: Probability,
 }

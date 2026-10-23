@@ -93,7 +93,6 @@ pub(crate) fn column(
     }
     metrics.pos_metrics.extended.genotype = genotype.map(|genotype| EstimatedGenotype {
         genotype,
-        likelihood: Probability::ONE,
         confidence: Probability::ONE,
     });
     metrics
