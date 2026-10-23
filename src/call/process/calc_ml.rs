@@ -12,8 +12,6 @@ use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
 use ndarray::{Array2, s};
 use seqair_types::{Base, Probability};
 use tracing::debug;
-#[cfg(test)]
-use tracing::instrument;
 
 /// Rows a single dispatch can carry, and so the size of the per-model GPU
 /// buffers: `max_samples × n_trees × 4 B` of intermediates, 26 MB per model at
@@ -30,55 +28,6 @@ pub const GPU_BATCH_BUFFER_SIZE: usize = 8_192;
 /// Filter out very unlikely alts before running slow ML
 fn pre_ml_filter(c: &MetricsForAlt) -> bool {
     c.metrics.pos_metrics.depth > 1 && *c.metrics.pos_metrics.mapq > 5.
-}
-
-/// One candidate at a time, the way scoring worked before regions were batched.
-/// Kept as the reference the batched paths are tested against.
-#[cfg(test)]
-#[instrument(level = "debug", skip_all)]
-pub fn add_ml_metrics(
-    before: Option<&PileupMetrics>,
-    current: &mut PileupMetrics,
-    after: Option<&PileupMetrics>,
-    ml: &MachineLearning,
-) -> Result<()> {
-    if !ml.enabled() {
-        return Ok(());
-    }
-
-    'alts: for alt_base in current.alts() {
-        let alt =
-            current.alt_metrics(alt_base).wrap_err("Failed to get alt metrics").this_is_a_bug()?;
-
-        if !pre_ml_filter(&alt) {
-            let filters = current
-                .alt_filters_mut(alt_base)
-                .wrap_err("Failed to get mutable alt metrics")
-                .this_is_a_bug()?;
-            filters.filters.add(RastairFilter::PreMl, || true);
-
-            // Skip expensive ML prediction for this low-quality alt
-            continue 'alts;
-        }
-
-        if let Some(prediction) = ml.predict(&alt, before, after) {
-            let filters = current
-                .alt_filters_mut(alt_base)
-                .wrap_err("Failed to get mutable alt metrics")
-                .this_is_a_bug()?;
-            filters.ml.replace(prediction.prediction);
-            filters.filters.add(RastairFilter::LowMlScore, || !prediction.pass());
-        } else {
-            debug!(
-                pos=%current.pos(),
-                ref_base=%current.ref_base(),
-                alt_base=%alt_base,
-                "No ML prediction made"
-            );
-        }
-    }
-
-    Ok(())
 }
 
 /// Build one feature row per ML candidate `only` takes, and tag the alts not
@@ -158,8 +107,8 @@ fn usable_features(features: Result<Array2<f32>>, kind: &'static str) -> Option<
 ///
 /// Every candidate in the region goes into one `predict` call per model. That
 /// batch is what lets biosphere walk 16 samples per tree in lockstep, which is
-/// ~5x faster than scoring candidates one at a time as [`add_ml_metrics`]
-/// does. Only the alts `only` takes are scored.
+/// ~5x faster than scoring candidates one at a time. Only the alts `only`
+/// takes are scored.
 pub fn score_on_cpu(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,

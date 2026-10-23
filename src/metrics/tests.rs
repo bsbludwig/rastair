@@ -80,11 +80,7 @@ fn set_filters() -> Result<()> {
         "failed to propagate CpG pass flags",
     );
 
-    map_surrounding(
-        &mut pileups,
-        |b, c, a| process::add_ml_metrics(b, c, a, &ml),
-        "failed to add ML metrics",
-    );
+    process::score_on_cpu(&mut pileups, &ml, |_, _| true)?;
 
     // get pileups for a CpG site
     let low_dp_on_a =

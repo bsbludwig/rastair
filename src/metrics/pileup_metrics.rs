@@ -295,10 +295,6 @@ impl PileupMetrics {
         self.alts.iter().map(|a| a.base).collect()
     }
 
-    pub fn alts_metrics(&self) -> impl Iterator<Item = &AlleleMetrics> {
-        self.alts.iter().map(|a| &a.metrics)
-    }
-
     pub fn ref_alts_metrics(&self) -> impl Iterator<Item = &AlleleMetrics> {
         std::iter::once(&self.ref_metrics).chain(self.alts.iter().map(|a| &a.metrics))
     }

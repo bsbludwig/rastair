@@ -2,8 +2,7 @@ use crate::metrics::ml::features::FeatureCalculatorBox;
 use biosphere::FlatForest;
 use biosphere::gpu::GpuForest;
 use color_eyre::eyre::WrapErr as _;
-use ndarray::Array1;
-use seqair_types::{Probability, SmolStr};
+use seqair_types::Probability;
 use std::fmt;
 use std::ops::{Index, IndexMut};
 
@@ -294,26 +293,6 @@ impl MachineLearning {
 
     pub fn enabled(&self) -> bool {
         self.model.is_some()
-    }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Prediction {
-    /// The model used for this prediction
-    pub model: MlModel,
-    pub allele: SmolStr,
-    /// Probability of the alt being a variant
-    pub prediction: Probability,
-    /// Threshold for calling a variant
-    pub threshold: Probability,
-    /// Features used for this prediction
-    #[serde(skip)]
-    pub features: Array1<f32>,
-}
-
-impl Prediction {
-    pub fn pass(&self) -> bool {
-        self.prediction >= self.threshold
     }
 }
 
