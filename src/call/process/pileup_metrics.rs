@@ -17,8 +17,7 @@ pub fn calculate_pileup_metrics(
         let span = tracing::trace_span!("pileup_metrics", pos=%pileup.pos);
         let _guard = span.enter();
 
-        let mut current =
-            PileupMetrics::new(pileup).wrap_err("Failed to calculate pileup metrics")?;
+        let mut current = pileup.metrics(segment).wrap_err("Failed to calculate pileup metrics")?;
 
         current.pos_metrics.extended.region_entropy = sliding_entropy.entropy_at(current.idx());
 

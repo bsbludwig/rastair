@@ -106,14 +106,14 @@ mod tests {
 
     #[test]
     fn denovo_inside_ref_cpg_uses_denovo_context() -> Result<()> {
-        let (_segment, pileups) = pileups!(
+        let (segment, pileups) = pileups!(
             [ C C G ] Ref,
             [ C G G ] OB,
             [ C A G ] OB,
             [ C G G ] OB,
         );
 
-        let mut metrics = PileupMetrics::new(pileups[1].clone())?;
+        let mut metrics = pileups[1].metrics(&segment)?;
         if let Some(alt) = metrics.alts.iter_mut().find(|alt| alt.base == G) {
             alt.call = AltCall::RealVariant;
         }
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn matching_c_with_denovo_candidate_prefers_matching_context() -> Result<()> {
-        let (_segment, pileups) = pileups!(
+        let (segment, pileups) = pileups!(
             [ C C A ] Ref,
             [ C C A ] OT,
             [ C C A ] OT,
@@ -147,7 +147,7 @@ mod tests {
             [ C G A ] OT,
         );
 
-        let mut metrics = PileupMetrics::new(pileups[1].clone())?;
+        let mut metrics = pileups[1].metrics(&segment)?;
         metrics.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingC;
 
         let info = MethylationEvidenceStrandInfo::from_pileup(&metrics);

@@ -122,113 +122,6 @@ pub enum AltCall {
 }
 
 impl PileupMetrics {
-    /// Create new metrics from pileup
-    ///
-    /// NOTE: The extended metrics in `PositionMetrics` are not set here and
-    /// need to be set later using `set_extended_metrics`.
-    #[cfg(test)]
-    pub fn new(pileup: crate::call::pileup::Pileup) -> Result<Self> {
-        use crate::metrics::ReadKey;
-        use seqair_types::RmsAccumulator;
-        let crate::call::pileup::Pileup { region, pos, reference_base, context, reads } = pileup;
-        let mut accumulators = PerBaseAccumulators::default();
-        let mut pos_baseq = RmsAccumulator::new();
-        let mut pos_mapq = RmsAccumulator::new();
-        let mut mapq0: u32 = 0;
-        let mut alt_bases: SmallVec<Base, 4> = SmallVec::new();
-        let mut total_reads: usize = 0;
-        for read in reads.iter() {
-            total_reads += 1;
-            let qual_sq = f64::from(read.qual).powi(2);
-            let mapq_sq = f64::from(read.mapq).powi(2);
-            accumulators.accumulate(read, qual_sq, mapq_sq);
-            pos_baseq.add_squared(qual_sq);
-            pos_mapq.add_squared(mapq_sq);
-            if read.mapq == 0 {
-                mapq0 += 1;
-            }
-            if read.base.known_index().is_some()
-                && read.base != reference_base
-                && !alt_bases.contains(&read.base)
-            {
-                alt_bases.push(read.base);
-            }
-        }
-
-        trace!(pos, ?reference_base, ?alt_bases, "New pileup");
-
-        let pos_metrics = PositionMetrics::new(
-            total_reads,
-            reference_base,
-            context.before_1,
-            context.after_1,
-            pos_baseq.finish(),
-            pos_mapq.finish(),
-            mapq0,
-        );
-
-        let ref_metrics = if let Some(acc) = accumulators.take(reference_base) {
-            acc.finish(reference_base, total_reads, pos, reference_base, &context)
-                .wrap_err("Failed to compute allele metrics for reference")?
-        } else {
-            AlleleMetrics { base: reference_base, ..default() }
-        };
-
-        let mut alts: SmallVec<Alt, 1> = alt_bases
-            .iter()
-            .map(|&base| {
-                let acc = accumulators
-                    .take(base)
-                    .ok_or_else(|| color_eyre::eyre::eyre!("unknown base {base} in alt_bases"))?;
-                let metrics = acc
-                    .finish(base, total_reads, pos, reference_base, &context)
-                    .wrap_err("Failed to compute allele metrics for alt")?;
-                Ok(Alt { base, metrics, filters: AltFilters::default(), call: default() })
-            })
-            .collect::<Result<_>>()?;
-        order_alts(&mut alts);
-
-        let mut before_counts = PairedCounts::default();
-        let mut after_counts = PairedCounts::default();
-        for read in reads.iter() {
-            if read.strand == Strand::Unknown {
-                continue;
-            }
-            if let Some(before) = read.before_base {
-                before_counts.increment(ReadKey {
-                    strand: read.strand,
-                    current: read.base,
-                    adj: before,
-                });
-            }
-            if let Some(after) = read.after_base {
-                after_counts.increment(ReadKey {
-                    strand: read.strand,
-                    current: read.base,
-                    adj: after,
-                });
-            }
-        }
-
-        Ok(PileupMetrics {
-            region,
-            pos,
-            reference_base,
-            context,
-            pos_metrics,
-            pos_filters: Filters::default(),
-            ref_metrics,
-            alts,
-            before_counts,
-            after_counts,
-            tags: RecordTags::default(),
-            // Indels are collected on the seqair path only.
-            indel_data: None,
-            snv_scores: None,
-            phase: None,
-        })
-    }
-
     pub fn ref_base(&self) -> Base {
         self.reference_base
     }
@@ -569,24 +462,6 @@ const fn strand_slot(strand: Strand) -> Option<usize> {
 }
 
 impl AlleleAccumulator {
-    #[cfg(test)]
-    pub(crate) fn add(
-        &mut self,
-        read: &crate::call::pileup::SimpleRead,
-        qual_sq: f64,
-        mapq_sq: f64,
-    ) {
-        self.add_fields(ReadFields {
-            qual_sq,
-            mapq_sq,
-            strand: read.strand,
-            matching_bases: read.matching_bases,
-            indels: read.indels,
-            pos_in_read: read.position.pos,
-            read_length: read.position.read_length,
-        });
-    }
-
     pub(crate) fn add_fields(&mut self, read: ReadFields) {
         let ReadFields {
             qual_sq,
@@ -670,18 +545,6 @@ impl AlleleAccumulator {
 pub(crate) struct PerBaseAccumulators([AlleleAccumulator; 4]);
 
 impl PerBaseAccumulators {
-    #[cfg(test)]
-    pub(crate) fn accumulate(
-        &mut self,
-        read: &crate::call::pileup::SimpleRead,
-        qual_sq: f64,
-        mapq_sq: f64,
-    ) {
-        if let Some(allele) = read.base.known_index().and_then(|idx| self.0.get_mut(idx)) {
-            allele.add(read, qual_sq, mapq_sq);
-        }
-    }
-
     pub(crate) fn accumulate_fields(&mut self, base: Base, read: ReadFields) {
         if let Some(allele) = base.known_index().and_then(|idx| self.0.get_mut(idx)) {
             allele.add_fields(read);

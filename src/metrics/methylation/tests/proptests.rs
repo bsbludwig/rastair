@@ -7,7 +7,7 @@ use crate::{
         variant_calling::{EstimatedGenotype, GenotypeTag},
     },
     metrics::{AlleleMetrics, Alt, AltCall, AltFilters, DenovoAdjecent},
-    sequence::{ChunkRegion, Region},
+    sequence::{ChunkRegion, Region, Segment},
     utils::default,
     vcf::{CpgOrigin, SequenceContext},
 };
@@ -94,7 +94,7 @@ impl MethylationScenario {
 
     /// Construct a `PileupMetrics` that embodies this scenario.
     fn build(&self) -> PileupMetrics {
-        let (ref_base, context) = self.ref_and_context();
+        let context = self.context();
 
         let strand = self.side.strand().expect("a CpG side");
         let wrong_strand = match strand {
@@ -141,15 +141,7 @@ impl MethylationScenario {
             (0..self.noise.wrong_adj).map(|_| make_read(mod_base, strand, wrong_bb, wrong_ab)),
         );
 
-        let pileup = Pileup {
-            region: dummy_region(),
-            context,
-            pos: 1000,
-            reads: SimpleReads(reads.into()),
-            reference_base: ref_base,
-        };
-
-        let mut metrics = PileupMetrics::new(pileup).unwrap();
+        let mut metrics = column(context, reads);
 
         // For de-novo: mark the new CpG-forming alt as a real variant.
         if self.origin == CpgOrigin::DeNovo {
@@ -164,12 +156,12 @@ impl MethylationScenario {
         metrics
     }
 
-    fn ref_and_context(&self) -> (Base, SequenceContext) {
+    fn context(&self) -> SequenceContext {
         match (self.side, self.origin) {
-            (InCpG::C, CpgOrigin::Original) => (C, ctx_after_g(C)),
-            (InCpG::G, CpgOrigin::Original) => (G, ctx_before_c(G)),
-            (InCpG::C, CpgOrigin::DeNovo) => (self.denovo_ref, ctx_after_g(self.denovo_ref)),
-            (InCpG::G, CpgOrigin::DeNovo) => (self.denovo_ref, ctx_before_c(self.denovo_ref)),
+            (InCpG::C, CpgOrigin::Original) => ctx_after_g(C),
+            (InCpG::G, CpgOrigin::Original) => ctx_before_c(G),
+            (InCpG::C, CpgOrigin::DeNovo) => ctx_after_g(self.denovo_ref),
+            (InCpG::G, CpgOrigin::DeNovo) => ctx_before_c(self.denovo_ref),
             (InCpG::No, _) => unreachable!("a scenario holds a CpG side"),
         }
     }
@@ -257,13 +249,34 @@ impl MethylationScenario {
 // Helpers for building minimal Pileup / PileupMetrics by hand
 // ---------------------------------------------------------------------------
 
-fn dummy_region() -> std::sync::Arc<ChunkRegion> {
-    std::sync::Arc::new(ChunkRegion {
-        region: Region { contig: "chr_test".into(), start: 1000, end: 1002 },
-        last_position: 1002,
+/// The column at the `me` of `context`, on a segment holding exactly the
+/// context's known bases.
+fn column(context: SequenceContext, reads: Vec<SimpleRead>) -> PileupMetrics {
+    let before: Vec<Base> = [context.before_2, context.before_1].into_iter().flatten().collect();
+    let after = [context.after_1, context.after_2].into_iter().flatten();
+    let sequence: Vec<u8> =
+        before.iter().copied().chain([context.me]).chain(after).map(|b| b as u8).collect();
+    let start = 1000;
+    let end = start + sequence.len() as u64;
+    let segment = Segment {
+        range: std::sync::Arc::new(ChunkRegion {
+            region: Region { contig: "chr_test".into(), start, end },
+            last_position: end,
+            overlap_start: 0,
+            overlap_end: 0,
+        }),
+        sequence,
         overlap_start: 0,
         overlap_end: 0,
-    })
+    };
+    let pileup = Pileup {
+        region: segment.range.clone(),
+        pos: u32::try_from(start + before.len() as u64).unwrap(),
+        reads: SimpleReads(reads.into()),
+        reference_base: context.me,
+        context,
+    };
+    pileup.metrics(&segment).unwrap()
 }
 
 fn ctx_after_g(me: Base) -> SequenceContext {
@@ -750,15 +763,7 @@ proptest! {
             .map(|_| SimpleRead { base: read_base, strand, ..default() })
             .collect();
 
-        let pileup = Pileup {
-            region: dummy_region(),
-            // No CpG context: ref is A or T, no adjacent C or G
-            context: SequenceContext { me: ref_base, after_1: Some(A), before_1: Some(T), ..default() },
-            pos: 1000,
-            reads: SimpleReads(reads.into()),
-            reference_base: ref_base,
-        };
-        let metrics = PileupMetrics::new(pileup).unwrap();
+        let metrics = column(SequenceContext { me: ref_base, after_1: Some(A), before_1: Some(T), ..default() }, reads);
         let result = call(&metrics).unwrap();
 
         prop_assert!(
@@ -773,9 +778,9 @@ proptest! {
         side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         n_reads in 1u8..20,
     ) {
-        let (ref_base, context) = match side {
-            InCpG::C => (C, ctx_after_g(C)),
-            InCpG::G => (G, ctx_before_c(G)),
+        let context = match side {
+            InCpG::C => ctx_after_g(C),
+            InCpG::G => ctx_before_c(G),
             InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         let wrong_strand = match side {
@@ -800,14 +805,7 @@ proptest! {
             })
             .collect();
 
-        let pileup = Pileup {
-            region: dummy_region(),
-            context,
-            pos: 1000,
-            reads: SimpleReads(reads.into()),
-            reference_base: ref_base,
-        };
-        let metrics = PileupMetrics::new(pileup).unwrap();
+        let metrics = column(context, reads);
         let result = call(&metrics).unwrap();
 
         prop_assert!(
@@ -887,14 +885,7 @@ fn denovo_adjacent_without_called_partner_is_not_a_cpg() {
             }))
             .collect();
 
-        let pileup = Pileup {
-            region: dummy_region(),
-            context,
-            pos: 1000,
-            reads: SimpleReads(reads.into()),
-            reference_base: ref_base,
-        };
-        let mut metrics = PileupMetrics::new(pileup).unwrap();
+        let mut metrics = column(context, reads);
 
         metrics.pos_metrics.extended.denovo_adj = match side {
             InCpG::C => DenovoAdjecent::ThisIsTheMatchingC,
@@ -951,14 +942,7 @@ fn denovo_adjacent_produces_original_cpg() {
             }))
             .collect();
 
-        let pileup = Pileup {
-            region: dummy_region(),
-            context,
-            pos: 1000,
-            reads: SimpleReads(reads.into()),
-            reference_base: ref_base,
-        };
-        let mut metrics = PileupMetrics::new(pileup).unwrap();
+        let mut metrics = column(context, reads);
 
         metrics.pos_metrics.extended.denovo_adj = match side {
             InCpG::C => DenovoAdjecent::ThisIsTheMatchingC,
@@ -1028,15 +1012,7 @@ fn both_sides_independent() {
     let mut all_reads = c_reads;
     all_reads.extend(g_reads);
 
-    let pileup = Pileup {
-        region: dummy_region(),
-        context,
-        pos: 1000,
-        reads: SimpleReads(all_reads.into()),
-        reference_base: C,
-    };
-
-    let mut metrics = PileupMetrics::new(pileup).unwrap();
+    let mut metrics = column(context, all_reads);
     metrics.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingG;
     metrics.pos_filters.other_pos_in_denovo_passes = true;
 
