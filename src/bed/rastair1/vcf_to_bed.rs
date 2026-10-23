@@ -74,7 +74,7 @@ impl Rastair1BedFormat {
             .wrap_err("Failed to read methylation evidence strand info")?;
 
         let genotype_alleles: SmallVec<_, 2> = if let Ok(gs) = r.genotypes() {
-            // No more genotype remapping needed since VCF no longer mixes '.' with real variants
+            // Taken as written: a record never mixes '.' with real alleles.
             gs.get(0).iter().map(|x| (*x).into()).collect()
         } else {
             SmallVec::new()
@@ -86,15 +86,6 @@ impl Rastair1BedFormat {
         } else {
             // Fallback for invalid genotype
             GenotypeString(Base::from(&r#ref), Base::from(&r#ref))
-        };
-        let genotype_likelihood = if let Ok(buffer) = r.format(b"GL").float()
-            && let Some(first) = buffer.first()
-            && let Some(val) = first.first()
-        {
-            Phred::from_phred((*val).clamp(0.0, 255.0) as u8)
-        } else {
-            trace!(?genotype, "No genotype likelihood field found");
-            Phred::from_phred(0_u8)
         };
         let genotype_confidence = if let Ok(buffer) = r.format(b"GC").float()
             && let Some(first) = buffer.first()
@@ -176,7 +167,7 @@ impl Rastair1BedFormat {
             snp: count.snp,
             coverage: read_depth as usize,
             genotype,
-            genotype_likelihood,
+            genotype_likelihood: genotype_confidence,
             genotype_confidence,
             de_novo: !in_cpg && de_novo,
         };

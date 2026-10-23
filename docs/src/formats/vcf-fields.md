@@ -14,10 +14,9 @@
 | m_vaf | Low variant allele frequency for methylation candidate |
 | m_bq_ratio | Low quality ratio for methylation candidate |
 | m_pos | Alt allele evidence from read edges for methylation candidate |
-| m_highDp | Excessive coverage for methylation candidate |
 | pre_ml | Low amount of usable evidence, skipping ML |
 | low_ml_score | Machine Learning module prediction below threshold |
-| indel_strand | Indel allele supported on only one bisulfite strand |
+| low_indel_qual | Indel allele the pair-HMM does not call present |
 
 ## INFO
 
@@ -52,8 +51,9 @@
 | ID | Number | Type | Description |
 |----|--------|------|-------------|
 | GT | 1 | String | Genotype |
-| GL | G | Float | Genotype likelihoods, Phred-scaled |
-| GC | G | Float | Genotype confidence, Phred-scaled |
+| PS | 1 | Integer | Phase set identifier: the position of the first variant in the phase block |
+| PQ | 1 | Integer | Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly |
+| GC | 1 | Float | Genotype confidence, Phred-scaled |
 | DP | 1 | Integer | Read depth |
 | M5mC | . | Float | Methylation level at CpG sites, one value per CpG context |
 | DPM5mC | . | Integer | Total read depth for 5-methylcytosine detection, one value per CpG context |

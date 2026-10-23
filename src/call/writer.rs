@@ -1,6 +1,6 @@
 use crate::{
     bed::{rastair1::Rastair1BedFormat, writer::BedWriter},
-    call::{CallParams, RecordFilters, variant_calling::ErrorModel},
+    call::{CallParams, RecordFilters},
     io::vcf_writer::SeqairVcfWriter,
     metrics::PileupMetrics,
     runtime::{
@@ -19,7 +19,6 @@ pub struct SegmentWriter {
     bed_writer: Option<BedWriter<Rastair1BedFormat>>,
     record_filter: RecordFilters,
     ml_threshold: Option<Probability>,
-    error_model: ErrorModel,
     progress: ProgressTracker,
 }
 
@@ -55,7 +54,6 @@ impl SegmentWriter {
             bed_writer,
             record_filter: params.record_filters.clone(),
             ml_threshold: params.ml.threshold(),
-            error_model: params.variant_calling.error_model,
             progress: ProgressTracker::new(regions.len()),
         })
     }
@@ -78,7 +76,7 @@ impl SegmentWriter {
 
             if let Some(writer) = self.vcf_writer.as_mut() {
                 writer
-                    .emit(&record, self.ml_threshold, &self.error_model, &self.record_filter)
+                    .emit(&record, self.ml_threshold, &self.record_filter)
                     .wrap_err("Failed to write VCF record")?;
             }
         }

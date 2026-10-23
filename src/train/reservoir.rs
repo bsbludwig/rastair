@@ -647,7 +647,7 @@ mod tests {
         let first = keys(0, MlModel::Cpg);
         assert_eq!(first, keys(0, MlModel::Cpg));
         assert_ne!(first, keys(1, MlModel::Cpg));
-        assert_ne!(first, keys(0, MlModel::Deletion));
+        assert_ne!(first, keys(0, MlModel::Others));
     }
 
     #[test]

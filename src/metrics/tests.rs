@@ -1,7 +1,7 @@
 use crate::{
     call::{ml::MachineLearningParams, process},
     metrics::PileupMetrics,
-    sequence::{ReaderParams, Segment},
+    sequence::ReaderParams,
     utils::{default, map_surrounding},
 };
 use color_eyre::{
@@ -10,25 +10,8 @@ use color_eyre::{
 };
 use seqair_types::Probability;
 
-#[cfg(not(feature = "experimental-seqair"))]
-fn build_test_pileups(
-    pileups: impl Iterator<Item = crate::call::pileup::Pileup>,
-    segment: &Segment,
-    threshold_filters: &process::ThresholdFilterParams,
-) -> Vec<PileupMetrics> {
-    process::calculate_pileup_metrics(pileups, segment)
-        .map(|x| {
-            let mut x = x.unwrap();
-            process::apply_threshold_filters(&mut x, threshold_filters).unwrap();
-            x
-        })
-        .collect()
-}
-
-#[cfg(feature = "experimental-seqair")]
 fn build_test_pileups(
     pileups: impl Iterator<Item = PileupMetrics>,
-    _segment: &Segment,
     threshold_filters: &process::ThresholdFilterParams,
 ) -> Vec<PileupMetrics> {
     pileups
@@ -46,7 +29,7 @@ fn test_cpg_detection() -> Result<()> {
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
     let pileup_mapping_params = process::PileupMappingParams::default();
-    let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
+    let (_segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
         .wrap_err("failed to process region")?;
 
     let threshold_filters = process::ThresholdFilterParams {
@@ -55,7 +38,7 @@ fn test_cpg_detection() -> Result<()> {
         denovo_cpg: default(),
     };
 
-    let mut pileups = build_test_pileups(pileups, &segment, &threshold_filters);
+    let mut pileups = build_test_pileups(pileups, &threshold_filters);
     map_surrounding(
         &mut pileups,
         |b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold),
@@ -79,7 +62,7 @@ fn set_filters() -> Result<()> {
     let chunk = readers.segments(1000, 0)?.next().wrap_err("failed to fetch segment")?;
 
     let pileup_mapping_params = process::PileupMappingParams::default();
-    let (segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
+    let (_segment, pileups) = process::get_pileups(&mut readers, &chunk, &pileup_mapping_params)
         .wrap_err("failed to process region")?;
 
     let threshold_filters = process::ThresholdFilterParams {
@@ -90,18 +73,14 @@ fn set_filters() -> Result<()> {
 
     let ml = MachineLearningParams::default().init(1)?;
 
-    let mut pileups = build_test_pileups(pileups, &segment, &threshold_filters);
+    let mut pileups = build_test_pileups(pileups, &threshold_filters);
     map_surrounding(
         &mut pileups,
         |b, c, a| process::propagate_denovo_pass_flags(b, c, a, ml_threshold),
         "failed to propagate CpG pass flags",
     );
 
-    map_surrounding(
-        &mut pileups,
-        |b, c, a| process::add_ml_metrics(b, c, a, &ml, true),
-        "failed to add ML metrics",
-    );
+    process::score_on_cpu(&mut pileups, &ml, |_, _| true)?;
 
     // get pileups for a CpG site
     let low_dp_on_a =

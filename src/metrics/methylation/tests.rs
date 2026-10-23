@@ -21,10 +21,10 @@ mod proptests;
 
 fn to_metrics(
     pileup: &Pileup,
-    _segment: &Segment,
+    segment: &Segment,
     genotype: Option<EstimatedGenotype>,
 ) -> PileupMetrics {
-    let mut metrics = PileupMetrics::new(pileup.clone()).unwrap();
+    let mut metrics = pileup.metrics(segment).unwrap();
     if let Some(gt) = genotype {
         metrics.pos_metrics.extended.genotype = Some(gt);
     }
@@ -69,9 +69,5 @@ fn assert_none(result: Option<Methylated>) {
 }
 
 fn ct_genotype() -> EstimatedGenotype {
-    EstimatedGenotype {
-        genotype: GenotypeTag::CT,
-        likelihood: Probability::new(0.99).unwrap(),
-        confidence: Probability::new(0.99).unwrap(),
-    }
+    EstimatedGenotype { genotype: GenotypeTag::CT, confidence: Probability::new(0.99).unwrap() }
 }

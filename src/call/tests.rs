@@ -23,6 +23,7 @@ mod figure_out_outputs_tests {
             denovo_cpg: default(),
             methylation: default(),
             ml: default(),
+            phase_min_switch_quality: crate::call::phasing::DEFAULT_MIN_SWITCH_QUALITY,
             vcf: default(),
             bed: default(),
             record_filters: RecordFilters { vcf_all: false, cpgs_only: false },

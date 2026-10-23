@@ -44,10 +44,6 @@ pub struct VerifyParams {
     #[arg(long = "output-html", help_heading = cli::sections::OUTPUT, value_hint = clap::ValueHint::FilePath)]
     output_html: Option<ClioPath>,
 
-    /// Enable experimental indel loading from VCF records.
-    #[arg(long, default_value_t = false, help_heading = cli::sections::PROCESSING)]
-    experimental_indels: bool,
-
     /// Number of threads
     #[arg(
         short = '@',
@@ -244,8 +240,6 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
     let threads = params.threads;
     let load_betas_for_methyl = comp_path.is_some();
 
-    let experimental_indels = params.experimental_indels;
-
     // Slots filled by each rayon task.
     let mut pred_variants: Result<FxHashMap<FullPositionKey, VariantCategory>> =
         Err(eyre!("pred variants not loaded"));
@@ -256,19 +250,19 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 
     rayon::scope(|s| {
         s.spawn(|_| {
-            pred_variants = load_variants(&pred_path, regions, threads, experimental_indels)
+            pred_variants = load_variants(&pred_path, regions, threads)
                 .wrap_err("Failed to load predictions variants");
         });
         if let Some(p) = truth_path.as_deref() {
             s.spawn(|_| {
-                truth_variants = load_variants(p, regions, threads, experimental_indels)
+                truth_variants = load_variants(p, regions, threads)
                     .wrap_err("Failed to load truth variants")
                     .map(Some);
             });
         }
         if let Some(p) = comp_path.as_deref() {
             s.spawn(|_| {
-                comp_variants = load_variants(p, regions, threads, experimental_indels)
+                comp_variants = load_variants(p, regions, threads)
                     .wrap_err("Failed to load competitor variants")
                     .map(Some);
             });
@@ -334,7 +328,6 @@ fn load_variants(
     path: &Path,
     regions: &[RegionString],
     threads: usize,
-    experimental_indels: bool,
 ) -> Result<FxHashMap<FullPositionKey, VariantCategory>> {
     ensure!(path.exists(), "VCF file `{}` not found", path.display());
 
@@ -347,13 +340,13 @@ fn load_variants(
         let header = reader.header().clone();
         for rec in reader.records() {
             match rec {
-                Ok(r) => extract_variants(&r, &header, &mut result, experimental_indels),
+                Ok(r) => extract_variants(&r, &header, &mut result),
                 Err(e) => warn!(error = %e, "Failed to read VCF record"),
             }
         }
     } else {
         for_each_record_in_regions(path, regions, threads, |r, header| {
-            extract_variants(r, header, &mut result, experimental_indels);
+            extract_variants(r, header, &mut result);
         })?;
     }
 
@@ -421,7 +414,6 @@ fn extract_variants(
     record: &bcf::Record,
     header: &HeaderView,
     result: &mut FxHashMap<FullPositionKey, VariantCategory>,
-    experimental_indels: bool,
 ) {
     if !record.has_filter("PASS".as_bytes()) {
         return;
@@ -478,12 +470,6 @@ fn extract_variants(
             Ok(s) => SmolStr::from(s),
             Err(_) => continue,
         };
-
-        // When indels are not enabled, skip multi-base alleles entirely
-        // (preserves the pre-indel behavior of only matching SNVs).
-        if !experimental_indels && (ref_allele.len() != 1 || alt_allele.len() != 1) {
-            continue;
-        }
 
         // Classify by allele lengths (VCF anchor-base convention: first base is shared).
         let category = if ref_allele.len() == 1 && alt_allele.len() == 1 {

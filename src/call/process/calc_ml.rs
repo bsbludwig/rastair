@@ -1,8 +1,7 @@
 use crate::utils::logging::ThisIsABug;
 use crate::{
-    call::pileup::indels::IndelAllele,
     metrics::{
-        MetricsForAlt, MetricsForIndel, PileupMetrics,
+        MetricsForAlt, PileupMetrics,
         ml::types::{
             ByModel, GpuRastairModel, MachineLearning, MlModel, PlattScaling, RastairFlatModel,
         },
@@ -13,8 +12,6 @@ use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
 use ndarray::{Array2, s};
 use seqair_types::{Base, Probability};
 use tracing::debug;
-#[cfg(test)]
-use tracing::instrument;
 
 /// Rows a single dispatch can carry, and so the size of the per-model GPU
 /// buffers: `max_samples × n_trees × 4 B` of intermediates, 26 MB per model at
@@ -23,7 +20,7 @@ use tracing::instrument;
 /// A larger round is not refused, it is split — [`submit_and_collect`] chunks
 /// by this — so the only cost of a low value is more rounds, and the only cost
 /// of a high one is a reservation that on a discrete GPU is real VRAM. A 100 kb
-/// segment produces ~4,900 rows across all five models, so a region is never
+/// segment produces ~4,900 rows across all models, so a region is never
 /// split, and there is room left should the inference queue ever back up
 /// enough for regions to coalesce (measured so far: it does not).
 pub const GPU_BATCH_BUFFER_SIZE: usize = 8_192;
@@ -33,77 +30,8 @@ fn pre_ml_filter(c: &MetricsForAlt) -> bool {
     c.metrics.pos_metrics.depth > 1 && *c.metrics.pos_metrics.mapq > 5.
 }
 
-/// One candidate at a time, the way scoring worked before regions were batched.
-/// Kept as the reference the batched paths are tested against.
-#[cfg(test)]
-#[instrument(level = "debug", skip_all)]
-pub fn add_ml_metrics(
-    before: Option<&PileupMetrics>,
-    current: &mut PileupMetrics,
-    after: Option<&PileupMetrics>,
-    ml: &MachineLearning,
-    score_indels: bool,
-) -> Result<()> {
-    if !ml.enabled() {
-        return Ok(());
-    }
-
-    'alts: for alt_base in current.alts() {
-        let alt =
-            current.alt_metrics(alt_base).wrap_err("Failed to get alt metrics").this_is_a_bug()?;
-
-        if !pre_ml_filter(&alt) {
-            let filters = current
-                .alt_filters_mut(alt_base)
-                .wrap_err("Failed to get mutable alt metrics")
-                .this_is_a_bug()?;
-            filters.filters.add(RastairFilter::PreMl, || true);
-
-            // Skip expensive ML prediction for this low-quality alt
-            continue 'alts;
-        }
-
-        if let Some(prediction) = ml.predict(&alt, before, after) {
-            let filters = current
-                .alt_filters_mut(alt_base)
-                .wrap_err("Failed to get mutable alt metrics")
-                .this_is_a_bug()?;
-            filters.ml.replace(prediction.prediction);
-            filters.filters.add(RastairFilter::LowMlScore, || !prediction.pass());
-        } else {
-            debug!(
-                pos=%current.pos(),
-                ref_base=%current.ref_base(),
-                alt_base=%alt_base,
-                "No ML prediction made"
-            );
-        }
-    }
-
-    // The hard-filter pathway must not carry an ML score: it did not consult the
-    // model, and a score would make `low_ml_score` reachable for calls the model
-    // never judged.
-    let mut indel_scores: Vec<(usize, Probability)> = Vec::new();
-    if let Some(ref d) = current.indel_data {
-        for (i, call) in d.calls.iter().enumerate().filter(|_| score_indels) {
-            let m = MetricsForIndel { metrics: current, indel: call };
-            if let Some(pred) = ml.predict_indels(&m) {
-                indel_scores.push((i, pred.prediction));
-            }
-        }
-    }
-    for (i, score) in indel_scores {
-        if let Some(d) = current.indel_data.as_mut()
-            && let Some(call) = d.calls.get_mut(i)
-        {
-            call.ml = Some(score);
-        }
-    }
-
-    Ok(())
-}
-
-/// Build one feature row per ML candidate, and tag the alts not worth scoring.
+/// Build one feature row per ML candidate `only` takes, and tag the alts not
+/// worth scoring.
 ///
 /// Reads `pileups[i - 1]` and `pileups[i + 1]`, so this has to run where the
 /// region's `Vec` lives. Candidates whose features fail to compute or come out
@@ -112,7 +40,7 @@ pub fn extract_ml_rows(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
     model: &RastairFlatModel,
-    score_indels: bool,
+    only: impl Fn(&PileupMetrics, Base) -> bool,
 ) -> Result<MlBatch> {
     let calc = &ml.feature_calculator;
     let feature_num = calc.feature_num();
@@ -126,6 +54,9 @@ pub fn extract_ml_rows(
         let Some(current) = pileups.get(i) else { continue };
 
         for alt_base in current.alts() {
+            if !only(current, alt_base) {
+                continue;
+            }
             let Some(alt) = current.alt_metrics(alt_base) else { continue };
 
             if !pre_ml_filter(&alt) {
@@ -133,7 +64,7 @@ pub fn extract_ml_rows(
                 continue;
             }
 
-            let (which, features) = if alt.is_evidence_for_methylation() {
+            let (which, features) = if alt.is_conversion() {
                 (MlModel::Cpg, calc.calculate_cpg(&alt, before, after))
             } else if *alt.alt.denovo {
                 (MlModel::DenovoCpg, calc.calculate_denovo_cpg(&alt, before, after))
@@ -142,20 +73,8 @@ pub fn extract_ml_rows(
             };
 
             let Some(f) = usable_features(features, "alt") else { continue };
-            batch[which].push(Pending::snp(i, alt_base, model.platt(which)), &f)?;
-        }
-
-        let indel_calls = current.indel_data.as_deref().map_or(&[][..], |d| &d.calls);
-        for (indel_idx, call) in indel_calls.iter().enumerate().filter(|_| score_indels) {
-            let indel = MetricsForIndel { metrics: current, indel: call };
-
-            let (which, features) = match &call.allele {
-                IndelAllele::Insertion(_) => (MlModel::Insertion, calc.calculate_insertion(&indel)),
-                IndelAllele::Deletion(_) => (MlModel::Deletion, calc.calculate_deletion(&indel)),
-            };
-
-            let Some(f) = usable_features(features, "indel") else { continue };
-            batch[which].push(Pending::indel(i, indel_idx, model.platt(which)), &f)?;
+            batch[which]
+                .push(Pending { pileup_idx: i, alt_base, platt: model.platt(which) }, &f)?;
         }
     }
 
@@ -188,12 +107,12 @@ fn usable_features(features: Result<Array2<f32>>, kind: &'static str) -> Option<
 ///
 /// Every candidate in the region goes into one `predict` call per model. That
 /// batch is what lets biosphere walk 16 samples per tree in lockstep, which is
-/// ~5x faster than scoring candidates one at a time as [`add_ml_metrics`]
-/// does.
+/// ~5x faster than scoring candidates one at a time. Only the alts `only`
+/// takes are scored.
 pub fn score_on_cpu(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
-    score_indels: bool,
+    only: impl Fn(&PileupMetrics, Base) -> bool,
 ) -> Result<()> {
     let Some(model) = ml.model.as_ref() else {
         return Ok(());
@@ -202,7 +121,7 @@ pub fn score_on_cpu(
         return Ok(());
     }
 
-    let (rows, targets) = extract_ml_rows(pileups, ml, model, score_indels)?.split()?;
+    let (rows, targets) = extract_ml_rows(pileups, ml, model, only)?.split()?;
     let scores = MlScores::from_fn(|m| {
         let rows = rows[m].view();
         if rows.nrows() == 0 {
@@ -216,8 +135,8 @@ pub fn score_on_cpu(
 
 /// Score a batch on the GPU: one dispatch per model per [`GPU_BATCH_BUFFER_SIZE`] rows.
 ///
-/// Every model is submitted before any is collected. The five forests sit on
-/// five separate devices, so this is what lets their GPU work overlap.
+/// Every model is submitted before any is collected, so their GPU work can
+/// overlap.
 pub fn submit_and_collect(rows: &MlRows, gpu: &GpuRastairModel) -> Result<MlScores> {
     let mut scores = MlScores::from_fn(|m| Vec::with_capacity(rows[m].nrows()));
     let longest = MlModel::ALL.into_iter().map(|m| rows[m].nrows()).max().unwrap_or(0);
@@ -260,15 +179,10 @@ pub fn apply_ml_scores(
             let Some(pileup) = pileups.get_mut(p.pileup_idx) else { continue };
             let calibrated: Probability = p.platt.calibrate_score(raw);
 
-            if let Some(indel_idx) = p.indel_idx {
-                if let Some(d) = pileup.indel_data.as_mut()
-                    && let Some(call) = d.calls.get_mut(indel_idx)
-                {
-                    call.ml = Some(calibrated);
-                }
-            } else if let Some(filters) = pileup.alt_filters_mut(p.alt_base) {
+            if let Some(filters) = pileup.alt_filters_mut(p.alt_base) {
                 filters.ml.replace(calibrated);
-                filters.filters.add(RastairFilter::LowMlScore, move || calibrated < threshold);
+                // A second scoring (the SNV cascade) replaces the first.
+                filters.filters.set(RastairFilter::LowMlScore, calibrated < threshold);
             }
         }
     }
@@ -316,7 +230,7 @@ impl MlBatch {
 ///
 /// Rows are appended to a flat `Vec` that grows with the candidates actually
 /// found, rather than reserved at `positions × 4` up front: a 100 kb region
-/// has ~5,000 rows across all five models, and the bound was two orders of
+/// has ~5,000 rows across all models, and the bound was two orders of
 /// magnitude above that. `pending.len() × n_features` is always the length of
 /// `features`, which [`Self::push`] enforces, so the two cannot drift apart.
 pub struct ModelBatch {
@@ -353,19 +267,35 @@ impl ModelBatch {
 
 pub struct Pending {
     pileup_idx: usize,
-    /// For SNPs: the alt base. For indels: unused.
     alt_base: Base,
-    /// For indels: index into `indel_calls`. For SNPs: `None`.
-    indel_idx: Option<usize>,
     platt: PlattScaling,
 }
 
-impl Pending {
-    fn snp(pileup_idx: usize, alt_base: Base, platt: PlattScaling) -> Self {
-        Self { pileup_idx, alt_base, indel_idx: None, platt }
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call::{RecordFilters, ml::MachineLearningParams, tests::utils::test_call};
+    use crate::pileups;
+    use seqair_types::Base::{G, T};
 
-    fn indel(pileup_idx: usize, indel_idx: usize, platt: PlattScaling) -> Self {
-        Self { pileup_idx, alt_base: Base::Unknown, indel_idx: Some(indel_idx), platt }
+    #[test]
+    fn only_the_alts_the_predicate_takes_are_scored() -> Result<()> {
+        let (segment, pileups) = pileups!(
+            [ A ] Ref,
+            [ T ] OT, [ T ] OB, [ T ] OT,
+            [ G ] OT, [ G ] OB, [ G ] OT,
+            [ A ] OT, [ A ] OB,
+        );
+        let mut columns = test_call(segment, pileups, RecordFilters::all())?;
+        let column = columns.first_mut().wrap_err("one column")?;
+        for base in [T, G] {
+            column.alt_filters_mut(base).wrap_err("both alts")?.ml = None;
+        }
+        let ml = MachineLearningParams::default().init(1)?;
+        score_on_cpu(&mut columns, &ml, |_, alt| alt == T)?;
+        let score = |base| columns.first()?.alt_filters(base)?.ml;
+        assert!(score(T).is_some(), "the alt the predicate takes is scored");
+        assert!(score(G).is_none(), "the alt it refuses keeps its score");
+        Ok(())
     }
 }

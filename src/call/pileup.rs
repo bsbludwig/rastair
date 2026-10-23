@@ -1,81 +1,26 @@
+#[cfg(test)]
+use crate::{
+    call::process::PileupMappingParams, metrics::PileupMetrics, sequence::RastairReadExtras,
+};
+#[cfg(test)]
 use crate::{sequence::ChunkRegion, utils::Base, vcf::SequenceContext};
+#[cfg(test)]
+use color_eyre::eyre::{ContextCompat as _, Result, ensure};
+#[cfg(test)]
+use seqair::bam::record_store::RecordStore;
+#[cfg(test)]
 use seqair_types::{SmallVec, SmolStr};
 
 pub mod indels;
+#[cfg(test)]
 mod read;
+#[cfg(test)]
 pub use read::*;
-pub(crate) mod from_hts;
-#[cfg(feature = "experimental-seqair")]
 pub(crate) mod from_seqair;
-pub(crate) mod hts_utils;
-// The mate-overlap dedup of the seqair path is driven by seqair's own mate
-// links (see `from_seqair::drops_overlapping_mate`); the name-based collector
-// only serves the htslib path and goes away with it.
-#[cfg(not(feature = "experimental-seqair"))]
-pub(crate) mod overlapping_reads;
-pub(crate) mod ref_features;
 
-/// Reference bases kept upstream / downstream of the anchor for indel slippage
-/// detection. Downstream must span the indel plus a few repeat units; a little
-/// upstream covers reads that are not left-aligned.
-pub(crate) const INDEL_REF_WINDOW_UP: usize = 8;
-pub(crate) const INDEL_REF_WINDOW_DOWN: usize = 24;
-/// Maximum window length (upstream + anchor + downstream). The inline capacity
-/// of [`Pileup::indel_ref_window`] is sized to this so a populated window never
-/// spills to the heap.
-pub(crate) const INDEL_REF_WINDOW_LEN: usize = INDEL_REF_WINDOW_UP + 1 + INDEL_REF_WINDOW_DOWN;
-
-/// Repeat units at a read terminus needed to flag the alignment as the kind that
-/// slips. A flagged read should be unusual, not typical: at 4 units a terminal
-/// homopolymer occurs ~3% of the time and a 3-unit dinucleotide repeat ~0.8%.
-pub(crate) const HOMOPOLYMER_UNITS: usize = 4;
-pub(crate) const DINUCLEOTIDE_UNITS: usize = 3;
-
-/// Whether either terminus of a read is a tandem repeat of period 1 or 2 — the
-/// alignment shape that makes an indel call unreliable, because the aligner can
-/// slide the indel along the tract.
-///
-/// **Units, not a shared base window.** With a 3 bp window the period-2 arm
-/// reduces to `seq[0] == seq[2]`, true for 43.75% of random reads, which makes
-/// the flag fire on a typical read rather than an unusual one. At 4 units a
-/// terminal homopolymer occurs ~3% of the time and a 3-unit dinucleotide repeat
-/// ~0.8%.
-///
-/// One definition for both backends. They had two, and disagreed: the seqair
-/// path measured the period-2 arm over 4 bases (2 units, ~6% of read ends)
-/// instead of 6. The sequence is passed as a length plus an indexer because the
-/// htslib path holds a 4-bit packed `Seq` and the seqair path a `&[Base]`;
-/// neither is decoded or copied.
-pub(crate) fn has_terminal_repeat<T: PartialEq>(
-    len: usize,
-    base_at: impl Fn(usize) -> Option<T>,
-) -> bool {
-    periodic_terminus(len, &base_at, 1, HOMOPOLYMER_UNITS)
-        || periodic_terminus(len, &base_at, 2, DINUCLEOTIDE_UNITS)
-}
-
-fn periodic_terminus<T: PartialEq>(
-    len: usize,
-    base_at: &impl Fn(usize) -> Option<T>,
-    period: usize,
-    units: usize,
-) -> bool {
-    if period == 0 || units < 2 {
-        return false;
-    }
-    let Some(window) = period.checked_mul(units).filter(|w| *w <= len) else {
-        return false;
-    };
-    let periodic = |start: usize| {
-        (start..start + window - period).all(|i| match (base_at(i), base_at(i + period)) {
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        })
-    };
-    periodic(0) || periodic(len - window)
-}
-
-/// Rastair's representation of a pileup at a specific position in the genome
+/// A hand-built pileup column: the reads at one position, for tests to turn
+/// into [`PileupMetrics`](crate::metrics::PileupMetrics) without a BAM.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct Pileup {
     /// Region of the chunk this pileup belongs to
@@ -88,27 +33,9 @@ pub struct Pileup {
     pub reads: SimpleReads,
     /// Reference base at this position
     pub reference_base: Base,
-    /// Indel observations collected from reads at this position.
-    ///
-    /// Empty at most positions. The inline capacity of 3 is 248 bytes of this
-    /// (per-column, htslib-path) temporary; `0` would make it 24 and cost a
-    /// heap allocation only where an indel actually is. Unmeasured — histogram
-    /// `indel_observations.len()` in `Pileup::from_hts` before changing it.
-    pub indel_observations: SmallVec<indels::IndelObservation, 3>,
-    /// Number of reference reads with problematic patterns (homopolymer, soft-clip)
-    /// for indel depth adjustment.
-    pub noisy_ref_count: u32,
-    pub homopolymer_run: u8,
-    pub dinucleotide_run: u8,
-    pub soft_clip_count: u32,
-    /// Reference bases around the anchor (`indel_ref_anchor` is the anchor's
-    /// index), used for tandem-repeat / slippage detection of indel alleles.
-    /// Only populated when indel observations are present.
-    pub indel_ref_window: SmallVec<Base, INDEL_REF_WINDOW_LEN>,
-    /// Index of the anchor (pileup `pos`) base within [`Pileup::indel_ref_window`].
-    pub indel_ref_anchor: u8,
 }
 
+#[cfg(test)]
 impl Pileup {
     /// Chromosome name of the segment
     pub fn contig(&self) -> SmolStr {
@@ -143,6 +70,128 @@ impl Pileup {
 }
 
 #[cfg(test)]
+impl Pileup {
+    /// The column as production builds it: each read becomes a record in a seqair
+    /// store, and the engine's column at `pos` goes through
+    /// [`ColumnDraft::accumulate`](from_seqair::ColumnDraft::accumulate) and
+    /// `finish`; a column no read reaches is
+    /// [`ColumnDraft::uncovered_cpg`](from_seqair::ColumnDraft::uncovered_cpg).
+    ///
+    /// Each read is a fragment of its own, at its `position` in a read of its
+    /// length, so overlap dedup never applies; a missing `before_base` or
+    /// `after_base` is an `N` there, which no adjacency count takes. The column
+    /// takes every read the fixture lists: base quality and read-end masking are
+    /// not applied.
+    pub fn metrics(&self, segment: &crate::sequence::Segment) -> Result<PileupMetrics> {
+        use from_seqair::{ColumnDraft, ColumnScratch};
+        use seqair::bam::pileup::PileupEngine;
+        use seqair_types::Pos0;
+
+        let mut params = PileupMappingParams::default();
+        params.variant_calling.quality.min_baseq = 0;
+        let segment = std::rc::Rc::new(segment.clone());
+        let store = self.store()?;
+        let pos = Pos0::new(self.pos).wrap_err("pileup position out of range")?;
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, (pos..=pos).into());
+        let draft = match engine.pileups() {
+            Some(column) => ColumnDraft::accumulate(
+                &column,
+                std::rc::Rc::clone(&segment),
+                &params,
+                &mut ColumnScratch::default(),
+            )?,
+            None => ColumnDraft::uncovered_cpg(u64::from(self.pos), &segment)?
+                .wrap_err("a column without reads has metrics only in a CpG")?,
+        };
+        let metrics = draft.finish()?;
+        ensure!(
+            metrics.reference_base == self.reference_base && metrics.context == self.context,
+            "the pileup's reference ({} in {:?}) is not the segment's at {} ({} in {:?})",
+            self.reference_base,
+            self.context,
+            self.pos,
+            metrics.reference_base,
+            metrics.context,
+        );
+        Ok(metrics)
+    }
+
+    fn store(&self) -> Result<RecordStore<RastairReadExtras>> {
+        use seqair::bam::{
+            BamHeader, MateFields,
+            cigar::{CigarOp, CigarOpType},
+        };
+        use seqair::reader::ResolveTid;
+        use seqair_types::{BamFlags, Pos0};
+
+        let tid = 0u32.resolve_tid(&BamHeader::synthetic(1, u64::from(u32::MAX)))?;
+        let mut extras = FixtureExtras { strand: seqair_types::Strand::Unknown };
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        for (i, read) in self.reads.iter().enumerate() {
+            let PositionInRead { pos: qpos, read_length } = read.position;
+            let offset = |i: Option<u32>| usize::try_from(i?).ok();
+            let mut bases = vec![Base::Unknown; usize::try_from(read_length)?];
+            let mut place = |at: Option<usize>, base: Base| -> Result<()> {
+                let slot = at.and_then(|i| bases.get_mut(i)).wrap_err("base outside the read")?;
+                *slot = base;
+                Ok(())
+            };
+            place(offset(Some(qpos)), read.base)?;
+            if let Some(before) = read.before_base {
+                place(offset(qpos.checked_sub(1)), before)?;
+            }
+            if let Some(after) = read.after_base {
+                place(offset(qpos.checked_add(1)), after)?;
+            }
+            let start = self.pos.checked_sub(qpos).wrap_err("read starts before the contig")?;
+            let end = (start + read_length).checked_sub(1).wrap_err("empty read")?;
+            let mut flags = if read.second { 0x81 } else { 0x41 };
+            if read.reverse {
+                flags |= 0x10;
+            }
+            extras.strand = read.strand;
+            store.push_fields(
+                Pos0::new(start).wrap_err("read start out of range")?,
+                Pos0::new(end).wrap_err("read end out of range")?,
+                BamFlags::from(flags),
+                read.mapq,
+                read.matching_bases,
+                read.indels,
+                format!("read{i}").as_bytes(),
+                &[CigarOp::new(CigarOpType::Match, read_length)],
+                &bases,
+                &vec![read.qual; bases.len()],
+                &[],
+                Some(tid),
+                MateFields { tid: None, pos: None, template_len: None },
+                &mut extras,
+            )?;
+        }
+        Ok(store)
+    }
+}
+
+/// The strand of the read being pushed; nothing masked.
+#[cfg(test)]
+#[derive(Clone)]
+struct FixtureExtras {
+    strand: seqair_types::Strand,
+}
+
+#[cfg(test)]
+impl seqair::bam::record_store::CustomizeRecordStore for FixtureExtras {
+    type Extra = RastairReadExtras;
+
+    fn compute(
+        &mut self,
+        rec: &seqair::bam::record_store::SlimRecord,
+        _store: &RecordStore<RastairReadExtras>,
+    ) -> RastairReadExtras {
+        RastairReadExtras { strand: self.strand, mask: 0..rec.seq_len }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -151,27 +200,6 @@ mod tests {
     };
     use insta::assert_debug_snapshot;
     use seqair_types::Strand;
-
-    /// The flag must fire on an unusual read, not a typical one. The seqair
-    /// path used to measure the period-2 arm over 4 bases — two repeat units,
-    /// ~6% of random read ends — where the htslib path required three units
-    /// over 6 bases. `ACAC` is exactly that boundary: two units, and not a
-    /// terminal repeat.
-    #[test]
-    fn terminal_repeat_needs_whole_units_at_both_periods() {
-        let repeat = |seq: &[u8]| has_terminal_repeat(seq.len(), |i| seq.get(i));
-
-        assert!(repeat(b"AAAACGTTGC"), "4-unit homopolymer at the start");
-        assert!(repeat(b"CGTTGCAAAA"), "4-unit homopolymer at the end");
-        assert!(!repeat(b"AAACGTTGCA"), "3 units is one short of the homopolymer limit");
-
-        assert!(repeat(b"ACACACGTTG"), "3-unit dinucleotide at the start");
-        assert!(repeat(b"GTTGCACACA"), "3-unit dinucleotide at the end");
-        assert!(!repeat(b"ACACGTTGCA"), "2 units is one short of the dinucleotide limit");
-
-        assert!(!repeat(b"ACGT"), "a read with neither terminus repeating");
-        assert!(!repeat(b"AA"), "shorter than either window");
-    }
 
     #[test]
     fn test_alleles_in_order() {
@@ -207,13 +235,6 @@ mod tests {
             pos: 1002, // Corresponds to index in the segment
             reads: bases,
             reference_base: Base::T, // Assume T is the reference base at this position
-            indel_observations: default(),
-            noisy_ref_count: 0,
-            homopolymer_run: 0,
-            dinucleotide_run: 0,
-            soft_clip_count: 0,
-            indel_ref_window: default(),
-            indel_ref_anchor: 0,
         };
 
         let alleles = variant_candidate.alleles();

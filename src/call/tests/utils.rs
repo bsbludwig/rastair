@@ -1,7 +1,6 @@
 //! Test utilities for writing concise and readable tests for rastair call
 #![allow(clippy::cast_possible_truncation, reason = "Test code")]
 use crate::call::process_region;
-use crate::call::variant_calling::ErrorModel;
 use crate::{
     CallParams,
     call::{
@@ -107,18 +106,77 @@ pub(crate) fn create_pileups(
                 pos: pos as u32,
                 reads: SimpleReads(reads.into()),
                 reference_base,
-                indel_observations: Default::default(),
-                noisy_ref_count: 0,
-                homopolymer_run: 0,
-                dinucleotide_run: 0,
-                soft_clip_count: 0,
-                indel_ref_window: Default::default(),
-                indel_ref_anchor: 0,
             }
         })
         .collect();
 
     (segment, pileups)
+}
+
+/// The read lines of `pileups!` columns as the pair-HMM sees reads: read `i`
+/// is the `i`-th read of every column, placed at the segment's start.
+pub(crate) fn read_lines(pileups: &[Pileup]) -> Vec<crate::call::pair_hmm::HaplotypeRead> {
+    use crate::call::{pair_hmm::HaplotypeRead, phasing::FragmentId};
+    use seqair_types::BaseQuality;
+
+    let Some(first) = pileups.first() else { return Vec::new() };
+    (0..first.reads.len())
+        .filter_map(|i| {
+            let reads: Vec<&SimpleRead> = pileups.iter().map(|p| &p.reads[i]).collect();
+            let bases: Vec<Base> = reads.iter().map(|r| r.base).collect();
+            let quals: Vec<BaseQuality> =
+                reads.iter().map(|r| BaseQuality::from_byte(r.qual)).collect();
+            let fragment = FragmentId::new(i as u64 + 1);
+            HaplotypeRead::new(&bases, &quals, 0, reads[0].strand, fragment, reads[0].mapq).ok()
+        })
+        .collect()
+}
+
+/// Score every column's alts (two per column, most reads first) as SNV
+/// events of the pair-HMM on `reads`, clustered as the engine clusters them.
+/// It stands in for the cascade of a forest that passes every alt, so a
+/// fixture's called alts carry the engine's genotype.
+pub(crate) fn score_snv_lines(
+    columns: &mut [PileupMetrics],
+    reads: &[crate::call::pair_hmm::HaplotypeRead],
+    segment: &Segment,
+) {
+    use crate::call::{
+        pair_hmm::{Allele, Event, HaplotypeScratch, score},
+        pileup::from_seqair::{CandidateFloor, snv_clusters},
+    };
+    use std::{cmp::Reverse, sync::Arc};
+
+    let snvs: Vec<_> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.reference_base.known_index().is_some())
+        .map(|(i, column)| {
+            let mut alts: Vec<_> =
+                column.alts.iter().filter(|alt| alt.base.known_index().is_some()).collect();
+            alts.sort_by_key(|alt| (Reverse(alt.metrics.depth), alt.base as u8));
+            let events = alts
+                .into_iter()
+                .take(2)
+                .map(|alt| Event { anchor: column.pos, allele: Allele::Base(alt.base) })
+                .collect();
+            (i, events)
+        })
+        .filter(|(_, events): &(usize, seqair_types::SmallVec<Event, 2>)| !events.is_empty())
+        .collect();
+    let reference: Vec<Base> = segment.sequence.iter().map(|&b| Base::from(b)).collect();
+    let mut scratch = HaplotypeScratch::default();
+    for cluster in snv_clusters(columns, &[], &snvs, CandidateFloor { min_reads: 2 }) {
+        let scored =
+            score(&reference, segment.range.start, cluster.events, reads.to_vec(), &mut scratch);
+        let Some(scores) = scored.map(Arc::new) else { continue };
+        for i in cluster.columns {
+            let column = &mut columns[i];
+            if scores.base_events_at(column.pos).next().is_some() {
+                column.snv_scores = Some(Arc::clone(&scores));
+            }
+        }
+    }
 }
 
 pub(crate) fn parse_strand(s: &str) -> Strand {
@@ -215,8 +273,8 @@ impl FieldValue {
     /// Compare field values with special handling for GT field
     fn matches_field(&self, other: &Self, field_name: &str, epsilon: f64) -> bool {
         if field_name == "GT" {
-            // Both expected and actual are now VCF-style genotype strings ("0/1").
-            // Normalize separator order is not needed; compare directly.
+            // Both expected and actual are VCF-style genotype strings ("0/1"),
+            // compared directly.
             match (self, other) {
                 (Self::String(expected), Self::String(actual)) => expected == actual,
                 _ => self.matches(other, epsilon),
@@ -268,10 +326,11 @@ pub(crate) struct VcfRecord {
     pub r#ref: String,
     /// ALT alleles; `["."]` for a reference-only site.
     pub alt: Vec<String>,
+    pub qual: String,
     /// FILTER codes; empty or `["PASS"]` means the record passes.
-    filters: Vec<String>,
+    pub filters: Vec<String>,
     /// FORMAT key → first sample's value.
-    format: FxHashMap<String, String>,
+    pub format: FxHashMap<String, String>,
 }
 
 impl VcfRecord {
@@ -288,6 +347,7 @@ fn parse_vcf(text: &str) -> Vec<VcfRecord> {
             let cols: Vec<&str> = line.split('\t').collect();
             let r#ref = cols.get(3).copied().unwrap_or(".").to_string();
             let alt = cols.get(4).copied().unwrap_or(".").split(',').map(String::from).collect();
+            let qual = cols.get(5).copied().unwrap_or(".").to_string();
             let filters = match cols.get(6).copied().unwrap_or(".") {
                 "." => Vec::new(),
                 f => f.split(';').map(String::from).collect(),
@@ -298,7 +358,7 @@ fn parse_vcf(text: &str) -> Vec<VcfRecord> {
                     format.insert(k.to_string(), v.to_string());
                 }
             }
-            VcfRecord { r#ref, alt, filters, format }
+            VcfRecord { r#ref, alt, qual, filters, format }
         })
         .collect()
 }
@@ -331,9 +391,11 @@ fn get_field_value(record: &VcfRecord, field_id: &str) -> Result<FieldValue> {
                 .ok_or_else(|| color_eyre::eyre::eyre!("ML field is empty"))?;
             Ok(FieldValue::F64(first))
         }
-        "GT" => {
-            let gt = record.format.get("GT").cloned().unwrap_or_else(|| ".".to_string());
-            Ok(FieldValue::String(gt))
+        // Absent renders as ".", so a test can assert a record carries no
+        // phase set as readily as it can assert a value.
+        "GT" | "PS" | "PQ" => {
+            let value = record.format.get(field_id).cloned().unwrap_or_else(|| ".".to_string());
+            Ok(FieldValue::String(value))
         }
         other => bail!("Unknown or unsupported field: {}", other),
     }
@@ -506,6 +568,7 @@ pub(crate) fn test_call(
         denovo_cpg: default(),
         methylation: default(),
         ml: default(),
+        phase_min_switch_quality: crate::call::phasing::DEFAULT_MIN_SWITCH_QUALITY,
         vcf: default(),
         bed: default(),
         total_threads: 2,
@@ -556,10 +619,14 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
         "failed to propagate CpG pass flags",
     );
 
+    for current in &mut records {
+        process::set_alt_calls(current, Some(ML_THRESHOLD))?;
+    }
+    map_surrounding(&mut records, process::mark_variant_pair_cpgs, "failed to mark CpGs");
+
     records
         .into_iter()
         .map(|mut current| {
-            process::set_alt_calls(&mut current, Some(ML_THRESHOLD))?;
             process::add_position_tags(&mut current);
 
             // Recalculate methylation strand info (needed for genotype estimation)
@@ -568,7 +635,7 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
 
             // Recalculate genotype and methylation after changing alt calls
             current.pos_metrics.extended.genotype =
-                current.estimate_genotype(Some(ML_THRESHOLD), ErrorModel::default());
+                current.estimate_genotype(ErrorModel::default(), true);
             current.pos_metrics.extended.methylated =
                 metrics::methylation::call(&current)?.unwrap_or_default();
 
@@ -609,7 +676,6 @@ pub(crate) fn metrics_to_vcf(
     let samples = [seqair_types::SmolStr::new("sample")];
     let (header, schema) = register(&contigs, &samples, &[])?;
     let config = FieldConfig::default().with_all_fields();
-    let error_model = ErrorModel::default();
 
     let mut buf = Vec::new();
     {
@@ -624,7 +690,6 @@ pub(crate) fn metrics_to_vcf(
                 contig,
                 &config,
                 Some(ML_THRESHOLD),
-                &error_model,
                 &filters,
                 &mut writer,
             )?;
@@ -645,7 +710,6 @@ pub(crate) fn metrics_to_bcf(metrics: &[PileupMetrics], filters: RecordFilters) 
     let samples = [seqair_types::SmolStr::new("sample")];
     let (header, schema) = register(&contigs, &samples, &[])?;
     let config = FieldConfig::default().with_all_fields();
-    let error_model = ErrorModel::default();
 
     let mut buf = Vec::new();
     {
@@ -660,7 +724,6 @@ pub(crate) fn metrics_to_bcf(metrics: &[PileupMetrics], filters: RecordFilters) 
                 contig,
                 &config,
                 Some(ML_THRESHOLD),
-                &error_model,
                 &filters,
                 &mut writer,
             )?;

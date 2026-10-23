@@ -38,7 +38,8 @@ Within each worker, processing proceeds through a lazy iterator chain with progr
 8. **Propagate CpG flags** (context-aware): Coordinate @CpG pair decisions
 9. **Set variant calls**: Classify as variant, methylation, or error
 10. **Calls**: Final genotype and @methylation calls
-11. **Core filter**: Remove overlap positions
+11. **Phasing**: Link heterozygous sites into phase blocks
+12. **Core filter**: Remove overlap positions, then re-anchor phase blocks on the positions that remain
 
 The "context-aware" steps are processed with parameters for the pileup metrics for the current position as well as the ones before and after.
 This enables @CpG pair coordination and @denovo detection without breaking the lazy iterator chain.
@@ -115,12 +116,10 @@ Best for methylation-focused downstream analyses.
 
 Random Forest models disambiguate true variants from sequencing errors and methylation artifacts.
 
-**Five Separate Models**: Different variant contexts require different discriminatory features:
+**Three Separate Models**: Different variant contexts require different discriminatory features:
 - **CpG model**: C→T or G→A at canonical CpG sites
 - **De-novo CpG model**: Variants creating new CpG sites
 - **Others model**: Non-CpG variants
-- **Insertion model**: Insertion alleles (used when experimental indel calling is enabled)
-- **Deletion model**: Deletion alleles (used when experimental indel calling is enabled)
 
 Models are bundled as one compressed file.
 A default model file is bundled in the Rastair binary and loaded at startup.

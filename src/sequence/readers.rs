@@ -1,3 +1,9 @@
+//! BAM/CRAM and FASTA readers: [`SeqairReaders`] for `call` and `ml train`, the
+//! htslib [`Readers`] for `per-read` and the BAM rewrite.
+//!
+//! Each record's OT/OB strand is assigned once from its SAM flags, when seqair
+//! loads it (`RastairRecordFilter::compute`), and kept in [`RastairReadExtras`].
+
 use crate::{
     sequence::{
         ChunkRegion, Region, SelectedRegion, chunked::ChunkedRegions, segementation::Segment,
@@ -17,16 +23,13 @@ use rust_htslib::bam::{self, HeaderView, Read as _};
 use seqair_types::SmolStr;
 use tracing::{debug, instrument, trace};
 
-// ── seqair path ───────────────────────────────────────────────────────────────
+#[cfg(test)]
+pub(crate) use seqair_readers::RastairRecordFilter;
+pub use seqair_readers::{RastairReadExtras, SeqairReaders};
 
-#[cfg(feature = "experimental-seqair")]
-pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
-
-#[cfg(feature = "experimental-seqair")]
 mod seqair_readers {
     use crate::{
         call::{
-            pileup::has_terminal_repeat,
             require_tags::TagRequirement,
             variant_calling::{ReadFlags, ReadMaskParams},
         },
@@ -36,52 +39,18 @@ mod seqair_readers {
         utils::{CliRegionInput, RegionString},
     };
     use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
-    use seqair::bam::cigar::CigarOpType;
+    use seqair::bam::aux::Aux;
     use seqair::bam::record_store::{
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
     };
-    use seqair_types::{Base, Pos0, Strand};
-    use std::{ops::Range, sync::Arc};
+    use seqair_types::{Pos0, Strand};
+    use std::ops::Range;
     use tracing::{debug, instrument};
-
-    /// Reference sequence window installed by the pileup driver before each
-    /// `readers.pileup()` call so that `RastairRecordFilter::compute` can do
-    /// mismatch-motif inference and deletion reference-base lookup.
-    #[derive(Clone)]
-    pub struct ReferenceWindow {
-        pub bases: Arc<[Base]>,
-        pub start: Pos0,
-    }
-
-    impl Default for ReferenceWindow {
-        fn default() -> Self {
-            Self { bases: Arc::from([] as [Base; 0]), start: Pos0::ZERO }
-        }
-    }
-
-    impl ReferenceWindow {
-        pub fn base_at(&self, pos: u32) -> Option<Base> {
-            let offset = usize::try_from(u64::from(pos).checked_sub(self.start.as_u64())?).ok()?;
-            self.bases.get(offset).copied()
-        }
-
-        pub fn range(&self, pos: u32, len: u32) -> Option<&[Base]> {
-            let offset = usize::try_from(u64::from(pos).checked_sub(self.start.as_u64())?).ok()?;
-            let end = offset.checked_add(usize::try_from(len).ok()?)?;
-            self.bases.get(offset..end)
-        }
-    }
 
     /// Per-record data computed once at fetch time.
     #[derive(Clone)]
     pub struct RastairReadExtras {
         pub strand: Strand,
-        pub has_soft_clip: bool,
-        /// True if first or last `repeat_limit` bases repeat a mono- or di-nucleotide.
-        pub has_repeat: bool,
-        /// TAPS-aware mismatch count. Only computed when `indel_bases > 0`
-        /// (expensive walk); zero otherwise.
-        pub taps_aware_mismatches: u32,
         /// Read positions that survive read-end masking. Resolved here from
         /// (strand, reverse, `seq_len`) so the per-column check is one range
         /// comparison — masking is evaluated at every base of every read, and
@@ -94,198 +63,63 @@ mod seqair_readers {
     pub struct RastairRecordFilter {
         pub read_flags: ReadFlags,
         pub unpaired: bool,
+        pub min_mapq: u8,
         pub tag_requirement: TagRequirement,
-        pub guess_orientation: bool,
         pub read_masking: ReadMaskParams,
-        pub reference: Option<ReferenceWindow>,
+        /// Mapped records the reader fetched, before any of these filters:
+        /// the same count a `.bai` keeps, for the phasing depth guard.
+        pub fetched_mapped: u64,
     }
 
     impl CustomizeRecordStore for RastairRecordFilter {
         type Extra = RastairReadExtras;
 
+        /// Every per-read filter runs here, before the depth cap counts the
+        /// read, so a deep pile of MAPQ 0 reads cannot fill the cap and evict
+        /// the usable ones.
         fn filter_raw(&mut self, fields: &FilterRawFields<'_>) -> bool {
+            if !fields.flags.is_unmapped() {
+                self.fetched_mapped = self.fetched_mapped.saturating_add(1);
+            }
             self.read_flags.filter_flags(fields.flags.raw(), self.unpaired)
+                && fields.mapq >= self.min_mapq
+                && self.tag_requirement.allows(Some(Aux::new(fields.aux_bytes)))
         }
 
+        /// The mask needs the strand, which `compute` resolves, so this read
+        /// has already taken a depth-cap slot; only an extreme read-end mask
+        /// empties a whole read. A read whose extras cannot be read is
+        /// rejected too.
         fn filter(&mut self, rec: &SlimRecord, store: &RecordStore<Self::Extra>) -> bool {
-            // A read the mask covers end to end contributes to no column, so
-            // keeping it would only cost store space and pileup depth.
-            if rec.extra(store).is_ok_and(|extra| extra.mask.is_empty()) {
-                return false;
-            }
-            match &self.tag_requirement {
-                TagRequirement::All => true,
-                TagRequirement::AllOf(filters) => {
-                    // Parity with the htslib path: a record whose aux block can't
-                    // be read fails a tag *requirement* (fail closed, not open).
-                    let Ok(aux) = rec.aux(store) else { return false };
-                    filters
-                        .iter()
-                        .all(|f| aux.get::<&[u8]>(f.tag()).is_ok_and(|v| v == f.value_bytes()))
-                }
-            }
+            rec.extra(store).is_ok_and(|extra| !extra.mask.is_empty())
         }
 
         fn compute(
             &mut self,
             rec: &SlimRecord,
-            store: &RecordStore<RastairReadExtras>,
+            _store: &RecordStore<RastairReadExtras>,
         ) -> RastairReadExtras {
-            let from_flags = Strand::from(rec.flags);
-
-            let strand = if self.guess_orientation {
-                if let Some(reference) = self.reference.as_ref() {
-                    infer_strand_from_motifs(rec, store, reference).unwrap_or(from_flags)
-                } else {
-                    from_flags
-                }
-            } else {
-                from_flags
-            };
-
-            let has_soft_clip = rec
-                .cigar(store)
-                .map(|ops| ops.iter().any(|op| op.op_type() == CigarOpType::SoftClip))
-                .unwrap_or(false);
-
-            let has_repeat = rec
-                .seq(store)
-                .map(|seq| has_terminal_repeat(seq.len(), |i| seq.get(i)))
-                .unwrap_or(false);
-
-            let has_indels = rec.indel_bases > 0;
-            let taps_aware_mismatches = if has_indels {
-                if let Some(reference) = self.reference.as_ref() {
-                    count_taps_aware_mismatches(rec, store, reference, strand)
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
+            let strand = Strand::from(rec.flags);
 
             let mask = self
                 .read_masking
                 .keep_range(strand, rec.flags.is_reverse(), rec.seq_len)
                 .unwrap_or(0..0);
 
-            RastairReadExtras { strand, has_soft_clip, has_repeat, taps_aware_mismatches, mask }
+            RastairReadExtras { strand, mask }
         }
     }
 
-    /// Walk aligned pairs counting non-TAPS mismatches (same logic as `from_hts.rs`).
-    fn count_taps_aware_mismatches<U>(
-        rec: &SlimRecord,
-        store: &RecordStore<U>,
-        reference: &ReferenceWindow,
-        strand: Strand,
-    ) -> u32 {
-        let Ok(pairs) = rec.aligned_pairs_with_read(store) else { return 0 };
-        let mut count = 0u32;
-
-        for matched in pairs.matches_only() {
-            let rpos_u32 = u32::try_from(matched.rpos.as_u64()).unwrap_or(u32::MAX);
-            let Some(ref_base) = reference.base_at(rpos_u32) else { continue };
-            let observed = matched.query;
-
-            if observed == Base::Unknown || ref_base == Base::Unknown || observed == ref_base {
-                continue;
-            }
-
-            let is_taps_signal = match strand {
-                Strand::OT => observed == Base::T && ref_base == Base::C,
-                Strand::OB => observed == Base::A && ref_base == Base::G,
-                Strand::Unknown => {
-                    (observed == Base::T && ref_base == Base::C)
-                        || (observed == Base::A && ref_base == Base::G)
-                }
-            };
-
-            if !is_taps_signal {
-                count += 1;
-            }
-        }
-        count
-    }
-
-    /// Infer OT/OB strand from mismatch-motif evidence (same logic as `from_hts.rs`).
-    fn infer_strand_from_motifs<U>(
-        rec: &SlimRecord,
-        store: &RecordStore<U>,
-        reference: &ReferenceWindow,
-    ) -> Option<Strand> {
-        let pairs = rec.aligned_pairs_with_read(store).ok()?;
-        let mut tg: u32 = 0;
-        let mut ca: u32 = 0;
-
-        for matched in pairs.matches_only() {
-            let rpos_u32 = u32::try_from(matched.rpos.as_u64()).ok()?;
-            let ref_base = reference.base_at(rpos_u32)?;
-            let observed = matched.query;
-
-            if ref_base == Base::Unknown || observed == Base::Unknown || ref_base == observed {
-                continue;
-            }
-
-            count_motifs_at_with_store(rec, store, matched.qpos.as_usize(), &mut tg, &mut ca);
-        }
-
-        match tg.cmp(&ca) {
-            std::cmp::Ordering::Greater => Some(Strand::OT),
-            std::cmp::Ordering::Less => Some(Strand::OB),
-            std::cmp::Ordering::Equal => {
-                // Tie: pseudo-random from qname+pos+flags (same approach as from_hts.rs)
-                let name = rec.qname(store).unwrap_or(&[]);
-                Some(pseudo_random_strand_from_bytes(name, rec.pos.as_u64(), rec.flags.raw()))
-            }
-        }
-    }
-
-    fn count_motifs_at_with_store<U>(
-        rec: &SlimRecord,
-        store: &RecordStore<U>,
-        idx: usize,
-        tg: &mut u32,
-        ca: &mut u32,
-    ) {
-        let Ok(seq) = rec.seq(store) else { return };
-        let pair_at = |first: usize, second: usize| -> Option<[Base; 2]> {
-            Some([*seq.get(first)?, *seq.get(second)?])
-        };
-        let mut bump = |motif: [Base; 2]| match motif {
-            [Base::T, Base::G] => *tg = tg.saturating_add(1),
-            [Base::C, Base::A] => *ca = ca.saturating_add(1),
-            _ => {}
-        };
-        if let Some(next) = idx.checked_add(1)
-            && let Some(motif) = pair_at(idx, next)
-        {
-            bump(motif);
-        }
-        if let Some(prev) = idx.checked_sub(1)
-            && let Some(motif) = pair_at(prev, idx)
-        {
-            bump(motif);
-        }
-    }
-
-    fn pseudo_random_strand_from_bytes(name: &[u8], pos: u64, flags: u16) -> Strand {
-        use rustc_hash::FxHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = FxHasher::default();
-        name.hash(&mut hasher);
-        pos.hash(&mut hasher);
-        flags.hash(&mut hasher);
-        if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
-    }
-
-    /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` that exposes
-    /// the same `segments()` / `segment()` interface as the htslib `Readers`,
-    /// so the `call` path can switch between backends with minimal call-site
-    /// changes.
+    /// Newtype wrapping `seqair::Readers<RastairRecordFilter>` with the
+    /// `segments()` / `segment()` interface the htslib `Readers` of `per-read`
+    /// and the BAM rewrite also have.
     pub struct SeqairReaders {
         pub(super) inner: seqair::Readers<RastairRecordFilter>,
         regions: Option<CliRegionInput>,
+        /// The whole file's mapped reads per covered base, from its index
+        /// ([`mapped_reads_per_base`](super::mapped_reads_per_base)); set
+        /// only when phasing asks for it.
+        pub run_reads_per_base: Option<f64>,
     }
 
     impl SeqairReaders {
@@ -293,7 +127,7 @@ mod seqair_readers {
             inner: seqair::Readers<RastairRecordFilter>,
             regions: Option<CliRegionInput>,
         ) -> Self {
-            Self { inner, regions }
+            Self { inner, regions, run_reads_per_base: None }
         }
 
         /// A handle for another thread that shares this one's parsed index and
@@ -301,10 +135,14 @@ mod seqair_readers {
         /// segments on different threads decode each slice once.
         pub fn fork(&self) -> Result<Self> {
             let inner = self.inner.fork().wrap_err("Failed to fork seqair readers")?;
-            Ok(Self { inner, regions: self.regions.clone() })
+            Ok(Self {
+                inner,
+                regions: self.regions.clone(),
+                run_reads_per_base: self.run_reads_per_base,
+            })
         }
 
-        /// Produces the same `ChunkRegion` iterator as the htslib `Readers::segments()`.
+        /// Produces the same `ChunkRegion` iterator as `Readers::segments()`.
         #[instrument(level = "debug", skip_all)]
         pub fn segments(
             &self,
@@ -353,15 +191,14 @@ mod seqair_readers {
         }
 
         /// Fetches the FASTA sequence for `region`, returning a rastair `Segment`.
-        /// Mirrors the htslib `Readers::segment()` signature.
         #[instrument(level = "debug", skip_all)]
         pub fn segment(&mut self, region: &ChunkRegion, overfetch: u64) -> Result<Segment> {
             let last_position_to_fetch =
                 region.end.wrapping_add(overfetch).min(region.last_position);
             let start = Pos0::try_from(region.start)
                 .wrap_err_with(|| format!("region start {} is out of range", region.start))?;
-            // `last_position_to_fetch` is an exclusive bound here, as it is in the
-            // htslib arm (`FastaReader::fetch_seq` takes `[start, stop)`), while
+            // `last_position_to_fetch` is an exclusive bound here, as it is for
+            // `Readers::segment` (`FastaReader::fetch_seq` takes `[start, stop)`), while
             // seqair's span is closed on both ends — hence the `- 1`. A region
             // whose bound coincides with its start names no base at all, and a
             // closed span cannot say that, so it short-circuits to an empty
@@ -398,6 +235,15 @@ mod seqair_readers {
         pub(crate) fn inner_mut(&mut self) -> &mut seqair::Readers<RastairRecordFilter> {
             &mut self.inner
         }
+
+        /// The run's mapped reads per base over those of the segment
+        /// `get_pileups` loaded last, `segment_len` bases long; `None`
+        /// without [`Self::run_reads_per_base`] or reads in the segment.
+        pub fn depth_scale(&self, segment_len: u64) -> Option<f64> {
+            let segment = self.inner.customize().fetched_mapped as f64 / segment_len as f64;
+            let run = self.run_reads_per_base?;
+            (segment.is_finite() && segment > 0.0).then(|| run / segment)
+        }
     }
 
     fn get_selected_region(
@@ -405,12 +251,13 @@ mod seqair_readers {
         header: &seqair::bam::BamHeader,
     ) -> Result<SelectedRegion> {
         let chromosome = region.chromosome.as_str();
-        let start = region.start.map(|p| p.as_u64()).unwrap_or(1);
+        let start = region.start.map(|p| p.to_zero_based().as_u64()).unwrap_or(0);
 
         let contig_info = header.resolve_contig(chromosome).wrap_err_with(|| {
             format!("Failed to resolve chromosome {} from header", region.chromosome)
         })?;
         let last_position = contig_info.len;
+        // A closed 1-based end is the same number as a half-open 0-based one.
         let end = region.end.map(|p| p.as_u64()).unwrap_or(last_position);
 
         ensure!(
@@ -434,11 +281,168 @@ mod seqair_readers {
             .map(|target| {
                 SelectedRegion::EntireContig(Region {
                     contig: target.name,
-                    start: 1,
+                    start: 0,
                     end: target.length,
                 })
             })
             .collect()
+    }
+}
+
+pub use index_depth::mapped_reads_per_base;
+
+/// seqair parses the index but keeps neither its read counts nor its bins, so
+/// this reads them itself.
+mod index_depth {
+    use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
+    use noodles::csi::{BinningIndex as _, binning_index::ReferenceSequence as _};
+    use std::{ops::Range, path::Path};
+
+    /// What a BAI or CSI index says about one reference.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ReferenceCounts {
+        /// `None` when the index keeps no pseudo-bin for it.
+        mapped: Option<u64>,
+        /// Bases in the index's finest bins that hold a read: the part of a
+        /// contig a sliced BAM left out is not counted.
+        leaf_bases: u64,
+    }
+
+    /// The finest bins of a binning scheme, and the bases each spans.
+    fn leaves(min_shift: u8, depth: u8) -> (Range<u64>, u64) {
+        let first = ((1u64 << (3 * u32::from(depth))) - 1) / 7;
+        (first..first + (1u64 << (3 * u32::from(depth))), 1u64 << min_shift)
+    }
+
+    /// Mapped reads per covered base over the whole alignment file, from its
+    /// `.csi` or `.bai` (looked up as seqair does); `contig_lengths` are the
+    /// header's, by tid, and cap a short contig's last bin. `None` without
+    /// such an index (a CRAM), or when it holds no read counts.
+    pub fn mapped_reads_per_base(alignment: &Path, contig_lengths: &[u64]) -> Result<Option<f64>> {
+        let with_suffix = |suffix: &str| {
+            let mut path = alignment.as_os_str().to_owned();
+            path.push(suffix);
+            std::path::PathBuf::from(path)
+        };
+        let references = if let Some(csi) = [with_suffix(".csi"), alignment.with_extension("csi")]
+            .into_iter()
+            .find(|path| path.exists())
+        {
+            let index = noodles::csi::fs::read(&csi)
+                .wrap_err_with(|| format!("Failed to read {}", csi.display()))?;
+            csi_counts(&index)
+        } else if let Some(bai) = [with_suffix(".bai"), alignment.with_extension("bai")]
+            .into_iter()
+            .find(|path| path.exists())
+        {
+            let bytes = std::fs::read(&bai)
+                .wrap_err_with(|| format!("Failed to read {}", bai.display()))?;
+            bai_counts(&bytes).wrap_err_with(|| format!("Failed to parse {}", bai.display()))?
+        } else {
+            return Ok(None);
+        };
+        Ok(reads_per_base(&references, contig_lengths))
+    }
+
+    fn reads_per_base(references: &[ReferenceCounts], contig_lengths: &[u64]) -> Option<f64> {
+        let mut mapped = None;
+        let mut covered = 0;
+        for (tid, reference) in references.iter().enumerate() {
+            if let Some(count) = reference.mapped {
+                *mapped.get_or_insert(0) += count;
+            }
+            let length = contig_lengths.get(tid).copied().unwrap_or(u64::MAX);
+            covered += reference.leaf_bases.min(length);
+        }
+        let mapped = mapped.filter(|&mapped| mapped > 0 && covered > 0)?;
+        Some(mapped as f64 / covered as f64)
+    }
+
+    fn csi_counts(index: &noodles::csi::Index) -> Vec<ReferenceCounts> {
+        let (leaves, leaf_len) = leaves(index.min_shift(), index.depth());
+        let references = index.reference_sequences().iter();
+        references
+            .map(|reference| ReferenceCounts {
+                mapped: reference.metadata().map(|metadata| metadata.mapped_record_count()),
+                leaf_bases: leaf_len
+                    * reference.bins().keys().filter(|&&bin| leaves.contains(&(bin as u64))).count()
+                        as u64,
+            })
+            .collect()
+    }
+
+    /// SAM spec §5.2: per reference, bins with their chunks, the pseudo-bin
+    /// 37450 among them whose second chunk is (mapped, unmapped), then the
+    /// linear index.
+    fn bai_counts(bytes: &[u8]) -> Result<Vec<ReferenceCounts>> {
+        const META_BIN: u64 = 37450;
+        let mut index = LeBytes(bytes);
+        ensure!(index.u32()? == u32::from_le_bytes(*b"BAI\x01"), "Not a BAI index");
+        let (leaves, leaf_len) = leaves(14, 5);
+        let mut references = Vec::new();
+        for _ in 0..index.u32()? {
+            let mut reference = ReferenceCounts { mapped: None, leaf_bases: 0 };
+            for _ in 0..index.u32()? {
+                let bin = u64::from(index.u32()?);
+                let n_chunk = usize::try_from(index.u32()?)?;
+                let chunks = index.take(16 * n_chunk)?;
+                if bin == META_BIN {
+                    let count = chunks.get(16..24).wrap_err("Pseudo-bin lacks its counts")?;
+                    reference.mapped = Some(u64::from_le_bytes(count.try_into()?));
+                } else if leaves.contains(&bin) {
+                    reference.leaf_bases += leaf_len;
+                }
+            }
+            let n_intv = usize::try_from(index.u32()?)?;
+            index.take(8 * n_intv)?;
+            references.push(reference);
+        }
+        Ok(references)
+    }
+
+    struct LeBytes<'a>(&'a [u8]);
+
+    impl<'a> LeBytes<'a> {
+        fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+            let (head, tail) = self.0.split_at_checked(n).wrap_err("Index ends early")?;
+            self.0 = tail;
+            Ok(head)
+        }
+
+        fn u32(&mut self) -> Result<u32> {
+            Ok(u32::from_le_bytes(self.take(4)?.try_into()?))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn bai_counts_match_samtools_idxstats() -> Result<()> {
+            let bytes = std::fs::read("tests/data/test.bam.bai")?;
+            let counts = |mapped, leaves: u64| ReferenceCounts {
+                mapped: Some(mapped),
+                leaf_bases: leaves * 16_384,
+            };
+            // Mapped from `samtools idxstats tests/data/test.bam`; the leaves
+            // agree with a CSI that `samtools index -c` built.
+            assert_eq!(
+                bai_counts(&bytes)?,
+                [counts(12_297, 3), counts(2_146, 1), counts(10_500, 3)]
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_contig_shorter_than_its_bin_counts_its_length() -> Result<()> {
+            let bytes = std::fs::read("tests/data/test.bam.bai")?;
+            let lengths = [61_431_566, 2_018, 48_502];
+            let covered = 3 * 16_384 + 2_018 + 48_502;
+            let rate = reads_per_base(&bai_counts(&bytes)?, &lengths);
+            assert_eq!(rate, Some(24_943.0 / f64::from(covered)));
+            Ok(())
+        }
     }
 }
 
@@ -485,8 +489,7 @@ impl ReaderParams {
         Ok(Readers { fasta, bam, params: self.clone() })
     }
 
-    #[cfg(feature = "experimental-seqair")]
-    pub fn open_seqair(&self) -> Result<SeqairReaders> {
+    pub fn pileup_readers(&self) -> Result<SeqairReaders> {
         use color_eyre::eyre::WrapErr as _;
         let inner = seqair::Readers::open_customized(
             self.bam_file.path(),
@@ -498,37 +501,12 @@ impl ReaderParams {
         })?;
         Ok(SeqairReaders::new(inner, self.regions.clone()))
     }
-
-    #[cfg(feature = "experimental-seqair")]
-    pub fn pileup_readers(&self) -> Result<SeqairReaders> {
-        self.open_seqair()
-    }
-
-    #[cfg(not(feature = "experimental-seqair"))]
-    pub fn pileup_readers(&self) -> Result<Readers> {
-        self.readers()
-    }
-
-    /// Opens a worker thread's readers, named after `SeqairReaders::fork` so
-    /// the two backends' [`ReaderSource`](crate::sequence::ReaderSource) read alike.
-    #[cfg(not(feature = "experimental-seqair"))]
-    pub fn fork(&self) -> Result<Readers> {
-        self.readers()
-    }
 }
 
 pub struct Readers {
     pub fasta: FastaReader,
     pub bam: bam::IndexedReader,
     params: ReaderParams,
-}
-
-/// htslib readers cannot be shared between threads, so workers keep only what
-/// opened them.
-impl From<Readers> for ReaderParams {
-    fn from(readers: Readers) -> Self {
-        readers.params
-    }
 }
 
 impl Readers {
@@ -609,7 +587,7 @@ impl Readers {
 fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result<SelectedRegion> {
     let chromosome = region.chromosome.as_str();
     // If no start position is specified, default to beginning of chromosome
-    let start = region.start.map(to_u64).unwrap_or(1);
+    let start = region.start.map(|p| p.to_zero_based().as_u64()).unwrap_or(0);
 
     let target_id = bam_header
         .tid(region.chromosome.as_bytes())
@@ -625,7 +603,8 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
     let last_position =
         bam_header.target_len(target_id).wrap_err("Failed to fetch header length")?;
     // If no end specified, use chromosome length from BAM header
-    let end = region.end.map(to_u64).unwrap_or(last_position);
+    // A closed 1-based end is the same number as a half-open 0-based one.
+    let end = region.end.map(|p| p.as_u64()).unwrap_or(last_position);
 
     ensure!(
         start <= last_position,
@@ -641,10 +620,6 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
         region: Region { contig: region.chromosome.clone(), start, end },
         last_position,
     })
-}
-
-fn to_u64(value: seqair_types::Pos1) -> u64 {
-    value.as_u64()
 }
 
 #[instrument(level = "debug", skip(header))]
@@ -666,7 +641,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
 
             Ok(SelectedRegion::EntireContig(Region {
                 contig: chr,
-                start: 1, // 1-based coordinates
+                start: 0,
                 end: length,
             }))
         })
@@ -677,6 +652,50 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// `--require-tags` is judged on the raw aux bytes, before the depth cap
+    /// counts the read, so a read without the tag never takes a slot.
+    #[test]
+    fn record_filter_rejects_a_missing_tag_before_loading() {
+        use crate::call::require_tags::RequireTagsParams;
+        use seqair::bam::aux_data::AuxData;
+        use seqair::bam::cigar::{CigarOp, CigarOpType};
+        use seqair::bam::{BamHeader, MateFields, record_store::RecordStore};
+        use seqair::reader::ResolveTid as _;
+        use seqair_types::{BamFlags, Base, Pos0};
+
+        let mut filter = RastairRecordFilter {
+            min_mapq: 1,
+            tag_requirement: RequireTagsParams { require_tags: vec!["RG=keep".parse().unwrap()] }
+                .filter(),
+            ..Default::default()
+        };
+        let tid = 0u32.resolve_tid(&BamHeader::synthetic(1, 1_000)).unwrap();
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        for (name, group) in [(&b"tagged"[..], "keep"), (b"other", "drop")] {
+            let mut aux = AuxData::new();
+            aux.set_string(*b"RG", group.as_bytes());
+            store
+                .push_fields(
+                    Pos0::new(10).unwrap(),
+                    Pos0::new(17).unwrap(),
+                    BamFlags::from(99u16),
+                    60,
+                    8,
+                    0,
+                    name,
+                    &[CigarOp::new(CigarOpType::Match, 8)],
+                    &[Base::A; 8],
+                    &[40u8; 8],
+                    aux.as_bytes(),
+                    Some(tid),
+                    MateFields { tid: Some(tid), pos: Pos0::new(500), template_len: None },
+                    &mut filter,
+                )
+                .unwrap();
+        }
+        assert_eq!(store.len(), 1, "only the read carrying RG=keep is loaded");
+    }
 
     fn test_data_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("data")
@@ -776,7 +795,7 @@ mod tests {
         let full_region = get_selected_region(&region_chr_only, header)?;
 
         assert_eq!(full_region.contig, "chr19");
-        assert_eq!(full_region.start, 1); // Should default to 1
+        assert_eq!(full_region.start, 0); // Should default to the first base
 
         // The end should be the chromosome length from the header
         let chr19_tid = header.tid(b"chr19").unwrap();
@@ -788,7 +807,7 @@ mod tests {
         let full_region = get_selected_region(&region_with_start, header)?;
 
         assert_eq!(full_region.contig, "chr19");
-        assert_eq!(full_region.start, 100);
+        assert_eq!(full_region.start, 99); // 1-based 100, 0-based 99
         assert_eq!(full_region.end, chr19_len); // Should default to chromosome length
 
         Ok(())
@@ -873,8 +892,8 @@ mod tests {
             let target_name = std::str::from_utf8(header.target_names()[i]).unwrap();
             assert_eq!(region.contig, target_name);
 
-            // Start should be 1 (1-based)
-            assert_eq!(region.start, 1);
+            // The contig's first base, 0-based
+            assert_eq!(region.start, 0);
 
             // End should match the chromosome length
             let tid = u32::try_from(i).unwrap();
@@ -885,7 +904,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "experimental-seqair")]
     mod seqair_fasta_filtering {
         use super::*;
 
@@ -896,7 +914,7 @@ mod tests {
             let params =
                 ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let chunks: Vec<ChunkRegion> = readers.segments(u64::MAX, 0)?.collect();
 
             let contigs: std::collections::HashSet<&str> =
@@ -917,7 +935,7 @@ mod tests {
             let params =
                 ReaderParams { bam_file: get_test_bam(), fasta_file: fasta, regions: None };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let result = readers.segments(u64::MAX, 0).map(Iterator::count);
             assert!(result.is_err(), "expected an error when no BAM contig is in the FASTA");
             Ok(())
@@ -937,7 +955,7 @@ mod tests {
                 regions: Some(regions),
             };
 
-            let readers = params.open_seqair()?;
+            let readers = params.pileup_readers()?;
             let result = readers.segments(u64::MAX, 0).map(Iterator::count);
             assert!(result.is_err(), "explicit region absent from FASTA must be a hard error");
             Ok(())

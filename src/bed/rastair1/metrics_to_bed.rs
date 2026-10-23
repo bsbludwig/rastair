@@ -13,7 +13,7 @@ impl Rastair1BedFormat {
     #[instrument(level = "trace", skip_all, fields(pos=%pileup.contig_pos()))]
     pub fn from_metrics(pileup: &PileupMetrics) -> Result<Option<Self>> {
         let t = &pileup.tags;
-        if !(t.cpg || t.denovo_cpg || t.denovo_cpg_partner) {
+        if !(*pileup.pos_metrics.cpg || t.denovo_cpg || t.denovo_cpg_partner) {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }
@@ -22,17 +22,13 @@ impl Rastair1BedFormat {
 
         // If a position is covered by both a ref CpG site and a de-novo CpG
         // site, the ref case should take precedence.
-        let de_novo = !t.cpg && (t.denovo_cpg || t.denovo_cpg_partner);
+        let de_novo = !*pileup.pos_metrics.cpg && (t.denovo_cpg || t.denovo_cpg_partner);
 
         let gt = if let Some(gt) = pileup.pos_metrics.genotype {
             gt
         } else {
             debug!("No genotype for record");
-            EstimatedGenotype {
-                genotype: GenotypeTag::hom_ref(),
-                likelihood: Probability::ZERO,
-                confidence: Probability::ZERO,
-            }
+            EstimatedGenotype { genotype: GenotypeTag::hom_ref(), confidence: Probability::ZERO }
         };
 
         let counts = pileup.pos_metrics.extended.methylation_strand_info;
@@ -66,7 +62,8 @@ impl Rastair1BedFormat {
             // Coverage is total read depth at this position, including all bases/alts
             coverage: pileup.pos_metrics.depth as usize,
             genotype: GenotypeString::from_genotype_tag(gt.genotype, ref_base, &alt_bases),
-            genotype_likelihood: Phred::from(gt.likelihood),
+            // The VCF has one genotype number, `GC`; the legacy column repeats it.
+            genotype_likelihood: Phred::from(gt.confidence),
             genotype_confidence: Phred::from(gt.confidence),
             de_novo,
         };

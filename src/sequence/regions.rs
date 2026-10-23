@@ -8,19 +8,20 @@ use seqair_types::SmolStr;
 use std::fmt;
 use tracing::warn;
 
-/// A genomic region with chromosome and coordinates
+/// A genomic region with chromosome and coordinates, 0-based and half-open:
+/// the same numbers as the 1-based, closed `contig:start+1-end`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Region {
     pub contig: SmolStr,
     /// 0-based start position (inclusive)
     pub start: u64,
-    /// 0-based end position (inclusive)
+    /// 0-based end position (exclusive)
     pub end: u64,
 }
 
 impl Region {
-    pub fn range(&self) -> std::ops::RangeInclusive<u64> {
-        self.start..=self.end
+    pub fn range(&self) -> std::ops::Range<u64> {
+        self.start..self.end
     }
 
     /// Returns true if the given position falls within this region's bounds
@@ -29,22 +30,12 @@ impl Region {
     }
 
     /// How many positions this region covers.
-    ///
-    /// Both ends are inclusive, so a region whose start and end are the same
-    /// base is one base long. This used to return `end - start`, which is one
-    /// short of what [`contains`](Self::contains) accepts — enough to make a
-    /// caller that sizes a buffer from it grow that buffer exactly once, at
-    /// the end, having already filled it.
     pub fn len(&self) -> u64 {
-        self.end.checked_sub(self.start).map_or(0, |span| span.saturating_add(1))
+        self.end.saturating_sub(self.start)
     }
 
-    /// True only for a malformed region whose end precedes its start. A
-    /// well-formed one covers at least its own start, so it is never empty —
-    /// this used to report `start >= end`, calling every single-base region
-    /// empty while `contains` accepted its one position.
     pub fn is_empty(&self) -> bool {
-        self.end < self.start
+        self.end <= self.start
     }
 }
 
@@ -53,7 +44,7 @@ impl<'reg> TryFrom<&'reg Region> for FetchDefinition<'reg> {
 
     fn try_from(region: &'reg Region) -> Result<Self> {
         let start = i64::try_from(region.start).wrap_err("start is invalid i64")?;
-        let end = i64::try_from(region.end.saturating_add(1)).wrap_err("end is invalid i64")?;
+        let end = i64::try_from(region.end).wrap_err("end is invalid i64")?;
 
         Ok(FetchDefinition::RegionString(region.contig.as_bytes(), start, end))
     }
@@ -92,7 +83,7 @@ pub enum SelectedRegion {
     UserDefinedSubset {
         /// The region that is a subset of the entire contig
         region: Region,
-        /// Last position in contig this region covers
+        /// The contig's length, one past its last 0-based position
         last_position: u64,
     },
 }
@@ -165,7 +156,8 @@ pub(crate) fn retain_fasta_regions(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChunkRegion {
     pub region: Region,
-    /// The last valid position in the full region this chunk belongs to
+    /// The length of the contig this chunk belongs to, one past its last
+    /// 0-based position
     pub last_position: u64,
     /// Number of bases of overlap at the start of this chunk
     pub overlap_start: u64,
@@ -205,21 +197,16 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// `len` must count the positions `contains` accepts. Both ends are
-    /// inclusive, so a region that starts and ends at the same base is one
-    /// base long — not zero, and not empty.
+    /// `len` must count the positions `contains` accepts, and `is_empty` say
+    /// whether there are any.
     #[test]
     fn len_counts_the_positions_contains_accepts() {
-        for (start, end) in [(100u64, 100u64), (100, 101), (100, 200), (0, 0)] {
+        for (start, end) in [(100u64, 100u64), (100, 101), (100, 200), (0, 1), (200, 100)] {
             let region = Region { contig: "chr1".into(), start, end };
-            let counted = (start..=end).filter(|&pos| region.contains(pos)).count() as u64;
-            assert_eq!(region.len(), counted, "[{start}, {end}]");
-            assert!(!region.is_empty(), "[{start}, {end}] contains {counted} positions");
+            let counted = (0..=300).filter(|&pos| region.contains(pos)).count() as u64;
+            assert_eq!(region.len(), counted, "[{start}, {end})");
+            assert_eq!(region.is_empty(), counted == 0, "[{start}, {end})");
         }
-
-        let backwards = Region { contig: "chr1".into(), start: 200, end: 100 };
-        assert!(backwards.is_empty());
-        assert_eq!(backwards.len(), 0);
     }
 
     #[test]
@@ -227,7 +214,8 @@ mod tests {
         let region = Region { contig: "chr1".into(), start: 100, end: 200 };
         assert!(region.contains(100));
         assert!(region.contains(150));
-        assert!(region.contains(200));
+        assert!(region.contains(199));
+        assert!(!region.contains(200));
         assert!(!region.contains(50));
         assert!(!region.contains(250));
     }

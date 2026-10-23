@@ -588,8 +588,11 @@ fn uncovered_reference_cpg_reported_with_all_and_cpgs_only() -> Result<()> {
     assert_eq!(records.len(), 2, "both reference CpG positions should survive pre-filtering");
     let c_record = &records[0];
     let g_record = &records[1];
-    assert!(c_record.tags.cpg && !c_record.tags.covered, "C column should be an uncovered CpG");
-    assert!(g_record.tags.cpg && g_record.tags.covered, "G column should be a covered CpG");
+    assert!(
+        *c_record.pos_metrics.cpg && !c_record.tags.covered,
+        "C column should be an uncovered CpG"
+    );
+    assert!(*g_record.pos_metrics.cpg && g_record.tags.covered, "G column should be a covered CpG");
 
     let all_cpgs = RecordFilters { vcf_all: true, cpgs_only: true };
     let cpgs_only = RecordFilters { vcf_all: false, cpgs_only: true };

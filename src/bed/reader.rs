@@ -174,7 +174,7 @@ impl SimpleRastairBedRecord {
         };
 
         let genotype = rec.genotype.split('/').collect::<SmallVec<&str, 2>>();
-        let [from, to] = genotype.as_slice() else {
+        let [from, to] = genotype.as_ref() else {
             bail!(
                 "Failed to parse genotype column, expected format 'N/N' or similar, but got {genotype:?}"
             );

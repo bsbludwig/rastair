@@ -7,6 +7,16 @@
 //! tables. [`crate::vcf::emit`] drives the encoder directly from
 //! [`PileupMetrics`](crate::metrics::PileupMetrics) using these keys — there is
 //! no intermediate record struct.
+//!
+//! Output is `##fileformat=VCFv4.5`, which seqair writes unconditionally: it is
+//! the version that defines `M5mC`, `DPM5mC` and `ADM5mC` (aliases of the
+//! ChEBI-numbered `M27551C` family). From 4.4 on the first allele's `GT` phase
+//! bit is read, so seqair sets it, or htslib renders a phased `0|1` as `/0|1`.
+//!
+//! Those three keep `Number=.` rather than 4.5's `Number=M`: noodles rejects
+//! `M` whatever the declared version, and the error rejects the whole file in
+//! every noodles-based tool (`aardvark` included). Revisit when noodles
+//! implements the 4.5 cardinalities; two tests here pin both halves.
 
 use std::io::Write;
 
@@ -146,15 +156,21 @@ const CPGNOVO_DEF: InfoFieldDef<seqair::vcf::Flag> = InfoFieldDef::new(
 
 const GT_DEF: FormatFieldDef<seqair::vcf::Gt> =
     FormatFieldDef::new("GT", Number::Count(1), ValueType::String, "Genotype");
-const GL_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
-    "GL",
-    Number::Genotypes,
-    ValueType::Float,
-    "Genotype likelihoods, Phred-scaled",
+const PS_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "PS",
+    Number::Count(1),
+    ValueType::Integer,
+    "Phase set identifier: the position of the first variant in the phase block",
+);
+const PQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "PQ",
+    Number::Count(1),
+    ValueType::Integer,
+    "Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly",
 );
 const GC_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
     "GC",
-    Number::Genotypes,
+    Number::Count(1),
     ValueType::Float,
     "Genotype confidence, Phred-scaled",
 );
@@ -225,8 +241,17 @@ const INFO_DEFS: &[&dyn FieldDescription] = &[
 ];
 
 /// Every FORMAT field definition, in header order. Drives doc generation.
-const FORMAT_DEFS: &[&dyn FieldDescription] =
-    &[&GT_DEF, &GL_DEF, &GC_DEF, &SAMPLE_DP_DEF, &M5MC_DEF, &DPM5MC_DEF, &ADM5MC_DEF, &ML_DEF];
+const FORMAT_DEFS: &[&dyn FieldDescription] = &[
+    &GT_DEF,
+    &PS_DEF,
+    &PQ_DEF,
+    &GC_DEF,
+    &SAMPLE_DP_DEF,
+    &M5MC_DEF,
+    &DPM5MC_DEF,
+    &ADM5MC_DEF,
+    &ML_DEF,
+];
 
 /// Write the VCF field reference documentation as markdown.
 pub fn write_vcf_docs<W: Write>(w: &mut W) -> std::io::Result<()> {
@@ -287,7 +312,7 @@ pub const ALL_INFO_IDS: &[&str] = &[
 ];
 
 /// All FORMAT field IDs. Used to validate `--vcf-format-fields` CLI input.
-pub const ALL_FORMAT_IDS: &[&str] = &["GT", "GL", "GC", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
+pub const ALL_FORMAT_IDS: &[&str] = &["GT", "GC", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
 
 // ── Resolved keys ───────────────────────────────────────────────────────
 
@@ -321,7 +346,9 @@ pub(crate) struct InfoKeys {
 /// All FORMAT keys, resolved against the header.
 pub(crate) struct FormatKeys {
     pub gt: FormatGt,
-    pub gl: FormatFloat,
+    /// Written only where the genotype is phased, and so is `pq`.
+    pub ps: FormatInt,
+    pub pq: FormatInt,
     pub gc: FormatFloat,
     pub dp: FormatInt,
     pub m5mc: FormatFloats,
@@ -423,7 +450,8 @@ pub fn register(
     let mut builder = builder.formats();
     let format = FormatKeys {
         gt: builder.register_format(&GT_DEF)?,
-        gl: builder.register_format(&GL_DEF)?,
+        ps: builder.register_format(&PS_DEF)?,
+        pq: builder.register_format(&PQ_DEF)?,
         gc: builder.register_format(&GC_DEF)?,
         dp: builder.register_format(&SAMPLE_DP_DEF)?,
         m5mc: builder.register_format(&M5MC_DEF)?,
@@ -480,7 +508,6 @@ pub struct InfoSelection {
 #[derive(Debug, Clone)]
 pub struct FormatSelection {
     pub gt: bool,
-    pub gl: bool,
     pub gc: bool,
     pub dp: bool,
     pub m5mc: bool,
@@ -517,7 +544,6 @@ impl Default for FieldConfig {
             },
             format: FormatSelection {
                 gt: true,
-                gl: true,
                 gc: true,
                 dp: true,
                 m5mc: true,
@@ -558,16 +584,9 @@ impl FieldConfig {
             *f = true;
         }
         let m = &mut self.format;
-        for f in [
-            &mut m.gt,
-            &mut m.gl,
-            &mut m.gc,
-            &mut m.dp,
-            &mut m.m5mc,
-            &mut m.dpm5mc,
-            &mut m.adm5mc,
-            &mut m.ml,
-        ] {
+        for f in
+            [&mut m.gt, &mut m.gc, &mut m.dp, &mut m.m5mc, &mut m.dpm5mc, &mut m.adm5mc, &mut m.ml]
+        {
             *f = true;
         }
         self
@@ -620,7 +639,6 @@ impl FieldConfig {
         let m = &mut self.format;
         match id {
             "GT" => m.gt = true,
-            "GL" => m.gl = true,
             "GC" => m.gc = true,
             "DP" => m.dp = true,
             "M5mC" => m.m5mc = true,

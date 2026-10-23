@@ -1,11 +1,27 @@
 //! Direct VCF/BCF emission from [`PileupMetrics`].
 //!
-//! This replaces the old `to_vcf_records` → intermediate `Record` → htslib
-//! pipeline: per emitted line we build typed [`Alleles`] from the pileup's
-//! `Base`s and drive seqair's typestate encoder straight from the metrics — no
+//! Per emitted line we build typed [`Alleles`] from the pileup's `Base`s and
+//! drive seqair's typestate encoder straight from the metrics — no
 //! intermediate record struct, no string round-trips.
+//!
+//! `QUAL` is the Phred-scaled probability, as given by whatever decided the
+//! record, that no variant is at this site: the forest's score for an SNV
+//! record, called or rejected (the highest over a multi-allelic record's
+//! alts); without forests (`--no-ml`) the SNV engine's margin for the alt,
+//! the same number an indel record carries from the pair-HMM; and for a
+//! reference-only record its hom-ref genotype confidence, the value of `GC`.
+//! A record whose decider gave no number has `QUAL` missing.
+//!
+//! `DP` and `AD` are the decider's reads by the same rule: an SNV record
+//! counts the column's reads per base, an indel record the reads the pair-HMM
+//! assigned to each haplotype over its window. The two are not interchanged:
+//! a window holds reads with no base at the anchor column, so an indel's `AD`
+//! against the column's depth could sum to more than `DP`.
 
-use std::io::Write;
+use std::{
+    io::Write,
+    num::{NonZeroU8, NonZeroU16},
+};
 
 use color_eyre::{Result, eyre::Context as _, eyre::ContextCompat as _, eyre::ensure};
 use enumset::EnumSet;
@@ -15,8 +31,13 @@ use seqair_types::{Base, Phred, Pos1, Probability, SmallVec, SmolStr};
 use crate::{
     call::{
         RecordFilters,
-        pileup::indels::IndelAllele,
-        variant_calling::{ErrorModel, GenotypeTag},
+        pair_hmm::EventIdx,
+        phasing::{self, GtAllele, PhaseCall, SiteKind},
+        pileup::indels::{IndelAllele, Scored},
+        variant_calling::{
+            GenotypeTag,
+            indel_calling::{IndelCall, IndelRecords},
+        },
     },
     metrics::{AlleleMetrics, Alt, AltCall, PileupMetrics},
     utils::IntoF64 as _,
@@ -32,14 +53,12 @@ use crate::{
 /// a main record (real variants, or reference-only for CpG tracking), optional
 /// rejected records (methylation evidence / read errors, only with `--vcf-all`),
 /// and any indel records.
-#[expect(clippy::too_many_arguments, reason = "self-contained per-pileup encode entry point")]
 pub fn emit_pileup<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
     contig: &ContigId,
     config: &FieldConfig,
     ml_threshold: Option<Probability>,
-    error_model: &ErrorModel,
     record_filter: &RecordFilters,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
@@ -64,9 +83,9 @@ pub fn emit_pileup<W: Write>(
         }
     }
 
-    // Line selection, ported from `VcfRecordSet::to_vec`.
+    // Line selection.
     let t = &pileup.tags;
-    let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
+    let cpg = *pileup.pos_metrics.cpg || t.denovo_cpg || t.denovo_cpg_partner;
     // A reference-only record (no real variants) is only emitted when it is a
     // CpG/de-novo-CpG; otherwise a covered non-CpG would carry M5mC values
     // without the CPG/CPGnovo tags set.
@@ -85,7 +104,8 @@ pub fn emit_pileup<W: Write>(
     };
 
     if want_main {
-        emit_main_record(pileup, schema, contig, config, &real_variants, error_model, writer)
+        let forests = ml_threshold.is_some();
+        emit_main_record(pileup, schema, contig, config, &real_variants, forests, writer)
             .wrap_err("Failed to emit main VCF record")?;
     }
 
@@ -96,95 +116,49 @@ pub fn emit_pileup<W: Write>(
         }
     }
 
-    let indel_calls = pileup.indel_data.as_ref().map_or(&[][..], |d| d.calls.as_slice());
-    // A compound het's two alleles share an anchor, so they have to go out as one
-    // multi-allelic record: two biallelic ones would each carry a `1/2` genotype
-    // referring to an allele they do not declare.
-    if indel_calls.iter().any(|c| matches!(c.genotype, GenotypeTag::AltHet(..))) {
-        emit_compound_het_record(
-            pileup,
-            schema,
-            contig,
-            config,
-            indel_calls,
-            ml_threshold,
-            record_filter.vcf_all,
-            writer,
-        )
-        .wrap_err("Failed to emit compound-het indel VCF record")?;
-    } else {
-        for call in indel_calls {
-            emit_indel_record(
-                pileup,
-                schema,
-                contig,
-                config,
-                call,
-                ml_threshold,
-                record_filter.vcf_all,
-                writer,
-            )
-            .wrap_err("Failed to emit indel VCF record")?;
+    let Some(scored) = pileup.indel_data.as_ref().and_then(|d| d.scored.as_ref()) else {
+        return Ok(());
+    };
+    match &scored.records {
+        IndelRecords::Compound(calls) => {
+            emit_compound_het_record(pileup, schema, contig, config, scored, calls, writer)
+                .wrap_err("Failed to emit compound-het indel VCF record")?;
+        }
+        IndelRecords::Separate(calls) => {
+            for call in calls.iter().filter(|call| record_filter.vcf_all || call.is_called()) {
+                emit_indel_record(pileup, schema, contig, config, scored, call, writer)
+                    .wrap_err("Failed to emit indel VCF record")?;
+            }
         }
     }
 
     Ok(())
 }
 
-/// The FILTER an indel call earns, or `None` for PASS.
-///
-/// One-sided strand support wins over a low ML score: it says the evidence is
-/// structurally unusable, which is more informative than the model's verdict.
-fn indel_filter(
-    call: &crate::call::variant_calling::indel_calling::IndelCall,
-    ml_threshold: Option<Probability>,
-) -> Option<RastairFilter> {
-    if call.one_sided {
-        Some(RastairFilter::IndelStrand)
-    } else if call.ml.zip(ml_threshold).is_some_and(|(ml, threshold)| ml < threshold) {
-        Some(RastairFilter::LowMlScore)
-    } else {
-        None
-    }
-}
-
 /// Emit a compound heterozygote as one multi-allelic record.
 ///
 /// Both alleles share an anchor, so REF spans the longest deletion among them
 /// and each ALT is written against that span.
-#[allow(clippy::too_many_arguments, reason = "encoder plumbing, mirrors emit_indel_record")]
 fn emit_compound_het_record<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
     contig: &ContigId,
     config: &FieldConfig,
-    calls: &[crate::call::variant_calling::indel_calling::IndelCall],
-    ml_threshold: Option<Probability>,
-    vcf_all: bool,
+    scored: &Scored,
+    [first, second]: &[IndelCall; 2],
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
-    let (Some(first), Some(second)) = (calls.first(), calls.get(1)) else {
-        return Ok(());
-    };
-
-    // The record carries whichever filter either allele earned; PASS needs both.
-    let filter = indel_filter(first, ml_threshold).or_else(|| indel_filter(second, ml_threshold));
-    if filter.is_some() && !vcf_all {
-        return Ok(());
-    }
-
     let anchor = pileup.reference_base;
     let render = |bases: &[Base]| -> String { bases.iter().map(|b| b.as_str()).collect() };
-    let deleted: &[Base] = calls
-        .iter()
-        .take(2)
+    let deleted: &[Base] = [first, second]
+        .into_iter()
         .filter_map(|c| match &c.allele {
             IndelAllele::Deletion(bases) => Some(&bases[..]),
             IndelAllele::Insertion(_) => None,
         })
         .max_by_key(|b| b.len())
         .unwrap_or(&[]);
-    let alt_of = |call: &crate::call::variant_calling::indel_calling::IndelCall| -> SmolStr {
+    let alt_of = |call: &IndelCall| -> SmolStr {
         match &call.allele {
             IndelAllele::Deletion(bases) => {
                 format!("{anchor}{}", render(deleted.get(bases.len()..).unwrap_or(&[]))).into()
@@ -199,44 +173,72 @@ fn emit_compound_het_record<W: Write>(
     alts.push(alt_of(second));
     let alleles = Alleles::complex(format!("{anchor}{}", render(deleted)).into(), alts);
 
-    let depth = first.depth;
     let enc = writer.begin_record(
         contig,
         pos1(pileup)?,
         &alleles,
         Some(first.quality.as_int() as f32),
     )?;
-    let mut enc = match filter {
-        Some(filter) => encode_filters(enc, schema, filter.into())?,
-        None => enc.filter_pass(),
-    };
+    let mut enc = enc.filter_pass();
 
+    let depth = scored.haplotypes.depth();
     if config.info.dp {
         schema.info.dp.encode(&mut enc, i32::try_from(depth).unwrap_or(i32::MAX))?;
     }
     if config.info.ad {
-        let ref_count = depth.saturating_sub(first.alt_count + second.alt_count);
-        let ad = [
-            i32::try_from(ref_count).unwrap_or(i32::MAX),
-            i32::try_from(first.alt_count).unwrap_or(i32::MAX),
-            i32::try_from(second.alt_count).unwrap_or(i32::MAX),
-        ];
-        schema.info.ad.encode(&mut enc, &ad)?;
+        schema.info.ad.encode(&mut enc, &indel_ad(scored, &[first.event, second.event]))?;
     }
 
     let mut enc = enc.begin_samples();
     if config.format.gt {
-        schema.format.gt.encode(&mut enc, &[to_seqair_gt(first.genotype)])?;
+        encode_indel_genotype(&mut enc, schema, pileup, first.genotype, true)?;
     }
+    encode_genotype_quality(&mut enc, schema, config, first.genotype_quality)?;
     if config.format.dp {
         schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
     }
-    // ML is Number=A: either one value per declared ALT, or none at all.
-    if config.format.ml && [first, second].iter().any(|c| c.ml.is_some()) {
-        let ml: [f32; 2] = [first, second].map(|c| c.ml.map(|ml| *ml as f32).unwrap_or_default());
-        schema.format.ml.encode_single_sample(&mut enc, &ml)?;
-    }
     enc.emit()?;
+    Ok(())
+}
+
+/// An indel record's `GT`, and its `PS` where phased.
+///
+/// Phasing made a site of the column's one passing heterozygous indel record,
+/// so the column's indel phase call belongs to whichever record that is; a
+/// filtered record under `--all` stays unphased, and so does a homozygous one.
+fn encode_indel_genotype(
+    enc: &mut seqair::vcf::RecordEncoder<'_, seqair::vcf::WithSamples>,
+    schema: &Schema,
+    pileup: &PileupMetrics,
+    tag: GenotypeTag,
+    passes: bool,
+) -> Result<()> {
+    let phase = phasing::call_of(pileup, SiteKind::Indel).filter(|_| passes);
+    let first = phase.map(|call| match call.first {
+        GtAllele::Ref => 0,
+        GtAllele::Alt(n) => NonZeroU16::from(n).get(),
+    });
+    let genotype = to_seqair_gt(tag, first);
+    let phased = genotype.phased.contains(&true);
+    schema.format.gt.encode(enc, &[genotype])?;
+    if let Some(call) = phase.filter(|_| phased) {
+        schema.format.ps.encode(enc, &[call.set.as_i32()])?;
+        schema.format.pq.encode(enc, &[i32::from(call.quality)])?;
+    }
+    Ok(())
+}
+
+/// An indel call's genotype quality as `GC`, the field SNV records carry
+/// theirs in.
+fn encode_genotype_quality(
+    enc: &mut seqair::vcf::RecordEncoder<'_, seqair::vcf::WithSamples>,
+    schema: &Schema,
+    config: &FieldConfig,
+    genotype_quality: Phred,
+) -> Result<()> {
+    if config.format.gc {
+        schema.format.gc.encode(enc, &[genotype_quality.as_int() as f32])?;
+    }
     Ok(())
 }
 
@@ -245,13 +247,20 @@ fn pos1(pileup: &PileupMetrics) -> Result<Pos1> {
         .wrap_err_with(|| format!("Invalid 1-based position from {}", pileup.pos))
 }
 
-fn to_seqair_gt(tag: GenotypeTag) -> SeqGenotype {
-    let allele = |n: std::num::NonZeroU8| u16::from(n.get());
-    match tag {
-        GenotypeTag::HomRef => SeqGenotype::unphased(0, 0),
-        GenotypeTag::RefHet(n) => SeqGenotype::unphased(0, allele(n)),
-        GenotypeTag::AltHet(m, n) => SeqGenotype::unphased(allele(m), allele(n)),
-        GenotypeTag::HomAlt(n) => SeqGenotype::unphased(allele(n), allele(n)),
+/// The genotype, phased around `first` (the VCF allele haplotype 1 carries)
+/// when that names one of a heterozygote's two alleles.
+fn to_seqair_gt(tag: GenotypeTag, first: Option<u16>) -> SeqGenotype {
+    let allele = |n: NonZeroU8| NonZeroU16::from(n).get();
+    let (lower, higher) = match tag {
+        GenotypeTag::HomRef => return SeqGenotype::unphased(0, 0),
+        GenotypeTag::HomAlt(n) => return SeqGenotype::unphased(allele(n), allele(n)),
+        GenotypeTag::RefHet(n) => (0, allele(n)),
+        GenotypeTag::AltHet(m, n) => (allele(m), allele(n)),
+    };
+    match first {
+        Some(hap1) if hap1 == lower => SeqGenotype::phased_diploid(lower, higher),
+        Some(hap1) if hap1 == higher => SeqGenotype::phased_diploid(higher, lower),
+        _ => SeqGenotype::unphased(lower, higher),
     }
 }
 
@@ -261,7 +270,7 @@ fn emit_main_record<W: Write>(
     contig: &ContigId,
     config: &FieldConfig,
     real_variants: &[&Alt],
-    error_model: &ErrorModel,
+    forests: bool,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
     let ref_base = pileup.reference_base;
@@ -272,32 +281,18 @@ fn emit_main_record<W: Write>(
         Alleles::snv_multi(ref_base, &alts).wrap_err("Failed to build SNV alleles")?
     };
 
-    let depth = pileup.pos_metrics.depth.max(1).f();
-    let ml_qual: Option<i32> = if real_variants.is_empty() {
-        Some(Phred::from_phred(99_u8).as_int())
+    let genotype = compute_genotype(pileup, real_variants);
+    let qual = if real_variants.is_empty() {
+        genotype.confidence
     } else {
-        real_variants
-            .iter()
-            .filter_map(|alt| alt.filters.ml)
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|p| Phred::from(p.inverted()).as_int())
-    };
-    let qual = match ml_qual {
-        Some(q) => q,
-        None => Phred::from(
-            Probability::new(*error_model.error_rate() / depth)
-                .wrap_err("Failed to compute QUAL from error rate")?,
-        )
-        .as_int(),
+        real_variants.iter().filter_map(|alt| snv_qual(pileup, alt, forests)).max_by(f32::total_cmp)
     };
 
-    let main_alts: &[&Alt] = if real_variants.is_empty() { &[] } else { real_variants };
-
-    let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, Some(qual as f32))?;
+    let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, qual)?;
     let mut enc = enc.filter_pass();
-    encode_info(&mut enc, schema, config, pileup, main_alts)?;
+    encode_info(&mut enc, schema, config, pileup, real_variants)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, main_alts)?;
+    encode_format(&mut enc, schema, config, pileup, real_variants, genotype)?;
     enc.emit()?;
     Ok(())
 }
@@ -313,7 +308,7 @@ fn emit_rejected_record<W: Write>(
 ) -> Result<()> {
     let alleles = Alleles::snv(pileup.reference_base, alt.base)
         .wrap_err("Failed to build rejected SNV alleles")?;
-    let qual = alt.filters.ml.map(|ml| Phred::from(ml.inverted()).as_int() as f32);
+    let qual = snv_qual(pileup, alt, ml_threshold.is_some());
 
     // Filters: low_ml_score (if below threshold) + position + alt filters.
     let mut filters = pileup.pos_filters.as_set() | alt.filters.filters.as_set();
@@ -326,27 +321,21 @@ fn emit_rejected_record<W: Write>(
     let alts = [alt];
     encode_info(&mut enc, schema, config, pileup, &alts)?;
     let mut enc = enc.begin_samples();
-    encode_format(&mut enc, schema, config, pileup, &alts)?;
+    let genotype = compute_genotype(pileup, &alts);
+    encode_format(&mut enc, schema, config, pileup, &alts, genotype)?;
     enc.emit()?;
     Ok(())
 }
 
-#[expect(clippy::cast_possible_truncation, reason = "VCF float fields are f32")]
-#[allow(clippy::too_many_arguments, reason = "encoder plumbing")]
 fn emit_indel_record<W: Write>(
     pileup: &PileupMetrics,
     schema: &Schema,
     contig: &ContigId,
     config: &FieldConfig,
-    call: &crate::call::variant_calling::indel_calling::IndelCall,
-    ml_threshold: Option<Probability>,
-    vcf_all: bool,
+    scored: &Scored,
+    call: &IndelCall,
     writer: &mut Writer<W, Ready>,
 ) -> Result<()> {
-    let filter = indel_filter(call, ml_threshold);
-    if filter.is_some() && !vcf_all {
-        return Ok(());
-    }
     let anchor = pileup.reference_base;
     let alleles = match &call.allele {
         IndelAllele::Insertion(bases) => Alleles::insertion(anchor, bases),
@@ -354,43 +343,57 @@ fn emit_indel_record<W: Write>(
     }
     .wrap_err("Failed to build indel alleles")?;
 
-    let qual = call
-        .ml
-        .map(|ml| Phred::from(ml.inverted()).as_int())
-        .unwrap_or_else(|| call.quality.as_int()) as f32;
-
+    let qual = call.quality.as_int() as f32;
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, Some(qual))?;
-    let mut enc = match filter {
-        Some(filter) => encode_filters(enc, schema, filter.into())?,
-        None => enc.filter_pass(),
+    // A pair-HMM call is rejected exactly when its genotype leaves the allele out.
+    let mut enc = if call.is_called() {
+        enc.filter_pass()
+    } else {
+        encode_filters(enc, schema, RastairFilter::LowIndelQual.into())?
     };
 
-    // Minimal INFO: combined depth + per-allele depth.
+    let depth = scored.haplotypes.depth();
     if config.info.dp {
-        schema.info.dp.encode(&mut enc, i32::try_from(call.depth).unwrap_or(i32::MAX))?;
+        schema.info.dp.encode(&mut enc, i32::try_from(depth).unwrap_or(i32::MAX))?;
     }
     if config.info.ad {
-        let ad = [
-            i32::try_from(call.depth.saturating_sub(call.alt_count)).unwrap_or(i32::MAX),
-            i32::try_from(call.alt_count).unwrap_or(i32::MAX),
-        ];
-        schema.info.ad.encode(&mut enc, &ad)?;
+        schema.info.ad.encode(&mut enc, &indel_ad(scored, &[call.event]))?;
     }
 
     let mut enc = enc.begin_samples();
     if config.format.gt {
-        schema.format.gt.encode(&mut enc, &[to_seqair_gt(call.genotype)])?;
+        encode_indel_genotype(&mut enc, schema, pileup, call.genotype, call.is_called())?;
     }
+    encode_genotype_quality(&mut enc, schema, config, call.genotype_quality)?;
     if config.format.dp {
-        schema.format.dp.encode(&mut enc, &[i32::try_from(call.depth).unwrap_or(i32::MAX)])?;
-    }
-    if config.format.ml
-        && let Some(ml) = call.ml
-    {
-        schema.format.ml.encode_single_sample(&mut enc, &[*ml as f32])?;
+        schema.format.dp.encode(&mut enc, &[i32::try_from(depth).unwrap_or(i32::MAX)])?;
     }
     enc.emit()?;
     Ok(())
+}
+
+/// An indel record's `AD`: the reads the pair-HMM assigns to the reference and
+/// to each of the record's alleles. Reads assigned to an allele another record
+/// writes are in `DP` but in no `AD` slot here.
+fn indel_ad(scored: &Scored, events: &[EventIdx]) -> SmallVec<i32, 3> {
+    scored
+        .haplotypes
+        .support_over(events)
+        .into_iter()
+        .map(|count| i32::try_from(count).unwrap_or(i32::MAX))
+        .collect()
+}
+
+/// An SNV alt's `QUAL`: the forest's score with forests, the SNV engine's
+/// margin without; `None` where that decider did not score the alt.
+fn snv_qual(pileup: &PileupMetrics, alt: &Alt, forests: bool) -> Option<f32> {
+    let phred = if forests {
+        Phred::from(alt.filters.ml?.inverted())
+    } else {
+        let scores = pileup.snv_scores.as_deref()?;
+        scores.verdict.margin(scores.base_event_at(pileup.pos, alt.base)?)?.qual()
+    };
+    Some(phred.as_int() as f32)
 }
 
 /// Resolve a filter set into the encoder's `Filtered` state. Empty (or all
@@ -531,20 +534,23 @@ fn encode_format(
     config: &FieldConfig,
     pileup: &PileupMetrics,
     main_alts: &[&Alt],
+    genotype: GenotypeFields,
 ) -> Result<()> {
     let f = &schema.format;
     let c = &config.format;
 
-    let (genotype, gl, gc) = compute_genotype(pileup, main_alts);
-
     if c.gt {
-        f.gt.encode(enc, &[genotype])?;
+        f.gt.encode(enc, &[genotype.genotype])?;
+        // An unphased record omits `PS` and `PQ` rather than carrying empty values.
+        if let Some(call) = genotype.phase {
+            f.ps.encode(enc, &[call.set.as_i32()])?;
+            f.pq.encode(enc, &[i32::from(call.quality)])?;
+        }
     }
-    if c.gl {
-        f.gl.encode(enc, &[gl])?;
-    }
-    if c.gc {
-        f.gc.encode(enc, &[gc])?;
+    if c.gc
+        && let Some(confidence) = genotype.confidence
+    {
+        f.gc.encode(enc, &[confidence])?;
     }
     if c.dp {
         f.dp.encode(enc, &[i32::try_from(pileup.pos_metrics.depth).unwrap_or(i32::MAX)])?;
@@ -586,27 +592,41 @@ fn encode_format(
     Ok(())
 }
 
-/// Phred-scaled GL/GC value as a single float (matches the previous output of
-/// one value per record).
+/// A Phred-scaled `GC` value.
 fn phred_value(p: Probability) -> f32 {
     Phred::from(p).as_int() as f32
 }
 
-/// The genotype plus its GL/GC values, ported from the old `build_format`.
+/// A record's genotype fields.
+struct GenotypeFields {
+    genotype: SeqGenotype,
+    /// `None` where `genotype` is missing.
+    confidence: Option<f32>,
+    /// Set exactly where `genotype` is phased.
+    phase: Option<PhaseCall>,
+}
+
+/// The genotype plus its `GC` value and phase call. A record with a called
+/// alt but no estimate (no engine dosage) is `./.`.
 ///
 /// The estimate is the one the calling pipeline stored, not a fresh one: an
 /// estimate re-derived here would silently ignore `--error-model` and so
 /// contradict the BED output and the methylation calls, which read the stored
-/// value.
-fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> (SeqGenotype, f32, f32) {
-    use std::num::NonZeroU8;
-
+/// value. The phase call names alleles the same way, so one remap serves both.
+fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> GenotypeFields {
     let Some(estimated) = pileup.pos_metrics.extended.genotype else {
-        return (
-            SeqGenotype::unphased(0, 0),
-            phred_value(Probability::ZERO),
-            phred_value(Probability::ZERO),
-        );
+        if pileup.alts.iter().any(|alt| alt.call == AltCall::RealVariant) {
+            return GenotypeFields {
+                genotype: SeqGenotype::missing_diploid(),
+                confidence: None,
+                phase: None,
+            };
+        }
+        return GenotypeFields {
+            genotype: SeqGenotype::unphased(0, 0),
+            confidence: Some(phred_value(Probability::ZERO)),
+            phase: None,
+        };
     };
 
     // Remap genotype allele indices from `pileup.alts` positions to the VCF ALT
@@ -640,7 +660,21 @@ fn compute_genotype(pileup: &PileupMetrics, main_alts: &[&Alt]) -> (SeqGenotype,
         },
     };
 
-    (to_seqair_gt(remapped), phred_value(estimated.likelihood), phred_value(estimated.confidence))
+    // A phase call whose allele does not survive the remap cannot be written
+    // as a genotype either, and the record stays unphased.
+    let phase = phasing::call_of(pileup, SiteKind::Snv);
+    let first = phase.and_then(|call| match call.first {
+        GtAllele::Ref => Some(0),
+        GtAllele::Alt(n) => map(n).map(|vcf| NonZeroU16::from(vcf).get()),
+    });
+    let genotype = to_seqair_gt(remapped, first);
+    let phased = genotype.phased.contains(&true);
+
+    GenotypeFields {
+        genotype,
+        confidence: Some(phred_value(estimated.confidence)),
+        phase: phase.filter(|_| phased),
+    }
 }
 
 /// Read counts in canonical CpG order, flattened for encoding.
@@ -655,7 +689,7 @@ fn counts(values: &SmallVec<Option<u32>, 2>) -> SmallVec<i32, 2> {
 ///
 /// `origins()` only reports a de-novo partner as a CpG once its partner's alt
 /// was actually called (`other_pos_in_denovo_passes`), so a rejected de-novo
-/// candidate no longer yields a zero `M5mC` without the `CPG`/`CPGnovo` tags set.
+/// candidate never yields a zero `M5mC` without the `CPG`/`CPGnovo` tags set.
 fn effective_methylation(pileup: &PileupMetrics) -> Methylated {
     let observed = &pileup.pos_metrics.methylated;
     if !observed.is_empty() {

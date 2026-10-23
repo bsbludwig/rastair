@@ -16,6 +16,10 @@
 //!
 //! The extracted features are returned as an ndarray Array1<f64> suitable
 //! for input to a random forest classifier.
+//!
+//! The default `--ml` threshold is 0.4, not 0.5: the engine-stage score is
+//! under-confident in the middle (at 10x, alts scored .3–.4 are about 52 %
+//! true), so 0.4 gains recall at low depth and is neutral at 26x and 73x.
 
 use crate::{
     call::process::{GPU_BATCH_BUFFER_SIZE, InferenceStage},
@@ -28,13 +32,13 @@ use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::{
     Result, Section,
-    eyre::{Context, ensure},
+    eyre::{Context, ensure, eyre},
 };
 use seqair_types::Probability;
 use std::{fs, io::Read, path::Path, sync::Arc};
 use tracing::{debug, instrument};
 
-pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.5);
+pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.4);
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MachineLearningParams {
@@ -53,12 +57,13 @@ pub struct MachineLearningParams {
     ///
     /// For consistency with `--no-ml`, this option can be also be specified as
     /// `--ml` without a value, which will use the default threshold.
-    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.5", num_args = 0..=1)]
+    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.4", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,
     /// Use GPU-accelerated ML predictions which might speed up large datasets,
-    /// but can be slower for small ones due to overhead.
+    /// but can be slower for small ones due to overhead. The
+    /// pair-HMM indel scoring runs on the GPU too.
     ///
     /// Requires a Metal/Vulkan/DX12-capable GPU.
     #[arg(long, help_heading = cli::sections::PROCESSING)]
@@ -71,21 +76,56 @@ pub struct MachineLearningParams {
     #[arg(help_heading = cli::sections::FILTER)]
     #[serde(skip)]
     model: Option<ClioPath>,
+    /// Re-score the forest's SNV candidates with the pair-HMM engine that
+    /// calls indels
+    ///
+    /// Alts the forest scores at 0.005 or more are scored as events of the
+    /// engine's haplotypes, and a second set of forests in the model scores
+    /// them again with that evidence. On by default; `--snv-engine=false`
+    /// scores with the first forests alone. The engine genotypes the called
+    /// SNVs either way.
+    #[arg(long, default_value_t = true)]
+    #[arg(action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(help_heading = cli::sections::FILTER)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[default(true)]
+    pub snv_engine: bool,
 }
 
 impl MachineLearningParams {
+    /// The forests that score every alt, and under `--snv-engine` the
+    /// model's second set, which scores the alts the engine has scored.
     #[instrument(name = "init_ml", skip(self))]
     pub fn init(&self, workers: usize) -> Result<MachineLearning> {
         if self.no_ml {
             return Ok(MachineLearning::disabled());
         };
 
-        let model = load_combined_model(
+        let mut model = load_combined_model(
             self.model.as_ref().map(|x| x.path()),
-            &include_bytes!("../../models/rastair_with_indels.rff.mpk.lz4")[..],
+            &include_bytes!("../../models/rastair_default.rff.mpk.lz4")[..],
         )
         .wrap_err("Failed to load combined RF model")?;
+        let engine_forests = model.snv_engine.take();
+        let mut ml = self.with_forests(model, workers)?;
+        if self.snv_engine {
+            let forests = engine_forests.ok_or_else(|| {
+                eyre!(
+                    "The model has no SNV engine forests; train one with \
+                     `rastair ml train --snv-engine`, or pass `--snv-engine=false`"
+                )
+            })?;
+            ml.snv_engine = Some(Box::new(self.with_forests(*forests, workers)?));
+        }
+        Ok(ml)
+    }
 
+    /// One set of forests, ignoring the model's SNV engine forests.
+    pub(crate) fn with_forests(
+        &self,
+        model: RastairFlatModel,
+        workers: usize,
+    ) -> Result<MachineLearning> {
         let gpu = if self.gpu {
             let ctx = GpuContext::new()
                 .wrap_err("Failed to initialise GPU context")
@@ -97,8 +137,6 @@ impl MachineLearningParams {
                 cpg: gpu_forest(&model.cpg),
                 denovo: gpu_forest(&model.denovo),
                 others: gpu_forest(&model.others),
-                insertion: gpu_forest(&model.insertion),
-                deletion: gpu_forest(&model.deletion),
             })
         } else {
             None
@@ -115,6 +153,7 @@ impl MachineLearningParams {
             feature_calculator: model.feature_set.get_calculator(),
             model: Some(Box::new(model)),
             inference,
+            snv_engine: None,
         })
     }
 
@@ -136,14 +175,47 @@ pub fn load_combined_model(path: Option<&Path>, built_in: &[u8]) -> Result<Rasta
         rmp_serde::from_read(decompress).wrap_err("Failed to deserialize combined model")
     }
 
-    if let Some(path) = path {
+    let model = if let Some(path) = path {
         let model = load_model_from_file(path)
-            .wrap_err_with(|| format!("Failed to load combined model from {path:?}"));
+            .wrap_err_with(|| format!("Failed to load combined model from {path:?}"))?;
         debug!(?path, "Loaded combined model from file");
+        model.check_feature_layout().wrap_err_with(|| format!("Cannot use model {path:?}"))?;
         model
     } else {
-        let model = load_combined(built_in);
+        let model = load_combined(built_in)?;
         debug!("Loaded built-in combined model");
+        model.check_feature_layout().wrap_err("Cannot use the bundled model")?;
         model
+    };
+    Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use color_eyre::eyre::ContextCompat as _;
+
+    const BUNDLED: &[u8] = include_bytes!("../../models/rastair_default.rff.mpk.lz4");
+
+    #[test]
+    fn the_bundled_model_matches_the_feature_layout() -> Result<()> {
+        load_combined_model(None, BUNDLED)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_model_fitted_on_another_layout_is_refused() -> Result<()> {
+        let mut model = load_combined_model(None, BUNDLED)?;
+        let layout = model.feature_layout.as_mut().wrap_err("bundled model has a layout")?;
+        layout.denovo ^= 1;
+        let error = model.check_feature_layout().expect_err("a changed layout is refused");
+        let message = format!("{error:#}");
+        assert!(message.contains("denovo forest"), "{message}");
+        assert!(message.contains("rastair ml train"), "{message}");
+
+        model.feature_layout = None;
+        let error = model.check_feature_layout().expect_err("a missing layout is refused");
+        assert!(format!("{error:#}").contains("rastair ml train"));
+        Ok(())
     }
 }

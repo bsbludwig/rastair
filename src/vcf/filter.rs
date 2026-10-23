@@ -1,7 +1,7 @@
 //! The closed set of VCF FILTER codes rastair can emit.
 //!
 //! Filters are modelled as a `#[repr(u8)]` enum rather than carried around as
-//! strings. FILTER is a set, and there are only 13 codes, so a whole set is a
+//! strings. FILTER is a set, and there are only 12 codes, so a whole set is a
 //! `u16` bitset ([`Filters`](crate::metrics::Filters)) rather than a list.
 //! This enum is the single source of truth: the VCF header is registered from
 //! [`RastairFilter::ALL`] (in declaration order) and each filter resolves to
@@ -12,6 +12,20 @@
 //! an output change: `RastairFilter as usize` indexes the resolved-`FilterId`
 //! table in [`crate::vcf::schema`], and a set iterates in discriminant order,
 //! which is what the FILTER column prints.
+//!
+//! Rejected records are only written under `--all`, and every committed VCF
+//! snapshot is all `PASS`, so no test looks at a non-PASS FILTER column. When
+//! changing filter emission, look at it directly:
+//!
+//! ```bash
+//! cargo run -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --all \
+//!   | grep -v '^#' | awk -F'\t' '$7!="PASS"{print $7}' | sort | uniq -c | sort -rn
+//! ```
+//!
+//! Open: `emit_rejected_record` adds `low_ml_score` when
+//! `alt.filters.ml < ml_threshold`, and `None < Some(_)`, so a record whose ML
+//! was skipped (`pre_ml`) is labelled `low_ml_score` too. Fixing it changes
+//! `--all` output.
 
 /// A VCF FILTER code. `PASS` is implicit (an empty filter set), so it is not a
 /// variant here.
@@ -37,14 +51,12 @@ pub enum RastairFilter {
     MBqRatio,
     /// `m_pos`
     MPos,
-    /// `m_highDp`
-    MHighDp,
     /// `pre_ml`
     PreMl,
     /// `low_ml_score`
     LowMlScore,
-    /// `indel_strand`
-    IndelStrand,
+    /// `low_indel_qual`
+    LowIndelQual,
 }
 
 impl RastairFilter {
@@ -53,7 +65,7 @@ impl RastairFilter {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every filter, in registration (header / dictionary) order.
-    pub const ALL: [RastairFilter; 13] = [
+    pub const ALL: [RastairFilter; 12] = [
         Self::LowDp,
         Self::DnCpgLowDp,
         Self::DnCpgBq,
@@ -63,10 +75,9 @@ impl RastairFilter {
         Self::MVaf,
         Self::MBqRatio,
         Self::MPos,
-        Self::MHighDp,
         Self::PreMl,
         Self::LowMlScore,
-        Self::IndelStrand,
+        Self::LowIndelQual,
     ];
 
     /// The filter's VCF ID, as it appears in the header and FILTER column.
@@ -81,10 +92,9 @@ impl RastairFilter {
             Self::MVaf => "m_vaf",
             Self::MBqRatio => "m_bq_ratio",
             Self::MPos => "m_pos",
-            Self::MHighDp => "m_highDp",
             Self::PreMl => "pre_ml",
             Self::LowMlScore => "low_ml_score",
-            Self::IndelStrand => "indel_strand",
+            Self::LowIndelQual => "low_indel_qual",
         }
     }
 
@@ -102,10 +112,9 @@ impl RastairFilter {
             Self::MVaf => "Low variant allele frequency for methylation candidate",
             Self::MBqRatio => "Low quality ratio for methylation candidate",
             Self::MPos => "Alt allele evidence from read edges for methylation candidate",
-            Self::MHighDp => "Excessive coverage for methylation candidate",
             Self::PreMl => "Low amount of usable evidence, skipping ML",
             Self::LowMlScore => "Machine Learning module prediction below threshold",
-            Self::IndelStrand => "Indel allele supported on only one bisulfite strand",
+            Self::LowIndelQual => "Indel allele the pair-HMM does not call present",
         }
     }
 }

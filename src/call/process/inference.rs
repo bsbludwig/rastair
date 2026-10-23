@@ -1,10 +1,8 @@
 //! A dedicated thread for GPU inference.
 //!
-//! Every worker used to fork its own copy of the five forests and dispatch its
-//! own region's rows, so the GPU saw `regions × models` dispatches carrying a
-//! few hundred rows each while nine threads shared one device per model. Here
-//! one thread owns one set of forests, and whatever batches are already queued
-//! when it wakes ride along in the same dispatch.
+//! One thread owns one set of forests, and whatever batches are already queued
+//! when it wakes ride along in the same dispatch. Forests per worker would
+//! give the GPU `regions × models` dispatches of a few hundred rows each.
 //!
 //! Submitting and waiting are separate ([`InferenceStage::submit`] returns a
 //! [`Ticket`]) so a caller can do other work while the GPU has its rows.
@@ -20,7 +18,7 @@ use crate::runtime::{fault_injection, threads};
 use color_eyre::eyre::{Report, Result, WrapErr as _, eyre};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ndarray::{Array2, s};
-use seqair_types::Probability;
+use seqair_types::{Base, Probability};
 use std::{
     sync::{
         Arc,
@@ -85,7 +83,7 @@ impl InferenceStage {
         &self,
         pileups: &mut [PileupMetrics],
         ml: &MachineLearning,
-        score_indels: bool,
+        only: impl Fn(&PileupMetrics, Base) -> bool,
     ) -> Result<()> {
         let Some(model) = ml.model.as_ref() else {
             return Ok(());
@@ -94,7 +92,7 @@ impl InferenceStage {
             return Ok(());
         }
 
-        let (rows, targets) = extract_ml_rows(pileups, ml, model, score_indels)?.split()?;
+        let (rows, targets) = extract_ml_rows(pileups, ml, model, only)?.split()?;
         self.submit(rows, targets)?.apply(pileups, ml.threshold)
     }
 
@@ -120,7 +118,7 @@ impl InferenceStage {
 pub fn score_on_gpu(
     pileups: &mut [PileupMetrics],
     ml: &MachineLearning,
-    score_indels: bool,
+    only: impl Fn(&PileupMetrics, Base) -> bool,
 ) -> bool {
     let Some(stage) = ml.inference.as_ref() else {
         return false;
@@ -129,7 +127,7 @@ pub fn score_on_gpu(
         return false;
     }
 
-    match stage.score(pileups, ml, score_indels) {
+    match stage.score(pileups, ml, only) {
         Ok(()) => true,
         Err(error) => {
             if !stage.failed.swap(true, Ordering::Relaxed) {
@@ -160,9 +158,8 @@ impl Ticket {
 impl Drop for InferenceStage {
     fn drop(&mut self) {
         // Closing the channel is what ends `serve`'s loop (or the drain after a
-        // crash); the forests are then
-        // dropped on the inference thread rather than on a rayon worker during
-        // TLS teardown, which is what used to upset Metal.
+        // crash); the forests are then dropped on the inference thread rather
+        // than on a rayon worker during TLS teardown, which upsets Metal.
         self.jobs = None;
         if let Some(thread) = self.thread.take()
             && let Err(error) = thread.join()

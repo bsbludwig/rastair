@@ -1,9 +1,8 @@
 ---
 source: src/metrics/ml/features.rs
-assertion_line: 409
 expression: report
 ---
-cpg (55 features)
+cpg (61 features)
    0  alt_ad_adj
    1  alt_score_adj
    2  ref_A
@@ -58,9 +57,15 @@ cpg (55 features)
   51  num_aligned_alt
   52  num_indels_ref
   53  num_indels_alt
-  54  beta_ratio
+  54  ev_scored
+  55  ev_presence
+  56  ev_margin
+  57  ev_ad_ref
+  58  ev_ad_alt
+  59  ev_events
+  60  beta_ratio
 
-denovo_cpg (56 features)
+denovo_cpg (62 features)
    0  alt_ad_adj
    1  alt_score_adj
    2  sb_adj
@@ -116,9 +121,15 @@ denovo_cpg (56 features)
   52  num_aligned_alt
   53  num_indels_ref
   54  num_indels_alt
-  55  beta_ratio
+  55  ev_scored
+  56  ev_presence
+  57  ev_margin
+  58  ev_ad_ref
+  59  ev_ad_alt
+  60  ev_events
+  61  beta_ratio
 
-others (54 features)
+others (60 features)
    0  ref_A
    1  ref_C
    2  ref_G
@@ -173,41 +184,9 @@ others (54 features)
   51  num_aligned_alt
   52  num_indels_ref
   53  num_indels_alt
-
-insertion (17 features)
-   0  indel_len
-   1  indel_complexity
-   2  indel_dominance
-   3  mapq_rms
-   4  relative_mapq
-   5  baseq_rms
-   6  edge_dist_rms
-   7  allele_fraction
-   8  strand_bias
-   9  indel_in_repeat
-  10  repeat_tract_length
-  11  homopolymer_run
-  12  soft_clip_rate
-  13  dinucleotide_run
-  14  repeat_fraction
-  15  insertion_baseq_rms
-  16  relative_insertion_baseq
-
-deletion (17 features)
-   0  indel_len
-   1  indel_complexity
-   2  indel_dominance
-   3  mapq_rms
-   4  relative_mapq
-   5  baseq_rms
-   6  edge_dist_rms
-   7  allele_fraction
-   8  strand_bias
-   9  indel_in_repeat
-  10  repeat_tract_length
-  11  homopolymer_run
-  12  soft_clip_rate
-  13  dinucleotide_run
-  14  repeat_fraction
-  15  post_del_baseq_rms
-  16  relative_post_del_baseq
+  54  ev_scored
+  55  ev_presence
+  56  ev_margin
+  57  ev_ad_ref
+  58  ev_ad_alt
+  59  ev_events

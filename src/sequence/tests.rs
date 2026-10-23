@@ -62,8 +62,12 @@ fn test_calculate_segments() -> Result<()> {
     // Check segment properties
     for segment in segments {
         assert_eq!(segment.region.contig, "chr19");
-        assert!(segment.region.start >= 6105700);
-        assert!(segment.region.end <= 6105800);
+        // 1-based 6105700-6105800 is 0-based [6105699, 6105800); the overlap
+        // reaches past it.
+        assert!(segment.region.start + segment.overlap_start >= 6105699);
+        assert!(segment.region.end - segment.overlap_end <= 6105800);
+        assert!(segment.region.start >= 6105699 - 100);
+        assert!(segment.region.end <= 6105800 + 100);
         // last position is the end of the contig, the same for all segments
         assert_eq!(segment.last_position, 61431566);
     }
@@ -138,7 +142,7 @@ fn test_segment_to_fetch_definition() -> Result<()> {
     if let FetchDefinition::RegionString(chr, start, end) = fetch_def {
         assert_eq!(chr, b"chr19");
         assert_eq!(start, 6105700);
-        assert_eq!(end, 6105801); // this is exclusive end
+        assert_eq!(end, 6105800); // exclusive, like the region's
     } else {
         panic!("Unexpected FetchDefinition variant");
     }
@@ -208,11 +212,11 @@ fn test_sequence_slice() -> Result<()> {
 
     // Test valid slice
     let slice = segment.sequence_slice::<5>(1, 4)?;
-    assert_eq!(slice.as_slice(), &[Base::T, Base::C, Base::G]);
+    assert_eq!(slice.as_ref(), &[Base::T, Base::C, Base::G]);
 
     // Test out-of-bounds slice
     let slice = segment.sequence_slice::<5>(0, 10)?;
-    assert_eq!(slice.as_slice(), &[Base::A, Base::T, Base::C, Base::G, Base::G]);
+    assert_eq!(slice.as_ref(), &[Base::A, Base::T, Base::C, Base::G, Base::G]);
 
     Ok(())
 }

@@ -3,7 +3,7 @@ use crate::{
         per_read::{BedReadsParams, PerRead},
         reader::{RastairBedReader, RastairCall},
     },
-    call::{pileup::hts_utils::infer_strand_from_mismatch_motifs, variant_calling::ReadFlags},
+    call::variant_calling::ReadFlags,
     runtime::{
         fault_injection, partial_output::PartialOutput, progress, progress::ProgressTracker,
         segments, threads,
@@ -82,17 +82,6 @@ pub struct PerReadParams {
     #[arg(long, default_value_t = false)]
     #[arg(help_heading = cli::sections::FILTER)]
     unpaired: bool,
-
-    /// Guess OT/OB read orientation from mismatch motifs instead of SAM flags
-    ///
-    /// Scans read mismatches against the reference and counts `TG` versus `CA`
-    /// motifs in a 2 bp window anchored at each mismatch (current+next and
-    /// previous+current), using the htslib/reference-oriented read sequence.
-    /// `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads
-    /// are split pseudo-randomly but reproducibly per read.
-    #[arg(long, default_value_t = false)]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    guess_read_orientation: bool,
 
     // --- Output parameters ---
     #[command(flatten)]
@@ -311,7 +300,6 @@ fn process_region(
             params.exclude_ambiguous,
             params.unpaired,
             params.count_clipped,
-            params.guess_read_orientation,
         )
         .wrap_err("Failed to read record")?;
 
@@ -332,7 +320,6 @@ fn record_to_row(
     exclude_ambiguous: bool,
     unpaired: bool,
     count_clipped: bool,
-    guess_read_orientation: bool,
 ) -> Result<PerRead> {
     let segment_start_pos =
         usize::try_from(segment.range.start).wrap_err("segment range exceeded usize")?;
@@ -342,11 +329,7 @@ fn record_to_row(
     let clipping_length = usize::try_from(cigar.leading_softclips() + cigar.leading_hardclips())
         .wrap_err("clipping length exceeded usize")?;
 
-    let strand = if guess_read_orientation {
-        infer_strand_from_mismatch_motifs(record, segment)
-    } else {
-        orientation(record, exclude_ambiguous, unpaired)
-    };
+    let strand = orientation(record, exclude_ambiguous, unpaired);
 
     let mut cpg_count = 0;
     let mut mod_cpgs = SmallVec::new();
@@ -478,197 +461,6 @@ fn orientation(bam_record: &Record, exclude_ambiguous: bool, unpaired: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sequence::{ChunkRegion, Region};
-    use rust_htslib::bam::record::{Cigar, CigarString};
-
-    fn test_segment(sequence: &[u8]) -> Segment {
-        let start = 100u64;
-        let end = start + u64::try_from(sequence.len()).expect("sequence length fits") - 1;
-        Segment {
-            range: std::sync::Arc::new(ChunkRegion {
-                region: Region { contig: "chrTest".into(), start, end },
-                last_position: end,
-                overlap_start: 0,
-                overlap_end: 0,
-            }),
-            sequence: sequence.to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
-        }
-    }
-
-    fn test_record(qname: &[u8], flags: u16, start: i64, sequence: &[u8]) -> Record {
-        let mut record = Record::new();
-        let cigar = CigarString(
-            vec![Cigar::Match(u32::try_from(sequence.len()).expect("sequence length fits in u32"))]
-                .into(),
-        );
-        record.set(qname, Some(&cigar), sequence, &vec![40; sequence.len()]);
-        record.set_flags(flags);
-        record.set_pos(start);
-        record
-    }
-
-    // Flags for F1R2 (OT) and R1F2 (OB) paired-end reads, using the standard bit layout:
-    // paired(0x1) + proper_pair(0x2) + mate_reverse(0x20) + first_in_pair(0x40) = 99  → F1 of F1R2
-    // paired(0x1) + proper_pair(0x2) + reverse(0x10) + first_in_pair(0x40)     = 83  → R1 of R1F2
-    const FLAGS_F1R2_FIRST: u16 = 99;
-    const FLAGS_R1F2_FIRST: u16 = 83;
-
-    #[test]
-    fn guess_orientation_ot_paired_read_detects_modified_cpgs() {
-        // ref: ACGACG — two CpGs at read positions 1 and 4 (C followed by G)
-        // OT methylation: C→T at both CpG positions → TG mismatches → OT evidence
-        let segment = test_segment(b"ACGACG");
-        let record = test_record(b"ot-paired", FLAGS_F1R2_FIRST, 100, b"ATGATG");
-
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-
-        assert_eq!(row.cpg_count, 2);
-        assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
-        assert!(row.unmod_cpgs.is_empty());
-    }
-
-    #[test]
-    fn guess_orientation_ob_paired_read_detects_modified_cpgs() {
-        // ref: ACGACG — two CpGs at read positions 2 and 5 (G preceded by C, OB view)
-        // OB methylation: G→A at both CpG positions → CA mismatches → OB evidence
-        let segment = test_segment(b"ACGACG");
-        let record = test_record(b"ob-paired", FLAGS_R1F2_FIRST, 100, b"ACAACA");
-
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-
-        assert_eq!(row.cpg_count, 2);
-        assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2, 5]);
-        assert!(row.unmod_cpgs.is_empty());
-    }
-
-    #[test]
-    fn guess_orientation_single_end_ot_uses_motifs_not_flags() {
-        // Flags 0x0 = single-end forward — no pair info, so flag-based orientation returns Unknown.
-        // With guess_read_orientation, TG motifs from OT methylation should override this.
-        let segment = test_segment(b"ACGACG");
-        let record = test_record(b"ot-single", 0x0, 100, b"ATGATG");
-
-        // Without guessing: strand is Unknown, so no CpGs are detected
-        let row_no_guess =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, false)
-                .unwrap();
-        assert_eq!(row_no_guess.cpg_count, 0);
-
-        // With guessing: TG motifs → OT → CpGs detected
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-        assert_eq!(row.cpg_count, 2);
-        assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
-    }
-
-    #[test]
-    fn guess_orientation_single_end_ob_uses_motifs_not_flags() {
-        // Flags 0x0 = single-end forward — no pair info, so flag-based orientation returns Unknown.
-        // With guess_read_orientation, CA motifs from OB methylation should override this.
-        let segment = test_segment(b"ACGACG");
-        let record = test_record(b"ob-single", 0x0, 100, b"ACAACA");
-
-        // Without guessing: strand is Unknown, so no CpGs are detected
-        let row_no_guess =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, false)
-                .unwrap();
-        assert_eq!(row_no_guess.cpg_count, 0);
-
-        // With guessing: CA motifs → OB → CpGs detected
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-        assert_eq!(row.cpg_count, 2);
-        assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2, 5]);
-    }
-
-    #[test]
-    fn guess_orientation_unmethylated_read_still_detects_cpgs() {
-        // No mismatches → zero TG/CA evidence → pseudo-random strand.
-        // With ref ACGACG, both OT and OB detect 2 CpGs (different positions),
-        // and with an unmethylated read (no C→T or G→A), all are unmod.
-        let segment = test_segment(b"ACGACG");
-        let record = test_record(b"unmethylated", FLAGS_F1R2_FIRST, 100, b"ACGACG");
-
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-
-        assert_eq!(row.cpg_count, 2);
-        assert_eq!(row.mod_count, 0);
-        assert_eq!(row.unmod_cpgs.len(), 2);
-        assert!(row.mod_cpgs.is_empty());
-        assert!(row.snp_cpgs.is_empty());
-    }
-
-    #[test]
-    fn guess_orientation_partially_methylated_ot_read() {
-        // ref ACGACG → two CpGs at read positions 1 and 4.
-        // Read ATGACG: first CpG C→T (methylated, gives TG evidence → OT),
-        // second CpG C→C (unmethylated).
-        let segment = test_segment(b"ACGACG");
-        let record = test_record(b"partial-ot", FLAGS_F1R2_FIRST, 100, b"ATGACG");
-
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-
-        assert_eq!(row.cpg_count, 2);
-        assert_eq!(row.mod_count, 1);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[4]);
-        assert!(row.snp_cpgs.is_empty());
-    }
-
-    #[test]
-    fn guess_orientation_partially_methylated_ob_read() {
-        // ref ACGACG → OB CpGs at read positions 2 and 5 (G preceded by C).
-        // Read ACAACG: second CpG G→A (methylated, gives CA evidence → OB),
-        // first CpG G→G (unmethylated).
-        let segment = test_segment(b"ACGACG");
-        let record = test_record(b"partial-ob", FLAGS_R1F2_FIRST, 100, b"ACAACG");
-
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-
-        assert_eq!(row.cpg_count, 2);
-        assert_eq!(row.mod_count, 1);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[5]);
-        assert!(row.snp_cpgs.is_empty());
-    }
-
-    #[test]
-    fn guess_orientation_multiple_cpgs_mixed_methylation() {
-        // ref ACGACGACG: 3 CpGs at OT read positions 1, 4, 7.
-        // Read ATGATGACG: first 2 CpGs methylated (C→T → TG evidence at pos 1 and 4),
-        // third CpG unmethylated (C→C). tg=2, ca=0 → OT strand.
-        let ref_seq = b"ACGACGACG";
-        let segment = test_segment(ref_seq);
-        let record = test_record(b"multi-cpg", FLAGS_F1R2_FIRST, 100, b"ATGATGACG");
-
-        let row =
-            record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, true)
-                .unwrap();
-
-        assert_eq!(row.cpg_count, 3);
-        assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[7]);
-        assert!(row.snp_cpgs.is_empty());
-    }
 
     #[test]
     fn orientation_single_end_uses_alignment_strand() {

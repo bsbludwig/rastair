@@ -1,6 +1,7 @@
 # Genotyping
 
-Rastair uses @ML scores to determine which @altAllele:pl represent true genetic @variant:pl, then applies statistical methods to estimate zygosity.
+Rastair uses @ML scores to determine which @altAllele:pl represent true genetic @variant:pl.
+Their zygosity comes from the pair-HMM that also calls indels: it scores the reads against the local haplotypes, TAPS conversion included, and picks the likeliest pair of haplotypes that carries the called alleles.
 Rastair only supports diploid genotyping (two chromosome copies) at this time.
 
 ## Multi-Allelic Sites
@@ -17,16 +18,19 @@ This representation follows VCF specification standards where allele indices sta
 ## Genotype Calls
 
 - Homozygous Reference (`0/0`): no alternate alleles passed filters
-- Heterozygous (`0/1`): One alternate allele passed filters but read counts show a mix of reference and alternate reads
-- Homozygous Alternate (`1/1`): an alternate allele passed filters and read counts show predominantly alternate reads, consistent with two copies of the variant
-- Compound Heterozygous (`1/2`, `2/3`, etc.): Multiple alternates passed filters and read counts support different variants on each chromosome copy
+- Heterozygous (`0/1`): the likeliest pair carries one copy of the alternate allele
+- Homozygous Alternate (`1/1`): the likeliest pair carries two copies
+- Compound Heterozygous (`1/2`): the likeliest pair carries two alternate alleles, one on each copy
+- Missing (`./.`): the alternate allele passed filters but the pair-HMM could not score it, at an `N` in the reference
 
 ## Confidence Scoring
 
-Confidence values reflect call certainty:
+`GC` is the Phred-scaled chance that the genotype is wrong:
 
-- For `0/0` calls: based on the margin between the ML threshold and the highest-scoring alternate
-- For variant calls: based on how well read count ratios match the expected distribution
+- For `0/0` calls with no passing alternate: a binomial test of the reads that show a SNP against the error rate
+- For variant calls: the posterior of the other copy count over the pairs of haplotypes consistent with the called alleles
+
+With `--no-ml` the pair-HMM also decides which alleles are present, and a passing alternate it finds absent is written `0/0`.
 
 ## Biological Interpretation
 
@@ -39,5 +43,41 @@ In most cases:
 
 ## Strand-Specific Counting
 
-For `C→T` and `G→A` variants, only one strand is used to avoid confounding with methylation.
+At a @CpG, a `T` over a `C` on the converted strand may be a methylated `C` (`A` over `G` likewise).
+The pair-HMM scores such reads against both alleles at the strand's methylation level, so they count only as far as they tell the alleles apart.
 For all other variant types, both strands contribute to genotyping.
+
+## Phasing
+
+Rastair groups heterozygous variants that share a read pair
+into phase blocks, written with a `|` separator and a `PS` field:
+
+```
+chr12  20028875  .  A  G  ...  GT:PS  0|1:20028875
+chr12  20028894  .  C  T  ...  GT:PS  1|0:20028875
+```
+
+Both records carry `PS=20028875`, the position of the block's first heterozygous site, so they belong to one block.
+Within a block, the alleles written first all sit on the same chromosome copy: above, the reference `A` and the alternate `T` are on one copy, the alternate `G` and the reference `C` on the other.
+Each block opens with `0|1`; nothing relates one block to another, and heterozygous sites no read pair links stay `0/1` without `PS`.
+
+Each read votes with the same pair-HMM that called the genotype:
+for the allele whose local haplotype explains the read better, weighted by how much better.
+A read needs a clear preference (ten times likelier under one allele) to vote,
+and a read neither haplotype explains (one with a soft clip or an indel the pair-HMM does not hold) does not vote.
+
+Since Rastair operates on @TAPS and @5Base data,
+it has to take methylation artifacts into account.
+In a @CpG site with alleles `C` and `T`,
+the `T` on the converted strand may be a methylated `C`.
+The pair-HMM scores such a read as about equally likely under both alleles,
+so it casts no vote (same for `G>A`).
+
+Heterozygous indels called by the pair-HMM (see [indels](indels.md)) take part the same way.
+An indel only becomes part of a block when the pair-HMM is confident of its heterozygous genotype: a doubtful one would mostly join two blocks the wrong way round.
+
+```admonish warning
+Phasing is not done with `--cpgs-only` or BED output alone, which drop the variants it links.
+Blocks do not cross the boundary between two processing segments,
+so a block is at most one segment long (`--segment-max-length`, 100 kb by default).
+```

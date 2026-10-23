@@ -68,17 +68,12 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    In this mode, unpaired reads are accepted and strand assignment uses only the read's alignment direction (forward=OT, reverse=OB).
 
   Default value: `false`
-* `--keep-overlapping-reads` — Whether to keep overlapping paired-end reads
-
-   In unpaired (`--single-strand`) mode this is ignored because read-pair overlap deduplication is disabled.
-
-  Default value: `false`
 * `--v-min-depth <V_MIN_DEPTH>`
 
   Default value: `3`
 * `--max-coverage <MAX_COVERAGE>` — Maximum number of reads to consider at one position
 
-   Counts reads that pass the mapping- and base-quality filters, so a pileup of MAPQ 0 reads cannot crowd out the usable ones. To bound memory, at most ten times this many reads are loaded per position at all. `0` means no limit.
+   Counts reads that pass the flag, mapping-quality and tag filters, so a pileup of MAPQ 0 reads cannot crowd out the usable ones; where it binds, the reads starting first are kept. Base quality and read-end masking apply afterwards, so a capped position counts somewhat fewer. `0` means no limit.
 
   Default value: `1000`
 * `-q`, `--min-mapq <MIN_MAPQ>` — Minimum mapping quality to consider a read
@@ -119,13 +114,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--cpg-novo-min-vaf <CPG_NOVO_MIN_VAF>` — Minimum variant allele frequency for de-novo CpGs
 
   Default value: `0.2`
-* `--rescue-soft-clip-cpg` — Rescue soft-clipped CpG-partner bases
-
-   Aligners often soft-clip a read's fringe base(s) when that mismatches the reference. But in TAPS, a methylated C reads as T, so a leading C→T mismatch might get soft-clipped, discarding real methylation evidence (and same for a trailing G->A). With this flag, a single soft-clipped base immediately next to an aligned base is "rescued" when it is the missing partner of a reference CpG (ref C on OT, ref G on OB) and counted as a normal observation.
-
-   Recovered bases bypass read-end masking (`--nOT`/`--nOB`) since they are fringe bases by definition, but still go through base-quality, mapping-quality and methylation read-position filters.
-
-   (Only takes effect on the seqair backend.)
 * `--no-ml` — Only use hard thresholds to call variants and methylation events.
 
    This disables using the machine learning models. This will make rastair much faster, but at the cost of accuracy.
@@ -135,10 +123,18 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    For consistency with `--no-ml`, this option can be also be specified as `--ml` without a value, which will use the default threshold.
 
-  Default value: `0.50`
+  Default value: `0.40`
 * `--model <MODEL>` — Path to the combined model file containing CpG, denovo, and others models
 
    Default is the bundled model in the Rastair binary.
+* `--snv-engine <SNV_ENGINE>` — Re-score the forest's SNV candidates with the pair-HMM engine that calls indels
+
+   Alts the forest scores at 0.005 or more are scored as events of the engine's haplotypes, and a second set of forests in the model scores them again with that evidence. On by default; `--snv-engine=false` scores with the first forests alone. The engine genotypes the called SNVs either way.
+
+  Default value: `true`
+
+  Possible values: `true`, `false`
+
 * `-c`, `--cpgs-only` — Report CpGs only and default to BED output
 
    Only report positions that are CpGs in the reference or variants that would result in a de-novo CpG.
@@ -149,38 +145,11 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Indel Options:**
 
-* `--experimental-indels <EXPERIMENTAL_INDELS>` — Enable experimental indel calling
+* `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations for an indel allele to be scored
 
-   Defaults to ML scoring.
-
-  Possible values:
-  - `ml`:
-    The model decides: a low score vetoes an allele the hard chain would keep. Best precision, worst recall
-  - `no-ml`:
-    A fixed filter chain only, with no ML scoring of indels at call time
-  - `ml-rescue`:
-    The hard chain's calls all stand, and the model reinstates an allele the chain dropped as homozygous reference. Best recall
-
-* `--min-indel-ao <MIN_INDEL_AO>` — Minimum alternate observations to call an indel
-
-   This threshold is evaluated per indel allele after read-level indel filters are applied.
+   Reads (one per fragment) whose alignment carries the allele; at least 5% of the column's depth is required in any case. Of the alleles reaching it in a cluster of neighbouring columns, the three most reads carry are scored, at most two per column, and a scored allele is called only if the pair-HMM finds it present.
 
   Default value: `2`
-* `--min-indel-depth <MIN_INDEL_DEPTH>` — Minimum depth to call an indel
-
-   Depth is computed at the locus after applying indel-specific read filters and depth adjustments.
-
-  Default value: `2`
-* `--indel-max-mismatches <INDEL_MAX_MISMATCHES>` — Maximum number of non-TAPS mismatches allowed on a read supporting an indel.
-
-   C->T mismatches on OT reads and G->A mismatches on OB reads are excluded from the count as they are expected TAPS methylation signal.
-
-  Default value: `5`
-* `--indel-end-of-read-cutoff <INDEL_END_OF_READ_CUTOFF>` — Ignore indels within this many bases of either read end.
-
-   This stricter end-of-read filter helps suppress alignment artifacts at read starts and ends.
-
-  Default value: `0`
 
 ###### **Input Options:**
 
@@ -209,15 +178,12 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 * `--m-read-position-max <M_READ_POSITION_MAX>` — The maximum relative position in read for alt allele evidence
 
   Default value: `0.8`
-* `--m-max-coverage <M_MAX_COVERAGE>` — The maximum coverage depth for methylation calling
-
-  Default value: `1000`
 
 ###### **Output Options:**
 
 * `--all` — Output all variants, even if they do not pass filters.
 
-   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG.
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG. Every reference CpG is reported, including those without coverage.
 
    If combined with `--cpgs-only`, only CpG positions are reported: every reference CpG including those without coverage, plus de-novo CpGs that were actually called. De-novo candidates rejected by filters or ML are not included.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
@@ -233,7 +199,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    By default, only a minimal set is included.
 
-  Possible values: `GT`, `GL`, `GC`, `DP`, `M5mC`, `DPM5mC`, `ADM5mC`, `ML`
+  Possible values: `GT`, `GC`, `DP`, `M5mC`, `DPM5mC`, `ADM5mC`, `ML`
 
 * `--vcf-all-fields`
 
@@ -250,6 +216,16 @@ Only variants that pass all filters are written by default. Use `--all` to get a
     Regular BED file, usually `.bed`
 
 
+###### **Phasing Options:**
+
+* `--phase-min-switch-quality <Q>` — Cut a phase block where switching its two sides would cost less than this
+
+   Heterozygous variants that share read pairs are linked into phase blocks and written as phased genotypes (`0|1`) with a `PS` phase set, SNVs and indels alike. This is not done for CpG-only output.
+
+   The cost is Phred-scaled and grows in steps of read pairs: one is worth at most 26, two about 50. The default keeps a block together on two read pairs; 26 on one of good base quality, 20 on most single read pairs.
+
+  Default value: `30`
+
 ###### **Processing Options:**
 
 * `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
@@ -264,18 +240,9 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   Default value: `200`
 * `--segment-max-bytes <SEGMENT_MAX_BYTES>` — Maximum estimated compressed bytes to load per segment (memory budget)
 
-   seqair backend only. A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
+   A segment whose index-estimated compressed size exceeds this is subdivided into smaller sub-segments, so peak memory per worker stays bounded regardless of local coverage. The decoded in-memory size is a few times larger than this compressed budget.
 
   Default value: `268435456`
-* `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
-
-   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the htslib/reference-oriented read sequence. `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
-
-   Useful for non-directional libraries, commonly from tagmentation prep.
-
-   This option currently affects only the pileup-based `call` workflow.
-
-  Default value: `false`
 * `--error-model <ERROR_MODEL>` — The error model to use
 
    Accepts platform names or a custom error rate (e.g., 0.005)
@@ -298,17 +265,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
-* `--linear-dedup-threshold <LINEAR_DEDUP_THRESHOLD>` — Depth threshold below which linear name dedup is used instead of a hashmap
-
-   At pileup positions with depth ≤ this value, read name deduplication uses a linear scan through parallel suffix/name arrays rather than an `FxHashMap`. Set to 0 to always use the hashmap.
-
-   Only affects the htslib pileup path. The seqair path deduplicates overlapping mates from seqair's per-store mate links and never matches read names, so it ignores this.
-
-  Default value: `30`
-* `--indel-error-rate <INDEL_ERROR_RATE>` — Error rate for indel genotyping (higher than SNV due to alignment uncertainty)
-
-  Default value: `0.05`
-* `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead.
+* `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead. The pair-HMM indel scoring runs on the GPU too.
 
    Requires a Metal/Vulkan/DX12-capable GPU.
 * `--vcf-threads <VCF_THREADS>` — Number of threads to use for writing (and compressing) VCF files
@@ -400,11 +357,6 @@ This will produce a bed file that list the methylation status of all CpGs in eve
    Helpful to avoid missing variants at the edges of segments.
 
   Default value: `500`
-* `--guess-read-orientation` — Guess OT/OB read orientation from mismatch motifs instead of SAM flags
-
-   Scans read mismatches against the reference and counts `TG` versus `CA` motifs in a 2 bp window anchored at each mismatch (current+next and previous+current), using the htslib/reference-oriented read sequence. `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads are split pseudo-randomly but reproducibly per read.
-
-  Default value: `false`
 * `-@`, `--threads <TOTAL_THREADS>` — Number of threads to use for processing the BAM file. Will use all available threads when not specified.
 
    Note that VCF writing might use additional threads internally for compression. This can be overwritten with `--vcf-threads`.
@@ -524,7 +476,7 @@ Convert between different file formats
 
    This does nothing if the input data does not contain ML scores.
 
-  Default value: `0.50`
+  Default value: `0.40`
 
 ###### **Input Options:**
 
@@ -563,7 +515,7 @@ Convert between different file formats
 
 * `--all` — Output all variants, even if they do not pass filters.
 
-   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG.
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG. Every reference CpG is reported, including those without coverage.
 
    If combined with `--cpgs-only`, only CpG positions are reported: every reference CpG including those without coverage, plus de-novo CpGs that were actually called. De-novo candidates rejected by filters or ML are not included.
 

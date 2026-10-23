@@ -1,8 +1,8 @@
 use crate::metrics::ml::features::FeatureCalculatorBox;
 use biosphere::FlatForest;
 use biosphere::gpu::GpuForest;
-use ndarray::Array1;
-use seqair_types::{Probability, SmolStr};
+use color_eyre::eyre::WrapErr as _;
+use seqair_types::Probability;
 use std::fmt;
 use std::ops::{Index, IndexMut};
 
@@ -32,32 +32,77 @@ impl PlattScaling {
     }
 }
 
+/// The field order is the on-disk layout: msgpack writes a struct as an
+/// array, so it is the order of the bundled `rastair_default.rff.mpk.lz4`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RastairFlatModel {
     pub cpg: FlatForest,
-    #[serde(default)]
-    pub cpg_platt: PlattScaling,
     pub denovo: FlatForest,
-    #[serde(default)]
-    pub denovo_platt: PlattScaling,
     pub others: FlatForest,
     #[serde(default)]
+    pub cpg_platt: PlattScaling,
+    #[serde(default)]
+    pub denovo_platt: PlattScaling,
+    #[serde(default)]
     pub others_platt: PlattScaling,
-    pub insertion: FlatForest,
-    #[serde(default)]
-    pub insertion_platt: PlattScaling,
-    pub deletion: FlatForest,
-    #[serde(default)]
-    pub deletion_platt: PlattScaling,
     #[serde(default)]
     pub feature_set: MlFeatureSet,
+    /// `None` in a model written before layouts were recorded.
+    #[serde(default)]
+    pub feature_layout: Option<FeatureLayout>,
+    /// The forests `--snv-engine` re-scores the engine's alts with, fitted on
+    /// the alts the forests above keep, with the engine's features from their
+    /// clusters. `None` in a model trained without the engine.
+    #[serde(default)]
+    pub snv_engine: Option<Box<RastairFlatModel>>,
+}
+
+/// A fingerprint of each forest's feature names, in layout order.
+///
+/// A forest reads a row by position, so one fitted on another layout would
+/// score the wrong features without failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FeatureLayout {
+    pub cpg: u64,
+    pub denovo: u64,
+    pub others: u64,
+}
+
+impl FeatureLayout {
+    pub fn of(feature_set: MlFeatureSet) -> Self {
+        let names = feature_set.get_calculator().feature_names();
+        Self {
+            cpg: fingerprint(&names.cpg),
+            denovo: fingerprint(&names.denovo_cpg),
+            others: fingerprint(&names.others),
+        }
+    }
+
+    fn get(self, model: MlModel) -> u64 {
+        match model {
+            MlModel::Others => self.others,
+            MlModel::Cpg => self.cpg,
+            MlModel::DenovoCpg => self.denovo,
+        }
+    }
+}
+
+/// 64-bit FNV-1a over the names, each terminated by a NUL: stable across
+/// builds and platforms, unlike `std`'s hashers.
+fn fingerprint(names: &[&str]) -> u64 {
+    names
+        .iter()
+        .flat_map(|name| name.bytes().chain([0]))
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
 }
 
 /// One value per [`MlModel`], addressed by the model itself.
 ///
-/// The five models are always handled together — a feature block, a dispatch
-/// and a score vector each — so this replaces the five parallel fields that
-/// shape would otherwise grow.
+/// The three models are always handled together — a feature block, a dispatch
+/// and a score vector each — so they are one array rather than three parallel
+/// fields.
 #[derive(Debug, Clone)]
 pub struct ByModel<T>([T; MlModel::COUNT]);
 
@@ -76,9 +121,9 @@ impl<T> ByModel<T> {
         self,
         mut f: impl FnMut(MlModel, T) -> Result<U, E>,
     ) -> Result<ByModel<U>, E> {
-        let [a, b, c, d, e] = self.0;
-        let [ma, mb, mc, md, me] = MlModel::ALL;
-        Ok(ByModel([f(ma, a)?, f(mb, b)?, f(mc, c)?, f(md, d)?, f(me, e)?]))
+        let [a, b, c] = self.0;
+        let [ma, mb, mc] = MlModel::ALL;
+        Ok(ByModel([f(ma, a)?, f(mb, b)?, f(mc, c)?]))
     }
 }
 
@@ -118,37 +163,47 @@ impl RastairFlatModel {
         trained: ByModel<(FlatForest, PlattScaling)>,
     ) -> Self {
         const {
-            assert!(matches!(
-                MlModel::ALL,
-                [
-                    MlModel::Others,
-                    MlModel::Cpg,
-                    MlModel::DenovoCpg,
-                    MlModel::Insertion,
-                    MlModel::Deletion
-                ]
-            ));
+            assert!(matches!(MlModel::ALL, [MlModel::Others, MlModel::Cpg, MlModel::DenovoCpg]));
         }
-        let [
-            (others, others_platt),
-            (cpg, cpg_platt),
-            (denovo, denovo_platt),
-            (insertion, insertion_platt),
-            (deletion, deletion_platt),
-        ] = trained.0;
+        let [(others, others_platt), (cpg, cpg_platt), (denovo, denovo_platt)] = trained.0;
         Self {
             cpg,
-            cpg_platt,
             denovo,
-            denovo_platt,
             others,
+            cpg_platt,
+            denovo_platt,
             others_platt,
-            insertion,
-            insertion_platt,
-            deletion,
-            deletion_platt,
             feature_set,
+            feature_layout: Some(FeatureLayout::of(feature_set)),
+            snv_engine: None,
         }
+    }
+
+    /// Refuse a model whose forests were not fitted on the features this
+    /// build computes.
+    pub fn check_feature_layout(&self) -> color_eyre::Result<()> {
+        let Some(recorded) = self.feature_layout else {
+            color_eyre::eyre::bail!(
+                "The model records no feature layout, so it predates the current features; \
+                 retrain it with `rastair ml train`"
+            );
+        };
+        let current = FeatureLayout::of(self.feature_set);
+        let differing: Vec<&str> = MlModel::ALL
+            .into_iter()
+            .filter(|&model| recorded.get(model) != current.get(model))
+            .map(MlModel::name)
+            .collect();
+        color_eyre::eyre::ensure!(
+            differing.is_empty(),
+            "The model's {} forest(s) were trained on a different feature layout than this \
+             rastair computes; retrain it with `rastair ml train`",
+            differing.join(", ")
+        );
+        if let Some(engine) = &self.snv_engine {
+            engine.check_feature_layout().wrap_err("The model's SNV engine forests")?;
+        }
+        Ok(())
     }
 
     pub fn forest(&self, model: MlModel) -> &FlatForest {
@@ -156,8 +211,6 @@ impl RastairFlatModel {
             MlModel::Others => &self.others,
             MlModel::Cpg => &self.cpg,
             MlModel::DenovoCpg => &self.denovo,
-            MlModel::Insertion => &self.insertion,
-            MlModel::Deletion => &self.deletion,
         }
     }
 
@@ -166,8 +219,6 @@ impl RastairFlatModel {
             MlModel::Others => self.others_platt,
             MlModel::Cpg => self.cpg_platt,
             MlModel::DenovoCpg => self.denovo_platt,
-            MlModel::Insertion => self.insertion_platt,
-            MlModel::Deletion => self.deletion_platt,
         }
     }
 }
@@ -188,34 +239,18 @@ impl fmt::Display for MlFeatureSet {
     }
 }
 
-/// Flat (BFS-linearised, f32) forests for CPU inference.
-///
-/// Built once from the loaded [`RastairModel`] and stored in [`MachineLearning`].
-/// Uses the same f32 representation as the GPU path so both paths are numerically consistent.
-pub struct FlatRastairModel {
-    pub cpg: FlatForest,
-    pub denovo: FlatForest,
-    pub others: FlatForest,
-    pub insertion: FlatForest,
-    pub deletion: FlatForest,
-}
-
-/// The five forests on one shared [`biosphere::gpu::GpuContext`], owned by the
+/// The three forests on one shared [`biosphere::gpu::GpuContext`], owned by the
 /// inference thread.
 ///
-/// They used to sit on five devices, because biosphere's UMA upload waited on
-/// the device's most recent submission from any source, which on a shared
-/// device was the previous model's dispatch. Biosphere now uploads with
-/// `write_buffer` everywhere, and with that fixed one device measures the same
-/// as five on Metal (chr12:20-30Mb, 1.87 s vs 1.90 s) while being what a
-/// discrete GPU wants: one queue pipelines the five dispatches that separate
-/// devices would time-slice.
+/// One queue pipelines the dispatches, which separate devices would
+/// time-slice, and on Metal one device measures the same as five
+/// (chr12:20-30Mb, 1.87 s vs 1.90 s). Sharing relies on biosphere uploading
+/// with `write_buffer`: an upload that waited on the device's most recent
+/// submission would wait on the previous model's dispatch.
 pub struct GpuRastairModel {
     pub cpg: GpuForest,
     pub denovo: GpuForest,
     pub others: GpuForest,
-    pub insertion: GpuForest,
-    pub deletion: GpuForest,
 }
 
 impl GpuRastairModel {
@@ -224,8 +259,6 @@ impl GpuRastairModel {
             MlModel::Others => &self.others,
             MlModel::Cpg => &self.cpg,
             MlModel::DenovoCpg => &self.denovo,
-            MlModel::Insertion => &self.insertion,
-            MlModel::Deletion => &self.deletion,
         }
     }
 }
@@ -239,6 +272,9 @@ pub struct MachineLearning {
     /// The thread that owns the GPU forests, when `--gpu` is on. Workers hand
     /// it feature rows rather than each forking a copy of the forests.
     pub inference: Option<crate::call::process::InferenceStage>,
+    /// The forests that re-score the alts the SNV engine scored, under
+    /// `--snv-engine`.
+    pub snv_engine: Option<Box<MachineLearning>>,
 }
 
 impl MachineLearning {
@@ -251,6 +287,7 @@ impl MachineLearning {
             feature_set,
             feature_calculator: feature_set.get_calculator(),
             inference: None,
+            snv_engine: None,
         }
     }
 
@@ -259,39 +296,16 @@ impl MachineLearning {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Prediction {
-    /// The model used for this prediction
-    pub model: MlModel,
-    pub allele: SmolStr,
-    /// Probability of the alt being a variant
-    pub prediction: Probability,
-    /// Threshold for calling a variant
-    pub threshold: Probability,
-    /// Features used for this prediction
-    #[serde(skip)]
-    pub features: Array1<f32>,
-}
-
-impl Prediction {
-    pub fn pass(&self) -> bool {
-        self.prediction >= self.threshold
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MlModel {
     Others,
     Cpg,
     DenovoCpg,
-    Insertion,
-    Deletion,
 }
 
 impl MlModel {
     /// Every model, in the order [`MlModel::index`] assigns.
-    pub const ALL: [Self; 5] =
-        [Self::Others, Self::Cpg, Self::DenovoCpg, Self::Insertion, Self::Deletion];
+    pub const ALL: [Self; 3] = [Self::Others, Self::Cpg, Self::DenovoCpg];
 
     pub const COUNT: usize = Self::ALL.len();
 
@@ -302,8 +316,6 @@ impl MlModel {
             Self::Others => 0,
             Self::Cpg => 1,
             Self::DenovoCpg => 2,
-            Self::Insertion => 3,
-            Self::Deletion => 4,
         }
     }
 
@@ -313,8 +325,6 @@ impl MlModel {
             Self::Others => "other",
             Self::Cpg => "cpg",
             Self::DenovoCpg => "denovo",
-            Self::Insertion => "insertion",
-            Self::Deletion => "deletion",
         }
     }
 }

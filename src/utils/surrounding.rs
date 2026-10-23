@@ -108,19 +108,17 @@ mod tests {
         })
     }
 
-    /// Helper to create a minimal `PileupMetrics` for testing
+    /// An uncovered `PileupMetrics` for testing: the C of a CpG, since only a
+    /// CpG has metrics without reads.
     fn make_pileup(contig: &str, pos: u64) -> PileupMetrics {
-        // Create a minimal segment with enough context
-        let start = pos.saturating_sub(10);
-        let end = pos + 20;
-        let segment = Rc::new(Segment {
-            range: region_for(contig, start, end),
-            sequence: vec![b'C'; (end - start) as usize],
-            overlap_start: 0,
-            overlap_end: 0,
-        });
+        // The region is shared per contig, so the sequence is laid out from
+        // its start, not from this position.
+        let range = region_for(contig, pos.saturating_sub(10), pos + 20);
+        let pos_idx = (pos - range.region.start) as usize;
+        let mut sequence = vec![b'C'; pos_idx + 20];
+        sequence[pos_idx + 1] = b'G';
+        let segment = Rc::new(Segment { range, sequence, overlap_start: 0, overlap_end: 0 });
 
-        let pos_idx = (pos - start) as usize;
         let context = SequenceContext::new(pos_idx, &segment).expect("valid context");
 
         let pileup = Pileup {
@@ -129,16 +127,9 @@ mod tests {
             pos: pos as u32,
             reads: SimpleReads(vec![].into()),
             reference_base: Base::C,
-            indel_observations: Default::default(),
-            noisy_ref_count: 0,
-            homopolymer_run: 0,
-            dinucleotide_run: 0,
-            soft_clip_count: 0,
-            indel_ref_window: Default::default(),
-            indel_ref_anchor: 0,
         };
 
-        PileupMetrics::new(pileup).unwrap()
+        pileup.metrics(&segment).unwrap()
     }
 
     /// Run `f` over `items` and hand back what survived, so each test reads as

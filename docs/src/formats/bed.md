@@ -31,8 +31,8 @@ The BED file for CpG sites contains the following columns:
 | `snp`           | Number of reads counting as @SNP:pl                                         |
 | `coverage`      | Total coverage at the CpG site                                              |
 | `genotype`      | `C/C`, `C/T`, `G/G`, `G/A`, `T/T`, or `A/A`                                 |
-| `gt_p_score`    | P-value for the genotype call                                               |
-| `gt_conf_score` | Confidence score for the genotype call                                      |
+| `gt_p_score`    | The same value as `gt_conf_score`                                           |
+| `gt_conf_score` | The genotype's `GC`: Phred-scaled chance that it is wrong                   |
 | `cpg`           | `REF` if CpG site occurs in @referenceGenome, `NEW` if it is a @denovo site |
 
 ## Per-Read Methylation

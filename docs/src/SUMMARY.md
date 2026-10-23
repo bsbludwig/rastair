@@ -12,7 +12,6 @@
 - [GPU acceleration](./gpu.md)
 
 # Calling logic
-- [Read orientation guessing](calling/strand-guesser.md)
 - [De-novo CpGs](calling/denovo.md)
 - [Indel calling](calling/indels.md)
 - [Methylation calling](calling/methylation.md)
