@@ -345,6 +345,44 @@ impl ColumnDraft {
         })
     }
 
+    /// The draft of a position no read reaches, or `None` unless the
+    /// reference has a CpG there: the only such positions any output reports.
+    pub(crate) fn uncovered_cpg(pos: u64, segment: &Rc<Segment>) -> Result<Option<ColumnDraft>> {
+        let pos_u32 = u32::try_from(pos).wrap_err("position exceeds u32")?;
+        let idx = segment.pos_to_idx(pos_u32)?;
+        let base_at =
+            |idx: Option<usize>| idx.and_then(|i| segment.sequence.get(i)).map(|&b| Base::from(b));
+        let reference_base = base_at(Some(idx)).wrap_err("failed to get reference base")?;
+        // The CpG test is all most gap positions need, so it comes before the
+        // full context.
+        let cpg =
+            InCpG::new(reference_base, base_at(idx.checked_sub(1)), base_at(idx.checked_add(1)));
+        if !*cpg {
+            return Ok(None);
+        }
+        let context =
+            SequenceContext::new(idx, segment).wrap_err("failed to get sequence context")?;
+        Ok(Some(ColumnDraft {
+            segment: segment.clone(),
+            pos,
+            pos_u32,
+            idx,
+            reference_base,
+            context,
+            accumulators: PerBaseAccumulators::default(),
+            pos_baseq: SumOfSquares::new(),
+            pos_mapq: SumOfSquares::new(),
+            mapq0: 0,
+            total_depth: 0,
+            alt_bases: SmallVec::new(),
+            indel_observations: SmallVec::new(),
+            depth_offset: 0,
+            soft_clip_count: 0,
+            before_counts: PairedCounts::default(),
+            after_counts: PairedCounts::default(),
+        }))
+    }
+
     /// The sequence index of this column, for the caller's sliding entropy.
     pub(crate) fn idx(&self) -> usize {
         self.idx

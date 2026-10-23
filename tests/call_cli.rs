@@ -1158,48 +1158,101 @@ fn cpgs_only_with_all_reports_uncovered_reference_cpgs_in_bed() -> Result<()> {
 
     const REGION: &str = "--region=chr19:6105700-6105800";
 
-    let temp_dir = TempDir::new()?;
-    let gapped_bam = temp_dir.path().join("gapped.bam");
-    // Set MAPQ 0 on every read covering the second reference CpG pair in the
-    // region (0-based 6105743..6105745, i.e. 1-based 6105744). The reads still
-    // align there, so the pileup column exists, but with the default
-    // `--min-mapq 1` they are filtered out and the position has zero coverage.
-    write_bam_with_zero_mapq_overlapping(&gapped_bam, "chr19", 6_105_743, 6_105_745)?;
+    // The second reference CpG pair in the region (0-based 6105743..6105745,
+    // i.e. 1-based 6105744) loses its coverage: either no read reaches it, or
+    // every read that does fails the default `--min-mapq 1`. Both must look
+    // the same in the output.
+    for gap in [Gap::NoReads, Gap::ZeroMapq] {
+        let temp_dir = TempDir::new()?;
+        let gapped_bam = temp_dir.path().join("gapped.bam");
+        write_bam_with_gap(&gapped_bam, "chr19", 6_105_743, 6_105_745, gap)?;
 
-    let cpgs_only_bed = temp_dir.path().join("cpgs-only.bed");
-    let all_bed = temp_dir.path().join("all.bed");
+        let cpgs_only_bed = temp_dir.path().join("cpgs-only.bed");
+        let all_bed = temp_dir.path().join("all.bed");
 
-    rastair()
-        .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
-        .arg(&gapped_bam)
-        .args([REGION, NO_ML, "--cpgs-only", "--bed"])
-        .arg(&cpgs_only_bed)
-        .succeeds()?;
+        rastair()
+            .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+            .arg(&gapped_bam)
+            .args([REGION, NO_ML, "--cpgs-only", "--bed"])
+            .arg(&cpgs_only_bed)
+            .succeeds()?;
 
-    rastair()
-        .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
-        .arg(&gapped_bam)
-        .args([REGION, NO_ML, "--cpgs-only", "--all", "--bed"])
-        .arg(&all_bed)
-        .succeeds()?;
+        rastair()
+            .args(["call", "--fasta-file=tests/data/test.fasta.gz"])
+            .arg(&gapped_bam)
+            .args([REGION, NO_ML, "--cpgs-only", "--all", "--bed"])
+            .arg(&all_bed)
+            .succeeds()?;
 
-    let cpgs_only_positions: BTreeSet<(u32, char)> =
-        parse_cpg_bed(&cpgs_only_bed)?.keys().copied().collect();
-    let all_positions: BTreeSet<(u32, char)> = parse_cpg_bed(&all_bed)?.keys().copied().collect();
+        let cpgs_only_positions: BTreeSet<(u32, char)> =
+            parse_cpg_bed(&cpgs_only_bed)?.keys().copied().collect();
+        let all_positions: BTreeSet<(u32, char)> =
+            parse_cpg_bed(&all_bed)?.keys().copied().collect();
 
-    // The second CpG pair has no coverage, so plain `--cpgs-only` drops it …
-    assert_eq!(
-        cpgs_only_positions,
-        BTreeSet::from([(6_105_711, '+'), (6_105_712, '-')]),
-        "expected only the covered CpG pair under --cpgs-only"
-    );
-    // … but `--all --cpgs-only` must report every reference CpG in the region,
-    // whether it has coverage or not (both CpG pairs here).
-    assert_eq!(
-        all_positions,
-        BTreeSet::from([(6_105_711, '+'), (6_105_712, '-'), (6_105_743, '+'), (6_105_744, '-'),]),
-        "expected all reference CpGs under --all --cpgs-only"
-    );
+        // The second CpG pair has no coverage, so plain `--cpgs-only` drops it …
+        assert_eq!(
+            cpgs_only_positions,
+            BTreeSet::from([(6_105_711, '+'), (6_105_712, '-')]),
+            "expected only the covered CpG pair under --cpgs-only ({gap:?})"
+        );
+        // … but `--all --cpgs-only` must report every reference CpG in the
+        // region, whether it has coverage or not (both CpG pairs here).
+        assert_eq!(
+            all_positions,
+            BTreeSet::from([
+                (6_105_711, '+'),
+                (6_105_712, '-'),
+                (6_105_743, '+'),
+                (6_105_744, '-'),
+            ]),
+            "expected all reference CpGs under --all --cpgs-only ({gap:?})"
+        );
+    }
+
+    Ok(())
+}
+
+/// A region no read reaches still lists every reference CpG under `--all`, so
+/// the outputs of two samples line up row for row.
+#[test]
+fn all_reports_cpgs_in_a_region_without_reads() -> Result<()> {
+    use rust_htslib::faidx;
+
+    apply_common_filters!();
+
+    // 1-based, inclusive; `test.bam` has no read here.
+    const REGION: &str = "--region=chr19:6000001-6001000";
+    const FIRST: u32 = 6_000_000;
+    const LAST: u32 = 6_000_999;
+
+    // One base either side, so a CpG straddling an edge is seen whole; only
+    // its half inside the region is reported.
+    let fasta = faidx::Reader::from_path("tests/data/test.fasta.gz")?;
+    let seq = fasta.fetch_seq_string("chr19", FIRST as usize - 1, LAST as usize + 1)?;
+    let expected: BTreeSet<(u32, char)> = seq
+        .as_bytes()
+        .windows(2)
+        .zip(FIRST - 1..)
+        .filter(|(pair, _)| pair.eq_ignore_ascii_case(b"CG"))
+        .flat_map(|(_, c)| [(c, '+'), (c + 1, '-')])
+        .filter(|&(pos, _)| (FIRST..=LAST).contains(&pos))
+        .collect();
+    assert!(!expected.is_empty(), "the region has reference CpGs");
+
+    for flags in [&["--all", "--cpgs-only"][..], &["--all"]] {
+        let temp_dir = TempDir::new()?;
+        let bed = temp_dir.path().join("all.bed");
+        rastair()
+            .args(["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"])
+            .args([REGION, NO_ML])
+            .args(flags)
+            .arg("--bed")
+            .arg(&bed)
+            .succeeds()?;
+
+        let reported: BTreeSet<(u32, char)> = parse_cpg_bed(&bed)?.keys().copied().collect();
+        assert_eq!(reported, expected, "every reference CpG under {flags:?}");
+    }
 
     Ok(())
 }
@@ -1212,7 +1265,7 @@ fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Res
 
     let temp_dir = TempDir::new()?;
     let gapped_bam = temp_dir.path().join("gapped.bam");
-    write_bam_with_zero_mapq_overlapping(&gapped_bam, "chr19", 6_105_743, 6_105_745)?;
+    write_bam_with_gap(&gapped_bam, "chr19", 6_105_743, 6_105_745, Gap::NoReads)?;
 
     // `call --all --cpgs-only` already reports the uncovered CpG pair with no
     // extra flag needed (that's the point of this refactor), so the VCF
@@ -1264,13 +1317,24 @@ fn convert_bed_include_empty_gates_uncovered_cpgs_independently_of_call() -> Res
     Ok(())
 }
 
-/// Copy `tests/data/test.bam`, setting MAPQ 0 on all reads whose alignment
-/// overlaps the 0-based half-open window `[win_start, win_end)` on `chrom`.
-fn write_bam_with_zero_mapq_overlapping(
+/// How [`write_bam_with_gap`] takes a window's coverage away.
+#[derive(Debug, Clone, Copy)]
+enum Gap {
+    /// Drop every read that overlaps the window.
+    NoReads,
+    /// Keep the reads, with MAPQ 0.
+    ZeroMapq,
+}
+
+/// Copy `tests/data/test.bam`, taking the coverage away from every read whose
+/// alignment overlaps the 0-based half-open window `[win_start, win_end)` on
+/// `chrom`.
+fn write_bam_with_gap(
     output: &std::path::Path,
     chrom: &str,
     win_start: i64,
     win_end: i64,
+    gap: Gap,
 ) -> Result<()> {
     use rust_htslib::bam::{self, Read as _, Record};
 
@@ -1294,7 +1358,10 @@ fn write_bam_with_zero_mapq_overlapping(
             pos < win_end && end > win_start
         };
         if overlaps {
-            record.set_mapq(0);
+            match gap {
+                Gap::NoReads => continue,
+                Gap::ZeroMapq => record.set_mapq(0),
+            }
         }
         writer.write(&record)?;
     }

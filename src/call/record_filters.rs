@@ -8,7 +8,7 @@ use crate::{metrics::PileupMetrics, utils::cli};
 /// | --------- | ----------- | ------------------------------------------------------------ |
 /// | ``        | ``          | All covered CpG sites and variants that PASS                 |
 /// | ``        | `-c`        | All covered CpG sites and PASSing de-novo CpGs               |
-/// | `--all`   | ``          | All CpG sites and all variants                               |
+/// | `--all`   | ``          | All reference CpGs (incl. uncovered) and all variants        |
 /// | `--all`   | `-c`        | All reference CpGs (incl. uncovered) and called de-novo CpGs |
 ///
 /// Note: We alwasy report both positions of a CpG.
@@ -17,7 +17,8 @@ pub struct RecordFilters {
     /// Output all variants, even if they do not pass filters.
     ///
     /// Positions where nothing but the reference was observed are still only
-    /// reported when they are a CpG or a de-novo CpG.
+    /// reported when they are a CpG or a de-novo CpG. Every reference CpG is
+    /// reported, including those without coverage.
     ///
     /// If combined with `--cpgs-only`, only CpG positions are reported: every
     /// reference CpG including those without coverage, plus de-novo CpGs that
@@ -62,6 +63,12 @@ impl RecordFilters {
             // Otherwise, keep all variant evidence + methylation evidence + indel evidence
             inputs.has_alts || inputs.cpg || inputs.has_indels
         }
+    }
+
+    /// Whether every reference CpG is reported, including those no read
+    /// reaches, so that two samples' outputs list the same positions.
+    pub fn reports_uncovered_cpgs(&self) -> bool {
+        self.vcf_all
     }
 
     /// Filter out pileups that are not relevant based on caller parameters

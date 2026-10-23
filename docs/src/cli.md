@@ -215,7 +215,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 * `--all` — Output all variants, even if they do not pass filters.
 
-   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG.
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG. Every reference CpG is reported, including those without coverage.
 
    If combined with `--cpgs-only`, only CpG positions are reported: every reference CpG including those without coverage, plus de-novo CpGs that were actually called. De-novo candidates rejected by filters or ML are not included.
 * `-o`, `--vcf <VCF>` — VCF/BCF output file path (use - to write to stdout)
@@ -554,7 +554,7 @@ Convert between different file formats
 
 * `--all` — Output all variants, even if they do not pass filters.
 
-   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG.
+   Positions where nothing but the reference was observed are still only reported when they are a CpG or a de-novo CpG. Every reference CpG is reported, including those without coverage.
 
    If combined with `--cpgs-only`, only CpG positions are reported: every reference CpG including those without coverage, plus de-novo CpGs that were actually called. De-novo candidates rejected by filters or ML are not included.
 

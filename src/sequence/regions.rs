@@ -165,7 +165,8 @@ pub(crate) fn retain_fasta_regions(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChunkRegion {
     pub region: Region,
-    /// The last valid position in the full region this chunk belongs to
+    /// The length of the contig this chunk belongs to, one past its last
+    /// 0-based position
     pub last_position: u64,
     /// Number of bases of overlap at the start of this chunk
     pub overlap_start: u64,

@@ -1,5 +1,8 @@
 use crate::{
-    call::{RecordFilters, require_tags::TagRequirement, variant_calling::VariantCallingParams},
+    call::{
+        PreFilterInputs, RecordFilters, require_tags::TagRequirement,
+        variant_calling::VariantCallingParams,
+    },
     sequence::{ChunkRegion, Segment},
 };
 use color_eyre::eyre::Result;
@@ -119,36 +122,9 @@ pub fn get_pileups(
         .collect();
 
     let segment = Rc::new(segment);
-    // `early_reject` drops seven covered columns in eight before anything
-    // downstream sees them, so this holds the survivors and not one entry per
-    // covered position. A quarter of the region is a deliberate
-    // over-reservation — a `PileupMetrics` is 928 bytes and doubling into it
-    // both copies and overshoots — against a chr12 keep rate of ~12 % without
-    // `--cpgs-only` and far below that with it. A caller that asked for every
-    // column doubles up into the rest, which costs it two copies of a vector
-    // that was going to be that size anyway.
-    //
-    // `region.len()` has to be the *inclusive* count for this to land where it
-    // is meant to.
-    let mut pileup_metrics: Vec<PileupMetrics> =
-        Vec::with_capacity(usize::try_from(region.len() / 4).unwrap_or(0));
+    let mut columns = Columns::new(&segment, region, params);
     // Reused across every column of every sub-segment; see `ColumnDraft::accumulate`.
     let mut scratch = ColumnScratch::default();
-
-    // The one-column delay that lets a column be rejected before it is
-    // finished. `set_denovo_adj` lets the *next* emitted column rescue a
-    // reference C, so such a draft waits here until that column is known;
-    // every other verdict is settled by what precedes it. The draft carries
-    // the `before` it was judged against, because by the time its successor
-    // arrives `previous` has moved on to the draft itself.
-    //
-    // Both live outside the sub-segment loop because the sequence they
-    // describe — this region's emitted columns, in ascending position — spans
-    // sub-segments, just as the vector this replaces did.
-    let mut deferred: Option<(ColumnDraft, Option<DenovoNeighbour>)> = None;
-    let mut previous: Option<DenovoNeighbour> = None;
-    let keeps = |inputs| params.early_reject.as_ref().is_none_or(|f| f.keeps(inputs));
-    let mut sliding_entropy = SlidingEntropy::new(&segment);
 
     for seqair_seg in &seqair_segments {
         // Fetch BAM records + FASTA into PileupEngine (compute() runs here).
@@ -172,71 +148,156 @@ pub fn get_pileups(
             if !region.contains(pos) {
                 continue;
             }
-            if let Some(neighbour) = plain_reference_column(&col, &segment, params, previous) {
-                if let Some((waiting, before)) = deferred.take()
-                    && keeps(waiting.pre_filter_inputs(before, Some(neighbour)))
-                {
-                    keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
-                }
-                previous = Some(neighbour);
+            columns.reach(pos)?;
+            if let Some(neighbour) =
+                plain_reference_column(&col, &segment, params, columns.previous)
+            {
+                columns.plain(neighbour);
                 continue;
             }
-            let draft = match ColumnDraft::accumulate(&col, segment.clone(), params, &mut scratch) {
-                Ok(draft) => draft,
+            match ColumnDraft::accumulate(&col, segment.clone(), params, &mut scratch) {
+                Ok(draft) => columns.draft(draft),
                 Err(error) => {
                     warn!(error = format!("{error:#}"), pos, "Failed to get pileup, skipping");
-                    continue;
                 }
-            };
-            let neighbour = draft.denovo_neighbour();
-
-            // The deferred column comes first: output stays in ascending
-            // position order.
-            if let Some((waiting, before)) = deferred.take()
-                && keeps(waiting.pre_filter_inputs(before, Some(neighbour)))
-            {
-                keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
             }
-
-            if keeps(draft.pre_filter_inputs(previous, None)) {
-                keep(&mut pileup_metrics, &mut sliding_entropy, draft);
-            } else if draft.awaits_successor() {
-                deferred = Some((draft, previous));
-            }
-            previous = Some(neighbour);
         }
     }
 
-    // Nothing follows the last column, so a still-deferred draft was only ever
-    // waiting for a rescue that cannot come.
-    if let Some((waiting, before)) = deferred.take()
-        && keeps(waiting.pre_filter_inputs(before, None))
-    {
-        keep(&mut pileup_metrics, &mut sliding_entropy, waiting);
-    }
-
-    Ok((segment, pileup_metrics.into_iter()))
+    // The region's end may be the contig's length, one past its last base.
+    let last = region.end.min(region.last_position.saturating_sub(1));
+    let kept = columns.finish(last)?;
+    Ok((segment, kept.into_iter()))
 }
 
-/// Finish a surviving column and give it its region entropy.
-///
-/// The entropy is only read by the ML feature extractor, so it is computed
-/// here and not for every covered position; the sliding window is still fed
-/// ascending indices and its counts are integers, so the values are the ones
-/// the whole-region pass produced.
-fn keep(
-    pileup_metrics: &mut Vec<PileupMetrics>,
-    sliding_entropy: &mut SlidingEntropy<'_>,
-    draft: ColumnDraft,
-) {
-    let idx = draft.idx();
-    match draft.finish() {
-        Ok(mut metrics) => {
-            metrics.pos_metrics.extended.region_entropy = sliding_entropy.entropy_at(idx);
-            pileup_metrics.push(metrics);
+/// A region's columns, in ascending position, each kept or rejected as soon as
+/// what decides it is known.
+struct Columns<'p, 's> {
+    segment: &'s Rc<Segment>,
+    early_reject: Option<&'p RecordFilters>,
+    /// Whether reference CpGs no read reaches get a column of their own.
+    fills_gaps: bool,
+    /// The first position of the region no column has reached yet.
+    unseen: u64,
+    /// `early_reject` drops seven covered columns in eight before anything
+    /// downstream sees them, so this holds the survivors and not one entry per
+    /// covered position.
+    kept: Vec<PileupMetrics>,
+    sliding_entropy: SlidingEntropy<'s>,
+    /// The one-column delay that lets a column be rejected before it is
+    /// finished. `set_denovo_adj` lets the *next* column rescue a reference C,
+    /// so such a draft waits here until that column is known; every other
+    /// verdict is settled by what precedes it. The draft carries the `before`
+    /// it was judged against, because by the time its successor arrives
+    /// `previous` has moved on to the draft itself.
+    deferred: Option<(ColumnDraft, Option<DenovoNeighbour>)>,
+    previous: Option<DenovoNeighbour>,
+}
+
+impl<'p, 's> Columns<'p, 's> {
+    fn new(
+        segment: &'s Rc<Segment>,
+        region: &ChunkRegion,
+        params: &'p PileupMappingParams,
+    ) -> Self {
+        // A quarter of the region is a deliberate over-reservation — a
+        // `PileupMetrics` is 928 bytes and doubling into it both copies and
+        // overshoots — against a chr12 keep rate of ~12 % without
+        // `--cpgs-only` and far below that with it. A caller that asked for
+        // every column doubles up into the rest, which costs it two copies of
+        // a vector that was going to be that size anyway.
+        //
+        // `region.len()` has to be the *inclusive* count for this to land
+        // where it is meant to.
+        let kept = Vec::with_capacity(usize::try_from(region.len() / 4).unwrap_or(0));
+        let early_reject = params.early_reject.as_ref();
+        Self {
+            segment,
+            early_reject,
+            fills_gaps: early_reject.is_some_and(RecordFilters::reports_uncovered_cpgs),
+            unseen: region.start,
+            kept,
+            sliding_entropy: SlidingEntropy::new(segment),
+            deferred: None,
+            previous: None,
         }
-        Err(error) => {
-            warn!(error = format!("{error:#}"), "Failed to finish pileup, skipping");
+    }
+
+    fn keeps(&self, inputs: PreFilterInputs) -> bool {
+        self.early_reject.is_none_or(|f| f.keeps(inputs))
+    }
+
+    /// A column [`plain_reference_column`] settled without a draft: it is never
+    /// kept, but it may still rescue the deferred one.
+    fn plain(&mut self, neighbour: DenovoNeighbour) {
+        if let Some((waiting, before)) = self.deferred.take()
+            && self.keeps(waiting.pre_filter_inputs(before, Some(neighbour)))
+        {
+            self.keep(waiting);
+        }
+        self.previous = Some(neighbour);
+    }
+
+    fn draft(&mut self, draft: ColumnDraft) {
+        let neighbour = draft.denovo_neighbour();
+        // The deferred column comes first: output stays in ascending position
+        // order.
+        if let Some((waiting, before)) = self.deferred.take()
+            && self.keeps(waiting.pre_filter_inputs(before, Some(neighbour)))
+        {
+            self.keep(waiting);
+        }
+        if self.keeps(draft.pre_filter_inputs(self.previous, None)) {
+            self.keep(draft);
+        } else if draft.awaits_successor() {
+            self.deferred = Some((draft, self.previous));
+        }
+        self.previous = Some(neighbour);
+    }
+
+    /// Move on to the column at `pos`, first giving each reference CpG before
+    /// it that no read reaches a column of its own.
+    fn reach(&mut self, pos: u64) -> Result<()> {
+        if self.fills_gaps {
+            for gap in self.unseen..pos {
+                if let Some(draft) = ColumnDraft::uncovered_cpg(gap, self.segment)? {
+                    self.draft(draft);
+                }
+            }
+        }
+        self.unseen = pos.saturating_add(1);
+        Ok(())
+    }
+
+    /// The kept columns, once every position up to `last` has been reached.
+    fn finish(mut self, last: u64) -> Result<Vec<PileupMetrics>> {
+        self.reach(last.saturating_add(1))?;
+        // Nothing follows the last column, so a still-deferred draft was only
+        // ever waiting for a rescue that cannot come.
+        if let Some((waiting, before)) = self.deferred.take()
+            && self.keeps(waiting.pre_filter_inputs(before, None))
+        {
+            self.keep(waiting);
+        }
+        Ok(self.kept)
+    }
+
+    /// Finish a surviving column and give it its region entropy.
+    ///
+    /// The entropy is only read by the ML feature extractor, so it is computed
+    /// here and not for every covered position; the sliding window is still fed
+    /// ascending indices and its counts are integers, so the values are the ones
+    /// the whole-region pass produced.
+    fn keep(&mut self, draft: ColumnDraft) {
+        let idx = draft.idx();
+        match draft.finish() {
+            Ok(mut metrics) => {
+                metrics.pos_metrics.extended.region_entropy = self.sliding_entropy.entropy_at(idx);
+                self.kept.push(metrics);
+            }
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "Failed to finish pileup, skipping");
+            }
         }
     }
 }
