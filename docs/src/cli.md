@@ -123,7 +123,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    For consistency with `--no-ml`, this option can be also be specified as `--ml` without a value, which will use the default threshold.
 
-  Default value: `0.50`
+  Default value: `0.40`
 * `--model <MODEL>` — Path to the combined model file containing CpG, denovo, and others models
 
    Default is the bundled model in the Rastair binary.

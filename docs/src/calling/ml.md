@@ -3,7 +3,7 @@
 Rastair uses @ML to distinguish true @methylation calls and variants from sequencing artifacts (and noise).
 The ML models evaluate each alt at each position and assign a prediction score for that alt to be a true variant.
 
-By default, ML is enabled with a threshold of `0.5`.
+By default, ML is enabled with a threshold of `0.4`.
 Pre-trained models are bundled with Rastair.
 
 These models handle several contexts with distinct sub-models:
@@ -22,13 +22,13 @@ The resulting ML scores are calibrated using [Platt scaling](https://en.wikipedi
 
 ## Adjusting the Threshold
 
-After calibration, a threshold of $ 0.5 $ should filter out all candidate variants with less than 50% likelihood of being true. Empirically, we determined this to be a good compromise between sensitivity and specificity. However, you can manually override this:
+After calibration, a threshold of $ 0.5 $ would filter out all candidate variants with less than 50% likelihood of being true. The default is $ 0.4 $ because the scores are under-confident in that range, most of all at low depth; it gains sensitivity at about 10x and is neutral at higher depths. However, you can manually override this:
 
 ```bash
 rastair call --ml 0.7 input.bam
 ```
 
-Values above 0.5 will shift the balance towards higher specificity at the expense of sensitivity.
+Higher values shift the balance towards higher specificity at the expense of sensitivity.
 
 If you care primarily about speed but do not need strict variant calling, e.g. when you only want to call methylation at known CpGs, you can turn the ML scoring off:
 

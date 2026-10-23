@@ -4,6 +4,7 @@ This is the changelog for Rastair 2.
 
 ## Unreleased
 
+- The default `--ml` threshold is 0.4 instead of 0.5, which recovers SNVs at low depth (+0.0024 SNV F1 at 10x) and is neutral at 26x and 73x.
 - Pileups are read by [seqair](https://github.com/Softleif/seqair) instead of htslib.
   Along with some other changes, this should be another great performance improvement for Rastair.
 - Removed `--linear-dedup-threshold`: it only tuned the htslib pileup path.

@@ -16,6 +16,10 @@
 //!
 //! The extracted features are returned as an ndarray Array1<f64> suitable
 //! for input to a random forest classifier.
+//!
+//! The default `--ml` threshold is 0.4, not 0.5: the engine-stage score is
+//! under-confident in the middle (at 10x, alts scored .3–.4 are about 52 %
+//! true), so 0.4 gains recall at low depth and is neutral at 26x and 73x.
 
 use crate::{
     call::process::{GPU_BATCH_BUFFER_SIZE, InferenceStage},
@@ -34,7 +38,7 @@ use seqair_types::Probability;
 use std::{fs, io::Read, path::Path, sync::Arc};
 use tracing::{debug, instrument};
 
-pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.5);
+pub const DEFAULT_ML_THRESHOLD: Probability = Probability::new_panicky(0.4);
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
 pub struct MachineLearningParams {
@@ -53,7 +57,7 @@ pub struct MachineLearningParams {
     ///
     /// For consistency with `--no-ml`, this option can be also be specified as
     /// `--ml` without a value, which will use the default threshold.
-    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.5", num_args = 0..=1)]
+    #[arg(long = "ml", default_value_t = DEFAULT_ML_THRESHOLD, default_missing_value = "0.4", num_args = 0..=1)]
     #[arg(help_heading = cli::sections::FILTER)]
     #[default(DEFAULT_ML_THRESHOLD)]
     pub ml: Probability,
