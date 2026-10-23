@@ -87,7 +87,7 @@ impl RecordFilters {
         let t = &record.tags;
         debug_assert!(t.set, "record tags not set before filtering");
 
-        let cpg = t.cpg || t.denovo_cpg || t.denovo_cpg_partner;
+        let cpg = *record.pos_metrics.cpg || t.denovo_cpg || t.denovo_cpg_partner;
 
         match (self.vcf_all, self.cpgs_only) {
             (false, false) => t.covered && (cpg || t.variant),

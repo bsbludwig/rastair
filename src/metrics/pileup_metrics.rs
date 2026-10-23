@@ -94,8 +94,6 @@ pub struct RecordTags {
     pub set: bool,
     /// This position has coverage
     pub covered: bool,
-    /// This is in a CpG site
-    pub cpg: bool,
     /// This is a de-novo CpG site (not the partner)
     pub denovo_cpg: bool,
     /// This is the partner position of a de-novo CpG site

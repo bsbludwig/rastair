@@ -7,7 +7,6 @@ pub fn add_position_tags(current: &mut PileupMetrics) {
     let tags = RecordTags {
         set: true,
         covered: current.pos_metrics.depth > 0,
-        cpg: *current.pos_metrics.cpg,
         denovo_cpg: current
             .alts
             .iter()
