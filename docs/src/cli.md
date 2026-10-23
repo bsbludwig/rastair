@@ -139,7 +139,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
    Default is the bundled model in the Rastair binary.
 * `--snv-engine <SNV_ENGINE>` — Re-score the forest's SNV candidates with the pair-HMM engine that calls indels
 
-   Alts the forest scores at 0.005 or more are scored as events of the engine's haplotypes, and a second set of forests in the model scores them again with that evidence. On by default; `--snv-engine=false` scores with the first forests alone.
+   Alts the forest scores at 0.005 or more are scored as events of the engine's haplotypes, and a second set of forests in the model scores them again with that evidence. On by default; `--snv-engine=false` scores with the first forests alone. The engine genotypes the called SNVs either way.
 
   Default value: `true`
 
@@ -286,18 +286,6 @@ Only variants that pass all filters are written by default. Use `--all` to get a
     NovaSeq6000 <https://support.illumina.com/sequencing/sequencing_instruments/novaseq-6000.html>
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
-
-* `--snv-genotype <SNV_GENOTYPE>` — How an SNV's zygosity is decided
-
-   `counts` weighs the reads of each allele per strand. `engine` takes the copy count of the pair-HMM's likeliest diploid pair carrying the alt, and its GQ as `GC`, wherever `--snv-engine` scored the alt; elsewhere the counts decide. Whether the alt is called stays the forests' decision.
-
-  Default value: `counts`
-
-  Possible values:
-  - `counts`:
-    The binomial genotyper over each allele's reads
-  - `engine`:
-    The SNV engine's dosage where it scored the alt
 
 * `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead. The pair-HMM indel scoring runs on the GPU too.
 

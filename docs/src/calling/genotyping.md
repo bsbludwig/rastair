@@ -1,6 +1,7 @@
 # Genotyping
 
-Rastair uses @ML scores to determine which @altAllele:pl represent true genetic @variant:pl, then applies statistical methods to estimate zygosity.
+Rastair uses @ML scores to determine which @altAllele:pl represent true genetic @variant:pl.
+Their zygosity comes from the pair-HMM that also calls indels: it scores the reads against the local haplotypes, TAPS conversion included, and picks the likeliest pair of haplotypes that carries the called alleles.
 Rastair only supports diploid genotyping (two chromosome copies) at this time.
 
 ## Multi-Allelic Sites
@@ -17,16 +18,19 @@ This representation follows VCF specification standards where allele indices sta
 ## Genotype Calls
 
 - Homozygous Reference (`0/0`): no alternate alleles passed filters
-- Heterozygous (`0/1`): One alternate allele passed filters but read counts show a mix of reference and alternate reads
-- Homozygous Alternate (`1/1`): an alternate allele passed filters and read counts show predominantly alternate reads, consistent with two copies of the variant
-- Compound Heterozygous (`1/2`, `2/3`, etc.): Multiple alternates passed filters and read counts support different variants on each chromosome copy
+- Heterozygous (`0/1`): the likeliest pair carries one copy of the alternate allele
+- Homozygous Alternate (`1/1`): the likeliest pair carries two copies
+- Compound Heterozygous (`1/2`): the likeliest pair carries two alternate alleles, one on each copy
+- Missing (`./.`): the alternate allele passed filters but the pair-HMM could not score it, at an `N` in the reference
 
 ## Confidence Scoring
 
-Confidence values reflect call certainty:
+`GC` is the Phred-scaled chance that the genotype is wrong:
 
-- For `0/0` calls: based on the margin between the ML threshold and the highest-scoring alternate
-- For variant calls: based on how well read count ratios match the expected distribution
+- For `0/0` calls with no passing alternate: a binomial test of the reads that show a SNP against the error rate
+- For variant calls: the posterior of the other copy count over the pairs of haplotypes consistent with the called alleles; `GL` carries the same value
+
+With `--no-ml` the pair-HMM also decides which alleles are present, and a passing alternate it finds absent is written `0/0`.
 
 ## Biological Interpretation
 
@@ -39,7 +43,8 @@ In most cases:
 
 ## Strand-Specific Counting
 
-For `C→T` and `G→A` variants, only one strand is used to avoid confounding with methylation.
+At a @CpG, a `T` over a `C` on the converted strand may be a methylated `C` (`A` over `G` likewise).
+The pair-HMM scores such reads against both alleles at the strand's methylation level, so they count only as far as they tell the alleles apart.
 For all other variant types, both strands contribute to genotyping.
 
 ## Phasing

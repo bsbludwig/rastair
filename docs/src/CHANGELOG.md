@@ -18,6 +18,7 @@ This is the changelog for Rastair 2.
 - Fixed a hang when the GPU inference thread crashes: queued regions now fall back to CPU scoring, like after any other GPU failure.
 - `call` links heterozygous variants that share read pairs into phase blocks, written as phased genotypes (`0|1`) with a new `PS` FORMAT field. This is always on, except for CpG-only output.
 - `call` calls indels with a TAPS-aware pair-HMM instead of the ML model. This is always on, except for CpG-only output.
+- SNV genotypes (`GT`, `GC`) come from the same pair-HMM, which scores every alt the model can pass; the read-count genotyper and `--snv-genotype` are gone.
 - With `--gpu`, the pair-HMM scores on the GPU as well; the calls are the same as on the CPU.
 - An indel allele needs at least 5% of the column's depth, besides `--min-indel-ao`, to be scored.
 - Indels at most 20 bp apart are called together, against haplotypes carrying every combination of them, with positions showing a nearby SNV left open; two indels on one chromosome are now both called, and an SNV next to an indel no longer turns into an indel call.
