@@ -85,11 +85,11 @@ use crate::{
     },
     metrics::{
         Alt, AltFilters, Filters, FormsDenovo, PairedCounts, PerBaseAccumulators, PileupMetrics,
-        ReadKey, RecordTags, alt_forms_denovo, order_alts,
+        ReadKey, RecordTags, order_alts,
     },
     sequence::{RastairReadExtras, Segment},
     utils::SequenceContext,
-    vcf::InCpG,
+    vcf::TapsContext,
 };
 use color_eyre::eyre::{ContextCompat as _, Result, WrapErr};
 use seqair::bam::{
@@ -312,8 +312,12 @@ impl ColumnDraft {
         let reference_base = base_at(Some(idx)).wrap_err("failed to get reference base")?;
         // The CpG test is all most gap positions need, so it comes before the
         // full context.
-        let cpg =
-            InCpG::new(reference_base, base_at(idx.checked_sub(1)), base_at(idx.checked_add(1)));
+        let cpg = TapsContext::new(
+            reference_base,
+            base_at(idx.checked_sub(1)),
+            base_at(idx.checked_add(1)),
+        )
+        .in_cpg();
         if !*cpg {
             return Ok(None);
         }
@@ -337,6 +341,10 @@ impl ColumnDraft {
         }))
     }
 
+    fn taps_context(&self) -> TapsContext {
+        TapsContext::new(self.reference_base, self.context.before_1, self.context.after_1)
+    }
+
     /// The sequence index of this column, for the caller's sliding entropy.
     pub(crate) fn idx(&self) -> usize {
         self.idx
@@ -346,7 +354,7 @@ impl ColumnDraft {
         let mut becomes_c = false;
         let mut becomes_g = false;
         for &base in self.alt_bases.iter() {
-            match alt_forms_denovo(base, self.reference_base, &self.context) {
+            match self.taps_context().forms_cpg(base) {
                 FormsDenovo::ThisBecomesC => becomes_c = true,
                 FormsDenovo::ThisBecomesG => becomes_g = true,
                 FormsDenovo::No => {}
@@ -380,7 +388,7 @@ impl ColumnDraft {
         let neighbour = self.denovo_neighbour();
         PreFilterInputs {
             has_alts: !self.alt_bases.is_empty(),
-            cpg: *InCpG::new(self.reference_base, self.context.before_1, self.context.after_1)
+            cpg: *self.taps_context().in_cpg()
                 || denovo_adj
                 || neighbour.becomes_c
                 || neighbour.becomes_g,

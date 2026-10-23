@@ -514,7 +514,7 @@ impl SegmentCollector<'_> {
             let Some(candidate) = column.alt_metrics(alt_base) else { continue };
             let label = truth.snps.contains(&PositionKey { pos, ref_base, alt_base });
 
-            let (model, features) = if candidate.is_evidence_for_methylation() {
+            let (model, features) = if candidate.is_conversion() {
                 (MlModel::Cpg, self.calculator.calculate_cpg(&candidate, before, after))
             } else if *alt.metrics.denovo {
                 (

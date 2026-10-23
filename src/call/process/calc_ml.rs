@@ -64,7 +64,7 @@ pub fn extract_ml_rows(
                 continue;
             }
 
-            let (which, features) = if alt.is_evidence_for_methylation() {
+            let (which, features) = if alt.is_conversion() {
                 (MlModel::Cpg, calc.calculate_cpg(&alt, before, after))
             } else if *alt.alt.denovo {
                 (MlModel::DenovoCpg, calc.calculate_denovo_cpg(&alt, before, after))

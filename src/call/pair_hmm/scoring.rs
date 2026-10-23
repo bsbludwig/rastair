@@ -12,7 +12,10 @@
 use super::{
     Allele, Cluster, Event, HapIdx, HaplotypeScores, MAX_EVENTS, MAX_HAPLOTYPES, ReadScores,
 };
-use crate::call::{phasing::FragmentId, pileup::indels::IndelAllele};
+use crate::{
+    call::{phasing::FragmentId, pileup::indels::IndelAllele},
+    vcf::InCpG,
+};
 use compair::{
     Band, Betas, ConversionModel, CpgRole, Haplotype, Log10Likelihood, PcrIndelModel, Probability,
     Read, TapsEmission, Workspace,
@@ -413,11 +416,13 @@ impl Conversions {
     /// Reads covering window index `q` on the strand that converts `role`,
     /// a read's own indels ignored. `None` for [`CpgRole::None`].
     fn at(reads: &[HaplotypeRead], q: usize, role: CpgRole) -> Option<Self> {
-        let (strand, converted_base, unconverted_base) = match role {
-            CpgRole::TopC => (Strand::OT, Base::T, Base::C),
-            CpgRole::BottomG => (Strand::OB, Base::A, Base::G),
+        let side = match role {
+            CpgRole::TopC => InCpG::C,
+            CpgRole::BottomG => InCpG::G,
             CpgRole::None => return None,
         };
+        let (strand, converted_base, unconverted_base) =
+            (side.strand()?, side.mod_base()?, side.unmod_base()?);
         let q = i64::try_from(q).ok()?;
         let mut counts =
             Self { converted: 0.0, unconverted: 0.0, converted_base, unconverted_base };

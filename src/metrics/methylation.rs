@@ -5,7 +5,7 @@ use crate::{
     vcf::{CpgBeta, CpgOrigin, InCpG, Methylated},
 };
 use color_eyre::{Result, eyre::Context};
-use seqair_types::{Base, Probability, SmallVec, Strand};
+use seqair_types::{Base, Probability, SmallVec};
 use tracing::instrument;
 
 #[cfg(test)]
@@ -20,10 +20,10 @@ mod tests;
 pub fn call(current: &PileupMetrics) -> Result<Option<Methylated>> {
     let mut betas: SmallVec<CpgBeta, 1> = SmallVec::new();
 
-    if let Some(b) = compute_beta(current, CpgSide::C).wrap_err("C-side beta")? {
+    if let Some(b) = compute_beta(current, InCpG::C).wrap_err("C-side beta")? {
         betas.push(b);
     }
-    if let Some(b) = compute_beta(current, CpgSide::G).wrap_err("G-side beta")? {
+    if let Some(b) = compute_beta(current, InCpG::G).wrap_err("G-side beta")? {
         betas.push(b);
     }
 
@@ -32,10 +32,10 @@ pub fn call(current: &PileupMetrics) -> Result<Option<Methylated>> {
 
 /// Determine whether this position has a CpG allele on the given side,
 /// and if so compute the methylation beta value.
-fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<CpgBeta>> {
+fn compute_beta(record: &PileupMetrics, side: InCpG) -> Result<Option<CpgBeta>> {
     let Some(origin) = cpg_origin(record, side) else { return Ok(None) };
 
-    let (raw_mod, raw_unmod) = read_counts(record, side);
+    let Some((raw_mod, raw_unmod)) = read_counts(record, side) else { return Ok(None) };
     let mod_count = raw_mod.f();
     let unmod_count = raw_unmod.f();
 
@@ -54,49 +54,9 @@ fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<CpgBeta>
     }))
 }
 
-/// Which side of the CpG dinucleotide we are looking at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CpgSide {
-    C,
-    G,
-}
-
-impl CpgSide {
-    pub(crate) fn strand(self) -> Strand {
-        match self {
-            CpgSide::C => Strand::OT,
-            CpgSide::G => Strand::OB,
-        }
-    }
-
-    /// The base that appears when methylated (T for C-side, A for G-side).
-    pub(crate) fn mod_base(self) -> Base {
-        match self {
-            CpgSide::C => T,
-            CpgSide::G => A,
-        }
-    }
-
-    /// The base that appears when unmethylated (C for C-side, G for G-side).
-    pub(crate) fn unmod_base(self) -> Base {
-        match self {
-            CpgSide::C => C,
-            CpgSide::G => G,
-        }
-    }
-
-    /// The required adjacent base (G after C, C before G).
-    fn adjacent_base(self) -> Base {
-        match self {
-            CpgSide::C => G,
-            CpgSide::G => C,
-        }
-    }
-}
-
 pub fn origins(record: &PileupMetrics) -> SmallVec<CpgOrigin, 2> {
     let mut origins = SmallVec::new();
-    for side in [CpgSide::C, CpgSide::G] {
+    for side in [InCpG::C, InCpG::G] {
         if let Some(origin) = cpg_origin(record, side)
             && !origins.contains(&origin)
         {
@@ -108,60 +68,61 @@ pub fn origins(record: &PileupMetrics) -> SmallVec<CpgOrigin, 2> {
 
 /// Determine the CpG origin for this position on the given side, or None if
 /// this position doesn't have a CpG allele on that side.
-pub(crate) fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
+pub(crate) fn cpg_origin(record: &PileupMetrics, side: InCpG) -> Option<CpgOrigin> {
     // `denovo_adj` is set from de-novo candidate alts, before ML scoring, so on
     // its own it does not mean a de-novo CpG exists. Only once the partner's
     // alt was actually called does this position become the other half of a
     // CpG.
     let denovo_partner_called = record.pos_filters.other_pos_in_denovo_passes;
     let is_original = match side {
-        CpgSide::C => {
+        InCpG::C => {
             record.pos_metrics.cpg == InCpG::C
                 || (record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC
                     && denovo_partner_called)
         }
-        CpgSide::G => {
+        InCpG::G => {
             record.pos_metrics.cpg == InCpG::G
                 || (record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG
                     && denovo_partner_called)
         }
+        InCpG::No => return None,
     };
 
     if is_original {
         return Some(CpgOrigin::Original);
     }
 
-    let cpg_base = side.unmod_base();
+    let cpg_base = side.unmod_base()?;
     let denovo_alt =
         record.alts.iter().find(|a| a.base == cpg_base && a.call == AltCall::RealVariant)?;
     // The partner is the reference's, or a called variant's next door
     // (`process::mark_variant_pair_cpgs`).
     let partner_present = match side {
-        CpgSide::C => {
+        InCpG::C => {
             record.context.after_1 == Some(G)
                 || denovo_alt.metrics.denovo == FormsDenovo::ThisBecomesC
         }
-        CpgSide::G => {
+        InCpG::G => {
             record.context.before_1 == Some(C)
                 || denovo_alt.metrics.denovo == FormsDenovo::ThisBecomesG
         }
+        InCpG::No => false,
     };
     partner_present.then_some(CpgOrigin::DeNovo)
 }
 
 /// Look up the mod and unmod read counts for the given CpG side.
-fn read_counts(record: &PileupMetrics, side: CpgSide) -> (u32, u32) {
-    let strand = side.strand();
-    let adj = side.adjacent_base();
-
-    let (counts, mod_base, unmod_base) = match side {
-        CpgSide::C => (&record.after_counts, T, C),
-        CpgSide::G => (&record.before_counts, A, G),
+fn read_counts(record: &PileupMetrics, side: InCpG) -> Option<(u32, u32)> {
+    let counts = match side {
+        InCpG::C => &record.after_counts,
+        InCpG::G => &record.before_counts,
+        InCpG::No => return None,
     };
+    let (strand, adj) = (side.strand()?, side.adjacent_base()?);
 
-    let raw_mod = counts.get(ReadKey { strand, current: mod_base, adj });
-    let raw_unmod = counts.get(ReadKey { strand, current: unmod_base, adj });
-    (raw_mod, raw_unmod)
+    let raw_mod = counts.get(ReadKey { strand, current: side.mod_base()?, adj });
+    let raw_unmod = counts.get(ReadKey { strand, current: side.unmod_base()?, adj });
+    Some((raw_mod, raw_unmod))
 }
 
 /// How the genotype at this position affects the beta calculation.
@@ -179,7 +140,7 @@ enum GenotypeAdjustment {
 
 fn genotype_adjustment(
     record: &PileupMetrics,
-    side: CpgSide,
+    side: InCpG,
     origin: CpgOrigin,
 ) -> GenotypeAdjustment {
     let Some(gt) = record.pos_metrics.genotype else {
@@ -191,7 +152,7 @@ fn genotype_adjustment(
     }
 
     if gt.genotype.is_heterozygous() {
-        let confounding = side.mod_base();
+        let Some(confounding) = side.mod_base() else { return GenotypeAdjustment::None };
         let confounded = match origin {
             CpgOrigin::Original => het_alt_is_base(record, &gt.genotype, confounding),
             CpgOrigin::DeNovo => {

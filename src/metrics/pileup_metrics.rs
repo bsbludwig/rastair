@@ -3,7 +3,7 @@ use crate::{
     metrics::{MethylationEvidenceStrandInfo, PairedCounts},
     sequence::ChunkRegion,
     utils::{ByStrand, IntoF64, SequenceContext, default, logging::ThisIsABug},
-    vcf::{InCpG, Methylated, RastairFilter},
+    vcf::{InCpG, Methylated, RastairFilter, TapsContext},
 };
 use better_default::Default;
 use color_eyre::{
@@ -389,7 +389,7 @@ impl PositionMetrics {
             baseq,
             mapq,
             mapq0,
-            cpg: InCpG::new(reference_base, before_1, after_1),
+            cpg: TapsContext::new(reference_base, before_1, after_1).in_cpg(),
             extended: PositionMetricsExt::default(),
         }
     }
@@ -430,23 +430,8 @@ pub struct AlleleMetrics {
     pub denovo: FormsDenovo,
 }
 
-/// Would observing `base` where the reference has `ref_base` create a CpG?
-///
-/// The column loop answers this from a column's alt bases alone, before any
-/// allele metrics exist, so it has to be one definition and not two.
-pub fn alt_forms_denovo(base: Base, ref_base: Base, context: &SequenceContext) -> FormsDenovo {
-    use Base::*;
-    if base == ref_base {
-        FormsDenovo::No
-    } else if context.before_1 == Some(C) && base == G {
-        FormsDenovo::ThisBecomesG
-    } else if context.after_1 == Some(G) && base == C {
-        FormsDenovo::ThisBecomesC
-    } else {
-        FormsDenovo::No
-    }
-}
-
+/// Whether an alt forms a CpG; [`TapsContext::forms_cpg`] decides it from the
+/// reference, `call::process::mark_variant_pair_cpgs` from a called neighbour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FormsDenovo {
     #[default]
@@ -652,7 +637,7 @@ impl AlleleAccumulator {
             bail!("allele has depth {} but pileup has 0 total reads — this is a bug", self.depth);
         }
 
-        let denovo = alt_forms_denovo(base, ref_base, context);
+        let denovo = TapsContext::new(ref_base, context.before_1, context.after_1).forms_cpg(base);
 
         let [ot_depth, ob_depth] = self.strand_depth;
         let [[ot_baseq, ot_mapq], [ob_baseq, ob_mapq]] = self.by_strand;
@@ -716,9 +701,9 @@ pub struct MetricsForAlt<'p> {
 }
 
 impl MetricsForAlt<'_> {
-    pub fn is_evidence_for_methylation(&self) -> bool {
-        (self.metrics.pos_metrics.cpg == InCpG::C && self.alt.base == Base::T)
-            || (self.metrics.pos_metrics.cpg == InCpG::G && self.alt.base == Base::A)
+    /// See [`TapsContext::is_conversion`].
+    pub fn is_conversion(&self) -> bool {
+        self.metrics.pos_metrics.cpg.mod_base() == Some(self.alt.base)
     }
 }
 

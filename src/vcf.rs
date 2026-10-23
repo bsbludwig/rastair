@@ -13,7 +13,7 @@
 use seqair_types::SmolStr;
 
 mod cpg;
-pub use cpg::InCpG;
+pub use cpg::{InCpG, TapsContext};
 mod denovo_cpg;
 pub use denovo_cpg::DeNovoCpGCandidate;
 mod methylation;

@@ -1,4 +1,7 @@
-use crate::metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics, alt_forms_denovo};
+use crate::{
+    metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics},
+    vcf::TapsContext,
+};
 use color_eyre::eyre::Result;
 use seqair_types::{Base::*, Probability};
 use tracing::instrument;
@@ -73,9 +76,9 @@ pub fn mark_variant_pair_cpgs(
         })
     };
     let (c_before, g_after) = (called(before, C), called(after, G));
-    let reference = current.ref_base();
+    let context = TapsContext::of(current);
     for alt in &mut current.alts {
-        let from_reference = alt_forms_denovo(alt.base, reference, &current.context);
+        let from_reference = context.forms_cpg(alt.base);
         let called = alt.call == AltCall::RealVariant;
         alt.metrics.denovo = match alt.base {
             C if called && g_after => FormsDenovo::ThisBecomesC,

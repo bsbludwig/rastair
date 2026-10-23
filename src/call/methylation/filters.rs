@@ -9,7 +9,7 @@ use color_eyre::Result;
 pub fn add_filters(config: &ThresholdParams, current: &MetricsForAlt) -> Result<Filters> {
     let mut filters = Filters::default();
 
-    if !current.is_evidence_for_methylation() {
+    if !current.is_conversion() {
         // Not a CpG site, skipping filters
         return Ok(filters);
     }

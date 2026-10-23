@@ -12,7 +12,7 @@ use crate::{
     vcf::{CpgOrigin, SequenceContext},
 };
 use proptest::prelude::*;
-use seqair_types::{Base, Base::*, Probability};
+use seqair_types::{Base, Base::*, Probability, Strand};
 
 const PROPTEST_CASES: u32 = 2048;
 
@@ -22,7 +22,7 @@ const PROPTEST_CASES: u32 = 2048;
 
 #[derive(Debug, Clone)]
 struct MethylationScenario {
-    side: CpgSide,
+    side: InCpG,
     origin: CpgOrigin,
     /// For `DeNovo`: the original ref base that was mutated.
     /// For Original: ignored (ref is determined by side).
@@ -96,14 +96,14 @@ impl MethylationScenario {
     fn build(&self) -> PileupMetrics {
         let (ref_base, context) = self.ref_and_context();
 
-        let strand = self.side.strand();
+        let strand = self.side.strand().expect("a CpG side");
         let wrong_strand = match strand {
             Strand::OT => Strand::OB,
             Strand::OB => Strand::OT,
             Strand::Unknown => unreachable!(),
         };
-        let mod_base = self.side.mod_base();
-        let unmod_base = self.side.unmod_base();
+        let mod_base = self.side.mod_base().expect("a CpG side");
+        let unmod_base = self.side.unmod_base().expect("a CpG side");
         let (before_base, after_base) = self.adj_bases();
         let wrong_adj = Some(T); // T is never the correct adj (C or G)
 
@@ -133,8 +133,9 @@ impl MethylationScenario {
 
         // Noise: mod-base reads on right strand but wrong adjacent base
         let (wrong_bb, wrong_ab) = match self.side {
-            CpgSide::C => (before_base, wrong_adj),
-            CpgSide::G => (wrong_adj, after_base),
+            InCpG::C => (before_base, wrong_adj),
+            InCpG::G => (wrong_adj, after_base),
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         reads.extend(
             (0..self.noise.wrong_adj).map(|_| make_read(mod_base, strand, wrong_bb, wrong_ab)),
@@ -152,7 +153,7 @@ impl MethylationScenario {
 
         // For de-novo: mark the new CpG-forming alt as a real variant.
         if self.origin == CpgOrigin::DeNovo {
-            let denovo_base = self.side.unmod_base();
+            let denovo_base = self.side.unmod_base().expect("a CpG side");
             if let Some(alt) = metrics.alts.iter_mut().find(|a| a.base == denovo_base) {
                 alt.call = AltCall::RealVariant;
             }
@@ -165,17 +166,19 @@ impl MethylationScenario {
 
     fn ref_and_context(&self) -> (Base, SequenceContext) {
         match (self.side, self.origin) {
-            (CpgSide::C, CpgOrigin::Original) => (C, ctx_after_g(C)),
-            (CpgSide::G, CpgOrigin::Original) => (G, ctx_before_c(G)),
-            (CpgSide::C, CpgOrigin::DeNovo) => (self.denovo_ref, ctx_after_g(self.denovo_ref)),
-            (CpgSide::G, CpgOrigin::DeNovo) => (self.denovo_ref, ctx_before_c(self.denovo_ref)),
+            (InCpG::C, CpgOrigin::Original) => (C, ctx_after_g(C)),
+            (InCpG::G, CpgOrigin::Original) => (G, ctx_before_c(G)),
+            (InCpG::C, CpgOrigin::DeNovo) => (self.denovo_ref, ctx_after_g(self.denovo_ref)),
+            (InCpG::G, CpgOrigin::DeNovo) => (self.denovo_ref, ctx_before_c(self.denovo_ref)),
+            (InCpG::No, _) => unreachable!("a scenario holds a CpG side"),
         }
     }
 
     fn adj_bases(&self) -> (Option<Base>, Option<Base>) {
         match self.side {
-            CpgSide::C => (Option::None, Some(G)),
-            CpgSide::G => (Some(C), Option::None),
+            InCpG::C => (Option::None, Some(G)),
+            InCpG::G => (Some(C), Option::None),
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         }
     }
 
@@ -190,7 +193,8 @@ impl MethylationScenario {
                 // first alt will do. Alts are ordered by depth, not by the
                 // order the reads were pushed, so the index has to be looked up.
                 let confounding = self.side.mod_base();
-                let idx = metrics.alts.iter().position(|a| a.base == confounding).unwrap_or(0);
+                let idx =
+                    metrics.alts.iter().position(|a| Some(a.base) == confounding).unwrap_or(0);
                 GenotypeTag::RefHet(NonZeroU8::new(idx as u8 + 1).unwrap())
             }
             GenotypeScenario::HetNonConfounding => self.build_het_non_confounding(metrics),
@@ -205,7 +209,7 @@ impl MethylationScenario {
 
     /// Build a het genotype that does NOT involve the confounding base.
     fn build_het_non_confounding(&self, metrics: &mut PileupMetrics) -> GenotypeTag {
-        let confounding = self.side.mod_base();
+        let confounding = self.side.mod_base().expect("a CpG side");
 
         // Find an existing non-confounding alt.
         let existing_idx = metrics.alts.iter().position(|a| a.base != confounding);
@@ -216,8 +220,9 @@ impl MethylationScenario {
             // For Original CpGs, unmod reads are ref reads (no alt created).
             // Push a dummy non-confounding alt (e.g., G at a C-ref site).
             let dummy_base = match self.side {
-                CpgSide::C => G, // confounding is T, dummy is G
-                CpgSide::G => T, // confounding is A, dummy is T
+                InCpG::C => G, // confounding is T, dummy is G
+                InCpG::G => T, // confounding is A, dummy is T
+                InCpG::No => unreachable!("a scenario holds a CpG side"),
             };
             push_dummy_alt(metrics, dummy_base);
             metrics.alts.len() - 1
@@ -227,21 +232,22 @@ impl MethylationScenario {
         GenotypeTag::RefHet(allele)
     }
 
-    /// Mirror this scenario to the opposite `CpgSide`.
+    /// Mirror this scenario to the opposite CpG side.
     fn mirror(&self) -> Self {
         let mirrored_side = match self.side {
-            CpgSide::C => CpgSide::G,
-            CpgSide::G => CpgSide::C,
+            InCpG::C => InCpG::G,
+            InCpG::G => InCpG::C,
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         // Mirror the denovo ref to maintain the same relationship.
         // C-side T→C mirrors to G-side A→G, etc.
         let mirrored_denovo_ref = match (self.side, self.denovo_ref) {
-            (CpgSide::C, T) => A,       // T→C mirrors to A→G
-            (CpgSide::C, A) => T,       // A→C mirrors to T→G
-            (CpgSide::C, G) => Base::C, // G→C mirrors to C→G
-            (CpgSide::G, A) => T,       // A→G mirrors to T→C
-            (CpgSide::G, T) => A,       // T→G mirrors to A→C
-            (CpgSide::G, Base::C) => G, // C→G mirrors to G→C
+            (InCpG::C, T) => A,       // T→C mirrors to A→G
+            (InCpG::C, A) => T,       // A→C mirrors to T→G
+            (InCpG::C, G) => Base::C, // G→C mirrors to C→G
+            (InCpG::G, A) => T,       // A→G mirrors to T→C
+            (InCpG::G, T) => A,       // T→G mirrors to A→C
+            (InCpG::G, Base::C) => G, // C→G mirrors to G→C
             _ => self.denovo_ref,
         };
         Self { side: mirrored_side, denovo_ref: mirrored_denovo_ref, ..self.clone() }
@@ -288,12 +294,13 @@ fn extract_beta(result: &Option<Methylated>, origin: CpgOrigin) -> Option<f64> {
 // ---------------------------------------------------------------------------
 
 /// Valid denovo ref bases for a given side (anything except the CpG base itself).
-fn denovo_ref_strategy(side: CpgSide) -> impl Strategy<Value = Base> {
+fn denovo_ref_strategy(side: InCpG) -> impl Strategy<Value = Base> {
     match side {
         // C-side: ref was T, A, or G — mutated to C
-        CpgSide::C => prop_oneof![Just(T), Just(A), Just(G)].boxed(),
+        InCpG::C => prop_oneof![Just(T), Just(A), Just(G)].boxed(),
         // G-side: ref was A, T, or C — mutated to G
-        CpgSide::G => prop_oneof![Just(A), Just(T), Just(C)].boxed(),
+        InCpG::G => prop_oneof![Just(A), Just(T), Just(C)].boxed(),
+        InCpG::No => unreachable!("a scenario holds a CpG side"),
     }
 }
 
@@ -307,7 +314,7 @@ fn read_count_strategy(lo: u8, hi: u8) -> impl Strategy<Value = u8> {
 }
 
 fn scenario_strategy() -> impl Strategy<Value = MethylationScenario> {
-    let side = prop_oneof![Just(CpgSide::C), Just(CpgSide::G)];
+    let side = prop_oneof![Just(InCpG::C), Just(InCpG::G)];
     let origin = prop_oneof![Just(CpgOrigin::Original), Just(CpgOrigin::DeNovo)];
 
     (side, origin)
@@ -332,9 +339,9 @@ fn scenario_strategy() -> impl Strategy<Value = MethylationScenario> {
             )
         })
         .prop_flat_map(|(side, origin, denovo_ref, mod_reads, unmod_reads, nws, nwa)| {
-            let confounding = side.mod_base();
+            let confounding = side.mod_base().expect("a CpG side");
             let ref_base = match origin {
-                CpgOrigin::Original => side.unmod_base(),
+                CpgOrigin::Original => side.unmod_base().expect("a CpG side"),
                 CpgOrigin::DeNovo => denovo_ref,
             };
 
@@ -487,14 +494,14 @@ proptest! {
     /// Het-confounded adjustment always produces a beta <= the unadjusted beta.
     #[test]
     fn het_confounded_reduces_beta(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         origin in prop_oneof![Just(CpgOrigin::Original), Just(CpgOrigin::DeNovo)],
         mod_reads in 1u8..50,
         unmod_reads in 1u8..50,
     ) {
         let unadjusted = MethylationScenario {
             side, origin,
-            denovo_ref: if origin == CpgOrigin::DeNovo { side.mod_base() } else { A },
+            denovo_ref: if origin == CpgOrigin::DeNovo { side.mod_base().expect("a CpG side") } else { A },
             mod_reads, unmod_reads,
             noise: default(),
             genotype: GenotypeScenario::None,
@@ -518,7 +525,7 @@ proptest! {
     /// HomAlt on an original CpG always produces beta = 0.0.
     #[test]
     fn hom_alt_original_is_zero(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         mod_reads in 1u8..50,
         unmod_reads in 0u8..50,
     ) {
@@ -544,14 +551,14 @@ proptest! {
     /// carry the variant → CpG exists on both → no adjustment).
     #[test]
     fn hom_alt_denovo_is_normal_beta(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         mod_reads in 1u8..50,
         unmod_reads in 1u8..50,
     ) {
         let normal = MethylationScenario {
             side,
             origin: CpgOrigin::DeNovo,
-            denovo_ref: side.mod_base(),
+            denovo_ref: side.mod_base().expect("a CpG side"),
             mod_reads,
             unmod_reads,
             noise: default(),
@@ -577,7 +584,7 @@ proptest! {
     /// a higher or equal beta.
     #[test]
     fn monotonic_in_mod_reads(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         origin in prop_oneof![Just(CpgOrigin::Original), Just(CpgOrigin::DeNovo)],
         mod_lo in 0u8..25,
         mod_extra in 1u8..25,
@@ -587,7 +594,7 @@ proptest! {
 
         let lo = MethylationScenario {
             side, origin,
-            denovo_ref: side.mod_base(),
+            denovo_ref: side.mod_base().expect("a CpG side"),
             mod_reads: mod_lo, unmod_reads,
             noise: default(),
             genotype: GenotypeScenario::None,
@@ -635,7 +642,7 @@ proptest! {
     /// beta value. Compare a scenario with noise to the same scenario without.
     #[test]
     fn noise_reads_are_ignored(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         origin in prop_oneof![Just(CpgOrigin::Original), Just(CpgOrigin::DeNovo)],
         mod_reads in 1u8..30,
         unmod_reads in 1u8..30,
@@ -644,7 +651,7 @@ proptest! {
     ) {
         let clean = MethylationScenario {
             side, origin,
-            denovo_ref: side.mod_base(),
+            denovo_ref: side.mod_base().expect("a CpG side"),
             mod_reads, unmod_reads,
             noise: NoiseReads::default(),
             genotype: GenotypeScenario::None,
@@ -677,7 +684,7 @@ proptest! {
     /// HomRef and HetNonConfounding should produce the same beta as no genotype.
     #[test]
     fn non_confounding_genotypes_are_transparent(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         origin in prop_oneof![Just(CpgOrigin::Original), Just(CpgOrigin::DeNovo)],
         mod_reads in 1u8..30,
         unmod_reads in 1u8..30,
@@ -689,8 +696,9 @@ proptest! {
         // For DeNovo + HetNonConfounding, ref must NOT be the confounding base.
         // Use a non-confounding ref (the CpG-forming base's adjacent counterpart).
         let denovo_ref = match side {
-            CpgSide::C => A, // not T (confounding)
-            CpgSide::G => T, // not A (confounding)
+            InCpG::C => A, // not T (confounding)
+            InCpG::G => T, // not A (confounding)
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         // Skip impossible combo: DeNovo + HetNonConfounding where ref==confounding
         // (already handled by using non-confounding denovo_ref above)
@@ -763,21 +771,24 @@ proptest! {
     /// All reads on the wrong strand should produce no evidence.
     #[test]
     fn wrong_strand_only_returns_no_evidence(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         n_reads in 1u8..20,
     ) {
         let (ref_base, context) = match side {
-            CpgSide::C => (C, ctx_after_g(C)),
-            CpgSide::G => (G, ctx_before_c(G)),
+            InCpG::C => (C, ctx_after_g(C)),
+            InCpG::G => (G, ctx_before_c(G)),
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         let wrong_strand = match side {
-            CpgSide::C => Strand::OB,
-            CpgSide::G => Strand::OT,
+            InCpG::C => Strand::OB,
+            InCpG::G => Strand::OT,
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
-        let mod_base = side.mod_base();
+        let mod_base = side.mod_base().expect("a CpG side");
         let (bb, ab) = match side {
-            CpgSide::C => (Option::None, Some(G)),
-            CpgSide::G => (Some(C), Option::None),
+            InCpG::C => (Option::None, Some(G)),
+            InCpG::G => (Some(C), Option::None),
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
 
         let reads: Vec<SimpleRead> = (0..n_reads)
@@ -809,11 +820,11 @@ proptest! {
     /// DeNovo alt that is NOT marked as RealVariant should not be detected.
     #[test]
     fn uncalled_denovo_returns_none(
-        side in prop_oneof![Just(CpgSide::C), Just(CpgSide::G)],
+        side in prop_oneof![Just(InCpG::C), Just(InCpG::G)],
         n_mod in 1u8..10,
         n_unmod in 1u8..10,
     ) {
-        let denovo_ref = side.mod_base();
+        let denovo_ref = side.mod_base().expect("a CpG side");
         let scenario = MethylationScenario {
             side,
             origin: CpgOrigin::DeNovo,
@@ -826,7 +837,7 @@ proptest! {
 
         let mut metrics = scenario.build();
         // UN-mark the denovo alt — revert to Uncalled
-        let denovo_base = side.unmod_base();
+        let denovo_base = side.unmod_base().expect("a CpG side");
         if let Some(alt) = metrics.alts.iter_mut().find(|a| a.base == denovo_base) {
             alt.call = AltCall::Uncalled;
         }
@@ -846,28 +857,30 @@ proptest! {
 
 #[test]
 fn denovo_adjacent_without_called_partner_is_not_a_cpg() {
-    for side in [CpgSide::C, CpgSide::G] {
-        let ref_base = side.unmod_base();
+    for side in [InCpG::C, InCpG::G] {
+        let ref_base = side.unmod_base().expect("a CpG side");
         let context = match side {
-            CpgSide::C => SequenceContext { me: ref_base, after_1: Some(A), ..default() },
-            CpgSide::G => SequenceContext { me: ref_base, before_1: Some(T), ..default() },
+            InCpG::C => SequenceContext { me: ref_base, after_1: Some(A), ..default() },
+            InCpG::G => SequenceContext { me: ref_base, before_1: Some(T), ..default() },
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
 
-        let strand = side.strand();
+        let strand = side.strand().expect("a CpG side");
         let (bb, ab) = match side {
-            CpgSide::C => (Option::None, Some(G)),
-            CpgSide::G => (Some(C), Option::None),
+            InCpG::C => (Option::None, Some(G)),
+            InCpG::G => (Some(C), Option::None),
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         let reads: Vec<SimpleRead> = (0..5)
             .map(|_| SimpleRead {
-                base: side.mod_base(),
+                base: side.mod_base().expect("a CpG side"),
                 strand,
                 before_base: bb,
                 after_base: ab,
                 ..default()
             })
             .chain((0..5).map(|_| SimpleRead {
-                base: side.unmod_base(),
+                base: side.unmod_base().expect("a CpG side"),
                 strand,
                 before_base: bb,
                 after_base: ab,
@@ -885,8 +898,9 @@ fn denovo_adjacent_without_called_partner_is_not_a_cpg() {
         let mut metrics = PileupMetrics::new(pileup).unwrap();
 
         metrics.pos_metrics.extended.denovo_adj = match side {
-            CpgSide::C => DenovoAdjecent::ThisIsTheMatchingC,
-            CpgSide::G => DenovoAdjecent::ThisIsTheMatchingG,
+            InCpG::C => DenovoAdjecent::ThisIsTheMatchingC,
+            InCpG::G => DenovoAdjecent::ThisIsTheMatchingG,
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         metrics.pos_filters.other_pos_in_denovo_passes = false;
 
@@ -904,31 +918,33 @@ fn denovo_adjacent_without_called_partner_is_not_a_cpg() {
 /// (partner of a denovo CpG) rather than via `InCpG` from ref context.
 #[test]
 fn denovo_adjacent_produces_original_cpg() {
-    for side in [CpgSide::C, CpgSide::G] {
+    for side in [InCpG::C, InCpG::G] {
         // Use a ref base that does NOT form a natural CpG context.
-        let ref_base = side.unmod_base(); // C for C-side, G for G-side
+        let ref_base = side.unmod_base().expect("a CpG side"); // C for C-side, G for G-side
         // Deliberately set the wrong adjacent base so InCpG::from would say No.
         let context = match side {
-            CpgSide::C => SequenceContext { me: ref_base, after_1: Some(A), ..default() },
-            CpgSide::G => SequenceContext { me: ref_base, before_1: Some(T), ..default() },
+            InCpG::C => SequenceContext { me: ref_base, after_1: Some(A), ..default() },
+            InCpG::G => SequenceContext { me: ref_base, before_1: Some(T), ..default() },
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
 
-        let strand = side.strand();
+        let strand = side.strand().expect("a CpG side");
         let (bb, ab) = match side {
             // Reads still need the correct adj for PairedCounts
-            CpgSide::C => (Option::None, Some(G)),
-            CpgSide::G => (Some(C), Option::None),
+            InCpG::C => (Option::None, Some(G)),
+            InCpG::G => (Some(C), Option::None),
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         let reads: Vec<SimpleRead> = (0..5)
             .map(|_| SimpleRead {
-                base: side.mod_base(),
+                base: side.mod_base().expect("a CpG side"),
                 strand,
                 before_base: bb,
                 after_base: ab,
                 ..default()
             })
             .chain((0..5).map(|_| SimpleRead {
-                base: side.unmod_base(),
+                base: side.unmod_base().expect("a CpG side"),
                 strand,
                 before_base: bb,
                 after_base: ab,
@@ -946,8 +962,9 @@ fn denovo_adjacent_produces_original_cpg() {
         let mut metrics = PileupMetrics::new(pileup).unwrap();
 
         metrics.pos_metrics.extended.denovo_adj = match side {
-            CpgSide::C => DenovoAdjecent::ThisIsTheMatchingC,
-            CpgSide::G => DenovoAdjecent::ThisIsTheMatchingG,
+            InCpG::C => DenovoAdjecent::ThisIsTheMatchingC,
+            InCpG::G => DenovoAdjecent::ThisIsTheMatchingG,
+            InCpG::No => unreachable!("a scenario holds a CpG side"),
         };
         metrics.pos_filters.other_pos_in_denovo_passes = true;
 
