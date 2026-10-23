@@ -27,13 +27,12 @@ rastair ml train --snv-engine \
 - **Defaults**: 800 trees, `--max-features 4`, `--max-depth 40`, `--min-samples-leaf 10`,
   8,000 positive / 200,000 negative examples per model.
 - The top-level forests come from the engine-off collection. The engine forests are fitted on
-  the second, cascade-shaped collection, whose negative pools are small (other 18.7k, cpg
-  10.6k, denovo 3.0k), so their fits take seconds.
-- Cost on an M4 Pro: 316 s wall, 2,277 CPU-s, 11.2 GiB peak RSS. File 30.3 MB.
+  the second, cascade-shaped collection: every alt the first stage scores at
+  `CASCADE_MIN_SCORE` or more, whatever its read count. Its negative pools are small (other
+  25.6k, cpg 10.7k, denovo 7.5k), so their fits take seconds.
+- Cost on an M4 Pro (`-@ 12`): 290 s wall, 2,663 CPU-s, 13.3 GiB peak RSS. File 32.0 MB.
 
-The file was trained at `b9e76cc3` (`feature/engine-beta`), whose SNV engine profiles the level
-of a `CpG` a substitution creates or destroys, mixes each read with its mismapping chance, offers
-the reference as an artefact of a pair without it, and keeps one haplotype per sequence. Every
-earlier model saw a zero `ev_*` margin wherever an indel pair respelled an SNV. The engine pools
-were other 18,673, cpg 10,559, denovo 3,035 negatives, as before. md5
-`552900b14ef0406b3d0ae61c756f0340`.
+The file was trained at `4c339a3b` (`feature/haplotypings`). Pools: top-level other
+462,625 / 15,589,292, cpg 80,544 / 7,083,948, denovo 93,478 / 1,654,618 (positive /
+negative); engine other 458,951 / 25,593, cpg 78,852 / 10,690, denovo 92,558 / 7,456. md5
+`b99d5ade14744e4946a1d3d0c5172fde`.
