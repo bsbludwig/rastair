@@ -9,11 +9,13 @@
 //! 4. Export: write the `RastairFlatModel`.
 //!
 //! ```bash
-//! rastair ml train -r hg38.fa.gz taps.bam HG001_benchmark.vcf.gz \
+//! rastair ml train -r hg38.fa.gz taps.bam [taps_10x.bam ...] HG001_benchmark.vcf.gz \
 //!   -R HG001_benchmark.bed -l "chr1 chr6 chr11" --seed <n> -o models/mymodel.rff.mpk.lz4 -@ 8
 //! ```
 //!
-//! - Positionals are BAM first, then the truth VCF. The defaults are the
+//! - Positionals are one or more BAMs, then the truth VCF. The BAMs' candidates
+//!   pool into one collection, each file offering its own, so one library
+//!   at several depths trains one model. The defaults are the
 //!   recipe of the bundled model (`models/rastair_default.rff.mpk.lz4`, see
 //!   `models/PROVENANCE.md`), so a bare command line retrains it. msgpack
 //!   writes `RastairFlatModel` as an array, so its field order is the file
@@ -54,10 +56,11 @@ use crate::{
     },
     regions::ConfidentRegions,
     sequence::{ChunkRegion, ReaderParams, Region, SegmentationParams, SeqairReaders},
-    utils::{cli, map_surrounding},
+    utils::{CliRegionInput, cli, map_surrounding},
     verify::for_each_record_in_regions,
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
+use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, ContextCompat as _, Result, ensure, eyre};
 use lz4::EncoderBuilder;
@@ -78,8 +81,24 @@ use tracing::{debug, info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
 pub struct TrainModelParams {
-    #[command(flatten)]
-    reader: ReaderParams,
+    /// Sorted and indexed BAM or CRAM files of the truth set's sample; their
+    /// candidates pool into one collection, e.g. one library down-sampled to
+    /// several depths
+    #[arg(required = true, num_args = 1.., value_parser = value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
+    bams: Vec<ClioPath>,
+
+    /// Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip
+    /// compressed, but requires both a gzi index and a fai index
+    #[arg(short = 'r', long, value_parser = value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
+    fasta_file: ClioPath,
+
+    /// Restrict training to these regions: space-separated region strings
+    /// (`chr`, `chr:start`, `chr:start-end`, 1-based inclusive) or `@file.bed`
+    #[arg(short = 'l', long = "region", value_parser = value_parser!(CliRegionInput))]
+    #[arg(help_heading = cli::sections::INPUT)]
+    regions: Option<CliRegionInput>,
 
     /// Path to the ground truth file (VCF) to train with
     #[arg(help_heading = cli::sections::INPUT, value_hint=clap::ValueHint::FilePath)]
@@ -329,14 +348,36 @@ fn collect(
     stage1: Option<&MachineLearning>,
 ) -> Result<Collected> {
     let segmentation = SegmentationParams::default();
-    let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
-    let segments: Vec<ChunkRegion> = readers
-        .segments(segmentation.segment_max_length, segmentation.segment_overlap)
-        .wrap_err("Could not fetch segments from BAM file")?
-        .collect();
-    ensure!(!segments.is_empty(), "No segments found in BAM file");
+    let readers = params
+        .bams
+        .iter()
+        .map(|bam| {
+            ReaderParams {
+                bam_file: bam.clone(),
+                fasta_file: params.fasta_file.clone(),
+                regions: params.regions.clone(),
+            }
+            .pileup_readers()
+            .wrap_err_with(|| format!("Failed to read {} or the FASTA file", bam.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    // Each segment is keyed by its index in this list, so the BAMs' samples
+    // are drawn independently even where they share positions.
+    let mut segments: Vec<(usize, ChunkRegion)> = Vec::new();
+    for (source, (bam, readers)) in params.bams.iter().zip(&readers).enumerate() {
+        let before = segments.len();
+        segments.extend(
+            readers
+                .segments(segmentation.segment_max_length, segmentation.segment_overlap)
+                .wrap_err_with(|| format!("Could not fetch segments from {}", bam.display()))?
+                .map(|segment| (source, segment)),
+        );
+        ensure!(segments.len() > before, "No segments found in {}", bam.display());
+    }
     info!("Processing {} segments to collect training data", segments.len());
-    let truth = Truth::load(params, &covered_regions(&segments)?)?;
+    let mut spans: Vec<ChunkRegion> = segments.iter().map(|(_, segment)| segment.clone()).collect();
+    spans.sort();
+    let truth = Truth::load(params, &covered_regions(&spans)?)?;
 
     let calculator = params.ml_features.get_calculator();
     let collector = SegmentCollector {
@@ -360,14 +401,16 @@ fn collect(
                 .par_iter()
                 .enumerate()
                 .map_init(
-                    || readers.fork(),
-                    |readers, (index, segment)| {
+                    || readers.iter().map(SeqairReaders::fork).collect::<Result<Vec<_>>>(),
+                    |forks, (index, (source, segment))| {
                         let _span =
                             tracing::info_span!("collect_segment", region = %segment.region)
                                 .entered();
-                        let readers = readers
+                        let readers = forks
                             .as_mut()
-                            .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
+                            .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?
+                            .get_mut(*source)
+                            .wrap_err("segment of an unknown BAM")?;
                         collector.segment(
                             readers,
                             segment,
@@ -982,6 +1025,26 @@ mod tests {
         .train;
         let error = create_output_dirs(&params).expect_err("a directory is not a model file");
         assert!(error.to_string().contains("is a directory"), "{error}");
+        Ok(())
+    }
+
+    /// Every positional but the last is a BAM, so one or several parse the
+    /// same way.
+    #[test]
+    fn the_last_positional_is_the_truth_and_the_rest_are_bams() -> Result<()> {
+        let parse = |bams: &[&str]| -> Result<(Vec<String>, String)> {
+            let args = ["train", "-r", "tests/data/test.fasta.gz"]
+                .into_iter()
+                .chain(bams.iter().copied())
+                .chain(["truth.vcf.gz", "-l", "chr1 chr6"]);
+            let params = TrainCli::try_parse_from(args)?.train;
+            let bams = params.bams.iter().map(|bam| bam.path().display().to_string()).collect();
+            Ok((bams, params.truth.path().display().to_string()))
+        };
+        let bam = "tests/data/test.bam";
+        assert_eq!(parse(&[bam])?, (vec![bam.to_owned()], "truth.vcf.gz".to_owned()));
+        assert_eq!(parse(&[bam, bam])?.0.len(), 2);
+        assert!(parse(&[]).is_err(), "a BAM is required");
         Ok(())
     }
 
