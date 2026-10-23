@@ -13,6 +13,8 @@ mod segementation;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use readers::RastairRecordFilter;
 pub use readers::{RastairReadExtras, ReaderParams, Readers, ReferenceWindow, SeqairReaders};
 pub use regions::{ChunkRegion, Region, SelectedRegion};
 pub use segementation::{Segment, SegmentationParams};

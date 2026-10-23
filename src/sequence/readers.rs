@@ -28,6 +28,8 @@ use rust_htslib::bam::{self, HeaderView, Read as _};
 use seqair_types::SmolStr;
 use tracing::{debug, instrument, trace};
 
+#[cfg(test)]
+pub(crate) use seqair_readers::RastairRecordFilter;
 pub use seqair_readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
 
 mod seqair_readers {
@@ -43,6 +45,7 @@ mod seqair_readers {
         utils::{CliRegionInput, RegionString},
     };
     use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
+    use seqair::bam::aux::Aux;
     use seqair::bam::cigar::CigarOpType;
     use seqair::bam::record_store::{
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
@@ -101,6 +104,7 @@ mod seqair_readers {
     pub struct RastairRecordFilter {
         pub read_flags: ReadFlags,
         pub unpaired: bool,
+        pub min_mapq: u8,
         pub tag_requirement: TagRequirement,
         pub guess_orientation: bool,
         pub read_masking: ReadMaskParams,
@@ -110,17 +114,21 @@ mod seqair_readers {
     impl CustomizeRecordStore for RastairRecordFilter {
         type Extra = RastairReadExtras;
 
+        /// Every per-read filter runs here, before the depth cap counts the
+        /// read, so a deep pile of MAPQ 0 reads cannot fill the cap and evict
+        /// the usable ones.
         fn filter_raw(&mut self, fields: &FilterRawFields<'_>) -> bool {
             self.read_flags.filter_flags(fields.flags.raw(), self.unpaired)
+                && fields.mapq >= self.min_mapq
+                && self.tag_requirement.allows(Some(Aux::new(fields.aux_bytes)))
         }
 
+        /// The mask needs the strand, which `compute` resolves, so this read
+        /// has already taken a depth-cap slot; only an extreme read-end mask
+        /// empties a whole read. A read whose extras cannot be read is
+        /// rejected too.
         fn filter(&mut self, rec: &SlimRecord, store: &RecordStore<Self::Extra>) -> bool {
-            // A read the mask covers end to end contributes to no column, so
-            // keeping it would only cost store space and pileup depth.
-            if rec.extra(store).is_ok_and(|extra| extra.mask.is_empty()) {
-                return false;
-            }
-            self.tag_requirement.allows(rec.aux(store).ok())
+            rec.extra(store).is_ok_and(|extra| !extra.mask.is_empty())
         }
 
         fn compute(
@@ -647,6 +655,50 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// `--require-tags` is judged on the raw aux bytes, before the depth cap
+    /// counts the read, so a read without the tag never takes a slot.
+    #[test]
+    fn record_filter_rejects_a_missing_tag_before_loading() {
+        use crate::call::require_tags::RequireTagsParams;
+        use seqair::bam::aux_data::AuxData;
+        use seqair::bam::cigar::{CigarOp, CigarOpType};
+        use seqair::bam::{BamHeader, MateFields, record_store::RecordStore};
+        use seqair::reader::ResolveTid as _;
+        use seqair_types::{BamFlags, Base, Pos0};
+
+        let mut filter = RastairRecordFilter {
+            min_mapq: 1,
+            tag_requirement: RequireTagsParams { require_tags: vec!["RG=keep".parse().unwrap()] }
+                .filter(),
+            ..Default::default()
+        };
+        let tid = 0u32.resolve_tid(&BamHeader::synthetic(1, 1_000)).unwrap();
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        for (name, group) in [(&b"tagged"[..], "keep"), (b"other", "drop")] {
+            let mut aux = AuxData::new();
+            aux.set_string(*b"RG", group.as_bytes());
+            store
+                .push_fields(
+                    Pos0::new(10).unwrap(),
+                    Pos0::new(17).unwrap(),
+                    BamFlags::from(99u16),
+                    60,
+                    8,
+                    0,
+                    name,
+                    &[CigarOp::new(CigarOpType::Match, 8)],
+                    &[Base::A; 8],
+                    &[40u8; 8],
+                    aux.as_bytes(),
+                    Some(tid),
+                    MateFields { tid: Some(tid), pos: Pos0::new(500), template_len: None },
+                    &mut filter,
+                )
+                .unwrap();
+        }
+        assert_eq!(store.len(), 1, "only the read carrying RG=keep is loaded");
+    }
 
     fn test_data_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("data")

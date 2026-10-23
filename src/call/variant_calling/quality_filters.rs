@@ -14,15 +14,3 @@ pub struct QualityFilterParams {
     #[default(10)]
     pub min_baseq: u8,
 }
-
-impl QualityFilterParams {
-    /// Check if the read and base pass the quality filters
-    pub fn filter_fields(&self, mapq: u8, baseq: u8) -> bool {
-        mapq >= self.min_mapq && baseq >= self.min_baseq
-    }
-
-    #[cfg(test)]
-    pub fn filter(&self, read: &crate::call::pileup::SimpleRead) -> bool {
-        self.filter_fields(read.mapq, read.qual)
-    }
-}

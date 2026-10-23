@@ -16,7 +16,7 @@ use crate::{
     sequence::{ReferenceWindow, SeqairReaders},
 };
 use color_eyre::eyre::WrapErr as _;
-use seqair::reader::{DepthLimit, SegmentOptions};
+use seqair::reader::SegmentOptions;
 use seqair_types::{Base, Pos0};
 use std::{
     num::{NonZeroU32, NonZeroU64},
@@ -79,16 +79,12 @@ pub fn get_pileups(
     readers.inner_mut().customize_mut().reference = Some(ref_window);
     readers.inner_mut().customize_mut().read_flags = params.read_flags.clone();
     readers.inner_mut().customize_mut().unpaired = params.unpaired;
+    readers.inner_mut().customize_mut().min_mapq = params.quality.min_mapq;
     readers.inner_mut().customize_mut().tag_requirement = params.require_tags.clone();
     readers.inner_mut().customize_mut().guess_orientation = params.guess_read_orientation;
     readers.inner_mut().customize_mut().read_masking = params.read_masking.clone();
 
-    // Loading and the engine are bounded by the memory ceiling only; the
-    // user's cap counts filtered reads, inside `ColumnDraft::accumulate`.
-    let depth_limit = match params.max_coverage.load_ceiling() {
-        Some(ceiling) => DepthLimit::PerColumn(ceiling),
-        None => DepthLimit::Unlimited,
-    };
+    let depth_limit = params.max_coverage.depth_limit();
 
     // Build the seqair Segment covering [region.start .. region.end + overfetch].
     // seqair's segment `end` is an *inclusive* 0-based position and must be
@@ -135,9 +131,6 @@ pub fn get_pileups(
             .pileup(seqair_seg, depth_limit)
             .run()
             .wrap_err("Failed to start seqair pileup")?;
-        if let Some(ceiling) = params.max_coverage.load_ceiling() {
-            guard.set_max_depth(ceiling);
-        }
         if params.rescue_soft_clip_cpg {
             // Recover exactly the single CpG-partner base the aligner clipped.
             guard.set_soft_clip_overhang(1);

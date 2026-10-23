@@ -59,7 +59,7 @@ use seqair::bam::{
 };
 use seqair_types::{Base, QPos, SmallVec, Strand, SumOfSquares};
 use std::rc::Rc;
-use tracing::{debug, instrument, trace};
+use tracing::{instrument, trace};
 
 /// One column's reads, accumulated but not yet reduced to a [`PileupMetrics`].
 ///
@@ -158,12 +158,6 @@ impl ColumnDraft {
         let pos_u32 = u32::try_from(pos).wrap_err("pileup position exceeds u32")?;
         let idx = segment.pos_to_idx(pos_u32)?;
         let depth = column.depth();
-        // The cap counts reads that pass `observed`, so a MAPQ 0 pileup cannot
-        // crowd out the usable reads.
-        let max_reads = params.max_coverage.kept();
-        if depth > max_reads {
-            debug!(pos, depth, "Capping number of counted reads in pileup to {max_reads}");
-        }
 
         let reference_base: Base =
             segment.sequence.get(idx).wrap_err("failed to get reference base")?.into();
@@ -186,13 +180,7 @@ impl ColumnDraft {
         let mut before_counts = PairedCounts::default();
         let mut after_counts = PairedCounts::default();
 
-        // Counted over reads that passed the filters, before an overlapping
-        // mate is collapsed into its fragment.
-        let mut passed: usize = 0;
         for (slot, view) in column.alignments().enumerate() {
-            if passed >= max_reads {
-                break;
-            }
             // Already resolved if the overlap rule reached forward for this
             // read while deciding its mate; otherwise this is its first ask.
             let resolved = match scratch.mates.resolved(slot) {
@@ -202,7 +190,6 @@ impl ColumnDraft {
             let Some(Observed { base, baseq, qpos }) = resolved else {
                 continue;
             };
-            passed += 1;
             let strand = view.extra().strand;
             if dedup_overlaps
                 && drops_overlapping_mate(
@@ -589,8 +576,9 @@ fn drops_overlapping_mate(
 }
 
 /// What a column requires of a read before it counts: a called base, a base
-/// quality, a query position, and the mapping/base-quality and read-end mask
-/// filters.
+/// quality, a query position, and the base-quality and read-end mask filters.
+/// Mapping quality is the loader's (`RastairRecordFilter::filter_raw`): a read
+/// below it never reaches a column.
 ///
 /// One definition, applied to a read the column iterates *and* to a mate
 /// consulted through it, so a mate can never contribute evidence that a read in
@@ -604,7 +592,7 @@ fn observed(
     let baseq = view.qual()?.get()?;
     let base = view.base()?;
     let qpos = view.qpos()?;
-    if !params.quality.filter_fields(view.mapq, baseq) {
+    if baseq < params.quality.min_baseq {
         return None;
     }
     if !passes_read_masking(view, reference_base, context) {
@@ -868,14 +856,19 @@ mod tests {
     use crate::call::pileup::indels::IndelCounts;
     use crate::call::process::PileupMappingParams;
     use crate::call::variant_calling::{ReadMaskParams, ReadMaskSetting};
+    use crate::sequence::RastairRecordFilter;
     use crate::sequence::{ChunkRegion, Region, Segment};
     use crate::utils::default;
+    use seqair::bam::DepthCap;
     use seqair::bam::cigar::{CigarOp, CigarOpType};
     use seqair::bam::pileup::PileupEngine;
-    use seqair::bam::record_store::{CustomizeRecordStore, RecordStore, SlimRecord};
+    use seqair::bam::record_store::{
+        CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
+    };
     use seqair::bam::{BamHeader, MateFields};
     use seqair::reader::{ResolveTid, Tid};
     use seqair_types::{BamFlags, Pos0, Strand};
+    use std::num::NonZeroU32;
 
     /// The only reference the test reads are on; mates are only linked when
     /// both records name the same one.
@@ -892,13 +885,27 @@ mod tests {
         }
     }
 
-    /// The parts of `RastairRecordFilter::compute` these tests need: strand
-    /// from the flags, soft-clip detection, and the read-end mask window.
+    /// The parts of `RastairRecordFilter` these tests need: the MAPQ filter,
+    /// strand from the flags, soft-clip detection, and the read-end mask
+    /// window.
     #[derive(Default, Clone)]
-    struct TestExtras(ReadMaskParams);
+    struct TestExtras {
+        masking: ReadMaskParams,
+        min_mapq: u8,
+    }
+
+    impl TestExtras {
+        fn new(params: &PileupMappingParams) -> Self {
+            Self { masking: params.read_masking.clone(), min_mapq: params.quality.min_mapq }
+        }
+    }
 
     impl CustomizeRecordStore for TestExtras {
         type Extra = RastairReadExtras;
+
+        fn filter_raw(&mut self, fields: &FilterRawFields<'_>) -> bool {
+            fields.mapq >= self.min_mapq
+        }
 
         fn compute(
             &mut self,
@@ -916,7 +923,7 @@ mod tests {
                 has_repeat: false,
                 taps_aware_mismatches: 0,
                 mask: self
-                    .0
+                    .masking
                     .keep_range(strand, rec.flags.is_reverse(), rec.seq_len)
                     .unwrap_or(0..0),
             }
@@ -979,8 +986,11 @@ mod tests {
 
     /// Push `reads` as one mate pair per qname, wire up the mate fields, and
     /// link — what `Readers::pileup` does for a real fetch.
-    fn store_of(reads: &[TestRead], masking: &ReadMaskParams) -> RecordStore<RastairReadExtras> {
-        let mut extras = TestExtras(masking.clone());
+    fn store_of(
+        reads: &[TestRead],
+        params: &PileupMappingParams,
+    ) -> RecordStore<RastairReadExtras> {
+        let mut extras = TestExtras::new(params);
         let mut store = RecordStore::<RastairReadExtras>::new();
         for read in reads {
             let mate_pos = reads
@@ -1029,7 +1039,7 @@ mod tests {
                 let baseq = view.qual()?.get()?;
                 let _base = view.base()?;
                 view.qpos()?;
-                if !params.quality.filter_fields(view.mapq, baseq) {
+                if baseq < params.quality.min_baseq {
                     return None;
                 }
                 if !passes_read_masking(&view, reference_base, context) {
@@ -1067,14 +1077,11 @@ mod tests {
     /// the OT/OB split.
     fn assert_same_as_name_collector(reads: &[TestRead], seq: &[u8], params: &PileupMappingParams) {
         let seg = segment(seq);
-        let store = store_of(reads, &params.read_masking);
+        let store = store_of(reads, &params);
         let last = seq.len().saturating_sub(1) as u32;
         let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, last));
         if params.rescue_soft_clip_cpg {
             engine.set_soft_clip_overhang(1);
-        }
-        if let Some(cap) = params.max_coverage.per_column() {
-            engine.set_max_depth(cap);
         }
 
         let mut scratch = ColumnScratch::default();
@@ -1204,7 +1211,7 @@ mod tests {
         ];
 
         let alleles_at_anchor = |params: &PileupMappingParams| {
-            let store = store_of(&reads, &params.read_masking);
+            let store = store_of(&reads, &params);
             let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
             let mut scratch = ColumnScratch::default();
             let mut out = Vec::new();
@@ -1297,7 +1304,7 @@ mod tests {
             },
         ];
 
-        let store = store_of(&reads, &params.read_masking);
+        let store = store_of(&reads, &params);
         let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
         let mut scratch = ColumnScratch::default();
         let mut alleles: Vec<IndelAllele> = Vec::new();
@@ -1385,7 +1392,7 @@ mod tests {
 
     fn indel_counts_at_anchor(reads: &[TestRead], params: &PileupMappingParams) -> IndelCounts {
         let seg = segment(b"AAAACGTTGG");
-        let store = store_of(reads, &params.read_masking);
+        let store = store_of(reads, &params);
         let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
         let mut scratch = ColumnScratch::default();
         let mut counts = None;
@@ -1454,7 +1461,7 @@ mod tests {
         params.call_indels = true;
         params.indel_end_of_read_cutoff = 0;
 
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
         let mut store = RecordStore::<RastairReadExtras>::new();
         store
             .push_fields(
@@ -1516,7 +1523,7 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
 
         let mut build_store = || {
             let mut store = RecordStore::<RastairReadExtras>::new();
@@ -1580,7 +1587,7 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
 
         let mut build_store = || {
             let mut store = RecordStore::<RastairReadExtras>::new();
@@ -1645,7 +1652,7 @@ mod tests {
         // Reference: T T C G T T — G@3 is the CpG-G, before_1 = C@2.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // 3M 1S at pos 0, flag 99 → OT. Trailing clip A projects onto ref G@3.
@@ -1692,7 +1699,7 @@ mod tests {
         // Reference: T T C A T T — C@2 is followed by A, so not a CpG.
         let seg = segment(b"TTCATT");
         let params = PileupMappingParams::default();
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         store
@@ -1742,7 +1749,7 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // 1S 3M at pos 3, flag 99 → OT. Clip base G (not T/C) projects onto C@2.
@@ -1792,7 +1799,7 @@ mod tests {
         // Reference: T T C G T T — CpG is C@2 / G@3.
         let seg = segment(b"TTCGTT");
         let params = PileupMappingParams::default();
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // Mate A: first in template, forward (flag 99 → OT). 3M at pos 2 covers
@@ -1878,7 +1885,7 @@ mod tests {
         let mut params = PileupMappingParams::default();
         params.variant_calling.read_masking =
             ReadMaskParams::new("0,0,0,1".parse().unwrap(), ReadMaskSetting::default());
-        let mut extras = TestExtras(params.read_masking.clone());
+        let mut extras = TestExtras::new(&params);
 
         let mut store = RecordStore::<RastairReadExtras>::new();
         // Mate A: first in template, forward (flag 99 → OT). 3M at pos 2 covers
@@ -2107,7 +2114,7 @@ mod tests {
         // And the column is genuinely one where dedup has to fire: without the
         // widened interval both mates would be counted at the CpG-C.
         let seg = segment(REF);
-        let store = store_of(&reads, &params.read_masking);
+        let store = store_of(&reads, &params);
         let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 19));
         engine.set_soft_clip_overhang(1);
         let mut scratch = ColumnScratch::default();
@@ -2123,41 +2130,43 @@ mod tests {
         assert_eq!(depth_at_cpg, Some(1), "the rescued clip deduped against its mate");
     }
 
-    /// `--max-coverage` truncates the column before either implementation sees
-    /// it, so both must agree on the truncated column too.
-    #[test]
-    fn dedup_matches_the_old_rule_under_max_depth_truncation() {
-        let mut reads = Vec::new();
-        for i in 0..6u32 {
-            let name = format!("p{i}");
-            reads.push(TestRead::matching(name.as_bytes(), 2, 8, Base::A, OT_FIRST));
-            reads.push(TestRead::matching(name.as_bytes(), 6, 8, Base::A, OT_SECOND));
-        }
-        let mut capped = dedup_params();
-        capped.variant_calling.max_coverage = crate::call::variant_calling::MaxCoverage::new(3);
-        assert_same_as_name_collector(&reads, REF, &capped);
-    }
-
-    /// `--max-coverage` counts reads that pass the filters. Two MAPQ 0 reads
-    /// arrive first at the column; with a cap of 2 they must not be the two the
-    /// engine keeps, or the column comes out empty.
+    /// `--max-coverage` counts reads that pass the record filter. Two MAPQ 0
+    /// reads arrive first at the column; with a cap of 2 they must not take
+    /// the two slots, or the column comes out empty.
     #[test]
     fn coverage_cap_counts_filtered_reads_only() {
-        let reads = vec![
-            TestRead::matching(b"junk1", 2, 8, Base::A, 0).with_mapq(0),
-            TestRead::matching(b"junk2", 2, 8, Base::A, 0).with_mapq(0),
-            TestRead::matching(b"good1", 2, 8, Base::A, 0),
-            TestRead::matching(b"good2", 2, 8, Base::A, 0),
-            TestRead::matching(b"good3", 2, 8, Base::A, 0),
-        ];
-        let mut params = dedup_params();
-        params.variant_calling.max_coverage = crate::call::variant_calling::MaxCoverage::new(2);
-        let seg = segment(REF);
-        let store = store_of(&reads, &params.read_masking);
-        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
-        if let Some(ceiling) = params.max_coverage.load_ceiling() {
-            engine.set_max_depth(ceiling);
+        let reads =
+            [(b"junk1", 0u8), (b"junk2", 0), (b"good1", 60), (b"good2", 60), (b"good3", 60)];
+        let params = dedup_params();
+        let filter = RastairRecordFilter {
+            read_flags: params.read_flags.clone(),
+            min_mapq: params.quality.min_mapq,
+            ..Default::default()
+        };
+        let mut capped = DepthCap::with_cap(filter, NonZeroU32::new(2));
+        let mut store = RecordStore::<RastairReadExtras>::new();
+        for (name, mapq) in reads {
+            store
+                .push_fields(
+                    Pos0::new(2).unwrap(),
+                    Pos0::new(9).unwrap(),
+                    BamFlags::from(OT_FIRST),
+                    mapq,
+                    8,
+                    0,
+                    name,
+                    &[CigarOp::new(CigarOpType::Match, 8)],
+                    &[Base::A; 8],
+                    &[40u8; 8],
+                    &[],
+                    Some(tid0()),
+                    mate_at(500),
+                    &mut capped,
+                )
+                .unwrap();
         }
+        let seg = segment(REF);
+        let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 9));
         let mut scratch = ColumnScratch::default();
         let mut depth = None;
         while let Some(col) = engine.pileups() {
@@ -2181,7 +2190,7 @@ mod tests {
         let mut params = dedup_params();
         params.variant_calling.keep_overlapping_reads = true;
         let seg = segment(REF);
-        let store = store_of(&reads, &params.read_masking);
+        let store = store_of(&reads, &params);
         let mut engine = PileupEngine::new(store.prepare_for_pileup().input, span(0, 19));
         let mut scratch = ColumnScratch::default();
         let mut overlap_depth = None;
