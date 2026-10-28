@@ -5,7 +5,8 @@
 //! the reads on the strand that converts the side whose neighbour in the read
 //! is the CpG partner (`read_counts`); `M5mC_Strands` and the BED `unmod`
 //! and `mod` columns count the same reads. A het genotype one of whose alleles
-//! is the methylated read's base, or a genotype with no reference copy at an
+//! is the methylated read's base, on a chromosome with the partner beside it
+//! (`PileupMetrics::unconfounded`), or a genotype with no reference copy at an
 //! `Original` CpG, adjusts β. The VCF writes one slot per CpG, `Original`
 //! first, and a CpG no read shows has no β ([`written`]).
 
@@ -154,8 +155,11 @@ fn genotype_adjustment(
     }
 
     // A het one of whose alleles is the base a methylated read shows: the
-    // reference (`T` under a de-novo `C`) only where a chromosome carries it.
+    // reference (`T` under a de-novo `C`) only where a chromosome carries it,
+    // and only where that chromosome has the partner beside it, as β counts
+    // only the reads that do.
     if gt.genotype.is_heterozygous()
+        && !record.unconfounded.contains(side)
         && gt
             .genotype
             .alleles()

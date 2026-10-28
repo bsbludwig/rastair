@@ -24,7 +24,8 @@ use tracing::instrument;
 /// methylation weigh their reads as at any de-novo CpG. A CpG that is not the reference's needs its
 /// `C` and `G` on one chromosome: neither two alts the pair-HMM puts apart, nor an alt and a
 /// reference partner whose own called alt sits on every chromosome carrying the alt
-/// ([`Verdict::has_haplotype`]).
+/// ([`Verdict::has_haplotype`]). A side whose methylated-read base no chromosome reads beside the
+/// partner is [`PileupMetrics::unconfounded`].
 ///
 /// Recomputed from the calls, so a test's re-run of the calls can clear it.
 // shortcut: a deletion joining a `C` and a `G` across its gap makes no CpG here, as the base
@@ -70,16 +71,34 @@ pub fn mark_called_cpgs(
     let before_sides = before_alts | inserted(before, <[Base]>::last);
     let after_sides = after_alts | inserted(Some(current), <[Base]>::first);
     current.beside_called_alts = CpgSide::beside(before_sides, after_sides);
+    current.unconfounded = EnumSet::empty();
+    if after.is_some_and(|g| !one_chromosome_reads(current, CpgSide::C.mod_base(), g, Base::G)) {
+        current.unconfounded.insert(CpgSide::C);
+    }
+    if before.is_some_and(|c| !one_chromosome_reads(c, Base::C, current, CpgSide::G.mod_base())) {
+        current.unconfounded.insert(CpgSide::G);
+    }
 }
 
-/// Whether one chromosome reads `C` at `c` and `G` at the next column `g`, as the pair-HMM scored
-/// them: by the event of an alt, by none of the column's events for the reference base, the two
-/// columns' events present where their alts are called and the cluster's others where the
-/// pair-HMM calls them. One does when they are not in one cluster, or a column has neither base.
+/// Whether one chromosome reads `C` at `c` and `G` at the next column `g`.
+fn on_one_chromosome(c: &PileupMetrics, g: &PileupMetrics) -> bool {
+    one_chromosome_reads(c, Base::C, g, Base::G)
+}
+
+/// Whether one chromosome reads `first_base` at `first` and `next_base` at the next column `next`,
+/// as the pair-HMM scored them: by the event of an alt, by none of the column's events for the
+/// reference base, the two columns' events present where their alts are called and the cluster's
+/// others where the pair-HMM calls them. One does when they are not in one cluster, or a column
+/// has neither base.
 // shortcut: as beside an indel that takes a cluster's slots; score their phase there too if such
 // pairs turn out to matter.
-fn on_one_chromosome(c: &PileupMetrics, g: &PileupMetrics) -> bool {
-    let (Some(scores), Some(other)) = (c.snv_scores.as_ref(), g.snv_scores.as_ref()) else {
+fn one_chromosome_reads(
+    first: &PileupMetrics,
+    first_base: Base,
+    next: &PileupMetrics,
+    next_base: Base,
+) -> bool {
+    let (Some(scores), Some(other)) = (first.snv_scores.as_ref(), next.snv_scores.as_ref()) else {
         return true;
     };
     let allele = |column: &PileupMetrics, base: Base| {
@@ -89,7 +108,8 @@ fn on_one_chromosome(c: &PileupMetrics, g: &PileupMetrics) -> bool {
             scores.base_event_at(column.pos, base).map(Some)
         }
     };
-    let (Some(at_c), Some(at_g)) = (allele(c, Base::C), allele(g, Base::G)) else {
+    let (Some(at_first), Some(at_next)) = (allele(first, first_base), allele(next, next_base))
+    else {
         return true;
     };
     if !Arc::ptr_eq(scores, other) {
@@ -99,16 +119,20 @@ fn on_one_chromosome(c: &PileupMetrics, g: &PileupMetrics) -> bool {
     let called =
         |column: &PileupMetrics, base: Base| column.find_alt(base).is_some_and(Alt::called);
     let held = |event: EventIdx| match scores.event(event) {
-        Some(Event { anchor, allele: Allele::Base(base) }) if *anchor == c.pos => called(c, *base),
-        Some(Event { anchor, allele: Allele::Base(base) }) if *anchor == g.pos => called(g, *base),
+        Some(Event { anchor, allele: Allele::Base(base) }) if *anchor == first.pos => {
+            called(first, *base)
+        }
+        Some(Event { anchor, allele: Allele::Base(base) }) if *anchor == next.pos => {
+            called(next, *base)
+        }
         _ => verdict.is_called(event),
     };
     // One substitution per anchor on a haplotype, so this is the base it reads.
     let reads = |hap: HapIdx, pos: Pos0, allele: Option<EventIdx>| {
         scores.base_events_at(pos).find(|&e| hap.carries(e)) == allele
     };
-    let cpg = |hap: HapIdx| reads(hap, c.pos, at_c) && reads(hap, g.pos, at_g);
-    verdict.has_haplotype(held, cpg).unwrap_or(true)
+    let both = |hap: HapIdx| reads(hap, first.pos, at_first) && reads(hap, next.pos, at_next);
+    verdict.has_haplotype(held, both).unwrap_or(true)
 }
 
 #[cfg(test)]

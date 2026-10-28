@@ -354,3 +354,44 @@ fn a_cpg_partner_replaced_on_the_same_chromosome_makes_no_cpg() -> Result<()> {
 
     Ok(())
 }
+
+/// `TA>CG` on one chromosome, half methylated, beside the reference `TA`.
+/// The reference chromosome's `T` reads have `A` beside them, so β never
+/// counts them and no het correction applies: β is the CpG chromosome's.
+#[test]
+fn a_cis_het_pair_cpg_is_not_corrected_for_the_reference_t() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T A ] Ref,
+        [ T A ] OT,
+        [ T A ] OT,
+        [ T A ] OT,
+        [ T A ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C G ] OT,
+        [ C G ] OT,
+        [ T A ] OB,
+        [ T A ] OB,
+        [ T A ] OB,
+        [ T A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C G ] OB,
+        [ C G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (T C) PASS GT="0|1" M5mC=0.5,
+        (A G) PASS GT="0|1" M5mC=0.5,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    set_pass(&mut records[1], G);
+    let records = reprocess(records)?;
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}

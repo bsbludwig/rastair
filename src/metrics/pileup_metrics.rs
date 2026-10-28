@@ -45,6 +45,11 @@ pub struct PileupMetrics {
     /// chromosome carrying the alt keeps: the neighbour's called alt sits on
     /// each (set by `process::mark_called_cpgs`).
     pub lost_to_called_alts: EnumSet<CpgSide>,
+    /// The CpG sides whose methylated-read base (`T` for the `C`, `A` for the
+    /// `G`) no chromosome reads beside the partner base, so the reads β
+    /// counts all come from the CpG's chromosomes and a het there needs no
+    /// correction (set by `process::mark_called_cpgs`).
+    pub unconfounded: EnumSet<CpgSide>,
     pub ref_metrics: AlleleMetrics,
     /// Alternate alleles at this position.
     ///

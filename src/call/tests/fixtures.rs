@@ -49,6 +49,7 @@ pub(crate) fn column(
         pos_metrics: PositionMetrics::default(),
         beside_called_alts: default(),
         lost_to_called_alts: default(),
+        unconfounded: default(),
         ref_metrics: default(),
         alts: alts
             .iter()
