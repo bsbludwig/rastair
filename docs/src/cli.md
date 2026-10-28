@@ -170,7 +170,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
    By default, only a minimal set is included.
 
-  Possible values: `AD`, `BQ`, `DP`, `MQ`, `MQ0`, `NS`, `AS_SB`, `SC5`, `AF`, `ABQ`, `AMQ`, `AS_SS_BQ`, `AS_SS_MQ`, `PIR`, `ENT100`, `NAB`, `NOI`, `M5mC_Strands`, `CPG`, `CPGnovo`
+  Possible values: `AD`, `BQ`, `DP`, `MQ`, `MQ0`, `NS`, `AS_SB`, `SC5`, `AF`, `ABQ`, `AMQ`, `AS_SS_BQ`, `AS_SS_MQ`, `PIR`, `ENT100`, `NAB`, `NOI`, `M5mC_Strands`, `CPG`, `CPGnovo`, `CPGlost`
 
 * `--vcf-format-fields <VCF_FORMAT_FIELDS>` — Additional FORMAT fields to include in VCF output (comma-separated VCF field IDs)
 

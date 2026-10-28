@@ -38,6 +38,7 @@
 | M5mC_Strands | 4 | Integer | Number of reads that are evidence for unmodified, modified (the reads M5mC counts), no SNP, SNP. Always reported; 0,0,0,0 where neither CPG nor CPGnovo is set. |
 | CPG | 0 | Flag | Is this a CpG site? |
 | CPGnovo | 0 | Flag | De-novo CPG candidate: Could the alt alleles create a new CpG site? |
+| CPGlost | 0 | Flag | Reference CpG not in this sample: the called variants leave no chromosome with both its C and G, so it has no M5mC. |
 
 ## FORMAT
 

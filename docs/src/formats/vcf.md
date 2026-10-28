@@ -48,6 +48,7 @@ Where it does not overlap a called variant, the `ALT` is set to `.`, _a.k.a._ th
 While rare, it is possible to have more than one methylation call at one position. This can occur in `CCG` positions where the middle C is also a C>G SNP. This leads to two alleles, one where the middle position is a G and the other where it is a C. Each could be methylated at different levels. In these cases, the `M5mC` value will be a comma-separated list.
 `M5mC`, `DPM5mC` and `ADM5mC` always hold one value per CpG the position takes part in, the reference CpG first and the de-novo one second.
 A CpG that no read shows has no $ \beta $: its `M5mC` value is missing (`.`), and its `DPM5mC` and `ADM5mC` are 0.
+A reference CpG that the called variants leave on no chromosome of the sample (a homozygous `C>T`, or a `C>T` and a `G>A` on different chromosomes) is not in this sample: both its positions keep `CPG`, add `CPGlost`, and have no $ \beta $.
 
 ### Quality scores
 
