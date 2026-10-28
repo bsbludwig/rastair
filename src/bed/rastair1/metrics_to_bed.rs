@@ -1,19 +1,16 @@
 use crate::{
     bed::rastair1::{Rastair1BedFormat, format::GenotypeString},
-    call::variant_calling::{EstimatedGenotype, GenotypeTag},
-    metrics::{DenovoAdjecent, FormsDenovo, PileupMetrics},
+    call::variant_calling::GenotypeTag,
+    metrics::{MethylationEvidenceStrandInfo, PileupMetrics, methylation},
     utils::logging::ThisIsABug as _,
-    vcf::{CpgOrigin, InCpG},
 };
 use color_eyre::{Result, Section as _, SectionExt as _, eyre::eyre};
-use seqair_types::{Phred, Probability, Strand};
 use tracing::{debug, instrument, trace, warn};
 
 impl Rastair1BedFormat {
     #[instrument(level = "trace", skip_all, fields(pos=%pileup.contig_pos()))]
     pub fn from_metrics(pileup: &PileupMetrics) -> Result<Option<Self>> {
-        let t = &pileup.tags;
-        if !(t.cpg || t.denovo_cpg || t.denovo_cpg_partner) {
+        if !pileup.in_cpg() {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }
@@ -22,40 +19,30 @@ impl Rastair1BedFormat {
 
         // If a position is covered by both a ref CpG site and a de-novo CpG
         // site, the ref case should take precedence.
-        let de_novo = !t.cpg && (t.denovo_cpg || t.denovo_cpg_partner);
+        let de_novo = pileup.reference_cpg().is_none() && pileup.in_denovo_cpg();
 
-        let gt = if let Some(gt) = pileup.pos_metrics.genotype {
-            gt
+        let (genotype, quality) = if let Some(gt) = &pileup.pos_metrics.genotype {
+            (gt.genotype, Some(gt.quality))
         } else {
             debug!("No genotype for record");
-            EstimatedGenotype {
-                genotype: GenotypeTag::hom_ref(),
-                likelihood: Probability::ZERO,
-                confidence: Probability::ZERO,
-            }
+            (GenotypeTag::HomRef, None)
         };
+        let quality = super::format::gq_column(quality);
 
-        let counts = pileup.pos_metrics.extended.methylation_strand_info;
+        let counts = MethylationEvidenceStrandInfo::from_pileup(pileup);
 
-        let methylated = &pileup.pos_metrics.methylated;
-        let beta = if methylated.is_empty() {
-            Some(Probability::ZERO)
-        } else {
-            let preferred_origin = if de_novo { CpgOrigin::DeNovo } else { CpgOrigin::Original };
-            let cpg = methylated
-                .iter()
-                .find(|b| b.origin == preferred_origin)
-                .or_else(|| methylated.iter().next());
-            cpg.map(|b| b.beta)
-        };
-
-        let strand = guess_strand_from_pileup(pileup);
+        // β, strand and counts are all the evidence CpG's.
+        let evidence = methylation::evidence(pileup);
+        let beta = evidence
+            .and_then(|(_, origin)| pileup.pos_metrics.methylated.get(origin))
+            .map(|cpg| cpg.beta);
+        let strand = evidence.map(|(side, _)| side.strand());
 
         let alt_bases: Vec<_> = pileup.alts.iter().map(|a| a.base).collect();
 
         let bed = super::Rastair1BedFormat {
-            contig: pileup.contig(),
-            pos: pileup.pos() as usize,
+            contig: pileup.region.contig.clone(),
+            pos: pileup.pos().as_usize(),
             r#ref: ref_base.into(),
             beta,
             strand,
@@ -65,9 +52,10 @@ impl Rastair1BedFormat {
             snp: counts.snp,
             // Coverage is total read depth at this position, including all bases/alts
             coverage: pileup.pos_metrics.depth as usize,
-            genotype: GenotypeString::from_genotype_tag(gt.genotype, ref_base, &alt_bases),
-            genotype_likelihood: Phred::from(gt.likelihood),
-            genotype_confidence: Phred::from(gt.confidence),
+            genotype: GenotypeString::from_genotype_tag(genotype, ref_base, &alt_bases),
+            // The VCF has one genotype number, `GQ`; the legacy column repeats it.
+            genotype_likelihood: quality,
+            genotype_confidence: quality,
             de_novo,
         };
 
@@ -78,28 +66,5 @@ impl Rastair1BedFormat {
         }
 
         Ok(Some(bed))
-    }
-}
-
-fn guess_strand_from_pileup(pileup: &PileupMetrics) -> Strand {
-    if pileup.pos_metrics.cpg == InCpG::C {
-        Strand::OT
-    } else if pileup.pos_metrics.cpg == InCpG::G {
-        Strand::OB
-    } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
-        Strand::OT
-    } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
-        Strand::OB
-    } else if let Some(denovo) = pileup.alts.iter().filter_map(|a| a.metrics.denovo.some()).next() {
-        if denovo == FormsDenovo::ThisBecomesC {
-            Strand::OT
-        } else if denovo == FormsDenovo::ThisBecomesG {
-            Strand::OB
-        } else {
-            // should never happen since .some above filters these out
-            Strand::Unknown
-        }
-    } else {
-        Strand::Unknown
     }
 }

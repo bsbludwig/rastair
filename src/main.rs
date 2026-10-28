@@ -82,10 +82,9 @@ enum Subcommand {
     /// competitor caller, computing variant overlap, F1/precision/recall, and
     /// methylation beta correlation.
     ///
-    /// Variants are scored the way hap.py scores them: alleles are reduced to
-    /// minimal representation, alt alleles the genotype does not carry are not
-    /// calls, and a true positive requires the zygosity to agree. Pass
-    /// `--match-mode allele` to ignore zygosity.
+    /// Variants match on chromosome, position, REF and ALT exactly, one key
+    /// per ALT allele of a PASS record: alleles are not normalised and the
+    /// genotype is not compared.
     #[command(hide = true)]
     Verify(VerifyParams),
     #[command(hide = true)]

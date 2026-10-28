@@ -1,15 +1,17 @@
+use crate::utils::{MappingQuality, MappingQualityExt};
 use crate::{
     bed::{
         per_read::{BedReadsParams, PerRead},
         reader::{RastairBedReader, RastairCall},
     },
-    call::{pileup::hts_utils::infer_strand_from_mismatch_motifs, variant_calling::ReadFlags},
+    call::variant_calling::{Pairing, ReadFlags},
     runtime::{
         fault_injection, partial_output::PartialOutput, progress, progress::ProgressTracker,
         segments, threads,
     },
     sequence::{ChunkRegion, ReaderParams, Readers, Region, Segment},
     utils::{cli, logging::ThisIsABug},
+    vcf::CpgSide,
 };
 use bio_types::sequence::SequenceReadPairOrientation;
 use clio::ClioPath;
@@ -22,6 +24,9 @@ use rustc_hash::FxHashMap;
 use seqair_types::Strand;
 use seqair_types::{Base, SmallVec};
 use std::thread::available_parallelism;
+
+mod hts_utils;
+use hts_utils::infer_strand_from_mismatch_motifs;
 use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Clone, clap::Args)]
@@ -32,8 +37,8 @@ pub struct PerReadParams {
     /// Maximum length of a segment in bases
     ///
     /// Used for splitting work between threads. Tweak this to adjust memory
-    /// usage.
-    #[arg(long, default_value_t = 100_000)]
+    /// usage. Between 1,000 and 1,000,000.
+    #[arg(long, default_value_t = 100_000, value_parser = crate::sequence::segment_length())]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub segment_max_length: u64,
     /// Number of bases to overlap between segments
@@ -87,7 +92,7 @@ pub struct PerReadParams {
     ///
     /// Scans read mismatches against the reference and counts `TG` versus `CA`
     /// motifs in a 2 bp window anchored at each mismatch (current+next and
-    /// previous+current), using the htslib/reference-oriented read sequence.
+    /// previous+current), using the read sequence as the BAM stores it (reference-oriented).
     /// `TG > CA` means OT, `CA > TG` means OB, and ties / evidence-free reads
     /// are split pseudo-randomly but reproducibly per read.
     #[arg(long, default_value_t = false)]
@@ -293,10 +298,15 @@ fn process_region(
         if record_start < start || record_start >= end {
             continue;
         }
-        if !params.read_flags.filter_with_unpaired_mode(&record, params.unpaired) {
+        if !params
+            .read_flags
+            .filter_flags(record.flags(), Pairing::from_unpaired_flag(params.unpaired))
+        {
             continue;
         }
-        if record.mapq() < params.min_mapq {
+        if !MappingQuality::from_byte(record.mapq())
+            .at_least(MappingQuality::from_byte(params.min_mapq))
+        {
             continue;
         }
         if record.seq_len() > params.max_read_length as usize {
@@ -343,11 +353,12 @@ fn record_to_row(
         .wrap_err("clipping length exceeded usize")?;
 
     let strand = if guess_read_orientation {
-        infer_strand_from_mismatch_motifs(record, segment)
+        Some(infer_strand_from_mismatch_motifs(record, segment))
     } else {
         orientation(record, exclude_ambiguous, unpaired)
     };
 
+    let side = strand.map(CpgSide::converted_on);
     let mut cpg_count = 0;
     let mut mod_cpgs = SmallVec::new();
     let mut unmod_cpgs = SmallVec::new();
@@ -381,38 +392,26 @@ fn record_to_row(
                 .note("When subtracting leading clippings, the position would be negative")?
         };
 
-        if strand == Strand::OT && ref_base == Base::C {
-            let next_base = ref_seq.get(idx + 1).map(Base::from).unwrap_or_default();
-            if next_base == Base::G {
-                cpg_count += 1;
-                match read_base {
-                    Base::C => unmod_cpgs.push(pos_rel),
-                    Base::T => mod_cpgs.push(pos_rel),
-                    _ => snp_cpgs.push(pos_rel),
-                }
+        let Some(side) = side else { continue };
+        let partner = match side {
+            CpgSide::C => ref_seq.get(idx + 1),
+            CpgSide::G => idx.checked_sub(1).and_then(|i| ref_seq.get(i)),
+        };
+        let in_reference_cpg =
+            ref_base == side.unmod_base() && partner.map(Base::from) == Some(side.adjacent_base());
+        if in_reference_cpg {
+            cpg_count += 1;
+            match side.read_methylated(read_base) {
+                Some(true) => mod_cpgs.push(pos_rel),
+                Some(false) => unmod_cpgs.push(pos_rel),
+                None => snp_cpgs.push(pos_rel),
             }
-        } else if strand == Strand::OB && ref_base == Base::G {
-            let prev_base =
-                idx.checked_sub(1).and_then(|i| ref_seq.get(i)).map(Base::from).unwrap_or_default();
-            if prev_base == Base::C {
-                cpg_count += 1;
-                match read_base {
-                    Base::G => unmod_cpgs.push(pos_rel),
-                    Base::A => mod_cpgs.push(pos_rel),
-                    _ => snp_cpgs.push(pos_rel),
-                }
-            }
-        }
-
-        // Check for de-novo CpGs
-        if let Some(call) = calls.get(&pos_in_ref)
-            && let RastairCall::DeNovoCpg { methylated, .. } = call
+        } else if let Some(RastairCall::DeNovoCpg { .. }) = calls.get(&pos_in_ref)
+            // A read showing another base carries the allele without the CpG.
+            && let Some(methylated) = side.read_methylated(read_base)
         {
-            if *methylated {
-                mod_denovos.push(pos_rel);
-            } else {
-                unmod_denovos.push(pos_rel);
-            }
+            cpg_count += 1;
+            if methylated { mod_denovos.push(pos_rel) } else { unmod_denovos.push(pos_rel) }
         }
     }
 
@@ -423,12 +422,12 @@ fn record_to_row(
             end: u64::try_from(cigar.end_pos()).wrap_err("end pos does not fit in u64")?,
         },
         flag: record.flags(),
-        mapq: record.mapq(),
+        mapq: MappingQuality::from_byte(record.mapq()),
         frag_length: record.insert_size().unsigned_abs(),
         read_length: record.seq_len(),
         read_id: String::from_utf8(Vec::from(record.qname())).unwrap_or_default(),
         cpg_count,
-        mod_count: mod_cpgs.len(),
+        mod_count: mod_cpgs.len() + mod_denovos.len(),
         mod_cpgs,
         unmod_cpgs,
         snp_cpgs,
@@ -437,20 +436,20 @@ fn record_to_row(
     })
 }
 
-fn orientation(bam_record: &Record, exclude_ambiguous: bool, unpaired: bool) -> Strand {
+fn orientation(bam_record: &Record, exclude_ambiguous: bool, unpaired: bool) -> Option<Strand> {
     if unpaired {
-        return if bam_record.is_reverse() { Strand::OB } else { Strand::OT };
+        return Some(if bam_record.is_reverse() { Strand::OB } else { Strand::OT });
     }
 
-    use SequenceReadPairOrientation::*;
+    use SequenceReadPairOrientation::{F1R2, F2R1, R1F2, R2F1};
 
     let read_pair_orientation = bam_record.read_pair_orientation();
     match read_pair_orientation {
-        F1R2 | R2F1 => Strand::OT,
-        F2R1 | R1F2 => Strand::OB,
+        F1R2 | R2F1 => Some(Strand::OT),
+        F2R1 | R1F2 => Some(Strand::OB),
         SequenceReadPairOrientation::None => {
             if exclude_ambiguous {
-                return Strand::Unknown;
+                return None;
             }
             trace!(
                 "Orientation of {} cannot be unambiguously determined",
@@ -460,18 +459,18 @@ fn orientation(bam_record: &Record, exclude_ambiguous: bool, unpaired: bool) -> 
             if bam_record.is_first_in_template() && bam_record.is_mate_reverse()
                 || bam_record.is_last_in_template() && bam_record.is_reverse()
             {
-                Strand::OT
+                Some(Strand::OT)
             }
             // F2R1
             else if bam_record.is_first_in_template() && bam_record.is_reverse()
                 || bam_record.is_last_in_template() && bam_record.is_mate_reverse()
             {
-                Strand::OB
+                Some(Strand::OB)
             } else {
-                Strand::Unknown
+                None
             }
         }
-        _ => Strand::Unknown, // This should be impossible?
+        _ => None, // This should be impossible?
     }
 }
 
@@ -492,8 +491,6 @@ mod tests {
                 overlap_end: 0,
             }),
             sequence: sequence.to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
         }
     }
 
@@ -528,7 +525,7 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1, 4]);
         assert!(row.unmod_cpgs.is_empty());
     }
 
@@ -545,7 +542,7 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2, 5]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[2, 5]);
         assert!(row.unmod_cpgs.is_empty());
     }
 
@@ -556,7 +553,7 @@ mod tests {
         let segment = test_segment(b"ACGACG");
         let record = test_record(b"ot-single", 0x0, 100, b"ATGATG");
 
-        // Without guessing: strand is Unknown, so no CpGs are detected
+        // Without guessing: strand is unknown, so no CpGs are detected
         let row_no_guess =
             record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, false)
                 .unwrap();
@@ -568,7 +565,7 @@ mod tests {
                 .unwrap();
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1, 4]);
     }
 
     #[test]
@@ -578,7 +575,7 @@ mod tests {
         let segment = test_segment(b"ACGACG");
         let record = test_record(b"ob-single", 0x0, 100, b"ACAACA");
 
-        // Without guessing: strand is Unknown, so no CpGs are detected
+        // Without guessing: strand is unknown, so no CpGs are detected
         let row_no_guess =
             record_to_row(&record, &segment, &FxHashMap::default(), false, false, false, false)
                 .unwrap();
@@ -590,7 +587,7 @@ mod tests {
                 .unwrap();
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2, 5]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[2, 5]);
     }
 
     #[test]
@@ -626,8 +623,8 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 1);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[4]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1]);
+        assert_eq!(row.unmod_cpgs.as_ref(), &[4]);
         assert!(row.snp_cpgs.is_empty());
     }
 
@@ -645,8 +642,8 @@ mod tests {
 
         assert_eq!(row.cpg_count, 2);
         assert_eq!(row.mod_count, 1);
-        assert_eq!(row.mod_cpgs.as_slice(), &[2]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[5]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[2]);
+        assert_eq!(row.unmod_cpgs.as_ref(), &[5]);
         assert!(row.snp_cpgs.is_empty());
     }
 
@@ -665,8 +662,8 @@ mod tests {
 
         assert_eq!(row.cpg_count, 3);
         assert_eq!(row.mod_count, 2);
-        assert_eq!(row.mod_cpgs.as_slice(), &[1, 4]);
-        assert_eq!(row.unmod_cpgs.as_slice(), &[7]);
+        assert_eq!(row.mod_cpgs.as_ref(), &[1, 4]);
+        assert_eq!(row.unmod_cpgs.as_ref(), &[7]);
         assert!(row.snp_cpgs.is_empty());
     }
 
@@ -675,12 +672,12 @@ mod tests {
         let mut record = Record::new();
 
         record.set_flags(0x0); // single-end forward
-        assert_eq!(orientation(&record, true, true), Strand::OT);
-        assert_eq!(orientation(&record, false, true), Strand::OT);
+        assert_eq!(orientation(&record, true, true), Some(Strand::OT));
+        assert_eq!(orientation(&record, false, true), Some(Strand::OT));
 
         record.set_flags(0x10); // single-end reverse
-        assert_eq!(orientation(&record, true, true), Strand::OB);
-        assert_eq!(orientation(&record, false, true), Strand::OB);
+        assert_eq!(orientation(&record, true, true), Some(Strand::OB));
+        assert_eq!(orientation(&record, false, true), Some(Strand::OB));
     }
 
     #[test]
@@ -688,12 +685,12 @@ mod tests {
         let mut record = Record::new();
 
         record.set_flags(0x0);
-        assert_eq!(orientation(&record, true, false), Strand::Unknown);
-        assert_eq!(orientation(&record, false, false), Strand::Unknown);
+        assert_eq!(orientation(&record, true, false), None);
+        assert_eq!(orientation(&record, false, false), None);
 
         record.set_flags(0x10);
-        assert_eq!(orientation(&record, true, false), Strand::Unknown);
-        assert_eq!(orientation(&record, false, false), Strand::Unknown);
+        assert_eq!(orientation(&record, true, false), None);
+        assert_eq!(orientation(&record, false, false), None);
     }
 
     #[test]
@@ -701,9 +698,9 @@ mod tests {
         let mut record = Record::new();
 
         record.set_flags(0x80 | 0x20); // would be OB in paired logic
-        assert_eq!(orientation(&record, true, true), Strand::OT);
+        assert_eq!(orientation(&record, true, true), Some(Strand::OT));
 
         record.set_flags(0x40 | 0x10); // reverse always means OB
-        assert_eq!(orientation(&record, true, true), Strand::OB);
+        assert_eq!(orientation(&record, true, true), Some(Strand::OB));
     }
 }

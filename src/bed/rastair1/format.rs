@@ -3,7 +3,13 @@ use crate::call::variant_calling::GenotypeTag;
 use color_eyre::Result;
 use seqair_types::{Base, Phred, Probability, SmolStr, Strand, smol_str::format_smolstr};
 use std::io::Write;
-use tracing::debug;
+
+/// The genotype quality column. The format has no missing marker for it, so a
+/// record without a genotype (`./.`, no `GQ`) writes 0 on both the `call --bed`
+/// and the `convert` path.
+pub fn gq_column(gq: Option<Phred>) -> Phred {
+    gq.unwrap_or_else(|| Phred::from_phred(0_u8))
+}
 
 #[derive(Debug, Clone)]
 pub struct Rastair1BedFormat {
@@ -11,7 +17,8 @@ pub struct Rastair1BedFormat {
     pub pos: usize,
     pub r#ref: SmolStr,
     pub beta: Option<Probability>,
-    pub strand: Strand,
+    /// `None` where the position is neither a CpG nor next to a de-novo one.
+    pub strand: Option<Strand>,
     pub unmod: u32,
     pub r#mod: u32,
     pub no_snp: u32,
@@ -45,13 +52,8 @@ impl BedRecord for Rastair1BedFormat {
         } = self;
         let end = start + 1;
         let name = ".";
-        let strand = strand.as_symbol();
-        let beta = if let Some(beta) = beta {
-            format_smolstr!("{beta:.2}")
-        } else {
-            debug!("position {contig}:{start} has no beta value");
-            SmolStr::new_inline(".")
-        };
+        let strand = strand.as_ref().map_or(".", Strand::as_symbol);
+        let beta = beta.map_or_else(SmolStr::default, |beta| format_smolstr!("{beta:.2}"));
 
         write!(
             f,
@@ -119,5 +121,16 @@ impl GenotypeString {
 impl std::fmt::Display for GenotypeString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.0, self.1)
+    }
+}
+
+#[cfg(test)]
+mod gq_column_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_gq_writes_zero_and_a_real_one_is_kept() {
+        assert_eq!(gq_column(None).as_int(), 0);
+        assert_eq!(gq_column(Some(Phred::from_phred(37_u8))).as_int(), 37);
     }
 }

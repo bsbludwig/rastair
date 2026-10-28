@@ -6,7 +6,6 @@ use crate::{
 use better_default::Default;
 use clio::ClioPath;
 use color_eyre::{Result, eyre::Context as _};
-use seqair_types::Probability;
 use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, clap::Args, Default)]
@@ -60,11 +59,4 @@ pub struct BedRecordsFilterParams {
     #[arg(long = "bed-include-empty")]
     #[arg(help_heading = cli::sections::FILTER)]
     pub include_empty: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct BedRecordsConvertParams {
-    /// Minimum ML score to consider a position as variant
-    pub ml_threshold: Probability,
-    pub filters: BedRecordsFilterParams,
 }

@@ -133,15 +133,15 @@ pub enum RastairCall {
     Cpg {
         /// The base on the reference strand (C or G)
         base: Base,
-        /// Whether the CpG is methylated
-        methylated: bool,
+        /// Whether the CpG is methylated; `None` where no read shows it
+        methylated: Option<bool>,
     },
     /// A de novo CpG site not present in the reference genome
     DeNovoCpg {
         /// The base on the reference strand (C or G)
         base: Base,
-        /// Whether the CpG is methylated
-        methylated: bool,
+        /// Whether the CpG is methylated; `None` where no read shows it
+        methylated: Option<bool>,
     },
     /// A SNP (single nucleotide polymorphism)
     Snp {
@@ -174,21 +174,35 @@ impl SimpleRastairBedRecord {
         };
 
         let genotype = rec.genotype.split('/').collect::<SmallVec<&str, 2>>();
-        let [from, to] = genotype.as_slice() else {
+        let [from, to] = genotype.as_ref() else {
             bail!(
                 "Failed to parse genotype column, expected format 'N/N' or similar, but got {genotype:?}"
             );
         };
         let from = from.parse().wrap_err("Failed to parse from base")?;
         let to = to.parse().wrap_err("Failed to parse to base")?;
-        let beta = rec.r#beta.parse::<f32>().wrap_err("Failed to parse beta value")?;
+        // Empty where no read shows the CpG's methylation.
+        let beta = match rec.beta {
+            "" => None,
+            beta => Some(beta.parse::<f32>().wrap_err("Failed to parse beta value")?),
+        };
+        let methylated = beta.map(|beta| beta > 0.5);
 
-        let call = if beta == 0.0 && rec.no_snp != "0" {
+        // β is 0 both at an unmethylated CpG and at one both chromosomes lose,
+        // so only the genotype tells them apart: a reference CpG is lost where
+        // neither allele is its base, which the strand column names (`+` the
+        // C side, `-` the G side). A de-novo row is a CpG a called alt makes.
+        let cpg_bases: &[Base] = match rec.strand {
+            "+" => &[Base::C],
+            "-" => &[Base::G],
+            _ => &[Base::C, Base::G],
+        };
+        let call = if rec.de_novo == "NEW" {
+            RastairCall::DeNovoCpg { base: from, methylated }
+        } else if !cpg_bases.contains(&from) && !cpg_bases.contains(&to) {
             RastairCall::Snp { from, to }
-        } else if rec.de_novo == "NEW" {
-            RastairCall::DeNovoCpg { base: from, methylated: beta > 0.5 }
         } else {
-            RastairCall::Cpg { base: from, methylated: beta > 0.5 }
+            RastairCall::Cpg { base: from, methylated }
         };
 
         Ok(SimpleRastairBedRecord {
@@ -281,6 +295,7 @@ mod tests {
             chr19	6107663	6107664	.	0.05	+	19	1	20	0	41	C/C	99	60	NEW
             chr19	6107750	6107751	.	0.73	+	3	8	7	0	18	C/C	99	21	REF
             chr19	6107751	6107752	.	0.71	-	2	5	11	0	18	G/G	99	33	REF
+            chr19	6107760	6107761	.		.	0	0	3	0	3	C/C	0	0	REF
         ";
 
         let parsed = example_bed
@@ -302,7 +317,9 @@ mod tests {
                 pos: 6107663,
                 call: DeNovoCpg {
                     base: C,
-                    methylated: false,
+                    methylated: Some(
+                        false,
+                    ),
                 },
             },
             SimpleRastairBedRecord {
@@ -310,7 +327,9 @@ mod tests {
                 pos: 6107750,
                 call: Cpg {
                     base: C,
-                    methylated: true,
+                    methylated: Some(
+                        true,
+                    ),
                 },
             },
             SimpleRastairBedRecord {
@@ -318,12 +337,41 @@ mod tests {
                 pos: 6107751,
                 call: Cpg {
                     base: G,
-                    methylated: true,
+                    methylated: Some(
+                        true,
+                    ),
+                },
+            },
+            SimpleRastairBedRecord {
+                chrom: "chr19",
+                pos: 6107760,
+                call: Cpg {
+                    base: C,
+                    methylated: None,
                 },
             },
         ]
         "#);
 
+        Ok(())
+    }
+
+    #[test]
+    fn a_zero_beta_is_an_snp_only_where_the_genotype_loses_the_cpg() -> Result<()> {
+        let call = |strand: &str, genotype: &str| -> Result<RastairCall> {
+            let line = format!(
+                "chr19\t100\t101\t.\t0.00\t{strand}\t20\t0\t18\t0\t38\t{genotype}\t40\t40\tREF"
+            );
+            Ok(SimpleRastairBedRecord::from_bed_line(&line)?.call)
+        };
+        assert!(matches!(call("+", "C/C")?, RastairCall::Cpg { methylated: Some(false), .. }));
+        assert!(matches!(call("+", "C/T")?, RastairCall::Cpg { .. }));
+        assert!(matches!(call("-", "A/G")?, RastairCall::Cpg { .. }));
+        assert!(matches!(call("+", "T/T")?, RastairCall::Snp { .. }));
+        assert!(matches!(call("+", "G/G")?, RastairCall::Snp { .. }));
+        assert!(matches!(call("-", "C/C")?, RastairCall::Snp { .. }));
+        assert!(matches!(call(".", "C/C")?, RastairCall::Cpg { .. }));
+        assert!(matches!(call(".", "T/T")?, RastairCall::Snp { .. }));
         Ok(())
     }
 }

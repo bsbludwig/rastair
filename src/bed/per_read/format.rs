@@ -1,6 +1,6 @@
 use crate::{bed::BedRecord, sequence::Region};
 use color_eyre::eyre::Result;
-use seqair_types::SmallVec;
+use seqair_types::{MappingQuality, SmallVec};
 use std::io::Write;
 
 /// Store methylation information for a single read
@@ -11,7 +11,7 @@ pub struct PerRead {
     /// Flag of read
     pub flag: u16,
     /// Mapq of read
-    pub mapq: u8,
+    pub mapq: MappingQuality,
     /// Absolute fragment length (non-directional)
     pub frag_length: u64,
     /// Read length
@@ -45,7 +45,8 @@ impl BedRecord for PerRead {
             self.region.start,
             self.region.end,
             self.read_id,
-            self.mapq,
+            // The MAPQ as the BAM has it, 255 for "not available".
+            self.mapq.as_byte(),
             if self.flag & 16 == 16 { "-" } else { "+" },
             self.frag_length,
             self.read_length,

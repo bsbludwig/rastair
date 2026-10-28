@@ -6,30 +6,9 @@ use color_eyre::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputFormat {
-    VcfLike(VcfFormat),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     VcfLike(VcfFormat),
     Bed(BedFormat),
-}
-
-impl clap::ValueEnum for InputFormat {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[
-            InputFormat::VcfLike(VcfFormat::Vcf),
-            InputFormat::VcfLike(VcfFormat::Bcf),
-            InputFormat::VcfLike(VcfFormat::VcfCompressed),
-        ]
-    }
-
-    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
-        match self {
-            InputFormat::VcfLike(format) => format.to_possible_value(),
-        }
-    }
 }
 
 impl clap::ValueEnum for OutputFormat {
@@ -90,12 +69,6 @@ impl FromFileExtension for BedFormat {
         } else {
             None
         }
-    }
-}
-
-impl FromFileExtension for InputFormat {
-    fn from_file_extension(p: &str) -> Option<Self> {
-        VcfFormat::from_file_extension(p).map(InputFormat::VcfLike)
     }
 }
 

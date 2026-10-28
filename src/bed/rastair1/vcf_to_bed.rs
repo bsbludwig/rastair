@@ -1,5 +1,5 @@
 use crate::{
-    bed::rastair1::{BedRecordsConvertParams, Rastair1BedFormat, format::GenotypeString},
+    bed::rastair1::{BedRecordsFilterParams, Rastair1BedFormat, format::GenotypeString},
     call::variant_calling::GenotypeTag,
     metrics::MethylationEvidenceStrandInfo,
     utils::logging::ThisIsABug,
@@ -8,7 +8,7 @@ use color_eyre::{
     Result, Section as _, SectionExt as _,
     eyre::{Context as _, ContextCompat as _, ensure, eyre},
 };
-use rust_htslib::bcf::Record as HtslibRecord;
+use rust_htslib::bcf::{Record as HtslibRecord, record::Numeric as _};
 use seqair_types::SmolStr;
 use seqair_types::{Base, SmallVec};
 use seqair_types::{Phred, Probability};
@@ -17,7 +17,7 @@ use tracing::{instrument, trace};
 impl Rastair1BedFormat {
     #[allow(clippy::cast_possible_truncation, reason = "htslib likes i64")]
     #[instrument(level = "trace", skip_all, fields(pos=%r.pos()))]
-    pub fn from_vcf(r: &HtslibRecord, params: &BedRecordsConvertParams) -> Result<Option<Self>> {
+    pub fn from_vcf(r: &HtslibRecord, params: &BedRecordsFilterParams) -> Result<Option<Self>> {
         let in_cpg = r.info(b"CPG").flag().unwrap_or(false);
         let de_novo = r.info(b"CPGnovo").flag().unwrap_or(false);
         let is_pass = r.has_filter("PASS".as_bytes());
@@ -47,9 +47,11 @@ impl Rastair1BedFormat {
             .wrap_err("Failed to parse alleles")?;
         let r#ref = alleles.first().wrap_err("Record has no reference allele")?.clone();
 
+        // `call --bed`'s β: the reference CpG's, else the de-novo one's,
+        // whichever a read shows first.
         let beta = if let Ok(buffer) = r.format(b"M5mC").float()
             && let Some(betas) = buffer.first()
-            && let Some(beta) = betas.first()
+            && let Some(beta) = betas.iter().find(|beta| !beta.is_missing())
         {
             Some(f64::from(*beta))
         } else {
@@ -66,7 +68,7 @@ impl Rastair1BedFormat {
         };
 
         // Skip positions without evidence
-        if !params.filters.include_empty && read_depth == 0 {
+        if !params.include_empty && read_depth == 0 {
             return Ok(None);
         }
 
@@ -74,8 +76,8 @@ impl Rastair1BedFormat {
             .wrap_err("Failed to read methylation evidence strand info")?;
 
         let genotype_alleles: SmallVec<_, 2> = if let Ok(gs) = r.genotypes() {
-            // No more genotype remapping needed since VCF no longer mixes '.' with real variants
-            gs.get(0).iter().map(|x| (*x).into()).collect()
+            // Taken as written: a record never mixes '.' with real alleles.
+            gs.get(0).iter().copied().collect()
         } else {
             SmallVec::new()
         };
@@ -87,50 +89,31 @@ impl Rastair1BedFormat {
             // Fallback for invalid genotype
             GenotypeString(Base::from(&r#ref), Base::from(&r#ref))
         };
-        let genotype_likelihood = if let Ok(buffer) = r.format(b"GL").float()
+        let genotype_confidence = if let Ok(buffer) = r.format(b"GQ").integer()
             && let Some(first) = buffer.first()
-            && let Some(val) = first.first()
+            && let Some(&val) = first.first()
+            // htslib's missing integer is `i32::MIN`, which is `.` in the VCF.
+            && val != i32::MIN
         {
-            Phred::from_phred((*val).clamp(0.0, 255.0) as u8)
-        } else {
-            trace!(?genotype, "No genotype likelihood field found");
-            Phred::from_phred(0_u8)
-        };
-        let genotype_confidence = if let Ok(buffer) = r.format(b"GC").float()
-            && let Some(first) = buffer.first()
-            && let Some(val) = first.first()
-        {
-            Phred::from_phred((*val).clamp(0.0, 255.0) as u8)
+            Some(Phred::from_phred(u8::try_from(val.clamp(0, 255)).unwrap_or(0)))
         } else {
             trace!(?genotype, "No genotype confidence field found");
-            Phred::from_phred(0_u8)
+            None
         };
+        let genotype_confidence = super::format::gq_column(genotype_confidence);
 
-        // If this is a CpG position with a called CpG-relevant variant, set beta to 0.
-        // We check both:
-        // 1. The CpG-relevant alt allele (T for C, A for G) exists with PASS filter
-        // 2. The genotype actually calls the variant (not hom ref 0/0)
-        // Without the genotype check, methylation evidence (which shows as T/A reads
-        // at CpG sites) would incorrectly set beta=0 when using --no-ml.
-        let is_called_variant = genotype_tag.is_some_and(|gt| !gt.is_hom_ref());
-        let has_cpg_snp = in_cpg && is_pass && is_called_variant && {
-            // Determine which alt base would be the CpG-relevant SNP (T for C, A for G)
-            let cpg_snp_base = if r#ref == "C" { "T" } else { "A" };
-            // Check if this alt exists in the alleles list
-            alleles.iter().skip(1).any(|a| a.as_str() == cpg_snp_base)
-        };
-
-        // Set beta to 0 if there's a called CpG-relevant SNP, otherwise use beta from VCF
-        let beta = if has_cpg_snp { Some(0.0) } else { beta };
-        let beta = if let Some(beta) = beta {
-            Some(Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug()?)
-        } else {
-            trace!(pos=%contig, pos=r.pos(), ?in_cpg, ?genotype, "why no beta?");
-            Some(Probability::ZERO)
-        };
+        // `M5mC` is the call's β: 0 where both chromosomes lose the CpG, the
+        // remaining allele's at a heterozygous SNV, missing where no read shows it.
+        let beta = beta
+            .map(|beta| Probability::new(beta).wrap_err("Beta value out of range").this_is_a_bug())
+            .transpose()?;
 
         let strand = if in_cpg {
-            if r#ref == "C" { seqair_types::Strand::OT } else { seqair_types::Strand::OB }
+            if r#ref == "C" {
+                Some(seqair_types::Strand::OT)
+            } else {
+                Some(seqair_types::Strand::OB)
+            }
         } else if de_novo {
             // Infer strand from de-novo CpG information:
             // De-novo CpGs are created when:
@@ -147,21 +130,21 @@ impl Rastair1BedFormat {
 
             if has_alt_c {
                 // This position has a variant creating a C
-                seqair_types::Strand::OT
+                Some(seqair_types::Strand::OT)
             } else if has_alt_g {
                 // This position has a variant creating a G
-                seqair_types::Strand::OB
+                Some(seqair_types::Strand::OB)
             } else if r#ref == "G" {
                 // Adjacent G position (partner to a C variant)
-                seqair_types::Strand::OB
+                Some(seqair_types::Strand::OB)
             } else if r#ref == "C" {
                 // Adjacent C position (partner to a G variant)
-                seqair_types::Strand::OT
+                Some(seqair_types::Strand::OT)
             } else {
-                seqair_types::Strand::Unknown
+                None
             }
         } else {
-            seqair_types::Strand::Unknown
+            None
         };
 
         let bed = Rastair1BedFormat {
@@ -176,7 +159,7 @@ impl Rastair1BedFormat {
             snp: count.snp,
             coverage: read_depth as usize,
             genotype,
-            genotype_likelihood,
+            genotype_likelihood: genotype_confidence,
             genotype_confidence,
             de_novo: !in_cpg && de_novo,
         };

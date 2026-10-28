@@ -6,10 +6,6 @@ impl super::Rastair1BedFormat {
     pub fn sanity_check(&self) -> Option<Errors> {
         let mut errors = vec![];
 
-        if self.beta.is_none() {
-            errors.push("Missing beta value".to_string());
-        }
-
         if let Some(beta) = self.beta
             && *beta > 0.
             && self.r#mod == 0

@@ -4,9 +4,8 @@ use crate::{
         rastair1::{BedRecordsFilterParams, Rastair1BedFormat},
         writer::BedWriter,
     },
-    call::{RecordFilters, variant_calling::ErrorModel},
     io::{
-        formats::{FromFileExtension, InputFormat, OutputFormat},
+        formats::{FromFileExtension, OutputFormat},
         vcf_writer,
     },
     utils::cli,
@@ -17,7 +16,6 @@ use color_eyre::{
     eyre::{Result, WrapErr, eyre},
 };
 use rust_htslib::bcf::{self, Read as _};
-use seqair_types::Probability;
 use tracing::{debug, info, warn};
 
 /// Convert between different file formats that rastair supports
@@ -39,7 +37,7 @@ pub struct ConvertParams {
     /// Input file format, guessed from file extension if not specified
     #[arg(short = 'f', long)]
     #[arg(help_heading = cli::sections::INPUT)]
-    pub input_format: Option<InputFormat>,
+    pub input_format: Option<vcf_writer::VcfFormat>,
 
     /// Output file
     #[arg(short = 'o', long, default_value = "-")]
@@ -51,24 +49,9 @@ pub struct ConvertParams {
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub output_format: Option<OutputFormat>,
 
-    #[arg(long, default_value = "novaseq6000", value_parser = ErrorModel::value_parser())]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    pub error_model: ErrorModel,
-
-    /// VCF filters
-    #[command(flatten)]
-    pub vcf_filter: RecordFilters,
-
     /// BED-specific parameters
     #[command(flatten)]
     pub bed_params: BedRecordsFilterParams,
-
-    /// Minimum ML score to consider a position as variant
-    ///
-    /// This does nothing if the input data does not contain ML scores.
-    #[arg(long = "bed-ml", default_value_t = Probability::new_panicky(0.5))]
-    #[arg(help_heading = cli::sections::FILTER)]
-    pub ml_threshold: Probability,
 
     /// Total number of threads to use (e.g. for parallel compression)
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = std::thread::available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
@@ -82,7 +65,7 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
 
     match (input_format, output_format) {
         // same format: copy the file
-        (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) if input == output => {
+        (input, OutputFormat::VcfLike(output)) if input == output => {
             warn!("Input and output formats are the same, no conversion will be performed");
 
             let mut from = params
@@ -102,7 +85,7 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             Ok(())
         }
         // converting from vcf to bcf or vice versa using htslib directly
-        (InputFormat::VcfLike(input), OutputFormat::VcfLike(output)) => {
+        (input, OutputFormat::VcfLike(output)) => {
             use vcf_writer::*;
 
             // htslib allows setting the number of background compression
@@ -142,14 +125,14 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
 
             Ok(())
         }
-        (InputFormat::VcfLike(_), OutputFormat::Bed(format)) => {
+        (_, OutputFormat::Bed(format)) => {
             vcf_to_bed(params, format).wrap_err("Failed to convert VCF to BED")
         }
     }
 }
 
 impl ConvertParams {
-    fn formats(&self) -> Result<(InputFormat, OutputFormat)> {
+    fn formats(&self) -> Result<(vcf_writer::VcfFormat, OutputFormat)> {
         let input_format = match self.input_format {
             Some(format) => format,
             None => {
@@ -157,7 +140,7 @@ impl ConvertParams {
                     return Err(eyre!("Input is stdin but no input format was specified"))
                         .note("Please specify the input format with `--input-format`");
                 } else {
-                    InputFormat::guess_format(&self.input)
+                    vcf_writer::VcfFormat::guess_format(&self.input)
                         .wrap_err("Failed to guess input format from file extension")?
                 }
             }
@@ -196,22 +179,27 @@ fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
     })?;
 
     let mut record = reader.empty_record();
+    // `call` writes a position's main record first, then under `--all` its
+    // rejected alts and its indels at the same position; the BED has one row
+    // per position, as `call --bed` writes it.
+    let mut last_row = None;
     while let Some(res) = reader.read(&mut record) {
         if let Err(error) = res {
             debug!(%error, "Skipping invalid record in VCF file");
             continue;
         };
+        let at = (record.rid(), record.pos());
+        if last_row == Some(at) {
+            continue;
+        }
 
-        let params = crate::bed::rastair1::BedRecordsConvertParams {
-            ml_threshold: params.ml_threshold,
-            filters: params.bed_params.clone(),
-        };
-        let Some(record) = Rastair1BedFormat::from_vcf(&record, &params)
+        let Some(row) = Rastair1BedFormat::from_vcf(&record, &params.bed_params)
             .wrap_err("Failed to convert record to BED format")?
         else {
             continue;
         };
-        writer.write_record(&record).wrap_err("Failed to write record")?;
+        writer.write_record(&row).wrap_err("Failed to write record")?;
+        last_row = Some(at);
     }
 
     Ok(())
