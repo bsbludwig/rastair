@@ -57,13 +57,10 @@ fn test_denovo_cpg_methylated() -> Result<()> {
     Ok(())
 }
 
-/// Edge case: CCC reference with heterozygous C>G at positions 1 and 2
-///
-/// Position 1: C>G creates de-novo CpG at (1,2)
-/// Position 2: C>G creates de-novo CpG at (2,3)
-/// Position 2 has dual role:
-///   - Its reference C is the partner of position 1's de-novo CpG
-///   - It also has C>G creating its own de-novo CpG
+/// `CCG` with a het `C>G` at the first two positions, both on one chromosome
+/// (`GGG` beside the reference `CCG`). The second `G` has the first one's `G`
+/// before it, not the reference `C`, so it makes no de-novo CpG; the
+/// reference CpG of the last two positions stays.
 #[test]
 fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
     let (segment, pileups) = pileups!(
@@ -77,7 +74,7 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=None, // Position 1: C with de-novo CpG G
-        (C G) PASS M5mC=vec![Some(0.5), None], // Position 2: Real variant G - original CpG only (no OB evidence for denovo)
+        (C G) PASS M5mC=0.5, // the reference CpG only
         (C T) FAIL,
         (G .) PASS M5mC=1.0,
         (G A) FAIL,

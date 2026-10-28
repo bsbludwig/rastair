@@ -1,6 +1,6 @@
 #[cfg(doc)]
 use crate::call::pair_hmm::Verdict;
-use crate::call::pair_hmm::{Allele, Event, EventIdx, HapIdx};
+use crate::call::pair_hmm::{Allele, Event, EventIdx, HapIdx, HaplotypeScores};
 use crate::{
     call::pileup::indels::IndelAllele,
     metrics::{Alt, PileupMetrics},
@@ -8,7 +8,6 @@ use crate::{
 };
 use enumset::EnumSet;
 use seqair_types::{Base, Pos0};
-use std::sync::Arc;
 use tracing::instrument;
 
 /// The CpGs called variants make with their neighbours: the called indels'
@@ -85,11 +84,12 @@ fn on_one_chromosome(c: &PileupMetrics, g: &PileupMetrics) -> bool {
     one_chromosome_reads(c, Base::C, g, Base::G)
 }
 
-/// Whether one chromosome reads `first_base` at `first` and `next_base` at the next column `next`,
-/// as the pair-HMM scored them: by the event of an alt, by none of the column's events for the
-/// reference base, the two columns' events present where their alts are called and the cluster's
-/// others where the pair-HMM calls them. One does when they are not in one cluster, or a column
-/// has neither base.
+/// Whether one chromosome reads `first_base` at `first` and `next_base` at the next column `next`.
+/// A column without a called alt reads its reference on every chromosome; otherwise the pair-HMM
+/// decides, in a cluster of either column holding both columns' called alts: by the event of an
+/// alt, by none of the column's events for the reference base, the two columns' events present
+/// where their alts are called and the cluster's others where the pair-HMM calls them. One does
+/// when no such cluster exists.
 // shortcut: as beside an indel that takes a cluster's slots; score their phase there too if such
 // pairs turn out to matter.
 fn one_chromosome_reads(
@@ -98,7 +98,20 @@ fn one_chromosome_reads(
     next: &PileupMetrics,
     next_base: Base,
 ) -> bool {
-    let (Some(scores), Some(other)) = (first.snv_scores.as_ref(), next.snv_scores.as_ref()) else {
+    let varies = |column: &PileupMetrics| column.alts.iter().any(Alt::called);
+    let columns = [(first, first_base), (next, next_base)];
+    if columns.iter().any(|&(column, base)| !varies(column) && column.reference_base != base) {
+        return false;
+    }
+    let holds = |scores: &HaplotypeScores, column: &PileupMetrics| {
+        let called = column.alts.iter().filter(|alt| alt.called());
+        called.into_iter().all(|alt| scores.base_event_at(column.pos, alt.base).is_some())
+    };
+    let clusters = [first, next].into_iter().filter_map(|column| column.snv_scores.as_deref());
+    let Some(scores) = clusters
+        .into_iter()
+        .find(|scores| columns.iter().all(|&(column, _)| holds(scores, column)))
+    else {
         return true;
     };
     let allele = |column: &PileupMetrics, base: Base| {
@@ -110,11 +123,8 @@ fn one_chromosome_reads(
     };
     let (Some(at_first), Some(at_next)) = (allele(first, first_base), allele(next, next_base))
     else {
-        return true;
+        return false;
     };
-    if !Arc::ptr_eq(scores, other) {
-        return true;
-    }
     let verdict = scores.verdict();
     let called =
         |column: &PileupMetrics, base: Base| column.find_alt(base).is_some_and(Alt::called);
