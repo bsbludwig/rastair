@@ -1,4 +1,7 @@
-use crate::utils::{Base, Strand};
+use crate::{
+    call::variant_calling::ReadDirection,
+    utils::{Base, MappingQuality, Strand},
+};
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// A collection of bases seen in a pileup
@@ -32,13 +35,13 @@ pub struct SimpleRead {
     #[cfg_attr(test, default(40))]
     pub qual: u8,
     /// Mapping quality of the read this base belongs to
-    #[cfg_attr(test, default(60))]
-    pub mapq: u8,
-    /// Strand the read was mapped to
+    #[cfg_attr(test, default(MappingQuality::from_byte(60)))]
+    pub mapq: MappingQuality,
+    /// The read's original strand, OT or OB
     #[cfg_attr(test, default(Strand::OT))]
     pub strand: Strand,
-    /// Whether the read was mapped to the reverse strand
-    pub reverse: bool,
+    /// Which way the read aligns to the reference
+    pub direction: ReadDirection,
     /// Whether this base was seen in the first or second read of a pair
     pub second: bool,
     /// Position of the base in the read
@@ -60,7 +63,7 @@ pub struct SimpleRead {
 impl fmt::Debug for SimpleRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.base)?;
-        write!(f, " {} Q{} MQ{}", self.strand, self.qual, self.mapq,)
+        write!(f, " {} Q{} MQ{}", self.strand, self.qual, self.mapq.as_byte())
     }
 }
 

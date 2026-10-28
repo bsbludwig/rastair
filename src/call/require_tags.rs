@@ -1,5 +1,5 @@
 use crate::utils::cli;
-use rust_htslib::bam;
+use seqair::bam::aux::{Aux, AuxValue, find_tag};
 use seqair_types::SmolStr;
 use std::{str::FromStr, sync::Arc};
 
@@ -8,18 +8,6 @@ use std::{str::FromStr, sync::Arc};
 pub struct TagValue {
     tag: [u8; 2],
     value: SmolStr,
-}
-
-impl TagValue {
-    #[cfg(feature = "experimental-seqair")]
-    pub(crate) fn tag(&self) -> [u8; 2] {
-        self.tag
-    }
-
-    #[cfg(feature = "experimental-seqair")]
-    pub(crate) fn value_bytes(&self) -> &[u8] {
-        self.value.as_bytes()
-    }
 }
 
 impl FromStr for TagValue {
@@ -37,6 +25,36 @@ impl FromStr for TagValue {
     }
 }
 
+impl TagValue {
+    /// `VALUE` is read as the type the tag has in the read: `Z` and `H` match
+    /// byte for byte, `A` as its one character, the integer types (`cCsSiI`)
+    /// by value, so `NM=0` and `NM=+0` match `NM:i:0`, and `f`/`d` by value
+    /// at their own precision. A `VALUE` that does not parse as that type, and
+    /// a `B` array, never match.
+    fn matches(&self, value: &AuxValue<'_>) -> bool {
+        let text = self.value.as_str();
+        match *value {
+            AuxValue::String(bytes) | AuxValue::Hex(bytes) => bytes == text.as_bytes(),
+            AuxValue::Char(c) => text.as_bytes() == [c],
+            AuxValue::I8(_)
+            | AuxValue::U8(_)
+            | AuxValue::I16(_)
+            | AuxValue::U16(_)
+            | AuxValue::I32(_)
+            | AuxValue::U32(_) => text.parse::<i64>().ok() == value.as_i64(),
+            AuxValue::Float(v) => text.parse::<f32>().ok() == Some(v),
+            AuxValue::Double(v) => text.parse::<f64>().ok() == Some(v),
+            AuxValue::ArrayI8(_)
+            | AuxValue::ArrayU8(_)
+            | AuxValue::ArrayI16(_)
+            | AuxValue::ArrayU16(_)
+            | AuxValue::ArrayI32(_)
+            | AuxValue::ArrayU32(_)
+            | AuxValue::ArrayFloat(_) => false,
+        }
+    }
+}
+
 impl serde::Serialize for TagValue {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let tag_str = std::str::from_utf8(&self.tag).unwrap_or("??");
@@ -48,9 +66,10 @@ impl serde::Serialize for TagValue {
 pub struct RequireTagsParams {
     /// Require reads to have a specific SAM tag value
     ///
-    /// Format: TAG=VALUE, e.g. `--require-tags RG=mygroup`. Accepts one or more values
+    /// Format: TAG=VALUE, e.g. `--require-tags RG=mygroup HP=1`. Accepts one or more values
     /// (space-separated). A read is kept only if it matches all of the specified
-    /// tag=value pairs.
+    /// tag=value pairs. VALUE is compared as the tag's SAM type: strings exactly,
+    /// integers and floats by value (`NM=0` matches `NM:i:0`); array tags never match.
     #[arg(long, num_args(1..))]
     #[arg(help_heading = cli::sections::INPUT)]
     pub require_tags: Vec<TagValue>,
@@ -77,87 +96,24 @@ impl RequireTagsParams {
 }
 
 impl TagRequirement {
-    /// Returns `true` if a read passes the tag filter.
-    pub fn allows(&self, record: &bam::RecordView<'_>) -> bool {
+    /// Whether a read with these aux fields passes. `None` is an aux block that
+    /// could not be read, which fails a requirement (closed, not open).
+    pub fn allows(&self, aux: Option<Aux<'_>>) -> bool {
         match self {
             TagRequirement::All => true,
-            TagRequirement::AllOf(filters) => {
-                let Some(aux) = record.raw_aux_data() else {
-                    return false;
-                };
+            TagRequirement::AllOf(filters) => aux.is_some_and(|aux| {
                 filters
                     .iter()
-                    .all(|f| find_tag(aux, f.tag).is_some_and(|v| v == f.value.as_bytes()))
-            }
+                    .all(|f| find_tag(aux.as_bytes(), f.tag).is_some_and(|value| f.matches(&value)))
+            }),
         }
     }
-}
-
-/// Scan raw BAM auxiliary data for a tag and return its string (`Z`-typed) value as raw bytes.
-fn find_tag(data: &[u8], target: [u8; 2]) -> Option<&[u8]> {
-    let mut pos = 0;
-    #[allow(clippy::indexing_slicing, reason = "loop condition checks bounds")]
-    while pos + 3 <= data.len() {
-        let tag0 = data[pos];
-        let tag1 = data[pos + 1];
-        let typ = data[pos + 2];
-        pos += 3;
-
-        if tag0 == target[0] && tag1 == target[1] {
-            if typ != b'Z' {
-                return None;
-            }
-            let start = pos;
-            while pos < data.len() && data[pos] != 0 {
-                pos += 1;
-            }
-            return Some(&data[start..pos]);
-        }
-
-        // Skip this tag's value.
-        match typ {
-            b'A' | b'c' | b'C' => pos += 1,
-            b's' | b'S' => pos += 2,
-            b'i' | b'I' | b'f' => pos += 4,
-            b'd' => pos += 8,
-            b'Z' | b'H' => {
-                while pos < data.len() && data[pos] != 0 {
-                    pos += 1;
-                }
-                pos += 1; // null terminator
-            }
-            b'B' => {
-                if pos + 5 > data.len() {
-                    return None;
-                }
-                let elem_size = match data[pos] {
-                    b'c' | b'C' => 1,
-                    b's' | b'S' => 2,
-                    b'i' | b'I' | b'f' => 4,
-                    _ => return None,
-                };
-                let count = u32::from_le_bytes([
-                    data[pos + 1],
-                    data[pos + 2],
-                    data[pos + 3],
-                    data[pos + 4],
-                ]) as usize;
-                pos = (count.checked_mul(elem_size))
-                    .and_then(|n| n.checked_add(5))
-                    .and_then(|n| pos.checked_add(n))?;
-            }
-            _ => return None,
-        }
-    }
-    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::Result;
-    use rust_htslib::bam::{self, FetchDefinition, Read as _, Record};
-    use std::collections::HashMap;
+    use seqair::bam::aux_data::AuxData;
 
     const L001: &str = "mTet1-PyBr-16h-p1_S1_L001";
     const L002: &str = "mTet1-PyBr-16h-p1_S1_L002";
@@ -167,106 +123,105 @@ mod tests {
             .filter()
     }
 
-    /// Read records from test.bam, returning one record per unique RG tag seen.
-    fn one_record_per_group() -> Result<Vec<(String, Record)>> {
-        let mut reader = bam::IndexedReader::from_path("tests/data/test.bam")?;
-        reader.fetch(FetchDefinition::All)?;
-        let mut seen = HashMap::new();
-        let mut record = Record::new();
-        while let Some(result) = reader.read(&mut record) {
-            result?;
-            if let Ok(bam::record::Aux::String(rg)) = record.aux(b"RG") {
-                seen.entry(rg.to_owned()).or_insert_with(|| record.clone());
-            }
+    fn aux(tags: &[(&[u8; 2], &str)]) -> AuxData {
+        let mut aux = AuxData::new();
+        aux.set_int(*b"NM", 3).unwrap();
+        for (tag, value) in tags {
+            aux.set_string(**tag, value.as_bytes());
         }
-        Ok(seen.into_iter().collect())
+        aux
     }
 
-    fn view<'a>(record: &'a Record) -> bam::RecordView<'a> {
-        // Safety: the RecordView borrows from the record and does not outlive it.
-        unsafe { bam::RecordView::from_raw(record.inner() as *const _) }
+    fn allows(f: &TagRequirement, aux: &AuxData) -> bool {
+        f.allows(Some(Aux::new(aux.as_bytes())))
     }
 
     #[test]
-    fn all_filter_allows_every_record() -> Result<()> {
+    fn all_filter_allows_every_record() {
         let f = filter(&[]);
         assert!(matches!(f, TagRequirement::All));
-        for (_, record) in one_record_per_group()? {
-            assert!(f.allows(&view(&record)));
-        }
-        Ok(())
+        assert!(allows(&f, &aux(&[(b"RG", L001)])));
+        assert!(allows(&f, &aux(&[])));
+        assert!(f.allows(None), "no filter asks nothing of the aux block");
     }
 
     #[test]
-    fn single_tag_allows_matching_record() -> Result<()> {
+    fn single_tag_allows_only_the_matching_value() {
         let f = filter(&[&format!("RG={L001}")]);
-        let records = one_record_per_group()?;
-        let (_, l001) = records.iter().find(|(rg, _)| rg == L001).expect("L001 record");
-        assert!(f.allows(&view(l001)));
-        Ok(())
+        assert!(allows(&f, &aux(&[(b"RG", L001)])));
+        assert!(!allows(&f, &aux(&[(b"RG", L002)])));
     }
 
     #[test]
-    fn single_tag_rejects_non_matching_records() -> Result<()> {
-        let f = filter(&[&format!("RG={L001}")]);
-        let records = one_record_per_group()?;
-        for (rg, record) in &records {
-            if rg != L001 {
-                assert!(!f.allows(&view(record)), "expected {rg} to be rejected");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn multiple_tags_require_all_members() -> Result<()> {
-        let records = one_record_per_group()?;
-        let (_, base) = records.iter().find(|(rg, _)| rg == L001).expect("L001 record");
-        let mut record = base.clone();
-        record.push_aux(b"XX", bam::record::Aux::String("foo"))?;
-        record.push_aux(b"YY", bam::record::Aux::String("bar"))?;
-
-        assert!(filter(&[&format!("RG={L001}"), "XX=foo", "YY=bar"]).allows(&view(&record)));
-
+    fn multiple_tags_require_all_members() {
+        let record = aux(&[(b"RG", L001), (b"XX", "foo"), (b"YY", "bar")]);
+        assert!(allows(&filter(&[&format!("RG={L001}"), "XX=foo", "YY=bar"]), &record));
         // One of several different tags mismatches → rejected.
-        assert!(!filter(&[&format!("RG={L001}"), "XX=foo", "YY=wrong"]).allows(&view(&record)));
-
+        assert!(!allows(&filter(&[&format!("RG={L001}"), "XX=foo", "YY=wrong"]), &record));
         // A required tag missing from the record → rejected.
-        assert!(!filter(&[&format!("RG={L001}"), "XX=foo", "ZZ=anything"]).allows(&view(&record)));
-
-        Ok(())
+        assert!(!allows(&filter(&[&format!("RG={L001}"), "XX=foo", "ZZ=anything"]), &record));
     }
 
     #[test]
-    fn same_tag_with_multiple_values_is_unsatisfiable() -> Result<()> {
+    fn same_tag_with_multiple_values_is_unsatisfiable() {
         // A record's RG can equal only one value, so requiring two different RG
         // values at once never matches.
         let f = filter(&[&format!("RG={L001}"), &format!("RG={L002}")]);
-        for (rg, record) in one_record_per_group()? {
-            assert!(!f.allows(&view(&record)), "expected {rg} to be rejected");
-        }
-        Ok(())
+        assert!(!allows(&f, &aux(&[(b"RG", L001)])));
+        assert!(!allows(&f, &aux(&[(b"RG", L002)])));
     }
 
     #[test]
-    fn record_without_tag_is_rejected_when_filter_active() -> Result<()> {
+    fn a_record_without_the_tag_or_its_aux_block_is_rejected() {
         let f = filter(&[&format!("RG={L001}")]);
-        let records = one_record_per_group()?;
-        let (_, base) = records.first().expect("at least one record");
-        let mut stripped = base.clone();
-        stripped.remove_aux(b"RG").ok();
-        assert!(!f.allows(&view(&stripped)));
-        Ok(())
+        assert!(!allows(&f, &aux(&[])));
+        assert!(!f.allows(None));
+    }
+
+    fn allows_one(requirement: &str, set: impl FnOnce(&mut AuxData)) -> bool {
+        let mut record = AuxData::new();
+        set(&mut record);
+        allows(&filter(&[requirement]), &record)
     }
 
     #[test]
-    fn record_without_tag_passes_when_no_filter() -> Result<()> {
-        let f = filter(&[]);
-        let records = one_record_per_group()?;
-        let (_, base) = records.first().expect("at least one record");
-        let mut stripped = base.clone();
-        stripped.remove_aux(b"RG").ok();
-        assert!(f.allows(&view(&stripped)));
-        Ok(())
+    fn integer_tags_match_by_value_at_every_width() {
+        for value in [0, 7, -1, 300, -300, 70_000, -70_000, i64::from(u32::MAX)] {
+            let set = |r: &mut AuxData| r.set_int(*b"NM", value).unwrap();
+            assert!(allows_one(&format!("NM={value}"), set), "NM={value}");
+            assert!(!allows_one(&format!("NM={}", value + 1), set), "NM={value} vs +1");
+        }
+        assert!(allows_one("HP=+1", |r| r.set_int(*b"HP", 1).unwrap()));
+        assert!(!allows_one("HP=one", |r| r.set_int(*b"HP", 1).unwrap()));
+        assert!(!allows_one("HP=1.0", |r| r.set_int(*b"HP", 1).unwrap()));
+    }
+
+    #[test]
+    fn float_tags_match_by_value_of_their_width() {
+        assert!(allows_one("XF=0.1", |r| r.set_float(*b"XF", 0.1)));
+        assert!(allows_one("XF=1", |r| r.set_float(*b"XF", 1.0)));
+        assert!(!allows_one("XF=0.2", |r| r.set_float(*b"XF", 0.1)));
+        assert!(allows_one("XD=0.1", |r| r.set_double(*b"XD", 0.1)));
+        assert!(!allows_one("XD=0.1000001", |r| r.set_double(*b"XD", 0.1)));
+    }
+
+    #[test]
+    fn char_tags_match_the_one_character() {
+        assert!(allows_one("XA=+", |r| r.set_char(*b"XA", b'+').unwrap()));
+        assert!(!allows_one("XA=-", |r| r.set_char(*b"XA", b'+').unwrap()));
+        assert!(!allows_one("XA=++", |r| r.set_char(*b"XA", b'+').unwrap()));
+    }
+
+    #[test]
+    fn string_and_hex_tags_match_byte_for_byte() {
+        assert!(allows_one("XZ=7", |r| r.set_string(*b"XZ", b"7")));
+        assert!(!allows_one("XZ=07", |r| r.set_string(*b"XZ", b"7")));
+        assert!(allows_one("XH=1AE3", |r| r.set_hex(*b"XH", b"1AE3")));
+        assert!(!allows_one("XH=1ae3", |r| r.set_hex(*b"XH", b"1AE3")));
+    }
+
+    #[test]
+    fn array_tags_never_match() {
+        assert!(!allows_one("XB=7", |r| r.set_array_u8(*b"XB", &[7]).unwrap()));
     }
 }

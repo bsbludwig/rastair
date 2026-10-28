@@ -4,11 +4,10 @@
 //! that comes from the fringes of the read. You can mask out specific areas
 //! from reads to reduce this.
 
-use crate::{
-    call::pileup::SimpleRead,
-    utils::{Strand, cli},
-};
-use seqair_types::SmallVec;
+#[cfg(test)]
+use crate::call::tests::pileup::SimpleRead;
+use crate::utils::{Strand, cli};
+use seqair_types::{BamFlags, SmallVec};
 use std::{num::ParseIntError, ops::Range, str::FromStr};
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
@@ -38,17 +37,44 @@ pub struct ReadMaskParams {
     n_ob: ReadMaskSetting,
 }
 
+/// Which way a read aligns to the reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReadDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
+impl ReadDirection {
+    #[must_use]
+    pub const fn of(flags: BamFlags) -> Self {
+        if flags.is_reverse() { Self::Reverse } else { Self::Forward }
+    }
+}
+
 impl ReadMaskParams {
     pub fn new(n_ot: ReadMaskSetting, n_ob: ReadMaskSetting) -> Self {
         Self { n_ot, n_ob }
     }
 
+    #[cfg(test)]
     pub fn filter(&self, read: &SimpleRead) -> bool {
-        self.filter_fields(read.strand, read.reverse, read.position.pos, read.position.read_length)
+        self.filter_fields(
+            read.strand,
+            read.direction,
+            read.position.pos,
+            read.position.read_length,
+        )
     }
 
-    pub fn filter_fields(&self, strand: Strand, reverse: bool, pos: u32, len: u32) -> bool {
-        self.keep_range(strand, reverse, len).is_some_and(|keep| keep.contains(&pos))
+    pub fn filter_fields(
+        &self,
+        strand: Strand,
+        direction: ReadDirection,
+        pos: u32,
+        len: u32,
+    ) -> bool {
+        self.keep_range(strand, direction, len).is_some_and(|keep| keep.contains(&pos))
     }
 
     /// The `[start, end)` window of read positions this read contributes, or
@@ -57,24 +83,27 @@ impl ReadMaskParams {
     ///
     /// Computed once per read at fetch time so the per-column check is a range
     /// comparison instead of four branches and two subtractions per base.
-    /// Reads of unknown strand are never masked, so their window is unbounded
-    /// rather than `0..len` — a read with no sequence still has no masked
-    /// positions.
-    pub fn keep_range(&self, strand: Strand, reverse: bool, len: u32) -> Option<Range<u32>> {
+    pub fn keep_range(
+        &self,
+        strand: Strand,
+        direction: ReadDirection,
+        len: u32,
+    ) -> Option<Range<u32>> {
         // The mask is expressed in read 5'->3' coordinates while `pos` counts
         // in reference direction, so a reverse-aligned mate has its two ends
         // swapped. R1/R2 selection differs between OT and OB for the same
         // reason.
-        let (mask, flip) = match (strand, reverse) {
-            (Strand::Unknown, _) => return Some(0..u32::MAX),
-            (Strand::OT, true) => (self.n_ot.r2, true),
-            (Strand::OT, false) => (self.n_ot.r1, false),
-            (Strand::OB, true) => (self.n_ob.r1, true),
-            (Strand::OB, false) => (self.n_ob.r2, false),
+        let mask = match (strand, direction) {
+            (Strand::OT, ReadDirection::Reverse) => self.n_ot.r2,
+            (Strand::OT, ReadDirection::Forward) => self.n_ot.r1,
+            (Strand::OB, ReadDirection::Reverse) => self.n_ob.r1,
+            (Strand::OB, ReadDirection::Forward) => self.n_ob.r2,
         };
 
-        let (from_start, from_end) =
-            if flip { (mask.from_end, mask.from_start) } else { (mask.from_start, mask.from_end) };
+        let (from_start, from_end) = match direction {
+            ReadDirection::Reverse => (mask.from_end, mask.from_start),
+            ReadDirection::Forward => (mask.from_start, mask.from_end),
+        };
 
         let keep = len.checked_sub(from_start)?.checked_sub(from_end)?;
         if keep == 0 {
@@ -93,12 +122,12 @@ pub struct ReadMask {
     pub from_end: u32,
 }
 
-/// Mask settings for both read orientations
+/// Mask settings for both mates of a pair
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadMaskSetting {
-    /// Mask for reads in forward orientation
+    /// Mask for read 1: the mate aligned forward on OT, reverse on OB
     pub r1: ReadMask,
-    /// Mask for reads in reverse orientation
+    /// Mask for read 2: the mate aligned reverse on OT, forward on OB
     pub r2: ReadMask,
 }
 
@@ -136,19 +165,19 @@ mod tests {
 
     use super::*;
 
-    use proptest::prelude::*;
+    use hegel::{TestCase, generators as gs};
 
-    /// The masking rule as originally written, in i64 so the subtractions
-    /// cannot wrap: an independent oracle for `keep_range`.
+    /// The masking rule written out position by position, in i64 so the
+    /// subtractions cannot wrap: an independent oracle for `keep_range`.
     fn masked_oracle(
         p: &ReadMaskParams,
         strand: Strand,
-        reverse: bool,
+        direction: ReadDirection,
         pos: u32,
         len: u32,
     ) -> bool {
+        let reverse = direction == ReadDirection::Reverse;
         let mask = match (strand, reverse) {
-            (Strand::Unknown, _) => return true,
             (Strand::OT, true) => p.n_ot.r2,
             (Strand::OT, false) => p.n_ot.r1,
             (Strand::OB, true) => p.n_ob.r1,
@@ -176,9 +205,8 @@ mod tests {
     #[test]
     fn keep_range_covers_the_whole_read_when_unmasked() {
         let p = params([0, 0, 0, 0], [0, 0, 0, 0]);
-        assert_eq!(p.keep_range(Strand::OT, false, 100), Some(0..100));
-        assert_eq!(p.keep_range(Strand::OB, true, 100), Some(0..100));
-        assert_eq!(p.keep_range(Strand::Unknown, false, 100), Some(0..u32::MAX));
+        assert_eq!(p.keep_range(Strand::OT, ReadDirection::Forward, 100), Some(0..100));
+        assert_eq!(p.keep_range(Strand::OB, ReadDirection::Reverse, 100), Some(0..100));
     }
 
     #[test]
@@ -186,89 +214,94 @@ mod tests {
         // OT R1 masks 5 from the 5' end and 3 from the 3' end; a reverse-aligned
         // OT mate uses R2 with the two ends swapped.
         let p = params([5, 3, 7, 2], [0, 0, 0, 0]);
-        assert_eq!(p.keep_range(Strand::OT, false, 100), Some(5..97));
-        assert_eq!(p.keep_range(Strand::OT, true, 100), Some(2..93));
+        assert_eq!(p.keep_range(Strand::OT, ReadDirection::Forward, 100), Some(5..97));
+        assert_eq!(p.keep_range(Strand::OT, ReadDirection::Reverse, 100), Some(2..93));
     }
 
     #[test]
     fn a_read_shorter_than_its_mask_keeps_nothing() {
         let p = params([50, 50, 50, 50], [50, 50, 50, 50]);
-        assert_eq!(p.keep_range(Strand::OT, false, 100), None);
-        assert_eq!(p.keep_range(Strand::OT, false, 99), None);
-        assert_eq!(p.keep_range(Strand::OT, false, 101), Some(50..51));
+        assert_eq!(p.keep_range(Strand::OT, ReadDirection::Forward, 100), None);
+        assert_eq!(p.keep_range(Strand::OT, ReadDirection::Forward, 99), None);
+        assert_eq!(p.keep_range(Strand::OT, ReadDirection::Forward, 101), Some(50..51));
     }
 
-    proptest! {
-        /// `keep_range` must decide exactly what the original per-position
-        /// masking rule decided, for every position of every read.
-        #[test]
-        fn keep_range_agrees_with_the_original_rule(
-            ot in prop::array::uniform4(0u32..40),
-            ob in prop::array::uniform4(0u32..40),
-            len in 0u32..80,
-            reverse in any::<bool>(),
-            strand_idx in 0usize..3,
-        ) {
-            let p = params(ot, ob);
-            let strand = [Strand::OT, Strand::OB, Strand::Unknown][strand_idx];
-            for pos in 0..len.max(1) {
-                prop_assert_eq!(
-                    p.filter_fields(strand, reverse, pos, len),
-                    masked_oracle(&p, strand, reverse, pos, len),
-                    "pos {} of {} ({:?}, reverse={})", pos, len, strand, reverse
-                );
-            }
+    fn mask_lengths() -> impl gs::PrintableGenerator<[u32; 4]> {
+        gs::arrays(gs::integers::<u32>().max_value(39))
+    }
+
+    /// `keep_range` must decide exactly what the original per-position
+    /// masking rule decided, for every position of every read.
+    #[hegel::test]
+    #[hegel::explicit_test_case(
+        ot = [0u32; 4],
+        ob = [0u32; 4],
+        len = 0u32,
+        direction = ReadDirection::Forward,
+        strand = Strand::OB
+    )]
+    fn keep_range_agrees_with_the_original_rule(tc: TestCase) {
+        let ot = tc.draw(mask_lengths());
+        let ob = tc.draw(mask_lengths());
+        let len = tc.draw(gs::integers::<u32>().max_value(79));
+        let direction =
+            tc.draw(gs::sampled_from([ReadDirection::Forward, ReadDirection::Reverse].as_slice()));
+        let strand = tc.draw(gs::sampled_from([Strand::OT, Strand::OB].as_slice()));
+        let p = params(ot, ob);
+        for pos in 0..len.max(1) {
+            assert_eq!(
+                p.filter_fields(strand, direction, pos, len),
+                masked_oracle(&p, strand, direction, pos, len),
+                "pos {pos} of {len} ({strand:?}, {direction:?})"
+            );
         }
+    }
 
-        #[test]
-        fn test_parse_read_mask_setting_valid(
-            r1_left in 0u32..1000,
-            r1_right in 0u32..1000,
-            r2_left in 0u32..1000,
-            r2_right in 0u32..1000
-        ) {
-            let input = format!("{r1_left},{r1_right},{r2_left},{r2_right}");
-            let result = ReadMaskSetting::from_str(&input).unwrap();
+    #[hegel::test]
+    fn test_parse_read_mask_setting_valid(tc: TestCase) {
+        let [r1_left, r1_right, r2_left, r2_right] =
+            tc.draw(gs::arrays(gs::integers::<u32>().max_value(999)));
+        let input = format!("{r1_left},{r1_right},{r2_left},{r2_right}");
+        let result = ReadMaskSetting::from_str(&input).unwrap();
 
-            assert_eq!(result.r1.from_start, r1_left);
-            assert_eq!(result.r1.from_end, r1_right);
-            assert_eq!(result.r2.from_start, r2_left);
-            assert_eq!(result.r2.from_end, r2_right);
+        assert_eq!(result.r1.from_start, r1_left);
+        assert_eq!(result.r1.from_end, r1_right);
+        assert_eq!(result.r2.from_start, r2_left);
+        assert_eq!(result.r2.from_end, r2_right);
+    }
+
+    #[hegel::test]
+    fn test_parse_read_mask_setting_invalid_count(tc: TestCase) {
+        // Any count up to nine but four: skip over it instead of rejecting it.
+        let count = tc.draw(gs::integers::<usize>().max_value(8));
+        let count = if count >= 4 { count + 1 } else { count };
+        let values: Vec<u32> =
+            tc.draw(gs::vecs(gs::integers::<u32>().max_value(999)).min_size(count).max_size(count));
+
+        let input = values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+
+        let result = ReadMaskSetting::from_str(&input);
+        assert!(result.is_err());
+    }
+
+    #[hegel::test]
+    fn test_parse_read_mask_setting_invalid_integer(tc: TestCase) {
+        let invalid_str = tc.draw(gs::from_regex("[a-zA-Z!@#$%^&*()]+"));
+        let valid = tc.draw(gs::integers::<usize>().max_value(2));
+        let valid_nums: Vec<u32> =
+            tc.draw(gs::vecs(gs::integers::<u32>().max_value(999)).min_size(valid).max_size(valid));
+        let mut parts = valid_nums.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        parts.push(invalid_str);
+
+        // Pad with more valid numbers if needed to get exactly 4 elements
+        while parts.len() < 4 {
+            parts.push("0".to_string());
         }
+        parts.truncate(4);
 
-        #[test]
-        fn test_parse_read_mask_setting_invalid_count(
-            values in prop::collection::vec(0u32..1000, 0..10)
-        ) {
-            prop_assume!(values.len() != 4);
-
-            let input = values.iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-
-            let result = ReadMaskSetting::from_str(&input);
-            prop_assert!(result.is_err());
-        }
-
-        #[test]
-        fn test_parse_read_mask_setting_invalid_integer(
-            invalid_str in "[a-zA-Z!@#$%^&*()]+",
-            valid_nums in prop::collection::vec(0u32..1000, 0..3)
-        ) {
-            let mut parts = valid_nums.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-            parts.push(invalid_str);
-
-            // Pad with more valid numbers if needed to get exactly 4 elements
-            while parts.len() < 4 {
-                parts.push("0".to_string());
-            }
-            parts.truncate(4);
-
-            let input = parts.join(",");
-            let result = ReadMaskSetting::from_str(&input);
-            prop_assert!(matches!(result, Err(ParseMaskError::ParseIntError(_))));
-        }
+        let input = parts.join(",");
+        let result = ReadMaskSetting::from_str(&input);
+        assert!(matches!(result, Err(ParseMaskError::ParseIntError(_))));
     }
 
     #[test]
@@ -291,11 +324,11 @@ mod tests {
         assert!(ReadMaskSetting::from_str("").is_err());
     }
 
-    fn read(pos: u32, len: u32, strand: Strand, rev: bool) -> SimpleRead {
+    fn read(pos: u32, len: u32, strand: Strand, direction: ReadDirection) -> SimpleRead {
         SimpleRead {
             strand,
-            reverse: rev,
-            position: crate::call::pileup::PositionInRead { pos, read_length: len },
+            direction,
+            position: crate::call::tests::pileup::PositionInRead { pos, read_length: len },
             ..default()
         }
     }
@@ -308,24 +341,24 @@ mod tests {
         };
 
         // OT forward: normal masking (start=5, end=3)
-        assert!(mask.filter(&read(10, 100, Strand::OT, false)));
-        assert!(!mask.filter(&read(4, 100, Strand::OT, false))); // < start
-        assert!(!mask.filter(&read(97, 100, Strand::OT, false))); // > len-end-1
+        assert!(mask.filter(&read(10, 100, Strand::OT, ReadDirection::Forward)));
+        assert!(!mask.filter(&read(4, 100, Strand::OT, ReadDirection::Forward))); // < start
+        assert!(!mask.filter(&read(97, 100, Strand::OT, ReadDirection::Forward))); // > len-end-1
 
         // OT reverse: flipped masking (start=from_end=4, end=from_start=2)
-        assert!(mask.filter(&read(10, 100, Strand::OT, true)));
-        assert!(!mask.filter(&read(3, 100, Strand::OT, true))); // < from_end
-        assert!(!mask.filter(&read(98, 100, Strand::OT, true))); // > len-from_start-1
+        assert!(mask.filter(&read(10, 100, Strand::OT, ReadDirection::Reverse)));
+        assert!(!mask.filter(&read(3, 100, Strand::OT, ReadDirection::Reverse))); // < from_end
+        assert!(!mask.filter(&read(98, 100, Strand::OT, ReadDirection::Reverse))); // > len-from_start-1
 
         // OB reverse: flipped masking (start=from_end=2, end=from_start=7)
-        assert!(mask.filter(&read(10, 100, Strand::OB, true)));
-        assert!(!mask.filter(&read(1, 100, Strand::OB, true))); // < from_end
-        assert!(!mask.filter(&read(93, 100, Strand::OB, true))); // > len-from_start-1
+        assert!(mask.filter(&read(10, 100, Strand::OB, ReadDirection::Reverse)));
+        assert!(!mask.filter(&read(1, 100, Strand::OB, ReadDirection::Reverse))); // < from_end
+        assert!(!mask.filter(&read(93, 100, Strand::OB, ReadDirection::Reverse))); // > len-from_start-1
 
         // OB forward: normal masking (start=3, end=6)
-        assert!(mask.filter(&read(10, 100, Strand::OB, false)));
-        assert!(!mask.filter(&read(2, 100, Strand::OB, false))); // < start
-        assert!(!mask.filter(&read(94, 100, Strand::OB, false))); // > len-end-1
+        assert!(mask.filter(&read(10, 100, Strand::OB, ReadDirection::Forward)));
+        assert!(!mask.filter(&read(2, 100, Strand::OB, ReadDirection::Forward))); // < start
+        assert!(!mask.filter(&read(94, 100, Strand::OB, ReadDirection::Forward))); // > len-end-1
     }
 
     #[test]
@@ -334,13 +367,13 @@ mod tests {
             ReadMaskParams { n_ot: ReadMaskSetting::from_str("1,1,1,1").unwrap(), ..default() };
 
         // Too small reads
-        assert!(!mask.filter(&read(1, 2, Strand::OT, false))); // 2 < 1+1+1
+        assert!(!mask.filter(&read(1, 2, Strand::OT, ReadDirection::Forward))); // 2 < 1+1+1
 
         // Boundary conditions
-        assert!(!mask.filter(&read(0, 10, Strand::OT, false))); // pos < start
-        assert!(mask.filter(&read(1, 10, Strand::OT, false))); // pos >= start
-        assert!(mask.filter(&read(8, 10, Strand::OT, false))); // pos <= len-end-1
-        assert!(!mask.filter(&read(9, 10, Strand::OT, false))); // pos > len-end-1
+        assert!(!mask.filter(&read(0, 10, Strand::OT, ReadDirection::Forward))); // pos < start
+        assert!(mask.filter(&read(1, 10, Strand::OT, ReadDirection::Forward))); // pos >= start
+        assert!(mask.filter(&read(8, 10, Strand::OT, ReadDirection::Forward))); // pos <= len-end-1
+        assert!(!mask.filter(&read(9, 10, Strand::OT, ReadDirection::Forward))); // pos > len-end-1
     }
 
     #[test]
@@ -350,19 +383,15 @@ mod tests {
             n_ob: ReadMaskSetting::from_str("40,40,40,40").unwrap(),
         };
 
-        // Unknown strand always passes
-        assert!(mask.filter(&read(5, 20, Strand::Unknown, false)));
-        assert!(mask.filter(&read(5, 20, Strand::Unknown, true)));
-
         // No masking passes everything
         let no_mask = ReadMaskParams::default();
-        assert!(no_mask.filter(&read(0, 1, Strand::OT, false)));
-        assert!(no_mask.filter(&read(99, 100, Strand::OB, true)));
+        assert!(no_mask.filter(&read(0, 1, Strand::OT, ReadDirection::Forward)));
+        assert!(no_mask.filter(&read(99, 100, Strand::OB, ReadDirection::Reverse)));
 
         // Aggressive masking filters most
-        assert!(mask.filter(&read(50, 100, Strand::OT, false))); // 40 <= 50 <= 59
-        assert!(!mask.filter(&read(39, 100, Strand::OT, false))); // < 40
-        assert!(!mask.filter(&read(60, 100, Strand::OT, false))); // > 59
-        assert!(!mask.filter(&read(50, 80, Strand::OT, false))); // 80 < 81 (too small)
+        assert!(mask.filter(&read(50, 100, Strand::OT, ReadDirection::Forward))); // 40 <= 50 <= 59
+        assert!(!mask.filter(&read(39, 100, Strand::OT, ReadDirection::Forward))); // < 40
+        assert!(!mask.filter(&read(60, 100, Strand::OT, ReadDirection::Forward))); // > 59
+        assert!(!mask.filter(&read(50, 80, Strand::OT, ReadDirection::Forward))); // 80 < 81 (too small)
     }
 }

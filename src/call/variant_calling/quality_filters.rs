@@ -1,27 +1,57 @@
-use crate::{call::pileup::SimpleRead, utils::cli};
+use crate::utils::cli;
 use better_default::Default;
+use seqair_types::{BaseQuality, MappingQuality};
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
+#[serde(from = "QualityBytes", into = "QualityBytes")]
 pub struct QualityFilterParams {
     /// Minimum mapping quality to consider a read
-    #[arg(short = 'q', long, default_value_t = 1)]
+    #[arg(short = 'q', long, default_value = "1", value_parser = mapping_quality)]
     #[arg(help_heading = cli::sections::FILTER)]
-    #[default(1)]
-    pub min_mapq: u8,
+    #[default(MappingQuality::from_byte(1))]
+    pub min_mapq: MappingQuality,
     /// Minimum base quality to consider a base
-    #[arg(short = 'Q', long, default_value_t = 10)]
+    #[arg(short = 'Q', long, default_value = "10", value_parser = base_quality)]
     #[arg(help_heading = cli::sections::FILTER)]
-    #[default(10)]
-    pub min_baseq: u8,
+    #[default(BaseQuality::from_byte(10))]
+    pub min_baseq: BaseQuality,
 }
 
 impl QualityFilterParams {
-    /// Check if the read and base pass the quality filters
-    pub fn filter_fields(&self, mapq: u8, baseq: u8) -> bool {
-        mapq >= self.min_mapq && baseq >= self.min_baseq
+    /// Whether a base of quality `baseq` counts. An unavailable base quality
+    /// never does, and a minimum of 255 is above every available one.
+    #[must_use]
+    pub fn keeps_base(&self, baseq: BaseQuality) -> bool {
+        baseq.get().is_some_and(|q| q >= self.min_baseq.as_byte())
     }
+}
 
-    pub fn filter(&self, read: &SimpleRead) -> bool {
-        self.filter_fields(read.mapq, read.qual)
+fn mapping_quality(s: &str) -> Result<MappingQuality, std::num::ParseIntError> {
+    s.parse().map(MappingQuality::from_byte)
+}
+
+fn base_quality(s: &str) -> Result<BaseQuality, std::num::ParseIntError> {
+    s.parse().map(BaseQuality::from_byte)
+}
+
+/// The thresholds as the run's config records them: their bytes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct QualityBytes {
+    min_mapq: u8,
+    min_baseq: u8,
+}
+
+impl From<QualityBytes> for QualityFilterParams {
+    fn from(bytes: QualityBytes) -> Self {
+        Self {
+            min_mapq: MappingQuality::from_byte(bytes.min_mapq),
+            min_baseq: BaseQuality::from_byte(bytes.min_baseq),
+        }
+    }
+}
+
+impl From<QualityFilterParams> for QualityBytes {
+    fn from(params: QualityFilterParams) -> Self {
+        Self { min_mapq: params.min_mapq.as_byte(), min_baseq: params.min_baseq.as_byte() }
     }
 }

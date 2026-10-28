@@ -35,12 +35,15 @@ pub(crate) mod utils {
     pub mod logging;
 
     mod surrounding;
-    pub use surrounding::map_surrounding;
+    pub use surrounding::{adjacent, map_surrounding};
 
     pub mod cli;
 
     mod conversion;
     pub use conversion::{IntoF32, IntoF64, default};
+
+    pub mod mapping_quality;
+    pub use mapping_quality::MappingQualityExt;
 
     mod grouping;
     pub use grouping::ByStrand;

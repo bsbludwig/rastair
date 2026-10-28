@@ -1,7 +1,6 @@
 use crate::utils::cli;
 use better_default::Default;
 use clap_num::maybe_hex;
-use rust_htslib::bam::Record;
 
 use flags::*;
 
@@ -28,33 +27,36 @@ pub struct ReadFlags {
     pub exclude_flags: u16,
 }
 
+/// Whether the library's reads come in pairs (`--unpaired` says they do not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pairing {
+    #[default]
+    Paired,
+    Unpaired,
+}
+
+impl Pairing {
+    #[must_use]
+    pub const fn from_unpaired_flag(unpaired: bool) -> Self {
+        if unpaired { Self::Unpaired } else { Self::Paired }
+    }
+}
+
 impl ReadFlags {
     /// Check if raw flags match the include flags and do not match the exclude flags.
-    /// In unpaired mode, pairing-related flags are masked out before comparison.
-    pub fn filter_flags(&self, flags: u16, unpaired_mode: bool) -> bool {
-        let (flags, include_flags, exclude_flags) = if unpaired_mode {
-            (
+    /// Unpaired, pairing-related flags are masked out before comparison.
+    pub fn filter_flags(&self, flags: u16, pairing: Pairing) -> bool {
+        let (flags, include_flags, exclude_flags) = match pairing {
+            Pairing::Unpaired => (
                 flags & !UNPAIRED_IGNORED_FLAGS,
                 self.include_flags & !UNPAIRED_IGNORED_FLAGS,
                 self.exclude_flags & !UNPAIRED_IGNORED_FLAGS,
-            )
-        } else {
-            (flags, self.include_flags, self.exclude_flags)
+            ),
+            Pairing::Paired => (flags, self.include_flags, self.exclude_flags),
         };
         let include = flags & include_flags == include_flags;
         let exclude = flags & exclude_flags != 0;
         include && !exclude
-    }
-
-    /// Check if the read matches the include flags and does not match the exclude flags.
-    /// In unpaired mode, pairing-related flags are masked out before comparison.
-    pub fn filter_with_unpaired_mode(&self, record: &Record, unpaired_mode: bool) -> bool {
-        self.filter_flags(record.flags(), unpaired_mode)
-    }
-
-    /// Check if the read matches the include flags and does not match the exclude flags
-    pub fn filter(&self, record: &Record) -> bool {
-        self.filter_flags(record.flags(), false)
     }
 }
 
@@ -87,60 +89,41 @@ mod tests {
     #[test]
     fn default_filter_rejects_single_end_reads() {
         let read_flags = ReadFlags::default();
-        let mut record = Record::new();
-
-        record.set_flags(0x0); // single-end forward
-        assert!(!read_flags.filter(&record));
-
-        record.set_flags(0x10); // single-end reverse
-        assert!(!read_flags.filter(&record));
+        assert!(!read_flags.filter_flags(0x0, Pairing::Paired)); // single-end forward
+        assert!(!read_flags.filter_flags(0x10, Pairing::Paired)); // single-end reverse
     }
 
     #[test]
     fn unpaired_mode_accepts_single_end_reads() {
         let read_flags = ReadFlags::default();
-        let mut record = Record::new();
-
-        record.set_flags(0x0); // single-end forward
-        assert!(read_flags.filter_with_unpaired_mode(&record, true));
-
-        record.set_flags(0x10); // single-end reverse
-        assert!(read_flags.filter_with_unpaired_mode(&record, true));
+        assert!(read_flags.filter_flags(0x0, Pairing::Unpaired)); // single-end forward
+        assert!(read_flags.filter_flags(0x10, Pairing::Unpaired)); // single-end reverse
     }
 
     #[test]
     fn default_filter_keeps_paired_requirements_for_paired_reads() {
         let read_flags = ReadFlags::default();
-        let mut record = Record::new();
-
-        record.set_flags(IS_PAIRED); // missing proper pair
-        assert!(!read_flags.filter(&record));
-
-        record.set_flags(IS_PAIRED | IS_PROPERLY_PAIRED);
-        assert!(read_flags.filter(&record));
+        assert!(!read_flags.filter_flags(IS_PAIRED, Pairing::Paired)); // missing proper pair
+        assert!(read_flags.filter_flags(IS_PAIRED | IS_PROPERLY_PAIRED, Pairing::Paired));
     }
 
     #[test]
     fn unpaired_mode_ignores_pair_related_flags() {
         let read_flags = ReadFlags::default();
-        let mut record = Record::new();
 
         // In unpaired mode, required 0x1/0x2 are ignored
-        record.set_flags(IS_PAIRED);
-        assert!(read_flags.filter_with_unpaired_mode(&record, true));
+        assert!(read_flags.filter_flags(IS_PAIRED, Pairing::Unpaired));
 
         // 0x20 and 0x40 are ignored as well
-        record
-            .set_flags(IS_PAIRED | IS_PROPERLY_PAIRED | MATE_IS_REVERSE_STRAND | IS_FIRST_IN_PAIR);
-        assert!(read_flags.filter_with_unpaired_mode(&record, true));
+        assert!(read_flags.filter_flags(
+            IS_PAIRED | IS_PROPERLY_PAIRED | MATE_IS_REVERSE_STRAND | IS_FIRST_IN_PAIR,
+            Pairing::Unpaired
+        ));
     }
 
     #[test]
     fn exclude_flags_still_apply_to_single_end_reads() {
         let read_flags = ReadFlags::default();
-        let mut record = Record::new();
-
-        record.set_flags(IS_UNMAPPED);
-        assert!(!read_flags.filter_with_unpaired_mode(&record, true));
+        assert!(!read_flags.filter_flags(IS_UNMAPPED, Pairing::Unpaired));
     }
 }

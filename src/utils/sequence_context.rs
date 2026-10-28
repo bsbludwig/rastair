@@ -25,13 +25,12 @@ impl SequenceContext {
         let me =
             segment.sequence.get(idx).wrap_err("Failed to get self base!").this_is_a_bug()?.into();
         let (before_2, before_1) =
-            match segment.sequence_slice::<2>(idx.saturating_sub(N), idx)?.as_slice() {
+            match segment.sequence_slice::<2>(idx.saturating_sub(N), idx)?.as_ref() {
                 [b2, b1] => (Some(*b2), Some(*b1)),
                 [b1] => (None, Some(*b1)),
                 _ => (None, None),
             };
-        let (after_1, after_2) = match segment.sequence_slice::<2>(idx + 1, idx + N + 1)?.as_slice()
-        {
+        let (after_1, after_2) = match segment.sequence_slice::<2>(idx + 1, idx + N + 1)?.as_ref() {
             [a1, a2] => (Some(*a1), Some(*a2)),
             [a1] => (Some(*a1), None),
             _ => (None, None),
@@ -77,8 +76,6 @@ mod tests {
                 overlap_end: 0,
             }),
             sequence: b"ACGTA".to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
         };
 
         let context = SequenceContext::new(2, &segment)?;
@@ -105,8 +102,6 @@ mod tests {
                 overlap_end: 0,
             }),
             sequence: b"ACGTA".to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
         };
 
         let context = SequenceContext::new(0, &segment)?;
@@ -133,8 +128,6 @@ mod tests {
                 overlap_end: 0,
             }),
             sequence: b"ACGTA".to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
         };
 
         let context = SequenceContext::new(3, &segment)?;
@@ -161,8 +154,6 @@ mod tests {
                 overlap_end: 0,
             }),
             sequence: b"ACGTA".to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
         };
 
         let context = SequenceContext::new(4, &segment)?;
@@ -189,8 +180,6 @@ mod tests {
                 overlap_end: 0,
             }),
             sequence: b"ACGTA".to_vec(),
-            overlap_start: 0,
-            overlap_end: 0,
         };
 
         let res = SequenceContext::new(12, &segment);
