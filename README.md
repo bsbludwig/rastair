@@ -49,14 +49,6 @@ rastair call -r reference.fa.gz --bed test.bed.gz test.bam
 
 This is significantly faster than calling variants across all genomic loci, but still runs the ML-based variant caller.
 
-### 2. Call methylation at CpGs without ML filtering (ultra-fast)
-
-```bash
-rastair call --no-ml -r reference.fa.gz --bed test.bed.gz test.bam
-```
-
-This will be very similar to the output from other methylation callers.
-
 ## Contributing
 
 If you want to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.md) file.

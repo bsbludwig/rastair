@@ -2,7 +2,7 @@
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| [`ci.yml`](workflows/ci.yml) | push to `main`, any pull request | `toolchain-pins`, `fmt`, `clippy`, `test`, `seqair`, `external-tools` (all parallel) |
+| [`ci.yml`](workflows/ci.yml) | push to `main`, any pull request | `toolchain-pins`, `fmt`, `clippy`, `test`, `external-tools` (all parallel) |
 | [`release.yml`](workflows/release.yml) | push of a `v*` tag | runs CI, builds+signs Linux/macOS binaries, uploads to S3 + GitHub Releases, rebuilds and deploys the docs site |
 
 `release.yml` can also be started manually from the Actions tab (**Run workflow**)
@@ -20,7 +20,7 @@ rather than as finished archives.
 * **clippy** — `cargo clippy --locked --workspace --all-targets`. The lint set
   lives in `[lints.clippy]` in `Cargo.toml`. Deliberately no `-D warnings`: the
   `deny`-level lints there are clean and do fail the job, but the `warn`-level
-  ones still fire ~170 times, so they surface as annotations to burn down.
+  ones still fire, so they surface as annotations to burn down.
   Add `-- -D warnings` once they are gone. Diagnostics become inline
   annotations via [`problem-matchers/rust.json`](problem-matchers/rust.json), a
   plain regex config registered with `::add-matcher::` — no third-party action.
@@ -32,13 +32,6 @@ rather than as finished archives.
   cargo-run-bin, which would recompile nextest from source on every run.
   Without `--features external-tool-tests`, the two test targets that shell
   out to third-party tools are not built here.
-* **seqair** — the whole suite again with `--features experimental-seqair`,
-  which swaps the pileup *reading* backend; the two backends are expected to
-  produce identical results, so every snapshot has to hold under both. It also
-  reruns clippy with the feature, since the gated code is invisible to the
-  `clippy` job's default build. Own cache (`shared-key: ci-seqair`) rather than
-  the `test` job's: a different feature set means different artifacts, which
-  would otherwise thrash that entry.
 * **external-tools** — the same runner (no Docker), running only
   `tests/bam_external_tools.rs` and `tests/mbias_report.rs`, which cross-check
   rastair against samtools, bismark, modkit, modbedtools and the R QC report.
@@ -54,12 +47,10 @@ rather than as finished archives.
     packages come from apt (~59 s), which is what lets `mbias_report.rs`
     render the report instead of self-skipping; drop them if that minute is
     not worth it.
-  * Two tool-version traps are pinned in that script: the **Perl** Bismark
-    (`v0.25.x`), because the `bismark-rust-v3.x` rewrite cannot do paired-end
-    extraction yet and the test BAM is paired; and `--sampling-frac 1` for
-    `modkit summary`, which dropped `--no-sampling`.
-  * `Dockerfile.ci` still exists for running these tests on macOS, which has no
-    modkit or Bismark build, but **CI does not build it** — this job installs
+  * The tool versions that matter are pinned in that script, with the reason
+    beside each; the `tests/bam_external_tools.rs` module doc lists them.
+  * `Dockerfile.ci` runs these tests on macOS, which has no modkit or Bismark
+    build, but **CI does not build it** — this job installs
     onto the runner instead so it can share the cargo cache. That image has no
     R (so `mbias_report` self-skips there) and takes its tools from bioconda,
     so it is a fallback rather than a mirror; this job is the source of truth.
@@ -85,7 +76,7 @@ turns each staged directory into the `.tar.gz` (Linux) / `.zip` (macOS) that
 make every Actions-tab download a GitHub zip wrapped around a tar.gz, since
 `upload-artifact` always zips. Two consequences of routing the payload through
 an artifact: `upload-artifact` does not preserve file modes, so `publish`
-re-applies `chmod +x`; and the macOS zip is no longer the one submitted to
+re-applies `chmod +x`; and the macOS zip is not the one submitted to
 `notarytool`, which is fine because the ticket is bound to the signed binary and
 served from Apple's CDN (nothing is stapled to the archive).
 
@@ -147,9 +138,6 @@ Settings → Environments → `release` → **Environment secrets**
 | `AWS_SECRET_KEY_DOC` | docs deploy | Note the name: `..._SECRET_KEY_DOC`, not `..._SECRET_ACCESS_KEY_DOC` |
 | `CLOUDFRONT_DISTRIBUTION_ID` | docs deploy | Not actually sensitive, but it is stored as a secret, so the workflow reads it via `secrets.` |
 
-The names are identical to the ones used in the old Bitbucket Pipelines and
-CircleCI setups, so the values can be copied across verbatim.
-
 ### Environment variables
 
 Settings → Environments → `release` → **Environment variables**
@@ -162,7 +150,6 @@ Settings → Environments → `release` → **Environment variables**
 | `AWS_REGION_REL` | docs | region for those download URLs |
 | `S3_BUCKET_DOC` | docs deploy | bucket serving the docs site |
 | `AWS_REGION_DOC` | docs deploy | region of that bucket |
-| `CLOUDFRONT_DISTRIBUTION_ID` | docs deploy | `E12QS42FTTJKFT` (was hardcoded in `bitbucket-pipelines.yml`) |
 | `MSTDN_INSTANCE` | docs | Mastodon instance shown on the landing page |
 | `MSTDN_ACCOUNT` | docs | Mastodon account shown on the landing page |
 | `ALL_APPLE_CERTS` | macOS build | whitespace-separated URLs of extra Apple root/intermediate `.cer` files |

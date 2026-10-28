@@ -5,19 +5,11 @@
 | ID | Description |
 |----|-------------|
 | PASS | All filters passed |
-| lowDp | Low read depth |
-| dnCpG_lowDp | Low read depth for de-novo CpG candidate |
-| dnCpG_bq | Low base quality for de-novo CpG candidate |
-| dnCpG_mapq | Low mapping quality for de-novo CpG candidate |
-| dnCpG_vaf | Low variant allele frequency for de-novo CpG candidate |
-| dnCpG_adj | Included as adjacent position for de-novo CpG candidate, but other position did not pass filters |
-| m_vaf | Low variant allele frequency for methylation candidate |
-| m_bq_ratio | Low quality ratio for methylation candidate |
-| m_pos | Alt allele evidence from read edges for methylation candidate |
-| m_highDp | Excessive coverage for methylation candidate |
 | pre_ml | Low amount of usable evidence, skipping ML |
+| m_highDp | Excessive coverage for methylation candidate |
 | low_ml_score | Machine Learning module prediction below threshold |
-| indel_strand | Indel allele supported on only one bisulfite strand |
+| low_indel_qual | Indel allele the pair-HMM does not call present |
+| no_genotype_copy | SNV allele the model passes but the pair-HMM's genotype holds no copy of |
 
 ## INFO
 
@@ -43,7 +35,7 @@
 | ENT100 | 1 | Float | Shannon entropy of 100bp sequence context around variant position. Value range (0..2) |
 | NAB | R | Float | RMS of number of aligned bases |
 | NOI | R | Float | RMS of number of indels |
-| M5mC_Strands | 4 | Integer | Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset. |
+| M5mC_Strands | 4 | Integer | Number of reads that are evidence for unmodified, modified (the reads M5mC counts), no SNP, SNP. Always reported; 0,0,0,0 where neither CPG nor CPGnovo is set. |
 | CPG | 0 | Flag | Is this a CpG site? |
 | CPGnovo | 0 | Flag | De-novo CPG candidate: Could the alt alleles create a new CpG site? |
 
@@ -52,10 +44,12 @@
 | ID | Number | Type | Description |
 |----|--------|------|-------------|
 | GT | 1 | String | Genotype |
-| GL | G | Float | Genotype likelihoods, Phred-scaled |
-| GC | G | Float | Genotype confidence, Phred-scaled |
+| PS | 1 | Integer | Phase set identifier: the position of the first variant in the phase block, or of its next variant where another block's PS is that position |
+| PQ | 1 | Integer | Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly |
+| GQ | 1 | Integer | Genotype quality: Phred-scaled chance the genotype is wrong, under a flat prior over the record's genotypes, capped at 99 |
+| PL | G | Integer | Phred-scaled genotype likelihoods, the likeliest genotype 0, capped at 255 |
 | DP | 1 | Integer | Read depth |
-| M5mC | . | Float | Methylation level at CpG sites, one value per CpG context |
+| M5mC | . | Float | Methylation level at CpG sites, one value per CpG context (the reference CpG first), missing where no read shows it |
 | DPM5mC | . | Integer | Total read depth for 5-methylcytosine detection, one value per CpG context |
 | ADM5mC | . | Integer | Read depth supporting 5-methylcytosine modification, one value per CpG context |
 | ML | A | Float | Prediction of methylation/variant likelihood by rastair's machine learning model |

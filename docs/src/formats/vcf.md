@@ -42,17 +42,23 @@ See [VCF Fields](vcf-fields.md) for a detailed description of the fields in the 
 
 The estimated $ \beta $ value is encoded in the VCF file through the `M5mC` FORMAT field
 which is provided at all positions where `CPG` or `CPGnovo` are set, and only there.
-Rastair includes all CpG positions in the reference, whether they overlap a variant or not.
-Where they do not overlap a variant, the `ALT` is set to `.`, _a.k.a._ the missing value.
+Rastair writes every covered CpG position of the reference (every one under `--all`), whether it overlaps a variant or not.
+Where it does not overlap a called variant, the `ALT` is set to `.`, _a.k.a._ the missing value.
 
 While rare, it is possible to have more than one methylation call at one position. This can occur in `CCG` positions where the middle C is also a C>G SNP. This leads to two alleles, one where the middle position is a G and the other where it is a C. Each could be methylated at different levels. In these cases, the `M5mC` value will be a comma-separated list.
+`M5mC`, `DPM5mC` and `ADM5mC` always hold one value per CpG the position takes part in, the reference CpG first and the de-novo one second.
+A CpG that no read shows has no $ \beta $: its `M5mC` value is missing (`.`), and its `DPM5mC` and `ADM5mC` are 0.
 
 ### Quality scores
 
-Quality scores in the vcf output reflect the ML-derived probability that a variant is "true".
+`QUAL` is Phred-scaled, as given by whatever decided the record:
+
+- SNV records, passing or rejected: the ML model's score (the highest over the alternates of a multi-allelic record).
+- Indel records: the pair-HMM's margin, how much likelier the reads are with the indel than without it (a likelihood ratio, not a probability), see [Indels](../calling/indels.md).
+- Reference-only records (`ALT=.`): the chance the position carries a variant, the same number as `GQ`; missing where there are no reads to weigh.
+
 When we train the ML model, we calibrate it against a validation dataset
 and estimate the fraction of true SNPs called at every score cutoff.
 Based on this, we can fit a regression (["Platt scaling"](https://en.wikipedia.org/wiki/Platt_scaling))
 that converts the score into a probability $ p $ that a SNP call is true.
 For the quality score, we encode the inverse as Phred: $ -10*log_{10}(1-p) $.
-For methylated positions where no variants were observed, we record the maximum Phred, _ie._ 99.

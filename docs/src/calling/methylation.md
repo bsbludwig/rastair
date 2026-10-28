@@ -22,8 +22,8 @@ This gives us a good indication that the `C` is methylated.
 
 ## Output (VCF)
 
-When methylation calling is enabled, Rastair will include all `CpG` sites in the output VCF file.
-It will set the beta value(s) in the `M5mC` format field for each site.
+Rastair writes every covered `CpG` site to the output VCF file, and with `--all` the uncovered ones as well.
+It sets the beta value(s) in the `M5mC` format field for each site.
 
 In most cases, a single beta value is reported. However, when a position is both:
 
@@ -35,10 +35,14 @@ Then **two beta values** will be reported in the `M5mC` field:
 - The first value represents the methylation level of the original CpG context
 - The second value represents the methylation level of the de-novo CpG context
 
+`DPM5mC` and `ADM5mC` follow the same order.
+A CpG that no read shows has no beta value: its `M5mC` value is `.` (missing), not 0,
+so a site with two CpGs of which only the de-novo one has reads is written `M5mC=.,0.5`.
+
 This allows for accurate methylation quantification in complex scenarios where multiple CpG contexts overlap at a single position.
 
-If a certain threshold of confidence is met,
-the alt allele will be set to `.` since it is not considered a variant in the traditional sense.
+Where no alternate allele is called at a CpG, its `ALT` is `.`:
+the `T` (or `A`) reads there are methylation, not a variant.
 
 ## Criteria for methylation calling
 
@@ -46,7 +50,6 @@ the alt allele will be set to `.` since it is not considered a variant in the tr
 - @OT reads showing `TG` on a ref `CG` position
 - @OB reads showing `CA` on the ref `CG` position
 - Not a homozygous variant away from C/T
-- Sufficient read depth (controlled with `--m-min-depth`)
 - High base quality (controlled with `--min-baseq`)
 - High mapping quality (controlled with `--min-mapq`)
 
@@ -57,7 +60,9 @@ where both the position itself and the other side of the CpG
 match the expected pattern.
 That means, that an @OT read showing `TA` is not considered methylation evidence,
 only `TG` is.
-This also applies to de-novo CpGs.
+This also applies to de-novo CpGs,
+and to the unmodified and modified counts in `M5mC_Strands`, `DPM5mC`, `ADM5mC` and the BED file,
+which are the reads the beta value is computed from.
 
 This method of "pairwise" counting shows different beta values
 compared to a trivial count looking at just one position.

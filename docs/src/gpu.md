@@ -1,6 +1,7 @@
 # GPU acceleration
 
-Rastair 2.1 and newer support running its @ML inference on @GPU:pl.
+Rastair 2.1 and newer support running its @ML inference on @GPU:pl,
+and the pair-HMM that calls indels and re-scores SNVs runs there as well; the calls are the same as on the CPU.
 This can speed up the `call` subcommand by about 2x.
 
 ## Usage

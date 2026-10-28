@@ -3,7 +3,7 @@
 Rastair uses @ML to distinguish true @methylation calls and variants from sequencing artifacts (and noise).
 The ML models evaluate each alt at each position and assign a prediction score for that alt to be a true variant.
 
-By default, ML is enabled with a threshold of `0.5`.
+By default, ML is enabled with a threshold of `0.4`.
 Pre-trained models are bundled with Rastair.
 
 These models handle several contexts with distinct sub-models:
@@ -11,7 +11,6 @@ These models handle several contexts with distinct sub-models:
 - **@CpG methylation sites**: Standard 5mC detection in @CpG sites
 - **@Denovo**: New methylation sites not in reference
 - **Other variants**: Non-CpG @SNP:pl
-- **Insertions** and **deletions**: Indel alleles, used when experimental indel calling is enabled
 
 Some features are shared across models, but some are model specific. Here is a plot of all features used in each model, ranked by importance:
 
@@ -19,22 +18,17 @@ Some features are shared across models, but some are model specific. Here is a p
 
 Here, `_adj` refers to a feature of the `adjacent` nucleotide, _ie_ the C when evaluating a G or the G when evaluating a C. All scores that refer to allele counts are normalised either implicitly (where the score itself is a ratio) or explicitly to the total depth at that position. Of note, the `alt_score` is a simple ratiometric score to establish the base-quality weighted enrichment of variant reads over non-variant reads: $$ altscore = \frac{log_{2}(sb_{alt}*bq_{alt}+1)}{log_{2}(sb_{ref}*bq_{ref}+1)} $$, where $sb_{ref/alt}$ refers to the number of reads with ref/alt on the OT (for C positions) or OB (for G positions), and $bq_{ref/alt}$ is the corresponding strand-specific @RMS of base qualities.
 
+With `--snv-engine` (on by default), the alts these forests score at 0.005 or more, the two highest at a position, are then scored by the pair-HMM, and a second set of forests in the bundled model scores them again with the pair-HMM's evidence.
+That second score replaces the first, and it is the one `--ml` and `QUAL` use; the other alts keep their first score.
+
 The resulting ML scores are calibrated using [Platt scaling](https://en.wikipedia.org/wiki/Platt_scaling), which normalizes score distributions across the three separate sub-models.
 
 ## Adjusting the Threshold
 
-After calibration, a threshold of $ 0.5 $ should filter out all candidate variants with less than 50% likelihood of being true. Empirically, we determined this to be a good compromise between sensitivity and specificity. However, you can manually override this:
+After calibration, a threshold of $ 0.5 $ would filter out all candidate variants with less than 50% likelihood of being true. The default is $ 0.4 $ because the scores are under-confident in that range, most of all at low depth; it gains sensitivity at about 10x and is neutral at higher depths. However, you can manually override this:
 
 ```bash
 rastair call --ml 0.7 input.bam
 ```
 
-Values above 0.5 will shift the balance towards higher specificity at the expense of sensitivity.
-
-If you care primarily about speed but do not need strict variant calling, e.g. when you only want to call methylation at known CpGs, you can turn the ML scoring off:
-
-```bash
-rastair call --no-ml input.bam
-```
-
-There are a range of hard-threshold filters that can be customized with different command line arguments. Refer to the [cli documentation](../cli.md) for details.
+Higher values shift the balance towards higher specificity at the expense of sensitivity.

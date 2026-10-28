@@ -12,7 +12,7 @@ At each mismatch, it inspects both 2 bp windows that include the mismatch base:
 - current + next base
 - previous + current base
 
-Motifs are counted on the read sequence as represented by htslib/reference orientation:
+Motifs are counted on the read sequence as the BAM stores it (reference orientation):
 
 - `TG` evidence supports OT
 - `CA` evidence supports OB
@@ -27,4 +27,4 @@ The tie-break is deterministic, so repeated runs produce stable OT/OB assignment
 
 ## Scope
 
-This option currently affects the main pileup-based `call` workflow.
+`call` and `per-read` take this option; `bam` assigns strands from the SAM flags.

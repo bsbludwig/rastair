@@ -10,11 +10,8 @@ even though it is structured as a library for internal organization.
 
 ### Crates
 
-Aside from the main `rastair` crate, we factored out some functionality into separate crates for better organization and reusability:
-
-- `crates/rastair-types`: Library crate with common types.
-- `crates/rastair-vcf`: Library crate for handling VCF files.
-- `tools/*`: Internal tooling for developing rastair.
+The workspace is the `rastair` crate and its internal tooling in `tools/*` (`xtask`, `cargo-bin`, `mdbook-glossary`).
+Common types such as `Base`, `Strand` and `Pos0` come from `seqair-types`, and VCF/BCF is written with `seqair`.
 
 ## Testing
 
@@ -29,7 +26,7 @@ Run the tests with `cargo xtask test`.
 
 ### Tools
 
-- [`proptest`](https://github.com/proptest-rs/proptest) is used for property-based testing.
+- [`hegel`](https://crates.io/crates/hegeltest) (`hegeltest`) is used for property-based testing.
 - [`cargo insta`](https://insta.rs/) is used for snapshot testing in various places.
 
 ### Test Coverage
@@ -39,8 +36,6 @@ The code is tested using [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llv
 ```bash
 cargo xtask test --coverage
 ```
-
-This is also run in CI, making the tests fail with insufficient coverage (currently less than 70% of lines covered).
 
 You can use `#[cfg_attr(coverage_nightly, coverage(off))]` to ignore certain functions or modules from coverage analysis, e.g. `Debug` or `Display` implementations that are only used in logs.
 
