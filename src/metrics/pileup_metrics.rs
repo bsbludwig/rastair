@@ -41,6 +41,10 @@ pub struct PileupMetrics {
     /// alt, or the base a called insertion puts beside it
     /// ([`CpgSide::beside`], set by `process::mark_called_cpgs`).
     pub beside_called_alts: EnumSet<CpgSide>,
+    /// The CpG sides an alt here takes with a reference neighbour that no
+    /// chromosome carrying the alt keeps: the neighbour's called alt sits on
+    /// each (set by `process::mark_called_cpgs`).
+    pub lost_to_called_alts: EnumSet<CpgSide>,
     pub ref_metrics: AlleleMetrics,
     /// Alternate alleles at this position.
     ///
@@ -215,7 +219,8 @@ impl PileupMetrics {
     /// The CpG side `base` takes here: beside its reference neighbours, or
     /// beside a called variant next door.
     pub fn cpg_side_of(&self, base: Base) -> Option<CpgSide> {
-        CpgSide::taken_by(base, TapsContext::of(self).sides() | self.beside_called_alts)
+        let reference = TapsContext::of(self).sides() - self.lost_to_called_alts;
+        CpgSide::taken_by(base, reference | self.beside_called_alts)
     }
 
     /// The side this reference base takes in a CpG a called variant next

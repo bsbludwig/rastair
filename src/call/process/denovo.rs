@@ -1,6 +1,14 @@
-use crate::{call::pileup::indels::IndelAllele, metrics::PileupMetrics, vcf::CpgSide};
+#[cfg(doc)]
+use crate::call::pair_hmm::Verdict;
+use crate::call::pair_hmm::{Allele, Event, EventIdx, HapIdx};
+use crate::{
+    call::pileup::indels::IndelAllele,
+    metrics::{Alt, PileupMetrics},
+    vcf::CpgSide,
+};
 use enumset::EnumSet;
-use seqair_types::Base;
+use seqair_types::{Base, Pos0};
+use std::sync::Arc;
 use tracing::instrument;
 
 /// The CpGs called variants make with their neighbours: the called indels'
@@ -13,11 +21,12 @@ use tracing::instrument;
 /// reference `C` anchor: the base beside it on the called chromosome decides. A called `C` alt
 /// before a called `G` alt forms a CpG of two variants (`TA>CG`), which the reference context
 /// cannot see: both alts form it ([`PileupMetrics::cpg_side_of`]), so that genotyping and
-/// methylation weigh their reads as at any de-novo CpG.
+/// methylation weigh their reads as at any de-novo CpG. A CpG that is not the reference's needs its
+/// `C` and `G` on one chromosome: neither two alts the pair-HMM puts apart, nor an alt and a
+/// reference partner whose own called alt sits on every chromosome carrying the alt
+/// ([`Verdict::has_haplotype`]).
 ///
 /// Recomputed from the calls, so a test's re-run of the calls can clear it.
-// shortcut: assumes the two variants sit on one chromosome; two hets in trans form no CpG, which
-// only phasing could tell.
 // shortcut: a deletion joining a `C` and a `G` across its gap makes no CpG here, as the base
 // after the gap is no neighbour of its anchor's column; that needs a pass over the segment.
 #[instrument(level = "debug", skip_all)]
@@ -38,9 +47,68 @@ pub fn mark_called_cpgs(
         });
         ends.filter_map(CpgSide::of_base).collect::<EnumSet<CpgSide>>()
     };
-    let before_sides = called_sides(before) | inserted(before, <[Base]>::last);
-    let after_sides = called_sides(after) | inserted(Some(current), <[Base]>::first);
+    // The C and the G of a CpG that is not the reference's are on one chromosome or make none: a
+    // called alt's partner, and a reference partner whose own called alt the other's chromosome
+    // carries.
+    let split_before = before.is_some_and(|c| !on_one_chromosome(c, current));
+    let split_after = after.is_some_and(|g| !on_one_chromosome(current, g));
+    let mut before_alts = called_sides(before);
+    let mut after_alts = called_sides(after);
+    current.lost_to_called_alts = EnumSet::empty();
+    if split_before {
+        before_alts.remove(CpgSide::C);
+        if current.reference_base != Base::G {
+            current.lost_to_called_alts.insert(CpgSide::G);
+        }
+    }
+    if split_after {
+        after_alts.remove(CpgSide::G);
+        if current.reference_base != Base::C {
+            current.lost_to_called_alts.insert(CpgSide::C);
+        }
+    }
+    let before_sides = before_alts | inserted(before, <[Base]>::last);
+    let after_sides = after_alts | inserted(Some(current), <[Base]>::first);
     current.beside_called_alts = CpgSide::beside(before_sides, after_sides);
+}
+
+/// Whether one chromosome reads `C` at `c` and `G` at the next column `g`, as the pair-HMM scored
+/// them: by the event of an alt, by none of the column's events for the reference base, the two
+/// columns' events present where their alts are called and the cluster's others where the
+/// pair-HMM calls them. One does when they are not in one cluster, or a column has neither base.
+// shortcut: as beside an indel that takes a cluster's slots; score their phase there too if such
+// pairs turn out to matter.
+fn on_one_chromosome(c: &PileupMetrics, g: &PileupMetrics) -> bool {
+    let (Some(scores), Some(other)) = (c.snv_scores.as_ref(), g.snv_scores.as_ref()) else {
+        return true;
+    };
+    let allele = |column: &PileupMetrics, base: Base| {
+        if column.reference_base == base {
+            Some(None)
+        } else {
+            scores.base_event_at(column.pos, base).map(Some)
+        }
+    };
+    let (Some(at_c), Some(at_g)) = (allele(c, Base::C), allele(g, Base::G)) else {
+        return true;
+    };
+    if !Arc::ptr_eq(scores, other) {
+        return true;
+    }
+    let verdict = scores.verdict();
+    let called =
+        |column: &PileupMetrics, base: Base| column.find_alt(base).is_some_and(Alt::called);
+    let held = |event: EventIdx| match scores.event(event) {
+        Some(Event { anchor, allele: Allele::Base(base) }) if *anchor == c.pos => called(c, *base),
+        Some(Event { anchor, allele: Allele::Base(base) }) if *anchor == g.pos => called(g, *base),
+        _ => verdict.is_called(event),
+    };
+    // One substitution per anchor on a haplotype, so this is the base it reads.
+    let reads = |hap: HapIdx, pos: Pos0, allele: Option<EventIdx>| {
+        scores.base_events_at(pos).find(|&e| hap.carries(e)) == allele
+    };
+    let cpg = |hap: HapIdx| reads(hap, c.pos, at_c) && reads(hap, g.pos, at_g);
+    verdict.has_haplotype(held, cpg).unwrap_or(true)
 }
 
 #[cfg(test)]

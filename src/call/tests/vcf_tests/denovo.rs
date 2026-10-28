@@ -280,3 +280,77 @@ fn two_variants_forming_a_cpg_are_a_denovo_cpg() -> Result<()> {
 
     Ok(())
 }
+
+/// The `C` on one chromosome and the `G` on the other (`CA` / `TG`) make no
+/// CpG: the pair-HMM's reads put them in trans.
+#[test]
+fn two_variants_in_trans_make_no_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T A ] Ref,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (T C) PASS GT="0|1" M5mC=None,
+        (A G) PASS GT="1|0" M5mC=None,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    set_pass(&mut records[1], G);
+    let records = reprocess(records)?;
+    assert!(records.iter().all(|r| !r.in_denovo_cpg()));
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// A `T>C` before a reference `G` whose `G>A` sits on the same chromosome
+/// (`CA` / `TG`) makes no CpG: the `C`'s chromosome lost its `G`.
+#[test]
+fn a_cpg_partner_replaced_on_the_same_chromosome_makes_no_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T G ] Ref,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (T C) PASS GT="0|1" M5mC=None,
+        (G A) PASS GT="0|1" M5mC=None,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    set_pass(&mut records[1], A);
+    let records = reprocess(records)?;
+    assert!(records.iter().all(|r| !r.in_denovo_cpg()));
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}

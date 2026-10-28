@@ -426,6 +426,7 @@ impl ColumnDraft {
             context,
             pos_metrics,
             beside_called_alts: EnumSet::empty(),
+            lost_to_called_alts: EnumSet::empty(),
             ref_metrics,
             alts,
             before_counts,
