@@ -1,5 +1,5 @@
 use super::super::shared::{
-    CommonFeatures, CommonSectionA, CommonSectionB, alt_score_methylation_aware,
+    CommonSectionA, CommonSectionB, alt_score_methylation_aware, common_sections,
 };
 use super::super::utils::safe_div;
 use crate::metrics::ml::features::define_features;
@@ -21,11 +21,11 @@ define_features! {
         scalar alt_ad_adj;
         /// Adjacent-position methylation-aware alt score.
         scalar alt_score_adj;
-        /// First block of [`CommonFeatures`].
+        /// First block of the [`common_sections`].
         flatten section_a: CommonSectionA;
         /// Methylation-aware alt score at this position.
         scalar alt_score;
-        /// Second block of [`CommonFeatures`].
+        /// Second block of the [`common_sections`].
         flatten section_b: CommonSectionB;
         /// Log-ratio of this position's beta to the adjacent CpG partner's beta.
         scalar beta_ratio;
@@ -41,33 +41,19 @@ impl CpgFeatures {
         before: Option<&PileupMetrics>,
         after: Option<&PileupMetrics>,
     ) -> Result<CpgFeatures> {
-        use Base::*;
-
         let alt = current.alt;
-        let PileupMetrics { reference_base, pos_metrics: pos, ref_metrics: r, .. } =
-            &current.metrics;
+        let PileupMetrics { reference_base, ref_metrics: r, .. } = &current.metrics;
         let ref_base = *reference_base;
 
-        ensure!(*pos.cpg, "cpg called on non-CpG position");
-        ensure!(
-            (ref_base == C && alt.base == T) || (ref_base == G && alt.base == A),
-            "cpg called on non-methylation candidate"
-        );
+        ensure!(current.is_conversion(), "cpg called on a non-methylation candidate");
 
-        let common = CommonFeatures::extract(current);
+        let (section_a, section_b) = common_sections(current);
         let alt_score = alt_score_methylation_aware(alt, r, ref_base);
         let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj } =
             calculate_adjacent_features(current, before, after)
                 .wrap_err("Failed to calculate adjacent features for CpG")?;
 
-        Ok(CpgFeatures {
-            alt_ad_adj,
-            alt_score_adj,
-            section_a: CommonSectionA::from_common(&common),
-            alt_score,
-            section_b: CommonSectionB::from_common(&common),
-            beta_ratio,
-        })
+        Ok(CpgFeatures { alt_ad_adj, alt_score_adj, section_a, alt_score, section_b, beta_ratio })
     }
 }
 
@@ -109,7 +95,7 @@ fn calculate_adjacent_features(
 
             // Calculate alt_score for G→A
             let alt_score_adj = (alt.strand_count.ot.f() * alt.baseq_s.ot.f() + 1.0).log2()
-                - (r.strand_count.ot.f() * c_r.baseq_s.ot.f() + 1.0).log2();
+                - (r.strand_count.ot.f() * r.baseq_s.ot.f() + 1.0).log2();
 
             let beta_after =
                 safe_div(alt.strand_count.ob.f(), (alt.strand_count.ob + r.strand_count.ob).f());
@@ -133,8 +119,10 @@ fn calculate_adjacent_features(
         let c_r = &c.metrics.ref_metrics;
         let r = &before.ref_metrics;
 
-        let beta_center =
-            safe_div(c_r.strand_count.ob.f(), c_alt.strand_count.ob.f() + c_r.strand_count.ob.f());
+        let beta_center = safe_div(
+            c_alt.strand_count.ob.f(),
+            c_alt.strand_count.ob.f() + c_r.strand_count.ob.f(),
+        );
 
         if let Some(MetricsForAlt { alt, .. }) = before.alt_metrics(T) {
             let alt_ad = alt.depth.f();
@@ -143,7 +131,7 @@ fn calculate_adjacent_features(
 
             // Calculate alt_score for C→T
             let alt_score_adj = (alt.strand_count.ob.f() * alt.baseq_s.ob.f() + 1.0).log2()
-                - (r.strand_count.ob.f() * c_r.baseq_s.ob.f() + 1.0).log2();
+                - (r.strand_count.ob.f() * r.baseq_s.ob.f() + 1.0).log2();
 
             let beta_before =
                 safe_div(alt.strand_count.ot.f(), (alt.strand_count.ot + r.strand_count.ot).f());

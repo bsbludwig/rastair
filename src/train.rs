@@ -1,39 +1,74 @@
-//! Train the five random forests a model file carries: CpG, de-novo CpG,
-//! other SNVs, insertion and deletion.
+//! Train the random forests a model file carries: CpG, de-novo CpG and other
+//! SNVs, and with `--snv-engine` a second set of the three for the cascade.
 //!
-//! 1. Collect: run the column pipeline over every segment, label each SNV and
-//!    indel candidate against the truth set, and file it under its model.
+//! 1. Collect: run the column pipeline over every segment, label each SNV
+//!    candidate against the truth set, and file it under its model.
 //!    Each model keeps a bounded uniform sample of what it is offered.
-//! 2. Sample: draw `--n-positive`/`--n-negative` examples per SNV model and
-//!    `--indel-n-positive`/`--indel-n-negative` per indel model.
+//! 2. Sample: draw `--n-positive`/`--n-negative` examples per model.
 //! 3. Fit: a random forest per model, Platt-scaled on examples it did not see.
 //! 4. Export: write the `RastairFlatModel`.
+//!
+//! ```bash
+//! rastair ml train --snv-engine -r hg38.fa.gz taps.bam [taps_10x.bam ...] HG001_benchmark.vcf.gz \
+//!   -R HG001_benchmark.bed -l "chr1 chr6 chr11" --seed <n> -o models/mymodel.rff.mpk.lz4 -@ 8
+//! ```
+//!
+//! - Positionals are one or more BAMs, then the truth VCF. The BAMs' candidates
+//!   pool into one collection, each file offering its own, so one library
+//!   at several depths trains one model. The defaults plus `--snv-engine`
+//!   are the recipe of the bundled model (`models/rastair_default.rff.mpk.lz4`,
+//!   see `models/PROVENANCE.md`). msgpack
+//!   writes `RastairFlatModel` as an array, so its field order is the file
+//!   layout.
+//! - The truth VCF needs a `.csi` (a `.tbi` alone is refused), and `-R` is a
+//!   plain-text BED. Without `-R`, candidates outside the truth set's
+//!   confident regions are labelled negative.
+//! - Train on GIAB HG001 and evaluate against Platinum Genomes on a held-out
+//!   chromosome. All three forests must train, or no model is written.
+//! - The sample is a keyed reservoir per model and class, seeded per segment
+//!   and model from `--seed` by `KeySource`, so it depends neither on
+//!   scheduling nor on other models' pools. The draw takes at most four fifths
+//!   of a class; the holdout keeps the population's class ratio, or Platt
+//!   scaling would shift what an ML threshold means.
+//! - A candidate's row comes from `call::process::ml_row`, the gate `call`
+//!   scores through: the alts it refuses are never offered, and the
+//!   neighbours it reads are the genome's, so the forests are fitted on the
+//!   rows they score.
+//! - The `Collected training examples` log line reports pool, kept, requested
+//!   and drawn per model. `--export-features` writes a 1-based `pos`.
+//! - Rows are `f32` in one flat buffer per model, and segments are folded with
+//!   `reduce`, not collected, so collection stays bounded.
+//! - `--snv-engine` collects a second time, with the engine-off forests and the
+//!   engine scoring as `call` does, and fits the engine forests on the alts the
+//!   engine scored (see `call::process::pileups`); their feature importance
+//!   files are prefixed `snv_engine_`.
 
 mod reservoir;
 
-#[cfg(not(feature = "experimental-seqair"))]
-use crate::call::process::calculate_pileup_metrics;
 use crate::{
     call::{
-        pileup::indels::IndelAllele,
-        process::{PileupMappingParams, get_pileups},
-        variant_calling::indel_calling::{self, IndelParams, IndelPathway},
+        SegmentColumns,
+        ml::MachineLearningParams,
+        process::{Engine, PileupMappingParams, Unscored, ml_row},
+        segment_columns,
     },
     metrics::{
-        MetricsForIndel, PileupMetrics,
+        PileupMetrics,
         ml::{
-            features::{FeatureCalculator, FeatureNum},
-            types::{ByModel, MlFeatureSet, MlModel, PlattScaling, RastairFlatModel},
+            features::{feature_count, feature_names},
+            types::{
+                ByModel, FeatureLayout, ForestSet, MachineLearning, MlModel, PlattScaling,
+                RastairFlatModel,
+            },
         },
     },
     regions::ConfidentRegions,
-    sequence::{
-        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Region, Segment, SegmentationParams,
-    },
-    utils::{cli, map_surrounding},
+    sequence::{ChunkRegion, ReaderParams, Region, SegmentationParams, SeqairReaders},
+    utils::{CliRegionInput, cli, map_surrounding},
     verify::for_each_record_in_regions,
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
+use clap::value_parser;
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, ContextCompat as _, Result, ensure, eyre};
 use lz4::EncoderBuilder;
@@ -42,21 +77,36 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use reservoir::{ByLabel, KeySource, Label, SamplingRequest, TrainingData};
 use rust_htslib::bcf::{self, Read as _};
-use seqair_types::{Base, Pos0, RegionString, SmallVec, SmolStr};
+use seqair_types::{Base, Pos0, RegionString, SmolStr};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
     io::{BufWriter, Write},
     path::Path,
-    rc::Rc,
     thread::available_parallelism,
 };
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, clap::Args)]
 pub struct TrainModelParams {
-    #[command(flatten)]
-    reader: ReaderParams,
+    /// Sorted and indexed BAM or CRAM files of the truth set's sample; their
+    /// candidates pool into one collection, e.g. one library down-sampled to
+    /// several depths
+    #[arg(required = true, num_args = 1.., value_parser = value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
+    bams: Vec<ClioPath>,
+
+    /// Path to sorted and indexed (via samtools faidx) FASTA file. Can be bgzip
+    /// compressed, but requires both a gzi index and a fai index
+    #[arg(short = 'r', long, value_parser = value_parser!(ClioPath).exists().is_file())]
+    #[arg(help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
+    fasta_file: ClioPath,
+
+    /// Restrict training to these regions: space-separated region strings
+    /// (`chr`, `chr:start`, `chr:start-end`, 1-based inclusive) or `@file.bed`
+    #[arg(short = 'l', long = "region", value_parser = value_parser!(CliRegionInput))]
+    #[arg(help_heading = cli::sections::INPUT)]
+    regions: Option<CliRegionInput>,
 
     /// Path to the ground truth file (VCF) to train with
     #[arg(help_heading = cli::sections::INPUT, value_hint=clap::ValueHint::FilePath)]
@@ -69,9 +119,9 @@ pub struct TrainModelParams {
     /// high-confidence regions a truth VCF asserts nothing, so a real variant
     /// there is simply missing from it and would be labelled *negative*. Those
     /// mislabelled negatives concentrate in the repetitive regions the truth set
-    /// excludes — which is where indels live — so training without this teaches
-    /// the model that indel-like signal in a repeat is false, using examples
-    /// where the truth is merely unknown.
+    /// excludes, so training without this teaches the model that a variant's
+    /// signal in a repeat is false, using examples where the truth is merely
+    /// unknown.
     ///
     /// Candidates outside the intervals are dropped, not relabelled.
     #[arg(long = "regions-file", short = 'R', help_heading = cli::sections::INPUT, value_hint = clap::ValueHint::FilePath)]
@@ -84,7 +134,7 @@ pub struct TrainModelParams {
 
     /// Export collected features and labels as TSV files to this directory.
     /// One file per model type: `cpg_features.tsv`, `denovo_features.tsv`,
-    /// `other_features.tsv`, `insertion_features.tsv`, `deletion_features.tsv`.
+    /// `other_features.tsv`.
     #[arg(long, help_heading = cli::sections::OUTPUT, value_hint=clap::ValueHint::DirPath)]
     export_features: Option<ClioPath>,
 
@@ -95,8 +145,15 @@ pub struct TrainModelParams {
     #[command(flatten)]
     model_params: ModelParameters,
 
-    #[arg(long, default_value_t = MlFeatureSet::Standard)]
-    ml_features: MlFeatureSet,
+    /// Also fit the forests `call --snv-engine` re-scores SNV candidates
+    /// with; the model file then carries both sets.
+    ///
+    /// The candidates are collected a second time the way the cascade hands
+    /// them on: the forests fitted first score every candidate, the pair-HMM
+    /// engine scores the ones they keep on the clusters
+    /// `call` builds, and only those are fitted on.
+    #[arg(long, help_heading = cli::sections::TRAINING)]
+    snv_engine: bool,
 
     /// Number of threads to use
     #[arg(short='@', long = "threads", env = "RASTAIR_THREADS", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
@@ -117,7 +174,7 @@ struct ModelParameters {
     max_features: usize,
 
     /// Maximum tree depth. `0` grows trees until pure (unbounded), which can
-    /// produce very large models on noisy/poorly-separable data such as indels.
+    /// produce very large models on noisy, poorly separable data.
     /// See <https://scikit-learn.org/stable/modules/tree.html>.
     #[arg(long = "max-depth", default_value_t = 40)]
     #[arg(help_heading = cli::sections::TRAINING)]
@@ -145,23 +202,6 @@ struct ModelParameters {
     #[arg(help_heading = cli::sections::TRAINING)]
     n_negative: usize,
 
-    /// Number of positive examples to draw for the insertion and deletion
-    /// models.
-    #[arg(long = "indel-n-positive", default_value_t = 8_000)]
-    #[arg(help_heading = cli::sections::TRAINING)]
-    indel_n_positive: usize,
-
-    /// Number of negative examples to draw for the insertion and deletion
-    /// models.
-    ///
-    /// Separate from `--n-negative` because indel candidates arrive already
-    /// filtered and are mostly true: the SNV draw would take nearly every
-    /// indel negative and train the indel models far more negative-heavy
-    /// than the candidates they judge.
-    #[arg(long = "indel-n-negative", default_value_t = 20_000)]
-    #[arg(help_heading = cli::sections::TRAINING)]
-    indel_n_negative: usize,
-
     /// Random seed for reproducibility (subsampling and forest training).
     /// Omit for a random seed.
     #[arg(long)]
@@ -170,34 +210,14 @@ struct ModelParameters {
 }
 
 impl ModelParameters {
-    fn sampling_plan(&self) -> SamplingPlan {
-        SamplingPlan {
-            snv: ByLabel { positive: self.n_positive, negative: self.n_negative },
-            indel: ByLabel { positive: self.indel_n_positive, negative: self.indel_n_negative },
-        }
-    }
-}
-
-/// The draw each model asks for: SNV and indel candidates have opposite
-/// class balance, so they are sampled separately.
-#[derive(Debug, Clone, Copy)]
-struct SamplingPlan {
-    snv: SamplingRequest,
-    indel: SamplingRequest,
-}
-
-impl SamplingPlan {
-    const fn request(self, model: MlModel) -> SamplingRequest {
-        match model {
-            MlModel::Cpg | MlModel::DenovoCpg | MlModel::Others => self.snv,
-            MlModel::Insertion | MlModel::Deletion => self.indel,
-        }
+    /// The draw every model asks for.
+    fn sampling_request(&self) -> SamplingRequest {
+        ByLabel { positive: self.n_positive, negative: self.n_negative }
     }
 }
 
 /// The order the models' forest seeds are drawn from the run seed in.
-const SEED_ORDER: [MlModel; MlModel::COUNT] =
-    [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others, MlModel::Insertion, MlModel::Deletion];
+const SEED_ORDER: [MlModel; MlModel::COUNT] = [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others];
 
 /// Key for indexing positions in truth set
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -205,13 +225,6 @@ struct PositionKey {
     pos: u64,
     ref_base: Base,
     alt_base: Base,
-}
-
-/// Key for indexing indel positions in truth set
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-struct IndelKey {
-    pos: u64,
-    allele: IndelAllele,
 }
 
 /// The labels a candidate is checked against.
@@ -228,7 +241,6 @@ struct Truth {
 #[derive(Debug, Default)]
 struct ContigTruth {
     snps: HashSet<PositionKey>,
-    indels: HashSet<IndelKey>,
 }
 
 impl Truth {
@@ -246,7 +258,7 @@ impl Truth {
             warn!(
                 "Training without --regions-file: candidates outside the truth set's \
                  high-confidence regions will be labelled negative even though the truth set \
-                 makes no claim there, which is most severe for indels."
+                 makes no claim there."
             );
         }
 
@@ -270,60 +282,41 @@ fn merge_collected(mut acc: Collected, other: Collected) -> Result<Collected> {
 #[instrument(level = "debug", skip_all)]
 pub fn train_model(params: &TrainModelParams) -> Result<()> {
     let seed = params.model_params.seed.unwrap_or_else(rand::random);
-    let plan = params.model_params.sampling_plan();
+    let request = params.model_params.sampling_request();
     info!(
         seed,
         n_trees = params.model_params.n_trees,
         max_features = params.model_params.max_features,
         max_depth = params.model_params.max_depth,
         min_samples_leaf = params.model_params.min_samples_leaf,
-        n_positive = plan.snv.positive,
-        n_negative = plan.snv.negative,
-        indel_n_positive = plan.indel.positive,
-        indel_n_negative = plan.indel.negative,
+        n_positive = request.positive,
+        n_negative = request.negative,
         "Training parameters",
     );
 
     create_output_dirs(params)?;
 
-    let (collected, failed_segments) = collect(params, plan, seed)?;
-    for (model, data) in collected.iter() {
-        let (seen, kept) = (data.seen(), data.kept());
-        let request = plan.request(model);
-        let draw = request.draw_from(kept);
-        info!(
-            model = model.name(),
-            pool_positive = seen.positive,
-            pool_negative = seen.negative,
-            kept_positive = kept.positive,
-            kept_negative = kept.negative,
-            requested_positive = request.positive,
-            requested_negative = request.negative,
-            draw_positive = draw.positive,
-            draw_negative = draw.negative,
-            rejected = data.rejected(),
-            "Collected training examples"
-        );
-        ensure!(
-            kept.positive >= 2 && kept.negative >= 2,
-            "The {} model collected {} positive and {} negative examples ({failed_segments} \
-             segments failed); it needs at least two of each, one to fit on and one to \
-             calibrate with",
-            model.name(),
-            kept.positive,
-            kept.negative,
-        );
-    }
+    let collected = collect(params, request, seed, None)?;
 
     if let Some(dir) = params.export_features.as_ref() {
         info!(dir = %dir.display(), "Exporting features as TSV");
-        let names = params.ml_features.get_calculator().feature_names();
         for (model, data) in collected.iter() {
-            export_features_tsv(data, model.name(), names.get(model), dir.path())?;
+            export_features_tsv(data, model.name(), &feature_names(model), dir.path())?;
         }
     }
 
-    let model = fit(params, plan, seed, collected)?;
+    let forests = fit(params, request, seed, &collected, "")?;
+    let snv_engine = if params.snv_engine {
+        // The engine forests are fitted on what the cascade hands them: the
+        // alts these forests keep, with the engine's features from their
+        // clusters.
+        let stage1 = MachineLearningParams::with_forests(forests.clone(), None, 1)?;
+        let collected = collect(params, request, seed, Some(&stage1))?;
+        Some(fit(params, request, seed, &collected, "snv_engine_")?)
+    } else {
+        None
+    };
+    let model = RastairFlatModel { feature_layout: FeatureLayout::current(), forests, snv_engine };
     serialize_model(&model, params.output.clone())
         .wrap_err_with(|| format!("Failed to serialize model to {}", params.output.display()))?;
     info!(path=%params.output, "Saved model");
@@ -351,32 +344,48 @@ fn create_output_dirs(params: &TrainModelParams) -> Result<()> {
     Ok(())
 }
 
-/// Label every candidate in the requested regions and file it under its model,
-/// and count the segments that failed.
-fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(Collected, usize)> {
+/// Label every candidate in the requested regions and file it under its model.
+/// With `stage1`, only the candidates the cascade re-scores after those
+/// forests (the engine forests' rows).
+fn collect(
+    params: &TrainModelParams,
+    request: SamplingRequest,
+    seed: u64,
+    stage1: Option<&MachineLearning>,
+) -> Result<Collected> {
     let segmentation = SegmentationParams::default();
-    let readers = params.reader.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
-    let segments: Vec<ChunkRegion> = readers
-        .segments(segmentation.segment_max_length, segmentation.segment_overlap)
-        .wrap_err("Could not fetch segments from BAM file")?
-        .collect();
-    ensure!(!segments.is_empty(), "No segments found in BAM file");
+    let readers = params
+        .bams
+        .iter()
+        .map(|bam| {
+            ReaderParams {
+                bam_file: bam.clone(),
+                fasta_file: params.fasta_file.clone(),
+                regions: params.regions.clone(),
+            }
+            .pileup_readers()
+            .wrap_err_with(|| format!("Failed to read {} or the FASTA file", bam.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    // Each segment is keyed by its index in this list, so the BAMs' samples
+    // are drawn independently even where they share positions.
+    let mut segments: Vec<(usize, ChunkRegion)> = Vec::new();
+    for (source, (bam, readers)) in params.bams.iter().zip(&readers).enumerate() {
+        let before = segments.len();
+        segments.extend(
+            readers
+                .segments(segmentation.segment_max_length, segmentation.segment_overlap)
+                .wrap_err_with(|| format!("Could not fetch segments from {}", bam.display()))?
+                .map(|segment| (source, segment)),
+        );
+        ensure!(segments.len() > before, "No segments found in {}", bam.display());
+    }
     info!("Processing {} segments to collect training data", segments.len());
-    let truth = Truth::load(params, &covered_regions(&segments)?)?;
+    let mut spans: Vec<ChunkRegion> = segments.iter().map(|(_, segment)| segment.clone()).collect();
+    spans.sort();
+    let truth = Truth::load(params, &covered_regions(&spans)?)?;
 
-    let calculator = params.ml_features.get_calculator();
-    let collector = SegmentCollector {
-        truth: &truth,
-        calculator: &*calculator,
-        feature_num: calculator.feature_num(),
-        plan,
-        // Training examples come from the ML pathway, not the hard-filter chain.
-        indel_params: IndelParams {
-            experimental_indels: Some(IndelPathway::Ml),
-            ..IndelParams::default()
-        },
-    };
-    let readers = ReaderSource::from(readers);
+    let collector = SegmentCollector { truth: &truth, stage1, request };
     // Reduced rather than collected: holding every segment's sample until a
     // final merge would keep `segments x cap` examples alive.
     let (mut collected, failed_segments) = rayon::ThreadPoolBuilder::new()
@@ -391,14 +400,16 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
                 .par_iter()
                 .enumerate()
                 .map_init(
-                    || readers.fork(),
-                    |readers, (index, segment)| {
+                    || readers.iter().map(SeqairReaders::fork).collect::<Result<Vec<_>>>(),
+                    |forks, (index, (source, segment))| {
                         let _span =
                             tracing::info_span!("collect_segment", region = %segment.region)
                                 .entered();
-                        let readers = readers
+                        let readers = forks
                             .as_mut()
-                            .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?;
+                            .map_err(|e| eyre!("Failed to open readers in worker thread: {e:#}"))?
+                            .get_mut(*source)
+                            .wrap_err("segment of an unknown BAM")?;
                         collector.segment(
                             readers,
                             segment,
@@ -433,86 +444,89 @@ fn collect(params: &TrainModelParams, plan: SamplingPlan, seed: u64) -> Result<(
     for model in MlModel::ALL {
         collected[model].finish();
     }
-    Ok((collected, failed_segments))
-}
-
-/// The columns of one segment, overlaps included, as the feature extractors
-/// read them.
-fn segment_columns(
-    readers: &mut PileupReaders,
-    segment: &ChunkRegion,
-) -> Result<(Rc<Segment>, Vec<PileupMetrics>)> {
-    let mapping = PileupMappingParams { call_indels: true, ..Default::default() };
-
-    #[cfg(feature = "experimental-seqair")]
-    let (segment, columns) = {
-        let (segment, columns) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        (segment, columns.collect())
-    };
-    #[cfg(not(feature = "experimental-seqair"))]
-    let (segment, columns) = {
-        let (segment, pileups) =
-            get_pileups(readers, segment, &mapping).wrap_err("Failed to build pileups")?;
-        let columns = calculate_pileup_metrics(pileups, &segment)
-            .filter_map(|metrics| {
-                metrics
-                    .inspect_err(|e| {
-                        warn!(error = format!("{e:#}"), "Failed to calculate pileup metrics");
-                    })
-                    .ok()
-            })
-            .collect();
-        (segment, columns)
-    };
-
-    Ok((segment, columns))
+    for (model, data) in collected.iter() {
+        let (seen, kept) = (data.seen(), data.kept());
+        let draw = request.draw_from(kept);
+        info!(
+            model = model.name(),
+            forests = if stage1.is_some() { "snv_engine_" } else { "" },
+            pool_positive = seen.positive,
+            pool_negative = seen.negative,
+            kept_positive = kept.positive,
+            kept_negative = kept.negative,
+            requested_positive = request.positive,
+            requested_negative = request.negative,
+            draw_positive = draw.positive,
+            draw_negative = draw.negative,
+            rejected = data.rejected(),
+            "Collected training examples"
+        );
+        ensure!(
+            kept.positive >= 2 && kept.negative >= 2,
+            "The {} model collected {} positive and {} negative examples ({failed_segments} \
+             segments failed); it needs at least two of each, one to fit on and one to \
+             calibrate with",
+            model.name(),
+            kept.positive,
+            kept.negative,
+        );
+    }
+    Ok(collected)
 }
 
 /// Turns one segment's candidates into labelled examples.
 struct SegmentCollector<'a> {
     truth: &'a Truth,
-    calculator: &'a dyn FeatureCalculator,
-    feature_num: FeatureNum,
-    plan: SamplingPlan,
-    indel_params: IndelParams,
+    /// With the forests of the cascade's first stage, the candidates are the
+    /// ones the SNV engine scores after them, as in `call --snv-engine`.
+    stage1: Option<&'a MachineLearning>,
+    request: SamplingRequest,
 }
 
 impl SegmentCollector<'_> {
     fn empty(&self) -> Collected {
-        ByModel::from_fn(|model| {
-            TrainingData::for_request(self.feature_num.get(model), self.plan.request(model))
-        })
+        ByModel::from_fn(|model| TrainingData::for_request(feature_count(model), self.request))
     }
 
-    /// Candidates are offered in column order, SNVs before indels, which
-    /// together with `keys` fixes which of them the reservoirs keep.
+    /// Candidates are offered in column order, which together with `keys`
+    /// fixes which of them the reservoirs keep.
     fn segment(
         &self,
-        readers: &mut PileupReaders,
+        readers: &mut SeqairReaders,
         segment: &ChunkRegion,
         keys: &mut ByModel<KeySource>,
     ) -> Result<Collected> {
         let Some(truth) = self.truth.contigs.get(&segment.contig) else {
             return Ok(self.empty());
         };
-        let (segment, mut columns) = segment_columns(readers, segment)?;
+        // With the first stage, the columns `call --snv-engine` builds,
+        // indels included, scored as it scores them.
+        let cascade = self.stage1.is_some();
+        let mapping = PileupMappingParams {
+            engine: if cascade { Engine::PairHmm } else { Engine::ColumnsOnly },
+            ..PileupMappingParams::default()
+        };
+        let SegmentColumns { segment, mut columns, held } =
+            segment_columns(readers, segment, &mapping)?;
+        if let Some(stage1) = self.stage1 {
+            crate::call::process::score_on_cpu(&mut columns, stage1, |_, _| true)?;
+            held.score_snv_clusters(&segment, &mut columns, &mapping);
+        }
         let mut collected = self.empty();
         let mut examples = Examples { collected: &mut collected, contig: &segment.contig, keys };
         // The overlap columns stay in as neighbours, as in `call`, but only
         // the core offers candidates: the neighbouring segment offers the rest.
-        map_surrounding(
-            &mut columns,
-            |before, column, after| {
-                let pos = u64::from(column.pos);
-                if !segment.is_core(pos) || !self.truth.claims(&segment.contig, pos) {
-                    return Ok(());
-                }
-                self.snvs(truth, &mut examples, before, column, after)?;
-                self.indels(truth, &mut examples, column)
-            },
-            "failed to extract training features, skipping",
-        );
+        map_surrounding(&mut columns, |before, column, after| {
+            if segment.is_core(column.pos)
+                && self.truth.claims(&segment.contig, column.pos.as_u64())
+                && let Err(error) = self.snvs(truth, &mut examples, before, column, after)
+            {
+                warn!(
+                    error = format!("{error:#}"),
+                    "failed to extract training features, skipping"
+                );
+            }
+        });
         Ok(collected)
     }
 
@@ -525,53 +539,22 @@ impl SegmentCollector<'_> {
         after: Option<&PileupMetrics>,
     ) -> Result<()> {
         let pos = u64::from(column.pos);
-        let ref_base = column.reference_base;
         for alt in &column.alts {
             let alt_base = alt.base;
-            if ref_base == Base::Unknown || alt_base == Base::Unknown {
+            if self.stage1.is_some() && !column.engine_scored(alt_base) {
                 continue;
             }
             let Some(candidate) = column.alt_metrics(alt_base) else { continue };
-            let label = truth.snps.contains(&PositionKey { pos, ref_base, alt_base });
-
-            let (model, features) = if candidate.is_evidence_for_methylation() {
-                (MlModel::Cpg, self.calculator.calculate_cpg(&candidate, before, after))
-            } else if *alt.metrics.denovo {
-                (
-                    MlModel::DenovoCpg,
-                    self.calculator.calculate_denovo_cpg(&candidate, before, after),
-                )
-            } else {
-                (MlModel::Others, self.calculator.calculate_others(&candidate, before, after))
-            };
-            examples.add(model, features, label, pos)?;
-        }
-        Ok(())
-    }
-
-    fn indels(
-        &self,
-        truth: &ContigTruth,
-        examples: &mut Examples<'_>,
-        column: &PileupMetrics,
-    ) -> Result<()> {
-        let Some(indel_data) = column.indel_data.as_ref() else { return Ok(()) };
-        let pos = u64::from(column.pos);
-        let tract = u32::from(indel_data.homopolymer_run.max(indel_data.dinucleotide_run));
-        let calls =
-            indel_calling::call_indels(&indel_data.counts, &self.indel_params, true, tract, false);
-        for call in &calls {
-            let label = truth.indels.contains(&IndelKey { pos, allele: call.allele.clone() });
-            let candidate = MetricsForIndel { metrics: column, indel: call };
-            let (model, features) = match call.allele {
-                IndelAllele::Insertion(_) => {
-                    (MlModel::Insertion, self.calculator.calculate_insertion(&candidate))
-                }
-                IndelAllele::Deletion(_) => {
-                    (MlModel::Deletion, self.calculator.calculate_deletion(&candidate))
-                }
-            };
-            examples.add(model, features, label, pos)?;
+            let label = truth.snps.contains(&PositionKey {
+                pos,
+                ref_base: column.reference_base,
+                alt_base,
+            });
+            match ml_row(&candidate, before, after) {
+                Ok((model, row)) => examples.add(model, &row, label, pos)?,
+                Err(Unscored::NoFeatures(model)) => examples.collected[model].reject(),
+                Err(Unscored::PreMl) => {}
+            }
         }
         Ok(())
     }
@@ -585,32 +568,8 @@ struct Examples<'a> {
 }
 
 impl Examples<'_> {
-    /// Offer a candidate whose features could be computed and are all finite,
-    /// and count any other as rejected.
-    fn add(
-        &mut self,
-        model: MlModel,
-        features: Result<Array2<f32>>,
-        in_truth: bool,
-        pos: u64,
-    ) -> Result<()> {
-        let features = match features {
-            Ok(features) if features.iter().all(|value| value.is_finite()) => features,
-            Ok(_) => {
-                self.collected[model].reject();
-                return Ok(());
-            }
-            Err(error) => {
-                debug!(
-                    model = model.name(),
-                    error = format!("{error:#}"),
-                    "No features for training candidate"
-                );
-                self.collected[model].reject();
-                return Ok(());
-            }
-        };
-        let row = features.as_slice().wrap_err("Feature row is not contiguous")?;
+    fn add(&mut self, model: MlModel, row: &Array2<f32>, in_truth: bool, pos: u64) -> Result<()> {
+        let row = row.as_slice().wrap_err("Feature row is not contiguous")?;
         self.collected[model].add_example(
             row,
             Label::of(in_truth),
@@ -652,7 +611,7 @@ fn covered_regions(segments: &[ChunkRegion]) -> Result<Vec<RegionString>> {
         .collect()
 }
 
-/// The SNP and indel keys of every PASS record of the truth VCF in `regions`,
+/// The SNP keys of every PASS record of the truth VCF in `regions`,
 /// for each contig of `regions` the VCF declares.
 #[instrument(level = "info", skip_all, fields(path = %path.display()))]
 fn truth_keys(
@@ -692,59 +651,33 @@ fn truth_keys(
         let alleles = record.alleles();
         let Some((&ref_allele, alts)) = alleles.split_first() else { return };
         for &alt_allele in alts {
-            match TruthKey::of(pos, ref_allele, alt_allele) {
-                Some(TruthKey::Snv(key)) => {
-                    truth.snps.insert(key);
-                }
-                Some(TruthKey::Indel(key)) => {
-                    truth.indels.insert(key);
-                }
-                None => {}
+            if let Some(key) = PositionKey::of_truth(pos, ref_allele, alt_allele) {
+                truth.snps.insert(key);
             }
         }
     })?;
-    let count = |of: fn(&ContigTruth) -> usize| contigs.values().map(of).sum::<usize>();
-    info!(
-        snps = count(|t| t.snps.len()),
-        indels = count(|t| t.indels.len()),
-        "Loaded true variants"
-    );
+    info!(snps = contigs.values().map(|t| t.snps.len()).sum::<usize>(), "Loaded true variants");
     Ok(contigs)
 }
 
-/// What one ALT allele of a truth record labels.
-#[derive(Debug, PartialEq, Eq)]
-enum TruthKey {
-    Snv(PositionKey),
-    Indel(IndelKey),
-}
-
-impl TruthKey {
-    /// The allele's key once the suffix it shares with REF past the anchor
-    /// base is stripped, which is how a multi-allelic record pads its shorter
-    /// alleles.
+impl PositionKey {
+    /// The key of one ALT allele of a truth record once the suffix it shares
+    /// with REF past the first base is stripped, which is how a multi-allelic
+    /// record pads its shorter alleles.
     ///
-    /// A single-base substitution or an insertion or deletion after the shared
-    /// anchor base has one; MNPs, complex and symbolic alleles do not.
-    fn of(pos: u64, ref_allele: &[u8], alt_allele: &[u8]) -> Option<Self> {
+    /// Only a single-base substitution has one; indels, MNPs, complex and
+    /// symbolic alleles do not.
+    fn of_truth(pos: u64, ref_allele: &[u8], alt_allele: &[u8]) -> Option<Self> {
         let (&ref_anchor, ref_rest) = ref_allele.split_first()?;
         let (&alt_anchor, alt_rest) = alt_allele.split_first()?;
         let (ref_rest, alt_rest) = strip_common_suffix(ref_rest, alt_rest);
-        let known = |bases: &[u8]| -> Option<SmallVec<Base, 4>> {
-            bases.iter().map(|&b| Some(Base::from(b)).filter(|&b| b != Base::Unknown)).collect()
-        };
-        match (ref_rest.is_empty(), alt_rest.is_empty()) {
-            (true, true) if ref_anchor != alt_anchor => {
-                let (ref_base, alt_base) = (Base::from(ref_anchor), Base::from(alt_anchor));
-                (ref_base != Base::Unknown && alt_base != Base::Unknown)
-                    .then_some(Self::Snv(PositionKey { pos, ref_base, alt_base }))
-            }
-            (false, true) if ref_anchor == alt_anchor => known(ref_rest)
-                .map(|bases| Self::Indel(IndelKey { pos, allele: IndelAllele::Deletion(bases) })),
-            (true, false) if ref_anchor == alt_anchor => known(alt_rest)
-                .map(|bases| Self::Indel(IndelKey { pos, allele: IndelAllele::Insertion(bases) })),
-            _ => None,
-        }
+        let (ref_base, alt_base) = (Base::from(ref_anchor), Base::from(alt_anchor));
+        (ref_rest.is_empty()
+            && alt_rest.is_empty()
+            && ref_base != alt_base
+            && ref_base != Base::Unknown
+            && alt_base != Base::Unknown)
+            .then_some(Self { pos, ref_base, alt_base })
     }
 }
 
@@ -760,27 +693,27 @@ fn strip_common_suffix<'a>(mut left: &'a [u8], mut right: &'a [u8]) -> (&'a [u8]
 }
 
 /// Fit every model's forest, one after the other: biosphere parallelises
-/// each fit over `--threads` in a pool of its own.
+/// each fit over `--threads` in a pool of its own. `prefix` names the forest
+/// set in the feature importance files.
 fn fit(
     params: &TrainModelParams,
-    plan: SamplingPlan,
+    request: SamplingRequest,
     seed: u64,
-    collected: Collected,
-) -> Result<RastairFlatModel> {
+    collected: &Collected,
+    prefix: &str,
+) -> Result<ForestSet> {
     let seeds = forest_seeds(seed);
-    let calculator = params.ml_features.get_calculator();
-    let (counts, names) = (calculator.feature_num(), calculator.feature_names());
 
-    let trained = collected.try_map(|model, data| -> Result<_> {
-        let (forest, platt) = fit_model(model, &data, params, plan.request(model), seeds[model])
+    let trained = ByModel::from_fn(|model| model).try_map(|model, _| -> Result<_> {
+        let (forest, platt) = fit_model(model, &collected[model], params, request, seeds[model])
             .wrap_err_with(|| format!("Failed to train the {} model", model.name()))?;
         if let Some(dir) = params.feature_analytics.as_ref() {
-            let path = dir.path().join(format!("{}_feature_importances.csv", model.name()));
-            export_feature_importances(&forest, names.get(model), &path).wrap_err_with(|| {
-                format!("Failed to export {} feature importances", model.name())
-            })?;
+            let path = dir.path().join(format!("{prefix}{}_feature_importances.csv", model.name()));
+            export_feature_importances(&forest, &feature_names(model), &path).wrap_err_with(
+                || format!("Failed to export {} feature importances", model.name()),
+            )?;
         }
-        Ok((FlatForest::from_forest(&forest, counts.get(model)), platt))
+        Ok((FlatForest::from_forest(&forest, feature_count(model)), platt))
     })?;
 
     #[derive(Debug, serde::Serialize)]
@@ -794,9 +727,9 @@ fn fit(
             (model.name(), ModelReport { forest: &forest.meta, scaling: *scaling })
         })
         .collect();
-    info!(report = ?report, "Trained models");
+    info!(report = ?report, forests = prefix, "Trained models");
 
-    Ok(RastairFlatModel::from_trained(params.ml_features, trained))
+    Ok(ForestSet::from_trained(trained))
 }
 
 /// One forest seed per model, drawn from the run seed in [`SEED_ORDER`].
@@ -1056,27 +989,76 @@ mod tests {
         Ok(())
     }
 
+    /// Every positional but the last is a BAM, so one or several parse the
+    /// same way.
+    #[test]
+    fn the_last_positional_is_the_truth_and_the_rest_are_bams() -> Result<()> {
+        let parse = |bams: &[&str]| -> Result<(Vec<String>, String)> {
+            let args = ["train", "-r", "tests/data/test.fasta.gz"]
+                .into_iter()
+                .chain(bams.iter().copied())
+                .chain(["truth.vcf.gz", "-l", "chr1 chr6"]);
+            let params = TrainCli::try_parse_from(args)?.train;
+            let bams = params.bams.iter().map(|bam| bam.path().display().to_string()).collect();
+            Ok((bams, params.truth.path().display().to_string()))
+        };
+        let bam = "tests/data/test.bam";
+        assert_eq!(parse(&[bam])?, (vec![bam.to_owned()], "truth.vcf.gz".to_owned()));
+        assert_eq!(parse(&[bam, bam])?.0.len(), 2);
+        assert!(parse(&[]).is_err(), "a BAM is required");
+        Ok(())
+    }
+
+    /// `call` scores the columns `ml train` labels, so a candidate's shared
+    /// features are the same on both paths.
+    #[test]
+    fn training_and_calling_see_the_same_common_features() -> Result<()> {
+        use crate::metrics::ml::features::shared::common_sections;
+
+        #[derive(clap::Parser)]
+        struct CallCli {
+            #[command(flatten)]
+            call: crate::CallParams,
+        }
+        let call = CallCli::try_parse_from([
+            "call",
+            "--fasta-file=tests/data/test.fasta.gz",
+            "tests/data/test.bam",
+            "--region=bacteriophage_lambda_CpG:1001-4000",
+        ])?
+        .call;
+        let common = |column: &PileupMetrics, alt: Base| -> Option<Vec<f32>> {
+            let (a, b) = common_sections(&column.alt_metrics(alt)?);
+            let mut row = a.as_row().to_vec();
+            row.extend_from_slice(b.as_row());
+            Some(row)
+        };
+
+        let mut readers = call.segments.pileup_readers()?;
+        let segment = readers.segments(10_000, 0)?.next().wrap_err("no segment")?;
+        let training =
+            segment_columns(&mut readers, &segment, &PileupMappingParams::default())?.columns;
+        let calling = segment_columns(&mut readers, &segment, &call.pileup_mapping())?.columns;
+
+        let training: HashMap<_, _> = training.iter().map(|column| (column.pos, column)).collect();
+        let mut compared = 0;
+        for column in &calling {
+            let trained = training.get(&column.pos).wrap_err("call column missing in training")?;
+            for alt in column.alts.iter().map(|alt| alt.base) {
+                assert_eq!(common(trained, alt), common(column, alt), "{} {alt}", column.pos);
+                compared += 1;
+            }
+        }
+        assert!(compared > 100, "only {compared} candidates compared");
+        Ok(())
+    }
+
     /// A bare command line trains the bundled model's recipe.
     #[test]
     fn the_defaults_are_the_bundled_recipe() {
         let params = model_parameters(&[]);
         assert_eq!((params.max_features, params.max_depth, params.min_samples_leaf), (4, 40, 10));
-        let plan = params.sampling_plan();
-        assert_eq!(plan.snv, ByLabel { positive: 8_000, negative: 200_000 });
-        assert_eq!(plan.indel, ByLabel { positive: 8_000, negative: 20_000 });
-    }
-
-    /// Raising the SNV draw must not drag the indel models along.
-    #[test]
-    fn indel_models_draw_their_own_numbers() {
-        let plan = model_parameters(&["--n-negative", "500000", "--indel-n-negative", "7"])
-            .sampling_plan();
-        for model in [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others] {
-            assert_eq!(plan.request(model).negative, 500_000, "{}", model.name());
-        }
-        for model in [MlModel::Insertion, MlModel::Deletion] {
-            assert_eq!(plan.request(model).negative, 7, "{}", model.name());
-        }
+        assert_eq!(params.sampling_request(), ByLabel { positive: 8_000, negative: 200_000 });
     }
 
     /// A retrain reproduces a model only if every forest gets the seed it got
@@ -1086,52 +1068,27 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(7);
         let expected: Vec<u64> = (0..MlModel::COUNT).map(|_| rng.random()).collect();
         let seeds = forest_seeds(7);
-        let order = [
-            MlModel::Cpg,
-            MlModel::DenovoCpg,
-            MlModel::Others,
-            MlModel::Insertion,
-            MlModel::Deletion,
-        ];
+        let order = [MlModel::Cpg, MlModel::DenovoCpg, MlModel::Others];
         assert_eq!(order.map(|model| seeds[model]).to_vec(), expected);
     }
 
-    fn truth_key(ref_allele: &str, alt_allele: &str) -> Option<TruthKey> {
-        TruthKey::of(10, ref_allele.as_bytes(), alt_allele.as_bytes())
-    }
-
-    fn deletion(bases: &[Base]) -> Option<TruthKey> {
-        Some(TruthKey::Indel(IndelKey { pos: 10, allele: IndelAllele::Deletion(bases.into()) }))
-    }
-
-    /// `REF=ATT ALT=A,AT` deletes two bases and one; the second allele is
-    /// padded with the T it shares with REF.
-    #[test]
-    fn a_padded_allele_of_a_multi_allelic_record_keys_its_own_indel() {
-        assert_eq!(truth_key("ATT", "A"), deletion(&[Base::T, Base::T]));
-        assert_eq!(truth_key("ATT", "AT"), deletion(&[Base::T]));
-        assert_eq!(truth_key("AA", "A"), deletion(&[Base::A]));
-        assert_eq!(
-            truth_key("A", "ATG"),
-            Some(TruthKey::Indel(IndelKey {
-                pos: 10,
-                allele: IndelAllele::Insertion([Base::T, Base::G].as_slice().into()),
-            }))
-        );
+    fn truth_key(ref_allele: &str, alt_allele: &str) -> Option<PositionKey> {
+        PositionKey::of_truth(10, ref_allele.as_bytes(), alt_allele.as_bytes())
     }
 
     /// `REF=AT ALT=GT` is an A>G substitution padded to the record's REF.
     #[test]
     fn a_padded_substitution_keys_an_snv() {
-        let snv =
-            |ref_base, alt_base| Some(TruthKey::Snv(PositionKey { pos: 10, ref_base, alt_base }));
+        let snv = |ref_base, alt_base| Some(PositionKey { pos: 10, ref_base, alt_base });
         assert_eq!(truth_key("AT", "GT"), snv(Base::A, Base::G));
         assert_eq!(truth_key("C", "T"), snv(Base::C, Base::T));
     }
 
     #[test]
-    fn complex_and_symbolic_alleles_key_nothing() {
+    fn indel_complex_and_symbolic_alleles_key_nothing() {
         for (ref_allele, alt_allele) in [
+            ("ATT", "AT"),
+            ("A", "ATG"),
             ("ATG", "AC"),
             ("AT", "GC"),
             ("AT", "AT"),
@@ -1154,27 +1111,6 @@ mod tests {
         assert!(platt.a < 0.0, "higher scores must mean higher probability: {platt:?}");
     }
 
-    /// A row biosphere cannot fit on is counted, not collected.
-    #[test]
-    fn a_non_finite_or_missing_row_is_rejected_and_counted() -> Result<()> {
-        let request = SamplingRequest { positive: 10, negative: 10 };
-        let mut collected = ByModel::from_fn(|_| TrainingData::for_request(2, request));
-        let mut keys = ByModel::from_fn(|model| KeySource::for_segment(0, 0, model));
-        let contig = SmolStr::from("chr1");
-        let mut examples = Examples { collected: &mut collected, contig: &contig, keys: &mut keys };
-        let row = |values: [f32; 2]| Ok(Array2::from_shape_vec((1, 2), values.to_vec())?);
-
-        examples.add(MlModel::Cpg, row([1.0, 2.0]), true, 1)?;
-        examples.add(MlModel::Cpg, row([1.0, f32::INFINITY]), true, 2)?;
-        examples.add(MlModel::Cpg, row([f32::NAN, 2.0]), false, 3)?;
-        examples.add(MlModel::Cpg, Err(eyre!("no neighbour")), false, 4)?;
-
-        assert_eq!(collected[MlModel::Cpg].len(), 1);
-        assert_eq!(collected[MlModel::Cpg].rejected(), 3);
-        assert_eq!(collected[MlModel::Others].rejected(), 0);
-        Ok(())
-    }
-
     /// `--export-features` is joined against VCFs, whose positions are 1-based.
     #[test]
     fn exported_features_carry_1_based_positions() -> Result<()> {
@@ -1190,23 +1126,16 @@ mod tests {
 
     /// Neighbouring segments share their overlap, and each of its candidates
     /// must be offered once, by the segment whose core holds it.
-    #[cfg(feature = "experimental-seqair")]
     #[test]
     fn overlapping_segments_offer_every_candidate_once() -> Result<()> {
         let truth = Truth {
             contigs: HashMap::from([("bacteriophage_lambda_CpG".into(), ContigTruth::default())]),
             confident: None,
         };
-        let calculator = MlFeatureSet::Standard.get_calculator();
         let collector = SegmentCollector {
             truth: &truth,
-            calculator: &*calculator,
-            feature_num: calculator.feature_num(),
-            plan: model_parameters(&[]).sampling_plan(),
-            indel_params: IndelParams {
-                experimental_indels: Some(IndelPathway::Ml),
-                ..IndelParams::default()
-            },
+            stage1: None,
+            request: model_parameters(&[]).sampling_request(),
         };
         let mut params = ReaderParams::test_data();
         params.regions = Some(crate::utils::CliRegionInput::from_region(
@@ -1230,6 +1159,41 @@ mod tests {
         let whole = offered(10_000, 0)?;
         assert!(whole > 0);
         assert_eq!(offered(1_000, 200)?, whole);
+        Ok(())
+    }
+
+    /// With the first stage's forests, a candidate is offered only when the
+    /// SNV engine scored it after them: fewer than every alt, more than none.
+    #[test]
+    fn the_engine_forests_see_only_what_the_cascade_rescores() -> Result<()> {
+        let truth = Truth {
+            contigs: HashMap::from([("bacteriophage_lambda_CpG".into(), ContigTruth::default())]),
+            confident: None,
+        };
+        let stage1 = MachineLearningParams::default().init(1)?.forests;
+        let params = ReaderParams::test_data();
+        let offered = |stage1: Option<&MachineLearning>| -> Result<u64> {
+            let collector = SegmentCollector {
+                truth: &truth,
+                stage1,
+                request: model_parameters(&[]).sampling_request(),
+            };
+            let mut readers = params.pileup_readers()?;
+            let segments: Vec<ChunkRegion> = readers.segments(100_000, 0)?.collect();
+            let mut offered = 0;
+            for (index, segment) in segments.iter().enumerate() {
+                let collected = collector.segment(
+                    &mut readers,
+                    segment,
+                    &mut ByModel::from_fn(|model| KeySource::for_segment(0, index, model)),
+                )?;
+                offered += collected.iter().map(|(_, data)| data.seen().negative).sum::<u64>();
+            }
+            Ok(offered)
+        };
+        let (every_alt, rescored) = (offered(None)?, offered(Some(&stage1))?);
+        assert!(rescored > 0, "the engine scored nothing on the test BAM");
+        assert!(rescored < every_alt, "{rescored} of {every_alt} alts were rescored");
         Ok(())
     }
 
@@ -1301,8 +1265,8 @@ mod tests {
         let chr1 = contigs.get("chr1").wrap_err("chr1 is declared")?;
         let chr2 = contigs.get("chr2").wrap_err("chr2 is declared")?;
         assert!(chr1.snps.contains(&PositionKey { pos: 99, ref_base: Base::A, alt_base: Base::G }));
-        assert_eq!(chr1.indels.len(), 1);
-        assert!(chr2.snps.is_empty() && chr2.indels.is_empty());
+        assert_eq!(chr1.snps.len(), 1, "the insertion is not an SNV");
+        assert!(chr2.snps.is_empty());
         Ok(())
     }
 

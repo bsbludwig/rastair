@@ -1,11 +1,12 @@
 use super::super::shared::{
-    CommonFeatures, CommonSectionA, CommonSectionB, alt_score_methylation_aware,
+    CommonSectionA, CommonSectionB, alt_score_methylation_aware, common_sections,
 };
 use super::super::utils::safe_div;
 use crate::metrics::ml::features::define_features;
 use crate::{
-    metrics::{FormsDenovo, MetricsForAlt, PileupMetrics},
+    metrics::{MetricsForAlt, PileupMetrics},
     utils::IntoF32 as _,
+    vcf::CpgSide,
 };
 use color_eyre::{
     Result,
@@ -23,11 +24,11 @@ define_features! {
         scalar alt_score_adj;
         /// Adjacent-position strand bias.
         scalar sb_adj;
-        /// First block of [`CommonFeatures`].
+        /// First block of the [`common_sections`].
         flatten section_a: CommonSectionA;
         /// Methylation-aware alt score at this position.
         scalar alt_score;
-        /// Second block of [`CommonFeatures`].
+        /// Second block of the [`common_sections`].
         flatten section_b: CommonSectionB;
         /// Log-ratio of this position's beta to the adjacent CpG partner's beta.
         scalar beta_ratio;
@@ -44,7 +45,7 @@ impl DenovoCpgFeatures {
         after: Option<&PileupMetrics>,
     ) -> Result<DenovoCpgFeatures> {
         let alt = current.alt;
-        ensure!(*alt.denovo, "denovo_cpg called on non-denovo candidate");
+        ensure!(current.denovo_side().is_some(), "denovo_cpg called on non-denovo candidate");
 
         let PileupMetrics { ref_metrics: r, .. } = &current.metrics;
 
@@ -52,7 +53,7 @@ impl DenovoCpgFeatures {
             bail!("denovo CpG alt base must be C or G")
         }
 
-        let common = CommonFeatures::extract(current);
+        let (section_a, section_b) = common_sections(current);
         let alt_score = alt_score_methylation_aware(alt, r, alt.base);
         let AdjecentFeatures { beta_ratio, alt_ad_adj, alt_score_adj, sb_adj } =
             calculate_adjacent_features(current, before, after)
@@ -62,9 +63,9 @@ impl DenovoCpgFeatures {
             alt_ad_adj,
             alt_score_adj,
             sb_adj,
-            section_a: CommonSectionA::from_common(&common),
+            section_a,
             alt_score,
-            section_b: CommonSectionB::from_common(&common),
+            section_b,
             beta_ratio,
         })
     }
@@ -85,13 +86,12 @@ fn calculate_adjacent_features(
     // after
     a: Option<&PileupMetrics>,
 ) -> Result<AdjecentFeatures> {
-    let c_alt = c.alt;
-
-    Ok(match c_alt.denovo {
-        FormsDenovo::ThisBecomesC => {
+    Ok(match c.denovo_side() {
+        Some(CpgSide::C) => {
+            // `allele`, not `alt`: at a `T>C` the converted reads are the reference.
             let beta_center = {
-                let c_count = c.metrics.alt(C).map(|x| x.strand_count.ot).unwrap_or_default();
-                let t_count = c.metrics.alt(T).map(|x| x.strand_count.ot).unwrap_or_default();
+                let c_count = c.metrics.allele(C).map(|x| x.strand_count.ot).unwrap_or_default();
+                let t_count = c.metrics.allele(T).map(|x| x.strand_count.ot).unwrap_or_default();
                 safe_div(t_count.f(), (t_count + c_count).f())
             };
 
@@ -119,10 +119,10 @@ fn calculate_adjacent_features(
                 AdjecentFeatures { beta_ratio, alt_ad_adj: 0.0, alt_score_adj: 0.0, sb_adj: 0.0 }
             }
         }
-        FormsDenovo::ThisBecomesG => {
+        Some(CpgSide::G) => {
             let beta_center = {
-                let g_count = c.metrics.alt(G).map(|x| x.strand_count.ot).unwrap_or_default();
-                let a_count = c.metrics.alt(A).map(|x| x.strand_count.ot).unwrap_or_default();
+                let g_count = c.metrics.allele(G).map(|x| x.strand_count.ob).unwrap_or_default();
+                let a_count = c.metrics.allele(A).map(|x| x.strand_count.ob).unwrap_or_default();
                 safe_div(a_count.f(), (a_count + g_count).f())
             };
 
@@ -133,8 +133,8 @@ fn calculate_adjacent_features(
                 let r = &before.ref_metrics;
 
                 let beta_before = {
-                    let c_count = r.strand_count.ob;
-                    let t_count = alt.strand_count.ob;
+                    let c_count = r.strand_count.ot;
+                    let t_count = alt.strand_count.ot;
                     safe_div(t_count.f(), (t_count + c_count).f())
                 };
                 let beta_ratio = (beta_center + 1.0).log2() - (beta_before + 1.0).log2();

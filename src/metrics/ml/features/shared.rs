@@ -6,96 +6,102 @@ use crate::{
 };
 use seqair_types::Base;
 
-/// Common features shared across all ML models.
-///
-/// The fields appear in two sections separated by per-model features:
-/// - Section A (33): `base_encoding` + `position_metrics` + `context_encoding` + `region_entropy` + `depth_ratios`
-/// - Section B (18): `base_quality_metrics` + `mapping_quality_metrics` + `read_metrics`
-pub struct CommonFeatures {
-    /// One-hot encoding of reference and alt bases (8 features)
-    pub base_encoding: [f32; 8],
-    /// Position-level mapping quality metrics (2 features)
-    pub position_metrics: [f32; 2],
-    /// One-hot encoding of sequence context (16 features)
-    pub context_encoding: [f32; 16],
-    /// Regional entropy (1 feature)
-    pub region_entropy: f32,
-    /// Depth ratios for ref and alt on both strands (6 features)
-    pub depth_ratios: [f32; 6],
-    /// Base quality metrics for ref and alt (6 features)
-    pub base_quality_metrics: [f32; 6],
-    /// Mapping quality metrics for ref and alt (6 features)
-    pub mapping_quality_metrics: [f32; 6],
-    /// Read position and alignment metrics (6 features)
-    pub read_metrics: [f32; 6],
-    // FIXME: consider adding `homopolymer_run` and `soft_clip_rate`
+/// The features every ML model shares, in two sections separated by
+/// per-model features.
+pub fn common_sections(current: &MetricsForAlt) -> (CommonSectionA, CommonSectionB) {
+    let alt = current.alt;
+    let PileupMetrics { reference_base, context, pos_metrics: pos, ref_metrics: r, .. } =
+        &current.metrics;
+
+    let ref_base = *reference_base;
+    let depth = pos.depth.f();
+    // Prevent division by zero resulting in NaN values
+    let depth = if depth > 0.0 { depth } else { 1.0 };
+
+    let seq_ctx = context;
+    let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
+    let (p2a, p2c, p2g, p2t) = one_hot_encode_base(seq_ctx.before_1);
+    let (p4a, p4c, p4g, p4t) = one_hot_encode_base(seq_ctx.after_1);
+    let (p5a, p5c, p5g, p5t) = one_hot_encode_base(seq_ctx.after_2);
+
+    let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(ref_base);
+    let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(alt.base);
+
+    let a = CommonSectionA {
+        base_encoding: [ref_a, ref_c, ref_g, ref_t, alt_a, alt_c, alt_g, alt_t],
+        position_metrics: [pos.mapq.f(), pos.mapq0.f()],
+        context_encoding: [
+            p1a, p1c, p1g, p1t, p2a, p2c, p2g, p2t, p4a, p4c, p4g, p4t, p5a, p5c, p5g, p5t,
+        ],
+        region_entropy: pos.region_entropy.f(),
+        depth_ratios: [
+            r.depth.f() / depth,
+            alt.depth.f() / depth,
+            r.strand_count.ot.f() / depth,
+            r.strand_count.ob.f() / depth,
+            alt.strand_count.ot.f() / depth,
+            alt.strand_count.ob.f() / depth,
+        ],
+    };
+    let b = CommonSectionB {
+        base_quality_metrics: [
+            r.baseq.f(),
+            alt.baseq.f(),
+            r.baseq_s.ot.f(),
+            r.baseq_s.ob.f(),
+            alt.baseq_s.ot.f(),
+            alt.baseq_s.ob.f(),
+        ],
+        mapping_quality_metrics: [
+            r.mapq_s.ot.f(),
+            r.mapq_s.ob.f(),
+            alt.mapq_s.ot.f(),
+            alt.mapq_s.ob.f(),
+            r.mapq.f(),
+            alt.mapq.f(),
+        ],
+        read_metrics: [
+            r.position_in_read.f(),
+            alt.position_in_read.f(),
+            r.num_aligned_bases.f(),
+            alt.num_aligned_bases.f(),
+            r.num_indels.f(),
+            alt.num_indels.f(),
+        ],
+        engine: engine_features(current.metrics, alt.base),
+    };
+    (a, b)
 }
 
-impl CommonFeatures {
-    pub fn extract(current: &MetricsForAlt) -> Self {
-        let alt = current.alt;
-        let PileupMetrics { reference_base, context, pos_metrics: pos, ref_metrics: r, .. } =
-            &current.metrics;
-
-        let ref_base = *reference_base;
-        let depth = pos.depth.f();
-        // Prevent division by zero resulting in NaN values
-        let depth = if depth > 0.0 { depth } else { 1.0 };
-
-        let seq_ctx = context;
-        let (p1a, p1c, p1g, p1t) = one_hot_encode_base(seq_ctx.before_2);
-        let (p2a, p2c, p2g, p2t) = one_hot_encode_base(seq_ctx.before_1);
-        let (p4a, p4c, p4g, p4t) = one_hot_encode_base(seq_ctx.after_1);
-        let (p5a, p5c, p5g, p5t) = one_hot_encode_base(seq_ctx.after_2);
-
-        let (ref_a, ref_c, ref_g, ref_t) = one_hot_encode_base(ref_base);
-        let (alt_a, alt_c, alt_g, alt_t) = one_hot_encode_base(alt.base);
-
-        Self {
-            base_encoding: [ref_a, ref_c, ref_g, ref_t, alt_a, alt_c, alt_g, alt_t],
-            position_metrics: [pos.mapq.f(), pos.mapq0.f()],
-            context_encoding: [
-                p1a, p1c, p1g, p1t, p2a, p2c, p2g, p2t, p4a, p4c, p4g, p4t, p5a, p5c, p5g, p5t,
-            ],
-            region_entropy: pos.region_entropy.f(),
-            depth_ratios: [
-                r.depth.f() / depth,
-                alt.depth.f() / depth,
-                r.strand_count.ot.f() / depth,
-                r.strand_count.ob.f() / depth,
-                alt.strand_count.ot.f() / depth,
-                alt.strand_count.ob.f() / depth,
-            ],
-            base_quality_metrics: [
-                r.baseq.f(),
-                alt.baseq.f(),
-                r.baseq_s.ot.f(),
-                r.baseq_s.ob.f(),
-                alt.baseq_s.ot.f(),
-                alt.baseq_s.ob.f(),
-            ],
-            mapping_quality_metrics: [
-                r.mapq_s.ot.f(),
-                r.mapq_s.ob.f(),
-                alt.mapq_s.ot.f(),
-                alt.mapq_s.ob.f(),
-                r.mapq.f(),
-                alt.mapq.f(),
-            ],
-            read_metrics: [
-                r.position_in_read.f(),
-                alt.position_in_read.f(),
-                r.num_aligned_bases.f(),
-                alt.num_aligned_bases.f(),
-                r.num_indels.f(),
-                alt.num_indels.f(),
-            ],
-        }
-    }
+/// `ev_presence` (1 − P(no copy)), `ev_margin`, `ev_ad_ref`, `ev_ad_alt` and
+/// `ev_events` of `alt`'s substitution event, or zeros when no cluster scored
+/// it: always in the cascade's first stage, never in the second, which
+/// scores only engine-scored alts. Both stages share the layout; the first
+/// stage's forests never split on the constant zeros.
+fn engine_features(column: &PileupMetrics, alt: Base) -> [f32; 5] {
+    // Margins are log10 likelihood ratios and grow with depth; the forests
+    // were fitted on them capped.
+    const MARGIN_CAP: f64 = 100.0;
+    let Some(scores) = column.snv_scores.as_deref() else { return [0.0; 5] };
+    let Some(event) = scores.base_event_at(column.pos, alt) else { return [0.0; 5] };
+    // 1 − P(no copy), written as the sum of the others because all three
+    // are zero when no pair explains the reads.
+    let [_, one, two] = scores.copy_posteriors(event);
+    let presence = one + two;
+    let margin = scores.verdict().margin(event).map_or(0.0, |m| m.log10());
+    let support = scores.reads_over(&[event]).ad;
+    let reads = |i: usize| support.get(i).copied().unwrap_or(0).f();
+    [
+        presence.f(),
+        margin.clamp(-MARGIN_CAP, MARGIN_CAP).f(),
+        reads(0),
+        reads(1),
+        scores.cluster().events().len().f(),
+    ]
 }
 
 define_features! {
-    /// First contiguous block of [`CommonFeatures`] (33 features).
+    /// First contiguous block of the [`common_sections`] (33 features).
     ///
     /// The alt-based models interleave a model-specific scalar (`alt_score`)
     /// between this section and [`CommonSectionB`], which is why the common
@@ -121,7 +127,7 @@ define_features! {
 }
 
 define_features! {
-    /// Second contiguous block of [`CommonFeatures`] (18 features).
+    /// Second contiguous block of the [`common_sections`] (23 features).
     pub struct CommonSectionB {
         array base_quality_metrics: 6 = [
             "baseq_ref", "baseq_alt",
@@ -136,28 +142,7 @@ define_features! {
             "num_aligned_ref", "num_aligned_alt",
             "num_indels_ref", "num_indels_alt",
         ];
-    }
-}
-
-impl CommonSectionA {
-    pub fn from_common(c: &CommonFeatures) -> Self {
-        Self {
-            base_encoding: c.base_encoding,
-            position_metrics: c.position_metrics,
-            context_encoding: c.context_encoding,
-            region_entropy: c.region_entropy,
-            depth_ratios: c.depth_ratios,
-        }
-    }
-}
-
-impl CommonSectionB {
-    pub fn from_common(c: &CommonFeatures) -> Self {
-        Self {
-            base_quality_metrics: c.base_quality_metrics,
-            mapping_quality_metrics: c.mapping_quality_metrics,
-            read_metrics: c.read_metrics,
-        }
+        array engine: 5 = ["ev_presence", "ev_margin", "ev_ad_ref", "ev_ad_alt", "ev_events"];
     }
 }
 

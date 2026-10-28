@@ -1,14 +1,35 @@
-//! Feature calculation implementations for ML models
+//! Feature vectors of the ML models.
 //!
-//! Trait-based abstraction for calculating features from variant metrics.
-//! Different implementations can be swapped to support various feature sets and
-//! model variants.
+//! Each model's vector is a `#[repr(C)]` struct of `f32` / `[f32; N]` fields
+//! built with `define_features!`: **field order is the feature order**. The
+//! macro generates `FEATURES`, `names()`/`extend_names()` and a zero-copy
+//! `as_row()`. Field kinds: `scalar name;`, `array name: N = ["..", ..];` and
+//! `flatten name: Type;` (a nested feature struct). The shared features
+//! are split into `CommonSectionA` and `CommonSectionB` because the alt-based models put
+//! their own scalars (e.g. `alt_score`) between the two halves.
+//!
+//! **Every trained model freezes the order**: reordering a field silently
+//! corrupts predictions. `feature_counts_are_stable` pins the counts and
+//! `feature_name_layout` snapshots every `name→index` mapping; update the
+//! snapshot only for an intended layout change, which needs a retrained
+//! model. The same names head the `--feature-analytics` and
+//! `--export-features` outputs of `ml train`.
+//!
+//! - **One column pipeline.** `call` and `ml train` both get their columns from
+//!   `call::segment_columns`; a per-column quantity a feature reads belongs
+//!   there, or training will not see it.
+//!   `train::tests::training_and_calling_see_the_same_common_features` checks
+//!   that the two agree.
+//! - **Layout fingerprint.** `RastairFlatModel.feature_layout` holds an FNV-1a
+//!   hash of each forest's `feature_names()`, one for both forest sets;
+//!   `load_combined_model` refuses a model whose fingerprint differs from this
+//!   build's, or a file of another format, and says to retrain. A layout
+//!   change ships a retrained bundled model.
 
-use super::types::{MlFeatureSet, MlModel};
-use crate::metrics::{MetricsForAlt, MetricsForIndel, PileupMetrics};
+use super::types::MlModel;
+use crate::metrics::{MetricsForAlt, PileupMetrics};
 use color_eyre::{Result, eyre::Context as _};
 use ndarray::Array2;
-use std::fmt;
 
 pub mod shared;
 pub mod standard;
@@ -18,9 +39,9 @@ pub mod utils;
 ///
 /// Every field is `f32` or `[f32; N]`, so a `#[repr(C)]` struct has no padding
 /// and is [`bytemuck::Pod`]. The field declaration order is the feature order,
-/// which removes the hand-counted `buf[start..end]` index arithmetic the old
-/// code relied on. `as_row()` reinterprets the struct as `&[f32]` with no copy,
-/// feeding the f32 inference forests directly.
+/// so no index arithmetic places a feature. `as_row()` reinterprets the
+/// struct as `&[f32]` with no copy, feeding the f32 inference forests
+/// directly.
 ///
 /// Names are derived from the same declaration, so they cannot drift from the
 /// values: a `scalar` field yields one name (its identifier), an `array` field
@@ -30,10 +51,10 @@ pub mod utils;
 ///
 /// ```ignore
 /// define_features! {
-///     pub struct InsertionFeatures {
-///         flatten common: CommonIndelFeatures;
-///         /// RMS base quality of the inserted bases.
-///         scalar insertion_baseq_rms;
+///     pub struct OthersFeatures {
+///         flatten section_a: CommonSectionA;
+///         /// Generic (strand-combined) alt score.
+///         scalar alt_score;
 ///     }
 /// }
 /// ```
@@ -130,101 +151,41 @@ macro_rules! define_features {
 
 pub(crate) use define_features;
 
-#[derive(Debug, Clone, Copy)]
-pub struct FeatureNum {
-    pub cpg: usize,
-    pub denovo_cpg: usize,
-    pub others: usize,
-    pub insertion: usize,
-    pub deletion: usize,
-}
-
-impl FeatureNum {
-    pub fn get(&self, model: MlModel) -> usize {
-        match model {
-            MlModel::Others => self.others,
-            MlModel::Cpg => self.cpg,
-            MlModel::DenovoCpg => self.denovo_cpg,
-            MlModel::Insertion => self.insertion,
-            MlModel::Deletion => self.deletion,
-        }
+/// How many features `model` reads.
+pub fn feature_count(model: MlModel) -> usize {
+    match model {
+        MlModel::Others => standard::OthersFeatures::FEATURES,
+        MlModel::Cpg => standard::CpgFeatures::FEATURES,
+        MlModel::DenovoCpg => standard::DenovoCpgFeatures::FEATURES,
     }
 }
 
-/// Feature names per model, in the same layout order as the feature vectors.
-#[derive(Debug, Clone)]
-pub struct FeatureNames {
-    pub cpg: Vec<&'static str>,
-    pub denovo_cpg: Vec<&'static str>,
-    pub others: Vec<&'static str>,
-    pub insertion: Vec<&'static str>,
-    pub deletion: Vec<&'static str>,
-}
-
-impl FeatureNames {
-    pub fn get(&self, model: MlModel) -> &[&'static str] {
-        match model {
-            MlModel::Others => &self.others,
-            MlModel::Cpg => &self.cpg,
-            MlModel::DenovoCpg => &self.denovo_cpg,
-            MlModel::Insertion => &self.insertion,
-            MlModel::Deletion => &self.deletion,
-        }
+/// `model`'s feature names, in the layout order of its feature vector.
+pub fn feature_names(model: MlModel) -> Vec<&'static str> {
+    match model {
+        MlModel::Others => standard::OthersFeatures::names(),
+        MlModel::Cpg => standard::CpgFeatures::names(),
+        MlModel::DenovoCpg => standard::DenovoCpgFeatures::names(),
     }
 }
 
-pub type FeatureCalculatorBox = Box<dyn FeatureCalculator>;
-
-/// Calculate ML features from variant metrics
-pub trait FeatureCalculator: fmt::Debug + Send + Sync {
-    fn feature_num(&self) -> FeatureNum;
-
-    /// Feature names per model, aligned with the feature vectors' layout order.
-    fn feature_names(&self) -> FeatureNames;
-
-    /// Calculate features for a CpG methylation candidate
-    fn calculate_cpg(
-        &self,
-        current: &MetricsForAlt,
-        before: Option<&PileupMetrics>,
-        after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>>;
-
-    /// Calculate features for a denovo CpG candidate
-    fn calculate_denovo_cpg(
-        &self,
-        current: &MetricsForAlt,
-        before: Option<&PileupMetrics>,
-        after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>>;
-
-    /// Calculate features for other variants
-    fn calculate_others(
-        &self,
-        current: &MetricsForAlt,
-        before: Option<&PileupMetrics>,
-        after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>>;
-
-    /// Calculate features for insertion
-    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f32>>;
-
-    /// Calculate features for deletion
-    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f32>>;
-}
-
-impl MlFeatureSet {
-    pub fn get_calculator(&self) -> FeatureCalculatorBox {
-        match self {
-            MlFeatureSet::Standard => Box::new(StandardFeatures),
-            MlFeatureSet::Simple => Box::new(SimpleFeatures),
-        }
+/// The model that scores `current`, and its feature row for that model.
+pub fn features(
+    current: &MetricsForAlt,
+    before: Option<&PileupMetrics>,
+    after: Option<&PileupMetrics>,
+) -> (MlModel, Result<Array2<f32>>) {
+    if current.is_conversion() {
+        let row = standard::CpgFeatures::extract(current, before, after);
+        (MlModel::Cpg, row.and_then(|f| row_to_array(f.as_row())))
+    } else if current.denovo_side().is_some() {
+        let row = standard::DenovoCpgFeatures::extract(current, before, after);
+        (MlModel::DenovoCpg, row.and_then(|f| row_to_array(f.as_row())))
+    } else {
+        let row = standard::OthersFeatures::extract(current, before, after);
+        (MlModel::Others, row.and_then(|f| row_to_array(f.as_row())))
     }
 }
-
-/// Standard implementation of feature calculation using all features
-#[derive(Debug, Clone, Copy)]
-pub struct StandardFeatures;
 
 /// Wrap a flat feature row into a `(1, N)` `Array2` for the forest predictor.
 fn row_to_array(row: &[f32]) -> Result<Array2<f32>> {
@@ -232,188 +193,36 @@ fn row_to_array(row: &[f32]) -> Result<Array2<f32>> {
         .wrap_err("Failed to build feature array from row")
 }
 
-impl FeatureCalculator for StandardFeatures {
-    fn feature_num(&self) -> FeatureNum {
-        FeatureNum {
-            cpg: standard::CpgFeatures::FEATURES,
-            denovo_cpg: standard::DenovoCpgFeatures::FEATURES,
-            others: standard::OthersFeatures::FEATURES,
-            insertion: standard::InsertionFeatures::FEATURES,
-            deletion: standard::DeletionFeatures::FEATURES,
-        }
-    }
-
-    fn feature_names(&self) -> FeatureNames {
-        FeatureNames {
-            cpg: standard::CpgFeatures::names(),
-            denovo_cpg: standard::DenovoCpgFeatures::names(),
-            others: standard::OthersFeatures::names(),
-            insertion: standard::InsertionFeatures::names(),
-            deletion: standard::DeletionFeatures::names(),
-        }
-    }
-
-    fn calculate_cpg(
-        &self,
-        current: &MetricsForAlt,
-        before: Option<&PileupMetrics>,
-        after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        row_to_array(standard::CpgFeatures::extract(current, before, after)?.as_row())
-    }
-
-    fn calculate_denovo_cpg(
-        &self,
-        current: &MetricsForAlt,
-        before: Option<&PileupMetrics>,
-        after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        row_to_array(standard::DenovoCpgFeatures::extract(current, before, after)?.as_row())
-    }
-
-    fn calculate_others(
-        &self,
-        current: &MetricsForAlt,
-        before: Option<&PileupMetrics>,
-        after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        row_to_array(standard::OthersFeatures::extract(current, before, after)?.as_row())
-    }
-
-    fn calculate_insertion(&self, current: &MetricsForIndel) -> Result<Array2<f32>> {
-        row_to_array(standard::InsertionFeatures::extract(current).as_row())
-    }
-
-    fn calculate_deletion(&self, current: &MetricsForIndel) -> Result<Array2<f32>> {
-        row_to_array(standard::DeletionFeatures::extract(current).as_row())
-    }
-}
-
-/// Very basic feature calculation using small subset of features
-#[derive(Debug, Clone, Copy)]
-pub struct SimpleFeatures;
-
-impl SimpleFeatures {
-    /// `SimpleFeatures` uses all of [`CommonFeatures`] except `region_entropy`.
-    const FEATURES: usize = shared::CommonSectionA::FEATURES - 1 + shared::CommonSectionB::FEATURES;
-
-    fn calculate_basic(&self, current: &MetricsForAlt) -> Result<Array2<f32>> {
-        let common = shared::CommonFeatures::extract(current);
-        let mut features = Vec::with_capacity(Self::FEATURES);
-        features.extend_from_slice(&common.base_encoding);
-        features.extend_from_slice(&common.position_metrics);
-        features.extend_from_slice(&common.context_encoding);
-        features.extend_from_slice(&common.depth_ratios);
-        features.extend_from_slice(&common.base_quality_metrics);
-        features.extend_from_slice(&common.mapping_quality_metrics);
-        features.extend_from_slice(&common.read_metrics);
-        Array2::from_shape_vec((1, features.len()), features)
-            .wrap_err("Failed to create basic feature array")
-    }
-
-    /// Names mirroring [`calculate_basic`](Self::calculate_basic): all of
-    /// [`CommonFeatures`] except `region_entropy`.
-    fn basic_names() -> Vec<&'static str> {
-        shared::CommonSectionA::names()
-            .into_iter()
-            .filter(|name| *name != "region_entropy")
-            .chain(shared::CommonSectionB::names())
-            .collect()
-    }
-}
-
-impl FeatureCalculator for SimpleFeatures {
-    fn feature_num(&self) -> FeatureNum {
-        let n = Self::FEATURES;
-        FeatureNum { cpg: n, denovo_cpg: n, others: n, insertion: 0, deletion: 0 }
-    }
-
-    fn feature_names(&self) -> FeatureNames {
-        FeatureNames {
-            cpg: Self::basic_names(),
-            denovo_cpg: Self::basic_names(),
-            others: Self::basic_names(),
-            insertion: Vec::new(),
-            deletion: Vec::new(),
-        }
-    }
-
-    fn calculate_cpg(
-        &self,
-        current: &MetricsForAlt,
-        _before: Option<&PileupMetrics>,
-        _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        self.calculate_basic(current)
-    }
-
-    fn calculate_denovo_cpg(
-        &self,
-        current: &MetricsForAlt,
-        _before: Option<&PileupMetrics>,
-        _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        self.calculate_basic(current)
-    }
-
-    fn calculate_others(
-        &self,
-        current: &MetricsForAlt,
-        _before: Option<&PileupMetrics>,
-        _after: Option<&PileupMetrics>,
-    ) -> Result<Array2<f32>> {
-        self.calculate_basic(current)
-    }
-
-    fn calculate_insertion(&self, _current: &MetricsForIndel) -> Result<Array2<f32>> {
-        todo!()
-    }
-
-    fn calculate_deletion(&self, _current: &MetricsForIndel) -> Result<Array2<f32>> {
-        todo!()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::shared::{CommonSectionA, CommonSectionB};
-    use super::standard::indel::CommonIndelFeatures;
-    use super::standard::{
-        CpgFeatures, DeletionFeatures, DenovoCpgFeatures, InsertionFeatures, OthersFeatures,
-    };
+    use super::standard::{CpgFeatures, DenovoCpgFeatures, OthersFeatures};
 
-    /// One name per `f64` slot, for every feature struct. A drift here means
+    /// One name per `f32` slot, for every feature struct. A drift here means
     /// the `names()` output no longer aligns with the feature vectors.
     #[test]
     fn names_align_with_feature_count() {
         assert_eq!(CommonSectionA::names().len(), CommonSectionA::FEATURES);
         assert_eq!(CommonSectionB::names().len(), CommonSectionB::FEATURES);
-        assert_eq!(CommonIndelFeatures::names().len(), CommonIndelFeatures::FEATURES);
         assert_eq!(CpgFeatures::names().len(), CpgFeatures::FEATURES);
         assert_eq!(DenovoCpgFeatures::names().len(), DenovoCpgFeatures::FEATURES);
         assert_eq!(OthersFeatures::names().len(), OthersFeatures::FEATURES);
-        assert_eq!(InsertionFeatures::names().len(), InsertionFeatures::FEATURES);
-        assert_eq!(DeletionFeatures::names().len(), DeletionFeatures::FEATURES);
     }
 
     /// The feature vector layout is frozen by every trained model. These counts
-    /// are the historical layout sizes; changing one silently invalidates the
-    /// corresponding model, so they are pinned here.
+    /// are the layout the bundled model was fitted on; changing one
+    /// invalidates the corresponding model, so they are pinned here.
     #[test]
     fn feature_counts_are_stable() {
         assert_eq!(CommonSectionA::FEATURES, 33);
-        assert_eq!(CommonSectionB::FEATURES, 18);
-        assert_eq!(CpgFeatures::FEATURES, 55);
-        assert_eq!(DenovoCpgFeatures::FEATURES, 56);
-        assert_eq!(OthersFeatures::FEATURES, 54);
-        assert_eq!(CommonIndelFeatures::FEATURES, 15);
-        assert_eq!(InsertionFeatures::FEATURES, 17);
-        assert_eq!(DeletionFeatures::FEATURES, 17);
+        assert_eq!(CommonSectionB::FEATURES, 23);
+        assert_eq!(CpgFeatures::FEATURES, 60);
+        assert_eq!(DenovoCpgFeatures::FEATURES, 61);
+        assert_eq!(OthersFeatures::FEATURES, 59);
     }
 
-    /// Snapshot the full name→index layout of every model. This is the
-    /// human-checkable replacement for the old "never change the order"
-    /// comments: reordering a field changes the snapshot and fails the test.
+    /// Snapshot the full name→index layout of every model: reordering a field
+    /// changes the snapshot and fails the test.
     #[test]
     fn feature_name_layout() {
         let render = |name: &str, names: Vec<&str>| {
@@ -426,8 +235,6 @@ mod tests {
             render("cpg", CpgFeatures::names()),
             render("denovo_cpg", DenovoCpgFeatures::names()),
             render("others", OthersFeatures::names()),
-            render("insertion", InsertionFeatures::names()),
-            render("deletion", DeletionFeatures::names()),
         ]
         .join("\n");
 
