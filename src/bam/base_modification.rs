@@ -4,7 +4,6 @@ use rustc_hash::FxHashMap;
 use seqair_types::SmallVec;
 use seqair_types::{Base, Strand};
 use std::fmt::Write;
-use tracing::{debug, warn};
 
 /// Methylation context for XM tag annotation.
 ///
@@ -67,10 +66,6 @@ pub fn determine_context(
                 MethylationContext::CHH
             }
         }
-        Strand::Unknown => {
-            warn!(pos, "determine_context called with Unknown strand, defaulting to CHH");
-            MethylationContext::CHH
-        }
     }
 }
 
@@ -114,10 +109,6 @@ impl MethylatedPositions {
         let base = match strand {
             Strand::OT => Base::C,
             Strand::OB => Base::G,
-            Strand::Unknown => {
-                debug!("Unknown strand, cannot create MethylatedPositions");
-                return Self { base: Base::C, strand: Strand::Unknown, positions: SmallVec::new() };
-            }
         };
 
         // Skip list of positions of the base in the sequence
@@ -141,9 +132,7 @@ impl MethylatedPositions {
     /// simply contribute no data to modkit's per-position counts.
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
         if self.positions.is_empty() {
-            remove_aux_if_present(record, b"MM")?;
-            remove_aux_if_present(record, b"ML")?;
-            return Ok(());
+            return remove_modifications(record);
         }
 
         replace_aux(record, b"MM", Aux::String(&self.to_mod_string()))?;
@@ -165,20 +154,12 @@ impl MethylatedPositions {
     /// [SAM tags]: https://samtools.github.io/hts-specs/SAMtags.pdf
     pub fn to_mod_string(&self) -> String {
         let mut mod_string = String::new();
-        let strand = match self.strand {
-            Strand::OT => "+",
-            Strand::OB => "-",
-            Strand::Unknown => {
-                debug!("Unknown strand, cannot create mod string");
-                return mod_string;
-            }
-        };
 
         // Unmodified "fundamental" base on sequenced strand
         mod_string.push(self.base.as_char());
 
         // Strand: + or -
-        mod_string.push_str(strand);
+        mod_string.push_str(self.strand.as_symbol());
 
         // Modification code: 'm' for 5-Methylcytosine
         mod_string.push('m');
@@ -251,7 +232,6 @@ fn generate_xm_string(
     let target_base = match strand {
         Strand::OT => Base::C,
         Strand::OB => Base::G,
-        Strand::Unknown => return ".".repeat(seq.len()),
     };
 
     seq.iter()
@@ -318,6 +298,12 @@ impl XrTags {
         Self { xr, xg, xm }
     }
 
+    /// Tags for a read of unknown strand: no XM call anywhere, and XG,
+    /// which has no unknown value, as CT.
+    pub fn unknown_strand(seq_len: usize, is_first_in_pair: bool) -> Self {
+        Self { xr: xr(is_first_in_pair), xg: ConversionType::CT, xm: ".".repeat(seq_len) }
+    }
+
     /// Apply XR/XG/XM tags to a BAM record
     pub fn apply_to_record(&self, record: &mut Record) -> Result<()> {
         replace_aux(record, b"XR", Aux::String(self.xr.as_str()))?;
@@ -326,6 +312,12 @@ impl XrTags {
 
         Ok(())
     }
+}
+
+/// Remove MM and ML, which is what a read without methylated positions gets.
+pub(super) fn remove_modifications(record: &mut Record) -> Result<()> {
+    remove_aux_if_present(record, b"MM")?;
+    remove_aux_if_present(record, b"ML")
 }
 
 fn replace_aux(record: &mut Record, tag: &[u8; 2], value: Aux<'_>) -> Result<()> {
@@ -344,16 +336,17 @@ fn remove_aux_if_present(record: &mut Record, tag: &[u8; 2]) -> Result<()> {
 }
 
 fn xr_xg(strand: Strand, is_first_in_pair: bool) -> (ConversionType, ConversionType) {
-    let xr = if is_first_in_pair { ConversionType::CT } else { ConversionType::GA };
+    let xr = xr(is_first_in_pair);
     let xg = match strand {
         Strand::OT => ConversionType::CT,
         Strand::OB => ConversionType::GA,
-        Strand::Unknown => {
-            debug!("Unknown strand detected, defaulting XG to CT");
-            ConversionType::CT
-        }
     };
     (xr, xg)
+}
+
+/// XR for a mate of `is_first_in_pair`.
+fn xr(is_first_in_pair: bool) -> ConversionType {
+    if is_first_in_pair { ConversionType::CT } else { ConversionType::GA }
 }
 
 #[cfg(test)]
@@ -372,9 +365,9 @@ mod tests {
         }
     }
 
-    /// Regression test for issue #15: an aligner (or an earlier rastair run) may
-    /// already have written XR/XG/XM, and re-annotating must overwrite them rather
-    /// than fail on the read.
+    /// An aligner (or an earlier rastair run) may already have written XR/XG/XM,
+    /// and re-annotating must overwrite them rather than fail on the read
+    /// (issue #15).
     #[test]
     fn legacy_tags_overwrite_existing_ones() -> Result<()> {
         let mut record = Record::new();
