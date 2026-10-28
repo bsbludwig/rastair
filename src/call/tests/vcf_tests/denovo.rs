@@ -101,9 +101,9 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=None GT="0/1", // Position 1: C with de-novo CpG G, and no methylation evidence
-        (C G) PASS M5mC=vec![0.0, 0.0] GT="1/1", // Position 2: Real variant G, genotype G/G, no C allele to methylate
+        (C G) PASS M5mC=0.0 GT="1/1", // Position 2: G/G, the de-novo CpG with position 1's C only: its own C is gone
         (C T) FAIL,
-        (C G) PASS M5mC=1.0 GT="1/1", // Position 3: Real variant G, methylation info for that G>A
+        (C G) PASS M5mC=None GT="1/1", // Position 3: a G after position 2's G on both chromosomes, no CpG
         (C A) FAIL,
     ];
 
