@@ -1,12 +1,11 @@
 use crate::sequence::Segment;
-use color_eyre::Result;
 
 const HALF_WINDOW: usize = 50;
 
 pub struct SlidingEntropy<'a> {
     sequence: &'a [u8],
-    // Order: [C, T, A, G] — matches the original Counter::entries() iteration order to preserve
-    // floating-point summation order and keep entropy values numerically identical to the old code.
+    // Order: [C, T, A, G]. The entropy is summed in this order, and the trained
+    // models saw exactly those floating-point values, so it must not change.
     counts: [usize; 4],
     unknown_count: usize,
     window_start: usize,
@@ -131,8 +130,11 @@ impl<'a> SlidingEntropy<'a> {
     }
 }
 
+/// The window entropy computed from scratch, as the oracle for the
+/// incremental [`entropy_at`](SlidingEntropy::entropy_at).
+#[cfg(test)]
 impl Segment {
-    pub fn entropy_around<const N: usize>(&self, idx: usize) -> Result<f64> {
+    pub fn entropy_around<const N: usize>(&self, idx: usize) -> color_eyre::Result<f64> {
         let seq_context = self.get(idx.saturating_sub(N / 2), idx.saturating_add(N / 2 + 1))?;
 
         Ok(entropy(seq_context))
@@ -140,7 +142,8 @@ impl Segment {
 }
 
 /// Calculate Shannon entropy for sequence context
-pub fn entropy(sequence: &[u8]) -> f64 {
+#[cfg(test)]
+fn entropy(sequence: &[u8]) -> f64 {
     // counts order: [C, T, A, G] — matches the original Counter::entries() order to preserve
     // floating-point summation stability across refactors.
     let mut counts = [0usize; 4];
@@ -174,7 +177,7 @@ pub fn entropy(sequence: &[u8]) -> f64 {
 mod tests {
     use super::*;
     use crate::sequence::{ChunkRegion, Region, Segment};
-    use proptest::{prop_assert, proptest};
+    use hegel::{TestCase, generators as gs};
     use seqair_types::SmolStr;
     use std::iter::repeat_n;
 
@@ -188,8 +191,6 @@ mod tests {
                 overlap_end: 0,
             }),
             sequence,
-            overlap_start: 0,
-            overlap_end: 0,
         }
     }
 
@@ -224,17 +225,16 @@ mod tests {
         assert!(entropy > 0.0);
     }
 
-    proptest! {
-        #[test]
-        fn entropy_is_non_negative(sequence in "[ACTG]{100}") {
-            let segment = test_segment(sequence.into_bytes());
+    #[hegel::test]
+    fn entropy_is_non_negative(tc: TestCase) {
+        let sequence: [u8; 100] = tc.draw(gs::arrays(gs::sampled_from(b"ACTG".as_slice())));
+        let segment = test_segment(sequence.to_vec());
 
-            let entropy = segment.entropy_around::<100>(50).unwrap();
+        let entropy = segment.entropy_around::<100>(50).unwrap();
 
-            // Shannon entropy over an alphabet of 4 bases is bounded to [0, log2(4)] = [0, 2]
-            prop_assert!(entropy >= 0.0);
-            prop_assert!(entropy <= 2.0 + f64::EPSILON);
-        }
+        // Shannon entropy over an alphabet of 4 bases is bounded to [0, log2(4)] = [0, 2]
+        assert!(entropy >= 0.0);
+        assert!(entropy <= 2.0 + f64::EPSILON);
     }
 
     #[test]

@@ -9,23 +9,15 @@
 mod chunked;
 mod readers;
 mod regions;
-mod segementation;
+mod segmentation;
 #[cfg(test)]
 mod tests;
 
-pub use readers::{ReaderParams, Readers};
+#[cfg(test)]
+pub(crate) use readers::RastairRecordFilter;
+pub use readers::{
+    IndexDepth, RastairReadExtras, ReaderParams, Readers, ReferenceWindow, SeqairReaders,
+    StrandSource,
+};
 pub use regions::{ChunkRegion, Region, SelectedRegion};
-pub use segementation::{Segment, SegmentationParams};
-
-#[cfg(feature = "experimental-seqair")]
-pub use readers::{RastairReadExtras, ReferenceWindow, SeqairReaders};
-
-#[cfg(feature = "experimental-seqair")]
-pub type PileupReaders = SeqairReaders;
-#[cfg(not(feature = "experimental-seqair"))]
-pub type PileupReaders = Readers;
-
-#[cfg(feature = "experimental-seqair")]
-pub type ReaderSource = SeqairReaders;
-#[cfg(not(feature = "experimental-seqair"))]
-pub type ReaderSource = ReaderParams;
+pub use segmentation::{ByteBudget, Segment, SegmentationParams, segment_length};

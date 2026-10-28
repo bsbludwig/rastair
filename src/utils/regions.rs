@@ -2,7 +2,7 @@ use std::{path::Path, str::FromStr};
 
 use color_eyre::{
     Result,
-    eyre::{Context as _, ContextCompat as _, ensure},
+    eyre::{Context as _, ContextCompat as _, bail, ensure},
 };
 use seqair_types::{Pos1, RegionString, SmolStr};
 
@@ -60,29 +60,45 @@ impl FromStr for CliRegionInput {
 ///
 /// BED uses 0-based half-open coordinates: `[start, end)`.
 /// We convert to 1-based inclusive: `[start + 1, end]`.
-///
-/// Lines starting with `#`, `track`, or `browser` are skipped as meta/comment lines.
-/// Extra columns beyond the first three are ignored.
 fn read_bed_file(path: &str) -> Result<Vec<RegionString>> {
+    read_bed_intervals(Path::new(path))?
+        .into_iter()
+        .map(|(chrom, start, end)| {
+            let pos = |n: u64| {
+                u32::try_from(n).ok().and_then(Pos1::new).wrap_err_with(|| {
+                    format!("BED position {n} on {chrom} is out of range for a 1-based position")
+                })
+            };
+            Ok(RegionString {
+                start: Some(pos(start + 1)?),
+                end: Some(pos(end)?),
+                chromosome: chrom,
+            })
+        })
+        .collect()
+}
+
+/// The `(contig, start, end)` intervals of a BED file, 0-based half-open as
+/// written. Lines starting with `#`, `track`, or `browser` are meta/comment
+/// lines; extra columns beyond the first three are ignored; empty intervals
+/// are skipped with a warning, and a line without three columns is an error.
+pub fn read_bed_intervals(path: &Path) -> Result<Vec<(SmolStr, u64, u64)>> {
     use std::{
         fs::File,
         io::{BufRead as _, BufReader},
     };
 
-    let path = Path::new(path);
     ensure!(path.exists(), "BED file does not exist");
 
     let file = File::open(path).wrap_err("Failed to open BED file")?;
-    let mut regions = Vec::new();
-    let mut skipped_start_gt_end = 0u64;
-    let mut skipped_malformed = 0u64;
+    let mut intervals = Vec::new();
+    let mut skipped_empty = 0u64;
 
     for (line_num, line) in BufReader::new(file).lines().enumerate() {
         let line_num = line_num + 1; // 1-based for error messages
         let line = line.wrap_err_with(|| format!("Failed to read line {line_num} of BED file"))?;
         let line = line.trim();
 
-        // Skip empty lines and meta/comment lines
         if line.is_empty()
             || line.starts_with('#')
             || line.starts_with("track")
@@ -91,72 +107,36 @@ fn read_bed_file(path: &str) -> Result<Vec<RegionString>> {
             continue;
         }
 
-        // BED: chrom \t start \t end [optional fields we ignore]
         let mut fields = line.splitn(4, '\t');
-        let Some(chrom) = fields.next().filter(|s| !s.is_empty()) else {
-            tracing::warn!("Skipping malformed BED line {line_num}: missing chromosome");
-            skipped_malformed += 1;
-            continue;
-        };
-        let (Some(start_str), Some(end_str)) = (fields.next(), fields.next()) else {
-            tracing::warn!(
-                "Skipping malformed BED line {line_num}: expected at least 3 tab-separated fields"
-            );
-            skipped_malformed += 1;
-            continue;
+        let (Some(chrom), Some(start_str), Some(end_str)) =
+            (fields.next().filter(|s| !s.is_empty()), fields.next(), fields.next())
+        else {
+            bail!("BED line {line_num} does not have three tab-separated fields: {line:?}");
         };
 
-        let bed_start: u64 = start_str.parse().wrap_err_with(|| {
+        let start: u64 = start_str.parse().wrap_err_with(|| {
             format!("Invalid start position on BED line {line_num}: {start_str:?}")
         })?;
-        let bed_end: u64 = end_str.parse().wrap_err_with(|| {
+        let end: u64 = end_str.parse().wrap_err_with(|| {
             format!("Invalid end position on BED line {line_num}: {end_str:?}")
         })?;
 
-        // BED is 0-based half-open: [bed_start, bed_end)
-        // Convert to 1-based inclusive:  [bed_start + 1, bed_end]
-        let start_1based = bed_start.checked_add(1).wrap_err_with(|| {
-            format!("BED start position {bed_start} overflows u64 on line {line_num}")
-        })?;
-        let end_1based = bed_end;
-
-        if start_1based > end_1based {
-            tracing::warn!(
-                "BED line {line_num}: start > end ({start_1based} > {end_1based}), skipping"
-            );
-            skipped_start_gt_end += 1;
+        if end <= start {
+            tracing::warn!("BED line {line_num}: empty interval [{start}, {end}), skipping");
+            skipped_empty += 1;
             continue;
         }
 
-        let start_nz = Pos1::new(u32::try_from(start_1based).wrap_err_with(|| {
-            format!("BED start position {start_1based} out of u32 range on line {line_num}")
-        })?)
-        .wrap_err_with(|| {
-            format!("BED start position is zero or out of range on line {line_num}")
-        })?;
-
-        let end_nz = Pos1::new(u32::try_from(end_1based).wrap_err_with(|| {
-            format!("BED end position {end_1based} out of u32 range on line {line_num}")
-        })?)
-        .wrap_err_with(|| format!("BED end position is zero or out of range on line {line_num}"))?;
-
-        regions.push(RegionString {
-            chromosome: SmolStr::from(chrom),
-            start: Some(start_nz),
-            end: Some(end_nz),
-        });
+        intervals.push((SmolStr::from(chrom), start, end));
     }
 
-    if skipped_start_gt_end > 0 {
-        tracing::warn!("Skipped {skipped_start_gt_end} BED record(s) with start > end");
-    }
-    if skipped_malformed > 0 {
-        tracing::warn!("Skipped {skipped_malformed} malformed BED line(s)");
+    if skipped_empty > 0 {
+        tracing::warn!("Skipped {skipped_empty} empty BED record(s)");
     }
 
-    ensure!(!regions.is_empty(), "BED file {} contains no valid records", path.display());
+    ensure!(!intervals.is_empty(), "BED file {} contains no valid records", path.display());
 
-    Ok(regions)
+    Ok(intervals)
 }
 
 #[cfg(test)]
@@ -261,6 +241,18 @@ mod tests {
         assert_eq!(regions[2].chromosome.as_str(), "chr3");
         assert_eq!(regions[2].start, Pos1::new(1001));
         assert_eq!(regions[2].end, Pos1::new(2000));
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_bed_line_without_three_fields_is_an_error() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bed_path = dir.path().join("short.bed");
+        std::fs::write(&bed_path, "chr1\t99\t199\nchr2\t0\n")?;
+
+        let err = read_bed_file(bed_path.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("BED line 2"), "{err}");
 
         Ok(())
     }

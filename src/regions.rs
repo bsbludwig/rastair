@@ -1,13 +1,11 @@
 //! Genomic intervals an analysis is restricted to.
 
-use color_eyre::{
-    Result,
-    eyre::{Context as _, ensure},
-};
+use crate::utils::regions::read_bed_intervals;
+use color_eyre::{Result, eyre::Context as _};
 use rustc_hash::FxHashMap;
 use seqair_types::SmolStr;
 use std::path::Path;
-use tracing::{info, instrument, warn};
+use tracing::{info, instrument};
 
 /// Half-open intervals that an analysis is restricted to, keyed by contig.
 ///
@@ -28,34 +26,12 @@ pub struct ConfidentRegions {
 impl ConfidentRegions {
     #[instrument(level = "info", skip_all)]
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
+        let intervals = read_bed_intervals(path)
             .wrap_err_with(|| format!("Failed to read BED file: {}", path.display()))?;
 
         let mut by_contig: FxHashMap<SmolStr, Vec<(u64, u64)>> = FxHashMap::default();
-        for (lineno, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty()
-                || line.starts_with('#')
-                || line.starts_with("track")
-                || line.starts_with("browser")
-            {
-                continue;
-            }
-            let mut fields = line.split('\t');
-            let (Some(chrom), Some(start), Some(end)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
-                warn!(line = lineno + 1, "Skipping BED line with fewer than 3 columns");
-                continue;
-            };
-            let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
-                warn!(line = lineno + 1, "Skipping BED line with unparsable coordinates");
-                continue;
-            };
-            if end <= start {
-                continue;
-            }
-            by_contig.entry(SmolStr::from(chrom)).or_default().push((start, end));
+        for (chrom, start, end) in intervals {
+            by_contig.entry(chrom).or_default().push((start, end));
         }
 
         for intervals in by_contig.values_mut() {
@@ -71,7 +47,6 @@ impl ConfidentRegions {
         }
 
         let total: usize = by_contig.values().map(Vec::len).sum();
-        ensure!(total > 0, "BED file `{}` contains no usable intervals", path.display());
         info!(contigs = by_contig.len(), intervals = total, "Loaded confident regions");
 
         Ok(Self { by_contig })

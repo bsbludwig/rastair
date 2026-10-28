@@ -4,7 +4,7 @@ use super::*;
 use crate::utils::Base;
 use clio::ClioPath;
 use color_eyre::Result;
-use proptest::prelude::*;
+use hegel::{TestCase, generators as gs};
 use rust_htslib::bam::FetchDefinition;
 use std::path::PathBuf;
 
@@ -62,8 +62,12 @@ fn test_calculate_segments() -> Result<()> {
     // Check segment properties
     for segment in segments {
         assert_eq!(segment.region.contig, "chr19");
-        assert!(segment.region.start >= 6105700);
-        assert!(segment.region.end <= 6105800);
+        // 1-based 6105700-6105800 is 0-based [6105699, 6105800); the overlap
+        // reaches past it.
+        assert!(segment.region.start + segment.overlap_start >= 6105699);
+        assert!(segment.region.end - segment.overlap_end <= 6105800);
+        assert!(segment.region.start >= 6105699 - 100);
+        assert!(segment.region.end <= 6105800 + 100);
         // last position is the end of the contig, the same for all segments
         assert_eq!(segment.last_position, 61431566);
     }
@@ -124,12 +128,8 @@ fn test_segment_to_fetch_definition() -> Result<()> {
         overlap_start: 0,
         overlap_end: 0,
     };
-    let segment = Segment {
-        range: std::sync::Arc::new(region.clone()),
-        sequence: vec![65, 66, 67],
-        overlap_start: 0,
-        overlap_end: 0,
-    }; // "ABC"
+    let segment =
+        Segment { range: std::sync::Arc::new(region.clone()), sequence: vec![65, 66, 67] }; // "ABC"
 
     // Convert to FetchDefinition
     let fetch_def = FetchDefinition::try_from(&segment.region)?;
@@ -138,7 +138,7 @@ fn test_segment_to_fetch_definition() -> Result<()> {
     if let FetchDefinition::RegionString(chr, start, end) = fetch_def {
         assert_eq!(chr, b"chr19");
         assert_eq!(start, 6105700);
-        assert_eq!(end, 6105801); // this is exclusive end
+        assert_eq!(end, 6105800); // exclusive, like the region's
     } else {
         panic!("Unexpected FetchDefinition variant");
     }
@@ -202,41 +202,40 @@ fn test_sequence_slice() -> Result<()> {
             overlap_end: 0,
         }),
         sequence: b"ATCGG".into(),
-        overlap_start: 0,
-        overlap_end: 0,
     };
 
     // Test valid slice
     let slice = segment.sequence_slice::<5>(1, 4)?;
-    assert_eq!(slice.as_slice(), &[Base::T, Base::C, Base::G]);
+    assert_eq!(slice.as_ref(), &[Base::T, Base::C, Base::G]);
 
     // Test out-of-bounds slice
     let slice = segment.sequence_slice::<5>(0, 10)?;
-    assert_eq!(slice.as_slice(), &[Base::A, Base::T, Base::C, Base::G, Base::G]);
+    assert_eq!(slice.as_ref(), &[Base::A, Base::T, Base::C, Base::G, Base::G]);
 
     Ok(())
 }
 
-proptest!(
-    #[test]
-    fn proptest_sequence_slice(start in 0usize..100, extra in 0usize..100, seq in "[ATCG]{0,10}") {
-        let end = start + extra;
-        let segment = Segment {
-            range: std::sync::Arc::new(ChunkRegion {
-                region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
-                last_position: 6105900,
-                overlap_start: 0,
-                overlap_end: 0,
-            }),
-            sequence: seq.into_bytes(),
+#[hegel::test]
+fn sequence_slice_never_fails(tc: TestCase) {
+    let start = tc.draw(gs::integers::<usize>().max_value(99));
+    let extra = tc.draw(gs::integers::<usize>().max_value(99));
+    let len = tc.draw(gs::integers::<usize>().max_value(10));
+    let seq: Vec<u8> =
+        tc.draw(gs::vecs(gs::sampled_from(b"ATCG".as_slice())).min_size(len).max_size(len));
+    let end = start + extra;
+    let segment = Segment {
+        range: std::sync::Arc::new(ChunkRegion {
+            region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
+            last_position: 6105900,
             overlap_start: 0,
             overlap_end: 0,
-        };
+        }),
+        sequence: seq,
+    };
 
-        let result = segment.sequence_slice::<5>(start, end);
-        prop_assert!(result.is_ok(), "sequence_slice({start}, {end}) failed: {:?}", result.err());
-    }
-);
+    let result = segment.sequence_slice::<5>(start, end);
+    assert!(result.is_ok(), "sequence_slice({start}, {end}) failed: {:?}", result.err());
+}
 
 #[test]
 fn test_overlap_values_in_segments() -> Result<()> {

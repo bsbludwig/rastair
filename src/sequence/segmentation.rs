@@ -2,9 +2,18 @@ use crate::{sequence::ChunkRegion, utils::cli};
 use better_default::Default;
 use color_eyre::eyre::ContextCompat as _;
 use color_eyre::eyre::Result;
-use seqair_types::{Base, SmallVec};
-use std::ops::{Deref, Range};
+use seqair_types::{Base, Pos0, SmallVec};
+use std::{
+    num::NonZeroU64,
+    ops::{Deref, Range},
+};
 use tracing::warn;
+
+/// The range `--segment-max-length` accepts: a shorter segment only adds index queries and
+/// shrinks ML batches, and a length of 0 never finishes segmenting.
+pub fn segment_length() -> clap::builder::RangedU64ValueParser {
+    clap::value_parser!(u64).range(1_000..=1_000_000)
+}
 
 #[derive(Debug, clap::Args, Clone, Default)]
 pub struct SegmentationParams {
@@ -15,8 +24,8 @@ pub struct SegmentationParams {
     /// batch each ML dispatch gets, which is why smaller is not free. On
     /// NA12878 chr12 at 26x, dropping this to 10 000 costs ~1.45x wall time —
     /// the same reads, but a tenth of the rows per GPU round trip and ten
-    /// times as many BAM index queries.
-    #[arg(long, default_value_t = 100_000)]
+    /// times as many BAM index queries. Between 1,000 and 1,000,000.
+    #[arg(long, default_value_t = 100_000, value_parser = segment_length())]
     #[arg(help_heading = cli::sections::PROCESSING)]
     #[default(100_000)]
     pub segment_max_length: u64,
@@ -31,51 +40,58 @@ pub struct SegmentationParams {
 
     /// Maximum estimated compressed bytes to load per segment (memory budget)
     ///
-    /// seqair backend only. A segment whose index-estimated compressed size
-    /// exceeds this is subdivided into smaller sub-segments, so peak memory
-    /// per worker stays bounded regardless of local coverage. The decoded
-    /// in-memory size is a few times larger than this compressed budget.
-    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    /// A segment whose index-estimated compressed size exceeds this is
+    /// subdivided into smaller sub-segments, read one after the other. The
+    /// decoded in-memory size is a few times larger than this compressed
+    /// budget. `call` keeps every sub-segment's reads until the SNV engine has
+    /// scored the segment, so there it bounds how much is read at a time, not
+    /// peak memory.
+    #[arg(long, default_value_t = ByteBudget::DEFAULT)]
     #[arg(help_heading = cli::sections::PROCESSING)]
-    #[default(256 * 1024 * 1024)]
-    pub segment_max_bytes: u64,
+    #[default(ByteBudget::DEFAULT)]
+    pub segment_max_bytes: ByteBudget,
+}
+
+/// The compressed bytes a segment may load, or no budget at all: `0` on the
+/// command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteBudget(Option<NonZeroU64>);
+
+impl ByteBudget {
+    pub const DEFAULT: Self = Self(NonZeroU64::new(256 * 1024 * 1024));
+
+    /// A budget of `bytes`, or none for `0`, as the command line reads it.
+    #[must_use]
+    pub const fn new(bytes: u64) -> Self {
+        Self(NonZeroU64::new(bytes))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> Option<NonZeroU64> {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ByteBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.map_or(0, NonZeroU64::get))
+    }
+}
+
+impl std::str::FromStr for ByteBudget {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::new(s.parse()?))
+    }
 }
 
 impl SegmentationParams {
     pub fn sanitize(&mut self) {
-        let defaults = Self::default();
-
-        if self.segment_max_length == 0 {
-            let default = defaults.segment_max_length;
-            warn!(
-                default,
-                "Segment max length is 0. This is invalid. Overwriting to default value."
-            );
-            self.segment_max_length = default;
-        };
-
-        let low_max_length = 1_000;
-        if self.segment_max_length < low_max_length {
-            warn!(
-                max_length = self.segment_max_length,
-                "Segment max length is set to a very low value (<{low_max_length}). This may cause performance degradation."
-            );
-        };
-
-        let high_max_length = 1_000_000;
-        if self.segment_max_length > high_max_length {
-            warn!(
-                max_length = self.segment_max_length,
-                "Segment max length is set to a very high value (>{high_max_length}). This may cause high memory usage."
-            );
-        };
-
+        // `segment_length()` already holds `segment_max_length` to its range.
         if self.segment_overlap == 0 {
-            let default = defaults.segment_overlap;
-            warn!(
-                default,
-                "Segment max length is 0. This is invalid. Overwriting to default value."
-            );
+            let default = Self::default().segment_overlap;
+            warn!(default, "Segment overlap is 0. This is invalid. Overwriting to default value.");
             self.segment_overlap = default;
         };
         let overlap_max_limit = 1000;
@@ -85,7 +101,7 @@ impl SegmentationParams {
                 "Segment overlap is set to a very high value (>{overlap_max_limit}). This may cause excessive redundant processing."
             );
         };
-        if self.segment_overlap * 2 >= self.segment_max_length {
+        if self.segment_overlap.saturating_mul(2) >= self.segment_max_length {
             warn!(
                 overlap = self.segment_overlap,
                 max_length = self.segment_max_length,
@@ -93,12 +109,14 @@ impl SegmentationParams {
             );
         };
 
-        // `0` intentionally disables the budget; only warn for a tiny non-zero
-        // value, which would subdivide regions far more than necessary.
+        // Only a tiny budget is suspicious: it would subdivide regions far
+        // more than necessary.
         let low_max_bytes = 1024 * 1024;
-        if self.segment_max_bytes != 0 && self.segment_max_bytes < low_max_bytes {
+        if let Some(max_bytes) = self.segment_max_bytes.get()
+            && max_bytes.get() < low_max_bytes
+        {
             warn!(
-                max_bytes = self.segment_max_bytes,
+                max_bytes,
                 "Segment max bytes is set very low (<1 MiB); this may subdivide regions excessively."
             );
         };
@@ -109,10 +127,6 @@ impl SegmentationParams {
 pub struct Segment {
     pub range: std::sync::Arc<ChunkRegion>,
     pub sequence: Vec<u8>,
-    /// Number of bases of overlap at the start of this segment
-    pub overlap_start: u64,
-    /// Number of bases of overlap at the end of this segment
-    pub overlap_end: u64,
 }
 
 impl Deref for Segment {
@@ -126,10 +140,10 @@ impl Deref for Segment {
 impl Segment {
     /// Whether `pos` is one this segment emits, rather than one of the overlap
     /// positions a neighbouring segment owns.
-    pub(crate) fn is_core(&self, pos: u64) -> bool {
+    pub(crate) fn is_core(&self, pos: Pos0) -> bool {
         let core_start = self.region.start + self.overlap_start;
         let core_end = self.region.end.saturating_sub(self.overlap_end);
-        pos >= core_start && pos < core_end
+        (core_start..core_end).contains(&pos.as_u64())
     }
 
     /// Get a slice of the sequence
@@ -153,3 +167,15 @@ impl Segment {
 #[derive(Debug, thiserror::Error)]
 #[error("Failed to read sequence slice {0:?}")]
 struct FailedToReadSequenceSlice(Range<usize>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_takes_any_overlap() {
+        let mut params = SegmentationParams { segment_overlap: u64::MAX, ..Default::default() };
+        params.sanitize();
+        assert_eq!(params.segment_overlap, u64::MAX);
+    }
+}

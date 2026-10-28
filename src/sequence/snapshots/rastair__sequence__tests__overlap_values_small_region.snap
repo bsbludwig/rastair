@@ -4,21 +4,27 @@ expression: segment_infos
 ---
 [
     SegmentInfo {
-        start: 6105700,
-        end: 6105760,
-        overlap_start: 0,
-        overlap_end: 10,
-    },
-    SegmentInfo {
-        start: 6105740,
-        end: 6105810,
+        start: 6105689,
+        end: 6105759,
         overlap_start: 10,
         overlap_end: 10,
     },
     SegmentInfo {
-        start: 6105790,
-        end: 6105850,
+        start: 6105739,
+        end: 6105809,
         overlap_start: 10,
-        overlap_end: 0,
+        overlap_end: 10,
+    },
+    SegmentInfo {
+        start: 6105789,
+        end: 6105859,
+        overlap_start: 10,
+        overlap_end: 10,
+    },
+    SegmentInfo {
+        start: 6105839,
+        end: 6105860,
+        overlap_start: 10,
+        overlap_end: 10,
     },
 ]
