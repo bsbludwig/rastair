@@ -1,36 +1,36 @@
-//! This is the most complex part of Rastair
+//! `rastair call`.
 //!
-//! Its data flow is as follows:
+//! The genome is cut into overlapping segments that worker threads process in
+//! parallel; the calling thread writes their records in segment order. Per
+//! segment (`process_segment`):
 //!
-//! - Input: Paths for BAM and FASTA, config parameters, output path and format
-//! - Split the genome into segments and process them in parallel:
-//!   1. Load reads from BAM overlapping the segment
-//!   2. Build pileups for each position in the segment
-//!   3. Calculate metrics for each pileup
-//!   4. Pre-filter positions (e.g. only keep CpG sites)
-//!   5. Call variants based on the metrics
-//! - Output: Write variants to output file in specified format (VCF/BCF)
-//!   1. The calling thread receives the records of each segment, in order
-//!   2. Filter be given criteria
-//!   3. Convert to the output format
-//!   4. Write to file in order
+//! 1. `segment_columns` builds each column from seqair, drops the ones with
+//!    no alt, indel or CpG, finishes the rest into [`PileupMetrics`], calls
+//!    the indels, and marks the CpGs called indels make.
+//! 2. The forests score every alt; the SNV engine scores the ones they kept,
+//!    and the engine forests score those again.
+//! 3. `process_collected_pileups`: alt calls with the engine's genotype, CpGs
+//!    of called alts, `0/0` genotypes, methylation, phasing.
+//!
+//! The writer emits the records the record filters keep as VCF/BCF and BED.
 
-#[cfg(any(not(feature = "experimental-seqair"), test))]
-use crate::call::pileup::Pileup;
-#[cfg(any(not(feature = "experimental-seqair"), test))]
+#[cfg(test)]
 use crate::call::process::calculate_pileup_metrics;
+#[cfg(test)]
+use crate::call::tests::pileup::Pileup;
 use crate::runtime::{fault_injection, progress, segments, threads};
 use crate::{
     bed::rastair1::BedParams,
     call::{
-        methylation::params::MethylationCallingParams, pileup::SimpleRead, process::get_pileups,
-        require_tags::RequireTagsParams, variant_calling::VariantCallingParams,
+        methylation::MethylationCallingParams, require_tags::RequireTagsParams,
+        variant_calling::VariantCallingParams,
     },
     io::vcf_writer,
-    metrics::{self, MethylationEvidenceStrandInfo, PileupMetrics, ml::types::MachineLearning},
-    sequence::{
-        ChunkRegion, PileupReaders, ReaderParams, ReaderSource, Segment, SegmentationParams,
+    metrics::{
+        self, Alt, PileupMetrics,
+        ml::types::{Cascade, MachineLearning},
     },
+    sequence::{ChunkRegion, ReaderParams, Segment, SegmentationParams, SeqairReaders},
     utils::{cli, map_surrounding},
 };
 use clio::ClioPath;
@@ -38,19 +38,23 @@ use color_eyre::{
     Section,
     eyre::{Result, WrapErr, ensure},
 };
+use seqair_types::Base;
 use std::{rc::Rc, thread::available_parallelism};
 use tracing::{Level, debug, instrument, trace, warn};
 
-pub mod denovo_cpg;
 pub mod methylation;
 pub mod ml;
+pub mod pair_hmm;
+pub mod phasing;
 pub mod pileup;
 mod record_filters;
 pub(crate) mod require_tags;
 pub mod variant_calling;
 mod writer;
 
-pub use record_filters::{PreFilterInputs, RecordFilters};
+#[cfg(test)]
+pub use record_filters::pre_filter;
+pub use record_filters::{ColumnEvidence, RecordFilters};
 use writer::SegmentWriter;
 
 // Jump in here if you want to know how the processing of regions works
@@ -80,11 +84,12 @@ pub struct CallParams {
     #[command(flatten)]
     pub indel: variant_calling::IndelParams,
     #[command(flatten)]
-    pub denovo_cpg: denovo_cpg::DenovoParams,
-    #[command(flatten)]
     pub methylation: MethylationCallingParams,
     #[command(flatten)]
     pub ml: ml::MachineLearningParams,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub phasing: phasing::PhasingParams,
 
     // --- Output parameters ---
     #[command(flatten)]
@@ -111,6 +116,21 @@ pub struct CallParams {
 }
 
 impl CallParams {
+    // NOTE: There are some filters applied here to ignore certain reads.
+    pub(crate) fn pileup_mapping(&self) -> process::PileupMappingParams {
+        process::PileupMappingParams {
+            variant_calling: self.variant_calling.clone(),
+            require_tags: self.require_tags.filter(),
+            engine: process::Engine::PairHmm,
+            indel_floor: self.indel.min_indel_ao,
+            segment_max_bytes: self.segmentation.segment_max_bytes,
+            rescue_soft_clip_cpg: self.methylation.rescue_soft_clip_cpg,
+            columns: process::ColumnKeep::Candidates,
+            uncovered_cpgs: self.record_filters.uncovered_cpgs(),
+            gpu: self.ml.gpu,
+        }
+    }
+
     fn figure_out_outputs(&mut self) -> Result<()> {
         let user_chose_output = self.vcf.vcf.is_some() || self.bed.bed.is_some();
 
@@ -160,34 +180,35 @@ pub fn call(mut params: CallParams) -> Result<()> {
     params.figure_out_outputs().wrap_err("Unclear output choice")?;
     params.segmentation.sanitize();
 
-    #[cfg(not(feature = "experimental-seqair"))]
-    if params.methylation.rescue_soft_clip_cpg {
-        warn!(
-            "--rescue-soft-clip-cpg has no effect on the default (htslib) backend; \
-             build with the `experimental-seqair` feature to use it"
-        );
-    }
-
     let params = &params; // make params immutable for threads
 
     // Initialize readers for BAM and FASTA files
-    let readers = params.segments.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
+    let mut readers =
+        params.segments.pileup_readers().wrap_err("Failed to read BAM/FASTA files")?;
+    readers.run_reads_per_base = readers.mapped_reads_per_base();
+    if readers.run_reads_per_base.is_none() {
+        warn!(
+            "The alignment index has no read counts (a CRAM, or no .bai/.csi), so the phasing \
+             depth guard compares each segment with itself and misses repeats longer than one \
+             segment"
+        );
+    }
 
     // Get segments that are small enough to process in RAM
     let regions: Vec<ChunkRegion> = readers
         .segments(params.segmentation.segment_max_length, params.segmentation.segment_overlap)
         .wrap_err("Could not fetch segments from BAM file")?
         .collect();
-    if regions.is_empty() {
+    let Some(first) = regions.first() else {
         warn!("No segments found in BAM file, nothing to do");
         return Ok(());
-    } else if regions[0].region.len() < 2 {
-        warn!(region=%regions[0].region, "Given range is one base long, this will not yield any results for context-specific methylation calling.");
+    };
+    if first.region.len() < 2 {
+        warn!(region=%first.region, "Given range is one base long, this will not yield any results for context-specific methylation calling.");
     }
 
     debug!("Going to process {} segments", regions.len());
 
-    let readers = ReaderSource::from(readers);
     let readers = &readers;
 
     progress::register_signal_handler();
@@ -256,9 +277,9 @@ pub fn call(mut params: CallParams) -> Result<()> {
 #[instrument(level = "info", skip_all, fields(region=%region.region))]
 fn process_region_wrapper(
     region: &ChunkRegion,
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     params: &CallParams,
-    ml: &MachineLearning,
+    ml: &Cascade,
     failed_segments: &segments::FailedSegments,
 ) -> Vec<PileupMetrics> {
     let mut records = process_segment(readers, region, params, ml).unwrap_or_else(|error| {
@@ -272,191 +293,134 @@ fn process_region_wrapper(
     records
 }
 
+/// Score the alts `only` takes with the forests, on the inference thread if
+/// there is one.
+fn score_forest(
+    pileups: &mut [PileupMetrics],
+    ml: &MachineLearning,
+    only: impl Fn(&PileupMetrics, Base) -> bool + Copy,
+) -> Result<()> {
+    // One batch per model either way; see `score_on_cpu` for why that
+    // matters on the CPU.
+    match process::score_on_gpu(pileups, ml, only) {
+        process::GpuScoring::Scored => {}
+        process::GpuScoring::LeftToCaller => process::score_on_cpu(pileups, ml, only)?,
+    }
+    Ok(())
+}
+
 /// The actual processing of a segment
 fn process_segment(
-    readers: &mut PileupReaders,
+    readers: &mut SeqairReaders,
     region: &ChunkRegion,
     params: &CallParams,
-    ml: &MachineLearning,
+    ml: &Cascade,
 ) -> Result<Vec<PileupMetrics>> {
     fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
 
-    // NOTE: There are some filters applied here to ignore certain reads.
-    let pileup_mapping_params = process::PileupMappingParams {
-        variant_calling: params.variant_calling.clone(),
-        require_tags: params.require_tags.filter(),
-        call_indels: params.indel.enabled(),
-        indel_max_mismatches: params.indel.indel_max_mismatches,
-        indel_end_of_read_cutoff: params.indel.indel_end_of_read_cutoff,
-        segment_max_bytes: params.segmentation.segment_max_bytes,
-        rescue_soft_clip_cpg: params.methylation.rescue_soft_clip_cpg,
-        early_reject: Some(params.record_filters.clone()),
-        ..Default::default()
-    };
-
-    #[cfg(not(feature = "experimental-seqair"))]
-    {
-        let (segment, pileups) = get_pileups(readers, region, &pileup_mapping_params)?;
-        process_region(segment, pileups, params, ml)
+    let mapping = params.pileup_mapping();
+    let SegmentColumns { segment, mut columns, held } = segment_columns(readers, region, &mapping)?;
+    let depth_scale = readers.depth_scale(held.depth);
+    score_forest(&mut columns, &ml.forests, |_, _| true)?;
+    // The cascade: the engine scores the alts the forest kept, which gives
+    // them their genotype, and the engine forests score exactly those again
+    // with the engine's features. The others keep their first score.
+    held.score_snv_clusters(&segment, &mut columns, &mapping);
+    if let Some(engine) = &ml.engine {
+        score_forest(&mut columns, engine, |p, alt| p.engine_scored(alt))?;
     }
-    #[cfg(feature = "experimental-seqair")]
-    {
-        let (segment, metrics) = get_pileups(readers, region, &pileup_mapping_params)?;
-        process_pre_built_metrics(segment, metrics, params, ml)
-    }
+    process_collected_pileups(segment, columns, params, depth_scale)
 }
 
-macro_rules! log_failed_and_skip {
-    ($msg:expr) => {
-        |x: Result<PileupMetrics>| match x {
-            Err(e) => {
-                warn!(error = format!("{e:#}"), $msg);
-                None
-            }
-            Ok(x) => Some(x),
-        }
-    };
+/// Every column of a segment, overlaps included, carrying everything the
+/// forests read: `call` filters and scores these, `ml train` labels them, so a
+/// quantity added here reaches both.
+pub(crate) struct SegmentColumns {
+    pub segment: Rc<Segment>,
+    pub columns: Vec<PileupMetrics>,
+    /// The reads the SNV engine scores the columns' SNV clusters on, under
+    /// [`process::Engine::PairHmm`].
+    pub held: process::HeldReads,
 }
 
-#[cfg(any(not(feature = "experimental-seqair"), test))]
-/// Analyse pileups in a region
+pub(crate) fn segment_columns(
+    readers: &mut SeqairReaders,
+    region: &ChunkRegion,
+    mapping: &process::PileupMappingParams,
+) -> Result<SegmentColumns> {
+    let (segment, mut columns, held) =
+        process::get_pileups_held(readers, region, mapping).wrap_err("Failed to build pileups")?;
+    // The indels are called, and the forests read the CpGs they make.
+    map_surrounding(&mut columns, process::mark_called_cpgs);
+    Ok(SegmentColumns { segment, columns, held })
+}
+
+/// The value of a calling step that succeeded on a column; a failed one is
+/// logged with `context` and its column dropped.
+fn log_failed_and_skip<T>(context: &str) -> impl Fn(Result<T>) -> Option<T> + '_ {
+    move |result| result.inspect_err(|error| warn!(error = format!("{error:#}"), "{context}")).ok()
+}
+
+/// Analyse hand-built pileups in a region as `call` does the reader's.
+#[cfg(test)]
 fn process_region(
     segment: Rc<Segment>,
     pileups_iter: impl Iterator<Item = Pileup>,
     params: &CallParams,
-    ml: &MachineLearning,
+    ml: &Cascade,
 ) -> Result<Vec<PileupMetrics>> {
-    // One per covered position, as on the seqair path — see the note in
-    // `process::pileups::get_pileups`. Doubling into a vec of 592-byte entries
-    // both copies and overshoots.
-    let mut pileups: Vec<PileupMetrics> =
-        Vec::with_capacity(usize::try_from(segment.range.len()).unwrap_or(0));
-    pileups.extend(
-        calculate_pileup_metrics(pileups_iter, &segment)
-            .filter_map(log_failed_and_skip!("failed to calculate metric, skipping")),
-    );
-    map_surrounding(
-        &mut pileups,
-        process::set_denovo_adj,
-        "failed to set denovo adjacency, skipping",
-    );
-    set_strand_info_and_prefilter(&mut pileups, params);
-
-    process_collected_pileups(segment, pileups, params, ml)
-}
-
-#[cfg(feature = "experimental-seqair")]
-fn process_pre_built_metrics(
-    segment: Rc<Segment>,
-    pileups: impl Iterator<Item = PileupMetrics>,
-    params: &CallParams,
-    ml: &MachineLearning,
-) -> Result<Vec<PileupMetrics>> {
-    let mut pileups: Vec<PileupMetrics> = pileups.collect();
-    map_surrounding(
-        &mut pileups,
-        process::set_denovo_adj,
-        "failed to set denovo adjacency, skipping",
-    );
-    set_strand_info_and_prefilter(&mut pileups, params);
-    process_collected_pileups(segment, pileups, params, ml)
-}
-
-/// The step both backends run between de-novo adjacency and the shared
-/// pipeline: strand info depends on the adjacency flags just set, and the
-/// pre-filter on the alts, so the order matters.
-fn set_strand_info_and_prefilter(pileups: &mut Vec<PileupMetrics>, params: &CallParams) {
-    for pileup in pileups.iter_mut() {
-        pileup.pos_metrics.extended.methylation_strand_info =
-            MethylationEvidenceStrandInfo::from_pileup(pileup);
+    let pileups: Vec<Pileup> = pileups_iter.collect();
+    let reads = tests::utils::read_lines(&pileups);
+    let mut pileups = metrics_of(pileups.into_iter(), &segment);
+    pre_filter(&mut pileups);
+    score_forest(&mut pileups, &ml.forests, |_, _| true)?;
+    tests::utils::score_snv_lines(&mut pileups, &reads, &segment);
+    if let Some(engine) = &ml.engine {
+        // The stand-in scores alts by read count; production's cascade takes
+        // only those the first stage scored at the floor.
+        let admitted = |p: &PileupMetrics, alt: Base| {
+            p.engine_scored(alt)
+                && p.alts.iter().any(|a| {
+                    a.base == alt
+                        && a.verdict.ml().is_some_and(|ml| {
+                            *ml >= crate::call::pileup::from_seqair::CASCADE_MIN_SCORE
+                        })
+                })
+        };
+        score_forest(&mut pileups, engine, admitted)?;
     }
-    pileups.retain(|p| params.record_filters.pre_filter(p));
+    process_collected_pileups(segment, pileups, params, phasing::DepthScale::SegmentOnly)
+}
+
+#[cfg(test)]
+fn metrics_of(pileups: impl Iterator<Item = Pileup>, segment: &Segment) -> Vec<PileupMetrics> {
+    calculate_pileup_metrics(pileups, segment)
+        .filter_map(log_failed_and_skip("failed to calculate metric, skipping"))
+        .collect()
 }
 
 fn process_collected_pileups(
     segment: Rc<Segment>,
-    mut pileups: Vec<PileupMetrics>,
+    pileups: Vec<PileupMetrics>,
     params: &CallParams,
-    ml: &MachineLearning,
+    depth_scale: phasing::DepthScale,
 ) -> Result<Vec<PileupMetrics>> {
-    let threshold_filters = process::ThresholdFilterParams {
-        variant_calling: params.variant_calling.clone(),
-        methylation: params.methylation.thresholds.clone(),
-        denovo_cpg: params.denovo_cpg.clone(),
-    };
-
-    if params.indel.enabled() {
-        for p in &mut pileups {
-            if let Some(ref mut d) = p.indel_data {
-                let tract = u32::from(d.homopolymer_run.max(d.dinucleotide_run));
-                d.calls = variant_calling::indel_calling::call_indels(
-                    &d.counts,
-                    &params.indel,
-                    params.indel.use_ml(ml.enabled()),
-                    tract,
-                    params.indel.rescues_hom_ref(),
-                );
-            }
-        }
-    }
-
-    // Pass 2: ML prediction on the inference thread when there is one, and on
-    // this thread otherwise or if the GPU failed. Both score the region as one
-    // batch per model; see `score_on_cpu` for why that matters on the CPU.
-    let score_indels = params.indel.needs_ml_scores(ml.enabled());
-    if !process::score_on_gpu(&mut pileups, ml, score_indels) {
-        process::score_on_cpu(&mut pileups, ml, score_indels)?;
-    }
-
-    if params.indel.rescues_hom_ref() {
-        for p in &mut pileups {
-            if let Some(ref mut d) = p.indel_data {
-                variant_calling::indel_calling::rescue_hom_ref(&mut d.calls, params.ml.threshold());
-            }
-        }
-    }
-
-    let mut pileups: Vec<PileupMetrics> = pileups
-        .into_iter()
-        .map(|mut pileup| {
-            process::apply_threshold_filters(&mut pileup, &threshold_filters)
-                .wrap_err("Failed to apply threshold filters")?;
-            Ok(pileup)
-        })
-        .filter_map(log_failed_and_skip!("failed to add threshold filters, skipping"))
-        .collect();
-    // For CpG sites and de-novo CpG sites, if one position is pass, mark
-    // corresponding as pass as well
-    map_surrounding(
-        &mut pileups,
-        |b, c, a| process::propagate_denovo_pass_flags(b, c, a, params.ml.threshold()),
-        "failed to propagate CpG pass flags, skipping",
+    let mut pileups = call_columns(
+        pileups,
+        params.ml.ml,
+        params.methylation.m_max_coverage,
+        params.variant_calling.error_model,
     );
 
-    let pileups: Vec<PileupMetrics> = pileups
-        .into_iter()
-        .map(|mut pileup| {
-            // Finally, set the actual variant calls based on all metrics and filters
-            process::set_alt_calls(&mut pileup, params.ml.threshold())?;
-            process::add_position_tags(&mut pileup);
-            Ok(pileup)
-        })
-        .filter_map(log_failed_and_skip!("failed to set alt calls, skipping"))
-        .map(|mut pileup| {
-            // Set "extended" metrics that depend on the segment and params. This is
-            // done in a separate step since it uses the pileup as well as the ML score.
-            pileup.pos_metrics.extended.genotype =
-                pileup.estimate_genotype(params.ml.threshold(), params.variant_calling.error_model);
-            pileup.pos_metrics.extended.methylated =
-                metrics::methylation::call(&pileup)?.unwrap_or_default();
-            pileup.pos_metrics.extended.methylation_strand_info =
-                MethylationEvidenceStrandInfo::from_pileup_with_methylation(&pileup);
-
-            Ok(pileup)
-        })
-        .filter_map(log_failed_and_skip!("failed to calculate extended metrics, skipping"))
-        .filter(|p| only_core_positions(&segment, p))
-        .collect();
+    // Before the overlap is trimmed: a site in it links reads reaching into
+    // the core.
+    phasing::phase_segment(
+        &mut pileups,
+        |pos| segment.is_core(pos),
+        depth_scale,
+        params.phasing.phase_min_switch_quality,
+    );
+    pileups.retain(|p| only_core_positions(&segment, p));
 
     // At this point, we have collected all metrics for the pileups in this
     // region. The recipient is responsible for further filtering based on
@@ -467,10 +431,8 @@ fn process_collected_pileups(
             debug!("No relevant pileups found in region");
         } else {
             let count_piles = readable::num::Unsigned::from(pileups.len());
-            let pile_size = pileups.len() * std::mem::size_of::<PileupMetrics>();
-            let read_size = pileups.iter().map(|p| p.pos_metrics.depth as usize).sum::<usize>()
-                * std::mem::size_of::<SimpleRead>();
-            let bytes = readable::byte::Byte::from(pile_size + read_size);
+            let bytes =
+                readable::byte::Byte::from(pileups.len() * std::mem::size_of::<PileupMetrics>());
             debug!(%count_piles, %bytes, "Collected pileup metrics");
         }
     }
@@ -478,6 +440,33 @@ fn process_collected_pileups(
     Ok(pileups)
 }
 
+/// The calls on scored columns: each alt's with the engine's genotype, then
+/// the CpGs called alts make, then the `0/0` genotype of a column with no
+/// called alt (a de-novo partner's reads weigh as a CpG's), and methylation.
+fn call_columns(
+    mut pileups: Vec<PileupMetrics>,
+    ml_threshold: seqair_types::Probability,
+    m_max_coverage: std::num::NonZeroU32,
+    error_model: variant_calling::ErrorModel,
+) -> Vec<PileupMetrics> {
+    for pileup in &mut pileups {
+        process::set_alt_calls(pileup, ml_threshold, m_max_coverage);
+    }
+    map_surrounding(&mut pileups, process::mark_called_cpgs);
+
+    pileups
+        .into_iter()
+        .map(|mut pileup| {
+            if !pileup.alts.iter().any(Alt::called) {
+                pileup.pos_metrics.genotype = pileup.hom_ref_genotype(error_model);
+            }
+            pileup.pos_metrics.methylated = metrics::methylation::call(&pileup)?;
+            Ok(pileup)
+        })
+        .filter_map(log_failed_and_skip("failed to call the column, skipping"))
+        .collect()
+}
+
 fn only_core_positions(segment: &Segment, p: &PileupMetrics) -> bool {
-    segment.is_core(u64::from(p.pos()))
+    segment.is_core(p.pos)
 }

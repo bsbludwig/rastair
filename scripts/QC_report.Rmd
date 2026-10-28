@@ -566,13 +566,13 @@ if (!is.null(params$plot_fp) && params$plot_fp==TRUE) {
       command <- paste(params$rastair,
     		"call -@", params$threads,
     		"-l", params$region,
-    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all --m-vaf-min 0",
+    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all",
     		"-r", params$reference,
     		params$input_bam)
     } else {
       command <- paste(params$rastair,
     		"call -@", params$threads,
-    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all -m-vaf-min 0",
+    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all",
     		"-r", params$reference,
     		params$input_bam)
     }
