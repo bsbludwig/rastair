@@ -11,7 +11,7 @@ fn convert_vcf_to_vcf_just_copies_the_file() -> Result<()> {
 
     rastair()
         .args(CALL_TEST_BAM)
-        .args([NO_ML, CHR19_SMALL, "-o"])
+        .args([CHR19_SMALL, "-o"])
         .arg(&vcf)
         .silent()
         .succeeds()
@@ -44,7 +44,7 @@ fn convert_vcf_to_bcf() -> Result<()> {
 
     rastair()
         .args(CALL_TEST_BAM)
-        .args([NO_ML, CHR19_SMALL, "-o"])
+        .args([CHR19_SMALL, "-o"])
         .arg(&vcf)
         .silent()
         .succeeds()
@@ -71,7 +71,7 @@ fn convert_bcf_to_vcf() -> Result<()> {
 
     rastair()
         .args(CALL_TEST_BAM)
-        .args([NO_ML, CHR19_SMALL, "-o"])
+        .args([CHR19_SMALL, "-o"])
         .arg(&bcf)
         .silent()
         .succeeds()
@@ -97,7 +97,7 @@ fn convert_bcf_to_vcf_stdout() -> Result<()> {
 
     rastair()
         .args(CALL_TEST_BAM)
-        .args([NO_ML, CHR19_SMALL, "-o"])
+        .args([CHR19_SMALL, "-o"])
         .arg(&bcf)
         .silent()
         .succeeds()
@@ -125,7 +125,7 @@ fn convert_vcf_to_same_bed() -> Result<()> {
 
     rastair()
         .args(CALL_TEST_BAM)
-        .args([NO_ML, CHR19_SMALL])
+        .arg("--region=chr19")
         .arg("-o")
         .arg(&vcf)
         .silent()
@@ -134,7 +134,7 @@ fn convert_vcf_to_same_bed() -> Result<()> {
 
     rastair()
         .args(CALL_TEST_BAM)
-        .args([NO_ML, CHR19_SMALL])
+        .arg("--region=chr19")
         .arg("-c")
         .arg("--bed")
         .arg(&bed)
@@ -165,14 +165,17 @@ fn can_pipe_through() -> Result<()> {
     apply_common_filters!();
 
     let call_args =
-        CALL_TEST_BAM.iter().chain(&[CHR19_SMALL, NO_ML]).copied().collect::<Vec<&str>>().join(" ");
-    let maybe_seqair =
-        if cfg!(feature = "experimental-seqair") { " --features experimental-seqair " } else { "" };
-
-    let mut cmd = Command::new(insta_cmd::get_cargo_bin("/bin/bash"));
+        CALL_TEST_BAM.iter().chain(&[CHR19_SMALL]).copied().collect::<Vec<&str>>().join(" ");
+    let mut cmd = Command::new("/bin/bash");
     cmd.arg("-c");
     cmd.env("NO_COLOR", "1");
-    cmd.arg(format!("cargo run -q {maybe_seqair} -- {call_args} --vcf | head -n1000 | cargo run -q {maybe_seqair} -- convert -f bcf -F bed | head -n5"));
+    // Not `cargo run`: it builds rastair differently from the test build and
+    // replaces `target/debug/rastair` while other tests run it, and a running
+    // binary symbolicates its backtraces from that path.
+    cmd.env("RASTAIR", insta_cmd::get_cargo_bin("rastair"));
+    cmd.arg(format!(
+        r#""$RASTAIR" {call_args} --vcf | head -n1000 | "$RASTAIR" convert -f bcf -F bed | head -n5"#
+    ));
 
     assert_cmd_snapshot!(cmd);
 

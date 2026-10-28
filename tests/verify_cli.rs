@@ -89,8 +89,8 @@ fn verify_html_output_is_written() -> Result<()> {
 }
 
 /// A whole-genome comparison names chrX and chrY, and a truth set like GIAB
-/// HG001 declares neither. Such a region is skipped with a warning; it used
-/// to abort the whole run.
+/// HG001 declares neither. Such a region is skipped with a warning rather than
+/// aborting the whole run.
 #[test]
 fn verify_skips_regions_on_chromosomes_the_vcf_lacks() -> Result<()> {
     let dir = TempDir::new()?;

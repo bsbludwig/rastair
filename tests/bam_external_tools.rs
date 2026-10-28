@@ -1,3 +1,25 @@
+//! Cross-checks of rastair's output against samtools, Bismark, modkit and
+//! modbedtools. Behind `--features external-tool-tests`; each test skips
+//! itself when its tool is missing. CI runs these (and `mbias_report.rs`) in
+//! the `external-tools` job, apart from `test` so third-party drift does not
+//! redden the main signal. On Linux:
+//!
+//! ```bash
+//! export PATH="$(.github/scripts/install-external-tools.sh):$PATH"
+//! cargo test --features external-tool-tests
+//! ```
+//!
+//! On macOS neither modkit nor the Bismark tarball has a build; `Dockerfile.ci`
+//! is the fallback, and its header says how it differs from CI. Two tool
+//! versions matter, both pinned in `install-external-tools.sh`: the **Perl**
+//! Bismark (`v0.25.x`), since the `bismark-rust-v3.x` rewrite aborts on
+//! paired-end extraction and the test BAM is paired; and `modkit summary`
+//! takes `--sampling-frac 1` (it has no `--no-sampling`).
+//!
+//! `RASTAIR_TEST_MIN_COVERAGE` (default 5) is the coverage at which positions
+//! are compared between tools, by fraction (see the `rastair::bam` module's note on
+//! MM/ML and XM counts). Lower values check more positions but are noisier.
+
 #![cfg(feature = "external-tool-tests")]
 
 mod utils;
@@ -43,7 +65,6 @@ fn setup_test_bams() -> Result<TestBams> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             &format!("--region={region}"),
             "--cpgs-only",
             "-o",
@@ -744,7 +765,7 @@ fn legacy_standard_per_position_agreement() -> Result<()> {
 /// Verify that modbedtools bam2mod does not crash on our standard modBAM output.
 ///
 /// Empty ML:B:C arrays (written for reads with no methylated positions) cause modbedtools
-/// to segfault. This test ensures we no longer produce empty ML arrays.
+/// to segfault, so rastair must not write them.
 #[test]
 fn modbedtools_bam2mod_does_not_crash() -> Result<()> {
     require_tool!("uvx");
@@ -782,4 +803,49 @@ fn modbedtools_bam2mod_does_not_crash() -> Result<()> {
 fn ref_base_at(fasta: &rust_htslib::faidx::Reader, chrom: &str, pos: usize) -> Option<u8> {
     let seq = fasta.fetch_seq_string(chrom, pos, pos).ok()?;
     seq.bytes().next().map(|b| b.to_ascii_uppercase())
+}
+
+/// `bcftools` must read the phased records: `GT` with a `|` and an integer `PS`.
+#[test]
+fn bcftools_reads_phased_genotypes() -> Result<()> {
+    use utils::scenario::{Hap, Scenario};
+    require_tool!("bcftools");
+
+    let scenario = Scenario::new(1000).snv(120, Hap::One).snv(420, Hap::Two).balanced(100, 350, 5);
+    let temp_dir = TempDir::new()?;
+    let fasta = scenario.write_fasta(temp_dir.path())?;
+    let bam = temp_dir.path().join("reads.bam");
+    scenario.write_bam(&bam)?;
+    let vcf = temp_dir.path().join("out.vcf.gz");
+    rastair()
+        .arg("call")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&bam)
+        .args([scenario.region().as_str(), "--vcf"])
+        .arg(&vcf)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to run rastair call")?;
+
+    let query = Command::new("bcftools")
+        .args(["query", "-i", "PS!=\".\"", "-f", "%POS[\t%GT\t%PS]\n"])
+        .arg(&vcf)
+        .output()
+        .wrap_err("Failed to run bcftools query")?;
+    ensure!(
+        query.status.success(),
+        "bcftools query failed (exit {}): {}",
+        query.status,
+        String::from_utf8_lossy(&query.stderr)
+    );
+
+    let phased: Vec<Vec<String>> = String::from_utf8_lossy(&query.stdout)
+        .lines()
+        .map(|line| line.split('\t').map(str::to_owned).collect())
+        .collect();
+    let row = |pos: &str, gt: &str| vec![pos.to_owned(), gt.to_owned(), "121".to_owned()];
+    let expected = [row("121", "0|1"), row("421", "1|0")];
+    ensure!(phased == expected, "bcftools read {phased:?}, expected {expected:?}");
+    Ok(())
 }

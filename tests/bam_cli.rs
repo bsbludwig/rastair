@@ -16,7 +16,6 @@ fn bam_rewrite_legacy_adds_xr_xg_xm_tags() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             "--region=chr19:6103075-6103100",
             "--cpgs-only",
             "-o",
@@ -144,7 +143,6 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             "--region=chr19:6103075-6103100",
             "--cpgs-only",
             "-o",
@@ -205,9 +203,9 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
 
 /// Rewritten BAM must be sorted by position and contain no duplicate reads,
 /// even when `--segment-max-length` forces processing across multiple segments.
-/// Reads overlapping a segment boundary used to be emitted by both the segment
-/// they start in and the next one, causing duplicates and sort-order violations
-/// that made `samtools index` fail.
+/// A read overlapping a segment boundary is emitted by the segment it starts
+/// in only; emitting it from the next one too would duplicate it and break the
+/// sort order, and `samtools index` would fail.
 #[test]
 fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
     apply_common_filters!();
@@ -223,7 +221,6 @@ fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             "--region=chr19:6103000-6106000",
             "--cpgs-only",
             "-o",
@@ -244,7 +241,7 @@ fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
         String::from_utf8_lossy(&tabix_output.stderr)
     );
 
-    // Use a very small segment length to force many segment boundaries,
+    // Use the smallest segment length to force several segment boundaries,
     // maximising the chance that reads straddle them.
     rastair()
         .args([
@@ -252,7 +249,7 @@ fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
             "standard",
             "--fasta-file=tests/data/test.fasta.gz",
             "--region=chr19:6103000-6106000",
-            "--segment-max-length=200",
+            "--segment-max-length=1000",
             "tests/data/test.bam",
         ])
         .arg(&calls_bed)
@@ -320,7 +317,6 @@ fn bam_rewrite_xm_content_matches_calls() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             &format!("--region={region}"),
             "--cpgs-only",
             "-o",
@@ -454,7 +450,7 @@ fn bam_rewrite_xm_content_matches_calls() -> Result<()> {
     Ok(())
 }
 
-/// Regression test for mixed-methylation sites in legacy XM output.
+/// Mixed-methylation sites in legacy XM output.
 ///
 /// At chr19:6103215 (1-based), the CpG C base is at 0-based position 6103214.
 /// In `tests/data/test.bam` there are 18 OT reads with evidence split:
@@ -477,7 +473,6 @@ fn bam_rewrite_legacy_mixed_site_keeps_per_read_z_and_z_uppercase() -> Result<()
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             &format!("--region={region}"),
             "--cpgs-only",
             "-o",
@@ -570,7 +565,6 @@ fn bam_legacy_accepts_cram_input() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             "--region=chr19:6103075-6103100",
             "--cpgs-only",
             "-o",
@@ -658,7 +652,6 @@ fn bam_legacy_cram_matches_bam_output() -> Result<()> {
             "call",
             "--fasta-file=tests/data/test.fasta.gz",
             "tests/data/test.bam",
-            "--no-ml",
             &format!("--region={region}"),
             "--cpgs-only",
             "-o",
@@ -747,5 +740,213 @@ fn bam_legacy_cram_matches_bam_output() -> Result<()> {
     }
 
     ensure!(records_compared > 0, "No records were compared");
+    Ok(())
+}
+
+/// A CpG no read shows methylation for has an empty `beta_est` in the calls
+/// BED. `bam` and `per-read` still read it as a CpG: per-read tags come from
+/// each read's base, not from the position's β.
+///
+/// The reference CpG at 300 is covered only by top-strand reads that end on its
+/// C, so no read pairs the C with its G, and β is empty. The de-novo CpG made
+/// by the `T>C` at 600 is covered only by bottom-strand reads, which cannot
+/// show the C side's methylation.
+#[test]
+fn a_cpg_without_beta_stays_a_cpg_downstream() -> Result<()> {
+    use color_eyre::eyre::OptionExt as _;
+    use utils::scenario::{Hap, READ_LEN, Scenario, Strand};
+    const CPG: usize = 300;
+    const DENOVO: usize = 600;
+
+    let scenario = Scenario::new(1_000)
+        .reference_at(CPG, b"CG")
+        .reference_at(DENOVO, b"TG")
+        .hom(DENOVO, b'C')
+        .methylated(Hap::One)
+        .pairs(Hap::One, Strand::Top, CPG + 1 - READ_LEN, 3)
+        .pairs(Hap::Two, Strand::Top, CPG + 1 - READ_LEN, 3)
+        .pairs(Hap::One, Strand::Bottom, DENOVO - 50, 3)
+        .pairs(Hap::Two, Strand::Bottom, DENOVO - 50, 3);
+    let dir = TempDir::new()?;
+    let fasta = scenario.write_fasta(dir.path())?;
+    let reads = dir.path().join("reads.bam");
+    scenario.write_bam(&reads)?;
+    let calls = dir.path().join("calls.bed.gz");
+    rastair()
+        .arg("call")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&reads)
+        .arg(scenario.region())
+        .arg("--bed")
+        .arg(&calls)
+        .silent()
+        .succeeds()?;
+
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut rust_htslib::bgzf::Reader::from_path(&calls).wrap_err("open calls BED")?,
+        &mut text,
+    )?;
+    let beta = |pos: usize| {
+        let pos = pos.to_string();
+        text.lines().find(|line| line.split('\t').nth(1) == Some(pos.as_str()))?.split('\t').nth(4)
+    };
+    ensure!(beta(CPG) == Some(""), "the CpG's β is not empty:\n{text}");
+    ensure!(beta(DENOVO) == Some(""), "the de-novo CpG's β is not empty:\n{text}");
+
+    let legacy = dir.path().join("legacy.bam");
+    let output = rastair()
+        .arg("bam")
+        .arg("legacy")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&reads)
+        .arg(&calls)
+        .arg("--output")
+        .arg(&legacy)
+        .output()?;
+    ensure!(output.status.success(), "bam legacy failed: {}", output.stderr());
+    ensure!(!output.stderr().contains("WARN"), "bam legacy warned: {}", output.stderr());
+
+    let mut reader = bam::Reader::from_path(&legacy).wrap_err("open legacy BAM")?;
+    let mut record = bam::Record::new();
+    let (mut methylated, mut unmethylated) = (0, 0);
+    while let Some(result) = reader.read(&mut record) {
+        result?;
+        let Ok(bam::record::Aux::String(xm)) = record.aux(b"XM") else {
+            bail!("no XM on {}", record.pos())
+        };
+        let xm = xm.as_bytes().to_vec();
+        for [in_read, in_ref] in record.aligned_pairs_full() {
+            if in_ref != Some(i64::try_from(CPG)?) {
+                continue;
+            }
+            let in_read = usize::try_from(in_read.ok_or_eyre("no read position")?)?;
+            match xm.get(in_read) {
+                Some(b'Z') => methylated += 1,
+                Some(b'z') => unmethylated += 1,
+                other => bail!("XM at the CpG is {other:?}"),
+            }
+        }
+    }
+    ensure!(
+        (methylated, unmethylated) == (3, 3),
+        "XM at the CpG: {methylated} Z, {unmethylated} z"
+    );
+
+    let output = rastair()
+        .arg("per-read")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&reads)
+        .arg("--calls")
+        .arg(&calls)
+        .output()?;
+    ensure!(output.status.success(), "per-read failed: {}", output.stderr());
+    ensure!(!output.stderr().contains("WARN"), "per-read warned: {}", output.stderr());
+    Ok(())
+}
+
+/// β is 0 both at an unmethylated CpG and at one both chromosomes lose, so
+/// `bam` must not take a β of 0 for an SNP: the CpG at 300 has no methylated
+/// read at all and every read there gets `z`. At 900 one methylated read among
+/// 210 rounds β to `0.00`; that read keeps its MM/ML entry.
+#[test]
+fn an_unmethylated_cpg_keeps_its_tags() -> Result<()> {
+    use color_eyre::eyre::OptionExt as _;
+    use utils::scenario::{Hap, Scenario, Strand};
+    const UNMETHYLATED: usize = 300;
+    const NEARLY: usize = 900;
+
+    let scenario = Scenario::new(1_500)
+        .reference_at(UNMETHYLATED, b"CG")
+        .reference_at(NEARLY, b"CG")
+        .methylated(Hap::One)
+        .pairs(Hap::Two, Strand::Top, UNMETHYLATED - 50, 3)
+        .pairs(Hap::Two, Strand::Bottom, UNMETHYLATED - 50, 3)
+        .pairs(Hap::One, Strand::Top, NEARLY - 50, 1)
+        .pairs(Hap::Two, Strand::Top, NEARLY - 50, 210)
+        .pairs(Hap::Two, Strand::Bottom, NEARLY - 50, 3);
+    let dir = TempDir::new()?;
+    let fasta = scenario.write_fasta(dir.path())?;
+    let reads = dir.path().join("reads.bam");
+    scenario.write_bam(&reads)?;
+    let calls = dir.path().join("calls.bed.gz");
+    rastair()
+        .arg("call")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&reads)
+        .arg(scenario.region())
+        .arg("--bed")
+        .arg(&calls)
+        .silent()
+        .succeeds()?;
+
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut rust_htslib::bgzf::Reader::from_path(&calls).wrap_err("open calls BED")?,
+        &mut text,
+    )?;
+    let beta = |pos: usize| {
+        let pos = pos.to_string();
+        text.lines().find(|line| line.split('\t').nth(1) == Some(pos.as_str()))?.split('\t').nth(4)
+    };
+    for pos in [UNMETHYLATED, UNMETHYLATED + 1, NEARLY] {
+        ensure!(beta(pos) == Some("0.00"), "β at {pos} is not 0.00:\n{text}");
+    }
+
+    let rewrite = |mode: &str| -> Result<std::path::PathBuf> {
+        let out = dir.path().join(format!("{mode}.bam"));
+        let output = rastair()
+            .arg("bam")
+            .arg(mode)
+            .arg("--fasta-file")
+            .arg(&fasta)
+            .arg(&reads)
+            .arg(&calls)
+            .arg("--output")
+            .arg(&out)
+            .output()?;
+        ensure!(output.status.success(), "bam {mode} failed: {}", output.stderr());
+        Ok(out)
+    };
+
+    let mut reader = bam::Reader::from_path(rewrite("legacy")?).wrap_err("open legacy BAM")?;
+    let mut record = bam::Record::new();
+    let mut at_unmethylated = Vec::new();
+    while let Some(result) = reader.read(&mut record) {
+        result?;
+        let Ok(bam::record::Aux::String(xm)) = record.aux(b"XM") else {
+            bail!("no XM on {}", record.pos())
+        };
+        let xm = xm.as_bytes().to_vec();
+        for [in_read, in_ref] in record.aligned_pairs_full() {
+            let Some(in_ref) = in_ref else { continue };
+            if ![UNMETHYLATED, UNMETHYLATED + 1].contains(&usize::try_from(in_ref)?) {
+                continue;
+            }
+            let in_read = usize::try_from(in_read.ok_or_eyre("no read position")?)?;
+            at_unmethylated.push(xm.get(in_read).copied().map(char::from));
+        }
+    }
+    let unmethylated = at_unmethylated.iter().filter(|&&xm| xm == Some('z')).count();
+    ensure!(
+        unmethylated == 6 && !at_unmethylated.contains(&Some('Z')),
+        "XM at the unmethylated CpG: {at_unmethylated:?}"
+    );
+
+    let mut reader = bam::Reader::from_path(rewrite("standard")?).wrap_err("open standard BAM")?;
+    let mut with_mm = 0;
+    while let Some(result) = reader.read(&mut record) {
+        result?;
+        if let Ok(bam::record::Aux::String(mm)) = record.aux(b"MM")
+            && mm.trim_end_matches(';').split(',').skip(1).any(|s| !s.is_empty())
+        {
+            with_mm += 1;
+        }
+    }
+    ensure!(with_mm == 1, "{with_mm} reads have MM entries, expected the one methylated read");
     Ok(())
 }

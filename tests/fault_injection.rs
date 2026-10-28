@@ -20,7 +20,7 @@ use utils::{faults::*, *};
 fn successful_run_moves_outputs_into_place() -> Result<()> {
     let dir = TempDir::new()?;
     let (vcf, bed) = (dir.path().join("out.vcf.gz"), dir.path().join("out.bed.gz"));
-    ensure_success(&call(&vcf, &[NO_ML, "--bed", &bed.to_string_lossy()], &[])?)?;
+    ensure_success(&call(&vcf, &["--bed", &bed.to_string_lossy()], &[])?)?;
 
     for file in ["out.vcf.gz", "out.vcf.gz.csi", "out.bed.gz", "out.bed.gz.tbi"] {
         ensure!(dir.path().join(file).exists(), "{file} should exist");
@@ -39,9 +39,9 @@ fn successful_run_moves_outputs_into_place() -> Result<()> {
 fn worker_panic_stops_the_run_and_leaves_a_valid_prefix() -> Result<()> {
     let dir = TempDir::new()?;
     let (full, crashed) = (dir.path().join("full.vcf"), dir.path().join("crashed.vcf"));
-    ensure_success(&call(&full, &[NO_ML], &[])?)?;
+    ensure_success(&call(&full, &[], &[])?)?;
 
-    let output = call(&crashed, &[NO_ML], &[(INJECT_PANIC, "worker@6")])?;
+    let output = call(&crashed, &[], &[(INJECT_PANIC, "worker@6")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a worker panic");
     ensure!(stderr.contains("A worker panicked (see the crash report above)"), "{stderr}");
@@ -62,7 +62,7 @@ fn worker_panic_stops_the_run_and_leaves_a_valid_prefix() -> Result<()> {
 fn writer_panic_stops_the_run() -> Result<()> {
     let dir = TempDir::new()?;
     let out = dir.path().join("out.vcf");
-    let output = call(&out, &[NO_ML], &[(INJECT_PANIC, "writer@3")])?;
+    let output = call(&out, &[], &[(INJECT_PANIC, "writer@3")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a writer panic");
     ensure!(
@@ -79,7 +79,7 @@ fn writer_panic_stops_the_run() -> Result<()> {
 fn writer_error_stops_the_run() -> Result<()> {
     let dir = TempDir::new()?;
     let out = dir.path().join("out.vcf");
-    let output = call(&out, &[NO_ML], &[(INJECT_ERROR, "writer@3")])?;
+    let output = call(&out, &[], &[(INJECT_ERROR, "writer@3")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a writer error");
     ensure!(stderr.contains("Failed to write the output"), "{stderr}");
@@ -93,9 +93,9 @@ fn writer_error_stops_the_run() -> Result<()> {
 fn failed_segment_is_skipped_and_fails_the_run() -> Result<()> {
     let dir = TempDir::new()?;
     let (full, lossy) = (dir.path().join("full.vcf"), dir.path().join("lossy.vcf"));
-    ensure_success(&call(&full, &[NO_ML], &[])?)?;
+    ensure_success(&call(&full, &[], &[])?)?;
 
-    let output = call(&lossy, &[NO_ML], &[(INJECT_ERROR, "worker@6")])?;
+    let output = call(&lossy, &[], &[(INJECT_ERROR, "worker@6")])?;
     let stderr = output.stderr();
     ensure!(output.status.code() == Some(1), "should fail after a segment error: {stderr}");
     ensure!(stderr.contains("Failed to process segment, its output is missing"), "{stderr}");
@@ -114,7 +114,7 @@ fn a_killed_run_leaves_only_partial_output() -> Result<()> {
     for (name, signal) in [("TERM", libc::SIGTERM), ("INT", libc::SIGINT)] {
         let out = dir.path().join(format!("{name}.vcf.gz"));
         let spec = format!("{name}:worker@6");
-        let output = call(&out, &[NO_ML], &[(INJECT_SIGNAL, &spec)])?;
+        let output = call(&out, &[], &[(INJECT_SIGNAL, &spec)])?;
         ensure_killed_by(&output, signal)?;
         only_partial_output(&out)?;
     }
@@ -128,7 +128,7 @@ fn gpu_thread_panic_falls_back_to_the_cpu() -> Result<()> {
     let (cpu, crashed) = (dir.path().join("cpu.vcf"), dir.path().join("crashed.vcf"));
 
     // More workers than the GPU thread keeps up with, so jobs are queued when it
-    // crashes: those used to wait forever.
+    // crashes: those must fall back to the CPU, not wait forever.
     let threads = ["--threads", "4"];
     let fault = &[(INJECT_PANIC, "gpu-dispatch@2")];
     let output = call(&crashed, &[&threads[..], &["--gpu"]].concat(), fault)?;
@@ -153,7 +153,7 @@ fn gpu_thread_panic_falls_back_to_the_cpu() -> Result<()> {
 fn panic_report_shows_where_the_panic_happened() -> Result<()> {
     let dir = TempDir::new()?;
     let mut cmd = rastair();
-    cmd.args(CALL_TEST_BAM).args([REGION, SMALL_SEGMENTS, NO_ML]);
+    cmd.args(CALL_TEST_BAM).args([REGION, SMALL_SEGMENTS]);
     cmd.arg("--vcf").arg(dir.path().join("out.vcf"));
     with_faults(&mut cmd, &[(INJECT_PANIC, "worker@2")]).env("RUST_BACKTRACE", "1");
     let output = run_with_timeout(&mut cmd)?;

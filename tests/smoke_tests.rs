@@ -5,7 +5,6 @@ use utils::*;
 const CALL_TEST_BAM: [&str; 3] =
     ["call", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"];
 const CHR19: &str = "--region=chr19";
-const NO_ML: &str = "--no-ml"; // disable ML for faster tests
 
 #[test]
 fn cli_help() -> Result<()> {
@@ -19,7 +18,7 @@ fn cli_help() -> Result<()> {
 fn count_bed_lines() -> Result<()> {
     apply_common_filters!();
 
-    let call = rastair().args(CALL_TEST_BAM).args([CHR19, NO_ML, "-c"]).output()?;
+    let call = rastair().args(CALL_TEST_BAM).args([CHR19, "-c"]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
     [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
@@ -47,7 +46,7 @@ fn count_bed_lines() -> Result<()> {
 fn count_vcf_lines() -> Result<()> {
     apply_common_filters!();
 
-    let call = rastair().args(CALL_TEST_BAM).args([CHR19, NO_ML, "-c", "--vcf"]).output()?;
+    let call = rastair().args(CALL_TEST_BAM).args([CHR19, "-c", "--vcf"]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
     [TIME] INFO rastair::runtime::partial_output: Wrote VCF output file="-"
@@ -73,12 +72,11 @@ fn count_vcf_lines() -> Result<()> {
 fn every_bed_line_should_be_in_vcf() -> Result<()> {
     apply_common_filters!();
 
-    let mut bed_call = rastair().args(CALL_TEST_BAM).args([CHR19, NO_ML, "-c"]).output()?;
+    let mut bed_call = rastair().args(CALL_TEST_BAM).args([CHR19, "-c"]).output()?;
     bed_call.succeeds()?;
     let (bed_cpg, bed_de_novo) = bed_cpgs_denovos(&bed_call.stdout());
 
-    let mut vcf_call =
-        rastair().args(CALL_TEST_BAM).args([CHR19, NO_ML, "-c", "--vcf"]).output()?;
+    let mut vcf_call = rastair().args(CALL_TEST_BAM).args([CHR19, "-c", "--vcf"]).output()?;
     vcf_call.succeeds()?;
     let (vcf_cpg, vcf_de_novo) = vcf_cpgs_denovos(&vcf_call.stdout());
 
@@ -120,12 +118,11 @@ fn every_bed_line_should_be_in_vcf_bacteriophage() -> Result<()> {
     apply_common_filters!();
     let region = "--region=bacteriophage_lambda_CpG";
 
-    let mut bed_call = rastair().args(CALL_TEST_BAM).args([region, NO_ML, "-c"]).output()?;
+    let mut bed_call = rastair().args(CALL_TEST_BAM).args([region, "-c"]).output()?;
     bed_call.succeeds()?;
     let (bed_cpg, bed_de_novo) = bed_cpgs_denovos(&bed_call.stdout());
 
-    let mut vcf_call =
-        rastair().args(CALL_TEST_BAM).args([region, NO_ML, "-c", "--vcf"]).output()?;
+    let mut vcf_call = rastair().args(CALL_TEST_BAM).args([region, "-c", "--vcf"]).output()?;
     vcf_call.succeeds()?;
     let (vcf_cpg, vcf_de_novo) = vcf_cpgs_denovos(&vcf_call.stdout());
 

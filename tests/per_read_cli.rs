@@ -102,7 +102,6 @@ fn enhance_with_calls_bed_file_to_add_denovo_counts() -> Result<()> {
             "tests/data/test.bam",
             "-c",
             "--region=chr19:6105900-6105950",
-            "--no-ml",
             "--bed",
         ])
         .arg(&calls_bed)
@@ -220,10 +219,10 @@ fn can_tabix_files() -> Result<()> {
     Ok(())
 }
 
-/// Reads starting exactly at a segment boundary used to be reported twice: the
-/// BAM fetch is one base wider than the segment, and only the lower bound was
-/// checked. Small segments put many reads on a boundary, so the output must
-/// still match a run that processes everything in one segment.
+/// Reads starting exactly at a segment boundary are reported once: the BAM
+/// fetch is one base wider than the segment, so both bounds are checked.
+/// Small segments put many reads on a boundary, so the output must still match
+/// a run that processes everything in one segment.
 #[test]
 fn reads_at_segment_boundaries_are_reported_once() -> Result<()> {
     let run = |segment_max_length: &str| -> Result<Vec<String>> {
@@ -255,4 +254,113 @@ fn reads_at_segment_boundaries_are_reported_once() -> Result<()> {
     ensure!(chunked == single, "segmentation changed the reported reads");
 
     Ok(())
+}
+
+/// The de-novo columns go by each read's base, like `bam`'s tags: a read on
+/// the strand that converts the CpG side lists it as methylated where it
+/// shows the converted base and unmethylated where it shows the CpG base; a
+/// read on the other strand lists it in neither. Here β is 5/8, but three
+/// reads on each strand are unmethylated.
+#[test]
+fn denovo_columns_follow_each_reads_base() -> Result<()> {
+    let stdout = per_read_over_a_denovo_cpg(&["--all-reads"])?;
+    let (methylated, unmethylated) = (listed(&stdout, 14), listed(&stdout, 15));
+    ensure!(
+        (methylated, unmethylated) == (10, 6),
+        "mod_denovos {methylated}, unmod_denovos {unmethylated}:\n{stdout}"
+    );
+    Ok(())
+}
+
+/// A read whose only CpG is de-novo is reported without `--all-reads`, and
+/// counts it in `num_cpg`.
+#[test]
+fn a_read_with_only_a_denovo_cpg_is_reported() -> Result<()> {
+    let stdout = per_read_over_a_denovo_cpg(&[])?;
+    let (methylated, unmethylated) = (listed(&stdout, 14), listed(&stdout, 15));
+    ensure!(
+        (methylated, unmethylated) == (10, 6),
+        "mod_denovos {methylated}, unmod_denovos {unmethylated}:\n{stdout}"
+    );
+    let rows: Vec<_> = stdout.lines().filter(|line| !line.starts_with('#')).collect();
+    ensure!(
+        rows.len() == 16 && rows.iter().all(|row| row.split('\t').nth(9) == Some("1")),
+        "expected 16 reads with num_cpg 1:\n{stdout}"
+    );
+    let num_mod = |value| rows.iter().filter(|row| row.split('\t').nth(10) == Some(value)).count();
+    ensure!(
+        (num_mod("1"), num_mod("0")) == (10, 6),
+        "expected num_mod 1 on the 10 methylated reads:\n{stdout}"
+    );
+    Ok(())
+}
+
+/// The number of positions all rows list in `column`.
+fn listed(stdout: &str, column: usize) -> usize {
+    stdout
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split('\t').nth(column))
+        .map(|positions| positions.split(',').filter(|p| !p.is_empty()).count())
+        .sum()
+}
+
+/// `per-read` with `args` over a homozygous de-novo CpG with β 5/8, given
+/// the calls `call --bed` makes there.
+fn per_read_over_a_denovo_cpg(args: &[&str]) -> Result<String> {
+    use utils::scenario::{Hap, Scenario, Strand};
+    const DENOVO: usize = 600;
+
+    let scenario = Scenario::new(1_000)
+        .reference_at(DENOVO, b"TG")
+        .hom(DENOVO, b'C')
+        .methylated(Hap::One)
+        .pairs(Hap::One, Strand::Top, DENOVO - 50, 5)
+        .pairs(Hap::Two, Strand::Top, DENOVO - 50, 3)
+        .pairs(Hap::One, Strand::Bottom, DENOVO - 50, 5)
+        .pairs(Hap::Two, Strand::Bottom, DENOVO - 50, 3);
+    let dir = TempDir::new()?;
+    let fasta = scenario.write_fasta(dir.path())?;
+    let reads = dir.path().join("reads.bam");
+    scenario.write_bam(&reads)?;
+    let calls = dir.path().join("calls.bed.gz");
+    rastair()
+        .arg("call")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&reads)
+        .arg(scenario.region())
+        .arg("--bed")
+        .arg(&calls)
+        .silent()
+        .succeeds()?;
+
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut rust_htslib::bgzf::Reader::from_path(&calls).wrap_err("open calls BED")?,
+        &mut text,
+    )?;
+    let row = |pos: usize| {
+        let pos = pos.to_string();
+        text.lines().find(|line| line.split('\t').nth(1) == Some(pos.as_str()))
+    };
+    for pos in [DENOVO, DENOVO + 1] {
+        let fields: Vec<_> = row(pos).unwrap_or_default().split('\t').collect();
+        ensure!(
+            fields.get(4) == Some(&"0.62") && fields.get(14) == Some(&"NEW"),
+            "no de-novo CpG with β 0.62 at {pos}:\n{text}"
+        );
+    }
+
+    let output = rastair()
+        .arg("per-read")
+        .arg("--fasta-file")
+        .arg(&fasta)
+        .arg(&reads)
+        .args(args)
+        .arg("--calls")
+        .arg(&calls)
+        .output()?;
+    ensure!(output.status.success(), "per-read failed: {}", output.stderr());
+    Ok(String::from_utf8(output.stdout)?)
 }

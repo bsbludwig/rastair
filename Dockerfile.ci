@@ -6,22 +6,17 @@
 #   docker build -f Dockerfile.ci -t rastair-ext-tests .
 #   docker run --rm -v "$(pwd):/rastair" rastair-ext-tests
 #
-# The name is historical: **CI no longer builds this file.** The `external-tools`
-# job in .github/workflows/ci.yml installs the same tools straight onto the
-# runner instead, which lets it share the cargo cache rather than compiling the
-# workspace cold inside a container on every run.
+# CI does not build this file: the `external-tools` job in
+# .github/workflows/ci.yml installs the same tools straight onto the runner, so
+# it shares the cargo cache. That job is the source of truth for how these tests
+# run; if this image fails, compare against it. Nothing builds this image
+# automatically, so it can rot.
 #
-# Two consequences worth knowing:
-#
-#  * Nothing exercises this file automatically, so it can rot. That is exactly
-#    how the `tabix` bug that broke all nine tests survived unnoticed. If it
-#    fails, compare against the `external-tools` job, which is the source of
-#    truth for how these tests are run.
-#  * It is not equivalent to CI. There is no R here, so tests/mbias_report.rs
-#    self-skips; CI installs r-base-core + r-cran-* and does render the QC
-#    report. Bismark and modkit also come from bioconda rather than the
-#    versions pinned in install-external-tools.sh, so a version-specific CLI
-#    difference can show up in one place and not the other.
+# It is not equivalent to CI: there is no R here, so tests/mbias_report.rs
+# self-skips, while CI installs r-base-core + r-cran-* and renders the QC
+# report. Bismark and modkit come from bioconda at the versions pinned in
+# install-external-tools.sh, so a packaging difference can still show up in one
+# place and not the other.
 
 FROM condaforge/mambaforge:latest
 
@@ -32,11 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config curl ca-certificates libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust. `--default-toolchain none` leaves the version entirely to
-# rust-toolchain.toml, which is the single source of truth for it. Pinning one
-# here was pointless — rustup overrode it from that file at build time anyway —
-# and actively harmful: the dependency prebuild below then ran on a different
-# toolchain than the tests, throwing the whole prebuilt cache away.
+# Install Rust. `--default-toolchain none` leaves the version to
+# rust-toolchain.toml, so the dependency prebuild below runs on the toolchain
+# the tests use.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- --default-toolchain none --profile minimal -y
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -50,11 +43,13 @@ RUN channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\(.*\)".*
     && rustup component add llvm-tools-preview \
     && rustc --version
 
-# Install bioinformatics tools
+# Install bioinformatics tools. Bismark and modkit carry the versions pinned
+# in .github/scripts/install-external-tools.sh: an unpinned `bismark` is the
+# `bismark-rust-v3.x` rewrite, which aborts on the paired test BAM.
 RUN mamba install -y -c bioconda -c conda-forge \
     samtools \
-    bismark \
-    ont-modkit \
+    bismark=0.25.1 \
+    ont-modkit=0.6.4 \
     && mamba clean -afy
 
 # Install uv (Python package manager); pre-cache modbedtools so uvx works offline.
@@ -65,7 +60,6 @@ RUN pip install uv && uvx modbedtools --help
 # Prepopulate cargo registry and dependency build cache:
 # copy only manifests + dep sources, build deps once, then copy real source.
 COPY Cargo.toml Cargo.lock LICENSE.txt ./
-COPY crates/ crates/
 COPY tools/ tools/
 # Create stub src so cargo can resolve the workspace and fetch+build deps
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \

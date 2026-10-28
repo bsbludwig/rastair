@@ -15,7 +15,7 @@ pub const INJECT_ERROR: &str = "RASTAIR_INJECT_ERROR";
 pub const INJECT_SIGNAL: &str = "RASTAIR_INJECT_SIGNAL";
 /// Its first three segments have no reads, so faults are injected at the sixth
 /// segment (`worker@6`) to have records before and after it
-pub const REGION: &str = "--region=chr19:6100000-6120000";
+pub const REGION: &str = "--region=chr19:6100001-6120000";
 /// Many small segments, so a fault lands in the middle of the run
 pub const SMALL_SEGMENTS: &str = "--segment-max-length=1000";
 /// What [`REGION`] is split into with [`SMALL_SEGMENTS`], in every pipeline
@@ -97,6 +97,59 @@ pub fn run_with_timeout(cmd: &mut Command) -> Result<Output> {
             // is still the child's: the thread above has not reaped it.
             unsafe { libc::kill(pid, libc::SIGKILL) };
             bail!("rastair did not finish within {TIMEOUT:?}, it probably hangs");
+        }
+    }
+}
+
+/// How a run bounded in time and memory ended.
+#[derive(Debug)]
+pub enum Bounded {
+    Finished(Output),
+    /// Killed after the timeout.
+    TooSlow,
+    /// Killed once its resident memory passed the cap.
+    TooBig,
+}
+
+/// Runs `cmd`, killing it once it runs longer than `timeout` or its resident
+/// memory passes `max_rss_bytes`, so that a runaway case cannot take the
+/// machine down. The memory is read with `ps` every 50 ms, since `ulimit -v`
+/// is not enforced on macOS.
+pub fn run_bounded(cmd: &mut Command, timeout: Duration, max_rss_bytes: u64) -> Result<Bounded> {
+    let child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .wrap_err("Failed to start rastair")?;
+    let pid = libc::pid_t::try_from(child.id())?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    let start = Instant::now();
+    let stop = |bounded: Bounded| -> Result<Bounded> {
+        // SAFETY: kill(2) has no memory-safety preconditions, and the pid
+        // is still the child's: the thread above has not reaped it.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        receiver.recv().wrap_err("Failed to reap rastair")??;
+        Ok(bounded)
+    };
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(output) => {
+                return Ok(Bounded::Finished(output.wrap_err("Failed to collect rastair output")?));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => bail!("lost the rastair process: {error}"),
+        }
+        let rss_kib: u64 = Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .map(|output| output.stdout().trim().parse().unwrap_or(0))
+            .unwrap_or(0);
+        if rss_kib.saturating_mul(1024) > max_rss_bytes {
+            return stop(Bounded::TooBig);
+        }
+        if start.elapsed() > timeout {
+            return stop(Bounded::TooSlow);
         }
     }
 }
@@ -193,7 +246,7 @@ pub fn ensure_crash_reported(stderr: &str, location: &str) -> Result<()> {
 pub fn bam_calls(dir: &Path) -> Result<PathBuf> {
     let calls = dir.join("calls.bed.gz");
     let mut cmd = rastair();
-    cmd.args(CALL_TEST_BAM).args([REGION, NO_ML, "--cpgs-only", "--bed"]).arg(&calls);
+    cmd.args(CALL_TEST_BAM).args([REGION, "--cpgs-only", "--bed"]).arg(&calls);
     ensure_success(&run_with_timeout(with_faults(&mut cmd, &[]))?)?;
     ensure!(dir.join("calls.bed.gz.tbi").exists(), "calls should be indexed");
     Ok(calls)
