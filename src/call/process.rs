@@ -3,34 +3,22 @@
 mod calc_ml;
 mod denovo;
 mod inference;
+#[cfg(test)]
 mod pileup_metrics;
 mod pileups;
-mod position_tags;
 mod set_alt_calls;
-mod threshold_filters;
 
-// First off, let's build Rastair-specific pileups from the BAM file
-pub use pileups::{PileupMappingParams, get_pileups};
-
-// Next, we calculate various metrics based on the generated pileups
-pub use pileup_metrics::calculate_pileup_metrics;
-// and set de-novo adjacency information now that we know where de-novo candidates are
-pub use denovo::set_denovo_adj;
-
-// Then, we apply filters to the calculated pileup metrics
-pub use threshold_filters::{ThresholdFilterParams, apply_threshold_filters};
-
-// And machine learning-based metrics, which are just more filters
 #[cfg(test)]
-pub use calc_ml::add_ml_metrics;
-pub use calc_ml::{GPU_BATCH_BUFFER_SIZE, score_on_cpu};
+pub use pileups::get_pileups;
+pub use pileups::{ColumnKeep, Engine, PileupMappingParams, UncoveredCpgs};
+pub use pileups::{HeldReads, get_pileups_held};
+
+#[cfg(test)]
+pub use pileup_metrics::calculate_pileup_metrics;
+
+pub use calc_ml::{GPU_BATCH_BUFFER_SIZE, Unscored, ml_row, score_on_cpu};
 // run on one dedicated thread when there is a GPU, so workers never own a forest
-pub use inference::{InferenceStage, score_on_gpu};
+pub use inference::{GpuScoring, InferenceStage, score_on_gpu};
 
-// Now, let's mark both positions of de-novo CpG sites as pass if one passes
-pub use denovo::propagate_denovo_pass_flags;
-
-// Finally, we set the actual variant calls based on all the metrics and filters
+pub use denovo::mark_called_cpgs;
 pub use set_alt_calls::set_alt_calls;
-// and add tags for positions based on the alt calls
-pub use position_tags::add_position_tags;
