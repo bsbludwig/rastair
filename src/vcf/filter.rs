@@ -1,50 +1,42 @@
 //! The closed set of VCF FILTER codes rastair can emit.
 //!
 //! Filters are modelled as a `#[repr(u8)]` enum rather than carried around as
-//! strings. FILTER is a set, and there are only 13 codes, so a whole set is a
-//! `u16` bitset ([`Filters`](crate::metrics::Filters)) rather than a list.
-//! This enum is the single source of truth: the VCF header is registered from
+//! strings. A record carries at most one: an SNV alt's
+//! [`Rejection`](crate::metrics::Rejection), or an indel the pair-HMM does
+//! not call. This enum is the single source of truth: the VCF header is registered from
 //! [`RastairFilter::ALL`] (in declaration order) and each filter resolves to
 //! its [`FilterId`](seqair::vcf::FilterId) by name at write time (see
 //! [`crate::vcf::schema`]).
 //!
-//! Two things depend on the declaration order, so reordering the variants is
-//! an output change: `RastairFilter as usize` indexes the resolved-`FilterId`
-//! table in [`crate::vcf::schema`], and a set iterates in discriminant order,
-//! which is what the FILTER column prints.
+//! `RastairFilter as usize` indexes the resolved-`FilterId` table in
+//! [`crate::vcf::schema`], so the discriminants are `0..COUNT`.
+//!
+//! Rejected records are only written under `--all`, and every committed VCF
+//! snapshot is all `PASS`; a few unit tests assert a FILTER code. When
+//! changing filter emission, look at the column directly:
+//!
+//! ```bash
+//! cargo run -- call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --all \
+//!   | grep -v '^#' | awk -F'\t' '$7!="PASS"{print $7}' | sort | uniq -c | sort -rn
+//! ```
+//!
+//! An SNV alt's code is decided once, in `set_alt_calls`.
 
-/// A VCF FILTER code. `PASS` is implicit (an empty filter set), so it is not a
-/// variant here.
-#[derive(Debug, Hash, enumset::EnumSetType)]
-#[enumset(repr = "u16")]
+/// A VCF FILTER code. `PASS` is a record without one, so it is not a variant
+/// here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum RastairFilter {
-    /// `lowDp`
-    LowDp,
-    /// `dnCpG_lowDp`
-    DnCpgLowDp,
-    /// `dnCpG_bq`
-    DnCpgBq,
-    /// `dnCpG_mapq`
-    DnCpgMapq,
-    /// `dnCpG_vaf`
-    DnCpgVaf,
-    /// `dnCpG_adj`
-    DnCpgAdj,
-    /// `m_vaf`
-    MVaf,
-    /// `m_bq_ratio`
-    MBqRatio,
-    /// `m_pos`
-    MPos,
-    /// `m_highDp`
-    MHighDp,
     /// `pre_ml`
     PreMl,
+    /// `m_highDp`
+    MHighDp,
     /// `low_ml_score`
     LowMlScore,
-    /// `indel_strand`
-    IndelStrand,
+    /// `low_indel_qual`
+    LowIndelQual,
+    /// `no_genotype_copy`
+    NoGenotypeCopy,
 }
 
 impl RastairFilter {
@@ -53,59 +45,30 @@ impl RastairFilter {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every filter, in registration (header / dictionary) order.
-    pub const ALL: [RastairFilter; 13] = [
-        Self::LowDp,
-        Self::DnCpgLowDp,
-        Self::DnCpgBq,
-        Self::DnCpgMapq,
-        Self::DnCpgVaf,
-        Self::DnCpgAdj,
-        Self::MVaf,
-        Self::MBqRatio,
-        Self::MPos,
-        Self::MHighDp,
-        Self::PreMl,
-        Self::LowMlScore,
-        Self::IndelStrand,
-    ];
+    pub const ALL: [RastairFilter; 5] =
+        [Self::PreMl, Self::MHighDp, Self::LowMlScore, Self::LowIndelQual, Self::NoGenotypeCopy];
 
     /// The filter's VCF ID, as it appears in the header and FILTER column.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::LowDp => "lowDp",
-            Self::DnCpgLowDp => "dnCpG_lowDp",
-            Self::DnCpgBq => "dnCpG_bq",
-            Self::DnCpgMapq => "dnCpG_mapq",
-            Self::DnCpgVaf => "dnCpG_vaf",
-            Self::DnCpgAdj => "dnCpG_adj",
-            Self::MVaf => "m_vaf",
-            Self::MBqRatio => "m_bq_ratio",
-            Self::MPos => "m_pos",
-            Self::MHighDp => "m_highDp",
             Self::PreMl => "pre_ml",
+            Self::MHighDp => "m_highDp",
             Self::LowMlScore => "low_ml_score",
-            Self::IndelStrand => "indel_strand",
+            Self::LowIndelQual => "low_indel_qual",
+            Self::NoGenotypeCopy => "no_genotype_copy",
         }
     }
 
     /// The filter's header description.
     pub const fn description(self) -> &'static str {
         match self {
-            Self::LowDp => "Low read depth",
-            Self::DnCpgLowDp => "Low read depth for de-novo CpG candidate",
-            Self::DnCpgBq => "Low base quality for de-novo CpG candidate",
-            Self::DnCpgMapq => "Low mapping quality for de-novo CpG candidate",
-            Self::DnCpgVaf => "Low variant allele frequency for de-novo CpG candidate",
-            Self::DnCpgAdj => {
-                "Included as adjacent position for de-novo CpG candidate, but other position did not pass filters"
-            }
-            Self::MVaf => "Low variant allele frequency for methylation candidate",
-            Self::MBqRatio => "Low quality ratio for methylation candidate",
-            Self::MPos => "Alt allele evidence from read edges for methylation candidate",
-            Self::MHighDp => "Excessive coverage for methylation candidate",
             Self::PreMl => "Low amount of usable evidence, skipping ML",
+            Self::MHighDp => "Excessive coverage for methylation candidate",
             Self::LowMlScore => "Machine Learning module prediction below threshold",
-            Self::IndelStrand => "Indel allele supported on only one bisulfite strand",
+            Self::LowIndelQual => "Indel allele the pair-HMM does not call present",
+            Self::NoGenotypeCopy => {
+                "SNV allele the model passes but the pair-HMM's genotype holds no copy of"
+            }
         }
     }
 }

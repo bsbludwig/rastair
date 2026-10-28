@@ -7,16 +7,30 @@
 //! tables. [`crate::vcf::emit`] drives the encoder directly from
 //! [`PileupMetrics`](crate::metrics::PileupMetrics) using these keys — there is
 //! no intermediate record struct.
+//!
+//! Output is `##fileformat=VCFv4.5`, which seqair writes unconditionally: it is
+//! the version that defines `M5mC`, `DPM5mC` and `ADM5mC` (aliases of the
+//! ChEBI-numbered `M27551C` family). From 4.4 on the first allele's `GT` phase
+//! bit is read, so seqair sets it, or htslib renders a phased `0|1` as `/0|1`.
+//!
+//! Those three keep `Number=.` rather than 4.5's `Number=M` ("one value for
+//! each possible base modification for the corresponding `ChEBI` ID"): noodles
+//! rejects `M` whatever the declared version (`invalid FORMAT: ID=M5mC:
+//! invalid number`), and the error rejects the whole file in every
+//! noodles-based tool (`aardvark` included). rastair writes one value per CpG
+//! the position takes part in, one or two, which `.` states in a way every
+//! reader accepts. Revisit when noodles implements the 4.5 cardinalities; two
+//! tests here pin both halves.
 
 use std::io::Write;
 
 use color_eyre::{Result, eyre::Context as _};
 use rustc_hash::FxHashMap;
 use seqair::vcf::record_encoder::{
-    Arr, FieldDescription, FilterFieldDef, FormatFieldDef, InfoFieldDef, Scalar, Str,
+    Arr, FieldDescription, FilterFieldDef, FormatFieldDef, InfoFieldDef, OptArr, Scalar, Str,
 };
 use seqair::vcf::{
-    ContigId, FilterId, FormatFloat, FormatFloats, FormatGt, FormatInt, FormatInts, InfoFlag,
+    ContigId, FilterId, FormatFloatOpts, FormatFloats, FormatGt, FormatInt, FormatInts, InfoFlag,
     InfoFloat, InfoFloats, InfoInt, InfoInts, InfoString, Number, ValueType, VcfHeader,
 };
 use seqair_types::SmolStr;
@@ -131,7 +145,7 @@ const M5MC_STRANDS_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::new(
     "M5mC_Strands",
     Number::Count(4),
     ValueType::Integer,
-    "Number of reads that are evidence for unmodified, modified, no SNP, SNP. Always reported, can be non-zero while CPG and CPGnovo are unset.",
+    "Number of reads that are evidence for unmodified, modified (the reads M5mC counts), no SNP, SNP. Always reported; 0,0,0,0 where neither CPG nor CPGnovo is set.",
 );
 const CPG_DEF: InfoFieldDef<seqair::vcf::Flag> =
     InfoFieldDef::new("CPG", Number::Count(0), ValueType::Flag, "Is this a CpG site?");
@@ -146,30 +160,38 @@ const CPGNOVO_DEF: InfoFieldDef<seqair::vcf::Flag> = InfoFieldDef::new(
 
 const GT_DEF: FormatFieldDef<seqair::vcf::Gt> =
     FormatFieldDef::new("GT", Number::Count(1), ValueType::String, "Genotype");
-const GL_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
-    "GL",
-    Number::Genotypes,
-    ValueType::Float,
-    "Genotype likelihoods, Phred-scaled",
+const PS_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "PS",
+    Number::Count(1),
+    ValueType::Integer,
+    "Phase set identifier: the position of the first variant in the phase block, or of its next variant where another block's PS is that position",
 );
-const GC_DEF: FormatFieldDef<Scalar<f32>> = FormatFieldDef::new(
-    "GC",
+const PQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "PQ",
+    Number::Count(1),
+    ValueType::Integer,
+    "Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly",
+);
+const GQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
+    "GQ",
+    Number::Count(1),
+    ValueType::Integer,
+    "Genotype quality: Phred-scaled chance the genotype is wrong, under a flat prior over the record's genotypes, capped at 99",
+);
+const PL_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
+    "PL",
     Number::Genotypes,
-    ValueType::Float,
-    "Genotype confidence, Phred-scaled",
+    ValueType::Integer,
+    "Phred-scaled genotype likelihoods, the likeliest genotype 0, capped at 255",
 );
 const SAMPLE_DP_DEF: FormatFieldDef<Scalar<i32>> =
     FormatFieldDef::new("DP", Number::Count(1), ValueType::Integer, "Read depth");
-// `Number=M` — seqair's base-modification cardinality — is not in the VCF
-// grammar. htslib tolerates it, but a strict parser (noodles, and so every tool
-// built on it) rejects the whole file rather than the line. These fields carry
-// one value per CpG the position takes part in, one or two, which `.` states in
-// a way every reader understands.
-const M5MC_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(
+// `Number=.`, not 4.5's `Number=M`: see the module doc.
+const M5MC_DEF: FormatFieldDef<OptArr<f32>> = FormatFieldDef::new(
     "M5mC",
     Number::Unknown,
     ValueType::Float,
-    "Methylation level at CpG sites, one value per CpG context",
+    "Methylation level at CpG sites, one value per CpG context (the reference CpG first), missing where no read shows it",
 );
 const DPM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
     "DPM5mC",
@@ -225,8 +247,18 @@ const INFO_DEFS: &[&dyn FieldDescription] = &[
 ];
 
 /// Every FORMAT field definition, in header order. Drives doc generation.
-const FORMAT_DEFS: &[&dyn FieldDescription] =
-    &[&GT_DEF, &GL_DEF, &GC_DEF, &SAMPLE_DP_DEF, &M5MC_DEF, &DPM5MC_DEF, &ADM5MC_DEF, &ML_DEF];
+const FORMAT_DEFS: &[&dyn FieldDescription] = &[
+    &GT_DEF,
+    &PS_DEF,
+    &PQ_DEF,
+    &GQ_DEF,
+    &PL_DEF,
+    &SAMPLE_DP_DEF,
+    &M5MC_DEF,
+    &DPM5MC_DEF,
+    &ADM5MC_DEF,
+    &ML_DEF,
+];
 
 /// Write the VCF field reference documentation as markdown.
 pub fn write_vcf_docs<W: Write>(w: &mut W) -> std::io::Result<()> {
@@ -287,7 +319,7 @@ pub const ALL_INFO_IDS: &[&str] = &[
 ];
 
 /// All FORMAT field IDs. Used to validate `--vcf-format-fields` CLI input.
-pub const ALL_FORMAT_IDS: &[&str] = &["GT", "GL", "GC", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
+pub const ALL_FORMAT_IDS: &[&str] = &["GT", "GQ", "PL", "DP", "M5mC", "DPM5mC", "ADM5mC", "ML"];
 
 // ── Resolved keys ───────────────────────────────────────────────────────
 
@@ -321,10 +353,13 @@ pub(crate) struct InfoKeys {
 /// All FORMAT keys, resolved against the header.
 pub(crate) struct FormatKeys {
     pub gt: FormatGt,
-    pub gl: FormatFloat,
-    pub gc: FormatFloat,
+    /// Written only where the genotype is phased, and so is `pq`.
+    pub ps: FormatInt,
+    pub pq: FormatInt,
+    pub gq: FormatInt,
+    pub pl: FormatInts,
     pub dp: FormatInt,
-    pub m5mc: FormatFloats,
+    pub m5mc: FormatFloatOpts,
     pub dpm5mc: FormatInts,
     pub adm5mc: FormatInts,
     pub ml: FormatFloats,
@@ -423,8 +458,10 @@ pub fn register(
     let mut builder = builder.formats();
     let format = FormatKeys {
         gt: builder.register_format(&GT_DEF)?,
-        gl: builder.register_format(&GL_DEF)?,
-        gc: builder.register_format(&GC_DEF)?,
+        ps: builder.register_format(&PS_DEF)?,
+        pq: builder.register_format(&PQ_DEF)?,
+        gq: builder.register_format(&GQ_DEF)?,
+        pl: builder.register_format(&PL_DEF)?,
         dp: builder.register_format(&SAMPLE_DP_DEF)?,
         m5mc: builder.register_format(&M5MC_DEF)?,
         dpm5mc: builder.register_format(&DPM5MC_DEF)?,
@@ -480,8 +517,8 @@ pub struct InfoSelection {
 #[derive(Debug, Clone)]
 pub struct FormatSelection {
     pub gt: bool,
-    pub gl: bool,
-    pub gc: bool,
+    pub gq: bool,
+    pub pl: bool,
     pub dp: bool,
     pub m5mc: bool,
     pub dpm5mc: bool,
@@ -491,7 +528,6 @@ pub struct FormatSelection {
 
 impl Default for FieldConfig {
     fn default() -> Self {
-        // Defaults mirror the previous macro schema's `default` markers.
         Self {
             info: InfoSelection {
                 ad: true,
@@ -517,8 +553,8 @@ impl Default for FieldConfig {
             },
             format: FormatSelection {
                 gt: true,
-                gl: true,
-                gc: true,
+                gq: true,
+                pl: true,
                 dp: true,
                 m5mc: true,
                 dpm5mc: true,
@@ -560,8 +596,8 @@ impl FieldConfig {
         let m = &mut self.format;
         for f in [
             &mut m.gt,
-            &mut m.gl,
-            &mut m.gc,
+            &mut m.gq,
+            &mut m.pl,
             &mut m.dp,
             &mut m.m5mc,
             &mut m.dpm5mc,
@@ -620,8 +656,8 @@ impl FieldConfig {
         let m = &mut self.format;
         match id {
             "GT" => m.gt = true,
-            "GL" => m.gl = true,
-            "GC" => m.gc = true,
+            "GQ" => m.gq = true,
+            "PL" => m.pl = true,
             "DP" => m.dp = true,
             "M5mC" => m.m5mc = true,
             "DPM5mC" => m.dpm5mc = true,
@@ -670,12 +706,10 @@ impl std::str::FromStr for FormatFieldId {
 mod tests {
     use super::*;
 
-    /// The header must declare the version that defines the fields it uses.
-    ///
-    /// `M5mC`, `DPM5mC` and `ADM5mC` are VCF 4.5 reserved FORMAT keys, aliases
-    /// for the ChEBI-numbered `M27551C` family; 4.3 defines none of them. seqair
-    /// writes 4.5 unconditionally and offers no way to ask for less, so this
-    /// asserts the property rather than a call rastair has to remember to make.
+    /// The header must declare the version that defines the fields it uses
+    /// (see the module doc). seqair writes 4.5 unconditionally and offers no
+    /// way to ask for less, so this asserts the property rather than a call
+    /// rastair has to remember to make.
     #[test]
     fn the_header_declares_the_version_that_defines_its_fields() {
         let (header, _schema) = register(&[], &[SmolStr::from("sample")], &[])
@@ -684,16 +718,7 @@ mod tests {
     }
 
     /// The methylation fields stay at `Number=.`, not the `Number=M` that VCF
-    /// 4.5 pairs them with.
-    ///
-    /// `M` is correct per the spec — "one value for each possible base
-    /// modification for the corresponding `ChEBI` ID" — but noodles rejects it,
-    /// and *declaring 4.5 does not help*: measured, a 4.5 header with
-    /// `Number=M` is still refused with `invalid FORMAT: ID=M5mC: invalid
-    /// number`. Since noodles is what `PacBio`'s aardvark and much of the
-    /// ecosystem parse with, `M` would make rastair's output unreadable to
-    /// them. `.` says the same thing in a way every reader accepts. Revisit
-    /// when noodles implements the 4.5 cardinalities.
+    /// 4.5 pairs them with (see the module doc).
     #[test]
     fn methylation_fields_avoid_the_cardinality_noodles_rejects() {
         for def in [M5MC_DEF.number, DPM5MC_DEF.number, ADM5MC_DEF.number] {

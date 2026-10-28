@@ -3,7 +3,7 @@
 //! The schema (every INFO/FORMAT/FILTER field) is defined once in [`schema`]
 //! and encoded straight from [`PileupMetrics`](crate::metrics::PileupMetrics)
 //! by [`emit`] using seqair's typestate writer — there is no intermediate
-//! record struct. The domain field types (`InCpG`, `Methylated`, …) live in
+//! record struct. The domain field types (`CpgSide`, `Methylated`, …) live in
 //! their own modules and are read directly during emission.
 //!
 //! See
@@ -13,11 +13,9 @@
 use seqair_types::SmolStr;
 
 mod cpg;
-pub use cpg::InCpG;
-mod denovo_cpg;
-pub use denovo_cpg::DeNovoCpGCandidate;
+pub use cpg::{CpgSide, TapsContext};
 mod methylation;
-pub use methylation::{CpgBeta, CpgOrigin, Methylated, MethylationAltDepth, MethylationDepth};
+pub use methylation::{CpgBeta, CpgOrigin, Methylated};
 mod filter;
 pub use filter::RastairFilter;
 

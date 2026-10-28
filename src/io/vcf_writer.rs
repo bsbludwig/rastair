@@ -1,5 +1,5 @@
 use crate::{
-    call::{RecordFilters, variant_calling::ErrorModel},
+    call::RecordFilters,
     io::formats::FromFileExtension,
     metrics::PileupMetrics,
     sequence::ChunkRegion,
@@ -12,7 +12,7 @@ use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use rustc_hash::FxHashSet;
 use seqair::vcf::{CoordinateIndex, OutputFormat, Ready, Writer as SeqWriter};
-use seqair_types::{Probability, SmolStr};
+use seqair_types::SmolStr;
 use std::{ffi::OsStr, io::Write, num::NonZeroUsize};
 use tracing::{debug, warn};
 
@@ -46,24 +46,25 @@ pub struct VcfParams {
         long,
         value_delimiter = ',',
         value_parser = PossibleValuesParser::new(crate::vcf::InfoFieldId::ALL_IDS)
-            .map(|s| s.parse::<crate::vcf::InfoFieldId>().unwrap())
+            .try_map(|s| s.parse::<crate::vcf::InfoFieldId>())
     )]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_info_fields: Vec<crate::vcf::InfoFieldId>,
 
     /// Additional FORMAT fields to include in VCF output (comma-separated VCF field IDs)
     ///
-    /// By default, only a minimal set is included.
+    /// By default, only a minimal set is included. `PS` and `PQ` are not
+    /// selectable: they are written wherever a genotype is phased.
     #[arg(
         long,
         value_delimiter = ',',
         value_parser = PossibleValuesParser::new(crate::vcf::FormatFieldId::ALL_IDS)
-            .map(|s| s.parse::<crate::vcf::FormatFieldId>().unwrap())
+            .try_map(|s| s.parse::<crate::vcf::FormatFieldId>())
     )]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_format_fields: Vec<crate::vcf::FormatFieldId>,
 
-    // Include all possible fields in VCF
+    /// Include every INFO and FORMAT field in VCF output
     #[arg(long, default_value_t = false, conflicts_with_all = &["vcf_info_fields", "vcf_format_fields"])]
     #[arg(help_heading = cli::sections::OUTPUT)]
     pub vcf_all_fields: bool,
@@ -202,13 +203,7 @@ pub struct SeqairVcfWriter {
 
 impl SeqairVcfWriter {
     /// Encode every VCF record this pileup produces.
-    pub fn emit(
-        &mut self,
-        pileup: &PileupMetrics,
-        ml_threshold: Option<Probability>,
-        error_model: &ErrorModel,
-        record_filter: &RecordFilters,
-    ) -> Result<()> {
+    pub fn emit(&mut self, pileup: &PileupMetrics, record_filter: &RecordFilters) -> Result<()> {
         let name = pileup.contig_name();
         if self.last_contig.as_ref().is_none_or(|c| c.name() != name) {
             self.last_contig = Some(
@@ -222,16 +217,7 @@ impl SeqairVcfWriter {
 
         let writer =
             self.writer.as_mut().wrap_err("VCF writer already finished").this_is_a_bug()?;
-        emit_pileup(
-            pileup,
-            &self.schema,
-            contig,
-            &self.config,
-            ml_threshold,
-            error_model,
-            record_filter,
-            writer,
-        )
+        emit_pileup(pileup, &self.schema, contig, &self.config, record_filter, writer)
     }
 
     /// Flush the BGZF EOF block / finalize the stream, then write the `.csi`
