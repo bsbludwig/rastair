@@ -54,5 +54,7 @@ pub(crate) mod utils {
     pub mod regions;
     pub use regions::CliRegionInput;
 }
+#[cfg(test)]
+mod pinned;
 pub mod runtime;
 pub(crate) mod sequence;

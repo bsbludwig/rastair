@@ -10,18 +10,17 @@
 //! - a crash is reported once.
 //!
 //! Fault injection is compiled out of release builds, so this only runs in
-//! debug builds. Set `PROPTEST_CASES` to run more cases.
+//! debug builds. Set `RASTAIR_PINNED_CASES` to run more cases.
 #![cfg(unix)]
 #![cfg_attr(
     not(debug_assertions),
     allow(dead_code, unused_imports, reason = "the test is ignored in release builds")
 )]
 
+#[path = "../src/pinned.rs"]
+mod pinned;
 mod utils;
-use proptest::{
-    prelude::*,
-    test_runner::{Config, TestCaseError, TestRunner},
-};
+use hegel::{TestCase, generators as gs};
 use std::{collections::HashMap, path::PathBuf, process::Output};
 use utils::{faults::*, *};
 
@@ -59,8 +58,8 @@ impl Pipeline {
         let threads = format!("--threads={threads}");
         let extra = [threads.as_str()];
         match self {
-            Self::CallVcf | Self::CallVcfGz => call(out, &[&extra[..], &[NO_ML]].concat(), faults),
-            Self::CallBedGz => call_to("--bed", out, &[&extra[..], &[NO_ML]].concat(), faults),
+            Self::CallVcf | Self::CallVcfGz => call(out, &extra[..], faults),
+            Self::CallBedGz => call_to("--bed", out, &extra[..], faults),
             Self::PerReadBed | Self::PerReadBedGz => per_read(out, &extra, faults),
             Self::Bam => bam(calls, out, &extra, faults),
         }
@@ -157,18 +156,16 @@ enum Expected {
     Killed(i32),
 }
 
-fn scenarios() -> impl Strategy<Value = Scenario> {
-    let pipeline = proptest::sample::select(Pipeline::ALL.to_vec());
-    let kind = prop_oneof![
-        Just(Kind::Panic),
-        Just(Kind::Error),
-        Just(Kind::Signal("INT")),
-        Just(Kind::Signal("TERM")),
-    ];
-    let point = prop_oneof![Just(Point::Worker), Just(Point::Writer)];
-    (pipeline, kind, point, 1..=SEGMENTS + 4, 1_usize..=4).prop_map(
-        |(pipeline, kind, point, nth, threads)| Scenario { pipeline, kind, point, nth, threads },
-    )
+#[hegel::composite]
+fn scenarios(tc: &TestCase) -> Scenario {
+    let kinds = [Kind::Panic, Kind::Error, Kind::Signal("INT"), Kind::Signal("TERM")];
+    Scenario {
+        pipeline: tc.draw(gs::sampled_from(Pipeline::ALL.as_slice())),
+        kind: tc.draw(gs::sampled_from(kinds.as_slice())),
+        point: tc.draw(gs::sampled_from([Point::Worker, Point::Writer].as_slice())),
+        nth: tc.draw(gs::integers::<usize>().min_value(1).max_value(SEGMENTS + 4)),
+        threads: tc.draw(gs::integers::<usize>().min_value(1).max_value(4)),
+    }
 }
 
 /// Complete outputs of each pipeline, computed once
@@ -248,22 +245,28 @@ fn ensure_one_stretch_missing(full: &[String], written: &[String]) -> Result<()>
     Ok(())
 }
 
+/// Each case runs Rastair, so the count is pinned; the scenario space is
+/// small enough to shrink fully.
+#[hegel::standalone_function(test_cases = pinned::cases(48))]
+#[hegel::explicit_test_case(
+    scenario = Scenario {
+        pipeline: Pipeline::CallVcfGz,
+        kind: Kind::Panic,
+        point: Point::Writer,
+        nth: 1,
+        threads: 1,
+    }
+)]
+fn crash_safe(tc: TestCase, references: &References) {
+    let scenario = tc.draw(scenarios());
+    let result = check(references, &scenario);
+    assert!(result.is_ok(), "{scenario:?}: {result:?}");
+}
+
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "fault injection only exists in debug builds")]
 fn pipelines_are_crash_safe() -> Result<()> {
     let references = References::new()?;
-    let cases = std::env::var("PROPTEST_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(48);
-    let mut runner = TestRunner::new(Config {
-        cases,
-        // Each case runs Rastair, so shrinking is slow; the cases are small anyway
-        max_shrink_iters: 32,
-        source_file: Some(file!()),
-        ..Config::default()
-    });
-    runner
-        .run(&scenarios(), |scenario| {
-            check(&references, &scenario)
-                .map_err(|error| TestCaseError::fail(format!("{scenario:?}: {error:?}")))
-        })
-        .map_err(|error| eyre!("{error}"))
+    crash_safe(&references);
+    Ok(())
 }

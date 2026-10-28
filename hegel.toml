@@ -1,0 +1,24 @@
+# Hegel property-based testing settings. See `hegel::docs::settings`.
+#
+# `development` (local runs) takes 256 cases, `ci` 1000.
+#
+# Expensive tests pin their own count with
+# `#[hegel::test(test_cases = pinned::cases(N))]`, which wins over the profile
+# and over `HEGEL_TEST_CASES` (see `src/pinned.rs`).
+#
+# For a deeper run: `HEGEL_DEFAULT_PROFILE=thorough cargo nextest run`, or
+# `RASTAIR_PINNED_CASES=500 cargo nextest run` to override the pinned counts.
+# Those are different axes: the profile reaches the tests that scale with it,
+# `RASTAIR_PINNED_CASES` the ones that pin their own count.
+
+# `too_slow` judges wall-clock time, so a clock jump on the machine (sleep,
+# NTP) fails a run that was not slow; the shipped `ci` profile suppresses it too.
+[profiles.development]
+test_cases = 256
+suppress_health_check = ["too_slow"]
+
+[profiles.ci]
+test_cases = 1000
+
+[profiles.thorough]
+test_cases = 50000
