@@ -23,10 +23,10 @@ use tracing::instrument;
 /// reference `C` anchor: the base beside it on the called chromosome decides. A called `C` alt
 /// before a called `G` alt forms a CpG of two variants (`TA>CG`), which the reference context
 /// cannot see: both alts form it ([`PileupMetrics::cpg_side_of`]), so that genotyping and
-/// methylation weigh their reads as at any de-novo CpG. A CpG that is not the reference's needs its
-/// `C` and `G` on one chromosome: neither two alts the pair-HMM puts apart, nor an alt and a
-/// reference partner whose own called alt sits on every chromosome carrying the alt
-/// ([`Verdict::has_haplotype`]). A side whose methylated-read base no chromosome reads beside the
+/// methylation weigh their reads as at any de-novo CpG. Every CpG, the reference's too, needs its
+/// `C` and `G` on one chromosome ([`Verdict::has_haplotype`]): not two alts the pair-HMM puts
+/// apart, an alt and a reference partner whose own called alt sits on every chromosome carrying
+/// the alt, or a reference CpG whose called alts leave no chromosome with both bases. A side whose methylated-read base no chromosome reads beside the
 /// partner is [`PileupMetrics::unconfounded`].
 ///
 /// Recomputed from the calls, so a test's re-run of the calls can clear it.
@@ -50,9 +50,8 @@ pub fn mark_called_cpgs(
         });
         ends.filter_map(CpgSide::of_base).collect::<EnumSet<CpgSide>>()
     };
-    // The C and the G of a CpG that is not the reference's are on one chromosome or make none: a
-    // called alt's partner, and a reference partner whose own called alt the other's chromosome
-    // carries.
+    // A CpG's C and G are on one chromosome or make none: two called alts, an alt and a reference
+    // partner, or the reference's own two bases where called alts replace them.
     let split_before = before.is_some_and(|c| !on_one_chromosome(c, current));
     let split_after = after.is_some_and(|g| !on_one_chromosome(current, g));
     let mut before_alts = called_sides(before);
@@ -60,15 +59,11 @@ pub fn mark_called_cpgs(
     current.lost_to_called_alts = EnumSet::empty();
     if split_before {
         before_alts.remove(CpgSide::C);
-        if current.reference_base != Base::G {
-            current.lost_to_called_alts.insert(CpgSide::G);
-        }
+        current.lost_to_called_alts.insert(CpgSide::G);
     }
     if split_after {
         after_alts.remove(CpgSide::G);
-        if current.reference_base != Base::C {
-            current.lost_to_called_alts.insert(CpgSide::C);
-        }
+        current.lost_to_called_alts.insert(CpgSide::C);
     }
     let before_sides = before_alts | inserted(before, <[Base]>::last);
     let after_sides = after_alts | inserted(Some(current), <[Base]>::first);

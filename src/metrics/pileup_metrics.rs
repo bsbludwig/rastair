@@ -41,9 +41,9 @@ pub struct PileupMetrics {
     /// alt, or the base a called insertion puts beside it
     /// ([`CpgSide::beside`], set by `process::mark_called_cpgs`).
     pub beside_called_alts: EnumSet<CpgSide>,
-    /// The CpG sides an alt here takes with a reference neighbour that no
-    /// chromosome carrying the alt keeps: the neighbour's called alt sits on
-    /// each (set by `process::mark_called_cpgs`).
+    /// The CpG sides a base here takes with a reference neighbour that no
+    /// chromosome has both of: called alts here or next door replace one of
+    /// the two on each (set by `process::mark_called_cpgs`).
     pub lost_to_called_alts: EnumSet<CpgSide>,
     /// The CpG sides whose methylated-read base (`T` for the `C`, `A` for the
     /// `G`) no chromosome reads beside the partner base, so the reads β
@@ -253,6 +253,13 @@ impl PileupMetrics {
     /// door: the columns `M5mC` is written for.
     pub fn in_cpg(&self) -> bool {
         !super::methylation::origins(self).is_empty()
+    }
+
+    /// Written as a CpG: in one, or at a reference CpG's position, which keeps
+    /// its record (with no `M5mC`) when called variants leave no chromosome
+    /// with the CpG.
+    pub fn cpg_record(&self) -> bool {
+        self.in_cpg() || self.reference_cpg().is_some()
     }
 
     /// In a CpG a called alt makes, here or next door.

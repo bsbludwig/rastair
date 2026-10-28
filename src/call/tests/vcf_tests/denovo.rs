@@ -392,3 +392,35 @@ fn a_cis_het_pair_cpg_is_not_corrected_for_the_reference_t() -> Result<()> {
 
     Ok(())
 }
+
+/// A homozygous `C>T` at a reference CpG leaves no chromosome with the CpG:
+/// both positions keep their record, neither has a β.
+#[test]
+fn a_homozygous_snp_at_a_reference_cpg_leaves_no_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (C T) PASS GT="1/1" M5mC=None,
+        (G .) PASS M5mC=None,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
+    assert!(records.iter().all(|r| !r.in_cpg() && r.cpg_record()));
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}

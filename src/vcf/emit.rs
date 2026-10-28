@@ -70,7 +70,7 @@ pub fn emit_pileup<W: Write>(
     // A reference-only record (no real variants) is only emitted when it is a
     // CpG/de-novo-CpG; otherwise a covered non-CpG would carry M5mC values
     // without the CPG/CPGnovo tags set.
-    if !real_variants.is_empty() || pileup.in_cpg() {
+    if !real_variants.is_empty() || pileup.cpg_record() {
         emit_main_record(pileup, schema, contig, config, &real_variants, writer)
             .wrap_err("Failed to emit main VCF record")?;
     }
