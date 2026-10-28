@@ -105,3 +105,31 @@ fn no_alt_t() {
 
     assert_original(result, 0.0);
 }
+
+/// `1/2` of two alts: no chromosome keeps the reference `C`, so the
+/// original CpG exists on neither, as under a homozygous alt.
+#[test]
+fn two_alts_leave_no_reference_cpg() {
+    let (seg, ps) = pileups!(
+        [C G] Ref,
+        [T G] OT,
+        [T G] OT,
+        [T G] OT,
+        [A G] OT,
+        [A G] OT,
+        [A G] OT,
+        [C G] OT,
+    );
+    let gt = EstimatedGenotype {
+        genotype: GenotypeTag::alt_het(
+            std::num::NonZeroU8::MIN,
+            std::num::NonZeroU8::new(2).expect("two"),
+        ),
+        quality: Phred::from_phred(20),
+        source: GenotypeSource::Binomial,
+    };
+    let metrics = to_metrics(&ps[0], &seg, Some(gt));
+    let result = call(&metrics).unwrap();
+
+    assert_original(result, 0.0);
+}

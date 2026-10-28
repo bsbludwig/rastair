@@ -1,11 +1,23 @@
+//! Methylation β per CpG a position takes part in.
+//!
+//! A position's CpG on a side is the reference's (`Original`) when the
+//! reference base takes that side, else a called alt's (`DeNovo`). β counts
+//! the reads on the strand that converts the side whose neighbour in the read
+//! is the CpG partner (`read_counts`); `M5mC_Strands` and the BED `unmod`
+//! and `mod` columns count the same reads. A het genotype one of whose alleles
+//! is the methylated read's base, or a genotype with no reference copy at an
+//! `Original` CpG, adjusts β. The VCF writes one slot per CpG, `Original`
+//! first, and a CpG no read shows has no β ([`written`]).
+
 use crate::{
     call::variant_calling::GenotypeTag,
-    metrics::{AltCall, DenovoAdjecent, PileupMetrics, ReadKey},
-    utils::{Base::*, IntoF64, logging::ThisIsABug},
-    vcf::{CpgBeta, CpgOrigin, InCpG, Methylated},
+    metrics::{PileupMetrics, ReadKey},
+    utils::{IntoF64, logging::ThisIsABug},
+    vcf::{CpgBeta, CpgOrigin, CpgSide, Methylated},
 };
 use color_eyre::{Result, eyre::Context};
-use seqair_types::{Base, Probability, SmallVec, Strand};
+use seqair_types::{Probability, SmallVec};
+use std::num::NonZeroU32;
 use tracing::instrument;
 
 #[cfg(test)]
@@ -14,152 +26,104 @@ mod tests;
 #[instrument(
     level="debug",
     skip_all,
-    fields(contig = %current.contig(), pos = current.pos()),
+    fields(contig = %current.contig_name(), pos = %current.pos()),
     name = "methylation_call"
 )]
-pub fn call(current: &PileupMetrics) -> Result<Option<Methylated>> {
-    let mut betas: SmallVec<CpgBeta, 1> = SmallVec::new();
-
-    if let Some(b) = compute_beta(current, CpgSide::C).wrap_err("C-side beta")? {
-        betas.push(b);
+/// The β of each CpG side with reads; of two de-novo sides (a called `C` and a
+/// called `G` alt), the C side's.
+pub fn call(current: &PileupMetrics) -> Result<Methylated> {
+    let mut methylated = Methylated::default();
+    for side in [CpgSide::C, CpgSide::G] {
+        if let Some((origin, beta)) =
+            compute_beta(current, side).wrap_err_with(|| format!("{side:?}-side beta"))?
+        {
+            methylated.get_mut(origin).get_or_insert(beta);
+        }
     }
-    if let Some(b) = compute_beta(current, CpgSide::G).wrap_err("G-side beta")? {
-        betas.push(b);
-    }
-
-    Ok((!betas.is_empty()).then_some(Methylated(betas)))
+    Ok(methylated)
 }
 
-/// Determine whether this position has a CpG allele on the given side,
-/// and if so compute the methylation beta value.
-fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<CpgBeta>> {
+/// The CpG this position takes on `side`, and its methylation beta if a read
+/// shows it.
+fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<(CpgOrigin, CpgBeta)>> {
     let Some(origin) = cpg_origin(record, side) else { return Ok(None) };
 
-    let (raw_mod, raw_unmod) = read_counts(record, side);
-    let mod_count = raw_mod.f();
-    let unmod_count = raw_unmod.f();
-
-    if mod_count + unmod_count == 0. {
-        return Ok(None);
-    }
+    let CpgReads { modified: raw_mod, unmodified: raw_unmod } = read_counts(record, side);
+    let Some(total_count) = NonZeroU32::new(raw_mod + raw_unmod) else { return Ok(None) };
 
     let adjustment = genotype_adjustment(record, side, origin);
-    let beta = adjusted_beta(mod_count, unmod_count, adjustment);
+    let beta = adjusted_beta(raw_mod.f(), raw_unmod.f(), adjustment);
 
-    Ok(Some(CpgBeta {
+    Ok(Some((
         origin,
-        beta: Probability::new(beta).this_is_a_bug()?,
-        mod_count: raw_mod,
-        total_count: raw_mod + raw_unmod,
-    }))
+        CpgBeta { beta: Probability::new(beta).this_is_a_bug()?, mod_count: raw_mod, total_count },
+    )))
 }
 
-/// Which side of the CpG dinucleotide we are looking at.
-#[derive(Debug, Clone, Copy)]
-enum CpgSide {
-    C,
-    G,
+/// The CpGs the VCF (`M5mC`, `DPM5mC`, `ADM5mC`) writes for this position:
+/// one per CpG [`origins`], Original first, so a value's slot says which CpG
+/// it measures; `None` for a CpG no read shows, which has no β.
+pub fn written(record: &PileupMetrics) -> SmallVec<(CpgOrigin, Option<CpgBeta>), 2> {
+    let methylated = &record.pos_metrics.methylated;
+    origins(record).into_iter().map(|origin| (origin, methylated.get(origin).copied())).collect()
 }
 
-impl CpgSide {
-    fn strand(self) -> Strand {
-        match self {
-            CpgSide::C => Strand::OT,
-            CpgSide::G => Strand::OB,
-        }
-    }
-
-    /// The base that appears when methylated (T for C-side, A for G-side).
-    fn mod_base(self) -> Base {
-        match self {
-            CpgSide::C => T,
-            CpgSide::G => A,
-        }
-    }
-
-    /// The base that appears when unmethylated (C for C-side, G for G-side).
-    fn unmod_base(self) -> Base {
-        match self {
-            CpgSide::C => C,
-            CpgSide::G => G,
-        }
-    }
-
-    /// The required adjacent base (G after C, C before G).
-    fn adjacent_base(self) -> Base {
-        match self {
-            CpgSide::C => G,
-            CpgSide::G => C,
-        }
-    }
-}
-
+/// The CpGs this position takes part in, Original first.
 pub fn origins(record: &PileupMetrics) -> SmallVec<CpgOrigin, 2> {
-    let mut origins = SmallVec::new();
-    for side in [CpgSide::C, CpgSide::G] {
-        if let Some(origin) = cpg_origin(record, side)
-            && !origins.contains(&origin)
-        {
-            origins.push(origin);
-        }
-    }
-    origins
+    let present: SmallVec<CpgOrigin, 2> =
+        [CpgSide::C, CpgSide::G].into_iter().filter_map(|side| cpg_origin(record, side)).collect();
+    [CpgOrigin::Original, CpgOrigin::DeNovo]
+        .into_iter()
+        .filter(|origin| present.contains(origin))
+        .collect()
+}
+
+/// The CpG whose reads are this column's methylation evidence, and the side
+/// it takes: the reference base's (`Original`) over a de-novo one, unless
+/// only the de-novo side has reads.
+pub fn evidence(record: &PileupMetrics) -> Option<(CpgSide, CpgOrigin)> {
+    let has_reads = |side| {
+        let CpgReads { modified, unmodified } = read_counts(record, side);
+        modified + unmodified > 0
+    };
+    [CpgSide::C, CpgSide::G]
+        .into_iter()
+        .filter_map(|side| Some((side, cpg_origin(record, side)?)))
+        .min_by_key(|&(side, origin)| (!has_reads(side), origin != CpgOrigin::Original))
 }
 
 /// Determine the CpG origin for this position on the given side, or None if
 /// this position doesn't have a CpG allele on that side.
 fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
-    // `denovo_adj` is set from de-novo candidate alts, before ML scoring, so on
-    // its own it does not mean a de-novo CpG exists. Only once the partner's
-    // alt was actually called does this position become the other half of a
-    // CpG.
-    let denovo_partner_called = record.pos_filters.other_pos_in_denovo_passes;
-    let is_original = match side {
-        CpgSide::C => {
-            record.pos_metrics.cpg == InCpG::C
-                || (record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC
-                    && denovo_partner_called)
-        }
-        CpgSide::G => {
-            record.pos_metrics.cpg == InCpG::G
-                || (record.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG
-                    && denovo_partner_called)
-        }
-    };
-
-    if is_original {
-        return Some(CpgOrigin::Original);
+    // The reference base takes this side, in a reference CpG or beside a
+    // called alt that makes one; else a called alt does.
+    if record.cpg_side_of(record.ref_base()) == Some(side) {
+        Some(CpgOrigin::Original)
+    } else {
+        let mut called = record.alts.iter().filter(|alt| alt.called());
+        called.any(|alt| record.cpg_side_of(alt.base) == Some(side)).then_some(CpgOrigin::DeNovo)
     }
-
-    let cpg_base = side.unmod_base();
-    let has_denovo_alt =
-        record.alts.iter().any(|a| a.base == cpg_base && a.call == AltCall::RealVariant);
-
-    let adjacent_present = match side {
-        CpgSide::C => record.context.after_1 == Some(G),
-        CpgSide::G => record.context.before_1 == Some(C),
-    };
-
-    if has_denovo_alt && adjacent_present {
-        return Some(CpgOrigin::DeNovo);
-    }
-
-    None
 }
 
-/// Look up the mod and unmod read counts for the given CpG side.
-fn read_counts(record: &PileupMetrics, side: CpgSide) -> (u32, u32) {
-    let strand = side.strand();
-    let adj = side.adjacent_base();
+/// A CpG side's reads that show it methylated and unmethylated.
+pub(crate) struct CpgReads {
+    pub(crate) modified: u32,
+    pub(crate) unmodified: u32,
+}
 
-    let (counts, mod_base, unmod_base) = match side {
-        CpgSide::C => (&record.after_counts, T, C),
-        CpgSide::G => (&record.before_counts, A, G),
+/// The reads β counts on `side`: on the converting strand, those whose
+/// neighbour in the read is the CpG partner.
+pub(crate) fn read_counts(record: &PileupMetrics, side: CpgSide) -> CpgReads {
+    let counts = match side {
+        CpgSide::C => &record.after_counts,
+        CpgSide::G => &record.before_counts,
     };
+    let (strand, adj) = (side.strand(), side.adjacent_base());
 
-    let raw_mod = counts.get(ReadKey { strand, current: mod_base, adj });
-    let raw_unmod = counts.get(ReadKey { strand, current: unmod_base, adj });
-    (raw_mod, raw_unmod)
+    CpgReads {
+        modified: counts.get(ReadKey { strand, current: side.mod_base(), adj }),
+        unmodified: counts.get(ReadKey { strand, current: side.unmod_base(), adj }),
+    }
 }
 
 /// How the genotype at this position affects the beta calculation.
@@ -170,9 +134,9 @@ enum GenotypeAdjustment {
     /// The confounding base (T for C-side, A for G-side) is present as a het
     /// allele, so some mod-base reads come from the SNP, not methylation.
     HetConfounded,
-    /// Original ref base is fully replaced by a homozygous variant — the
-    /// original CpG no longer exists on either chromosome.
-    HomAlt,
+    /// No chromosome carries the original reference base (`1/1`, or `1/2`
+    /// of two alts): the original CpG exists on neither.
+    NoReference,
 }
 
 fn genotype_adjustment(
@@ -180,50 +144,33 @@ fn genotype_adjustment(
     side: CpgSide,
     origin: CpgOrigin,
 ) -> GenotypeAdjustment {
-    let Some(gt) = record.pos_metrics.genotype else {
+    let Some(gt) = &record.pos_metrics.genotype else {
         return GenotypeAdjustment::None;
     };
 
-    if origin == CpgOrigin::Original && gt.genotype.is_homozygous() && !gt.genotype.is_hom_ref() {
-        return GenotypeAdjustment::HomAlt;
+    let carries_reference = matches!(gt.genotype, GenotypeTag::HomRef | GenotypeTag::RefHet(_));
+    if origin == CpgOrigin::Original && !carries_reference {
+        return GenotypeAdjustment::NoReference;
     }
 
-    if gt.genotype.is_heterozygous() {
-        let confounding = side.mod_base();
-        let confounded = match origin {
-            CpgOrigin::Original => het_alt_is_base(record, &gt.genotype, confounding),
-            CpgOrigin::DeNovo => {
-                record.ref_base() == confounding
-                    || het_alt_is_base(record, &gt.genotype, confounding)
-            }
-        };
-        if confounded {
-            return GenotypeAdjustment::HetConfounded;
-        }
+    // A het one of whose alleles is the base a methylated read shows: the
+    // reference (`T` under a de-novo `C`) only where a chromosome carries it.
+    if gt.genotype.is_heterozygous()
+        && gt
+            .genotype
+            .alleles()
+            .into_iter()
+            .any(|allele| record.allele_base(allele) == Some(side.mod_base()))
+    {
+        return GenotypeAdjustment::HetConfounded;
     }
 
     GenotypeAdjustment::None
 }
 
-fn het_alt_is_base(record: &PileupMetrics, gt: &GenotypeTag, base: Base) -> bool {
-    match *gt {
-        GenotypeTag::RefHet(idx) => {
-            let i = (idx.get() as usize).saturating_sub(1);
-            record.alts.get(i).map(|a| a.base) == Some(base)
-        }
-        GenotypeTag::AltHet(a, b) => {
-            let ai = (a.get() as usize).saturating_sub(1);
-            let bi = (b.get() as usize).saturating_sub(1);
-            record.alts.get(ai).map(|x| x.base) == Some(base)
-                || record.alts.get(bi).map(|x| x.base) == Some(base)
-        }
-        _ => false,
-    }
-}
-
 fn adjusted_beta(mod_count: f64, unmod_count: f64, adjustment: GenotypeAdjustment) -> f64 {
     match adjustment {
-        GenotypeAdjustment::HomAlt => 0.0,
+        GenotypeAdjustment::NoReference => 0.0,
         GenotypeAdjustment::HetConfounded => {
             let total = mod_count + unmod_count;
             let excess_mod = (mod_count - total / 2.).max(0.0);

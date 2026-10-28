@@ -1,14 +1,13 @@
 use super::*;
 use crate::{
     call::{
-        pileup::Pileup,
-        variant_calling::{EstimatedGenotype, GenotypeTag},
+        tests::pileup::Pileup,
+        variant_calling::{EstimatedGenotype, GenotypeSource, GenotypeTag},
     },
-    metrics::AltCall,
     pileups,
     sequence::Segment,
 };
-use seqair_types::Probability;
+use seqair_types::{Base::*, Phred};
 
 mod denovo_a_to_g;
 mod denovo_other_to_c;
@@ -21,26 +20,23 @@ mod proptests;
 
 fn to_metrics(
     pileup: &Pileup,
-    _segment: &Segment,
+    segment: &Segment,
     genotype: Option<EstimatedGenotype>,
 ) -> PileupMetrics {
-    let mut metrics = PileupMetrics::new(pileup.clone()).unwrap();
+    let mut metrics = pileup.metrics(segment).unwrap();
     if let Some(gt) = genotype {
-        metrics.pos_metrics.extended.genotype = Some(gt);
+        metrics.pos_metrics.genotype = Some(gt);
     }
     for alt in &mut metrics.alts {
-        alt.call = AltCall::RealVariant;
+        alt.verdict = crate::metrics::AltVerdict::Called(seqair_types::Probability::ONE);
     }
     metrics
 }
 
 #[track_caller]
-fn assert_beta(result: Option<Methylated>, origin: CpgOrigin, expected_beta: f64) {
-    let methylated = result.expect("expected Some(Methylated)");
+fn assert_beta(methylated: Methylated, origin: CpgOrigin, expected_beta: f64) {
     let cpg = methylated
-        .0
-        .iter()
-        .find(|b| b.origin == origin)
+        .get(origin)
         .unwrap_or_else(|| panic!("expected {origin:?} CpG in {methylated:?}"));
     assert!(
         (*cpg.beta - expected_beta).abs() < 0.001,
@@ -50,28 +46,24 @@ fn assert_beta(result: Option<Methylated>, origin: CpgOrigin, expected_beta: f64
 }
 
 #[track_caller]
-fn assert_original(result: Option<Methylated>, expected_beta: f64) {
+fn assert_original(result: Methylated, expected_beta: f64) {
     assert_beta(result, CpgOrigin::Original, expected_beta);
 }
 
 #[track_caller]
-fn assert_denovo(result: Option<Methylated>, expected_beta: f64) {
+fn assert_denovo(result: Methylated, expected_beta: f64) {
     assert_beta(result, CpgOrigin::DeNovo, expected_beta);
 }
 
 #[track_caller]
-fn assert_none(result: Option<Methylated>) {
-    assert!(
-        result.as_ref().is_none_or(|m| !m.has_evidence()),
-        "Expected None or no evidence, got {:?}",
-        result,
-    );
+fn assert_none(result: Methylated) {
+    assert!(result.is_empty(), "Expected no evidence, got {result:?}");
 }
 
 fn ct_genotype() -> EstimatedGenotype {
     EstimatedGenotype {
         genotype: GenotypeTag::CT,
-        likelihood: Probability::new(0.99).unwrap(),
-        confidence: Probability::new(0.99).unwrap(),
+        quality: Phred::from_phred(20),
+        source: GenotypeSource::Binomial,
     }
 }

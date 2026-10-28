@@ -17,8 +17,8 @@ fn standard_a_to_c() {
     );
     let gt = EstimatedGenotype {
         genotype: GenotypeTag::HomRef,
-        likelihood: Probability::new(0.8).unwrap(),
-        confidence: Probability::new(0.99).unwrap(),
+        quality: Phred::from_phred(20),
+        source: GenotypeSource::Binomial,
     };
     let metrics = to_metrics(&ps[0], &seg, Some(gt));
     let result = call(&metrics).unwrap();

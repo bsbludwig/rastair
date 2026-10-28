@@ -1,17 +1,20 @@
-use crate::metrics::{AltCall, DenovoAdjecent, FormsDenovo, PileupMetrics};
-use seqair_types::Base::*;
+use crate::metrics::{
+    PileupMetrics,
+    methylation::{self, CpgReads},
+};
+use crate::vcf::CpgSide;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MethylationEvidenceStrandInfo {
-    /// Number of unmethylated reads
+    /// Number of unmethylated reads, the ones β counts
     ///
-    /// - for C: C OT reads
-    /// - for G: G OB reads
+    /// - for C: C OT reads followed by a G
+    /// - for G: G OB reads preceded by a C
     pub unmod: u32,
-    /// Number of methylated reads
+    /// Number of methylated reads, the ones β counts
     ///
-    /// - for C: T OT reads
-    /// - for G: A OB reads
+    /// - for C: T OT reads followed by a G
+    /// - for G: A OB reads preceded by a C
     pub modified: u32,
     /// Number of reads with no SNP evidence
     ///
@@ -26,74 +29,28 @@ pub struct MethylationEvidenceStrandInfo {
 }
 
 impl MethylationEvidenceStrandInfo {
+    /// The reads of [`methylation::evidence`]; none outside a CpG.
     pub fn from_pileup(pileup: &PileupMetrics) -> Self {
-        let ref_base = pileup.ref_base();
-        let cpg = *pileup.pos_metrics.cpg;
-
-        if cpg && ref_base == C {
-            MethylationEvidenceStrandInfo::from_c(pileup)
-        } else if cpg && ref_base == G {
-            MethylationEvidenceStrandInfo::from_g(pileup)
-        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingC {
-            MethylationEvidenceStrandInfo::from_c(pileup)
-        } else if pileup.pos_metrics.denovo_adj == DenovoAdjecent::ThisIsTheMatchingG {
-            MethylationEvidenceStrandInfo::from_g(pileup)
-        } else if let Some(denovo) =
-            pileup.alts.iter().find(|a| *a.metrics.denovo && a.call == AltCall::RealVariant)
-        {
-            if denovo.metrics.denovo == FormsDenovo::ThisBecomesC {
-                MethylationEvidenceStrandInfo::from_c(pileup)
-            } else if denovo.metrics.denovo == FormsDenovo::ThisBecomesG {
-                MethylationEvidenceStrandInfo::from_g(pileup)
-            } else {
-                // Should be never happen since we filtered above
-                MethylationEvidenceStrandInfo::default()
-            }
-        } else {
-            MethylationEvidenceStrandInfo::default()
-        }
+        methylation::evidence(pileup)
+            .map(|(side, _)| Self::from_side(pileup, side))
+            .unwrap_or_default()
     }
 
-    pub fn from_pileup_with_methylation(pileup: &PileupMetrics) -> Self {
-        let m = &pileup.pos_metrics.extended.methylated;
-        let denovo_only = m.denovo().is_some_and(|b| b.has_evidence())
-            && !m.original().is_some_and(|b| b.has_evidence());
-        if denovo_only {
-            Self::from_denovo_context(pileup).unwrap_or_else(|| Self::from_pileup(pileup))
-        } else {
-            Self::from_pileup(pileup)
+    /// TAPS converts `side` on one strand, so there its unmodified and
+    /// modified bases are methylation, counted as β counts them; the other
+    /// strand reads the reference base or a variant.
+    fn from_side(pileup: &PileupMetrics, side: CpgSide) -> Self {
+        let CpgReads { modified, unmodified } = methylation::read_counts(pileup, side);
+        let plain = |base| {
+            let reads = pileup.allele(base).map(|a| a.strand_count).unwrap_or_default();
+            side.converting_and_plain(reads).plain
+        };
+        Self {
+            unmod: unmodified,
+            modified,
+            no_snp: plain(side.unmod_base()),
+            snp: plain(side.mod_base()),
         }
-    }
-
-    fn from_c(pileup: &PileupMetrics) -> Self {
-        let c = pileup.allele(C).map(|a| a.strand_count).unwrap_or_default();
-        let t = pileup.allele(T).map(|a| a.strand_count).unwrap_or_default();
-
-        Self { unmod: c.ot, modified: t.ot, no_snp: c.ob, snp: t.ob }
-    }
-
-    fn from_g(pileup: &PileupMetrics) -> Self {
-        let g = pileup.allele(G).map(|a| a.strand_count).unwrap_or_default();
-        let a = pileup.allele(A).map(|a| a.strand_count).unwrap_or_default();
-
-        Self { unmod: g.ob, modified: a.ob, no_snp: g.ot, snp: a.ot }
-    }
-
-    fn from_denovo_context(pileup: &PileupMetrics) -> Option<Self> {
-        let context = &pileup.context;
-        let has_denovo_c =
-            pileup.alts.iter().any(|alt| alt.base == C && alt.call == AltCall::RealVariant);
-        if has_denovo_c && context.after_1 == Some(G) {
-            return Some(Self::from_c(pileup));
-        }
-
-        let has_denovo_g =
-            pileup.alts.iter().any(|alt| alt.base == G && alt.call == AltCall::RealVariant);
-        if has_denovo_g && context.before_1 == Some(C) {
-            return Some(Self::from_g(pileup));
-        }
-
-        None
     }
 }
 
@@ -103,30 +60,28 @@ mod tests {
     use crate::metrics;
     use crate::pileups;
     use color_eyre::Result;
+    use seqair_types::Base::*;
 
     #[test]
     fn denovo_inside_ref_cpg_uses_denovo_context() -> Result<()> {
-        let (_segment, pileups) = pileups!(
+        let (segment, pileups) = pileups!(
             [ C C G ] Ref,
             [ C G G ] OB,
             [ C A G ] OB,
             [ C G G ] OB,
         );
 
-        let mut metrics = PileupMetrics::new(pileups[1].clone())?;
+        let mut metrics = pileups[1].metrics(&segment)?;
         if let Some(alt) = metrics.alts.iter_mut().find(|alt| alt.base == G) {
-            alt.call = AltCall::RealVariant;
+            alt.verdict = crate::metrics::AltVerdict::Called(seqair_types::Probability::ONE);
         }
 
-        metrics.pos_metrics.extended.methylated =
-            metrics::methylation::call(&metrics)?.unwrap_or_default();
+        metrics.pos_metrics.methylated = metrics::methylation::call(&metrics)?;
 
-        assert!(metrics.pos_metrics.extended.methylated.denovo().is_some_and(|b| b.has_evidence()));
-        assert!(
-            !metrics.pos_metrics.extended.methylated.original().is_some_and(|b| b.has_evidence())
-        );
+        assert!(metrics.pos_metrics.methylated.denovo.is_some());
+        assert!(metrics.pos_metrics.methylated.original.is_none());
 
-        let info = MethylationEvidenceStrandInfo::from_pileup_with_methylation(&metrics);
+        let info = MethylationEvidenceStrandInfo::from_pileup(&metrics);
         assert_eq!(info.unmod, 2);
         assert_eq!(info.modified, 1);
         assert_eq!(info.no_snp, 0);
@@ -137,18 +92,23 @@ mod tests {
 
     #[test]
     fn matching_c_with_denovo_candidate_prefers_matching_context() -> Result<()> {
-        let (_segment, pileups) = pileups!(
+        let (segment, pileups) = pileups!(
             [ C C A ] Ref,
-            [ C C A ] OT,
-            [ C C A ] OT,
-            [ C T A ] OT,
+            [ C C G ] OT,
+            [ C C G ] OT,
+            [ C T G ] OT,
             [ C C A ] OB,
             [ C C A ] OB,
             [ C G A ] OT,
         );
 
-        let mut metrics = PileupMetrics::new(pileups[1].clone())?;
-        metrics.pos_metrics.extended.denovo_adj = DenovoAdjecent::ThisIsTheMatchingC;
+        let mut metrics = pileups[1].metrics(&segment)?;
+        assert_eq!(
+            MethylationEvidenceStrandInfo::from_pileup(&metrics).unmod,
+            0,
+            "a G candidate after it whose alt is not called makes no CpG"
+        );
+        metrics.beside_called_alts = enumset::EnumSet::only(CpgSide::C);
 
         let info = MethylationEvidenceStrandInfo::from_pileup(&metrics);
         assert_eq!(info.unmod, 2);

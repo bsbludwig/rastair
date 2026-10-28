@@ -37,8 +37,8 @@ fn het_snp_adjustment() {
     );
     let gt = EstimatedGenotype {
         genotype: GenotypeTag::RefHet(NonZeroU8::new(1).unwrap()),
-        likelihood: Probability::new(0.8).unwrap(),
-        confidence: Probability::new(0.99).unwrap(),
+        quality: Phred::from_phred(20),
+        source: GenotypeSource::Binomial,
     };
     let metrics = to_metrics(&ps[1], &seg, Some(gt));
     let result = call(&metrics).unwrap();

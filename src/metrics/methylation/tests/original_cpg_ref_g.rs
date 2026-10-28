@@ -121,7 +121,7 @@ fn filtered_denovo_alt_does_not_change_beta() {
     let mut metrics = to_metrics(&ps[1], &seg, None);
 
     let denovo_alt = metrics.alts.iter_mut().find(|a| a.base == C).expect("expected C alt");
-    denovo_alt.call = AltCall::ReadError;
+    denovo_alt.verdict = crate::metrics::AltVerdict::Unscored;
 
     let result = call(&metrics).unwrap();
     assert_none(result);

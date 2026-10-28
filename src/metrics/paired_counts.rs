@@ -4,7 +4,7 @@ use seqair_types::{Base, Strand};
 ///
 /// `current` is the base at the position being queried; `adj` is the adjacent
 /// base (before or after, depending on which `PairedCounts` field is accessed).
-/// Unknown bases or strands are silently ignored on both `get` and `increment`.
+/// Unknown bases are silently ignored on both `get` and `increment`.
 pub struct ReadKey {
     pub strand: Strand,
     pub current: Base,
@@ -15,20 +15,17 @@ pub struct ReadKey {
 ///
 /// Array-backed for O(1) access. Indexed as `[strand][current_base][adj_base]`.
 ///
-/// Counters are `u16`: each one counts reads at a single position, which
-/// `--max-coverage` bounds (default 1000), so the range is 65x the default cap
-/// and the table is 64 bytes instead of 128. Two of these live in every
-/// `PileupMetrics`, of which a region holds one per covered base. A cap set
-/// past `u16::MAX` saturates rather than wraps — a wrapped count would read as
-/// a plausible small number and quietly move an ML feature.
+/// Counters are `u32`, like every other per-position read count:
+/// `--max-coverage 0` loads every read, so a deep amplicon can pass `u16::MAX`
+/// reads at one position.
 #[derive(Debug, Clone, Default)]
 pub struct PairedCounts {
-    inner: [[[u16; 4]; 4]; 2],
+    inner: [[[u32; 4]; 4]; 2],
 }
 
 impl PairedCounts {
     pub fn get(&self, key: ReadKey) -> u32 {
-        key.slot().and_then(|slot| self.flat().get(slot).copied()).map_or(0, u32::from)
+        key.slot().and_then(|slot| self.flat().get(slot).copied()).unwrap_or(0)
     }
 
     pub fn increment(&mut self, key: ReadKey) {
@@ -39,29 +36,28 @@ impl PairedCounts {
         }
     }
 
-    /// The table as one contiguous run of 32 counters. The nested shape is what
-    /// serialises, but every access here is by a computed slot, and three
-    /// nested index expressions is three bounds checks and three dependent
-    /// address computations for one increment that runs per read per column.
-    fn flat(&self) -> &[u16] {
+    /// The table as one contiguous run of 32 counters. Every access is by a
+    /// computed slot: three nested index expressions would be three bounds
+    /// checks and three dependent address computations for one increment that
+    /// runs per read per column.
+    fn flat(&self) -> &[u32] {
         self.inner.as_flattened().as_flattened()
     }
 
-    fn flat_mut(&mut self) -> &mut [u16] {
+    fn flat_mut(&mut self) -> &mut [u32] {
         self.inner.as_flattened_mut().as_flattened_mut()
     }
 }
 
 impl ReadKey {
     /// This key's slot in the flattened `[strand][current][adj]` table, or
-    /// `None` when any component is unknown — those observations are silently
+    /// `None` when either base is unknown — those observations are silently
     /// not counted, on `get` as on `increment`.
     #[inline]
     fn slot(&self) -> Option<usize> {
         let strand = match self.strand {
             Strand::OT => 0,
             Strand::OB => 1,
-            Strand::Unknown => return None,
         };
         // `known_index` is a table lookup, so this is three loads and a
         // multiply-add rather than three branches on data-dependent bases.
@@ -78,8 +74,8 @@ mod tests {
     }
 
     /// Every (strand, current, adj) triple must have its own slot, and no
-    /// increment may land in another's. Written before flattening the index
-    /// arithmetic, so it is the thing that says the flattening was faithful.
+    /// increment may land in another's: the flattened index arithmetic keeps
+    /// the nested table's layout.
     #[test]
     fn every_known_triple_has_its_own_slot() {
         for strand in [Strand::OT, Strand::OB] {
@@ -108,11 +104,9 @@ mod tests {
     #[test]
     fn unknown_components_are_not_counted() {
         let mut counts = PairedCounts::default();
-        counts.increment(key(Strand::Unknown, Base::A, Base::C));
         counts.increment(key(Strand::OT, Base::Unknown, Base::C));
         counts.increment(key(Strand::OT, Base::A, Base::Unknown));
 
-        assert_eq!(counts.get(key(Strand::Unknown, Base::A, Base::C)), 0);
         assert_eq!(counts.get(key(Strand::OT, Base::Unknown, Base::C)), 0);
         assert_eq!(counts.get(key(Strand::OT, Base::A, Base::Unknown)), 0);
         let total: u32 = [Strand::OT, Strand::OB]
@@ -124,7 +118,7 @@ mod tests {
             })
             .map(|(s, c, a)| counts.get(key(s, c, a)))
             .sum();
-        assert_eq!(total, 0, "an unknown component must count nothing at all");
+        assert_eq!(total, 0, "an unknown base must count nothing at all");
     }
 
     #[test]
@@ -136,16 +130,15 @@ mod tests {
         assert_eq!(counts.get(key(Strand::OB, Base::G, Base::T)), 7);
     }
 
-    /// A counter is bounded by the position's depth, which `--max-coverage`
-    /// caps (default 1000). A run with a cap above the counter's range must
-    /// still saturate rather than wrap — a wrapped count would read as a
-    /// plausible small number and quietly change an ML feature.
+    /// `--max-coverage 0` loads every read, so a counter must count a depth
+    /// past `u16::MAX` exactly.
     #[test]
-    fn a_counter_saturates_instead_of_wrapping() {
+    fn a_counter_counts_past_u16() {
         let mut counts = PairedCounts::default();
-        for _ in 0..=u32::from(u16::MAX) {
+        let depth = u32::from(u16::MAX) + 10;
+        for _ in 0..depth {
             counts.increment(key(Strand::OT, Base::C, Base::G));
         }
-        assert_eq!(counts.get(key(Strand::OT, Base::C, Base::G)), u32::from(u16::MAX));
+        assert_eq!(counts.get(key(Strand::OT, Base::C, Base::G)), depth);
     }
 }
