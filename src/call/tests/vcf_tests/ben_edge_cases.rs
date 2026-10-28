@@ -37,9 +37,9 @@ fn cgg_middle_g_to_c_no_methylation() -> Result<()> {
     // Position 1: Dual role - G-side of original + C-side of denovo
     // Position 2: G-side of denovo CpG
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=0.0,
-        (G C) PASS M5mC=0.0,
-        (G .) PASS M5mC=0.0,
+        (C .) PASS M5mC=None,
+        (G C) PASS M5mC=vec![None, Some(0.0)],
+        (G .) PASS M5mC=None,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
@@ -108,7 +108,7 @@ fn cgg_middle_g_to_c_methylation_on_denovo_cpg() -> Result<()> {
     // Position 1 shows methylation on DENOVO CpG (C-side)
     let expected_vcf = vcf_assert![
         (C .) PASS,
-        (G C) PASS M5mC=0.5,
+        (G C) PASS M5mC=vec![None, Some(0.5)],
         (G T) FAIL,
         (G .) PASS,
     ];
@@ -225,7 +225,7 @@ fn cgg_middle_homalt_c_with_methylation() -> Result<()> {
     // Denovo CpG: normal beta calculation
     let expected_vcf = vcf_assert![
         (C .) PASS,
-        (G C) PASS M5mC=0.333333 GT="1/1",
+        (G C) PASS M5mC=vec![None, Some(0.333333)] GT="1/1",
         (G T) FAIL,
         (G .) PASS,
     ];
@@ -267,7 +267,7 @@ fn cag_middle_a_to_c_creates_denovo_at_1_2() -> Result<()> {
     let expected_vcf = vcf_assert![
         (A C) PASS M5mC=0.4,
         (A T) FAIL,
-        (G .) PASS M5mC=0.0,
+        (G .) PASS M5mC=None,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
@@ -295,7 +295,7 @@ fn cag_middle_a_to_g_creates_denovo_at_0_1() -> Result<()> {
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C .) PASS M5mC=0.0,
+        (C .) PASS M5mC=None,
         (A G) PASS M5mC=0.4,
     ];
 

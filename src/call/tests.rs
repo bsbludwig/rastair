@@ -1,4 +1,6 @@
 mod debug;
+pub(crate) mod fixtures;
+pub(crate) mod pileup;
 pub mod utils;
 
 mod vcf_tests;
@@ -20,9 +22,9 @@ mod figure_out_outputs_tests {
             require_tags: default(),
             variant_calling: default(),
             indel: default(),
-            denovo_cpg: default(),
             methylation: default(),
             ml: default(),
+            phasing: default(),
             vcf: default(),
             bed: default(),
             record_filters: RecordFilters { vcf_all: false, cpgs_only: false },

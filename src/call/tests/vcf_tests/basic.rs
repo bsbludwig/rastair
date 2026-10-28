@@ -3,9 +3,9 @@ use seqair_types::Base::*;
 
 /// A non-CpG variant emits a record with no methylation context. The `M5mC`
 /// FORMAT field for such a record must round-trip through BCF without making
-/// htslib-based float readers panic: previously it was encoded as a zero-length
-/// value (`n == 0`), which makes `rust_htslib`'s `Format::float()` panic on
-/// `chunks(0)`. The field must be either absent or carry at least one value.
+/// htslib-based float readers panic: a zero-length value (`n == 0`) makes
+/// `rust_htslib`'s `Format::float()` panic on `chunks(0)`. The field must be
+/// either absent or carry at least one value.
 #[test]
 fn non_methylation_record_m5mc_is_readable_in_bcf() -> Result<()> {
     use rust_htslib::bcf::{self, Read as _};
@@ -117,7 +117,9 @@ fn test_all_matching_ref() -> Result<()> {
 
 #[test]
 fn test_multiple_alt_alleles() -> Result<()> {
-    // Multiple different alt alleles at the same position
+    // Multiple different alt alleles at the same position: of the two the
+    // model passes, the one G read is a stray beside two T reads, so the
+    // genotype holds no G and G is not called.
     let (segment, pileups) = pileups!(
         [ C ] Ref,
         [ T ] OT,
@@ -126,8 +128,9 @@ fn test_multiple_alt_alleles() -> Result<()> {
         [ G ] OB,
     );
     let expected_vcf = vcf_assert![
-        (C T,G) PASS,
+        (C T) PASS,
         (C A) FAIL,
+        (C G) FAIL,
     ];
 
     let mut records = test_call(segment, pileups, RecordFilters::variants())?;
@@ -191,10 +194,8 @@ fn test_g_to_a_outside_cpg() -> Result<()> {
 }
 
 #[test]
-fn test_c_to_t_outside_cpg_with_no_ml() -> Result<()> {
-    // Test C->T transition when ML model wasn't run
-    // Question: When ml is None but we have C->T, does it fall back to filter checks?
-    // Should we still treat it as methylation evidence, or only when ML explicitly fails?
+fn test_c_to_t_outside_cpg_scored_by_the_forests() -> Result<()> {
+    // No `set_pass`: the bundled forests score the alt themselves.
     let (segment, pileups) = pileups!(
         [ C ] Ref,
         [ T ] OT,

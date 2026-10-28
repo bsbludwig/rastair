@@ -1,6 +1,6 @@
 use crate::{
     call::{
-        pileup::{SimpleRead, SimpleReads},
+        tests::pileup::{SimpleRead, SimpleReads},
         tests::utils::*,
     },
     pileups, vcf_assert,
@@ -107,7 +107,7 @@ fn test_multiple_methylation_transitions_same_position() -> Result<()> {
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=1.,  // genotype C/C, all reads show T (fully methylated)
         (C T) FAIL,  // the methylation transition
-        (G .) PASS M5mC=0.,
+        (G .) PASS M5mC=None,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
@@ -246,9 +246,8 @@ fn test_non_covered_cpg_filtering() -> Result<()> {
 }
 
 #[test]
-fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
-    // Test C->T with high ML but other filters fail (e.g., low depth, low quality)
-    // Current implementation trusts ML score if it is set, so should output PASS
+fn test_methylation_transition_is_called_by_its_ml_score() -> Result<()> {
+    // Test C->T with and without an ML score: the score decides
     let (segment, pileups) = pileups!(
         [ C G ] Ref,
         [ T G ] OT,
@@ -259,11 +258,10 @@ fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
 
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T); // High ML score
-    records[0].alt_filters_mut(T).unwrap().filters.add(crate::vcf::RastairFilter::LowDp, || true);
     let mut records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
-        (C T) PASS, // PASS despite other filters failing
+        (C T) PASS,
         (G .) PASS,
     ];
 
@@ -271,12 +269,12 @@ fn test_methylation_transition_with_other_filters_failing() -> Result<()> {
     expected_vcf.matches(vcf_records)?;
 
     // Now, without ML
-    records[0].alt_filters_mut(T).unwrap().ml = None;
+    records[0].find_alt_mut(T).unwrap().verdict = crate::metrics::AltVerdict::Unscored;
     let records = reprocess(records)?;
 
     let expected_vcf = vcf_assert![
         (C .) PASS,
-        (C T) FAIL,  // FAIL because ML is None and other filters fail
+        (C T) FAIL,  // FAIL because ML is None
         (G .) PASS,
     ];
 
@@ -305,7 +303,7 @@ fn test_single_end_like_methylation_calling() -> Result<()> {
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=1./2.,
         (C T) FAIL,
-        (G .) PASS M5mC=0.,
+        (G .) PASS M5mC=None,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
@@ -336,7 +334,7 @@ fn test_c_with_t_and_a_both_low_ml() -> Result<()> {
         (C .) PASS M5mC=1.,  // methylation evidence from C->T
         (C T) FAIL,
         (C A) FAIL,
-        (G .) PASS M5mC=0.,
+        (G .) PASS M5mC=None,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
@@ -404,13 +402,13 @@ fn test_cpg_islands_multiple_positions() -> Result<()> {
     let expected_vcf = vcf_assert![
         (C .) PASS M5mC=1.,  // C1: genotype C/C, all reads show T (fully methylated)
         (C T) FAIL,  // C1->T methylation transition
-        (G .) PASS M5mC=0.,  // G1 matches ref
-        (C .) PASS M5mC=0.,  // C2 matches ref
+        (G .) PASS M5mC=None,  // G1 matches ref
+        (C .) PASS M5mC=None,  // C2 matches ref
         (G .) PASS M5mC=1.,  // G2: genotype G/G, all reads show A (fully methylated)
         (G A) FAIL,  // G2->A methylation transition
         (C .) PASS M5mC=1.,  // C3: genotype C/C, all reads show T (fully methylated)
         (C T) FAIL,  // C3->T methylation transition
-        (G .) PASS M5mC=0.,  // G3 matches ref
+        (G .) PASS M5mC=None,  // G3 matches ref
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
@@ -461,8 +459,8 @@ fn test_strand_bias_in_methylation() -> Result<()> {
     set_pass(&mut records[1], A);
     let records = reprocess(records)?;
     let expected_vcf = vcf_assert![
-        (C T) PASS M5mC=0.,
-        (G A) PASS M5mC=0.,
+        (C T) PASS M5mC=None,
+        (G A) PASS M5mC=None,
     ];
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
@@ -537,11 +535,11 @@ fn test_other_pos_in_cpg_passes_flag() -> Result<()> {
     Ok(())
 }
 
+/// A het C/A at the C of a CpG: the `A` reads on either strand carry no CpG,
+/// so β at both sides is over the CpG chromosome's reads alone, the `T`s on
+/// OT and the `A`s on OB after a `C`: all of them methylated.
 #[test]
-#[ignore = "TODO: Fix beta calculation for het positions with non-T alts (see ref_c in methylation.rs)"]
-fn test_non_ct_variant() -> Result<()> {
-    // Test C with both methylation evidence (C->T low ML) and real variant (C->A high ML)
-    // Assumption: When we have both types, we output ref->. plus both alt rows
+fn a_non_conversion_het_leaves_beta_to_the_cpg_reads() -> Result<()> {
     let (segment, pileups) = pileups!(
         [ C G ] Ref,
         [ T G ] OT,
@@ -562,8 +560,8 @@ fn test_non_ct_variant() -> Result<()> {
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::cpgs())?;
     let expected_vcf = vcf_assert![
-        (C A) PASS M5mC=0.5,  // C allele shows 2 converted reads out of 4 OT reads
-        (G .) PASS M5mC=0.5, // 2 OB reads are converted
+        (C A) PASS M5mC=1.0 GT="0/1",
+        (G .) PASS M5mC=1.0,
     ];
     expected_vcf.matches(vcf_records)?;
 
@@ -588,8 +586,14 @@ fn uncovered_reference_cpg_reported_with_all_and_cpgs_only() -> Result<()> {
     assert_eq!(records.len(), 2, "both reference CpG positions should survive pre-filtering");
     let c_record = &records[0];
     let g_record = &records[1];
-    assert!(c_record.tags.cpg && !c_record.tags.covered, "C column should be an uncovered CpG");
-    assert!(g_record.tags.cpg && g_record.tags.covered, "G column should be a covered CpG");
+    assert!(
+        c_record.reference_cpg().is_some() && !c_record.covered(),
+        "C column should be an uncovered CpG"
+    );
+    assert!(
+        g_record.reference_cpg().is_some() && g_record.covered(),
+        "G column should be a covered CpG"
+    );
 
     let all_cpgs = RecordFilters { vcf_all: true, cpgs_only: true };
     let cpgs_only = RecordFilters { vcf_all: false, cpgs_only: true };
@@ -605,6 +609,43 @@ fn uncovered_reference_cpg_reported_with_all_and_cpgs_only() -> Result<()> {
         (C .),
         (G .),
     ];
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// The model passes both `T` and `A` at a CpG `C`, but the `T` reads are all
+/// on the converted strand and the `C` reads on the other: the engine's
+/// genotype is `C/A`, holds no copy of `T`, so `T` is not called and its
+/// reads count as methylation, as if it had failed.
+#[test]
+fn a_passed_conversion_the_genotype_holds_no_copy_of_is_methylation() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C G ] OB,
+        [ C G ] OB,
+        [ C G ] OB,
+        [ A G ] OT,
+        [ A G ] OB,
+        [ A G ] OB,
+    );
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], T);
+    set_pass(&mut records[0], A);
+    let records = reprocess(records)?;
+
+    let expected_vcf = vcf_assert![
+        (C A) PASS M5mC=1. GT="0/1",
+        (C T) FAIL,
+        (G .) PASS,
+    ];
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
+    let filters: Vec<_> = vcf_records.iter().map(|r| r.filters.join(";")).collect();
+    assert!(filters.iter().any(|f| f.contains("no_genotype_copy")), "{filters:?}");
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

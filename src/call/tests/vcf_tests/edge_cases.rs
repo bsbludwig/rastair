@@ -10,8 +10,6 @@ use seqair_types::Base::*;
 ///
 /// ref=C, genotype=Het(C/A). T reads are purely methylation, no excess
 /// correction needed because the het alt (A) is not the confounding base (T).
-///
-/// This was the old TODO case in the pre-refactor code.
 #[test]
 fn het_with_non_confounding_alt_original_cpg() -> Result<()> {
     let (segment, pileups) = pileups!(
