@@ -1495,3 +1495,32 @@ fn test_reverse_complement() {
     let reverse = reverse_complement(forward);
     assert_eq!(reverse, b"ACAAT");
 }
+
+/// A rerun on rastair's own output gets the next free `@PG` ID, chained to
+/// the last one, rather than one whose `PP` names itself.
+#[test]
+fn a_rerun_gets_its_own_pg_id() -> Result<()> {
+    let header = |pgs: &str| BamHeader::from_sam_text(&format!("@SQ\tSN:c1\tLN:10\n{pgs}"));
+    let pg_ids = |header: &BamHeader| -> Vec<String> {
+        header
+            .header_text()
+            .lines()
+            .filter(|line| line.starts_with("@PG"))
+            .map(|line| {
+                line.split('\t').filter(|f| !f.starts_with("CL:") && !f.starts_with("VN:")).collect::<Vec<_>>().join(" ")
+            })
+            .collect()
+    };
+
+    let mut fresh = header("")?;
+    fresh.add_pg(rastair_pg(&fresh));
+    assert_snapshot!(pg_ids(&fresh).join("\n"), @"@PG ID:rastair.rewrite_bam PN:rastair DS:Rewrote BAM with methylation information");
+
+    let mut rerun = header(
+        "@PG\tID:rastair.rewrite_bam\tPN:rastair\n@PG\tID:rastair.rewrite_bam.1\tPN:rastair\tPP:rastair.rewrite_bam\n",
+    )?;
+    rerun.add_pg(rastair_pg(&rerun));
+    let last = pg_ids(&rerun).pop().wrap_err("no @PG")?;
+    assert_snapshot!(last, @"@PG ID:rastair.rewrite_bam.2 PN:rastair DS:Rewrote BAM with methylation information PP:rastair.rewrite_bam.1");
+    Ok(())
+}

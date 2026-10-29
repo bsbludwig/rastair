@@ -166,7 +166,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
 
     let Input { source, header: input_header, decoder, filter } = Input::open(&params.segments)?;
     let mut header = BamHeader::from_template(&input_header);
-    header.add_pg(rastair_pg());
+    header.add_pg(rastair_pg(&header));
     let decoder = decoder.map(std::sync::Mutex::new);
 
     let worker_threads = params.threads.saturating_sub(1).max(1);
@@ -908,10 +908,24 @@ fn reverse_complement(seq: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// The `@PG` line for rastair
-fn rastair_pg() -> PgRecord {
+/// The `@PG` line for rastair, with an ID no `@PG` of `header` has, numbered
+/// as samtools numbers its own (`ID`, `ID.1`, `ID.2`, …): `add_pg` points
+/// `PP` at the last `@PG`, which a rerun on its own output would make itself.
+fn rastair_pg(header: &BamHeader) -> PgRecord {
+    const ID: &str = "rastair.rewrite_bam";
+    let taken: rustc_hash::FxHashSet<&str> = header
+        .header_text()
+        .lines()
+        .filter(|line| line.starts_with("@PG\t"))
+        .flat_map(|line| line.split('\t'))
+        .filter_map(|field| field.strip_prefix("ID:"))
+        .collect();
+    let id = std::iter::once(ID.to_owned())
+        .chain((1_u64..).map(|n| format!("{ID}.{n}")))
+        .find(|id| !taken.contains(id.as_str()))
+        .unwrap_or_else(|| ID.to_owned());
     PgRecord {
-        id: "rastair.rewrite_bam".into(),
+        id: id.into(),
         pn: Some("rastair".into()),
         vn: Some(env!("CARGO_PKG_VERSION").into()),
         cl: Some(std::env::args().skip(1).collect::<Vec<_>>().join(" ").into()),

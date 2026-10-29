@@ -1547,3 +1547,48 @@ fn a_read_in_two_regions_is_written_once() -> Result<()> {
     ensure!(written == expected, "{spanning} reads written, {} expected", expected.len());
     Ok(())
 }
+
+/// `bam` on its own output adds a second `@PG` with an ID of its own, whose
+/// `PP` is the first.
+#[test]
+fn bam_twice_gives_unique_pg_ids() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--region=chr19:6103000-6103300", "--cpgs-only", "--bed"])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+    let mut input = Path::new("tests/data/test.bam").to_path_buf();
+    for run in ["first", "second"] {
+        let output = temp_dir.path().join(format!("{run}.bam"));
+        rastair()
+            .args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz"])
+            .arg(&input)
+            .arg(&calls_bed)
+            .arg("-o")
+            .arg(&output)
+            .silent()
+            .succeeds()
+            .wrap_err_with(|| format!("{run} run failed"))?;
+        input = output;
+    }
+    let header = seqair::bam::BamHeader::from_bam_path(&input)?;
+    let pgs: Vec<Vec<&str>> = header
+        .header_text()
+        .lines()
+        .filter(|line| line.starts_with("@PG"))
+        .map(|line| line.split('\t').collect())
+        .collect();
+    let field =
+        |pg: &[&str], key: &str| pg.iter().find_map(|f| f.strip_prefix(key)).map(str::to_owned);
+    let ids: Vec<String> = pgs.iter().filter_map(|pg| field(pg, "ID:")).collect();
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    ensure!(unique.len() == ids.len(), "duplicate @PG IDs: {ids:?}");
+    let last = pgs.last().ok_or_else(|| eyre!("no @PG"))?;
+    ensure!(field(last, "ID:").as_deref() == Some("rastair.rewrite_bam.1"), "{last:?}");
+    ensure!(field(last, "PP:").as_deref() == Some("rastair.rewrite_bam"), "{last:?}");
+    Ok(())
+}
