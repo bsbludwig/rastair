@@ -952,3 +952,46 @@ fn an_unmethylated_cpg_keeps_its_tags() -> Result<()> {
     ensure!(with_mm == 1, "{with_mm} reads have MM entries, expected the one methylated read");
     Ok(())
 }
+
+/// `bam` streams the whole input, so every record comes out in input order,
+/// the unplaced unmapped reads at its end (`*` in `samtools idxstats`)
+/// included.
+#[test]
+fn bam_keeps_every_record() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--cpgs-only", "--bed"])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    let names = |path: &Path| -> Result<Vec<(Vec<u8>, u16)>> {
+        let mut reader = bam::Reader::from_path(path).wrap_err("Failed to open BAM")?;
+        reader
+            .records()
+            .map(|record| {
+                let record = record.wrap_err("Failed to read BAM record")?;
+                Ok((record.qname().to_owned(), record.flags()))
+            })
+            .collect()
+    };
+    let input = names(Path::new("tests/data/test.bam"))?;
+    ensure!(input.len() == 29_358, "the test BAM has {} records", input.len());
+
+    for mode in ["standard", "legacy"] {
+        let output_bam = temp_dir.path().join(format!("{mode}.bam"));
+        rastair()
+            .args(["bam", mode, "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"])
+            .arg(&calls_bed)
+            .arg("-o")
+            .arg(&output_bam)
+            .silent()
+            .succeeds()
+            .wrap_err_with(|| format!("Failed to rewrite BAM in {mode} mode"))?;
+        ensure!(names(&output_bam)? == input, "{mode} should keep every record, in order");
+    }
+    Ok(())
+}
