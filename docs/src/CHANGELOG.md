@@ -70,6 +70,9 @@ Output:
 - `bam` annotates a CpG whose BED β is 0. It took every such row for an SNP, so a fully unmethylated CpG had no `XM` (`z`), and a CpG whose few methylated reads round β to `0.00` lost their MM/ML entries. A BED row is now an SNP only where its genotype holds no copy of the CpG's base.
 - `per-read`'s `mod_denovos` and `unmod_denovos` go by each read's base, like `mod_cpgs`, `unmod_cpgs` and `bam`'s tags: `T` or `C` on an OT read, `A` or `G` on an OB read. They listed every read covering a de-novo CpG by the site's β (methylated above 0.5), whatever its base or strand.
 - `per-read`'s `num_cpg` counts the de-novo CpGs a read shows as well, and `num_mod` the methylated ones, so a read whose only CpGs are de-novo is written without `--all-reads`. Both counted reference CpGs only.
+- `bam` reads its input front to back with [seqair](https://github.com/Softleif/seqair) and writes every record, in input order: the unplaced unmapped reads at the end of a sorted BAM (`*` in `samtools idxstats`) were dropped. It needs neither an index nor sorted input; `--region` reads a BAM or SAM through its index and writes a read overlapping two regions once. `--segment-max-length` is gone from `bam`.
+- `bam` tagged a read reaching past the end of a 10 kb segment only up to that end, so `XM` and `MM`/`ML` missed its CpGs beyond it.
+- A record that is not valid BAM stops `bam` with an error naming it; such a read was skipped with a warning.
 
 Regions:
 
