@@ -83,7 +83,8 @@ fn has_tag(record: &RawBamRecord, tag: &[u8; 2]) -> bool {
 
 /// The read bases that sit on the reference, as read index and reference position.
 fn matched(record: &RawBamRecord) -> Vec<(usize, u32)> {
-    aligned_bases(record).into_iter().map(|m| (m.qpos.as_usize(), m.rpos.as_u32())).collect()
+    let cigar = cigar_of(record);
+    aligned_bases(record.pos(), &cigar).map(|m| (m.qpos.as_usize(), m.rpos.as_u32())).collect()
 }
 
 fn write_bam(path: &std::path::Path, records: &[RawBamRecord]) -> Result<()> {

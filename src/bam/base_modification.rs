@@ -313,6 +313,15 @@ impl XrTags {
 
 /// Remove MM and ML, which is what a read without methylated positions gets.
 pub(super) fn remove_modifications(record: &mut RawBamRecord) -> Result<()> {
+    // Most reads carry neither, and an edit copies the aux block; the scan
+    // still fails on malformed tags, as an edit would.
+    let mut tags = record.aux().iter_checked();
+    let present = tags.try_fold(false, |present, tag| {
+        tag.map(|(tag, _)| present || tag == *b"MM" || tag == *b"ML")
+    });
+    if !present.wrap_err("could not write the methylation tags")? {
+        return Ok(());
+    }
     edit_aux(record, |aux| {
         aux.remove(*b"MM");
         aux.remove(*b"ML");

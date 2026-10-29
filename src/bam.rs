@@ -739,12 +739,26 @@ fn rewrite_named(
     })
 }
 
-/// The bases of `record` aligned to the reference, as read index and
-/// reference position; none for an unplaced record.
-fn aligned_bases(record: &RawBamRecord) -> Vec<MatchPosition> {
-    let Some(pos) = record.pos() else { return Vec::new() };
-    let cigar: SmallVec<CigarOp, 8> = record.cigar().collect();
-    AlignedPairs::new(pos, &cigar).matches_only().collect()
+/// A record's CIGAR, for [`aligned_bases`].
+fn cigar_of(record: &RawBamRecord) -> SmallVec<CigarOp, 8> {
+    record.cigar().collect()
+}
+
+/// The bases of a record at `pos` with `cigar` aligned to the reference, as
+/// read index and reference position; none for an unplaced record.
+fn aligned_bases(pos: Option<Pos0>, cigar: &[CigarOp]) -> impl Iterator<Item = MatchPosition> + '_ {
+    pos.into_iter().flat_map(move |pos| AlignedPairs::new(pos, cigar).matches_only())
+}
+
+/// The base at `qpos` of the stored SEQ, read from its packed form.
+fn base_at(record: &RawBamRecord, qpos: QPos) -> Option<Base> {
+    let i = qpos.as_usize();
+    if i >= record.seq_len() {
+        return None;
+    }
+    let byte = record.packed_seq().get(i / 2)?;
+    let nibble = if i.is_multiple_of(2) { byte >> 4 } else { *byte };
+    Some(seqair_types::IupacBase::from_nibble(nibble).to_base())
 }
 
 #[instrument(level = "debug", skip_all, fields(pos = ?record.pos()))]
@@ -838,11 +852,11 @@ fn build_legacy_annotations(
     strand: Strand,
     ref_base: impl Fn(u32) -> Option<Base>,
 ) -> FxHashMap<usize, XmAnnotation> {
-    let seq = record.bases();
     let mut annotations = FxHashMap::default();
     let side = CpgSide::converted_on(strand);
 
-    for MatchPosition { qpos, rpos, .. } in aligned_bases(record) {
+    let cigar = cigar_of(record);
+    for MatchPosition { qpos, rpos, .. } in aligned_bases(record.pos(), &cigar) {
         let pos_in_ref = rpos.as_u32();
         let is_denovo = match calls.get(&pos_in_ref) {
             Some(RastairCall::Cpg { .. }) => false,
@@ -850,7 +864,7 @@ fn build_legacy_annotations(
             _ => continue,
         };
 
-        let Some(&base) = seq.get(qpos.as_usize()) else { continue };
+        let Some(base) = base_at(record, qpos) else { continue };
         if let Some(methylated) = side.read_methylated(base) {
             let context = if is_denovo {
                 determine_context(pos_in_ref, strand, &ref_base)
@@ -885,7 +899,8 @@ fn get_methylated_positions(
     let mut methylated_positions = SmallVec::new();
     let side = CpgSide::converted_on(strand);
 
-    for MatchPosition { qpos, rpos, .. } in aligned_bases(record) {
+    let cigar = cigar_of(record);
+    for MatchPosition { qpos, rpos, .. } in aligned_bases(record.pos(), &cigar) {
         match calls.get(&rpos.as_u32()) {
             Some(RastairCall::Cpg { .. } | RastairCall::DeNovoCpg { .. }) => {}
             _ => continue,
