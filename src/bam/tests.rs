@@ -1,24 +1,110 @@
 use color_eyre::eyre::{bail, ensure};
 use insta::{assert_compact_debug_snapshot, assert_snapshot};
-use rust_htslib::bam::record::Aux;
+use seqair::bam::aux::{AuxValue, find_tag};
+use seqair_types::BamFlags;
 
 use super::*;
-use color_eyre::eyre::ContextCompat as _;
 
-#[test]
-fn a_bam_without_eof_block_was_not_closed() -> Result<()> {
-    let dir = tempfile::TempDir::new()?;
-    let path = dir.path().join("out.bam");
-    let header = Header::new();
-    drop(Writer::from_path(&path, &header, bam::Format::Bam)?);
-    ensure_closed(&path)?;
+const TEST_BAM: &str = "tests/data/test.bam";
 
-    let bytes = std::fs::read(&path)?;
-    std::fs::write(&path, bytes.get(..bytes.len() - 1).unwrap_or_default())?;
-    ensure!(ensure_closed(&path).is_err());
-    std::fs::write(&path, b"")?;
-    ensure!(ensure_closed(&path).is_err());
+fn open_test_bam() -> Result<AlignmentStream> {
+    Ok(AlignmentStream::from_reader(std::fs::File::open(TEST_BAM)?)?)
+}
+
+/// The first record of the test BAM, in file order, that `pred` accepts.
+fn find_record(pred: impl Fn(&RawBamRecord) -> bool) -> Result<RawBamRecord> {
+    let mut stream = open_test_bam()?;
+    let mut record = RawBamRecord::default();
+    while stream.read_record(&mut record)? {
+        if pred(&record) {
+            return Ok(record);
+        }
+    }
+    bail!("no record in the test BAM matches")
+}
+
+/// The records on the first contig that overlap `[start, end)`, in file order.
+fn records_overlapping(start: u32, end: u32) -> Result<Vec<RawBamRecord>> {
+    let mut stream = open_test_bam()?;
+    let mut record = RawBamRecord::default();
+    let mut found = Vec::new();
+    while stream.read_record(&mut record)? {
+        let (Some(tid), Some(pos), Some(last)) = (record.tid(), record.pos(), record.end_pos())
+        else {
+            continue;
+        };
+        // The file is sorted, so nothing after `end` on this contig can overlap.
+        if tid.as_u32() > 0 || pos.as_u32() >= end {
+            break;
+        }
+        if last.as_u32() >= start {
+            found.push(record.clone());
+        }
+    }
+    Ok(found)
+}
+
+/// What `fetch((0, start, end))` followed by one `read` returned.
+fn first_overlapping(start: u32, end: u32) -> Result<RawBamRecord> {
+    records_overlapping(start, end)?.into_iter().next().wrap_err("no records")
+}
+
+fn find_flag_at(flag_value: u16, pos_value: u32) -> Result<RawBamRecord> {
+    find_record(|r| flag(r) == flag_value && pos(r) == pos_value)
+        .wrap_err_with(|| format!("could not find flag-{flag_value} record at {pos_value}"))
+}
+
+fn flag(record: &RawBamRecord) -> u16 {
+    record.flags().raw()
+}
+
+fn pos(record: &RawBamRecord) -> u32 {
+    record.pos().map_or(0, |pos| pos.as_u32())
+}
+
+fn stored_seq(record: &RawBamRecord) -> Vec<u8> {
+    let mut seq = Vec::new();
+    record.decode_seq_into(&mut seq);
+    seq
+}
+
+/// A string tag; missing or of another type, an error.
+fn string_tag(record: &RawBamRecord, tag: &[u8; 2]) -> Result<String> {
+    match find_tag(record.aux().as_bytes(), *tag) {
+        None => bail!("missing {} tag", tag.escape_ascii()),
+        Some(AuxValue::String(value)) => Ok(String::from_utf8(value.to_vec())?),
+        Some(other) => bail!("{} is not a string tag: {other:?}", tag.escape_ascii()),
+    }
+}
+
+fn has_tag(record: &RawBamRecord, tag: &[u8; 2]) -> bool {
+    find_tag(record.aux().as_bytes(), *tag).is_some()
+}
+
+/// The read bases that sit on the reference, as read index and reference position.
+fn matched(record: &RawBamRecord) -> Vec<(usize, u32)> {
+    aligned_bases(record).into_iter().map(|m| (m.qpos.as_usize(), m.rpos.as_u32())).collect()
+}
+
+fn write_bam(path: &std::path::Path, records: &[RawBamRecord]) -> Result<()> {
+    let header = BamHeader::from_template(open_test_bam()?.header());
+    let mut writer = BamWriterBuilder::to_path(path, &header).build().wrap_err("create writer")?;
+    for record in records {
+        writer.write_raw(record)?;
+    }
+    writer.finish()?;
     Ok(())
+}
+
+fn read_bam(path: &std::path::Path) -> Result<Vec<RawBamRecord>> {
+    let mut stream = AlignmentStream::from_reader(std::fs::File::open(path)?)
+        .wrap_err("open roundtrip BAM for reading")?;
+    let mut records = Vec::new();
+    let mut record = RawBamRecord::default();
+    while stream.read_record(&mut record)? {
+        records.push(record.clone());
+    }
+    Ok(records)
 }
 
 /// No-op reference lookup for tests that don't involve de-novo CpGs
@@ -40,21 +126,12 @@ fn golden_legacy_and_standard_agree() -> Result<()> {
     // SEQ: AAGGCATGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGT
     // BAM pos: 6103076 (0-based)
     // Ref: aaggcgtgcaccaccacgcctggcttggtttggtttttgattggttgGttggtcttttgagacagggtttctctgtgt
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch(FetchDefinition::All)?;
-    let mut record = Record::new();
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        if record.flags() == 163 && record.pos() == 6103076 {
-            break;
-        }
-    }
-    ensure!(record.flags() == 163, "could not find flag-163 record at 6103076");
+    let record = find_flag_at(163, 6103076)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
     assert_eq!(strand, Strand::OB, "expected OB strand");
-    assert!(!record.is_reverse(), "expected forward read");
-    let seq = record.seq().as_bytes();
+    assert!(!record.flags().is_reverse(), "expected forward read");
+    let seq = stored_seq(&record);
     assert_snapshot!(as_base_string(&seq), @"AAGGCATGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGT");
 
     // Construct calls for two CpG positions (G side, matching OB strand):
@@ -88,15 +165,9 @@ fn golden_legacy_and_standard_agree() -> Result<()> {
     let mut legacy_record = record.clone();
     rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
-    let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
-        bail!("XM not a string");
-    };
-    let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else {
-        bail!("XR not a string");
-    };
-    let Aux::String(xg_tag) = legacy_record.aux(b"XG")? else {
-        bail!("XG not a string");
-    };
+    let xm_tag = string_tag(&legacy_record, b"XM")?;
+    let xr_tag = string_tag(&legacy_record, b"XR")?;
+    let xg_tag = string_tag(&legacy_record, b"XG")?;
 
     // Flag 163: second in pair → XR=GA; OB → XG=GA
     assert_snapshot!(xr_tag, @"GA");
@@ -112,19 +183,17 @@ fn golden_legacy_and_standard_agree() -> Result<()> {
     assert_compact_debug_snapshot!(xm_annotations, @"[(5, 'Z'), (17, 'z')]");
 
     // SEQ should NOT be rewritten in legacy mode
-    assert_eq!(legacy_record.seq().as_bytes(), seq, "Legacy mode should not modify SEQ");
+    assert_eq!(stored_seq(&legacy_record), seq, "Legacy mode should not modify SEQ");
 
     // === Standard mode ===
     let mut standard_record = record.clone();
     rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
-    let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
-        bail!("MM not a string");
-    };
+    let mm_tag = string_tag(&standard_record, b"MM")?;
 
     // OB strand, not reversed → MM uses G-m format with stored-SEQ positions
     // Rewritten SEQ: position 5 changed from A→G (un-modify methylation evidence)
-    let new_seq = standard_record.seq().as_bytes();
+    let new_seq = stored_seq(&standard_record);
     assert_snapshot!(as_base_string(&new_seq), @"AAGGCGTGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGT");
 
     // Verify position 5 was rewritten (A→G) and position 17 unchanged (G stays G)
@@ -136,10 +205,10 @@ fn golden_legacy_and_standard_agree() -> Result<()> {
     assert_snapshot!(mm_tag, @"G-m,2;");
 
     // === Cross-check: both modes agree on methylated positions ===
-    let xm_methylated = decode_xm_to_positions(xm_tag);
+    let xm_methylated = decode_xm_to_positions(&xm_tag);
 
     let fwd_seq = seq_for_mm_tag(&standard_record);
-    let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+    let (mm_base, mm_methylated) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
     assert_eq!(mm_base, G, "MM should target G for OB strand");
 
     // Both should identify position 5 as the only methylated position
@@ -147,9 +216,9 @@ fn golden_legacy_and_standard_agree() -> Result<()> {
     assert_eq!(mm_methylated, vec![5], "MM methylated positions");
 
     // Standard mode should NOT have XR/XG/XM tags
-    assert!(standard_record.aux(b"XR").is_err());
+    assert!(!has_tag(&standard_record, b"XR"));
     // Legacy mode should NOT have MM/ML tags
-    assert!(legacy_record.aux(b"MM").is_err());
+    assert!(!has_tag(&legacy_record, b"MM"));
 
     Ok(())
 }
@@ -163,18 +232,9 @@ fn per_read_methylation_independent_of_position_call() -> Result<()> {
     use Base::*;
 
     // Same OB flag-163 read as golden_legacy_and_standard_agree
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch(FetchDefinition::All)?;
-    let mut record = Record::new();
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        if record.flags() == 163 && record.pos() == 6103076 {
-            break;
-        }
-    }
-    ensure!(record.flags() == 163, "could not find flag-163 record at 6103076");
+    let record = find_flag_at(163, 6103076)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
     assert_eq!(strand, Strand::OB);
 
     // Position 6103081 (read offset 5): Read[5] = A → evidence base for OB
@@ -195,9 +255,7 @@ fn per_read_methylation_independent_of_position_call() -> Result<()> {
     let mut legacy_record = record.clone();
     rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
-    let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
-        bail!("XM not a string");
-    };
+    let xm_tag = string_tag(&legacy_record, b"XM")?;
 
     // Offset 5 must be Z (methylated per-read), offset 17 must be z (unmethylated per-read)
     let xm_annotations: Vec<(usize, char)> =
@@ -208,16 +266,14 @@ fn per_read_methylation_independent_of_position_call() -> Result<()> {
     let mut standard_record = record.clone();
     rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
-    let new_seq = standard_record.seq().as_bytes();
+    let new_seq = stored_seq(&standard_record);
     // Position 5 must be rewritten A→G (undo methylation evidence)
     assert_eq!(Base::from(new_seq[5]), G, "position 5 should be rewritten A→G");
 
-    let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
-        bail!("MM not a string");
-    };
+    let mm_tag = string_tag(&standard_record, b"MM")?;
     // MM tag should report the methylation at position 5
     let fwd_seq = seq_for_mm_tag(&standard_record);
-    let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+    let (mm_base, mm_methylated) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
     assert_eq!(mm_base, G);
     assert_eq!(mm_methylated, vec![5], "MM should report methylation at offset 5");
 
@@ -233,16 +289,13 @@ fn golden_ot_reversed_legacy_and_standard_agree() -> Result<()> {
 
     // Read 1: flag 83, OB strand, first in pair, REVERSED
     // BAM pos: 6103075 (0-based)
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+    let record = first_overlapping(6103075, 6103100)?;
 
-    assert_eq!(record.flags(), 83);
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
+    assert_eq!(flag(&record), 83);
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
     assert_eq!(strand, Strand::OB);
-    assert!(record.is_reverse());
-    let seq = record.seq().as_bytes();
+    assert!(record.flags().is_reverse());
+    let seq = stored_seq(&record);
 
     // Two CpG calls (G side for OB):
     // Pos 6103081 (read offset 6): Read[6]=G → target, unmethylated in this read
@@ -251,9 +304,9 @@ fn golden_ot_reversed_legacy_and_standard_agree() -> Result<()> {
     // Also add a methylated call where read actually shows evidence:
     // Let's find a position where the read has A (OB evidence)
     let mut evidence_pos = None;
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-        if Base::from(seq[pos_in_read as usize]) == A {
-            evidence_pos = Some((pos_in_read as usize, pos_in_ref as u32));
+    for (pos_in_read, pos_in_ref) in matched(&record) {
+        if Base::from(seq[pos_in_read]) == A {
+            evidence_pos = Some((pos_in_read, pos_in_ref));
             break;
         }
     }
@@ -279,9 +332,7 @@ fn golden_ot_reversed_legacy_and_standard_agree() -> Result<()> {
     let mut legacy_record = record.clone();
     rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
-    let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else {
-        bail!("XM not a string");
-    };
+    let xm_tag = string_tag(&legacy_record, b"XM")?;
     assert_eq!(xm_tag.len(), seq.len());
 
     // Verify the three annotated positions
@@ -296,20 +347,18 @@ fn golden_ot_reversed_legacy_and_standard_agree() -> Result<()> {
     let mut standard_record = record.clone();
     rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
-    let Aux::String(mm_tag) = standard_record.aux(b"MM")? else {
-        bail!("MM not a string");
-    };
+    let mm_tag = string_tag(&standard_record, b"MM")?;
 
     // This is a reversed read, so MM positions are in original-read orientation
     // (reverse complement of stored SEQ). The strand qualifier flips OB→OT.
     assert_snapshot!(mm_tag.chars().take(3).collect::<String>(), @"C+m");
 
     // === Cross-check ===
-    let xm_methylated = decode_xm_to_positions(xm_tag);
+    let xm_methylated = decode_xm_to_positions(&xm_tag);
     assert_eq!(xm_methylated, vec![ev_read_pos], "XM: only evidence position should be Z");
 
     let fwd_seq = seq_for_mm_tag(&standard_record);
-    let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+    let (mm_base, mm_methylated) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
     // For reversed OB→OT, MM uses C base
     assert_eq!(mm_base, C);
 
@@ -331,18 +380,14 @@ fn sequence_transform() -> Result<()> {
 
     // it's easiest to take a record from a real BAM file instead of
     // constructing one manually
-    let mut bam =
-        bam::IndexedReader::from_path("tests/data/test.bam").wrap_err("failed to open test BAM")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("failed to read record")?;
+    let mut record = first_overlapping(6103075, 6103100)?;
 
     // just to be sure we have the expected record
-    assert_snapshot!(record.pos(), @"6103075");
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
+    assert_snapshot!(pos(&record), @"6103075");
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
     assert_snapshot!(strand, @"OB");
 
-    let ol_seq = record.seq().as_bytes();
+    let ol_seq = stored_seq(&record);
 
     // We want to create some test calls that are setting some CpG positions
     // to be methylated.
@@ -356,22 +401,19 @@ fn sequence_transform() -> Result<()> {
         let mut calls = FxHashMap::default();
         let seq = &ol_seq;
 
-        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-            let current_base = Base::from(seq[pos_in_read as usize]);
-            let Some(next_base) = seq.get((pos_in_read + 1) as usize).map(Base::from) else {
+        for (pos_in_read, pos_in_ref) in matched(&record) {
+            let current_base = Base::from(seq[pos_in_read]);
+            let Some(next_base) = seq.get(pos_in_read + 1).map(Base::from) else {
                 continue;
             };
 
             match (current_base, next_base) {
                 (C, G) => {
-                    calls.insert(
-                        pos_in_ref as u32,
-                        RastairCall::Cpg { methylated: Some(true), base: C },
-                    );
+                    calls.insert(pos_in_ref, RastairCall::Cpg { methylated: Some(true), base: C });
                 }
                 (C, A) => {
                     calls.insert(
-                        pos_in_ref as u32 + 1,
+                        pos_in_ref + 1,
                         RastairCall::Cpg { methylated: Some(true), base: G },
                     );
                 }
@@ -381,22 +423,26 @@ fn sequence_transform() -> Result<()> {
         calls
     };
 
-    let data = get_methylated_positions(&calls, &record, strand)?;
+    let data = get_methylated_positions(&calls, &record, strand);
     let new_seq = &data.seq;
 
     // for human comparison
     assert_snapshot!(as_base_string(&ol_seq), @"AAAGGCGTGCACCACCACGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGTA");
     assert_snapshot!(as_base_string(new_seq), @"AAAGGCGTGCGCCGCCGCGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACGGGGTTTCTCTGTGTA");
 
-    assert_compact_debug_snapshot!(data.methylated_positions, @"[10, 13, 16, 64]");
+    assert_compact_debug_snapshot!(
+        data.methylated_positions.iter().map(|p| p.get()).collect::<Vec<_>>(),
+        @"[10, 13, 16, 64]"
+    );
     // verify these are all positions where A (methylation evidence) was
     // rewritten to G
     for &pos in &data.methylated_positions {
-        let base = Base::from(ol_seq[pos as usize]);
+        let pos = pos.as_usize();
+        let base = Base::from(ol_seq[pos]);
         if base != A {
             bail!("expected A at methylated position {}, found {}", pos, base.as_str());
         }
-        let new_base = Base::from(new_seq[pos as usize]);
+        let new_base = Base::from(new_seq[pos]);
         if new_base != G {
             bail!(
                 "expected G at rewritten methylated position {}, found {}",
@@ -409,14 +455,14 @@ fn sequence_transform() -> Result<()> {
     // This is a reverse OB read (flag=83). The MM tag must be in
     // original-read orientation (RC of stored SEQ), with flipped
     // base/strand (OB→OT = C+m).
-    let is_reverse = record.is_reverse();
+    let is_reverse = record.flags().is_reverse();
     assert!(is_reverse, "test record should be reverse-strand");
 
     let seq_len = new_seq.len();
     let original_positions: SmallVec<u32, 10> = data
         .methylated_positions
         .iter()
-        .map(|&p| u32::try_from(seq_len - 1 - p as usize).expect("fits"))
+        .map(|&p| u32::try_from(seq_len - 1 - p.as_usize()).expect("fits"))
         .collect();
     let original_seq = reverse_complement(new_seq);
 
@@ -428,9 +474,7 @@ fn sequence_transform() -> Result<()> {
         .apply_to_record(&mut record)
         .wrap_err("failed to apply modifications to record")?;
 
-    let Aux::String(mod_string) = record.aux(b"MM").wrap_err("missing MM tag")? else {
-        bail!("MM tag is not a string");
-    };
+    let mod_string = string_tag(&record, b"MM")?;
     assert_snapshot!(mod_string, @"C+m,5,16,0,0;");
 
     Ok(())
@@ -441,39 +485,32 @@ fn test_xr_xg_xm_tags() -> Result<()> {
     use Base::*;
 
     // Test with flag 83 (OB strand, first in pair reverse)
-    let mut bam =
-        bam::IndexedReader::from_path("tests/data/test.bam").wrap_err("failed to open test BAM")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("failed to read record")?;
+    let mut record = first_overlapping(6103075, 6103100)?;
 
     // Verify this is flag 83
-    assert_eq!(record.flags(), 83, "Expected flag 83");
-    assert_eq!(StrandFromRecord::strand(&record), Some(Strand::OB));
+    assert_eq!(flag(&record), 83, "Expected flag 83");
+    assert_eq!(Strand::from_flags(record.flags()), Some(Strand::OB));
 
-    let ol_seq = record.seq().as_bytes();
+    let ol_seq = stored_seq(&record);
 
     // Create test calls with some methylated CpGs
     let calls = {
         let mut calls = FxHashMap::default();
         let seq = &ol_seq;
 
-        for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-            let current_base = Base::from(seq[pos_in_read as usize]);
-            let Some(next_base) = seq.get((pos_in_read + 1) as usize).map(Base::from) else {
+        for (pos_in_read, pos_in_ref) in matched(&record) {
+            let current_base = Base::from(seq[pos_in_read]);
+            let Some(next_base) = seq.get(pos_in_read + 1).map(Base::from) else {
                 continue;
             };
 
             match (current_base, next_base) {
                 (C, G) => {
-                    calls.insert(
-                        pos_in_ref as u32,
-                        RastairCall::Cpg { methylated: Some(true), base: C },
-                    );
+                    calls.insert(pos_in_ref, RastairCall::Cpg { methylated: Some(true), base: C });
                 }
                 (C, A) => {
                     calls.insert(
-                        pos_in_ref as u32 + 1,
+                        pos_in_ref + 1,
                         RastairCall::Cpg { methylated: Some(true), base: G },
                     );
                 }
@@ -486,21 +523,15 @@ fn test_xr_xg_xm_tags() -> Result<()> {
     rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
     // Check XR tag (flag 83: first in pair => CT)
-    let Aux::String(xr_tag) = record.aux(b"XR").wrap_err("missing XR tag")? else {
-        bail!("XR tag is not a string");
-    };
+    let xr_tag = string_tag(&record, b"XR")?;
     assert_snapshot!(xr_tag, @"CT");
 
     // Check XG tag (OB strand => GA)
-    let Aux::String(xg_tag) = record.aux(b"XG").wrap_err("missing XG tag")? else {
-        bail!("XG tag is not a string");
-    };
+    let xg_tag = string_tag(&record, b"XG")?;
     assert_snapshot!(xg_tag, @"GA");
 
     // Check XM tag exists and has correct length
-    let Aux::String(xm_tag) = record.aux(b"XM").wrap_err("missing XM tag")? else {
-        bail!("XM tag is not a string");
-    };
+    let xm_tag = string_tag(&record, b"XM")?;
     assert_eq!(xm_tag.len(), record.seq_len());
 
     Ok(())
@@ -510,34 +541,29 @@ fn test_xr_xg_xm_tags() -> Result<()> {
 /// from, so neither mode calls any of its bases, even at called CpGs.
 #[test]
 fn a_read_of_unknown_strand_carries_no_methylation() -> Result<()> {
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut original = Record::new();
-    bam.read(&mut original).wrap_err("no records")?.wrap_err("read")?;
-    original.set_flags(original.flags() & !0xC0);
-    ensure!(StrandFromRecord::strand(&original).is_none(), "the strand should be unknown");
-    let calls: FxHashMap<u32, RastairCall> = original
-        .aligned_pairs()
-        .flat_map(|[_, pos]| {
-            let pos = u32::try_from(pos).ok()?;
-            Some([
+    let mut original = first_overlapping(6103075, 6103100)?;
+    original.set_flags(BamFlags::from(flag(&original) & !0xC0))?;
+    ensure!(Strand::from_flags(original.flags()).is_none(), "the strand should be unknown");
+    let calls: FxHashMap<u32, RastairCall> = matched(&original)
+        .into_iter()
+        .flat_map(|(_, pos)| {
+            [
                 (pos, RastairCall::Cpg { methylated: Some(true), base: Base::C }),
                 (pos, RastairCall::Cpg { methylated: Some(true), base: Base::G }),
-            ])
+            ]
         })
-        .flatten()
         .collect();
 
     let mut legacy = original.clone();
     rewrite_record(&calls, &mut legacy, BamMode::Legacy, no_ref)?;
-    assert_eq!(legacy.aux(b"XR")?, Aux::String("GA"));
-    assert_eq!(legacy.aux(b"XG")?, Aux::String("CT"));
-    assert_eq!(legacy.aux(b"XM")?, Aux::String(&".".repeat(original.seq_len())));
+    assert_eq!(string_tag(&legacy, b"XR")?, "GA");
+    assert_eq!(string_tag(&legacy, b"XG")?, "CT");
+    assert_eq!(string_tag(&legacy, b"XM")?, ".".repeat(original.seq_len()));
 
     let mut standard = original.clone();
     rewrite_record(&calls, &mut standard, BamMode::Standard, no_ref)?;
-    assert!(standard.aux(b"MM").is_err() && standard.aux(b"ML").is_err());
-    assert_eq!(standard.seq().as_bytes(), original.seq().as_bytes());
+    assert!(!has_tag(&standard, b"MM") && !has_tag(&standard, b"ML"));
+    assert_eq!(stored_seq(&standard), stored_seq(&original));
     Ok(())
 }
 
@@ -550,36 +576,18 @@ fn test_xr_xg_tags_all_flags() -> Result<()> {
         (163, "GA", "GA"), // flag 163: OB, second in pair => XR:GA, XG:GA
     ];
 
-    for (flag, expected_xr, expected_xg) in test_cases {
-        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")
-            .wrap_err("failed to open test BAM")?;
-
-        bam.fetch(FetchDefinition::All)?;
-        let mut record = Record::new();
-        let mut found = false;
-
-        while let Some(result) = bam.read(&mut record) {
-            result?;
-            if record.flags() == flag {
-                found = true;
-                break;
-            }
-        }
-
-        ensure!(found, "No record with flag {flag} found in test BAM");
+    for (wanted, expected_xr, expected_xg) in test_cases {
+        let mut record = find_record(|r| flag(r) == wanted)
+            .wrap_err_with(|| format!("No record with flag {wanted} found in test BAM"))?;
 
         let calls = FxHashMap::default();
         rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
-        let Aux::String(xr_tag) = record.aux(b"XR").wrap_err("missing XR tag")? else {
-            bail!("XR tag is not a string for flag {}", flag);
-        };
-        assert_eq!(xr_tag, expected_xr, "XR tag mismatch for flag {}", flag);
+        let xr_tag = string_tag(&record, b"XR")?;
+        assert_eq!(xr_tag, expected_xr, "XR tag mismatch for flag {}", wanted);
 
-        let Aux::String(xg_tag) = record.aux(b"XG").wrap_err("missing XG tag")? else {
-            bail!("XG tag is not a string for flag {}", flag);
-        };
-        assert_eq!(xg_tag, expected_xg, "XG tag mismatch for flag {}", flag);
+        let xg_tag = string_tag(&record, b"XG")?;
+        assert_eq!(xg_tag, expected_xg, "XG tag mismatch for flag {}", wanted);
     }
 
     Ok(())
@@ -637,39 +645,31 @@ fn decode_xm_to_positions(xm_tag: &str) -> Vec<usize> {
 /// Get the sequence in MM tag orientation. For forward reads this is the
 /// stored SEQ; for reverse reads it is the reverse complement (original
 /// read orientation), since MM positions count from the original 5' end.
-fn seq_for_mm_tag(record: &Record) -> Vec<u8> {
-    let stored = record.seq().as_bytes();
-    if record.is_reverse() { reverse_complement(&stored) } else { stored }
+fn seq_for_mm_tag(record: &RawBamRecord) -> Vec<u8> {
+    let stored = stored_seq(record);
+    if record.flags().is_reverse() { reverse_complement(&stored) } else { stored }
 }
 
 #[test]
 fn roundtrip_standard_mm_tags() -> Result<()> {
-    let mut bam =
-        bam::IndexedReader::from_path("tests/data/test.bam").wrap_err("failed to open test BAM")?;
-
-    bam.fetch((0, 6103075, 6103200))?;
-    let mut record = Record::new();
     let mut tested = 0u32;
 
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        let ol_seq = record.seq().as_bytes();
+    for mut record in records_overlapping(6103075, 6103200)? {
+        let ol_seq = stored_seq(&record);
         let calls = build_cpg_calls(&record, &ol_seq);
         rewrite_record(&calls, &mut record, BamMode::Standard, no_ref)?;
 
         // Standard mode should NOT produce XR/XG/XM tags
-        assert!(record.aux(b"XR").is_err(), "Standard mode should not produce XR tag");
+        assert!(!has_tag(&record, b"XR"), "Standard mode should not produce XR tag");
 
         // MM/ML are omitted when there are no methylated positions (absent = "no data").
-        if let Ok(aux) = record.aux(b"MM") {
-            let Aux::String(mm_tag) = aux else {
-                bail!("MM tag is not a string at pos={} flag={}", record.pos(), record.flags());
-            };
+        if has_tag(&record, b"MM") {
+            let mm_tag = string_tag(&record, b"MM")?;
 
             let fwd_seq = seq_for_mm_tag(&record);
             let (_, mm_positions) =
-                decode_mm_to_positions(mm_tag, &fwd_seq).wrap_err_with(|| {
-                    format!("decode MM {:?} pos={} flag={}", mm_tag, record.pos(), record.flags())
+                decode_mm_to_positions(&mm_tag, &fwd_seq).wrap_err_with(|| {
+                    format!("decode MM {:?} pos={} flag={}", mm_tag, pos(&record), flag(&record))
                 })?;
             assert!(mm_positions.len() <= fwd_seq.len(), "MM positions out of range");
         }
@@ -686,62 +686,37 @@ fn roundtrip_write_read_bam_standard() -> Result<()> {
     let temp_dir = tempfile::TempDir::new()?;
     let temp_bam = temp_dir.path().join("roundtrip.bam");
 
-    let header = {
-        let bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-        Header::from_template(bam.header())
-    };
-
-    let mut writer =
-        Writer::from_path(&temp_bam, &header, bam::Format::Bam).wrap_err("create writer")?;
-
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam").wrap_err("open test BAM")?;
-    bam.fetch((0, 6103075, 6103100))?;
-
-    let mut records_written = 0u32;
-    let mut record = Record::new();
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        let ol_seq = record.seq().as_bytes();
-        let calls = build_cpg_calls(&record, &ol_seq);
-        rewrite_record(&calls, &mut record, BamMode::Standard, no_ref)?;
-        writer.write(&record)?;
-        records_written += 1;
+    let mut rewritten = records_overlapping(6103075, 6103100)?;
+    for record in &mut rewritten {
+        let calls = build_cpg_calls(record, &stored_seq(record));
+        rewrite_record(&calls, record, BamMode::Standard, no_ref)?;
     }
-    drop(writer);
-    ensure!(records_written > 0, "no records written");
+    ensure!(!rewritten.is_empty(), "no records written");
+    write_bam(&temp_bam, &rewritten)?;
 
-    let mut reader =
-        bam::Reader::from_path(&temp_bam).wrap_err("open roundtrip BAM for reading")?;
-    let mut records_read = 0u32;
-
-    while let Some(result) = reader.read(&mut record) {
-        result?;
-        records_read += 1;
-
-        let fwd_seq = seq_for_mm_tag(&record);
+    let read_back = read_bam(&temp_bam)?;
+    for record in &read_back {
+        let fwd_seq = seq_for_mm_tag(record);
 
         // MM/ML are omitted when there are no methylated positions (absent = "no data").
-        if let Ok(aux) = record.aux(b"MM") {
-            let Aux::String(mm_tag) = aux else {
-                bail!("MM not a string");
-            };
+        if has_tag(record, b"MM") {
+            let mm_tag = string_tag(record, b"MM")?;
+            let (_, mm_positions) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
 
-            let (_, mm_positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
-
-            let Aux::ArrayU8(ml_data) = record.aux(b"ML").wrap_err("missing ML")? else {
-                bail!("ML not an array");
+            let Some(AuxValue::ArrayU8(ml_data)) = find_tag(record.aux().as_bytes(), *b"ML") else {
+                bail!("ML missing or not an array");
             };
             assert_eq!(
-                ml_data.iter().count(),
+                ml_data.len(),
                 mm_positions.len(),
                 "ML length should match number of methylated positions"
             );
         }
 
-        assert!(record.aux(b"XR").is_err(), "Standard mode should not produce XR");
+        assert!(!has_tag(record, b"XR"), "Standard mode should not produce XR");
     }
 
-    assert_eq!(records_written, records_read, "record count mismatch after roundtrip");
+    assert_eq!(rewritten.len(), read_back.len(), "record count mismatch after roundtrip");
 
     Ok(())
 }
@@ -751,53 +726,25 @@ fn roundtrip_write_read_bam_legacy() -> Result<()> {
     let temp_dir = tempfile::TempDir::new()?;
     let temp_bam = temp_dir.path().join("roundtrip_legacy.bam");
 
-    let header = {
-        let bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-        Header::from_template(bam.header())
-    };
-
-    let mut writer =
-        Writer::from_path(&temp_bam, &header, bam::Format::Bam).wrap_err("create writer")?;
-
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam").wrap_err("open test BAM")?;
-    bam.fetch((0, 6103075, 6103100))?;
-
-    let mut records_written = 0u32;
-    let mut record = Record::new();
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        let ol_seq = record.seq().as_bytes();
-        let calls = build_cpg_calls(&record, &ol_seq);
-        rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
-        writer.write(&record)?;
-        records_written += 1;
+    let mut rewritten = records_overlapping(6103075, 6103100)?;
+    for record in &mut rewritten {
+        let calls = build_cpg_calls(record, &stored_seq(record));
+        rewrite_record(&calls, record, BamMode::Legacy, no_ref)?;
     }
-    drop(writer);
-    ensure!(records_written > 0, "no records written");
+    ensure!(!rewritten.is_empty(), "no records written");
+    write_bam(&temp_bam, &rewritten)?;
 
-    let mut reader =
-        bam::Reader::from_path(&temp_bam).wrap_err("open roundtrip BAM for reading")?;
-    let mut records_read = 0u32;
-
-    while let Some(result) = reader.read(&mut record) {
-        result?;
-        records_read += 1;
-
-        let Aux::String(_) = record.aux(b"XR").wrap_err("missing XR")? else {
-            bail!("XR not a string");
-        };
-        let Aux::String(_) = record.aux(b"XG").wrap_err("missing XG")? else {
-            bail!("XG not a string");
-        };
-        let Aux::String(xm_tag) = record.aux(b"XM").wrap_err("missing XM")? else {
-            bail!("XM not a string");
-        };
+    let read_back = read_bam(&temp_bam)?;
+    for record in &read_back {
+        string_tag(record, b"XR")?;
+        string_tag(record, b"XG")?;
+        let xm_tag = string_tag(record, b"XM")?;
         assert_eq!(xm_tag.len(), record.seq_len(), "XM length mismatch");
 
-        assert!(record.aux(b"MM").is_err(), "Legacy mode should not produce MM");
+        assert!(!has_tag(record, b"MM"), "Legacy mode should not produce MM");
     }
 
-    assert_eq!(records_written, records_read, "record count mismatch after roundtrip");
+    assert_eq!(rewritten.len(), read_back.len(), "record count mismatch after roundtrip");
 
     Ok(())
 }
@@ -807,36 +754,22 @@ fn roundtrip_no_methylation_standard() -> Result<()> {
     let temp_dir = tempfile::TempDir::new()?;
     let temp_bam = temp_dir.path().join("roundtrip_empty.bam");
 
-    let header = {
-        let bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-        Header::from_template(bam.header())
-    };
-
-    let mut writer = Writer::from_path(&temp_bam, &header, bam::Format::Bam)?;
-
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
-
+    let mut record = first_overlapping(6103075, 6103100)?;
     let calls = FxHashMap::default();
     rewrite_record(&calls, &mut record, BamMode::Standard, no_ref)?;
-    writer.write(&record)?;
-    drop(writer);
+    write_bam(&temp_bam, &[record])?;
 
-    let mut reader = bam::Reader::from_path(&temp_bam)?;
-    reader.read(&mut record).wrap_err("no records")?.wrap_err("read back")?;
+    let record = read_bam(&temp_bam)?.into_iter().next().wrap_err("no records")?;
 
     // With no methylated positions, MM/ML tags are not written at all.
     // An absent MM means "no modification data" per SAM spec.
     // Writing empty C+m; or empty ML:B:C crashes tools like modbedtools.
     assert!(
-        record.aux(b"MM").is_err(),
+        !has_tag(&record, b"MM"),
         "MM tag should not be present when there are no methylated positions"
     );
     assert!(
-        record.aux(b"ML").is_err(),
+        !has_tag(&record, b"ML"),
         "ML tag should not be present when there are no methylated positions"
     );
 
@@ -848,31 +781,15 @@ fn roundtrip_no_methylation_legacy() -> Result<()> {
     let temp_dir = tempfile::TempDir::new()?;
     let temp_bam = temp_dir.path().join("roundtrip_empty_legacy.bam");
 
-    let header = {
-        let bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-        Header::from_template(bam.header())
-    };
-
-    let mut writer = Writer::from_path(&temp_bam, &header, bam::Format::Bam)?;
-
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
-
+    let mut record = first_overlapping(6103075, 6103100)?;
     let calls = FxHashMap::default();
     rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
-    writer.write(&record)?;
-    drop(writer);
+    write_bam(&temp_bam, &[record])?;
 
-    let mut reader = bam::Reader::from_path(&temp_bam)?;
-    reader.read(&mut record).wrap_err("no records")?.wrap_err("read back")?;
+    let record = read_bam(&temp_bam)?.into_iter().next().wrap_err("no records")?;
 
-    let Aux::String(xm_tag) = record.aux(b"XM").wrap_err("missing XM")? else {
-        bail!("XM not a string");
-    };
-    let xm_positions = decode_xm_to_positions(xm_tag);
+    let xm_tag = string_tag(&record, b"XM")?;
+    let xm_positions = decode_xm_to_positions(&xm_tag);
     assert!(xm_positions.is_empty(), "expected no XM methylation");
 
     ensure!(!xm_tag.contains('Z'), "XM should have no uppercase Z without methylation calls");
@@ -882,26 +799,20 @@ fn roundtrip_no_methylation_legacy() -> Result<()> {
 
 /// Build CpG methylation calls from a record's sequence by looking for
 /// CA (OB strand evidence) and CG dinucleotides.
-fn build_cpg_calls(record: &Record, seq: &[u8]) -> FxHashMap<u32, RastairCall> {
+fn build_cpg_calls(record: &RawBamRecord, seq: &[u8]) -> FxHashMap<u32, RastairCall> {
     use Base::*;
     let mut calls = FxHashMap::default();
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-        let current_base = Base::from(seq[pos_in_read as usize]);
-        let Some(next_base) = seq.get((pos_in_read + 1) as usize).map(Base::from) else {
+    for (pos_in_read, pos_in_ref) in matched(record) {
+        let current_base = Base::from(seq[pos_in_read]);
+        let Some(next_base) = seq.get(pos_in_read + 1).map(Base::from) else {
             continue;
         };
         match (current_base, next_base) {
             (C, G) => {
-                calls.insert(
-                    pos_in_ref as u32,
-                    RastairCall::Cpg { methylated: Some(true), base: C },
-                );
+                calls.insert(pos_in_ref, RastairCall::Cpg { methylated: Some(true), base: C });
             }
             (C, A) => {
-                calls.insert(
-                    pos_in_ref as u32 + 1,
-                    RastairCall::Cpg { methylated: Some(true), base: G },
-                );
+                calls.insert(pos_in_ref + 1, RastairCall::Cpg { methylated: Some(true), base: G });
             }
             _ => {}
         }
@@ -920,13 +831,10 @@ fn as_base_string(seq: &[u8]) -> String {
 fn xm_only_marks_called_cpg_positions() -> Result<()> {
     use Base::*;
 
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+    let mut record = first_overlapping(6103075, 6103100)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
-    let seq = record.seq().as_bytes();
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
+    let seq = stored_seq(&record);
 
     // Count how many G bases (OB target) are in the read
     let total_target_bases =
@@ -936,24 +844,21 @@ fn xm_only_marks_called_cpg_positions() -> Result<()> {
     // dinucleotide we find
     let mut calls = FxHashMap::default();
     let mut cpg_count = 0u32;
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-        let current_base = Base::from(seq[pos_in_read as usize]);
-        let Some(next_base) = seq.get((pos_in_read + 1) as usize).map(Base::from) else {
+    for (pos_in_read, pos_in_ref) in matched(&record) {
+        let current_base = Base::from(seq[pos_in_read]);
+        let Some(next_base) = seq.get(pos_in_read + 1).map(Base::from) else {
             continue;
         };
 
         // For OB: look for CA (methylation evidence for G on next pos)
         if strand == Strand::OB && current_base == C && next_base == A && cpg_count == 0 {
-            calls.insert(
-                pos_in_ref as u32 + 1,
-                RastairCall::Cpg { methylated: Some(true), base: G },
-            );
+            calls.insert(pos_in_ref + 1, RastairCall::Cpg { methylated: Some(true), base: G });
             cpg_count += 1;
             break;
         }
         // For OT: look for TG (methylation evidence for C)
         if strand == Strand::OT && current_base == T && next_base == G && cpg_count == 0 {
-            calls.insert(pos_in_ref as u32, RastairCall::Cpg { methylated: Some(true), base: C });
+            calls.insert(pos_in_ref, RastairCall::Cpg { methylated: Some(true), base: C });
             cpg_count += 1;
             break;
         }
@@ -962,9 +867,7 @@ fn xm_only_marks_called_cpg_positions() -> Result<()> {
 
     rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
-    let Aux::String(xm_tag) = record.aux(b"XM")? else {
-        bail!("XM not a string");
-    };
+    let xm_tag = string_tag(&record, b"XM")?;
 
     let z_count = xm_tag.chars().filter(|c| *c == 'Z' || *c == 'z').count();
 
@@ -983,19 +886,16 @@ fn xm_only_marks_called_cpg_positions() -> Result<()> {
 fn xm_includes_denovo_cpg_methylation() -> Result<()> {
     use Base::*;
 
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+    let mut record = first_overlapping(6103075, 6103100)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
-    let seq = record.seq().as_bytes();
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
+    let seq = stored_seq(&record);
 
     // Create a single DeNovoCpg call at the first methylation evidence base
     let mut calls = FxHashMap::default();
     let mut found = false;
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-        let observed = Base::from(seq[pos_in_read as usize]);
+    for (pos_in_read, pos_in_ref) in matched(&record) {
+        let observed = Base::from(seq[pos_in_read]);
         let is_evidence = match strand {
             Strand::OT => observed == T,
             Strand::OB => observed == A,
@@ -1005,8 +905,7 @@ fn xm_includes_denovo_cpg_methylation() -> Result<()> {
                 Strand::OT => C,
                 Strand::OB => G,
             };
-            calls
-                .insert(pos_in_ref as u32, RastairCall::DeNovoCpg { methylated: Some(true), base });
+            calls.insert(pos_in_ref, RastairCall::DeNovoCpg { methylated: Some(true), base });
             found = true;
             break;
         }
@@ -1015,9 +914,7 @@ fn xm_includes_denovo_cpg_methylation() -> Result<()> {
 
     rewrite_record(&calls, &mut record, BamMode::Legacy, no_ref)?;
 
-    let Aux::String(xm_tag) = record.aux(b"XM")? else {
-        bail!("XM not a string");
-    };
+    let xm_tag = string_tag(&record, b"XM")?;
 
     let has_methylated = xm_tag.chars().any(|c| c == 'Z' || c == 'X' || c == 'H');
     assert!(
@@ -1034,18 +931,15 @@ fn xm_includes_denovo_cpg_methylation() -> Result<()> {
 fn standard_mode_includes_denovo_cpg() -> Result<()> {
     use Base::*;
 
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+    let record = first_overlapping(6103075, 6103100)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
-    let seq = record.seq().as_bytes();
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
+    let seq = stored_seq(&record);
 
     let mut calls = FxHashMap::default();
     let mut expected_pos = None;
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-        let observed = Base::from(seq[pos_in_read as usize]);
+    for (pos_in_read, pos_in_ref) in matched(&record) {
+        let observed = Base::from(seq[pos_in_read]);
         let is_evidence = match strand {
             Strand::OT => observed == T,
             Strand::OB => observed == A,
@@ -1055,15 +949,14 @@ fn standard_mode_includes_denovo_cpg() -> Result<()> {
                 Strand::OT => C,
                 Strand::OB => G,
             };
-            calls
-                .insert(pos_in_ref as u32, RastairCall::DeNovoCpg { methylated: Some(true), base });
-            expected_pos = Some(pos_in_read as u32);
+            calls.insert(pos_in_ref, RastairCall::DeNovoCpg { methylated: Some(true), base });
+            expected_pos = Some(u32::try_from(pos_in_read)?);
             break;
         }
     }
     ensure!(expected_pos.is_some(), "need a methylation-evidence base");
 
-    let data = get_methylated_positions(&calls, &record, strand)?;
+    let data = get_methylated_positions(&calls, &record, strand);
     assert!(
         !data.methylated_positions.is_empty(),
         "get_methylated_positions should find DeNovoCpg calls, but found none"
@@ -1078,20 +971,17 @@ fn standard_mode_includes_denovo_cpg() -> Result<()> {
 fn xm_denovo_uses_context_letters() -> Result<()> {
     use Base::*;
 
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch((0, 6103075, 6103100))?;
-    let mut record = Record::new();
-    bam.read(&mut record).wrap_err("no records")?.wrap_err("read")?;
+    let mut record = first_overlapping(6103075, 6103100)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
-    let seq = record.seq().as_bytes();
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
+    let seq = stored_seq(&record);
 
     // Create a DeNovoCpg call and a synthetic ref lookup that returns
     // non-CpG context (CHH: no G after C for OT, no C before G for OB)
     let mut calls = FxHashMap::default();
     let mut denovo_ref_pos = None;
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs() {
-        let observed = Base::from(seq[pos_in_read as usize]);
+    for (pos_in_read, pos_in_ref) in matched(&record) {
+        let observed = Base::from(seq[pos_in_read]);
         let is_evidence = match strand {
             Strand::OT => observed == T,
             Strand::OB => observed == A,
@@ -1101,9 +991,8 @@ fn xm_denovo_uses_context_letters() -> Result<()> {
                 Strand::OT => C,
                 Strand::OB => G,
             };
-            calls
-                .insert(pos_in_ref as u32, RastairCall::DeNovoCpg { methylated: Some(true), base });
-            denovo_ref_pos = Some(pos_in_ref as u32);
+            calls.insert(pos_in_ref, RastairCall::DeNovoCpg { methylated: Some(true), base });
+            denovo_ref_pos = Some(pos_in_ref);
             break;
         }
     }
@@ -1123,9 +1012,7 @@ fn xm_denovo_uses_context_letters() -> Result<()> {
 
     rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
 
-    let Aux::String(xm_tag) = record.aux(b"XM")? else {
-        bail!("XM not a string");
-    };
+    let xm_tag = string_tag(&record, b"XM")?;
 
     // De-novo with CHH context should use H (methylated CHH), not Z
     assert!(xm_tag.contains('H'), "De-novo CpG in CHH context should produce 'H', got: {xm_tag}");
@@ -1145,21 +1032,12 @@ fn golden_ot_forward_legacy_and_standard_agree() -> Result<()> {
 
     // Flag 99: OT, first in pair, NOT reversed
     // SAM pos 6103079 (1-based) → BAM pos 6103078 (0-based)
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch(FetchDefinition::All)?;
-    let mut record = Record::new();
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        if record.flags() == 99 && record.pos() == 6103078 {
-            break;
-        }
-    }
-    ensure!(record.flags() == 99, "could not find flag-99 record at 6103078");
+    let record = find_flag_at(99, 6103078)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
     assert_eq!(strand, Strand::OT);
-    assert!(!record.is_reverse());
-    let seq = record.seq().as_bytes();
+    assert!(!record.flags().is_reverse());
+    let seq = stored_seq(&record);
     assert_snapshot!(as_base_string(&seq), @"GGTGTGCACCACCATGCCTGGCTTGGTTTGGTTTTTGATTGGTTGGTTGGTCTTTTGAGACAGGGTTTCTCTGTGTAGCT");
 
     // CpG calls (C side for OT):
@@ -1179,9 +1057,9 @@ fn golden_ot_forward_legacy_and_standard_agree() -> Result<()> {
     let mut legacy_record = record.clone();
     rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
-    let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
-    let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else { bail!("XR") };
-    let Aux::String(xg_tag) = legacy_record.aux(b"XG")? else { bail!("XG") };
+    let xm_tag = string_tag(&legacy_record, b"XM")?;
+    let xr_tag = string_tag(&legacy_record, b"XR")?;
+    let xg_tag = string_tag(&legacy_record, b"XG")?;
 
     // Flag 99: first in pair → XR=CT; OT → XG=CT
     assert_snapshot!(xr_tag, @"CT");
@@ -1192,28 +1070,28 @@ fn golden_ot_forward_legacy_and_standard_agree() -> Result<()> {
     assert_compact_debug_snapshot!(xm_annotations, @"[(2, 'Z'), (14, 'Z')]");
 
     // SEQ unchanged in legacy mode
-    assert_eq!(legacy_record.seq().as_bytes(), seq);
+    assert_eq!(stored_seq(&legacy_record), seq);
 
     // === Standard mode ===
     let mut standard_record = record.clone();
     rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
-    let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
+    let mm_tag = string_tag(&standard_record, b"MM")?;
     // OT, forward → C+m
     assert_snapshot!(mm_tag.chars().take(3).collect::<String>(), @"C+m");
     assert_snapshot!(mm_tag, @"C+m,0,5;");
 
     // Rewritten SEQ: T→C at methylated positions 2 and 14
-    let new_seq = standard_record.seq().as_bytes();
+    let new_seq = stored_seq(&standard_record);
     assert_eq!(Base::from(seq[2]), T);
     assert_eq!(Base::from(new_seq[2]), C);
     assert_eq!(Base::from(seq[14]), T);
     assert_eq!(Base::from(new_seq[14]), C);
 
     // === Cross-check ===
-    let xm_methylated = decode_xm_to_positions(xm_tag);
+    let xm_methylated = decode_xm_to_positions(&xm_tag);
     let fwd_seq = seq_for_mm_tag(&standard_record);
-    let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+    let (mm_base, mm_methylated) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
     assert_eq!(mm_base, C);
     assert_eq!(xm_methylated, vec![2, 14]);
     assert_eq!(mm_methylated, vec![2, 14]);
@@ -1228,20 +1106,11 @@ fn golden_denovo_legacy_and_standard_agree() -> Result<()> {
     use Base::*;
 
     // Use the flag-163 OB read (same as golden_legacy_and_standard_agree)
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch(FetchDefinition::All)?;
-    let mut record = Record::new();
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        if record.flags() == 163 && record.pos() == 6103076 {
-            break;
-        }
-    }
-    ensure!(record.flags() == 163, "could not find record");
+    let record = find_flag_at(163, 6103076)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
     assert_eq!(strand, Strand::OB);
-    let seq = record.seq().as_bytes();
+    let seq = stored_seq(&record);
 
     // Read[5] = A → methylation evidence at ref pos 6103081 on OB
     assert_eq!(Base::from(seq[5]), A);
@@ -1264,7 +1133,7 @@ fn golden_denovo_legacy_and_standard_agree() -> Result<()> {
     let mut legacy_record = record.clone();
     rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
-    let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
+    let xm_tag = string_tag(&legacy_record, b"XM")?;
     let xm_annotations: Vec<(usize, char)> =
         xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
     // CHG methylated → 'X'
@@ -1274,7 +1143,7 @@ fn golden_denovo_legacy_and_standard_agree() -> Result<()> {
     let mut standard_record = record.clone();
     rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
-    let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
+    let mm_tag = string_tag(&standard_record, b"MM")?;
     // Should still produce MM tag (standard mode doesn't distinguish ref vs de-novo)
     assert_snapshot!(mm_tag, @"G-m,2;");
 
@@ -1286,7 +1155,7 @@ fn golden_denovo_legacy_and_standard_agree() -> Result<()> {
         .map(|(i, _)| i)
         .collect();
     let fwd_seq = seq_for_mm_tag(&standard_record);
-    let (_, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+    let (_, mm_methylated) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
     assert_eq!(xm_methylated, vec![5]);
     assert_eq!(mm_methylated, vec![5]);
 
@@ -1301,17 +1170,8 @@ fn denovo_all_contexts_both_strands() -> Result<()> {
     use Base::*;
 
     // === OB strand (flag-163 read at 6103076) ===
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch(FetchDefinition::All)?;
-    let mut ob_record = Record::new();
-    while let Some(result) = bam.read(&mut ob_record) {
-        result?;
-        if ob_record.flags() == 163 && ob_record.pos() == 6103076 {
-            break;
-        }
-    }
-    ensure!(ob_record.flags() == 163, "could not find OB record");
-    let ob_seq = ob_record.seq().as_bytes();
+    let ob_record = find_flag_at(163, 6103076)?;
+    let ob_seq = stored_seq(&ob_record);
     // Read[5]=A (evidence), Read[17]=G (target) on OB
     assert_eq!(Base::from(ob_seq[5]), A);
     assert_eq!(Base::from(ob_seq[17]), G);
@@ -1331,7 +1191,7 @@ fn denovo_all_contexts_both_strands() -> Result<()> {
         let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
         let mut record = ob_record.clone();
         rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
-        let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+        let xm = string_tag(&record, b"XM")?;
         let annotations: Vec<(usize, char)> =
             xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
         assert_compact_debug_snapshot!(annotations, @"[(5, 'Z'), (17, 'z')]");
@@ -1354,7 +1214,7 @@ fn denovo_all_contexts_both_strands() -> Result<()> {
         let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
         let mut record = ob_record.clone();
         rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
-        let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+        let xm = string_tag(&record, b"XM")?;
         let annotations: Vec<(usize, char)> =
             xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
         assert_compact_debug_snapshot!(annotations, @"[(5, 'X'), (17, 'x')]");
@@ -1377,24 +1237,15 @@ fn denovo_all_contexts_both_strands() -> Result<()> {
         let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
         let mut record = ob_record.clone();
         rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
-        let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+        let xm = string_tag(&record, b"XM")?;
         let annotations: Vec<(usize, char)> =
             xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
         assert_compact_debug_snapshot!(annotations, @"[(5, 'H'), (17, 'h')]");
     }
 
     // === OT strand (flag-99 read at 6103078) ===
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch(FetchDefinition::All)?;
-    let mut ot_record = Record::new();
-    while let Some(result) = bam.read(&mut ot_record) {
-        result?;
-        if ot_record.flags() == 99 && ot_record.pos() == 6103078 {
-            break;
-        }
-    }
-    ensure!(ot_record.flags() == 99, "could not find OT record");
-    let ot_seq = ot_record.seq().as_bytes();
+    let ot_record = find_flag_at(99, 6103078)?;
+    let ot_seq = stored_seq(&ot_record);
     // Read[2]=T (evidence), Read[14]=T (evidence) on OT
     assert_eq!(Base::from(ot_seq[2]), T);
     assert_eq!(Base::from(ot_seq[14]), T);
@@ -1414,7 +1265,7 @@ fn denovo_all_contexts_both_strands() -> Result<()> {
         let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
         let mut record = ot_record.clone();
         rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
-        let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+        let xm = string_tag(&record, b"XM")?;
         let annotations: Vec<(usize, char)> =
             xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
         assert_compact_debug_snapshot!(annotations, @"[(2, 'Z'), (14, 'Z')]");
@@ -1437,7 +1288,7 @@ fn denovo_all_contexts_both_strands() -> Result<()> {
         let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
         let mut record = ot_record.clone();
         rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
-        let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+        let xm = string_tag(&record, b"XM")?;
         let annotations: Vec<(usize, char)> =
             xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
         assert_compact_debug_snapshot!(annotations, @"[(2, 'X'), (14, 'X')]");
@@ -1460,7 +1311,7 @@ fn denovo_all_contexts_both_strands() -> Result<()> {
         let ref_lookup = |pos: u32| -> Option<Base> { ref_bases.get(&pos).copied() };
         let mut record = ot_record.clone();
         rewrite_record(&calls, &mut record, BamMode::Legacy, ref_lookup)?;
-        let Aux::String(xm) = record.aux(b"XM")? else { bail!("XM") };
+        let xm = string_tag(&record, b"XM")?;
         let annotations: Vec<(usize, char)> =
             xm.chars().enumerate().filter(|(_, c)| *c != '.').collect();
         assert_compact_debug_snapshot!(annotations, @"[(2, 'H'), (14, 'H')]");
@@ -1477,20 +1328,11 @@ fn golden_indel_read_legacy_and_standard_agree() -> Result<()> {
     use Base::*;
 
     // Flag 99 read at 6106220 (BAM 0-based) with CIGAR 61M1D19M
-    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-    bam.fetch(FetchDefinition::All)?;
-    let mut record = Record::new();
-    while let Some(result) = bam.read(&mut record) {
-        result?;
-        if record.flags() == 99 && record.pos() == 6106220 {
-            break;
-        }
-    }
-    ensure!(record.flags() == 99 && record.pos() == 6106220, "could not find indel read");
+    let record = find_flag_at(99, 6106220)?;
 
-    let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
+    let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
     assert_eq!(strand, Strand::OT);
-    let seq = record.seq().as_bytes();
+    let seq = stored_seq(&record);
 
     // CIGAR: 61M1D19M
     // Read[0-60] → ref[6106220-6106280] (61M)
@@ -1517,7 +1359,7 @@ fn golden_indel_read_legacy_and_standard_agree() -> Result<()> {
     let mut legacy_record = record.clone();
     rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
-    let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM") };
+    let xm_tag = string_tag(&legacy_record, b"XM")?;
     assert_eq!(xm_tag.len(), seq.len());
     let xm_annotations: Vec<(usize, char)> =
         xm_tag.chars().enumerate().filter(|(_, c)| *c != '.').collect();
@@ -1528,17 +1370,17 @@ fn golden_indel_read_legacy_and_standard_agree() -> Result<()> {
     let mut standard_record = record.clone();
     rewrite_record(&calls, &mut standard_record, BamMode::Standard, ref_lookup)?;
 
-    let Aux::String(mm_tag) = standard_record.aux(b"MM")? else { bail!("MM") };
+    let mm_tag = string_tag(&standard_record, b"MM")?;
 
     // Rewritten SEQ: T→C at position 9
-    let new_seq = standard_record.seq().as_bytes();
+    let new_seq = stored_seq(&standard_record);
     assert_eq!(Base::from(new_seq[9]), C, "methylated T should be rewritten to C");
     assert_eq!(Base::from(new_seq[79]), C, "unmethylated C should stay C");
 
     // === Cross-check ===
-    let xm_methylated = decode_xm_to_positions(xm_tag);
+    let xm_methylated = decode_xm_to_positions(&xm_tag);
     let fwd_seq = seq_for_mm_tag(&standard_record);
-    let (mm_base, mm_methylated) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
+    let (mm_base, mm_methylated) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
     assert_eq!(mm_base, C);
     // Only position 9 is methylated
     assert_eq!(xm_methylated, vec![9]);
@@ -1566,27 +1408,16 @@ fn all_four_flags_consistent_annotations() -> Result<()> {
         (163, Strand::OB, "GA", "GA"),
     ];
 
-    for (flag, expected_strand, expected_xr, expected_xg) in test_cases {
-        let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
-        bam.fetch(FetchDefinition::All)?;
-        let mut record = Record::new();
-        let mut found = false;
-        while let Some(result) = bam.read(&mut record) {
-            result?;
-            if record.flags() == flag {
-                // Make sure this read covers our CpG position
-                let start = record.pos() as u32;
-                let end = start + record.seq_len() as u32;
-                if start <= 6103081 && end > 6103081 {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        ensure!(found, "No record with flag {flag} covering CpG at 6103080/81");
+    for (wanted, expected_strand, expected_xr, expected_xg) in test_cases {
+        // Make sure this read covers our CpG position
+        let record = find_record(|r| {
+            let start = pos(r);
+            flag(r) == wanted && start <= 6103081 && start + r.seq_len() as u32 > 6103081
+        })
+        .wrap_err_with(|| format!("No record with flag {wanted} covering CpG at 6103080/81"))?;
 
-        let strand = StrandFromRecord::strand(&record).wrap_err("unknown strand")?;
-        assert_eq!(strand, expected_strand, "strand mismatch for flag {flag}");
+        let strand = Strand::from_flags(record.flags()).wrap_err("unknown strand")?;
+        assert_eq!(strand, expected_strand, "strand mismatch for flag {wanted}");
 
         // Build calls appropriate for this strand
         let calls = if strand == Strand::OT {
@@ -1605,17 +1436,17 @@ fn all_four_flags_consistent_annotations() -> Result<()> {
         let mut legacy_record = record.clone();
         rewrite_record(&calls, &mut legacy_record, BamMode::Legacy, ref_lookup)?;
 
-        let Aux::String(xr_tag) = legacy_record.aux(b"XR")? else { bail!("XR for {flag}") };
-        let Aux::String(xg_tag) = legacy_record.aux(b"XG")? else { bail!("XG for {flag}") };
-        let Aux::String(xm_tag) = legacy_record.aux(b"XM")? else { bail!("XM for {flag}") };
+        let xr_tag = string_tag(&legacy_record, b"XR")?;
+        let xg_tag = string_tag(&legacy_record, b"XG")?;
+        let xm_tag = string_tag(&legacy_record, b"XM")?;
 
-        assert_eq!(xr_tag, expected_xr, "XR mismatch for flag {flag}");
-        assert_eq!(xg_tag, expected_xg, "XG mismatch for flag {flag}");
-        assert_eq!(xm_tag.len(), record.seq_len(), "XM length mismatch for flag {flag}");
+        assert_eq!(xr_tag, expected_xr, "XR mismatch for flag {wanted}");
+        assert_eq!(xg_tag, expected_xg, "XG mismatch for flag {wanted}");
+        assert_eq!(xm_tag.len(), record.seq_len(), "XM length mismatch for flag {wanted}");
 
         // Every flag should have at least one annotation (Z or z)
         let has_annotation = xm_tag.chars().any(|c| c != '.');
-        assert!(has_annotation, "XM has no annotations for flag {flag}: {xm_tag}");
+        assert!(has_annotation, "XM has no annotations for flag {wanted}: {xm_tag}");
 
         // === Standard ===
         let mut standard_record = record.clone();
@@ -1623,20 +1454,19 @@ fn all_four_flags_consistent_annotations() -> Result<()> {
 
         // Cross-check: both modes find the same number of methylated positions.
         // MM/ML are absent when no methylation evidence is found (absent = 0 positions).
-        let xm_methylated = decode_xm_to_positions(xm_tag);
-        let mm_methylated_count = match standard_record.aux(b"MM") {
-            Ok(Aux::String(mm_tag)) => {
-                let fwd_seq = seq_for_mm_tag(&standard_record);
-                let (_, positions) = decode_mm_to_positions(mm_tag, &fwd_seq)?;
-                positions.len()
-            }
-            Ok(_) => bail!("MM not a string for flag {flag}"),
-            Err(_) => 0,
+        let xm_methylated = decode_xm_to_positions(&xm_tag);
+        let mm_methylated_count = if has_tag(&standard_record, b"MM") {
+            let mm_tag = string_tag(&standard_record, b"MM")?;
+            let fwd_seq = seq_for_mm_tag(&standard_record);
+            let (_, positions) = decode_mm_to_positions(&mm_tag, &fwd_seq)?;
+            positions.len()
+        } else {
+            0
         };
         assert_eq!(
             xm_methylated.len(),
             mm_methylated_count,
-            "Methylated position count mismatch for flag {flag}: \
+            "Methylated position count mismatch for flag {wanted}: \
              XM={xm_methylated:?}, MM_count={mm_methylated_count}"
         );
     }
