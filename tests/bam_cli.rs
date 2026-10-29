@@ -1003,6 +1003,7 @@ mod generated_inputs {
     };
     use seqair::reader::AlignmentStream;
     use seqair_types::Strand;
+    use std::fmt::Write as _;
     use std::io::Write as _;
 
     const CONTIGS: [&str; 2] = ["c1", "c2"];
@@ -1114,11 +1115,11 @@ mod generated_inputs {
     }
 
     impl Input {
-        fn sam(&self) -> String {
+        fn sam(&self) -> Result<String> {
             let order = if self.sorted { "coordinate" } else { "unsorted" };
             let mut sam = format!("@HD\tVN:1.6\tSO:{order}\n");
             for name in CONTIGS {
-                sam.push_str(&format!("@SQ\tSN:{name}\tLN:{CONTIG_LEN}\n"));
+                writeln!(sam, "@SQ\tSN:{name}\tLN:{CONTIG_LEN}")?;
             }
             sam.push_str("@RG\tID:rg1\n");
             let mut reads: Vec<(usize, &Read)> = self.reads.iter().enumerate().collect();
@@ -1135,9 +1136,11 @@ mod generated_inputs {
                     let seq = String::from_utf8_lossy(&read.seq);
                     let (flags, rname, pos, cigar) = match &read.placement {
                         Placement::Mapped { tid, pos, cigar } => {
-                            let cigar: String =
-                                cigar.iter().map(|(op, n)| format!("{n}{op}")).collect();
-                            (read.flags, CONTIGS.get(*tid).copied().unwrap_or("*"), pos + 1, cigar)
+                            let mut text = String::new();
+                            for (op, n) in cigar {
+                                write!(text, "{n}{op}")?;
+                            }
+                            (read.flags, CONTIGS.get(*tid).copied().unwrap_or("*"), pos + 1, text)
                         }
                         Placement::PlacedUnmapped { tid, pos } => (
                             read.flags | 0x4,
@@ -1159,12 +1162,12 @@ mod generated_inputs {
                     sam.push('\n');
                 }
             }
-            sam
+            Ok(sam)
         }
 
         fn write(&self, dir: &Path) -> Result<()> {
             let mut stream =
-                AlignmentStream::from_reader(std::io::Cursor::new(self.sam().into_bytes()))?;
+                AlignmentStream::from_reader(std::io::Cursor::new(self.sam()?.into_bytes()))?;
             let header = BamHeader::from_template(stream.header());
             let mut writer = BamWriterBuilder::to_path(&dir.join("in.bam"), &header).build()?;
             let mut record = RawBamRecord::default();
@@ -1177,11 +1180,8 @@ mod generated_inputs {
             let mut fai = String::new();
             for (name, seq) in CONTIGS.iter().zip(&self.reference) {
                 let offset = fasta.len() + name.len() + 2;
-                fasta.push_str(&format!(">{name}\n{}\n", String::from_utf8_lossy(seq)));
-                fai.push_str(&format!(
-                    "{name}\t{CONTIG_LEN}\t{offset}\t{CONTIG_LEN}\t{}\n",
-                    CONTIG_LEN + 1
-                ));
+                writeln!(fasta, ">{name}\n{}", String::from_utf8_lossy(seq))?;
+                writeln!(fai, "{name}\t{CONTIG_LEN}\t{offset}\t{CONTIG_LEN}\t{}", CONTIG_LEN + 1)?;
             }
             std::fs::write(dir.join("ref.fa"), fasta)?;
             std::fs::write(dir.join("ref.fa.fai"), fai)?;
