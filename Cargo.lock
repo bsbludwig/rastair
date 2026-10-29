@@ -2496,9 +2496,7 @@ checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 
 [[package]]
 name = "seqair"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf499767915d951c4c97b410725fd0c22102934d0001e40a538666d2da840cd6"
+version = "0.9.0"
 dependencies = [
  "bytemuck",
  "bz2ngrs",
@@ -2510,6 +2508,7 @@ dependencies = [
  "itoa",
  "libdeflater",
  "md5",
+ "rayon-core",
  "rustc-hash 2.1.3",
  "seqair-types",
  "thiserror 2.0.21",
@@ -2520,8 +2519,6 @@ dependencies = [
 [[package]]
 name = "seqair-types"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be0cef98e618648d2bd971ec9f7aef8d6906f7ac24f1d7c42fb6b2d973aa7bf5"
 dependencies = [
  "bytemuck",
  "fearless_simd",
