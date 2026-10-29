@@ -1447,3 +1447,58 @@ fn an_invalid_record_fails_the_run() -> Result<()> {
     }
     Ok(())
 }
+
+/// `--region` with several regions keeps each overlapping read once, also one
+/// reaching into two of them, as `samtools view -M` does.
+#[test]
+fn a_read_in_two_regions_is_written_once() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--region=chr19:6103000-6103300", "--cpgs-only", "--bed"])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    // 1-based closed regions; reads are about 80 bases, so many span the gaps
+    let regions = [(6103000, 6103050), (6103060, 6103100), (6103080, 6103300)];
+    let mut expected = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut bam = bam::IndexedReader::from_path("tests/data/test.bam")?;
+    for (start, end) in regions {
+        bam.fetch(("chr19", start - 1, end))?;
+        for record in bam.records() {
+            let record = record?;
+            let key = (record.qname().to_owned(), record.flags());
+            if seen.insert(key.clone()) {
+                expected.push(key);
+            }
+        }
+    }
+    expected.sort_by_key(|(name, flags)| (name.clone(), *flags));
+
+    let output_bam = temp_dir.path().join("out.bam");
+    let region = regions.map(|(start, end)| format!("chr19:{start}-{end}")).join(" ");
+    rastair()
+        .args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz", "--region", &region])
+        .arg("tests/data/test.bam")
+        .arg(&calls_bed)
+        .arg("-o")
+        .arg(&output_bam)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to rewrite BAM")?;
+    let mut written: Vec<(Vec<u8>, u16)> = bam::Reader::from_path(&output_bam)?
+        .records()
+        .map(|record| {
+            Ok::<_, color_eyre::Report>(record.map(|r| (r.qname().to_owned(), r.flags()))?)
+        })
+        .collect::<Result<_>>()?;
+    let spanning = written.len();
+    written.sort();
+    ensure!(written.len() > 10, "too few reads to test");
+    ensure!(written == expected, "{spanning} reads written, {} expected", expected.len());
+    Ok(())
+}
