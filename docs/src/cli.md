@@ -395,11 +395,6 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 
 ###### **Processing Options:**
 
-* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
-
-   Used for splitting work between threads. Tweak this to adjust memory usage. Between 1,000 and 1,000,000.
-
-  Default value: `10000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
   Default value: `14`
@@ -432,11 +427,6 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 
 ###### **Processing Options:**
 
-* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
-
-   Used for splitting work between threads. Tweak this to adjust memory usage. Between 1,000 and 1,000,000.
-
-  Default value: `10000`
 * `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
 
   Default value: `14`

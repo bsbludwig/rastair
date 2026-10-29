@@ -203,13 +203,11 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
     Ok(())
 }
 
-/// Rewritten BAM must be sorted by position and contain no duplicate reads,
-/// even when `--segment-max-length` forces processing across multiple segments.
-/// A read overlapping a segment boundary is emitted by the segment it starts
-/// in only; emitting it from the next one too would duplicate it and break the
-/// sort order, and `samtools index` would fail.
+/// A `--region` rewrite is sorted like its input and holds each read of the
+/// region once; a duplicate would break the sort
+/// order, and `samtools index` would fail.
 #[test]
-fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
+fn bam_rewrite_of_a_region_is_sorted_without_duplicates() -> Result<()> {
     apply_common_filters!();
 
     let temp_dir = TempDir::new()?;
@@ -243,15 +241,12 @@ fn bam_rewrite_is_sorted_with_small_segments() -> Result<()> {
         String::from_utf8_lossy(&tabix_output.stderr)
     );
 
-    // Use the smallest segment length to force several segment boundaries,
-    // maximising the chance that reads straddle them.
     rastair()
         .args([
             "bam",
             "standard",
             "--fasta-file=tests/data/test.fasta.gz",
             "--region=chr19:6103000-6106000",
-            "--segment-max-length=1000",
             "tests/data/test.bam",
         ])
         .arg(&calls_bed)

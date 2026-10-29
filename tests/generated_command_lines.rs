@@ -547,7 +547,6 @@ fn downstream_command_lines(tc: &TestCase) -> (Downstream, Vec<String>, &'static
         }
         Downstream::BamStandard | Downstream::BamLegacy => {
             flag(tc, format!("--region={}", tc.draw(regions())));
-            flag(tc, format!("--segment-max-length={}", segment_length(tc)));
             "out.bam"
         }
     };
@@ -617,8 +616,6 @@ fn a_zero_segment_length_is_no_runaway() -> Result<()> {
     let commands = [
         ("call", call),
         ("per-read", Downstream::PerRead.command(&prepared, &out("zero.bed"))),
-        ("bam standard", Downstream::BamStandard.command(&prepared, &out("standard.bam"))),
-        ("bam legacy", Downstream::BamLegacy.command(&prepared, &out("legacy.bam"))),
     ];
     for (name, mut cmd) in commands {
         cmd.arg("--segment-max-length=0");

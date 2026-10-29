@@ -68,7 +68,7 @@ pub fn per_read(out: &Path, extra: &[&str], faults: Faults<'_>) -> Result<Output
 pub fn bam(calls: &Path, out: &Path, extra: &[&str], faults: Faults<'_>) -> Result<Output> {
     let mut cmd = rastair();
     cmd.args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"])
-        .args([REGION, SMALL_SEGMENTS])
+        .arg(REGION)
         .args(extra)
         .arg(calls);
     cmd.arg("-o").arg(out);

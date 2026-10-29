@@ -113,14 +113,6 @@ pub enum BamMode {
 pub struct BamRewriteArgs {
     #[command(flatten)]
     segments: ReaderParams,
-    /// Maximum length of a segment in bases
-    ///
-    /// Used for splitting work between threads. Tweak this to adjust memory
-    /// usage. Between 1,000 and 1,000,000.
-    #[arg(long, default_value_t = 10_000, value_parser = crate::sequence::segment_length())]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    pub segment_max_length: u64,
-
     /// Number of threads to use for processing the BAM file.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
     #[arg(help_heading = cli::sections::PROCESSING)]
