@@ -1272,6 +1272,54 @@ mod generated_inputs {
             .map(<[u8]>::to_vec)
     }
 
+    /// The stored-SEQ indices MM marks, decoded against the read's SEQ in its
+    /// original orientation as the SAM spec counts them; checks ML has one
+    /// probability for each.
+    fn mm_positions(record: &RawBamRecord) -> Result<Vec<usize>> {
+        let Some(mm) = string_tag(record, *b"MM") else { return Ok(Vec::new()) };
+        let mm = String::from_utf8(mm)?;
+        let mut fields =
+            mm.strip_suffix(';').ok_or_else(|| eyre!("MM {mm} lacks its ;"))?.split(',');
+        let base =
+            fields.next().and_then(|head| head.bytes().next()).ok_or_else(|| eyre!("MM {mm}"))?;
+        let stored = seq(record);
+        let reverse = record.flags().is_reverse();
+        let oriented: Vec<u8> = if reverse {
+            stored
+                .iter()
+                .rev()
+                .map(|b| match b {
+                    b'A' => b'T',
+                    b'C' => b'G',
+                    b'G' => b'C',
+                    b'T' => b'A',
+                    _ => b'N',
+                })
+                .collect()
+        } else {
+            stored.clone()
+        };
+        let of_base: Vec<usize> =
+            oriented.iter().enumerate().filter(|(_, b)| **b == base).map(|(i, _)| i).collect();
+        let mut next = 0;
+        let mut positions = Vec::new();
+        for skip in fields {
+            next += skip.parse::<usize>()?;
+            let at = *of_base
+                .get(next)
+                .ok_or_else(|| eyre!("MM {mm} skips past the {}s", base as char))?;
+            positions.push(if reverse { stored.len() - 1 - at } else { at });
+            next += 1;
+        }
+        let ml = match seqair::bam::aux::find_tag(record.aux().as_bytes(), *b"ML") {
+            Some(seqair::bam::aux::AuxValue::ArrayU8(ml)) => ml.len(),
+            other => bail!("ML is {other:?}"),
+        };
+        ensure!(ml == positions.len(), "ML has {ml} values for {} MM positions", positions.len());
+        positions.sort_unstable();
+        Ok(positions)
+    }
+
     fn seq(record: &RawBamRecord) -> Vec<u8> {
         let mut seq = Vec::new();
         record.decode_seq_into(&mut seq);
@@ -1410,6 +1458,19 @@ mod generated_inputs {
                     string_tag(standard, *b"MM").is_some() == expected.contains(&b'Z'),
                     "{name}: MM present without methylation, or missing"
                 );
+                let converted: Vec<usize> = expected
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| **m == b'Z')
+                    .map(|(i, _)| i)
+                    .collect();
+                ensure!(mm_positions(standard)? == converted, "{name}: MM/ML marks other bases");
+
+                let first = input_record.flags().is_first_in_template();
+                let xr: &[u8] = if first { b"CT" } else { b"GA" };
+                let xg: &[u8] = if strand == Some(Strand::OB) { b"GA" } else { b"CT" };
+                ensure!(string_tag(legacy, *b"XR").as_deref() == Some(xr), "{name}: XR");
+                ensure!(string_tag(legacy, *b"XG").as_deref() == Some(xg), "{name}: XG");
             }
             Ok(())
         };
