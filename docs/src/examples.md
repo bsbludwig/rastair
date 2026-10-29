@@ -131,6 +131,8 @@ rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
 
 > [!TIP]
 > All the `bam` subcommands also supports @CRAM input, but output will be written in @BAM.
+> They read the input front to back and write every record, unmapped ones included, in input order, so the input needs neither sorting nor an index.
+> Only `--region` on a @BAM (or bgzipped SAM) uses its index, to read just the reads overlapping the regions.
 
 Alternatively, we also support the new official SAM standard for recording per-read methylation via [the `MM` tags](https://samtools.github.io/hts-specs/SAMtags.pdf):
 
