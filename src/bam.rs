@@ -28,7 +28,9 @@
 //! any run), looks up the calls (and, for de-novo CpGs in legacy mode, the
 //! reference) over each run's span once, and rewrites the records in place;
 //! the writer writes the batches in order ([`segments::process_in_order`]).
-//! Unsorted input only makes the runs shorter.
+//! Unsorted input is rewritten correctly but slowly: read by name, nearly
+//! every record is a run of its own, with its own calls query (and FASTA
+//! fetch in legacy mode). Sort by coordinate first for speed.
 //!
 //! `--region` keeps the records overlapping it, each once, also when it
 //! overlaps two regions. BAM and SAM read the regions through the index; CRAM,
