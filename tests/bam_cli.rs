@@ -1,3 +1,5 @@
+#[path = "../src/pinned.rs"]
+mod pinned;
 mod utils;
 use rust_htslib::bam::ext::BamRecordExtensions as _;
 use rust_htslib::bam::{self, Read as BamRead};
@@ -992,4 +994,381 @@ fn bam_keeps_every_record() -> Result<()> {
         ensure!(names(&output_bam)? == input, "{mode} should keep every record, in order");
     }
     Ok(())
+}
+
+mod generated_inputs {
+    //! `bam` on generated inputs: mapped, placed-unmapped and unplaced
+    //! records, sorted or not, on either side of a batch boundary.
+
+    use super::*;
+    use hegel::{TestCase, generators as gs};
+    use seqair::bam::{
+        AuxData, BamHeader, CigarOp, RawBamRecord, aligned_pairs::AlignedPairs,
+        writer::BamWriterBuilder,
+    };
+    use seqair::reader::AlignmentStream;
+    use seqair_types::Strand;
+    use std::io::Write as _;
+
+    const CONTIGS: [&str; 2] = ["c1", "c2"];
+    const CONTIG_LEN: usize = 200;
+    /// The tags `bam` writes; every other byte of a record stays.
+    const EDITED: [[u8; 2]; 5] = [*b"MM", *b"ML", *b"XR", *b"XG", *b"XM"];
+
+    #[derive(Debug, Clone)]
+    enum Placement {
+        Mapped { tid: usize, pos: usize, cigar: Vec<(char, usize)> },
+        PlacedUnmapped { tid: usize, pos: usize },
+        Unplaced,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Read {
+        placement: Placement,
+        /// FLAG bits besides 0x4
+        flags: u16,
+        seq: Vec<u8>,
+        /// SAM aux fields, a stale methylation tag among them at times
+        tags: Vec<&'static str>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Call {
+        tid: usize,
+        pos: usize,
+        /// `+`, the C side, or `-`, the G side
+        plus: bool,
+        denovo: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Input {
+        reference: Vec<Vec<u8>>,
+        reads: Vec<Read>,
+        /// Each read is written this many times, to cross a batch boundary
+        copies: usize,
+        sorted: bool,
+        calls: Vec<Call>,
+    }
+
+    #[hegel::composite]
+    fn reads(tc: &TestCase) -> Read {
+        let tid = tc.draw(gs::integers::<usize>().max_value(CONTIGS.len() - 1));
+        let kind = tc.draw(gs::integers::<u8>().max_value(2));
+        let (placement, query_len) = match kind {
+            0 => {
+                let n_ops = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
+                let mut cigar =
+                    vec![('M', tc.draw(gs::integers::<usize>().min_value(1).max_value(20)))];
+                for _ in 1..n_ops {
+                    let op = tc.draw(gs::sampled_from(['M', 'I', 'D'].as_slice()));
+                    cigar.push((op, tc.draw(gs::integers::<usize>().min_value(1).max_value(6))));
+                }
+                if tc.draw(gs::booleans()) {
+                    cigar.push(('S', tc.draw(gs::integers::<usize>().min_value(1).max_value(6))));
+                }
+                let ref_len: usize =
+                    cigar.iter().filter(|(op, _)| "MD".contains(*op)).map(|(_, n)| n).sum();
+                let query_len =
+                    cigar.iter().filter(|(op, _)| "MIS".contains(*op)).map(|(_, n)| n).sum();
+                let pos = tc.draw(gs::integers::<usize>().max_value(CONTIG_LEN - ref_len));
+                (Placement::Mapped { tid, pos, cigar }, query_len)
+            }
+            1 => {
+                let pos = tc.draw(gs::integers::<usize>().max_value(CONTIG_LEN - 1));
+                let len = tc.draw(gs::integers::<usize>().min_value(1).max_value(20));
+                (Placement::PlacedUnmapped { tid, pos }, len)
+            }
+            _ => (Placement::Unplaced, tc.draw(gs::integers::<usize>().min_value(1).max_value(20))),
+        };
+        let bits = [0x1, 0x10, 0x20, 0x40, 0x80];
+        let flags = bits.iter().filter(|_| tc.draw(gs::booleans())).sum();
+        let seq = tc.draw(
+            gs::vecs(gs::sampled_from(b"ACGTN".as_slice())).min_size(query_len).max_size(query_len),
+        );
+        let optional = ["NM:i:1", "RG:Z:rg1", "XM:Z:stale", "MM:Z:C+m,0;", "XS:i:-3"];
+        let tags = optional.into_iter().filter(|_| tc.draw(gs::booleans())).collect();
+        Read { placement, flags, seq, tags }
+    }
+
+    #[hegel::composite]
+    fn inputs(tc: &TestCase) -> Input {
+        let reference = CONTIGS
+            .iter()
+            .map(|_| {
+                tc.draw(
+                    gs::vecs(gs::sampled_from(b"ACGT".as_slice()))
+                        .min_size(CONTIG_LEN)
+                        .max_size(CONTIG_LEN),
+                )
+            })
+            .collect();
+        let n_reads = tc.draw(gs::integers::<usize>().max_value(12));
+        let reads = (0..n_reads).map(|_| tc.draw(reads())).collect();
+        let copies = tc.draw(gs::sampled_from([1, 2, 300].as_slice()));
+        let n_calls = tc.draw(gs::integers::<usize>().max_value(40));
+        let calls = (0..n_calls)
+            .map(|_| Call {
+                tid: tc.draw(gs::integers::<usize>().max_value(CONTIGS.len() - 1)),
+                pos: tc.draw(gs::integers::<usize>().max_value(CONTIG_LEN - 1)),
+                plus: tc.draw(gs::booleans()),
+                denovo: tc.draw(gs::booleans()),
+            })
+            .collect();
+        Input { reference, reads, copies, sorted: tc.draw(gs::booleans()), calls }
+    }
+
+    impl Input {
+        fn sam(&self) -> String {
+            let order = if self.sorted { "coordinate" } else { "unsorted" };
+            let mut sam = format!("@HD\tVN:1.6\tSO:{order}\n");
+            for name in CONTIGS {
+                sam.push_str(&format!("@SQ\tSN:{name}\tLN:{CONTIG_LEN}\n"));
+            }
+            sam.push_str("@RG\tID:rg1\n");
+            let mut reads: Vec<(usize, &Read)> = self.reads.iter().enumerate().collect();
+            if self.sorted {
+                reads.sort_by_key(|(_, read)| match read.placement {
+                    Placement::Mapped { tid, pos, .. } | Placement::PlacedUnmapped { tid, pos } => {
+                        (tid, pos)
+                    }
+                    Placement::Unplaced => (usize::MAX, 0),
+                });
+            }
+            for (index, read) in reads {
+                for copy in 0..self.copies {
+                    let seq = String::from_utf8_lossy(&read.seq);
+                    let (flags, rname, pos, cigar) = match &read.placement {
+                        Placement::Mapped { tid, pos, cigar } => {
+                            let cigar: String =
+                                cigar.iter().map(|(op, n)| format!("{n}{op}")).collect();
+                            (read.flags, CONTIGS.get(*tid).copied().unwrap_or("*"), pos + 1, cigar)
+                        }
+                        Placement::PlacedUnmapped { tid, pos } => (
+                            read.flags | 0x4,
+                            CONTIGS.get(*tid).copied().unwrap_or("*"),
+                            pos + 1,
+                            "*".into(),
+                        ),
+                        Placement::Unplaced => (read.flags | 0x4, "*", 0, "*".into()),
+                    };
+                    let mut line = format!(
+                        "r{index}_{copy}\t{flags}\t{rname}\t{pos}\t60\t{cigar}\t*\t0\t0\t{seq}\t{}",
+                        "I".repeat(read.seq.len())
+                    );
+                    for tag in &read.tags {
+                        line.push('\t');
+                        line.push_str(tag);
+                    }
+                    sam.push_str(&line);
+                    sam.push('\n');
+                }
+            }
+            sam
+        }
+
+        fn write(&self, dir: &Path) -> Result<()> {
+            let mut stream =
+                AlignmentStream::from_reader(std::io::Cursor::new(self.sam().into_bytes()))?;
+            let header = BamHeader::from_template(stream.header());
+            let mut writer = BamWriterBuilder::to_path(&dir.join("in.bam"), &header).build()?;
+            let mut record = RawBamRecord::default();
+            while stream.read_record(&mut record)? {
+                writer.write_raw(&record)?;
+            }
+            writer.finish()?;
+
+            let mut fasta = String::new();
+            let mut fai = String::new();
+            for (name, seq) in CONTIGS.iter().zip(&self.reference) {
+                let offset = fasta.len() + name.len() + 2;
+                fasta.push_str(&format!(">{name}\n{}\n", String::from_utf8_lossy(seq)));
+                fai.push_str(&format!(
+                    "{name}\t{CONTIG_LEN}\t{offset}\t{CONTIG_LEN}\t{}\n",
+                    CONTIG_LEN + 1
+                ));
+            }
+            std::fs::write(dir.join("ref.fa"), fasta)?;
+            std::fs::write(dir.join("ref.fa.fai"), fai)?;
+
+            let mut calls = self.calls.clone();
+            calls.sort_by_key(|call| (call.tid, call.pos));
+            calls.dedup_by_key(|call| (call.tid, call.pos));
+            let path = dir.join("calls.bed.gz");
+            let mut bed = rust_htslib::bgzf::Writer::from_path(&path)?;
+            for call in &calls {
+                let (strand, base) = if call.plus { ("+", "C") } else { ("-", "G") };
+                let origin = if call.denovo { "NEW" } else { "REF" };
+                let name = CONTIGS.get(call.tid).copied().unwrap_or("*");
+                writeln!(
+                    bed,
+                    "{name}\t{}\t{}\t.\t0.50\t{strand}\t1\t1\t2\t0\t2\t{base}/{base}\t7\t7\t{origin}",
+                    call.pos,
+                    call.pos + 1
+                )?;
+            }
+            drop(bed);
+            rust_htslib::tbx::build_index(&path, rust_htslib::tbx::TabixFormat::Bed, 0)?;
+            Ok(())
+        }
+
+        fn called(&self, tid: usize, pos: usize) -> bool {
+            self.calls.iter().any(|call| call.tid == tid && call.pos == pos)
+        }
+    }
+
+    fn read_bam(path: &Path) -> Result<Vec<RawBamRecord>> {
+        let mut stream = AlignmentStream::from_reader(std::fs::File::open(path)?)?;
+        let mut records = Vec::new();
+        let mut record = RawBamRecord::default();
+        while stream.read_record(&mut record)? {
+            records.push(record.clone());
+        }
+        Ok(records)
+    }
+
+    fn unedited_tags(record: &RawBamRecord) -> Vec<u8> {
+        let mut aux = AuxData::from_bytes(record.aux().as_bytes().to_vec());
+        for tag in EDITED {
+            aux.remove(tag);
+        }
+        aux.as_bytes().to_vec()
+    }
+
+    fn string_tag(record: &RawBamRecord, tag: [u8; 2]) -> Option<Vec<u8>> {
+        seqair::bam::aux::find_tag(record.aux().as_bytes(), tag)
+            .and_then(|value| value.as_str())
+            .map(<[u8]>::to_vec)
+    }
+
+    fn seq(record: &RawBamRecord) -> Vec<u8> {
+        let mut seq = Vec::new();
+        record.decode_seq_into(&mut seq);
+        seq
+    }
+
+    /// Every input record comes out once, in order, with every byte but SEQ
+    /// and the methylation tags as it was. Legacy XM marks exactly the read
+    /// bases at called positions that show the strand's C (or G) or its
+    /// conversion, in upper case where converted, and standard mode turns
+    /// exactly those converted bases back.
+    #[hegel::test(test_cases = pinned::cases(12))]
+    fn bam_rewrites_every_record_and_only_its_methylation(tc: TestCase) {
+        let input = tc.draw(inputs());
+        let check = || -> Result<()> {
+            let dir = TempDir::new()?;
+            input.write(dir.path())?;
+            let records = read_bam(&dir.path().join("in.bam"))?;
+            let mut outputs = Vec::new();
+            for mode in ["standard", "legacy"] {
+                let out = dir.path().join(format!("{mode}.bam"));
+                let output = rastair()
+                    .args(["bam", mode, "-@", "3", "--fasta-file"])
+                    .arg(dir.path().join("ref.fa"))
+                    .arg(dir.path().join("in.bam"))
+                    .arg(dir.path().join("calls.bed.gz"))
+                    .arg("-o")
+                    .arg(&out)
+                    .output()?;
+                ensure!(
+                    output.status.success(),
+                    "{mode}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let written = read_bam(&out)?;
+                ensure!(
+                    written.len() == records.len(),
+                    "{mode}: {} of {} records",
+                    written.len(),
+                    records.len()
+                );
+                outputs.push(written);
+            }
+            let (standard, legacy) = (&outputs[0], &outputs[1]);
+            for ((input_record, standard), legacy) in records.iter().zip(standard).zip(legacy) {
+                let name = String::from_utf8_lossy(input_record.qname()).into_owned();
+                for output in [standard, legacy] {
+                    ensure!(output.qname() == input_record.qname(), "order changed at {name}");
+                    ensure!(output.flags() == input_record.flags(), "{name}: FLAG");
+                    ensure!(
+                        (output.tid(), output.pos()) == (input_record.tid(), input_record.pos()),
+                        "{name}: position"
+                    );
+                    ensure!(output.mapq() == input_record.mapq(), "{name}: MAPQ");
+                    ensure!(
+                        output.stored_cigar_bytes() == input_record.stored_cigar_bytes(),
+                        "{name}: CIGAR"
+                    );
+                    ensure!(output.qual() == input_record.qual(), "{name}: QUAL");
+                    ensure!(output.mate_fields() == input_record.mate_fields(), "{name}: mate");
+                    ensure!(unedited_tags(output) == unedited_tags(input_record), "{name}: tags");
+                }
+                let original = seq(input_record);
+                ensure!(seq(legacy) == original, "{name}: legacy changed SEQ");
+
+                let strand = Strand::from_flags(input_record.flags());
+                let mut expected = vec![b'.'; original.len()];
+                if let (Some(strand), Some(tid), Some(pos)) =
+                    (strand, input_record.tid(), input_record.pos())
+                {
+                    let (unmod, conv) = match strand {
+                        Strand::OT => (b'C', b'T'),
+                        Strand::OB => (b'G', b'A'),
+                    };
+                    let cigar: Vec<CigarOp> = input_record.cigar().collect();
+                    for aligned in AlignedPairs::new(pos, &cigar).matches_only() {
+                        let qpos = aligned.qpos.as_usize();
+                        if !input.called(tid.as_usize(), aligned.rpos.as_usize()) {
+                            continue;
+                        }
+                        let (Some(&base), Some(mark)) =
+                            (original.get(qpos), expected.get_mut(qpos))
+                        else {
+                            continue;
+                        };
+                        if base == unmod {
+                            *mark = b'z';
+                        } else if base == conv {
+                            *mark = b'Z';
+                        }
+                    }
+                }
+                let xm = string_tag(legacy, *b"XM").ok_or_else(|| eyre!("{name}: no XM"))?;
+                // De-novo CpGs take their letter (z, x or h) from the context
+                let class = |c: &u8| match c {
+                    b'.' => b'.',
+                    c if c.is_ascii_uppercase() => b'Z',
+                    _ => b'z',
+                };
+                ensure!(
+                    xm.iter().map(class).collect::<Vec<_>>() == expected,
+                    "{name}: XM {} where {} was expected",
+                    String::from_utf8_lossy(&xm),
+                    String::from_utf8_lossy(&expected)
+                );
+
+                let rewritten = seq(standard);
+                ensure!(rewritten.len() == original.len(), "{name}: SEQ length");
+                for (i, ((&before, &after), &mark)) in
+                    original.iter().zip(&rewritten).zip(&expected).enumerate()
+                {
+                    let converted_back = matches!((before, after), (b'T', b'C') | (b'A', b'G'));
+                    ensure!(
+                        before == after || (mark == b'Z' && converted_back),
+                        "{name}: SEQ {i} {} became {}",
+                        before as char,
+                        after as char
+                    );
+                    ensure!(mark != b'Z' || converted_back, "{name}: SEQ {i} not converted back");
+                }
+                ensure!(
+                    string_tag(standard, *b"MM").is_some() == expected.contains(&b'Z'),
+                    "{name}: MM present without methylation, or missing"
+                );
+            }
+            Ok(())
+        };
+        let result = check();
+        assert!(result.is_ok(), "{result:?}");
+    }
 }
