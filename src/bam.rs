@@ -19,23 +19,22 @@
 //! counts differ ~2:1. Compare the two modes by fraction, at a minimum
 //! coverage.
 //!
-//! **The input is streamed front to back**, so every record comes out, in
-//! input order, unplaced ones included, and no index is needed. The reading
-//! side (`RecordBatches`) cuts the stream into `Batch`es of up to
-//! `BATCH_RECORDS` records on one contig within `BATCH_MAX_SPAN` bases
-//! (unplaced records join any batch). The workers pull batches one at a time
-//! ([`segments::process_in_order`]), so reading is serial and runs on whichever
-//! worker asks next; a worker looks up the calls (and, for de-novo CpGs in
-//! legacy mode, the reference) over its batch's span once, rewrites the
-//! records in place, and the writer writes the batches in order. The span cap
-//! keeps that lookup small for unsorted input, which only makes batches
-//! smaller.
+//! **The input is read front to back**, so every record comes out, in input
+//! order, unplaced ones included, and no index is needed. A reader thread
+//! (`Source`) cuts it into `Batch`es: `BATCH_RECORDS` records of BAM or
+//! SAM, or one CRAM container, which the worker that takes it decodes, so
+//! CRAM decoding runs in parallel. A worker splits its batch into runs of
+//! records within `LOOKUP_MAX_SPAN` bases of one contig (unplaced records join
+//! any run), looks up the calls (and, for de-novo CpGs in legacy mode, the
+//! reference) over each run's span once, and rewrites the records in place;
+//! the writer writes the batches in order ([`segments::process_in_order`]).
+//! Unsorted input only makes the runs shorter.
 //!
-//! `--region` keeps the records overlapping it, each once; it filters the
-//! stream, so the whole file is still read. `RecordBatches` is the one place
-//! that knows where records come from: an indexed region query would be
-//! another source of `Batch`es, and so would CRAM, where a batch would be one
-//! container, decoded by the worker that takes it rather than by the reader.
+//! `--region` keeps the records overlapping it, each once, also when it
+//! overlaps two regions. BAM and SAM read the regions through the index; CRAM,
+//! which has no raw region query yet, is read whole and filtered.
+//!
+//! A record whose aux block is malformed fails the run, naming the read.
 //!
 //! A record of unknown strand (paired, but neither first nor second) carries
 //! no methylation; an unmapped or unplaced one has no aligned bases, so it gets
@@ -44,6 +43,7 @@
 use crate::{
     bed::reader::{RastairBedReader, RastairCall},
     sequence::{ReaderParams, Region},
+    utils::logging::ThisIsABug as _,
     utils::{
         CliRegionInput, cli,
         file_helpers::{FastaReader, open_fasta},
@@ -52,7 +52,10 @@ use crate::{
 };
 use clap::{Parser, value_parser};
 use clio::ClioPath;
-use color_eyre::eyre::{Context, ContextCompat as _, Report, Result, ensure};
+use color_eyre::{
+    Section as _,
+    eyre::{Context, ContextCompat as _, Report, Result, ensure},
+};
 use rustc_hash::FxHashMap;
 use seqair::{
     bam::{
@@ -61,16 +64,18 @@ use seqair::{
         header::PgRecord,
         writer::BamWriterBuilder,
     },
-    reader::{AlignmentStream, Tid},
+    cram::stream::{CramContainer, CramContainerDecoder, CramStreamReader},
+    reader::{AlignmentStream, IndexedReader, Tid},
 };
-use seqair_types::{Base, QPos, SmallVec, Strand};
+use seqair_types::{Base, Pos0, QPos, SmallVec, Strand};
 use std::{
     fmt,
-    io::{self, Write as _},
+    io::{self, Read as _, Seek as _, Write as _},
     num::NonZeroU8,
     sync::{
-        Arc,
+        Arc, PoisonError,
         atomic::{AtomicU64, Ordering},
+        mpsc::SyncSender,
     },
     thread::available_parallelism,
 };
@@ -132,11 +137,11 @@ pub struct BamRewriteArgs {
     output: ClioPath,
 }
 
-/// Records per [`Batch`]: about what a 10 kb segment held at 30x.
+/// Records per [`Batch`] of BAM or SAM: about what a 10 kb segment held at
+/// 30x. A CRAM batch is one container.
 const BATCH_RECORDS: usize = 2_000;
-/// The longest reference span of a [`Batch`], which bounds its calls and
-/// reference lookup.
-const BATCH_MAX_SPAN: u64 = 1_000_000;
+/// The longest reference span one calls and reference lookup covers.
+const LOOKUP_MAX_SPAN: u64 = 1_000_000;
 /// Threads inflating the input's BGZF blocks.
 const INFLATE_THREADS: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
 /// Threads compressing the output, as for `samtools view -@ 3`.
@@ -149,11 +154,10 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
     progress::register_signal_handler();
     let panics = threads::PanicCheck::start();
 
-    let batches = RecordBatches::open(&params.segments)?;
-    let input_bytes = batches.input_bytes;
-    let input_header = BamHeader::from_template(batches.stream.header());
-    let mut header = BamHeader::from_template(batches.stream.header());
+    let Input { source, header: input_header, decoder, filter } = Input::open(&params.segments)?;
+    let mut header = BamHeader::from_template(&input_header);
     header.add_pg(rastair_pg());
+    let decoder = decoder.map(std::sync::Mutex::new);
 
     let worker_threads = params.threads.saturating_sub(1).max(1);
     let pool = rayon::ThreadPoolBuilder::new()
@@ -177,26 +181,43 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
         .build()
         .wrap_err("failed to create writer")?;
 
-    let kib = |bytes: u64| usize::try_from(bytes / 1024).unwrap_or(usize::MAX);
-    let mut progress = ProgressTracker::counting(kib(input_bytes), "KiB of input");
-    let processed = segments::process_in_order(
-        &pool,
-        batches.map(Pulled),
-        || Worker::open(params, mode),
-        |worker, Pulled(batch)| {
-            fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
-            let batch = batch?;
-            let read = batch.read;
-            worker.rewrite(&input_header, batch, mode).map(|records| (records, read))
-        },
-        |(records, read)| {
-            for record in &records {
-                writer.write_raw(record).wrap_err("failed to write record to new BAM file")?;
+    let (total, unit) = source.progress_total();
+    let mut progress = ProgressTracker::counting(total, unit);
+    let processed = std::thread::scope(|scope| {
+        let (send, batches) = std::sync::mpsc::sync_channel(worker_threads);
+        let reader = std::thread::Builder::new()
+            .name("bam-reader".to_owned())
+            .spawn_scoped(scope, move || source.send_batches(&send))
+            .wrap_err("Failed to start the BAM reader thread")?;
+        let processed = segments::process_in_order(
+            &pool,
+            batches.into_iter().map(Pulled),
+            || Worker::open(params, mode, decoder.as_ref()),
+            |worker, Pulled(batch)| {
+                fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
+                let batch = batch?;
+                let done = batch.progress;
+                worker
+                    .rewrite(&input_header, batch, mode, filter.as_ref())
+                    .map(|records| (records, done))
+            },
+            |(records, done)| {
+                for record in &records {
+                    writer.write_raw(record).wrap_err("failed to write record to new BAM file")?;
+                }
+                progress.done_up_to(done);
+                fault_injection::fault_point(fault_injection::FaultPoint::Writer)
+            },
+        );
+        // A stopped run drops the receiver, which ends the reader
+        let read = match reader.join() {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                Err(color_eyre::eyre::eyre!("The BAM reader panicked (see the crash report above)"))
             }
-            progress.done_up_to(kib(read));
-            fault_injection::fault_point(fault_injection::FaultPoint::Writer)
-        },
-    )
+        };
+        segments::first_error(processed, read)
+    })
     .wrap_err("Failed to process the BAM file in parallel");
 
     // Close the output even if processing failed, so it holds a valid prefix
@@ -226,25 +247,247 @@ impl io::Read for CountingReader {
     }
 }
 
+/// The input, opened: where its records come from, and what the workers
+/// need to finish them.
+struct Input {
+    source: Source,
+    header: BamHeader,
+    /// For CRAM: the template each worker forks its decoder from
+    decoder: Option<CramContainerDecoder>,
+    /// For a whole-file source read with `--region`: what to keep
+    filter: Option<Regions>,
+}
+
+/// Where the records come from, in output order.
+enum Source {
+    /// BAM or SAM, front to back
+    Stream { stream: AlignmentStream, input_bytes: u64, read: Arc<AtomicU64> },
+    /// CRAM, front to back, as containers the workers decode
+    Cram { reader: CramStreamReader<CountingReader>, input_bytes: u64, read: Arc<AtomicU64> },
+    /// BAM or SAM, `--region` by region through the index
+    Regions { reader: IndexedReader, regions: Regions },
+}
+
+impl Input {
+    fn open(params: &ReaderParams) -> Result<Self> {
+        let path = params.bam_file.path();
+        let open_error = || format!("Failed to read `{}`", path.display());
+        let mut file = std::fs::File::open(path).wrap_err_with(open_error)?;
+        let mut magic = [0; 4];
+        let is_cram = match file.read_exact(&mut magic) {
+            Ok(()) => magic == *b"CRAM",
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
+            Err(error) => return Err(error).wrap_err_with(open_error),
+        };
+        file.rewind().wrap_err_with(open_error)?;
+
+        if params.regions.is_some() && !is_cram {
+            let reader = IndexedReader::open(path)
+                .wrap_err_with(open_error)
+                .suggestion("`--region` reads through the index: `samtools index` creates it")?;
+            let regions = Regions::new(params.regions.as_ref(), reader.header())?;
+            let header = BamHeader::from_template(reader.header());
+            return Ok(Self {
+                source: Source::Regions { reader, regions },
+                header,
+                decoder: None,
+                filter: None,
+            });
+        }
+
+        let input_bytes = file.metadata().wrap_err_with(open_error)?.len();
+        let read = Arc::new(AtomicU64::new(0));
+        let input = CountingReader { inner: file, read: Arc::clone(&read) };
+        let (source, header, decoder) = if is_cram {
+            let reader = CramStreamReader::new(input).wrap_err_with(open_error)?;
+            let decoder = reader
+                .decoder(params.fasta_file.path())
+                .wrap_err("Failed to open the reference for the CRAM file")?;
+            let header = BamHeader::from_template(reader.header());
+            (Source::Cram { reader, input_bytes, read }, header, Some(decoder))
+        } else {
+            let inflate_pool = rayon::ThreadPoolBuilder::new()
+                .thread_name(|idx| format!("bam-inflate-{idx}"))
+                .num_threads(std::num::NonZeroUsize::from(INFLATE_THREADS).get())
+                .build()
+                .wrap_err("Failed to create thread pool for reading the BAM file")?;
+            let stream = AlignmentStream::builder(input)
+                .threads_in(INFLATE_THREADS, inflate_pool)
+                .build()
+                .wrap_err_with(open_error)?;
+            let header = BamHeader::from_template(stream.header());
+            (Source::Stream { stream, input_bytes, read }, header, None)
+        };
+        let filter = params
+            .regions
+            .as_ref()
+            .map(|regions| Regions::new(Some(regions), &header))
+            .transpose()?;
+        Ok(Self { source, header, decoder, filter })
+    }
+}
+
+impl Source {
+    /// The progress the reader reports: input bytes, or bases of `--region`.
+    fn progress_total(&self) -> (usize, &'static str) {
+        let kilo = |n: u64| usize::try_from(n / 1000).unwrap_or(usize::MAX);
+        match self {
+            Self::Stream { input_bytes, .. } | Self::Cram { input_bytes, .. } => {
+                (kilo(*input_bytes), "kB of input")
+            }
+            Self::Regions { regions, .. } => {
+                (kilo(regions.0.iter().map(|span| span.end - span.start).sum()), "kb of regions")
+            }
+        }
+    }
+
+    /// Read the input to the end and send it as batches, or the error that
+    /// stopped it; until the receiver hangs up.
+    fn send_batches(self, send: &SyncSender<Result<Batch>>) {
+        let mut number = 0_u64;
+        let mut emit = |chunk: Chunk, progress: u64| {
+            number += 1;
+            let kilo = usize::try_from(progress / 1000).unwrap_or(usize::MAX);
+            send.send(Ok(Batch { number, chunk, progress: kilo })).is_ok()
+        };
+        let result = match self {
+            Self::Stream { mut stream, read, .. } => (|| {
+                let mut records = Vec::with_capacity(BATCH_RECORDS);
+                loop {
+                    let mut record = RawBamRecord::default();
+                    let more = match stream.read_record(&mut record) {
+                        Ok(more) => more,
+                        Err(error) => {
+                            // The records before it are written, as a prefix
+                            if !records.is_empty() {
+                                emit(Chunk::Records(records), read.load(Ordering::Relaxed));
+                            }
+                            return Err(error).wrap_err("Failed to read the input BAM file");
+                        }
+                    };
+                    if more {
+                        records.push(record);
+                    }
+                    if (records.len() == BATCH_RECORDS || !more) && !records.is_empty() {
+                        let chunk = Chunk::Records(std::mem::replace(
+                            &mut records,
+                            Vec::with_capacity(BATCH_RECORDS),
+                        ));
+                        if !emit(chunk, read.load(Ordering::Relaxed)) {
+                            return Ok(());
+                        }
+                    }
+                    if !more {
+                        return Ok(());
+                    }
+                }
+            })(),
+            Self::Cram { mut reader, read, .. } => (|| {
+                while let Some(container) =
+                    reader.next_container().wrap_err("Failed to read the input CRAM file")?
+                {
+                    if !emit(Chunk::Container(container), read.load(Ordering::Relaxed)) {
+                        break;
+                    }
+                }
+                Ok(())
+            })(),
+            Self::Regions { mut reader, regions } => (|| {
+                let mut records = Vec::with_capacity(BATCH_RECORDS);
+                let mut done = 0;
+                let mut previous: Option<Span> = None;
+                for &region in &regions.0 {
+                    if region.start >= region.end {
+                        continue;
+                    }
+                    let pos = |at: u64| u32::try_from(at).ok().and_then(Pos0::new);
+                    let (Some(first), Some(last)) =
+                        (pos(region.start), region.end.checked_sub(1).and_then(pos))
+                    else {
+                        continue;
+                    };
+                    let mut query = reader
+                        .query_raw(region.tid, (first..=last).into())
+                        .wrap_err_with(|| format!("Failed to query the BAM file for {region:?}"))?;
+                    loop {
+                        let mut record = RawBamRecord::default();
+                        let more = match query.read_record(&mut record) {
+                            Ok(more) => more,
+                            Err(error) => {
+                                // The records before it are written, as a prefix
+                                if !records.is_empty() {
+                                    emit(Chunk::Records(records), done);
+                                }
+                                return Err(error).wrap_err("Failed to read the input BAM file");
+                            }
+                        };
+                        let at = record.pos().map_or(region.start, |pos| pos.as_u64());
+                        // Regions are disjoint and sorted, so a record reaching
+                        // an earlier one reaches the one before this.
+                        if more
+                            && !previous.is_some_and(|prev| {
+                                Span::of(&record).is_some_and(|span| span.overlaps(prev))
+                            })
+                        {
+                            records.push(record);
+                        }
+                        if (records.len() == BATCH_RECORDS || !more) && !records.is_empty() {
+                            let progress = done + at.clamp(region.start, region.end) - region.start;
+                            let chunk = Chunk::Records(std::mem::replace(
+                                &mut records,
+                                Vec::with_capacity(BATCH_RECORDS),
+                            ));
+                            if !emit(chunk, progress) {
+                                return Ok(());
+                            }
+                        }
+                        if !more {
+                            break;
+                        }
+                    }
+                    done += region.end - region.start;
+                    previous = Some(region);
+                }
+                Ok(())
+            })(),
+        };
+        if let Err(error) = result {
+            // A hung-up receiver needs no error: the run already stopped
+            send.send(Err(error)).ok();
+        }
+    }
+}
+
 /// Consecutive records of the input, the unit of work.
 struct Batch {
-    /// The input index of the first record, from 0
-    first: u64,
-    records: Vec<RawBamRecord>,
-    /// Where the placed records lie, if any
-    span: Option<Span>,
-    /// How many input bytes were read once the batch was complete
-    read: u64,
+    /// From 1, in input order
+    number: u64,
+    chunk: Chunk,
+    /// The progress once it is written
+    progress: usize,
+}
+
+/// A batch's records as the source hands them over.
+enum Chunk {
+    Records(Vec<RawBamRecord>),
+    /// Decoded by the worker that takes it
+    Container(CramContainer),
 }
 
 impl fmt::Display for Batch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let last = self.first.saturating_add(self.records.len() as u64);
-        write!(f, "records {}-{last} of the input", self.first.saturating_add(1))
+        match &self.chunk {
+            Chunk::Records(records) => {
+                write!(f, "batch {} of the input ({} records)", self.number, records.len())
+            }
+            Chunk::Container(container) => {
+                write!(f, "CRAM container {} of the input", container.number())
+            }
+        }
     }
 }
 
-/// What a worker pulls from [`RecordBatches`]: a batch, or why there is none.
+/// What a worker pulls from the reader: a batch, or why there is none.
 struct Pulled(Result<Batch>);
 
 impl fmt::Display for Pulled {
@@ -274,6 +517,10 @@ impl Span {
         Some(Self { tid, start: pos.as_u64(), end: last.as_u64().saturating_add(1) })
     }
 
+    fn overlaps(self, other: Self) -> bool {
+        self.tid == other.tid && self.start < other.end && other.start < self.end
+    }
+
     /// The span covering both, if they share a contig and it stays short.
     fn joined(self, other: Self) -> Option<Self> {
         let joined = Self {
@@ -281,110 +528,18 @@ impl Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         };
-        (self.tid == other.tid && joined.end - joined.start <= BATCH_MAX_SPAN).then_some(joined)
-    }
-}
-
-/// Reads the input front to back as [`Batch`]es: where the records come from.
-struct RecordBatches {
-    stream: AlignmentStream,
-    regions: Option<RegionFilter>,
-    /// The size of the input file
-    input_bytes: u64,
-    read: Arc<AtomicU64>,
-    /// The record that started the next batch
-    pending: Option<RawBamRecord>,
-    /// A read error, returned after the batch of the records before it
-    error: Option<Report>,
-    /// The input index of the next record
-    next: u64,
-}
-
-impl RecordBatches {
-    fn open(params: &ReaderParams) -> Result<Self> {
-        let path = params.bam_file.path();
-        let file = std::fs::File::open(path)
-            .wrap_err_with(|| format!("Failed to open `{}`", path.display()))?;
-        let input_bytes =
-            file.metadata().wrap_err_with(|| format!("Failed to read `{}`", path.display()))?.len();
-        let read = Arc::new(AtomicU64::new(0));
-        let inflate_pool = rayon::ThreadPoolBuilder::new()
-            .thread_name(|idx| format!("bam-inflate-{idx}"))
-            .num_threads(std::num::NonZeroUsize::from(INFLATE_THREADS).get())
-            .build()
-            .wrap_err("Failed to create thread pool for reading the BAM file")?;
-        let stream =
-            AlignmentStream::builder(CountingReader { inner: file, read: Arc::clone(&read) })
-                .threads_in(INFLATE_THREADS, inflate_pool)
-                .build()
-                .wrap_err_with(|| format!("Failed to read `{}`", path.display()))?;
-        let regions = params
-            .regions
-            .as_ref()
-            .map(|regions| RegionFilter::new(regions, stream.header()))
-            .transpose()?;
-        Ok(Self { stream, regions, input_bytes, read, pending: None, error: None, next: 0 })
-    }
-}
-
-impl Iterator for RecordBatches {
-    type Item = Result<Batch>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(error) = self.error.take() {
-            return Some(Err(error));
-        }
-        let first = self.next;
-        let mut records = Vec::with_capacity(BATCH_RECORDS);
-        let mut span = None;
-        let mut next = self.pending.take();
-        while records.len() < BATCH_RECORDS {
-            let record = match next.take() {
-                Some(record) => record,
-                None => {
-                    let mut record = RawBamRecord::default();
-                    match self.stream.read_record(&mut record) {
-                        Ok(true) => {}
-                        Ok(false) => break,
-                        Err(error) => {
-                            self.error = Some(
-                                Report::new(error).wrap_err("Failed to read the input BAM file"),
-                            );
-                            break;
-                        }
-                    }
-                    if self.regions.as_ref().is_some_and(|regions| !regions.keeps(&record)) {
-                        continue;
-                    }
-                    record
-                }
-            };
-            if let Some(this) = Span::of(&record) {
-                match span.map_or(Some(this), |span: Span| span.joined(this)) {
-                    Some(joined) => span = Some(joined),
-                    None => {
-                        self.pending = Some(record);
-                        break;
-                    }
-                }
-            }
-            records.push(record);
-        }
-        if records.is_empty() {
-            return self.error.take().map(Err);
-        }
-        self.next = first.saturating_add(records.len() as u64);
-        Some(Ok(Batch { first, records, span, read: self.read.load(Ordering::Relaxed) }))
+        (self.tid == other.tid && joined.end - joined.start <= LOOKUP_MAX_SPAN).then_some(joined)
     }
 }
 
 /// `--region`, as sorted, non-overlapping spans.
-struct RegionFilter(Vec<Span>);
+struct Regions(Vec<Span>);
 
-impl RegionFilter {
-    fn new(input: &CliRegionInput, header: &BamHeader) -> Result<Self> {
+impl Regions {
+    fn new(input: Option<&CliRegionInput>, header: &BamHeader) -> Result<Self> {
         let mut spans = input
-            .regions()
+            .map(CliRegionInput::regions)
+            .unwrap_or_default()
             .iter()
             .map(|region| {
                 let tid = header.tid(&region.chromosome).wrap_err_with(|| {
@@ -425,7 +580,7 @@ impl RegionFilter {
         before
             .checked_sub(1)
             .and_then(|index| self.0.get(index))
-            .is_some_and(|region| region.tid == span.tid && region.end > span.start)
+            .is_some_and(|region| region.overlaps(span))
     }
 }
 
@@ -434,10 +589,16 @@ struct Worker {
     calls: RastairBedReader,
     /// Only legacy mode needs the reference
     fasta: Option<FastaReader>,
+    /// For CRAM input
+    decoder: Option<CramContainerDecoder>,
 }
 
 impl Worker {
-    fn open(params: &BamRewriteArgs, mode: BamMode) -> Result<Self> {
+    fn open(
+        params: &BamRewriteArgs,
+        mode: BamMode,
+        decoder: Option<&std::sync::Mutex<CramContainerDecoder>>,
+    ) -> Result<Self> {
         let calls = RastairBedReader::new(params.calls_file.path())
             .wrap_err("Failed to open calls file in worker thread")?;
         let fasta = match mode {
@@ -447,7 +608,11 @@ impl Worker {
                     .wrap_err("Failed to open FASTA in worker thread")?,
             ),
         };
-        Ok(Self { calls, fasta })
+        let decoder = decoder
+            .map(|template| template.lock().unwrap_or_else(PoisonError::into_inner).fork())
+            .transpose()
+            .wrap_err("Failed to open the CRAM decoder in worker thread")?;
+        Ok(Self { calls, fasta, decoder })
     }
 
     #[instrument(level = "debug", skip_all, fields(%batch))]
@@ -456,13 +621,57 @@ impl Worker {
         header: &BamHeader,
         batch: Batch,
         mode: BamMode,
+        filter: Option<&Regions>,
     ) -> Result<Vec<RawBamRecord>> {
-        let Batch { mut records, span, .. } = batch;
+        let mut records = match batch.chunk {
+            Chunk::Records(records) => records,
+            Chunk::Container(container) => {
+                let decoder = self.decoder.as_mut().wrap_err("no CRAM decoder").this_is_a_bug()?;
+                let mut records = Vec::new();
+                decoder.decode(&container, &mut records).wrap_err("Failed to decode CRAM")?;
+                records
+            }
+        };
+        if let Some(regions) = filter {
+            records.retain(|record| regions.keeps(record));
+        }
+
+        // Runs of records whose span one lookup covers; an unplaced record
+        // joins any run.
+        let mut start = 0;
+        let mut span: Option<Span> = None;
+        for end in 0..=records.len() {
+            let next = records.get(end).map(Span::of);
+            let joined = match next {
+                Some(None) => continue,
+                Some(Some(this)) => span.map_or(Some(this), |span| span.joined(this)),
+                None => None,
+            };
+            if let Some(joined) = joined {
+                span = Some(joined);
+                continue;
+            }
+            let run = records.get_mut(start..end).wrap_err("run out of range").this_is_a_bug()?;
+            self.rewrite_run(header, run, span, mode)?;
+            start = end;
+            span = next.flatten();
+        }
+        Ok(records)
+    }
+
+    /// Rewrite `records`, which all lie in `span` or are unplaced.
+    fn rewrite_run(
+        &mut self,
+        header: &BamHeader,
+        records: &mut [RawBamRecord],
+        span: Option<Span>,
+        mode: BamMode,
+    ) -> Result<()> {
         let Some(span) = span else {
-            for record in &mut records {
+            for record in records {
                 rewrite_record(&FxHashMap::default(), record, mode, |_| None)?;
             }
-            return Ok(records);
+            return Ok(());
         };
         let contig = header.target_name(span.tid).wrap_err("record of an unknown contig")?;
         let region = Region { contig: contig.into(), start: span.start, end: span.end };
@@ -495,12 +704,12 @@ impl Worker {
             ref_seq.get(idx).map(|&b| Base::from(b))
         };
 
-        for record in &mut records {
+        for record in records {
             rewrite_record(&calls, record, mode, ref_base).wrap_err_with(|| {
                 format!("failed to rewrite record {}", String::from_utf8_lossy(record.qname()))
             })?;
         }
-        Ok(records)
+        Ok(())
     }
 }
 

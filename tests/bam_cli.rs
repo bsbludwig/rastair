@@ -553,7 +553,6 @@ fn bam_rewrite_legacy_mixed_site_keeps_per_read_z_and_z_uppercase() -> Result<()
 /// `bam legacy` must accept a CRAM input file (using the required FASTA as the
 /// decoding reference) and produce a valid BAM with XR/XG/XM tags.
 #[test]
-#[ignore = "needs seqair streaming CRAM"]
 fn bam_legacy_accepts_cram_input() -> Result<()> {
     apply_common_filters!();
 
@@ -638,7 +637,6 @@ fn bam_legacy_accepts_cram_input() -> Result<()> {
 /// CRAM and BAM inputs must produce identical XR/XG/XM tag content for every
 /// record when running `bam legacy` over the same region.
 #[test]
-#[ignore = "needs seqair streaming CRAM"]
 fn bam_legacy_cram_matches_bam_output() -> Result<()> {
     apply_common_filters!();
 
