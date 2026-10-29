@@ -59,7 +59,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 
 ###### **Filter Options:**
 
@@ -276,7 +276,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 
 ###### **Filter Options:**
 
@@ -377,7 +377,7 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 * `<CALLS_FILE>` — Rastair's calls to determine methylation
 
 ###### **Input Options:**
@@ -409,7 +409,7 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 * `<CALLS_FILE>` — Rastair's calls to determine methylation
 
 ###### **Input Options:**

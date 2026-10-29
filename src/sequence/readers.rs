@@ -458,7 +458,9 @@ mod seqair_readers {
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct ReaderParams {
-    /// Path to sorted and indexed BAM or CRAM file
+    /// Path to a BAM or CRAM file: sorted and indexed for `call` and
+    /// `per-read`; `bam` takes any order, and SAM, and only `--region` there
+    /// needs the index
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub bam_file: ClioPath,

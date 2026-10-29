@@ -500,7 +500,7 @@ impl fmt::Display for Pulled {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             Ok(batch) => batch.fmt(f),
-            Err(_) => f.write_str("the next records of the input"),
+            Err(_) => f.write_str("the rest of the input"),
         }
     }
 }
@@ -949,7 +949,14 @@ fn rastair_pg(header: &BamHeader) -> PgRecord {
         id: id.into(),
         pn: Some("rastair".into()),
         vn: Some(env!("CARGO_PKG_VERSION").into()),
-        cl: Some(std::env::args().skip(1).collect::<Vec<_>>().join(" ").into()),
+        cl: Some(
+            std::env::args_os()
+                .skip(1)
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .into(),
+        ),
         ds: Some("Rewrote BAM with methylation information".into()),
         pp: None,
     }
