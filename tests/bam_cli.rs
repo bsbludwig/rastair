@@ -203,9 +203,9 @@ fn bam_rewrite_preserves_existing_tags() -> Result<()> {
     Ok(())
 }
 
-/// A `--region` rewrite is sorted like its input and holds each read of the
-/// region once; a duplicate would break the sort
-/// order, and `samtools index` would fail.
+/// A `--region` rewrite of a BAM or CRAM is sorted like its input and holds
+/// each read of the region once; a duplicate would break the sort order, and
+/// `samtools index` would fail.
 #[test]
 fn bam_rewrite_of_a_region_is_sorted_without_duplicates() -> Result<()> {
     apply_common_filters!();
@@ -241,21 +241,6 @@ fn bam_rewrite_of_a_region_is_sorted_without_duplicates() -> Result<()> {
         String::from_utf8_lossy(&tabix_output.stderr)
     );
 
-    rastair()
-        .args([
-            "bam",
-            "standard",
-            "--fasta-file=tests/data/test.fasta.gz",
-            "--region=chr19:6103000-6106000",
-            "tests/data/test.bam",
-        ])
-        .arg(&calls_bed)
-        .args(["-o"])
-        .arg(&output_bam)
-        .silent()
-        .succeeds()
-        .wrap_err("Failed to rewrite BAM")?;
-
     // Count records in the input BAM for the same region (the ground truth).
     let input_count = {
         let mut bam_in = bam::IndexedReader::from_path("tests/data/test.bam")
@@ -270,27 +255,48 @@ fn bam_rewrite_of_a_region_is_sorted_without_duplicates() -> Result<()> {
         n
     };
 
-    let mut reader = bam::Reader::from_path(&output_bam).wrap_err("Failed to open output BAM")?;
+    for input in ["tests/data/test.bam", "tests/data/test.cram"] {
+        rastair()
+            .args([
+                "bam",
+                "standard",
+                "--fasta-file=tests/data/test.fasta.gz",
+                "--region=chr19:6103000-6106000",
+                input,
+            ])
+            .arg(&calls_bed)
+            .args(["-o"])
+            .arg(&output_bam)
+            .silent()
+            .succeeds()
+            .wrap_err_with(|| format!("Failed to rewrite {input}"))?;
 
-    let mut record = bam::Record::new();
-    let mut prev_pos: i64 = -1;
-    let mut output_count = 0u32;
+        let mut reader =
+            bam::Reader::from_path(&output_bam).wrap_err("Failed to open output BAM")?;
 
-    while let Some(result) = reader.read(&mut record) {
-        result.wrap_err("Failed to read BAM record")?;
-        output_count += 1;
+        let mut record = bam::Record::new();
+        let mut prev_pos: i64 = -1;
+        let mut output_count = 0u32;
 
-        let pos = record.pos();
-        ensure!(pos >= prev_pos, "Output BAM is not sorted: position {prev_pos} followed by {pos}");
-        prev_pos = pos;
+        while let Some(result) = reader.read(&mut record) {
+            result.wrap_err("Failed to read BAM record")?;
+            output_count += 1;
+
+            let pos = record.pos();
+            ensure!(
+                pos >= prev_pos,
+                "{input}: output is not sorted: position {prev_pos} followed by {pos}"
+            );
+            prev_pos = pos;
+        }
+
+        ensure!(output_count > 10, "{input}: expected more than 10 records, got {output_count}");
+        ensure!(
+            output_count == input_count,
+            "{input}: record count mismatch: input has {input_count} but output has \
+             {output_count} (duplicates introduced or records lost)"
+        );
     }
-
-    ensure!(output_count > 10, "Expected more than 10 records, got {output_count}");
-    ensure!(
-        output_count == input_count,
-        "Record count mismatch: input has {input_count} but output has {output_count} \
-         (duplicates introduced or records lost)"
-    );
 
     Ok(())
 }
@@ -1635,8 +1641,8 @@ fn a_lossy_names_cram_is_named_after_the_file() -> Result<()> {
     Ok(())
 }
 
-/// `--region` with several regions keeps each overlapping read once, also one
-/// reaching into two of them, as `samtools view -M` does.
+/// `--region` with several regions keeps each overlapping read of a BAM or
+/// CRAM once, also one reaching into two of them, as `samtools view -M` does.
 #[test]
 fn a_read_in_two_regions_is_written_once() -> Result<()> {
     let temp_dir = TempDir::new()?;
@@ -1668,25 +1674,62 @@ fn a_read_in_two_regions_is_written_once() -> Result<()> {
 
     let output_bam = temp_dir.path().join("out.bam");
     let region = regions.map(|(start, end)| format!("chr19:{start}-{end}")).join(" ");
+    for input in ["tests/data/test.bam", "tests/data/test.cram"] {
+        rastair()
+            .args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz", "--region", &region])
+            .arg(input)
+            .arg(&calls_bed)
+            .arg("-o")
+            .arg(&output_bam)
+            .silent()
+            .succeeds()
+            .wrap_err_with(|| format!("Failed to rewrite {input}"))?;
+        let mut written: Vec<(Vec<u8>, u16)> = bam::Reader::from_path(&output_bam)?
+            .records()
+            .map(|record| {
+                Ok::<_, color_eyre::Report>(record.map(|r| (r.qname().to_owned(), r.flags()))?)
+            })
+            .collect::<Result<_>>()?;
+        let spanning = written.len();
+        written.sort();
+        ensure!(written.len() > 10, "{input}: too few reads to test");
+        ensure!(
+            written == expected,
+            "{input}: {spanning} reads written, {} expected",
+            expected.len()
+        );
+    }
+    Ok(())
+}
+
+/// `--region` reads through the index, so a BAM or CRAM without one is an
+/// error that says how to make it.
+#[test]
+fn region_without_an_index_says_how_to_make_one() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
     rastair()
-        .args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz", "--region", &region])
-        .arg("tests/data/test.bam")
+        .args(CALL_TEST_BAM)
+        .args(["--region=chr19:6103000-6103300", "--cpgs-only", "--bed"])
         .arg(&calls_bed)
-        .arg("-o")
-        .arg(&output_bam)
         .silent()
         .succeeds()
-        .wrap_err("Failed to rewrite BAM")?;
-    let mut written: Vec<(Vec<u8>, u16)> = bam::Reader::from_path(&output_bam)?
-        .records()
-        .map(|record| {
-            Ok::<_, color_eyre::Report>(record.map(|r| (r.qname().to_owned(), r.flags()))?)
-        })
-        .collect::<Result<_>>()?;
-    let spanning = written.len();
-    written.sort();
-    ensure!(written.len() > 10, "too few reads to test");
-    ensure!(written == expected, "{spanning} reads written, {} expected", expected.len());
+        .wrap_err("Failed to generate calls")?;
+    for name in ["test.bam", "test.cram"] {
+        let input = temp_dir.path().join(name);
+        std::fs::copy(Path::new("tests/data").join(name), &input)?;
+        let output = rastair()
+            .args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz"])
+            .arg("--region=chr19:6103000-6103300")
+            .arg(&input)
+            .arg(&calls_bed)
+            .arg("-o")
+            .arg(temp_dir.path().join("out.bam"))
+            .output()?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        ensure!(!output.status.success(), "{name} should fail: {stderr}");
+        ensure!(stderr.contains("`samtools index` creates it"), "{name}: {stderr}");
+    }
     Ok(())
 }
 

@@ -1543,11 +1543,11 @@ mod regions {
     }
 
     /// `--region`s in any order, overlapping, adjacent or on two contigs:
-    /// `keeps` is "overlaps one of them", and querying the merged regions in
-    /// turn, skipping what the region before returned, yields each overlapping
-    /// record once, in (contig, start) order.
+    /// querying the merged regions in turn, skipping what the region before
+    /// returned, yields each record overlapping one of them once, in
+    /// (contig, start) order.
     #[hegel::test]
-    fn regions_keep_and_query_each_overlapping_record_once(tc: TestCase) {
+    fn regions_query_each_overlapping_record_once(tc: TestCase) {
         let n_regions = tc.draw(gs::integers::<usize>().max_value(6));
         let regions: Vec<(u32, u64, u64)> = (0..n_regions).map(|_| tc.draw(spans(40))).collect();
         let n_records = tc.draw(gs::integers::<usize>().max_value(40));
@@ -1575,14 +1575,6 @@ mod regions {
                 })
                 .map(span)
                 .collect::<Result<_>>()?;
-
-            for record in &records {
-                let record = span(record)?;
-                ensure!(
-                    merged.keeps_span(record) == overlapping.contains(&record),
-                    "keeps {record:?}"
-                );
-            }
 
             let mut queried = Vec::new();
             let mut previous = None;

@@ -32,9 +32,8 @@
 //! every record is a run of its own, with its own calls query (and FASTA
 //! fetch in legacy mode). Sort by coordinate first for speed.
 //!
-//! `--region` keeps the records overlapping it, each once, also when it
-//! overlaps two regions. BAM and SAM read the regions through the index; CRAM,
-//! which has no raw region query yet, is read whole and filtered.
+//! `--region` reads the records overlapping it through the index (BAI, CSI or
+//! CRAI), each once, also when it overlaps two regions.
 //!
 //! A record whose aux block is malformed fails the run, naming the read.
 //!
@@ -166,7 +165,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
     progress::register_signal_handler();
     let panics = threads::PanicCheck::start();
 
-    let Input { source, header: input_header, decoder, filter } = Input::open(&params.segments)?;
+    let Input { source, header: input_header, decoder } = Input::open(&params.segments)?;
     let mut header = BamHeader::from_template(&input_header);
     header.add_pg(rastair_pg(&header));
     let decoder = decoder.map(std::sync::Mutex::new);
@@ -209,9 +208,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
                 fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
                 let batch = batch?;
                 let done = batch.progress;
-                worker
-                    .rewrite(&input_header, batch, mode, filter.as_ref())
-                    .map(|records| (records, done))
+                worker.rewrite(&input_header, batch, mode).map(|records| (records, done))
             },
             |(records, done)| {
                 for record in &records {
@@ -264,10 +261,9 @@ impl io::Read for CountingReader {
 struct Input {
     source: Source,
     header: BamHeader,
-    /// For CRAM: the template each worker forks its decoder from
+    /// For CRAM read front to back: the template each worker forks its
+    /// decoder from
     decoder: Option<CramContainerDecoder>,
-    /// For a whole-file source read with `--region`: what to keep
-    filter: Option<Regions>,
 }
 
 /// Where the records come from, in output order.
@@ -276,7 +272,7 @@ enum Source {
     Stream { stream: AlignmentStream, input_bytes: u64, read: Arc<AtomicU64> },
     /// CRAM, front to back, as containers the workers decode
     Cram { reader: CramStreamReader<CountingReader>, input_bytes: u64, read: Arc<AtomicU64> },
-    /// BAM or SAM, `--region` by region through the index
+    /// `--region` by region through the index
     Regions { reader: IndexedReader, regions: Regions },
 }
 
@@ -293,18 +289,13 @@ impl Input {
         };
         file.rewind().wrap_err_with(open_error)?;
 
-        if params.regions.is_some() && !is_cram {
-            let reader = IndexedReader::open(path)
+        if params.regions.is_some() {
+            let reader = IndexedReader::open_with_reference(path, params.fasta_file.path())
                 .wrap_err_with(open_error)
                 .suggestion("`--region` reads through the index: `samtools index` creates it")?;
             let regions = Regions::new(params.regions.as_ref(), reader.header())?;
             let header = BamHeader::from_template(reader.header());
-            return Ok(Self {
-                source: Source::Regions { reader, regions },
-                header,
-                decoder: None,
-                filter: None,
-            });
+            return Ok(Self { source: Source::Regions { reader, regions }, header, decoder: None });
         }
 
         let input_bytes = file.metadata().wrap_err_with(open_error)?.len();
@@ -317,10 +308,10 @@ impl Input {
                 .wrap_err("Failed to open the reference for the CRAM file")?
                 // The names of records the file stores none for, as htslib
                 // names them after the path it opened
-                .name_prefix(path.file_name().map_or_else(
-                    || "-".into(),
-                    |name| name.to_string_lossy().into_owned(),
-                ));
+                .name_prefix(
+                    path.file_name()
+                        .map_or_else(|| "-".into(), |name| name.to_string_lossy().into_owned()),
+                );
             let header = BamHeader::from_template(reader.header());
             (Source::Cram { reader, input_bytes, read }, header, Some(decoder))
         } else {
@@ -336,12 +327,7 @@ impl Input {
             let header = BamHeader::from_template(stream.header());
             (Source::Stream { stream, input_bytes, read }, header, None)
         };
-        let filter = params
-            .regions
-            .as_ref()
-            .map(|regions| Regions::new(Some(regions), &header))
-            .transpose()?;
-        Ok(Self { source, header, decoder, filter })
+        Ok(Self { source, header, decoder })
     }
 }
 
@@ -426,7 +412,7 @@ impl Source {
                     };
                     let mut query = reader
                         .query_raw(region.tid, (first..=last).into())
-                        .wrap_err_with(|| format!("Failed to query the BAM file for {region:?}"))?;
+                        .wrap_err_with(|| format!("Failed to query the input for {region:?}"))?;
                     loop {
                         let mut record = RawBamRecord::default();
                         let more = match query.read_record(&mut record) {
@@ -436,7 +422,7 @@ impl Source {
                                 if !records.is_empty() {
                                     emit(Chunk::Records(records), done);
                                 }
-                                return Err(error).wrap_err("Failed to read the input BAM file");
+                                return Err(error).wrap_err("Failed to read the input file");
                             }
                         };
                         let at = record.pos().map_or(region.start, |pos| pos.as_u64());
@@ -582,27 +568,11 @@ impl Regions {
         Ok(Self(merged))
     }
 
-    /// Whether `record` overlaps a region; an unplaced one does not.
-    fn keeps(&self, record: &RawBamRecord) -> bool {
-        Span::of(record).is_some_and(|span| self.keeps_span(span))
-    }
-
     /// Whether a record a region's query returned came with the query of the
     /// region before, `previous`: regions are disjoint and sorted, so one
     /// reaching any earlier region reaches that one.
     fn queried_before(previous: Option<Span>, record: Option<Span>) -> bool {
         previous.zip(record).is_some_and(|(previous, record)| record.overlaps(previous))
-    }
-
-    fn keeps_span(&self, span: Span) -> bool {
-        // The regions do not overlap, so of those starting before the record
-        // ends, only the last one can reach it.
-        let before =
-            self.0.partition_point(|region| (region.tid, region.start) < (span.tid, span.end));
-        before
-            .checked_sub(1)
-            .and_then(|index| self.0.get(index))
-            .is_some_and(|region| region.overlaps(span))
     }
 }
 
@@ -643,7 +613,6 @@ impl Worker {
         header: &BamHeader,
         batch: Batch,
         mode: BamMode,
-        filter: Option<&Regions>,
     ) -> Result<Vec<RawBamRecord>> {
         let mut records = match batch.chunk {
             Chunk::Records(records) => records,
@@ -654,10 +623,6 @@ impl Worker {
                 records
             }
         };
-        if let Some(regions) = filter {
-            records.retain(|record| regions.keeps(record));
-        }
-
         // Runs of records whose span one lookup covers; an unplaced record
         // joins any run.
         let mut start = 0;
