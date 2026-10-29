@@ -1045,6 +1045,10 @@ mod generated_inputs {
         copies: usize,
         sorted: bool,
         calls: Vec<Call>,
+        /// `RASTAIR_BAM_BATCH_RECORDS` and `RASTAIR_BAM_LOOKUP_SPAN`: small,
+        /// so batches and lookup runs end inside the input, among the calls
+        batch_records: usize,
+        lookup_span: u64,
     }
 
     #[hegel::composite]
@@ -1111,7 +1115,15 @@ mod generated_inputs {
                 denovo: tc.draw(gs::booleans()),
             })
             .collect();
-        Input { reference, reads, copies, sorted: tc.draw(gs::booleans()), calls }
+        Input {
+            reference,
+            reads,
+            copies,
+            sorted: tc.draw(gs::booleans()),
+            calls,
+            batch_records: tc.draw(gs::integers::<usize>().min_value(1).max_value(40)),
+            lookup_span: tc.draw(gs::integers::<u64>().max_value(60)),
+        }
     }
 
     impl Input {
@@ -1245,8 +1257,11 @@ mod generated_inputs {
     /// Every input record comes out once, in order, with every byte but SEQ
     /// and the methylation tags as it was. Legacy XM marks exactly the read
     /// bases at called positions that show the strand's C (or G) or its
-    /// conversion, in upper case where converted, and standard mode turns
-    /// exactly those converted bases back.
+    /// conversion, in upper case where converted, whatever batch or lookup
+    /// run the read falls in, and standard mode turns exactly those converted
+    /// bases back. (`bam` once cut the genome into 10 kb segments and looked
+    /// up only a segment's own calls, so a read reaching past a segment's end
+    /// lost its tags there.)
     #[hegel::test(test_cases = pinned::cases(12))]
     fn bam_rewrites_every_record_and_only_its_methylation(tc: TestCase) {
         let input = tc.draw(inputs());
@@ -1258,6 +1273,8 @@ mod generated_inputs {
             for mode in ["standard", "legacy"] {
                 let out = dir.path().join(format!("{mode}.bam"));
                 let output = rastair()
+                    .env("RASTAIR_BAM_BATCH_RECORDS", input.batch_records.to_string())
+                    .env("RASTAIR_BAM_LOOKUP_SPAN", input.lookup_span.to_string())
                     .args(["bam", mode, "-@", "3", "--fasta-file"])
                     .arg(dir.path().join("ref.fa"))
                     .arg(dir.path().join("in.bam"))

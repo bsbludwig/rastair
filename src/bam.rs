@@ -134,6 +134,24 @@ pub struct BamRewriteArgs {
 const BATCH_RECORDS: usize = 2_000;
 /// The longest reference span one calls and reference lookup covers.
 const LOOKUP_MAX_SPAN: u64 = 1_000_000;
+
+/// [`BATCH_RECORDS`]; debug builds take `RASTAIR_BAM_BATCH_RECORDS`, so tests
+/// cross batch boundaries with small inputs.
+fn batch_records() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| test_size("RASTAIR_BAM_BATCH_RECORDS").unwrap_or(BATCH_RECORDS))
+}
+
+/// [`LOOKUP_MAX_SPAN`]; debug builds take `RASTAIR_BAM_LOOKUP_SPAN`, so tests
+/// cross run boundaries on short contigs.
+fn lookup_max_span() -> u64 {
+    static SPAN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SPAN.get_or_init(|| test_size("RASTAIR_BAM_LOOKUP_SPAN").unwrap_or(LOOKUP_MAX_SPAN))
+}
+
+fn test_size<T: std::str::FromStr>(var: &str) -> Option<T> {
+    if cfg!(debug_assertions) { std::env::var(var).ok()?.parse().ok() } else { None }
+}
 /// Threads inflating the input's BGZF blocks.
 const INFLATE_THREADS: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
 /// Threads compressing the output, as for `samtools view -@ 3`.
@@ -344,7 +362,7 @@ impl Source {
         };
         let result = match self {
             Self::Stream { mut stream, read, .. } => (|| {
-                let mut records = Vec::with_capacity(BATCH_RECORDS);
+                let mut records = Vec::with_capacity(batch_records());
                 loop {
                     let mut record = RawBamRecord::default();
                     let more = match stream.read_record(&mut record) {
@@ -360,10 +378,10 @@ impl Source {
                     if more {
                         records.push(record);
                     }
-                    if (records.len() == BATCH_RECORDS || !more) && !records.is_empty() {
+                    if (records.len() == batch_records() || !more) && !records.is_empty() {
                         let chunk = Chunk::Records(std::mem::replace(
                             &mut records,
-                            Vec::with_capacity(BATCH_RECORDS),
+                            Vec::with_capacity(batch_records()),
                         ));
                         if !emit(chunk, read.load(Ordering::Relaxed)) {
                             return Ok(());
@@ -385,7 +403,7 @@ impl Source {
                 Ok(())
             })(),
             Self::Regions { mut reader, regions } => (|| {
-                let mut records = Vec::with_capacity(BATCH_RECORDS);
+                let mut records = Vec::with_capacity(batch_records());
                 let mut done = 0;
                 let mut previous: Option<Span> = None;
                 for &region in &regions.0 {
@@ -423,11 +441,11 @@ impl Source {
                         {
                             records.push(record);
                         }
-                        if (records.len() == BATCH_RECORDS || !more) && !records.is_empty() {
+                        if (records.len() == batch_records() || !more) && !records.is_empty() {
                             let progress = done + at.clamp(region.start, region.end) - region.start;
                             let chunk = Chunk::Records(std::mem::replace(
                                 &mut records,
-                                Vec::with_capacity(BATCH_RECORDS),
+                                Vec::with_capacity(batch_records()),
                             ));
                             if !emit(chunk, progress) {
                                 return Ok(());
@@ -520,7 +538,7 @@ impl Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         };
-        (self.tid == other.tid && joined.end - joined.start <= LOOKUP_MAX_SPAN).then_some(joined)
+        (self.tid == other.tid && joined.end - joined.start <= lookup_max_span()).then_some(joined)
     }
 }
 
