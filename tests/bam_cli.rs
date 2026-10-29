@@ -1596,6 +1596,45 @@ fn an_invalid_record_under_region_reports_its_offset() -> Result<()> {
     Ok(())
 }
 
+/// A CRAM that stores no read names (`RN=false`) gets generated ones, named
+/// after the file as `samtools view <file>` names them, not as for stdin.
+#[test]
+fn a_lossy_names_cram_is_named_after_the_file() -> Result<()> {
+    use std::io::Write as _;
+
+    let temp_dir = TempDir::new()?;
+    let calls = temp_dir.path().join("calls.bed.gz");
+    let mut bed = rust_htslib::bgzf::Writer::from_path(&calls)?;
+    writeln!(bed, "chr1\t9\t10\t.\t0.50\t+\t1\t1\t2\t0\t2\tC/C\t7\t7\tREF")?;
+    drop(bed);
+    rust_htslib::tbx::build_index(&calls, rust_htslib::tbx::TabixFormat::Bed, 0)?;
+    let out = temp_dir.path().join("out.bam");
+
+    rastair()
+        .args([
+            "bam",
+            "legacy",
+            "--fasta-file=tests/data/lossy_names/fidelity.fa",
+            "tests/data/lossy_names/fidelity_lossy_names.cram",
+        ])
+        .arg(&calls)
+        .arg("-o")
+        .arg(&out)
+        .silent()
+        .succeeds()?;
+
+    let mut reader = bam::Reader::from_path(&out)?;
+    let names: Vec<String> = reader
+        .records()
+        .map(|record| Ok(String::from_utf8_lossy(record?.qname()).into_owned()))
+        .collect::<Result<_>>()?;
+    ensure!(
+        names.iter().any(|name| name.starts_with("fidelity_lossy_names.cram:")),
+        "no generated name carries the file's name: {names:?}"
+    );
+    Ok(())
+}
+
 /// `--region` with several regions keeps each overlapping read once, also one
 /// reaching into two of them, as `samtools view -M` does.
 #[test]

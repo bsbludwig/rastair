@@ -314,7 +314,13 @@ impl Input {
             let reader = CramStreamReader::new(input).wrap_err_with(open_error)?;
             let decoder = reader
                 .decoder(params.fasta_file.path())
-                .wrap_err("Failed to open the reference for the CRAM file")?;
+                .wrap_err("Failed to open the reference for the CRAM file")?
+                // The names of records the file stores none for, as htslib
+                // names them after the path it opened
+                .name_prefix(path.file_name().map_or_else(
+                    || "-".into(),
+                    |name| name.to_string_lossy().into_owned(),
+                ));
             let header = BamHeader::from_template(reader.header());
             (Source::Cram { reader, input_bytes, read }, header, Some(decoder))
         } else {
