@@ -432,13 +432,7 @@ impl Source {
                             }
                         };
                         let at = record.pos().map_or(region.start, |pos| pos.as_u64());
-                        // Regions are disjoint and sorted, so a record reaching
-                        // an earlier one reaches the one before this.
-                        if more
-                            && !previous.is_some_and(|prev| {
-                                Span::of(&record).is_some_and(|span| span.overlaps(prev))
-                            })
-                        {
+                        if more && !Regions::queried_before(previous, Span::of(&record)) {
                             records.push(record);
                         }
                         if (records.len() == batch_records() || !more) && !records.is_empty() {
@@ -582,7 +576,17 @@ impl Regions {
 
     /// Whether `record` overlaps a region; an unplaced one does not.
     fn keeps(&self, record: &RawBamRecord) -> bool {
-        let Some(span) = Span::of(record) else { return false };
+        Span::of(record).is_some_and(|span| self.keeps_span(span))
+    }
+
+    /// Whether a record a region's query returned came with the query of the
+    /// region before, `previous`: regions are disjoint and sorted, so one
+    /// reaching any earlier region reaches that one.
+    fn queried_before(previous: Option<Span>, record: Option<Span>) -> bool {
+        previous.zip(record).is_some_and(|(previous, record)| record.overlaps(previous))
+    }
+
+    fn keeps_span(&self, span: Span) -> bool {
         // The regions do not overlap, so of those starting before the record
         // ends, only the last one can reach it.
         let before =

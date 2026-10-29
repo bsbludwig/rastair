@@ -1507,7 +1507,10 @@ fn a_rerun_gets_its_own_pg_id() -> Result<()> {
             .lines()
             .filter(|line| line.starts_with("@PG"))
             .map(|line| {
-                line.split('\t').filter(|f| !f.starts_with("CL:") && !f.starts_with("VN:")).collect::<Vec<_>>().join(" ")
+                line.split('\t')
+                    .filter(|f| !f.starts_with("CL:") && !f.starts_with("VN:"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             })
             .collect()
     };
@@ -1523,4 +1526,78 @@ fn a_rerun_gets_its_own_pg_id() -> Result<()> {
     let last = pg_ids(&rerun).pop().wrap_err("no @PG")?;
     assert_snapshot!(last, @"@PG ID:rastair.rewrite_bam.2 PN:rastair DS:Rewrote BAM with methylation information PP:rastair.rewrite_bam.1");
     Ok(())
+}
+
+mod regions {
+    use super::*;
+    use crate::utils::CliRegionInput;
+    use hegel::{TestCase, generators as gs};
+
+    #[hegel::composite]
+    fn spans(tc: &TestCase, max_len: u64) -> (u32, u64, u64) {
+        let tid = tc.draw(gs::integers::<u32>().max_value(1));
+        let start = tc.draw(gs::integers::<u64>().max_value(120));
+        let len = tc.draw(gs::integers::<u64>().min_value(1).max_value(max_len));
+        (tid, start, start + len)
+    }
+
+    /// `--region`s in any order, overlapping, adjacent or on two contigs:
+    /// `keeps` is "overlaps one of them", and querying the merged regions in
+    /// turn, skipping what the region before returned, yields each overlapping
+    /// record once, in (contig, start) order.
+    #[hegel::test]
+    fn regions_keep_and_query_each_overlapping_record_once(tc: TestCase) {
+        let n_regions = tc.draw(gs::integers::<usize>().max_value(6));
+        let regions: Vec<(u32, u64, u64)> = (0..n_regions).map(|_| tc.draw(spans(40))).collect();
+        let n_records = tc.draw(gs::integers::<usize>().max_value(40));
+        let mut records: Vec<(u32, u64, u64)> =
+            (0..n_records).map(|_| tc.draw(spans(30))).collect();
+        records.sort_unstable();
+
+        let header = BamHeader::synthetic(2, 200);
+        let tid = |n: u32| header.tid(&format!("c{n}")).wrap_err("tid");
+        let check = || -> Result<()> {
+            let text: Vec<String> = regions
+                .iter()
+                .map(|(tid, start, end)| format!("c{tid}:{}-{end}", start + 1))
+                .collect();
+            let input: Option<CliRegionInput> =
+                (!text.is_empty()).then(|| text.join(" ").parse()).transpose()?;
+            let merged = Regions::new(input.as_ref(), &header)?;
+            let span = |&(t, start, end): &(u32, u64, u64)| -> Result<Span> {
+                Ok(Span { tid: tid(t)?, start, end })
+            };
+            let overlapping: Vec<Span> = records
+                .iter()
+                .filter(|(t, start, end)| {
+                    regions.iter().any(|(rt, rs, re)| rt == t && start < re && rs < end)
+                })
+                .map(span)
+                .collect::<Result<_>>()?;
+
+            for record in &records {
+                let record = span(record)?;
+                ensure!(
+                    merged.keeps_span(record) == overlapping.contains(&record),
+                    "keeps {record:?}"
+                );
+            }
+
+            let mut queried = Vec::new();
+            let mut previous = None;
+            for &region in &merged.0 {
+                for record in &records {
+                    let record = span(record)?;
+                    if record.overlaps(region) && !Regions::queried_before(previous, Some(record)) {
+                        queried.push(record);
+                    }
+                }
+                previous = Some(region);
+            }
+            ensure!(queried == overlapping, "queried {queried:?}, overlapping {overlapping:?}");
+            Ok(())
+        };
+        let result = check();
+        assert!(result.is_ok(), "{regions:?} {records:?}: {result:?}");
+    }
 }
