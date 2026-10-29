@@ -126,7 +126,7 @@ For a description of the per-read bed format, see the [BED format](formats/bed.m
 Alternatively, we also support two different ways to include methylation information in the bam file directly. To do this, you need to first generate a per-position bed file with `rastair call` as described earlier. Once you have this, you can annotate your input bam with the `XM`/`XR` tags used in [Bismark](https://felixkrueger.github.io/Bismark/bismark/alignment/) and several other short-read methylation callers:
 
 ```bash
-rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
+rastair bam legacy -r reference.fa.gz -o test_xm.bam test.bam test.bed.gz
 ```
 
 > [!TIP]
@@ -137,7 +137,7 @@ rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
 Alternatively, we also support the new official SAM standard for recording per-read methylation via [the `MM` tags](https://samtools.github.io/hts-specs/SAMtags.pdf):
 
 ```bash
-rastair bam standard -r reference.fa.gz --bam test_mm.bam test.bam test.bed.gz
+rastair bam standard -r reference.fa.gz -o test_mm.bam test.bam test.bed.gz
 ```
 
 > [!WARNING]
