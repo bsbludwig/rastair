@@ -71,30 +71,34 @@ pub fn first_error(first: Result<()>, then: Result<()>) -> Result<()> {
     }
 }
 
-/// Runs `work` on each segment on `pool`'s threads and hands the results to
+/// Runs `work` on each item on `pool`'s threads and hands the results to
 /// `write` on the calling thread, in order (see [`ordair::in_order`]).
 ///
-/// An error stops the run: no new segment is started, so the output is a
-/// contiguous prefix. To skip a segment that failed in `work` instead, count
-/// it in [`FailedSegments`] and return no records. A panic in `init`, `work`
-/// or `write` stops the run like an error, after the panic hook printed its
-/// report.
-pub fn process_in_order<T: Sync + fmt::Display, S, R: Send>(
+/// The workers pull `items` one at a time, so an iterator that reads its input
+/// runs on them, serially. An error stops the run: no new item is started, so
+/// the output is a contiguous prefix. To skip a segment that failed in `work`
+/// instead, count it in [`FailedSegments`] and return no records. A panic in
+/// `init`, `work` or `write` stops the run like an error, after the panic hook
+/// printed its report.
+pub fn process_in_order<I, S, R: Send>(
     pool: &rayon::ThreadPool,
-    segments: &[T],
+    items: I,
     init: impl Fn() -> Result<S> + Sync,
-    work: impl Fn(&mut S, &T) -> Result<R> + Sync,
+    work: impl Fn(&mut S, I::Item) -> Result<R> + Sync,
     mut write: impl FnMut(R) -> Result<()>,
-) -> Result<()> {
-    let total = segments.len();
-    let mut written = 0;
-    // ordair's default window, four segments per worker, lets the others carry
-    // on past one slow segment (deep coverage, a repeat) without every segment
+) -> Result<()>
+where
+    I: IntoIterator<IntoIter: Send, Item: Send + fmt::Display>,
+{
+    let mut written = 0_usize;
+    // ordair's default window, four items per worker, lets the others carry
+    // on past one slow item (deep coverage, a repeat) without every item
     // behind it piling up in memory.
-    let result = ordair::in_order(segments)
+    let result = ordair::in_order(items)
         .pool(pool)
-        .map_init(init, |state, segment| {
-            work(state, segment).wrap_err_with(|| format!("Failed to process region `{segment}`"))
+        .map_init(init, |state, item| {
+            let name = item.to_string();
+            work(state, item).wrap_err_with(|| format!("Failed to process `{name}`"))
         })
         .try_for_each(|processed| {
             write(processed?).wrap_err("Failed to write the output")?;
@@ -111,8 +115,8 @@ pub fn process_in_order<T: Sync + fmt::Display, S, R: Send>(
         })
         .flatten();
 
-    if written < total {
-        warn!(written, total, "Output is incomplete: stopped before all segments were written");
+    if result.is_err() {
+        warn!(written, "Output is incomplete: stopped before all items were written");
     }
     result
 }
