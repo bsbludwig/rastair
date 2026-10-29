@@ -679,7 +679,7 @@ impl Worker {
     ) -> Result<()> {
         let Some(span) = span else {
             for record in records {
-                rewrite_record(&FxHashMap::default(), record, mode, |_| None)?;
+                rewrite_named(&FxHashMap::default(), record, mode, |_| None)?;
             }
             return Ok(());
         };
@@ -715,12 +715,22 @@ impl Worker {
         };
 
         for record in records {
-            rewrite_record(&calls, record, mode, ref_base).wrap_err_with(|| {
-                format!("failed to rewrite record {}", String::from_utf8_lossy(record.qname()))
-            })?;
+            rewrite_named(&calls, record, mode, ref_base)?;
         }
         Ok(())
     }
+}
+
+/// [`rewrite_record`], failing with the read's name.
+fn rewrite_named(
+    calls: &FxHashMap<u32, RastairCall>,
+    record: &mut RawBamRecord,
+    mode: BamMode,
+    ref_base: impl Fn(u32) -> Option<Base>,
+) -> Result<()> {
+    rewrite_record(calls, record, mode, ref_base).wrap_err_with(|| {
+        format!("failed to rewrite record {}", String::from_utf8_lossy(record.qname()))
+    })
 }
 
 /// The bases of `record` aligned to the reference, as read index and

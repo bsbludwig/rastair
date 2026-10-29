@@ -1049,6 +1049,9 @@ mod generated_inputs {
         /// so batches and lookup runs end inside the input, among the calls
         batch_records: usize,
         lookup_span: u64,
+        /// The read whose aux block gets a tag without its NUL, which `bam`
+        /// must fail on, naming it
+        malformed: Option<usize>,
     }
 
     #[hegel::composite]
@@ -1104,7 +1107,15 @@ mod generated_inputs {
             })
             .collect();
         let n_reads = tc.draw(gs::integers::<usize>().max_value(12));
-        let reads = (0..n_reads).map(|_| tc.draw(reads())).collect();
+        let mut reads: Vec<Read> = (0..n_reads).map(|_| tc.draw(reads())).collect();
+        let malformed = (n_reads > 0 && tc.draw(gs::integers::<u8>().max_value(3)) == 0)
+            .then(|| tc.draw(gs::integers::<usize>().max_value(n_reads - 1)));
+        // Mostly an unplaced one: a batch of only those has no lookup run
+        if let Some(read) = malformed.and_then(|index| reads.get_mut(index))
+            && tc.draw(gs::booleans())
+        {
+            read.placement = Placement::Unplaced;
+        }
         let copies = tc.draw(gs::sampled_from([1, 2, 300].as_slice()));
         let n_calls = tc.draw(gs::integers::<usize>().max_value(40));
         let calls = (0..n_calls)
@@ -1123,6 +1134,7 @@ mod generated_inputs {
             calls,
             batch_records: tc.draw(gs::integers::<usize>().min_value(1).max_value(40)),
             lookup_span: tc.draw(gs::integers::<u64>().max_value(60)),
+            malformed,
         }
     }
 
@@ -1184,7 +1196,13 @@ mod generated_inputs {
             let mut writer = BamWriterBuilder::to_path(&dir.join("in.bam"), &header).build()?;
             let mut record = RawBamRecord::default();
             while stream.read_record(&mut record)? {
-                writer.write_raw(&record)?;
+                if self.is_malformed(&record) {
+                    let mut payload = record.as_payload().to_vec();
+                    payload.extend_from_slice(b"XXZab");
+                    writer.write_raw(&RawBamRecord::from_payload(payload, &header)?)?;
+                } else {
+                    writer.write_raw(&record)?;
+                }
             }
             writer.finish()?;
 
@@ -1217,6 +1235,12 @@ mod generated_inputs {
             drop(bed);
             rust_htslib::tbx::build_index(&path, rust_htslib::tbx::TabixFormat::Bed, 0)?;
             Ok(())
+        }
+
+        /// Whether `record` is a copy of the [`Self::malformed`] read
+        fn is_malformed(&self, record: &RawBamRecord) -> bool {
+            let name = String::from_utf8_lossy(record.qname()).into_owned();
+            self.malformed.is_some_and(|index| name.starts_with(&format!("r{index}_")))
         }
 
         fn called(&self, tid: usize, pos: usize) -> bool {
@@ -1262,13 +1286,14 @@ mod generated_inputs {
     /// bases back. (`bam` once cut the genome into 10 kb segments and looked
     /// up only a segment's own calls, so a read reaching past a segment's end
     /// lost its tags there.)
-    #[hegel::test(test_cases = pinned::cases(12))]
+    #[hegel::test(test_cases = pinned::cases(32))]
     fn bam_rewrites_every_record_and_only_its_methylation(tc: TestCase) {
         let input = tc.draw(inputs());
         let check = || -> Result<()> {
             let dir = TempDir::new()?;
             input.write(dir.path())?;
             let records = read_bam(&dir.path().join("in.bam"))?;
+            let first_malformed = records.iter().find(|record| input.is_malformed(record));
             let mut outputs = Vec::new();
             for mode in ["standard", "legacy"] {
                 let out = dir.path().join(format!("{mode}.bam"));
@@ -1282,11 +1307,16 @@ mod generated_inputs {
                     .arg("-o")
                     .arg(&out)
                     .output()?;
-                ensure!(
-                    output.status.success(),
-                    "{mode}: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if let Some(record) = first_malformed {
+                    let name = String::from_utf8_lossy(record.qname());
+                    ensure!(!output.status.success(), "{mode} should fail on {name}");
+                    let named = format!("failed to rewrite record {name}");
+                    ensure!(stderr.contains(&named), "{mode} should name {name}: {stderr}");
+                    ensure!(!out.exists(), "{mode} should commit no output");
+                    continue;
+                }
+                ensure!(output.status.success(), "{mode}: {stderr}");
                 let written = read_bam(&out)?;
                 ensure!(
                     written.len() == records.len(),
@@ -1295,6 +1325,9 @@ mod generated_inputs {
                     records.len()
                 );
                 outputs.push(written);
+            }
+            if first_malformed.is_some() {
+                return Ok(());
             }
             let (standard, legacy) = (&outputs[0], &outputs[1]);
             for ((input_record, standard), legacy) in records.iter().zip(standard).zip(legacy) {
