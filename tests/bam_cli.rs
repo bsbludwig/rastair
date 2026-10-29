@@ -1479,16 +1479,14 @@ mod generated_inputs {
     }
 }
 
-/// A record that is not valid BAM (here its CIGAR is longer than its SEQ)
-/// stops the run with an error naming it, and nothing is committed: `bam`
-/// rewrites losslessly or not at all.
-#[test]
-fn an_invalid_record_fails_the_run() -> Result<()> {
+/// A coordinate-sorted BAM of three reads in `c1`; with `invalid` the second
+/// has a CIGAR longer than its sequence. The records are as long either way,
+/// so an index built on the valid file also fits the invalid one.
+fn write_three_reads_bam(dir: &std::path::Path, invalid: bool) -> Result<std::path::PathBuf> {
     use seqair::bam::RawBamRecord;
     use seqair::reader::AlignmentStream;
     use std::io::Write as _;
 
-    let temp_dir = TempDir::new()?;
     let sam = "@SQ\tSN:c1\tLN:100\n\
                a\t0\tc1\t1\t60\t4M\t*\t0\t0\tACGT\tIIII\n\
                b\t0\tc1\t2\t60\t4M\t*\t0\t0\tACGT\tIIII\n\
@@ -1507,9 +1505,9 @@ fn an_invalid_record_fails_the_run() -> Result<()> {
         .get_mut(1)
         .and_then(|payload| payload.get_mut(cigar_at..cigar_at + 4))
         .ok_or_else(|| eyre!("no second record"))?;
-    op.copy_from_slice(&(5_u32 << 4).to_le_bytes());
+    op.copy_from_slice(&(if invalid { 5_u32 } else { 4 } << 4).to_le_bytes());
 
-    let input = temp_dir.path().join("in.bam");
+    let input = dir.join("in.bam");
     let mut bam_bytes = b"BAM\x01".to_vec();
     let text = header.header_text().as_bytes();
     bam_bytes.extend_from_slice(&u32::try_from(text.len())?.to_le_bytes());
@@ -1525,6 +1523,19 @@ fn an_invalid_record_fails_the_run() -> Result<()> {
     let mut writer = rust_htslib::bgzf::Writer::from_path(&input)?;
     writer.write_all(&bam_bytes)?;
     drop(writer);
+
+    Ok(input)
+}
+
+/// A record that is not valid BAM (here its CIGAR is longer than its SEQ)
+/// stops the run with an error naming it, and nothing is committed: `bam`
+/// rewrites losslessly or not at all.
+#[test]
+fn an_invalid_record_fails_the_run() -> Result<()> {
+    use std::io::Write as _;
+
+    let temp_dir = TempDir::new()?;
+    let input = write_three_reads_bam(temp_dir.path(), true)?;
 
     let fasta = write_fasta_with_contigs(temp_dir.path(), &["c1"])?;
     let calls = temp_dir.path().join("calls.bed.gz");
@@ -1551,6 +1562,37 @@ fn an_invalid_record_fails_the_run() -> Result<()> {
         let written = bam::Reader::from_path(&partial)?.records().count();
         ensure!(written == 1, "{mode}: the records before it are left, got {written}");
     }
+    Ok(())
+}
+
+/// Through the index, an invalid record fails the run with its BGZF virtual
+/// offset, which `samtools view -X` and a hex dump can find.
+#[test]
+fn an_invalid_record_under_region_reports_its_offset() -> Result<()> {
+    use std::io::Write as _;
+
+    let temp_dir = TempDir::new()?;
+    let input = write_three_reads_bam(temp_dir.path(), false)?;
+    bam::index::build(&input, None, bam::index::Type::Bai, 1)?;
+    write_three_reads_bam(temp_dir.path(), true)?;
+    let fasta = write_fasta_with_contigs(temp_dir.path(), &["c1"])?;
+    let calls = temp_dir.path().join("calls.bed.gz");
+    let mut bed = rust_htslib::bgzf::Writer::from_path(&calls)?;
+    writeln!(bed, "c1\t1\t2\t.\t0.50\t+\t1\t1\t2\t0\t2\tC/C\t7\t7\tREF")?;
+    drop(bed);
+    rust_htslib::tbx::build_index(&calls, rust_htslib::tbx::TabixFormat::Bed, 0)?;
+
+    let output = rastair()
+        .args(["bam", "legacy", "--fasta-file"])
+        .arg(&fasta)
+        .arg(&input)
+        .arg(&calls)
+        .args(["--region", "c1", "-o"])
+        .arg(temp_dir.path().join("out.bam"))
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    ensure!(!output.status.success(), "should fail: {stderr}");
+    ensure!(stderr.contains("virtual offset 0x"), "{stderr}");
     Ok(())
 }
 
