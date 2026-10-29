@@ -1372,3 +1372,78 @@ mod generated_inputs {
         assert!(result.is_ok(), "{result:?}");
     }
 }
+
+/// A record that is not valid BAM (here its CIGAR is longer than its SEQ)
+/// stops the run with an error naming it, and nothing is committed: `bam`
+/// rewrites losslessly or not at all.
+#[test]
+fn an_invalid_record_fails_the_run() -> Result<()> {
+    use seqair::bam::RawBamRecord;
+    use seqair::reader::AlignmentStream;
+    use std::io::Write as _;
+
+    let temp_dir = TempDir::new()?;
+    let sam = "@SQ\tSN:c1\tLN:100\n\
+               a\t0\tc1\t1\t60\t4M\t*\t0\t0\tACGT\tIIII\n\
+               b\t0\tc1\t2\t60\t4M\t*\t0\t0\tACGT\tIIII\n\
+               c\t0\tc1\t3\t60\t4M\t*\t0\t0\tACGT\tIIII\n";
+    let mut stream = AlignmentStream::from_reader(std::io::Cursor::new(sam.as_bytes().to_vec()))?;
+    let header = stream.header().clone();
+    let mut payloads = Vec::new();
+    let mut record = RawBamRecord::default();
+    while stream.read_record(&mut record)? {
+        payloads.push(record.as_payload().to_vec());
+    }
+    // The second record's CIGAR becomes 5M: the first op follows the
+    // 32-byte fixed fields and the NUL-terminated name.
+    let cigar_at = 32 + 2;
+    let op = payloads
+        .get_mut(1)
+        .and_then(|payload| payload.get_mut(cigar_at..cigar_at + 4))
+        .ok_or_else(|| eyre!("no second record"))?;
+    op.copy_from_slice(&(5_u32 << 4).to_le_bytes());
+
+    let input = temp_dir.path().join("in.bam");
+    let mut bam_bytes = b"BAM\x01".to_vec();
+    let text = header.header_text().as_bytes();
+    bam_bytes.extend_from_slice(&u32::try_from(text.len())?.to_le_bytes());
+    bam_bytes.extend_from_slice(text);
+    bam_bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bam_bytes.extend_from_slice(&3_u32.to_le_bytes());
+    bam_bytes.extend_from_slice(b"c1\0");
+    bam_bytes.extend_from_slice(&100_u32.to_le_bytes());
+    for payload in &payloads {
+        bam_bytes.extend_from_slice(&u32::try_from(payload.len())?.to_le_bytes());
+        bam_bytes.extend_from_slice(payload);
+    }
+    let mut writer = rust_htslib::bgzf::Writer::from_path(&input)?;
+    writer.write_all(&bam_bytes)?;
+    drop(writer);
+
+    let fasta = write_fasta_with_contigs(temp_dir.path(), &["c1"])?;
+    let calls = temp_dir.path().join("calls.bed.gz");
+    let mut bed = rust_htslib::bgzf::Writer::from_path(&calls)?;
+    writeln!(bed, "c1\t1\t2\t.\t0.50\t+\t1\t1\t2\t0\t2\tC/C\t7\t7\tREF")?;
+    drop(bed);
+    rust_htslib::tbx::build_index(&calls, rust_htslib::tbx::TabixFormat::Bed, 0)?;
+
+    for mode in ["standard", "legacy"] {
+        let out = temp_dir.path().join(format!("{mode}.bam"));
+        let output = rastair()
+            .args(["bam", mode, "--fasta-file"])
+            .arg(&fasta)
+            .arg(&input)
+            .arg(&calls)
+            .arg("-o")
+            .arg(&out)
+            .output()?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        ensure!(!output.status.success(), "{mode} should fail: {stderr}");
+        ensure!(stderr.contains("BAM record 2 is invalid"), "{mode}: {stderr}");
+        ensure!(!out.exists(), "{mode} should commit no output");
+        let partial = temp_dir.path().join(format!("{mode}.bam.partial"));
+        let written = bam::Reader::from_path(&partial)?.records().count();
+        ensure!(written == 1, "{mode}: the records before it are left, got {written}");
+    }
+    Ok(())
+}
