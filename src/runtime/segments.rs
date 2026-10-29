@@ -72,7 +72,9 @@ pub fn first_error(first: Result<()>, then: Result<()>) -> Result<()> {
 }
 
 /// Runs `work` on each item on `pool`'s threads and hands the results to
-/// `write` on the calling thread, in order (see [`ordair::in_order`]).
+/// `write` on the calling thread, in order (see [`ordair::in_order`]). At most
+/// `window` items are started ahead of the one being written, four per thread
+/// if `None`.
 ///
 /// The workers pull `items` one at a time, so an iterator that reads its input
 /// runs on them, serially. An error stops the run: no new item is started, so
@@ -82,6 +84,7 @@ pub fn first_error(first: Result<()>, then: Result<()>) -> Result<()> {
 /// printed its report.
 pub fn process_in_order<I, S, R: Send>(
     pool: &rayon::ThreadPool,
+    window: Option<usize>,
     items: I,
     init: impl Fn() -> Result<S> + Sync,
     work: impl Fn(&mut S, I::Item) -> Result<R> + Sync,
@@ -91,11 +94,12 @@ where
     I: IntoIterator<IntoIter: Send, Item: Send + fmt::Display>,
 {
     let mut written = 0_usize;
-    // ordair's default window, four items per worker, lets the others carry
-    // on past one slow item (deep coverage, a repeat) without every item
-    // behind it piling up in memory.
+    // Four items per worker lets the others carry on past one slow item (deep
+    // coverage, a repeat) without every item behind it piling up in memory.
+    let window = window.unwrap_or_else(|| pool.current_num_threads().saturating_mul(4)).max(1);
     let result = ordair::in_order(items)
         .pool(pool)
+        .window(window)
         .map_init(init, |state, item| {
             let name = item.to_string();
             work(state, item).wrap_err_with(|| format!("Failed to process `{name}`"))

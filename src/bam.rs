@@ -194,6 +194,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
 
     let (total, unit) = source.progress_total();
     let mut progress = ProgressTracker::counting(total, unit);
+    let window = source.window(worker_threads);
     let processed = std::thread::scope(|scope| {
         let (send, batches) = std::sync::mpsc::sync_channel(worker_threads);
         let reader = std::thread::Builder::new()
@@ -202,6 +203,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
             .wrap_err("Failed to start the BAM reader thread")?;
         let processed = segments::process_in_order(
             &pool,
+            window,
             batches.into_iter().map(Pulled),
             || Worker::open(params, mode, decoder.as_ref()),
             |worker, Pulled(batch)| {
@@ -343,6 +345,13 @@ impl Source {
                 (kilo(regions.0.iter().map(|span| span.end - span.start).sum()), "kb of regions")
             }
         }
+    }
+
+    /// How many batches may run ahead of the one being written: for CRAM one
+    /// per worker, as a decoded container is often 10,000 records, five BAM
+    /// batches at about 1 kB each in memory; four per worker otherwise.
+    fn window(&self, workers: usize) -> Option<usize> {
+        matches!(self, Self::Cram { .. }).then_some(workers)
     }
 
     /// Read the input to the end and send it as batches, or the error that

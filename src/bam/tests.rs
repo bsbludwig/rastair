@@ -1594,3 +1594,20 @@ mod regions {
         assert!(result.is_ok(), "{regions:?} {records:?}: {result:?}");
     }
 }
+
+/// A decoded CRAM container is several BAM batches, so a CRAM source runs one
+/// batch per worker ahead of the writer, a BAM source the default.
+#[test]
+fn a_cram_runs_one_batch_per_worker_ahead() -> Result<()> {
+    let window = |input: &str| -> Result<Option<usize>> {
+        let params = ReaderParams {
+            bam_file: ClioPath::new(input)?,
+            fasta_file: ClioPath::new("tests/data/test.fasta.gz")?,
+            regions: None,
+        };
+        Ok(Input::open(&params)?.source.window(7))
+    };
+    assert_eq!(window("tests/data/test.cram")?, Some(7));
+    assert_eq!(window("tests/data/test.bam")?, None);
+    Ok(())
+}
