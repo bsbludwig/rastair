@@ -1653,3 +1653,50 @@ fn bam_twice_gives_unique_pg_ids() -> Result<()> {
     ensure!(field(last, "PP:").as_deref() == Some("rastair.rewrite_bam"), "{last:?}");
     Ok(())
 }
+
+/// A name-sorted CRAM (`SO:queryname`), as aligners and `samtools sort -n`
+/// write it, is rewritten whole, in its own order.
+#[test]
+fn a_name_sorted_cram_keeps_its_order() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let cram = temp_dir.path().join("by_name.cram");
+    let sorted = Command::new("samtools")
+        .args(["sort", "-n", "-O", "cram", "--reference", "tests/data/test.fasta.gz", "-o"])
+        .arg(&cram)
+        .arg("tests/data/test.bam")
+        .output()
+        .wrap_err("Failed to run samtools")?;
+    ensure!(sorted.status.success(), "samtools: {}", String::from_utf8_lossy(&sorted.stderr));
+
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--region=chr19:6103000-6103300", "--cpgs-only", "--bed"])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+    let output_bam = temp_dir.path().join("out.bam");
+    rastair()
+        .args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz"])
+        .arg(&cram)
+        .arg(&calls_bed)
+        .arg("-o")
+        .arg(&output_bam)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to rewrite the name-sorted CRAM")?;
+
+    let names = |path: &Path| -> Result<Vec<(Vec<u8>, u16)>> {
+        let mut reader = bam::Reader::from_path(path)?;
+        reader.set_reference("tests/data/test.fasta.gz")?;
+        reader
+            .records()
+            .map(|record| Ok(record.map(|r| (r.qname().to_owned(), r.flags()))?))
+            .collect()
+    };
+    let input = names(&cram)?;
+    ensure!(input.len() == 29_358, "the CRAM has {} records", input.len());
+    ensure!(names(&output_bam)? == input, "every record, in the CRAM's order");
+    Ok(())
+}
