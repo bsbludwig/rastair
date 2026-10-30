@@ -130,6 +130,13 @@ pub struct BamRewriteArgs {
     #[arg(short = 'o', long, default_value = "-")]
     #[arg(help_heading = cli::sections::OUTPUT)]
     output: ClioPath,
+
+    /// BGZF compression level of the output, from 0 (uncompressed) to 12
+    /// (smallest, slowest). Higher levels cost the compression threads (`-@`)
+    /// more time; samtools writes 6.
+    #[arg(long, default_value_t = 1, value_parser = value_parser!(u8).range(0..=12))]
+    #[arg(help_heading = cli::sections::OUTPUT)]
+    compression_level: u8,
 }
 
 /// Records per [`Batch`] of BAM or SAM: about what a 10 kb segment held at
@@ -187,7 +194,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
         Box::new(io::BufWriter::new(file))
     };
     let mut writer = BamWriterBuilder::to_writer(sink, &header)
-        .compression_level(1)
+        .compression_level(params.compression_level.into())
         // Level-1 BGZF takes about two thirds of the rewrite's CPU, so a fixed
         // few threads capped the run; idle compressors only wait.
         .compression_threads(params.threads)

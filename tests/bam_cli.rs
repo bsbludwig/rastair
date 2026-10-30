@@ -997,6 +997,54 @@ fn bam_keeps_every_record() -> Result<()> {
     Ok(())
 }
 
+/// `--compression-level` changes how the output is compressed, never what it holds.
+#[test]
+fn compression_level_changes_only_the_file_size() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let calls_bed = temp_dir.path().join("calls.bed.gz");
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args(["--cpgs-only", "--bed"])
+        .arg(&calls_bed)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    let records = |path: &Path| -> Result<Vec<seqair::bam::RawBamRecord>> {
+        let mut stream = seqair::reader::AlignmentStream::from_reader(std::fs::File::open(path)?)?;
+        let mut records = Vec::new();
+        let mut record = seqair::bam::RawBamRecord::default();
+        while stream.read_record(&mut record)? {
+            records.push(record.clone());
+        }
+        Ok(records)
+    };
+    let mut outputs = Vec::new();
+    for level in ["0", "9"] {
+        let output_bam = temp_dir.path().join(format!("level{level}.bam"));
+        rastair()
+            .args([
+                "bam",
+                "standard",
+                "--fasta-file=tests/data/test.fasta.gz",
+                "tests/data/test.bam",
+            ])
+            .arg(&calls_bed)
+            .args(["--compression-level", level, "-o"])
+            .arg(&output_bam)
+            .silent()
+            .succeeds()
+            .wrap_err_with(|| format!("Failed to rewrite BAM at level {level}"))?;
+        outputs.push((std::fs::metadata(&output_bam)?.len(), records(&output_bam)?));
+    }
+    let [(stored, stored_records), (compressed, compressed_records)] = outputs.as_slice() else {
+        color_eyre::eyre::bail!("expected two outputs");
+    };
+    ensure!(stored_records == compressed_records, "both levels hold the same records");
+    ensure!(stored > compressed, "level 0 ({stored} B) is larger than level 9 ({compressed} B)");
+    Ok(())
+}
+
 mod generated_inputs {
     //! `bam` on generated inputs: mapped, placed-unmapped and unplaced
     //! records, sorted or not, on either side of a batch boundary.

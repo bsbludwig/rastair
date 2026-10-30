@@ -392,6 +392,9 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 * `-o`, `--output <OUTPUT>` — Output file
 
   Default value: `-`
+* `--compression-level <COMPRESSION_LEVEL>` — BGZF compression level of the output, from 0 (uncompressed) to 12 (smallest, slowest). Higher levels cost the compression threads (`-@`) more time; samtools writes 6
+
+  Default value: `1`
 
 ###### **Processing Options:**
 
@@ -424,6 +427,9 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 * `-o`, `--output <OUTPUT>` — Output file
 
   Default value: `-`
+* `--compression-level <COMPRESSION_LEVEL>` — BGZF compression level of the output, from 0 (uncompressed) to 12 (smallest, slowest). Higher levels cost the compression threads (`-@`) more time; samtools writes 6
+
+  Default value: `1`
 
 ###### **Processing Options:**
 
