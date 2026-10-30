@@ -71,7 +71,7 @@ fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<(CpgOrig
 pub fn written(record: &PileupMetrics) -> SmallVec<(CpgOrigin, Option<CpgBeta>), 2> {
     let methylated = &record.pos_metrics.methylated;
     let mut origins = origins(record);
-    if record.reference_cpg().is_some() && !origins.contains(&CpgOrigin::Original) {
+    if record.lost_reference_cpg() {
         origins.insert(0, CpgOrigin::Original);
     }
     origins.into_iter().map(|origin| (origin, methylated.get(origin).copied())).collect()

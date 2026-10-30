@@ -229,7 +229,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   Default value: `false`
 * `--error-model <ERROR_MODEL>` — The error model to use
 
-   Accepts platform names or a custom error rate (e.g., 0.005)
+   Accepts platform names or a custom error rate (e.g., 0.005). The pair-HMM also takes it as the rate at which TAPS converts an unmethylated C.
 
   Default value: `novaseq6000`
 
@@ -249,6 +249,11 @@ Only variants that pass all filters are written by default. Use `--all` to get a
   - `hiseqxten`:
     HiSeq X Ten <https://support.illumina.com/sequencing/sequencing_instruments/hiseq-x.html>
 
+* `--conversion-efficiency <CONVERSION_EFFICIENCY>` — Chance that TAPS converts a methylated C, which then reads as T
+
+   Used by the pair-HMM that scores indels and SNVs. The default is measured from the lambda spike-in control.
+
+  Default value: `0.96`
 * `--gpu` — Use GPU-accelerated ML predictions which might speed up large datasets, but can be slower for small ones due to overhead. The pair-HMM, indel and SNV clusters alike, runs on the GPU too.
 
    Requires a Metal/Vulkan/DX12-capable GPU.

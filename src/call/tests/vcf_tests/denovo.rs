@@ -417,7 +417,7 @@ fn a_homozygous_snp_at_a_reference_cpg_leaves_no_cpg() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
     let records = reprocess(records)?;
-    assert!(records.iter().all(|r| !r.in_cpg() && r.cpg_record()));
+    assert!(records.iter().all(|r| !r.in_cpg() && r.cpg_record() && r.lost_reference_cpg()));
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;

@@ -262,6 +262,13 @@ impl PileupMetrics {
         self.in_cpg() || self.reference_cpg().is_some()
     }
 
+    /// At a reference CpG's position that called variants leave on no
+    /// chromosome of this sample (`CPGlost`).
+    pub fn lost_reference_cpg(&self) -> bool {
+        self.reference_cpg().is_some()
+            && !super::methylation::origins(self).contains(&crate::vcf::CpgOrigin::Original)
+    }
+
     /// In a CpG a called alt makes, here or next door.
     pub fn in_denovo_cpg(&self) -> bool {
         self.denovo_partner().is_some()

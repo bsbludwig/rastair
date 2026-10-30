@@ -6,7 +6,7 @@ expression: stdout
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##rastairVersion=2.2.0
 ##rastairCommand=call --fasta-file=tests/data/test.fasta.gz tests/data/test.bam --region=chr19:6105700-6105800
-##rastairConfig={"require_tags":[],"variant_calling":{"unpaired":false,"guess_read_orientation":false,"error_model":"Novaseq6000","keep_overlapping_reads":false,"max_coverage":1000,"quality":{"min_mapq":1,"min_baseq":10},"read_masking":{"n_ot":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}},"n_ob":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}}},"read_flags":{"include_flags":3,"exclude_flags":3852}},"indel":{"min_indel_ao":2},"methylation":{"rescue_soft_clip_cpg":false,"m_max_coverage":1000},"ml":{"ml":0.4,"gpu":false,"snv_engine":true},"phase_min_switch_quality":30,"record_filters":{"vcf_all":false,"cpgs_only":false}}
+##rastairConfig={"require_tags":[],"variant_calling":{"unpaired":false,"guess_read_orientation":false,"error_model":"Novaseq6000","keep_overlapping_reads":false,"max_coverage":1000,"conversion_efficiency":0.96,"quality":{"min_mapq":1,"min_baseq":10},"read_masking":{"n_ot":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}},"n_ob":{"r1":{"from_start":0,"from_end":0},"r2":{"from_start":0,"from_end":0}}},"read_flags":{"include_flags":3,"exclude_flags":3852}},"indel":{"min_indel_ao":2},"methylation":{"rescue_soft_clip_cpg":false,"m_max_coverage":1000},"ml":{"ml":0.4,"gpu":false,"snv_engine":true},"phase_min_switch_quality":30,"record_filters":{"vcf_all":false,"cpgs_only":false}}
 ##reference="tests/data/test.fasta.gz"
 ##FILTER=<ID=pre_ml,Description="Low amount of usable evidence, skipping ML">
 ##FILTER=<ID=m_highDp,Description="Excessive coverage for methylation candidate">
@@ -36,6 +36,7 @@ expression: stdout
 ##INFO=<ID=M5mC_Strands,Number=4,Type=Integer,Description="Number of reads that are evidence for unmodified, modified (the reads M5mC counts), no SNP, SNP. Always reported; 0,0,0,0 where neither CPG nor CPGnovo is set.">
 ##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
 ##INFO=<ID=CPGnovo,Number=0,Type=Flag,Description="De-novo CPG candidate: Could the alt alleles create a new CpG site?">
+##INFO=<ID=CPGlost,Number=0,Type=Flag,Description="Reference CpG not in this sample: the called variants leave no chromosome with both its C and G, so it has no M5mC.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set identifier: the position of the first variant in the phase block, or of its next variant where another block's PS is that position">
 ##FORMAT=<ID=PQ,Number=1,Type=Integer,Description="Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly">

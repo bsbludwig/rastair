@@ -7,7 +7,9 @@ use crate::{
     utils::cli,
 };
 use better_default::Default;
+use compair::ConversionModel;
 use seqair::reader::DepthLimit;
+use seqair_types::Probability;
 use std::num::NonZeroU32;
 
 #[derive(Debug, Clone, Default, clap::Args, serde::Serialize, serde::Deserialize)]
@@ -35,7 +37,9 @@ pub struct VariantCallingParams {
 
     /// The error model to use
     ///
-    /// Accepts platform names or a custom error rate (e.g., 0.005)
+    /// Accepts platform names or a custom error rate (e.g., 0.005). The
+    /// pair-HMM also takes it as the rate at which TAPS converts an
+    /// unmethylated C.
     #[arg(long, default_value = "novaseq6000", value_parser = ErrorModel::value_parser())]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub error_model: ErrorModel,
@@ -60,6 +64,15 @@ pub struct VariantCallingParams {
     #[default(MaxCoverage::DEFAULT)]
     pub max_coverage: MaxCoverage,
 
+    /// Chance that TAPS converts a methylated C, which then reads as T
+    ///
+    /// Used by the pair-HMM that scores indels and SNVs. The default is
+    /// measured from the lambda spike-in control.
+    #[arg(long, default_value_t = ConversionModel::taps_default().efficiency())]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    #[default(ConversionModel::taps_default().efficiency())]
+    pub conversion_efficiency: Probability,
+
     #[command(flatten)]
     pub quality: QualityFilterParams,
 
@@ -79,6 +92,13 @@ impl VariantCallingParams {
     #[must_use]
     pub const fn strand_source(&self) -> StrandSource {
         if self.guess_read_orientation { StrandSource::Motifs } else { StrandSource::Flags }
+    }
+
+    /// The false conversion rate is the error model's: an unmethylated C read
+    /// as T on the spike-in control is indistinguishable from sequencing error.
+    #[must_use]
+    pub fn conversion_model(&self) -> ConversionModel {
+        ConversionModel::new(self.conversion_efficiency, self.error_model.error_rate())
     }
 }
 
