@@ -114,7 +114,9 @@ pub enum BamMode {
 pub struct BamRewriteArgs {
     #[command(flatten)]
     segments: ReaderParams,
-    /// Number of threads to use for processing the BAM file.
+    /// Number of threads: `N - 1` rewrite records and `N` more compress the
+    /// output, as `samtools view -@ N` does; three more read and inflate the
+    /// input.
     #[arg(short='@', long = "threads", default_value_t = available_parallelism().map(|n|n.get()).unwrap_or(2).max(1))]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub threads: usize,
@@ -155,8 +157,6 @@ fn test_size<T: std::str::FromStr>(var: &str) -> Option<T> {
 }
 /// Threads inflating the input's BGZF blocks.
 const INFLATE_THREADS: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
-/// Threads compressing the output, as for `samtools view -@ 3`.
-const COMPRESS_THREADS: usize = 3;
 
 #[tracing::instrument(level = "info", skip_all, fields(
     ?mode,
@@ -188,7 +188,9 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
     };
     let mut writer = BamWriterBuilder::to_writer(sink, &header)
         .compression_level(1)
-        .compression_threads(COMPRESS_THREADS)
+        // Level-1 BGZF takes about two thirds of the rewrite's CPU, so a fixed
+        // few threads capped the run; idle compressors only wait.
+        .compression_threads(params.threads)
         .build()
         .wrap_err("failed to create writer")?;
 
