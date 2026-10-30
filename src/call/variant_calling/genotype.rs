@@ -18,8 +18,10 @@
 //! - **Two variants can form a CpG together** (`TA>CG`). The forests see
 //!   only the reference context, where neither alt forms one; once both are
 //!   called, `process::mark_called_cpgs` records each beside the other
-//!   (`PileupMetrics::cpg_side_of`), for methylation calling. It assumes the
-//!   two sit on one chromosome.
+//!   (`PileupMetrics::cpg_side_of`), for methylation calling, when the
+//!   pair-HMM puts the two on one chromosome (`Verdict::has_haplotype`). A
+//!   reference partner whose own called alt sits on every chromosome carrying
+//!   the de-novo alt makes no CpG either.
 //!
 //! Methylation calling reads the genotype (`GenotypeAdjustment`), so a
 //! genotype flip moves that site's beta too. The `pileups!` fixtures in

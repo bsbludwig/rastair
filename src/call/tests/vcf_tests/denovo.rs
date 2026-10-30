@@ -57,13 +57,10 @@ fn test_denovo_cpg_methylated() -> Result<()> {
     Ok(())
 }
 
-/// Edge case: CCC reference with heterozygous C>G at positions 1 and 2
-///
-/// Position 1: C>G creates de-novo CpG at (1,2)
-/// Position 2: C>G creates de-novo CpG at (2,3)
-/// Position 2 has dual role:
-///   - Its reference C is the partner of position 1's de-novo CpG
-///   - It also has C>G creating its own de-novo CpG
+/// `CCG` with a het `C>G` at the first two positions, both on one chromosome
+/// (`GGG` beside the reference `CCG`). The second `G` has the first one's `G`
+/// before it, not the reference `C`, so it makes no de-novo CpG; the
+/// reference CpG of the last two positions stays.
 #[test]
 fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
     let (segment, pileups) = pileups!(
@@ -77,7 +74,7 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=None, // Position 1: C with de-novo CpG G
-        (C G) PASS M5mC=vec![Some(0.5), None], // Position 2: Real variant G - original CpG only (no OB evidence for denovo)
+        (C G) PASS M5mC=0.5, // the reference CpG only
         (C T) FAIL,
         (G .) PASS M5mC=1.0,
         (G A) FAIL,
@@ -104,9 +101,9 @@ fn test_adjacent_denovo_cpgs_dual_role_middle_position2() -> Result<()> {
 
     let expected_vcf = vcf_assert![
         (C G) PASS M5mC=None GT="0/1", // Position 1: C with de-novo CpG G, and no methylation evidence
-        (C G) PASS M5mC=vec![0.0, 0.0] GT="1/1", // Position 2: Real variant G, genotype G/G, no C allele to methylate
+        (C G) PASS M5mC=0.0 GT="1/1", // Position 2: G/G, the de-novo CpG with position 1's C only: its own C is gone
         (C T) FAIL,
-        (C G) PASS M5mC=1.0 GT="1/1", // Position 3: Real variant G, methylation info for that G>A
+        (C G) PASS M5mC=None GT="1/1", // Position 3: a G after position 2's G on both chromosomes, no CpG
         (C A) FAIL,
     ];
 
@@ -276,6 +273,153 @@ fn two_variants_forming_a_cpg_are_a_denovo_cpg() -> Result<()> {
     let records = reprocess(records)?;
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// The `C` on one chromosome and the `G` on the other (`CA` / `TG`) make no
+/// CpG: the pair-HMM's reads put them in trans.
+#[test]
+fn two_variants_in_trans_make_no_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T A ] Ref,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (T C) PASS GT="0|1" M5mC=None,
+        (A G) PASS GT="1|0" M5mC=None,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    set_pass(&mut records[1], G);
+    let records = reprocess(records)?;
+    assert!(records.iter().all(|r| !r.in_denovo_cpg()));
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// A `T>C` before a reference `G` whose `G>A` sits on the same chromosome
+/// (`CA` / `TG`) makes no CpG: the `C`'s chromosome lost its `G`.
+#[test]
+fn a_cpg_partner_replaced_on_the_same_chromosome_makes_no_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T G ] Ref,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ C A ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (T C) PASS GT="0|1" M5mC=None,
+        (G A) PASS GT="0|1" M5mC=None,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    set_pass(&mut records[1], A);
+    let records = reprocess(records)?;
+    assert!(records.iter().all(|r| !r.in_denovo_cpg()));
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// `TA>CG` on one chromosome, half methylated, beside the reference `TA`.
+/// The reference chromosome's `T` reads have `A` beside them, so β never
+/// counts them and no het correction applies: β is the CpG chromosome's.
+#[test]
+fn a_cis_het_pair_cpg_is_not_corrected_for_the_reference_t() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ T A ] Ref,
+        [ T A ] OT,
+        [ T A ] OT,
+        [ T A ] OT,
+        [ T A ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ C G ] OT,
+        [ C G ] OT,
+        [ T A ] OB,
+        [ T A ] OB,
+        [ T A ] OB,
+        [ T A ] OB,
+        [ C A ] OB,
+        [ C A ] OB,
+        [ C G ] OB,
+        [ C G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (T C) PASS GT="0|1" M5mC=0.5,
+        (A G) PASS GT="0|1" M5mC=0.5,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], C);
+    set_pass(&mut records[1], G);
+    let records = reprocess(records)?;
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::variants())?;
+    expected_vcf.matches(vcf_records)?;
+
+    Ok(())
+}
+
+/// A homozygous `C>T` at a reference CpG leaves no chromosome with the CpG:
+/// both positions keep their record, neither has a β.
+#[test]
+fn a_homozygous_snp_at_a_reference_cpg_leaves_no_cpg() -> Result<()> {
+    let (segment, pileups) = pileups!(
+        [ C G ] Ref,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OT,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+        [ T G ] OB,
+    );
+
+    let expected_vcf = vcf_assert![
+        (C T) PASS GT="1/1" M5mC=None,
+        (G .) PASS M5mC=None,
+    ];
+
+    let mut records = test_call(segment, pileups, RecordFilters::all())?;
+    set_pass(&mut records[0], T);
+    let records = reprocess(records)?;
+    assert!(records.iter().all(|r| !r.in_cpg() && r.cpg_record() && r.lost_reference_cpg()));
+
+    let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;
 
     Ok(())

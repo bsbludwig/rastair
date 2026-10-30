@@ -86,8 +86,8 @@ fn het_with_non_confounding_alt_original_cpg_g_side() -> Result<()> {
 
 /// Edge case 2: `HomAlt` on original CpG
 ///
-/// ref=C, genotype=HomAlt(T). No C allele → beta=0.0.
-/// This is not tested in the unit tests, only implicitly in integration tests.
+/// ref=C, genotype=HomAlt(T): no chromosome keeps the CpG, so both of its
+/// positions are written without a β.
 #[test]
 fn homalt_on_original_cpg() -> Result<()> {
     let (segment, pileups) = pileups!(
@@ -104,11 +104,9 @@ fn homalt_on_original_cpg() -> Result<()> {
     set_pass(&mut records[0], T); // T is a real variant (passes ML)
     let records = reprocess(records)?;
 
-    // Genotype should be HomAlt(T/T)
-    // Beta should be 0.0 because there's no C allele to methylate
     let expected_vcf = vcf_assert![
-        (C T) PASS M5mC=0.0 GT="1/1",
-        (G .) PASS,
+        (C T) PASS M5mC=None GT="1/1",
+        (G .) PASS M5mC=None,
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
@@ -119,7 +117,7 @@ fn homalt_on_original_cpg() -> Result<()> {
 
 /// Edge case 2b: Same but with G-side of CpG
 ///
-/// ref=G, genotype=HomAlt(A). No G allele → beta=0.0.
+/// ref=G, genotype=HomAlt(A), likewise.
 #[test]
 fn homalt_on_original_cpg_g_side() -> Result<()> {
     let (segment, pileups) = pileups!(
@@ -136,11 +134,9 @@ fn homalt_on_original_cpg_g_side() -> Result<()> {
     set_pass(&mut records[1], A); // A is a real variant (passes ML)
     let records = reprocess(records)?;
 
-    // Genotype should be HomAlt(A/A)
-    // Beta should be 0.0 because there's no G allele to methylate
     let expected_vcf = vcf_assert![
-        (C .) PASS,
-        (G A) PASS M5mC=0.0 GT="1/1",
+        (C .) PASS M5mC=None,
+        (G A) PASS M5mC=None GT="1/1",
     ];
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
