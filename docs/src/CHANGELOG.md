@@ -89,6 +89,7 @@ Running:
 - `call` and `per-read` skipped a segment that failed to process and exited successfully, leaving a gap in the output. They still process all other segments, but exit with an error that says how many segments failed.
 - `call`, `per-read` and `bam` no longer accumulate finished segments without limit behind a slow one (deep coverage, a repeat); at most four segments per thread wait to be written.
 - `bam -@ N` compresses its output on `N` threads instead of 3, which had capped it: chr12 at 26x takes 5.7 s instead of 6.9 s at `-@ 8`.
+- `bam` and `per-read` stop with an error naming the line when the calls file has a line that is not Rastair BED (a VCF, say), instead of warning per line and writing output without methylation tags.
 - Crashes and internal errors end with a link to open a pre-filled GitHub issue, with the error, Rastair's version and the region being processed. With `--verbose`, only crashes and internal errors show a backtrace.
 
 ## Version 2.2.0 (2026-08-24)
