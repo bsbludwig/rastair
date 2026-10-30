@@ -258,8 +258,10 @@ impl PlacedRead<'_> {
     }
 
     fn haplotype_read(&self, window_start: Pos0) -> Option<HaplotypeRead> {
+        let bases: Vec<Base> =
+            self.rec.seq().get(self.bases.clone())?.iter().map(|b| b.to_base()).collect();
         HaplotypeRead::new(
-            self.rec.seq().get(self.bases.clone())?,
+            &bases,
             self.rec.qual().get(self.bases.clone())?,
             i32::try_from((self.start - window_start).get()).ok().filter(|&offset| offset >= 0)?,
             self.strand,

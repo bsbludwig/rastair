@@ -142,7 +142,7 @@ impl Pileup {
                 read.indels,
                 format!("read{i}").as_bytes(),
                 &[CigarOp::new(CigarOpType::Match, read_length)],
-                &bases,
+                &iupac(&bases),
                 &vec![read.qual; bases.len()],
                 &[],
                 Some(tid),
@@ -170,4 +170,9 @@ impl seqair::bam::record_store::CustomizeRecordStore for FixtureExtras {
     ) -> RastairReadExtras {
         RastairReadExtras { strand: Some(self.strand), mask: Some(0..rec.seq_len) }
     }
+}
+
+/// Bases as the record store holds them, for `RecordStore::push_fields`.
+pub fn iupac(bases: &[Base]) -> Vec<seqair_types::IupacBase> {
+    bases.iter().copied().map(seqair_types::IupacBase::from).collect()
 }
