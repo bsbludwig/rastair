@@ -681,7 +681,7 @@ mod tests {
         let mut store = RecordStore::<RastairReadExtras>::new();
         for (name, group) in [(&b"tagged"[..], "keep"), (b"other", "drop")] {
             let mut aux = AuxData::new();
-            aux.set_string(*b"RG", group.as_bytes());
+            aux.set_string(*b"RG", group.as_bytes()).unwrap();
             store
                 .push_fields(
                     Pos0::new(10).unwrap(),

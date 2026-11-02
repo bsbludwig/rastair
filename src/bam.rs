@@ -66,6 +66,7 @@ use seqair::{
         writer::BamWriterBuilder,
     },
     cram::stream::{CramContainer, CramContainerDecoder, CramStreamReader},
+    io::CompressionLevel,
     reader::{AlignmentStream, IndexedReader, Tid},
 };
 use seqair_types::{Base, Pos0, QPos, SmallVec, Strand};
@@ -174,7 +175,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
 
     let Input { source, header: input_header, decoder } = Input::open(&params.segments)?;
     let mut header = BamHeader::from_template(&input_header);
-    header.add_pg(rastair_pg(&header));
+    header.add_pg(rastair_pg()).wrap_err("Failed to add rastair's @PG line to the header")?;
     let decoder = decoder.map(std::sync::Mutex::new);
 
     let worker_threads = params.threads.saturating_sub(1).max(1);
@@ -194,7 +195,10 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
         Box::new(io::BufWriter::new(file))
     };
     let mut writer = BamWriterBuilder::to_writer(sink, &header)
-        .compression_level(params.compression_level.into())
+        .compression_level(
+            CompressionLevel::try_from(i32::from(params.compression_level))
+                .wrap_err("invalid `--compression-level`")?,
+        )
         // Level-1 BGZF takes about two thirds of the rewrite's CPU, so a fixed
         // few threads capped the run; idle compressors only wait.
         .compression_threads(params.threads)
@@ -918,32 +922,21 @@ fn reverse_complement(seq: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// The `@PG` line for rastair, with an ID no `@PG` of `header` has, numbered
-/// as samtools numbers its own (`ID`, `ID.1`, `ID.2`, …): `add_pg` points
-/// `PP` at the last `@PG`, which a rerun on its own output would make itself.
-fn rastair_pg(header: &BamHeader) -> PgRecord {
-    const ID: &str = "rastair.rewrite_bam";
-    let taken: rustc_hash::FxHashSet<&str> = header
-        .header_text()
-        .lines()
-        .filter(|line| line.starts_with("@PG\t"))
-        .flat_map(|line| line.split('\t'))
-        .filter_map(|field| field.strip_prefix("ID:"))
-        .collect();
-    let id = std::iter::once(ID.to_owned())
-        .chain((1_u64..).map(|n| format!("{ID}.{n}")))
-        .find(|id| !taken.contains(id.as_str()))
-        .unwrap_or_else(|| ID.to_owned());
+/// The `@PG` line for rastair; `add_pg` numbers its ID if the input already
+/// has one (`rastair.rewrite_bam.1`, …), as on a rerun on rastair's output.
+fn rastair_pg() -> PgRecord {
     PgRecord {
-        id: id.into(),
+        id: "rastair.rewrite_bam".into(),
         pn: Some("rastair".into()),
         vn: Some(env!("CARGO_PKG_VERSION").into()),
+        // A tab or newline in an argument would break the header line.
         cl: Some(
             std::env::args_os()
                 .skip(1)
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
                 .join(" ")
+                .replace(char::is_control, " ")
                 .into(),
         ),
         ds: Some("Rewrote BAM with methylation information".into()),

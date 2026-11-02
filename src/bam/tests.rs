@@ -1517,13 +1517,13 @@ fn a_rerun_gets_its_own_pg_id() -> Result<()> {
     };
 
     let mut fresh = header("")?;
-    fresh.add_pg(rastair_pg(&fresh));
+    fresh.add_pg(rastair_pg())?;
     assert_snapshot!(pg_ids(&fresh).join("\n"), @"@PG ID:rastair.rewrite_bam PN:rastair DS:Rewrote BAM with methylation information");
 
     let mut rerun = header(
         "@PG\tID:rastair.rewrite_bam\tPN:rastair\n@PG\tID:rastair.rewrite_bam.1\tPN:rastair\tPP:rastair.rewrite_bam\n",
     )?;
-    rerun.add_pg(rastair_pg(&rerun));
+    rerun.add_pg(rastair_pg())?;
     let last = pg_ids(&rerun).pop().wrap_err("no @PG")?;
     assert_snapshot!(last, @"@PG ID:rastair.rewrite_bam.2 PN:rastair DS:Rewrote BAM with methylation information PP:rastair.rewrite_bam.1");
     Ok(())

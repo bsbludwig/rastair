@@ -136,7 +136,7 @@ impl MethylatedPositions {
         }
 
         edit_aux(record, |aux| {
-            aux.set_string(*b"MM", self.to_mod_string().as_bytes());
+            aux.set_string(*b"MM", self.to_mod_string().as_bytes())?;
             aux.set_array_u8(*b"ML", &vec![255_u8; self.positions.len()])
         })
     }
@@ -303,10 +303,9 @@ impl XrTags {
     /// Apply XR/XG/XM tags to a BAM record
     pub fn apply_to_record(&self, record: &mut RawBamRecord) -> Result<()> {
         edit_aux(record, |aux| {
-            aux.set_string(*b"XR", self.xr.as_str().as_bytes());
-            aux.set_string(*b"XG", self.xg.as_str().as_bytes());
-            aux.set_string(*b"XM", self.xm.as_bytes());
-            Ok(())
+            aux.set_string(*b"XR", self.xr.as_str().as_bytes())?;
+            aux.set_string(*b"XG", self.xg.as_str().as_bytes())?;
+            aux.set_string(*b"XM", self.xm.as_bytes())
         })
     }
 }

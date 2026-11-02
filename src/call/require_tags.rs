@@ -127,7 +127,7 @@ mod tests {
         let mut aux = AuxData::new();
         aux.set_int(*b"NM", 3).unwrap();
         for (tag, value) in tags {
-            aux.set_string(**tag, value.as_bytes());
+            aux.set_string(**tag, value.as_bytes()).unwrap();
         }
         aux
     }
@@ -214,10 +214,10 @@ mod tests {
 
     #[test]
     fn string_and_hex_tags_match_byte_for_byte() {
-        assert!(allows_one("XZ=7", |r| r.set_string(*b"XZ", b"7")));
-        assert!(!allows_one("XZ=07", |r| r.set_string(*b"XZ", b"7")));
-        assert!(allows_one("XH=1AE3", |r| r.set_hex(*b"XH", b"1AE3")));
-        assert!(!allows_one("XH=1ae3", |r| r.set_hex(*b"XH", b"1AE3")));
+        assert!(allows_one("XZ=7", |r| r.set_string(*b"XZ", b"7").unwrap()));
+        assert!(!allows_one("XZ=07", |r| r.set_string(*b"XZ", b"7").unwrap()));
+        assert!(allows_one("XH=1AE3", |r| r.set_hex(*b"XH", b"1AE3").unwrap()));
+        assert!(!allows_one("XH=1ae3", |r| r.set_hex(*b"XH", b"1AE3").unwrap()));
     }
 
     #[test]
