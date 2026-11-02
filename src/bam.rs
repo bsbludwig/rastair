@@ -60,16 +60,14 @@ use color_eyre::{
 use rustc_hash::FxHashMap;
 use seqair::{
     bam::{
-        BamHeader, CigarOp, RawBamRecord,
-        aligned_pairs::{AlignedPairs, MatchPosition},
-        header::PgRecord,
+        BamHeader, RawBamRecord, aligned_pairs::MatchPosition, header::PgRecord,
         writer::BamWriterBuilder,
     },
     cram::stream::{CramContainer, CramContainerDecoder, CramStreamReader},
     io::CompressionLevel,
     reader::{AlignmentStream, IndexedReader, Tid},
 };
-use seqair_types::{Base, Pos0, QPos, SmallVec, Strand};
+use seqair_types::{Base, IupacBase, Pos0, QPos, SmallVec, Strand};
 use std::{
     fmt,
     io::{self, Read as _, Seek as _, Write as _},
@@ -732,26 +730,12 @@ fn rewrite_named(
     })
 }
 
-/// A record's CIGAR, for [`aligned_bases`].
-fn cigar_of(record: &RawBamRecord) -> SmallVec<CigarOp, 8> {
-    record.cigar().collect()
-}
-
-/// The bases of a record at `pos` with `cigar` aligned to the reference, as
-/// read index and reference position; none for an unplaced record.
-fn aligned_bases(pos: Option<Pos0>, cigar: &[CigarOp]) -> impl Iterator<Item = MatchPosition> + '_ {
-    pos.into_iter().flat_map(move |pos| AlignedPairs::new(pos, cigar).matches_only())
-}
-
-/// The base at `qpos` of the stored SEQ, read from its packed form.
-fn base_at(record: &RawBamRecord, qpos: QPos) -> Option<Base> {
-    let i = qpos.as_usize();
-    if i >= record.seq_len() {
-        return None;
-    }
-    let byte = record.packed_seq().get(i / 2)?;
-    let nibble = if i.is_multiple_of(2) { byte >> 4 } else { *byte };
-    Some(seqair_types::IupacBase::from_nibble(nibble).to_base())
+/// The bases of `record` aligned to the reference, as read index and
+/// reference position.
+fn aligned_bases(record: &RawBamRecord) -> impl Iterator<Item = MatchPosition> + '_ {
+    // An unplaced record has no aligned bases, whatever its CIGAR says (the
+    // error `aligned_pairs` gives when it has one).
+    record.aligned_pairs().ok().into_iter().flat_map(|pairs| pairs.matches_only())
 }
 
 #[instrument(level = "debug", skip_all, fields(pos = ?record.pos()))]
@@ -829,9 +813,7 @@ fn rewrite_record(
 
 /// Set the base at `qpos`, which is only ever an unmodified C or G.
 fn set_base(record: &mut RawBamRecord, qpos: QPos, base: Base) -> Result<()> {
-    record
-        .set_base(qpos, seqair_types::IupacBase::from(base))
-        .wrap_err("failed to rewrite a methylated base")
+    record.set_base(qpos, IupacBase::from(base)).wrap_err("failed to rewrite a methylated base")
 }
 
 /// Build per-read-position XM annotations for legacy mode.
@@ -848,8 +830,7 @@ fn build_legacy_annotations(
     let mut annotations = FxHashMap::default();
     let side = CpgSide::converted_on(strand);
 
-    let cigar = cigar_of(record);
-    for MatchPosition { qpos, rpos, .. } in aligned_bases(record.pos(), &cigar) {
+    for MatchPosition { qpos, rpos, .. } in aligned_bases(record) {
         let pos_in_ref = rpos.as_u32();
         let is_denovo = match calls.get(&pos_in_ref) {
             Some(RastairCall::Cpg { .. }) => false,
@@ -857,7 +838,7 @@ fn build_legacy_annotations(
             _ => continue,
         };
 
-        let Some(base) = base_at(record, qpos) else { continue };
+        let Some(base) = record.base_at(qpos).map(IupacBase::to_base) else { continue };
         if let Some(methylated) = side.read_methylated(base) {
             let context = if is_denovo {
                 determine_context(pos_in_ref, strand, &ref_base)
@@ -892,8 +873,7 @@ fn get_methylated_positions(
     let mut methylated_positions = SmallVec::new();
     let side = CpgSide::converted_on(strand);
 
-    let cigar = cigar_of(record);
-    for MatchPosition { qpos, rpos, .. } in aligned_bases(record.pos(), &cigar) {
+    for MatchPosition { qpos, rpos, .. } in aligned_bases(record) {
         match calls.get(&rpos.as_u32()) {
             Some(RastairCall::Cpg { .. } | RastairCall::DeNovoCpg { .. }) => {}
             _ => continue,
