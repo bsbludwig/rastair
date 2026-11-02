@@ -73,7 +73,7 @@ use std::{
     io::{self, Read as _, Seek as _, Write as _},
     num::NonZeroU8,
     sync::{
-        Arc, PoisonError,
+        Arc,
         atomic::{AtomicU64, Ordering},
         mpsc::SyncSender,
     },
@@ -174,7 +174,6 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
     let Input { source, header: input_header, decoder } = Input::open(&params.segments)?;
     let mut header = BamHeader::from_template(&input_header);
     header.add_pg(rastair_pg()).wrap_err("Failed to add rastair's @PG line to the header")?;
-    let decoder = decoder.map(std::sync::Mutex::new);
 
     let worker_threads = params.threads.saturating_sub(1).max(1);
     let pool = rayon::ThreadPoolBuilder::new()
@@ -609,7 +608,7 @@ impl Worker {
     fn open(
         params: &BamRewriteArgs,
         mode: BamMode,
-        decoder: Option<&std::sync::Mutex<CramContainerDecoder>>,
+        decoder: Option<&CramContainerDecoder>,
     ) -> Result<Self> {
         let calls = RastairBedReader::new(params.calls_file.path())
             .wrap_err("Failed to open calls file in worker thread")?;
@@ -621,7 +620,7 @@ impl Worker {
             ),
         };
         let decoder = decoder
-            .map(|template| template.lock().unwrap_or_else(PoisonError::into_inner).fork())
+            .map(CramContainerDecoder::fork)
             .transpose()
             .wrap_err("Failed to open the CRAM decoder in worker thread")?;
         Ok(Self { calls, fasta, decoder })
