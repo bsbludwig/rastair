@@ -65,12 +65,12 @@ use seqair::{
     },
     cram::stream::{CramContainer, CramContainerDecoder, CramStreamReader},
     io::CompressionLevel,
-    reader::{AlignmentStream, IndexedReader, Tid},
+    reader::{AlignmentStream, CramInput, IndexedReader, Tid},
 };
 use seqair_types::{Base, IupacBase, Pos0, QPos, SmallVec, Strand};
 use std::{
     fmt,
-    io::{self, Read as _, Seek as _, Write as _},
+    io::{self, Write as _},
     num::NonZeroU8,
     sync::{
         Arc,
@@ -283,7 +283,7 @@ enum Source {
     /// BAM or SAM, front to back
     Stream { stream: AlignmentStream, input_bytes: u64, read: Arc<AtomicU64> },
     /// CRAM, front to back, as containers the workers decode
-    Cram { reader: CramStreamReader<CountingReader>, input_bytes: u64, read: Arc<AtomicU64> },
+    Cram { reader: CramStreamReader<CramInput>, input_bytes: u64, read: Arc<AtomicU64> },
     /// `--region` by region through the index
     Regions { reader: IndexedReader, regions: Regions },
 }
@@ -292,15 +292,6 @@ impl Input {
     fn open(params: &ReaderParams) -> Result<Self> {
         let path = params.bam_file.path();
         let open_error = || format!("Failed to read `{}`", path.display());
-        let mut file = std::fs::File::open(path).wrap_err_with(open_error)?;
-        let mut magic = [0; 4];
-        let is_cram = match file.read_exact(&mut magic) {
-            Ok(()) => magic == *b"CRAM",
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
-            Err(error) => return Err(error).wrap_err_with(open_error),
-        };
-        file.rewind().wrap_err_with(open_error)?;
-
         if params.regions.is_some() {
             let reader = IndexedReader::open_with_reference(path, params.fasta_file.path())
                 .wrap_err_with(open_error)
@@ -310,34 +301,32 @@ impl Input {
             return Ok(Self { source: Source::Regions { reader, regions }, header, decoder: None });
         }
 
+        let file = std::fs::File::open(path).wrap_err_with(open_error)?;
         let input_bytes = file.metadata().wrap_err_with(open_error)?.len();
         let read = Arc::new(AtomicU64::new(0));
         let input = CountingReader { inner: file, read: Arc::clone(&read) };
-        let (source, header, decoder) = if is_cram {
-            let reader = CramStreamReader::new(input).wrap_err_with(open_error)?;
-            let decoder = reader
-                .decoder(params.fasta_file.path())
-                .wrap_err("Failed to open the reference for the CRAM file")?
-                // The names of records the file stores none for, as htslib
-                // names them after the path it opened
-                .name_prefix(
-                    path.file_name()
-                        .map_or_else(|| "-".into(), |name| name.to_string_lossy().into_owned()),
-                );
-            let header = BamHeader::from_template(reader.header());
-            (Source::Cram { reader, input_bytes, read }, header, Some(decoder))
-        } else {
-            let inflate_pool = rayon::ThreadPoolBuilder::new()
-                .thread_name(|idx| format!("bam-inflate-{idx}"))
-                .num_threads(std::num::NonZeroUsize::from(INFLATE_THREADS).get())
-                .build()
-                .wrap_err("Failed to create thread pool for reading the BAM file")?;
-            let stream = AlignmentStream::builder(input)
-                .threads_in(INFLATE_THREADS, inflate_pool)
-                .build()
-                .wrap_err_with(open_error)?;
-            let header = BamHeader::from_template(stream.header());
-            (Source::Stream { stream, input_bytes, read }, header, None)
+        let inflate_pool = rayon::ThreadPoolBuilder::new()
+            .thread_name(|idx| format!("bam-inflate-{idx}"))
+            .num_threads(std::num::NonZeroUsize::from(INFLATE_THREADS).get())
+            .build()
+            .wrap_err("Failed to create thread pool for reading the BAM file")?;
+        let stream = AlignmentStream::builder(input)
+            .threads_in(INFLATE_THREADS, inflate_pool)
+            .reference(params.fasta_file.path())
+            // The names of CRAM records the file stores none for, as htslib
+            // names them after the path it opened
+            .name_prefix(
+                path.file_name()
+                    .map_or_else(|| "-".into(), |name| name.to_string_lossy().into_owned()),
+            )
+            .build()
+            .wrap_err_with(open_error)?;
+        let header = BamHeader::from_template(stream.header());
+        // CRAM containers are decoded on the workers, BAM and SAM records come
+        // decoded from the stream
+        let (source, decoder) = match stream.into_cram() {
+            Ok((reader, decoder)) => (Source::Cram { reader, input_bytes, read }, Some(decoder)),
+            Err(stream) => (Source::Stream { stream, input_bytes, read }, None),
         };
         Ok(Self { source, header, decoder })
     }
