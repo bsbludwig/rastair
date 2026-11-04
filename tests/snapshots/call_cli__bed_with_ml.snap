@@ -23,5 +23,6 @@ chr19	6105743	6105744	.	0.80	+	2	8	6	0	16	C/C	18	18	REF
 chr19	6105744	6105745	.	0.50	-	3	3	10	0	16	G/G	30	30	REF
 
 ----- stderr -----
+[TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
 [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
 [TIME] INFO rastair: Call finished [DURATION]

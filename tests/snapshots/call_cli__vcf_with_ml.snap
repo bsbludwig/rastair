@@ -67,5 +67,6 @@ chr19	6105744	.	C	.	18	PASS	AD=8;BQ=35.7631;DP=16;MQ=60;M5mC_Strands=2,8,6,0;CPG
 chr19	6105745	.	G	.	30	PASS	AD=13;BQ=34.0367;DP=16;MQ=60;M5mC_Strands=3,3,10,0;CPG	GT:GQ:DP:M5mC:DPM5mC:ADM5mC	0/0:30:16:0.5:6:3
 
 ----- stderr -----
+[TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
 [TIME] INFO rastair::runtime::partial_output: Wrote VCF output file="-"
 [TIME] INFO rastair: Call finished [DURATION]

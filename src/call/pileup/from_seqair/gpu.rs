@@ -50,7 +50,7 @@ use std::{
     },
     thread,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Pairs a launch holds at most. A launch costs ~1.5 ms over its pairs,
 /// so smaller launches lose that; larger ones hold more prepared reads
@@ -63,7 +63,7 @@ fn context() -> Option<&'static Arc<GpuContext>> {
     CONTEXT
         .get_or_init(|| match GpuContext::new() {
             Ok(context) => {
-                info!(adapter = %context.adapter_info().name, "The pair-HMM is scored on the GPU");
+                debug!(adapter = %context.adapter_info().name, "The pair-HMM is scored on the GPU");
                 Some(context)
             }
             Err(error) => {
