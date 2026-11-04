@@ -21,7 +21,6 @@ cargo-pgo = { version = "0.3.0" }
 
 mdbook = { version = "0.5.4" }
 mdbook-katex = { version = "0.10.0" }
-mdbook-mermaid = { version = "0.17.1" }
 
 [workspace]
 members = ["tools/*"]

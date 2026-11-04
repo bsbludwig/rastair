@@ -40,54 +40,6 @@ Within each worker, a segment's columns pass through these steps in order:
 The "context-aware" steps are processed with parameters for the pileup metrics for the current position as well as the ones before and after.
 This enables @CpG pair coordination and @denovo detection.
 
-<!--
-Diagram ideas:
-- Flowchart showing iterator stages with data flow
-- Architecture diagram showing threads + in-order result queue
-- Sequence diagram showing data transformation through pipeline
--->
-
-```mermaid
-flowchart TB
-    Segments --> Pipeline
-    P8 --> Channel
-    Channel --> Writer
-
-    Channel["Ordered Channel"]
-
-    subgraph Main
-        BamReader["BAM file"] --> Segments["Genome Segments"]
-    end
-    
-    subgraph WriterThread
-        Writer["VCF/BED Writer"]
-    end
-
-    subgraph Worker[Worker Threads]
-        direction TB
-
-        subgraph TLS["Thread-Local"]
-            Readers["BAM/FASTA Readers"]
-        end
-
-        subgraph Pipeline["Per-Segment Iterator Pipeline"]
-            direction TB
-            
-            P1[Generate Pileups]
-            P2[Add ML Metrics]
-            P3[SNV Engine]
-            P4[Set Variant Calls]
-            P5["Mark (de-novo) CpGs of Called Variants"]
-            P6[Set Genotype and Methylation Calls]
-            P7[Phasing]
-            P8[Filter out overlap positions]
-
-            P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8
-            Readers --> P1
-        end 
-    end
-```
-
 ## Output Formats
 
 Rastair's internal representation is converted to standard bioinformatics formats for downstream analysis.
