@@ -26,11 +26,10 @@ The combinations yield the following outputs:
 | `--cpgs-only` `--all` | All reference CpGs and called de-novo CpGs.                                                    |
 | `--all`               | All variants (whether passing or not) and all reference CpGs                                   |
 
-```admonish note
-When converting an existing VCF/BCF file to @BED with `rastair convert`,
-`--bed-include-empty` decides whether to keep the zero-coverage rows
-that might be present in the input file.
-```
+> [!NOTE]
+> When converting an existing VCF/BCF file to @BED with `rastair convert`,
+> `--bed-include-empty` decides whether to keep the zero-coverage rows
+> that might be present in the input file.
 
 ## Fields
 

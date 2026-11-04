@@ -76,7 +76,6 @@ so it casts no vote (same for `G>A`).
 Heterozygous indels called by the pair-HMM (see [indels](indels.md)) take part the same way.
 An indel only becomes part of a block when the pair-HMM is confident of its heterozygous genotype: a doubtful one would mostly join two blocks the wrong way round.
 
-```admonish warning
-Blocks do not cross the boundary between two processing segments,
-so a block is at most one segment long (`--segment-max-length`, 100 kb by default).
-```
+> [!WARNING]
+> Blocks do not cross the boundary between two processing segments,
+> so a block is at most one segment long (`--segment-max-length`, 100 kb by default).

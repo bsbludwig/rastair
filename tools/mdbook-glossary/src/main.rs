@@ -1,9 +1,8 @@
 use anyhow::{Context, Result, ensure};
 use clap::Parser as _;
-use mdbook::{
-    BookItem,
-    book::{Book, Chapter},
-    preprocess::{CmdPreprocessor, Preprocessor, PreprocessorContext},
+use mdbook_preprocessor::{
+    Preprocessor, PreprocessorContext,
+    book::{Book, BookItem, Chapter},
 };
 use smol_str::{SmolStr, format_smolstr};
 use std::{
@@ -37,7 +36,7 @@ fn main() -> Result<()> {
             return Ok(()); // support all renderers
         }
         _ => {
-            let (ctx, book) = CmdPreprocessor::parse_input(BufReader::new(io::stdin()))?;
+            let (ctx, book) = mdbook_preprocessor::parse_input(BufReader::new(io::stdin()))?;
             let processed_book = pre.run(&ctx, book)?;
             serde_json::to_writer(BufWriter::new(io::stdout()), &processed_book)?;
         }
@@ -56,9 +55,9 @@ impl Preprocessor for GlossaryProcessor {
     fn run(&self, ctx: &PreprocessorContext, mut book: Book) -> Result<Book> {
         let path = ctx
             .config
-            .get("preprocessor.glossary.glossary")
-            .and_then(|path| path.as_str())
-            .unwrap_or("src/glossary.yaml");
+            .get::<String>("preprocessor.glossary.glossary")?
+            .unwrap_or_else(|| "src/glossary.yaml".into());
+        let path = path.as_str();
         let glossary_file = ctx.root.join(path);
         ensure!(
             glossary_file.exists(),
@@ -71,7 +70,7 @@ impl Preprocessor for GlossaryProcessor {
         let glossary = serde_yaml::from_str::<Glossary>(&glossary)
             .with_context(|| format!("Failed to parse glossary file `{glossary_file:?}`"))?;
 
-        book.sections.push(BookItem::Chapter(Chapter {
+        book.items.push(BookItem::Chapter(Chapter {
             name: "Glossary".into(),
             content: render(glossary.by_group_sorted())
                 .context("failed to write glossary items to markdown")?,
@@ -127,8 +126,8 @@ impl Preprocessor for GlossaryProcessor {
         Ok(book)
     }
 
-    fn supports_renderer(&self, _renderer: &str) -> bool {
-        true
+    fn supports_renderer(&self, _renderer: &str) -> Result<bool> {
+        Ok(true)
     }
 }
 

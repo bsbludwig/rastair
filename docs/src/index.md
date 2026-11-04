@@ -56,9 +56,8 @@ On the right, we plot the agreement in estimated beta between rastair (y-axis) a
 
 Rastair is free for academic and other non-commercial use, and the [code is available on GitHub](https://github.com/bsbludwig/rastair). You can read the details of the license [here](https://github.com/bsbludwig/rastair/blob/main/LICENSE.txt).
 
-```admonish info
-For commercial entities that would like to use rastair beyond internal evaluation, please contact [enquiries@innovation.ox.ac.uk](mailto:enquiries@innovation.ox.ac.uk?cc=benjamin.schuster-boeckler%40ludwig.ox.ac.uk&subject=Rastair%20%2F%20reference%2024811) quoting reference 24811.
-```
+> [!NOTE]
+> For commercial entities that would like to use rastair beyond internal evaluation, please contact [enquiries@innovation.ox.ac.uk](mailto:enquiries@innovation.ox.ac.uk?cc=benjamin.schuster-boeckler%40ludwig.ox.ac.uk&subject=Rastair%20%2F%20reference%2024811) quoting reference 24811.
 
 ## Quick start
 
@@ -72,9 +71,8 @@ Call methylation at all CpG positions (including CpGs formed by SNPs) from a bam
 ```bash
 rastair call --bed output.bed.gz -r reference.fasta.gz input.bam
 ```
-```admonish tip
-By default, rastair will use all available CPU cores. You can restrict this with `-@ 1`.
-```
+> [!TIP]
+> By default, rastair will use all available CPU cores. You can restrict this with `-@ 1`.
 
 Rastair can also produce variant and methylation calls in [VCF format](formats/vcf.md):
 

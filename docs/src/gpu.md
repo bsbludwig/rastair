@@ -15,10 +15,9 @@ The machine running Rastair will need to have access to a GPU.
 On Linux, @Vulkan drivers are needed.
 On macOS, the system-provided Metal drivers are used.
 
-```admonish warning
-Rastair does not use Nvidia's CUDA!
-If you are running other @ML workloads, it might still be necessary to ensure Vulkan drivers are installed.
-```
+> [!WARNING]
+> Rastair does not use Nvidia's CUDA!
+> If you are running other @ML workloads, it might still be necessary to ensure Vulkan drivers are installed.
 
 ### Tested Hardware
 

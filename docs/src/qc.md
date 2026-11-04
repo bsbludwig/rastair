@@ -2,23 +2,22 @@
 
 Rastair comes with a helper script, written in [R](https://cran.r-project.org), which generates a comprehensive QC report for your sequencing library.
 
-```admonish info
-**If not using the docker image:**
-The QC tool requires a working installation of R with [RMarkdown](https://cran.r-project.org/web/packages/rmarkdown/index.html), [data.table](https://r-datatable.com), [ggplot2](https://ggplot2.tidyverse.org) and [argparser](https://cran.r-project.org/web/packages/argparser/index.html) libraries. You can install all of them at once with
+> [!NOTE]
+> **If not using the docker image:**
+> The QC tool requires a working installation of R with [RMarkdown](https://cran.r-project.org/web/packages/rmarkdown/index.html), [data.table](https://r-datatable.com), [ggplot2](https://ggplot2.tidyverse.org) and [argparser](https://cran.r-project.org/web/packages/argparser/index.html) libraries. You can install all of them at once with
 > ```r
 > install.packages(c("argparser", "data.table", "ggplot2", "rmarkdown"))
 > ```
-
-For V-bias and GC-bias plots, it also requires [Rsamtools](https://bioconductor.org/packages//release/bioc/html/Rsamtools.html) from Bioconductor. This can be installed with
->```r
+>
+> For V-bias and GC-bias plots, it also requires [Rsamtools](https://bioconductor.org/packages//release/bioc/html/Rsamtools.html) from Bioconductor. This can be installed with
+> ```r
 > if (!require("BiocManager", quietly = TRUE))
 >   install.packages("BiocManager")
 >
 > BiocManager::install("Rsamtools")
->```
-
-It also requires [pandoc](https://pandoc.org) for rendering and [bcftools](https://github.com/samtools/bcftools) for GC and CpG bias plots.
-```
+> ```
+>
+> It also requires [pandoc](https://pandoc.org) for rendering and [bcftools](https://github.com/samtools/bcftools) for GC and CpG bias plots.
 
 ## Generating QC reports
 The qc report can be generated directly from a bam file, or from pre-generated per-read and per-position bed files:
@@ -52,9 +51,8 @@ The classic ["methylation bias"](https://genomebiology.biomedcentral.com/article
 
 ![Example M-bias plot](img/mbias_example.png "Example M-bias plot")
 
-```admonish info
-Unlike other tools, we consistently use 5'&rarr;3' orientation per read, not per reference!
-```
+> [!NOTE]
+> Unlike other tools, we consistently use 5'&rarr;3' orientation per read, not per reference!
 
 We distinguish between @OT and @OB fragments, and show average methylation for R1 and R2 reads separately. This is an example of an enzymatically fully methylated piece of DNA that we use as a control, so methylation is nearly 100% across most reads. However, you can see that the ends of R2 of OB fragments seem to have lost methylation information. This could be corrected with the [`--nOT` and `--nOB` arguments](./cli.md#filter-options) to `rastair call`.
 

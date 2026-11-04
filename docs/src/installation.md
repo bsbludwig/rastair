@@ -50,9 +50,8 @@ We provide a pre-built binary for Linux (x86):
 
 This binary was built on Ubuntu 20.04 but should work on most recent distributions.
 
-```admonish info
-While rastair itself is statically linked and therefore independent of system libraries, this is unfortunately not yet the case for htslib. If your system uses a GLIBC older than 2.30, then you will have to [compile from source](#building-from-source).
-```
+> [!NOTE]
+> While rastair itself is statically linked and therefore independent of system libraries, this is unfortunately not yet the case for htslib. If your system uses a GLIBC older than 2.30, then you will have to [compile from source](#building-from-source).
 
 ### macOS
 
@@ -101,9 +100,8 @@ cargo xtask release
 
 The binary will be located in `target/release/rastair`.
 
-```admonish tip
-On some systems, you might get performance improvements by allowing the compiler to use platform-specific optimisations:
+> [!TIP]
+> On some systems, you might get performance improvements by allowing the compiler to use platform-specific optimisations:
 > ```bash
 > RUSTFLAGS="-C target-cpu=native" cargo xtask release
 > ```
-```
