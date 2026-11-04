@@ -34,6 +34,7 @@ fn simple_per_read_call() -> Result<()> {
     chr19	6105947	6106027	NB502094:69:HN2H2BGX5:2:12207:14946:2414	60	-	241	80	83	3	3	6,37,49				
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
     [TIME] INFO rastair: Calling reads finished [DURATION]
     "#);
@@ -74,6 +75,7 @@ fn per_read_with_guess_read_orientation() -> Result<()> {
     chr19	6105947	6106027	NB502094:69:HN2H2BGX5:2:12207:14946:2414	60	-	241	80	83	3	3	6,37,49				
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
     [TIME] INFO rastair: Calling reads finished [DURATION]
     "#);
@@ -144,6 +146,7 @@ fn fails_when_given_a_calls_file_as_stdin() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     Error: 
        0: Failed to read calls from BED file "-"
        1: Failed to open tabix file
@@ -175,6 +178,7 @@ fn fails_when_given_a_calls_file_with_no_tbi() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     Error: 
        0: Failed to read calls from BED file "tests/data/rastair1.bed"
        1: Failed to open tabix file

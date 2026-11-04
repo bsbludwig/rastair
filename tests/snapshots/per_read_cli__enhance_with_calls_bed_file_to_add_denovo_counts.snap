@@ -11,6 +11,7 @@ info:
     - tmp/tests/calls.bed.gz
   env:
     NO_COLOR: "1"
+    RASTAIR_THREADS: "2"
 ---
 success: true
 exit_code: 0
@@ -33,5 +34,6 @@ chr19	6105947	6106026	NB502094:69:HN2H2BGX5:1:12302:4502:11914	60	-	263	79	83	3	
 chr19	6105947	6106027	NB502094:69:HN2H2BGX5:2:12207:14946:2414	60	-	241	80	83	3	3	6,37,49				
 
 ----- stderr -----
+[TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
 [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
 [TIME] INFO rastair: Calling reads finished [DURATION]

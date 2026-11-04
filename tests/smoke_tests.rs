@@ -21,6 +21,7 @@ fn count_bed_lines() -> Result<()> {
     let call = rastair().args(CALL_TEST_BAM).args([CHR19, "-c"]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     [TIME] INFO rastair::runtime::partial_output: Wrote BED output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);
@@ -49,6 +50,7 @@ fn count_vcf_lines() -> Result<()> {
     let call = rastair().args(CALL_TEST_BAM).args([CHR19, "-c", "--vcf"]).output()?;
 
     assert_snapshot!(call.stderr(), @r#"
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     [TIME] INFO rastair::runtime::partial_output: Wrote VCF output file="-"
     [TIME] INFO rastair: Call finished [DURATION]
     "#);

@@ -86,6 +86,7 @@ fn validates_region_in_bam() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     Error: 
        0: Could not fetch segments from BAM file
        1: Failed to resolve chromosome chr66 from header
@@ -116,6 +117,7 @@ fn region_present_in_bam_missing_from_fasta() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     Error: 
        0: Could not fetch segments from BAM file
        1: Requested contig "bacteriophage_lambda_CpG" is not present in the FASTA reference
@@ -140,6 +142,7 @@ fn different_paths_for_bed_and_vcf() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     Error: 
        0: Unclear output choice
        1: Can't write both VCF and BED output to the same file. Please specify different output files.
@@ -167,6 +170,7 @@ fn invalid_bam_file() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    [TIME] INFO rastair: Rastair is free for research use. For commercial use, please refer to https://github.com/bsbludwig/rastair/blob/v2.2.0/LICENSE.txt or contact enquiries@innovation.ox.ac.uk
     Error: 
        0: Failed to read BAM/FASTA files
        1: Failed to open alignment file [PATH]

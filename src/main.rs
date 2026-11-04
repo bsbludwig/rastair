@@ -129,6 +129,14 @@ enum Generate {
 fn main() -> Result<()> {
     let args = Cli::parse();
     setup_logging(args.verbose);
+    info!(
+        "Rastair is free for research use. For commercial use, please refer to {} or contact enquiries@innovation.ox.ac.uk",
+        concat!(
+            "https://github.com/bsbludwig/rastair/blob/v",
+            env!("CARGO_PKG_VERSION"),
+            "/LICENSE.txt"
+        ),
+    );
 
     #[cfg(unix)]
     // make sure we quit when the pipe closes
