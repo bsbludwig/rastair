@@ -62,7 +62,7 @@ Rastair is free for academic and other non-commercial use, and the [code is avai
 ## Quick start
 
 ### Installation
-We provide pre-built binaries for [Linux (x86)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-x86_64-unknown-linux-gnu.tar.gz), [Mac (Apple Silicon)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-aarch64-apple-darwin.zip) and [Mac (Intel)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-x86_64-apple-darwin.zip). We also provide a [docker image](https://hub.docker.com/r/sbludwig/rastair) and a [conda package](installation.md#conda). For build instructions and more details, see the [installation page](installation.md).
+We provide pre-built binaries for [Linux (x86)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v{{VERSION}}/rastair-v{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz), [Mac (Apple Silicon)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v{{VERSION}}/rastair-v{{VERSION}}-aarch64-apple-darwin.zip) and [Mac (Intel)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v{{VERSION}}/rastair-v{{VERSION}}-x86_64-apple-darwin.zip). We also provide a [docker image](https://hub.docker.com/r/sbludwig/rastair) and a [conda package](installation.md#conda). For build instructions and more details, see the [installation page](installation.md).
 
 ### Usage
 

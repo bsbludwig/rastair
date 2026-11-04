@@ -85,7 +85,6 @@ Update all user-facing version strings together; the release workflow refuses a 
 - `version` in `CITATION`
 - the version in `docs/src/cli.md` (regenerate it)
 - tag references in `README.md` (e.g. `version-X.Y.Z`)
-- the download links, docker tag and conda version in `docs/src/index.md` and `docs/src/installation.md`
 - `##rastairVersion=...` in the VCF snapshots under `tests/snapshots/` (`cargo xtask insta`)
 - the `Unreleased` heading of `docs/src/CHANGELOG.md` becomes `Version X.Y.Z (date)`
 

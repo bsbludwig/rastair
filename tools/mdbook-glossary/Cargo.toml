@@ -8,6 +8,7 @@ publish = false
 anyhow = "1.0.98"
 clap = { version = "4.5.40", features = ["derive"] }
 mdbook-preprocessor = "0.5.4"
+toml = "1.1.2"
 pathdiff = "0.2.3"
 regex = "1.11.1"
 serde = { workspace = true, features = ["derive"] }

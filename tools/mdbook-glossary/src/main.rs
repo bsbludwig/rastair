@@ -59,6 +59,7 @@ impl Preprocessor for GlossaryProcessor {
             .unwrap_or_else(|| "src/glossary.yaml".into());
         let path = path.as_str();
         let glossary_file = ctx.root.join(path);
+        let version = rastair_version(&ctx.root)?;
         ensure!(
             glossary_file.exists(),
             "Glossary file `{glossary_file:?}` not found in the book root."
@@ -115,7 +116,7 @@ impl Preprocessor for GlossaryProcessor {
                 return;
             };
             match replace_references(chapter, path, &replacements) {
-                Ok(content) => chapter.content = content,
+                Ok(content) => chapter.content = content.replace("{{VERSION}}", &version),
                 Err(error) => {
                     let error = format!("{error:#}");
                     warn!(error, chapter.name, "Failed to replace references in chapter")
@@ -129,6 +130,22 @@ impl Preprocessor for GlossaryProcessor {
     fn supports_renderer(&self, _renderer: &str) -> Result<bool> {
         Ok(true)
     }
+}
+
+/// The `[package].version` of the rastair manifest next to the book, which is also the release tag
+/// without its `v`.
+fn rastair_version(book_root: &Path) -> Result<String> {
+    let manifest_path = book_root.join("../Cargo.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read `{manifest_path:?}`"))?;
+    let manifest: toml::Table = toml::from_str(&manifest)
+        .with_context(|| format!("Failed to parse `{manifest_path:?}`"))?;
+    manifest
+        .get("package")
+        .and_then(|package| package.get("version"))
+        .and_then(|version| version.as_str())
+        .map(str::to_owned)
+        .with_context(|| format!("No `[package].version` in `{manifest_path:?}`"))
 }
 
 fn capitalize(s: &str) -> SmolStr {
