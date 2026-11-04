@@ -1610,6 +1610,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smol_str",
+ "toml 1.2.0+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
 ]

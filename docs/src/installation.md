@@ -15,7 +15,7 @@ brew install rastair
 You can use the pre-built docker image in the usual way:
 
 ```bash
-docker pull sbludwig/rastair:version-2.2.0
+docker pull sbludwig/rastair:version-{{VERSION}}
 ```
 
 ### Building using Docker
@@ -34,7 +34,7 @@ to also run the bundled R scripts.
 ## Conda
 
 ```bash
-conda create -n rastair_env -c conda-forge -c bioconda rastair=2.2.0
+conda create -n rastair_env -c conda-forge -c bioconda rastair={{VERSION}}
 conda activate rastair_env
 ```
 
@@ -46,7 +46,7 @@ You can also download pre-built binaries for a number of platforms.
 
 We provide a pre-built binary for Linux (x86):
 
-- [rastair-v2.2.0-x86_64-unknown-linux-gnu.tar.gz](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-x86_64-unknown-linux-gnu.tar.gz) (64-bit, x86)
+- [rastair-v{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v{{VERSION}}/rastair-v{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz) (64-bit, x86)
 
 This binary was built on Ubuntu 20.04 but should work on most recent distributions.
 
@@ -57,9 +57,9 @@ This binary was built on Ubuntu 20.04 but should work on most recent distributio
 
 For Apple users, we provide both Apple Silicon and Intel binaries:
 
-- [rastair-v2.2.0-aarch64-apple-darwin.zip](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-aarch64-apple-darwin.zip) (ARM "Apple Silicon", for all "M" line processors)
+- [rastair-v{{VERSION}}-aarch64-apple-darwin.zip](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v{{VERSION}}/rastair-v{{VERSION}}-aarch64-apple-darwin.zip) (ARM "Apple Silicon", for all "M" line processors)
 
-- [rastair-v2.2.0-x86_64-apple-darwin.zip](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-x86_64-apple-darwin.zip) (64-bit, older x86 Intel Macs)
+- [rastair-v{{VERSION}}-x86_64-apple-darwin.zip](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v{{VERSION}}/rastair-v{{VERSION}}-x86_64-apple-darwin.zip) (64-bit, older x86 Intel Macs)
 
 ## Building from source
 
