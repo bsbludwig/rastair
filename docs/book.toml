@@ -16,7 +16,7 @@ after = ["links"]
 command = "mdbook-mermaid"
 
 [output.html]
-additional-js = ["mermaid.min.js", "mermaid-init.js", "theme/silktide-consent-manager.js"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "theme/silktide-consent-manager.js", "theme/consent-banner.js"]
 git-repository-url = "https://github.com/bsbludwig/rastair"
 additional-css = ["theme/custom.css", "theme/silktide-consent-manager.css"]
 theme = "theme"
