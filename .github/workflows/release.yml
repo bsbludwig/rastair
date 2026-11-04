@@ -412,13 +412,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: release
-    env:
-      RELEASE_TAG: ${{ needs.resolve-version.outputs.version }}
-      # Template values baked into the rendered book (mdbook-yapp).
-      S3_BUCKET_REL: ${{ vars.S3_BUCKET_REL }}
-      AWS_REGION_REL: ${{ vars.AWS_REGION_REL }}
-      MSTDN_INSTANCE: ${{ vars.MSTDN_INSTANCE }}
-      MSTDN_ACCOUNT: ${{ vars.MSTDN_ACCOUNT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -427,7 +420,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            libclang-dev cmake gettext-base
+            libclang-dev cmake
 
       - uses: ./.github/actions/setup-rust
 
@@ -438,22 +431,7 @@ jobs:
             mdbook@0.4.52 \
             mdbook-mermaid@0.16.2 \
             mdbook-katex@0.9.4 \
-            mdbook-admonish@1.20.0 \
-            mdbook-yapp@1.2.4
-
-      - name: Render template substitutions
-        shell: bash
-        run: |
-          set -euo pipefail
-          : "${S3_BUCKET_REL:?Set the S3_BUCKET_REL environment variable}"
-          : "${AWS_REGION_REL:?Set the AWS_REGION_REL environment variable}"
-
-          # `{{VERSION}}` keeps the leading "v" (matching the S3 release prefix);
-          # `{{DOCKER_VERSION}}` is the bare semver used for image tags.
-          export VERSION_TRUNC="${RELEASE_TAG#v}"
-          export RELEASE_TAG GITHUB_REPOSITORY GITHUB_REPOSITORY_OWNER
-          envsubst < docs/template_yapp.config > docs/yapp.config
-          cat docs/yapp.config
+            mdbook-admonish@1.20.0
 
       - name: Build book
         run: cargo xtask docs

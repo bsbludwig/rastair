@@ -146,12 +146,8 @@ Settings → Environments → `release` → **Environment variables**
 | --- | --- | --- |
 | `S3_BUCKET` | release upload | release artifact bucket |
 | `AWS_REGION` | release upload | e.g. `eu-west-2` |
-| `S3_BUCKET_REL` | docs | bucket the docs link to for downloads (usually same as `S3_BUCKET`) |
-| `AWS_REGION_REL` | docs | region for those download URLs |
 | `S3_BUCKET_DOC` | docs deploy | bucket serving the docs site |
 | `AWS_REGION_DOC` | docs deploy | region of that bucket |
-| `MSTDN_INSTANCE` | docs | Mastodon instance shown on the landing page |
-| `MSTDN_ACCOUNT` | docs | Mastodon account shown on the landing page |
 | `ALL_APPLE_CERTS` | macOS build | whitespace-separated URLs of extra Apple root/intermediate `.cer` files |
 
 **CRLF trap for multi-line values.** The web UI stores anything typed into a

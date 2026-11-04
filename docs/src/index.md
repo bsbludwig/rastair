@@ -15,9 +15,9 @@ You can read more in our paper, [Rastair: an integrated variant and methylation 
 ## Latest Updates
 <section id="news">
   <a class="mastodon-feed"
-     href="https://{{MSTDN_INSTANCE}}/{{MSTDN_ACCOUNT}}"
+     href="https://genomic.social/@rastair"
      data-toot-limit="2">
-     Loading posts from {{MSTDN_ACCOUNT}}@{{MSTDN_INSTANCE}}...
+     Loading posts from @rastair@genomic.social...
   </a>
 </section>
 
@@ -54,7 +54,7 @@ On the right, we plot the agreement in estimated beta between rastair (y-axis) a
 
 ## License
 
-Rastair is free for academic and other non-commercial use, and the [code is available on GitHub](https://github.com/{{REPO_FULL_NAME}}). You can read the details of the license [here](https://github.com/{{REPO_FULL_NAME}}/blob/main/LICENSE.txt).
+Rastair is free for academic and other non-commercial use, and the [code is available on GitHub](https://github.com/bsbludwig/rastair). You can read the details of the license [here](https://github.com/bsbludwig/rastair/blob/main/LICENSE.txt).
 
 ```admonish info
 For commercial entities that would like to use rastair beyond internal evaluation, please contact [enquiries@innovation.ox.ac.uk](mailto:enquiries@innovation.ox.ac.uk?cc=benjamin.schuster-boeckler%40ludwig.ox.ac.uk&subject=Rastair%20%2F%20reference%2024811) quoting reference 24811.
@@ -63,7 +63,7 @@ For commercial entities that would like to use rastair beyond internal evaluatio
 ## Quick start
 
 ### Installation
-We provide pre-built binaries for [Linux (x86)](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz), [Mac (Apple Silicon)](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-aarch64-apple-darwin.zip) and [Mac (Intel)](https://s3.{{S3_REGION}}.amazonaws.com/{{S3_BUCKET}}/build/release-{{VERSION}}/rastair-{{VERSION}}-x86_64-apple-darwin.zip). We also provide a [docker image](https://hub.docker.com/r/sbludwig/rastair) and a [conda package](installation.md#conda). For build instructions and more details, see the [installation page](installation.md).
+We provide pre-built binaries for [Linux (x86)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-x86_64-unknown-linux-gnu.tar.gz), [Mac (Apple Silicon)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-aarch64-apple-darwin.zip) and [Mac (Intel)](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v2.2.0/rastair-v2.2.0-x86_64-apple-darwin.zip). We also provide a [docker image](https://hub.docker.com/r/sbludwig/rastair) and a [conda package](installation.md#conda). For build instructions and more details, see the [installation page](installation.md).
 
 ### Usage
 
@@ -86,7 +86,7 @@ For a more in-depth look at different use-cases of rastair with practical exampl
 
 ## Get help
 
-You can file an issue or question on our [issue tracker over on GitHub](https://github.com/{{REPO_FULL_NAME}}/issues)!
+You can file an issue or question on our [issue tracker over on GitHub](https://github.com/bsbludwig/rastair/issues)!
 
 ## Citing rastair
 
