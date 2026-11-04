@@ -15,15 +15,10 @@ after = ["links"]
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
 
-[preprocessor.admonish]
-command = "mdbook-admonish"
-assets_version = "3.1.0" # do not edit: managed by `mdbook-admonish install`
-
 [output.html]
 additional-js = ["mermaid.min.js", "mermaid-init.js", "theme/silktide-consent-manager.js"]
 git-repository-url = "https://github.com/bsbludwig/rastair"
-git-repository-icon = "fa-github"
-additional-css = ["theme/custom.css", "theme/mdbook-admonish.css", "theme/silktide-consent-manager.css"]
+additional-css = ["theme/custom.css", "theme/silktide-consent-manager.css"]
 theme = "theme"
 
 [output.html.search]

@@ -20,11 +20,10 @@ Your reads should come from a mod-C→T experiment, such as @TAPS or @5Base.
 Rastair interprets the C→T (and G→A) mismatches caused by these methods as methylation signal,
 so libraries generated with other conversion methods will not yield meaningful methylation calls.
 
-```admonish tip
-Nearly all rastair sub-commands are capable of multi-threading.
-You can e.g. use `-@ 4` to parallelise operations across 4 cores.
-By default, rastair will try to use all available cores on your system.
-```
+> [!TIP]
+> Nearly all rastair sub-commands are capable of multi-threading.
+> You can e.g. use `-@ 4` to parallelise operations across 4 cores.
+> By default, rastair will try to use all available cores on your system.
 
 ## 1. Call genomic variants and methylated positions
 
@@ -37,14 +36,12 @@ all high-confidence calls will be included:
 rastair call -r reference.fa.gz -o test.vcf.gz test.bam
 ```
 
-```admonish note
-`-o` is a short alias for `--vcf`, so this is equivalent to `rastair call -r reference.fa.gz --vcf test.vcf.gz test.bam`, as used in the [quick start](index.md).
-```
+> [!NOTE]
+> `-o` is a short alias for `--vcf`, so this is equivalent to `rastair call -r reference.fa.gz --vcf test.vcf.gz test.bam`, as used in the [quick start](index.md).
 
-```admonish tip
-You can restrict processing to only a specific genomic region. For example `-l chr19` will process the entire chromosome 19.
-You can also choose an interval within the chromosome: `-l chr19:6103156-6143156`.
-```
+> [!TIP]
+> You can restrict processing to only a specific genomic region. For example `-l chr19` will process the entire chromosome 19.
+> You can also choose an interval within the chromosome: `-l chr19:6103156-6143156`.
 
 Rastair will only report variants that pass its internal filters. If you want to report absolutely all candidate variants, regardless of their score, you can use the `--all` flag:
 
@@ -52,9 +49,8 @@ Rastair will only report variants that pass its internal filters. If you want to
 rastair call -r reference.fa.gz --all -o test.vcf.gz test.bam
 ```
 
-```admonish warning
-Beware that vcf files generated with `--all` can get very large!
-```
+> [!WARNING]
+> Beware that vcf files generated with `--all` can get very large!
 
 Rastair will annotate variants with only a subset of all possible `INFO` and `FORMAT` tags. You can choose a custom set of annotations with e.g.
 
@@ -64,11 +60,10 @@ rastair call -r reference.fa.gz --vcf-info-fields AD,BQ,MQ,MQ0,ENT100,SC5,CPG,CP
 
 You can find a description of all custom VCF fields used by rastair [here](formats/vcf-fields.md).
 
-```admonish tip
-rastair can produce uncompressed VCF, bgzip-compressed `vcf.gz` and `bcf` files.
-The format will be guessed from the file ending.
-If no output name is given, rastair writes VCF to @STDOUT.
-```
+> [!TIP]
+> rastair can produce uncompressed VCF, bgzip-compressed `vcf.gz` and `bcf` files.
+> The format will be guessed from the file ending.
+> If no output name is given, rastair writes VCF to @STDOUT.
 
 ## 2. Only call methylation, do not report genetic variants (very fast)
 
@@ -78,15 +73,14 @@ If no output name is given, rastair writes VCF to @STDOUT.
 rastair call -r reference.fa.gz --bed test.bed.gz test.bam
 ```
 
-````admonish tip
-Rastair will automatically produce @bgzip compressed files if the output file name ends in `.gz`. They are also automaticall indexed with @tabix for rapid access to specific genomic ranges:
-
+> [!TIP]
+> Rastair will automatically produce @bgzip compressed files if the output file name ends in `.gz`. They are also automaticall indexed with @tabix for rapid access to specific genomic ranges:
+>
 > ```bash
 > tabix test.bed.gz chr19:6103156-6143156
 > ```
-
-This is usually orders of magnitude faster than using e.g. @bedtools. You can also stream the @BED file to @STDOUT by setting `--bed -`.
-````
+>
+> This is usually orders of magnitude faster than using e.g. @bedtools. You can also stream the @BED file to @STDOUT by setting `--bed -`.
 
 In some cases, you might prefer to write the bed output to @STDOUT and pipe it into another unix tool, e.g. to only report positions that are CpG in the references (i.e. exclude @denovo):
 
@@ -102,9 +96,8 @@ The command-line argument for this was inspired by [MethylDackel](https://github
 However, we decided to only have one set of parameters: `--nOT` and `--nOB`.
 Each of them takes a comma-separated list of 4 integers: `[r1_5',r1_3',r2_5',r2_3']`, denoting the number of bases from the start/end of read 1/2 that should be ignored.
 
-```admonish warning
-Unlike MethylDackel, **rastair's command line arguments always refer to the start/end position of the read in 5'&rarr;3' direction**, not the position in the reference after alignment!
-```
+> [!WARNING]
+> Unlike MethylDackel, **rastair's command line arguments always refer to the start/end position of the read in 5'&rarr;3' direction**, not the position in the reference after alignment!
 
 To give an example: imagine the following read pair
 
@@ -136,9 +129,8 @@ Alternatively, we also support two different ways to include methylation informa
 rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
 ```
 
-```admonish tip
-All the `bam` subcommands also supports @CRAM input, but output will be written in @BAM.
-```
+> [!TIP]
+> All the `bam` subcommands also supports @CRAM input, but output will be written in @BAM.
 
 Alternatively, we also support the new official SAM standard for recording per-read methylation via [the `MM` tags](https://samtools.github.io/hts-specs/SAMtags.pdf):
 
@@ -146,9 +138,8 @@ Alternatively, we also support the new official SAM standard for recording per-r
 rastair bam standard -r reference.fa.gz --bam test_mm.bam test.bam test.bed.gz
 ```
 
-```admonish warn
-Be aware that `rastair bam standard` will produce bam files where any T that was deemed a "conversion" in a read is converted back to C, so the sequence information in the source and `MM` annotated files will differ!
-```
+> [!WARNING]
+> Be aware that `rastair bam standard` will produce bam files where any T that was deemed a "conversion" in a read is converted back to C, so the sequence information in the source and `MM` annotated files will differ!
 
 ## Interrupted and failed runs
 

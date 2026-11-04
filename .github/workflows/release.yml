@@ -428,10 +428,9 @@ jobs:
       - name: Install mdbook toolchain
         run: |
           cargo install --locked \
-            mdbook@0.4.52 \
-            mdbook-mermaid@0.16.2 \
-            mdbook-katex@0.9.4 \
-            mdbook-admonish@1.20.0
+            mdbook@0.5.4 \
+            mdbook-mermaid@0.17.1 \
+            mdbook-katex@0.10.0
 
       - name: Build book
         run: cargo xtask docs

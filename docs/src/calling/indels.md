@@ -2,9 +2,8 @@
 
 As of version 2.2.0, rastair supports calling @indel:pl variants in the `call` workflow.
 
-```admonish warning
-This is still an experimental feature!
-```
+> [!WARNING]
+> This is still an experimental feature!
 
 Indels are called in every `call` run.
 

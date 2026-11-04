@@ -1,8 +1,7 @@
 # modBAM
 
-```admonish note
-This is a preview feature.
-```
+> [!NOTE]
+> This is a preview feature.
 
 The modBAM format is a @BAM/@SAM file
 that contains modified base information.
