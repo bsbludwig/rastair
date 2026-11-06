@@ -41,6 +41,15 @@ pub struct PileupMetrics {
     /// alt, or the base a called insertion puts beside it
     /// ([`CpgSide::beside`], set by `process::mark_called_cpgs`).
     pub beside_called_alts: EnumSet<CpgSide>,
+    /// The CpG sides a base here takes with a reference neighbour that no
+    /// chromosome has both of: called alts here or next door replace one of
+    /// the two on each (set by `process::mark_called_cpgs`).
+    pub lost_to_called_alts: EnumSet<CpgSide>,
+    /// The CpG sides whose methylated-read base (`T` for the `C`, `A` for the
+    /// `G`) no chromosome reads beside the partner base, so the reads β
+    /// counts all come from the CpG's chromosomes and a het there needs no
+    /// correction (set by `process::mark_called_cpgs`).
+    pub unconfounded: EnumSet<CpgSide>,
     pub ref_metrics: AlleleMetrics,
     /// Alternate alleles at this position.
     ///
@@ -215,7 +224,8 @@ impl PileupMetrics {
     /// The CpG side `base` takes here: beside its reference neighbours, or
     /// beside a called variant next door.
     pub fn cpg_side_of(&self, base: Base) -> Option<CpgSide> {
-        CpgSide::taken_by(base, TapsContext::of(self).sides() | self.beside_called_alts)
+        let reference = TapsContext::of(self).sides() - self.lost_to_called_alts;
+        CpgSide::taken_by(base, reference | self.beside_called_alts)
     }
 
     /// The side this reference base takes in a CpG a called variant next
@@ -243,6 +253,20 @@ impl PileupMetrics {
     /// door: the columns `M5mC` is written for.
     pub fn in_cpg(&self) -> bool {
         !super::methylation::origins(self).is_empty()
+    }
+
+    /// Written as a CpG: in one, or at a reference CpG's position, which keeps
+    /// its record (with no `M5mC`) when called variants leave no chromosome
+    /// with the CpG.
+    pub fn cpg_record(&self) -> bool {
+        self.in_cpg() || self.reference_cpg().is_some()
+    }
+
+    /// At a reference CpG's position that called variants leave on no
+    /// chromosome of this sample (`CPGlost`).
+    pub fn lost_reference_cpg(&self) -> bool {
+        self.reference_cpg().is_some()
+            && !super::methylation::origins(self).contains(&crate::vcf::CpgOrigin::Original)
     }
 
     /// In a CpG a called alt makes, here or next door.
