@@ -56,6 +56,8 @@ const MIN_CALIBRATION_TIME: Duration = Duration::from_secs(30);
 pub struct ProgressTracker {
     enabled: bool,
     total: usize,
+    /// What `total` counts, for the log
+    unit: &'static str,
     completed: usize,
     calibrated: bool,
     start: Instant,
@@ -65,10 +67,16 @@ pub struct ProgressTracker {
 impl ProgressTracker {
     /// Create a progress tracker, disabled if the "CI" environment variable is set (to avoid spamming CI logs).
     pub fn new(total_segments: usize) -> Self {
+        Self::counting(total_segments, "segments")
+    }
+
+    /// A tracker of `total` `unit`s, which [`Self::done_up_to`] advances.
+    pub fn counting(total: usize, unit: &'static str) -> Self {
         let enabled = std::env::var("CI").err() == Some(std::env::VarError::NotPresent);
         let terminal = TerminalProgress::detect(enabled);
         Self {
-            total: total_segments,
+            total,
+            unit,
             completed: 0,
             calibrated: false,
             start: Instant::now(),
@@ -79,11 +87,16 @@ impl ProgressTracker {
 
     /// Call after each segment has been fully written
     pub fn segment_done(&mut self) {
+        self.done_up_to(self.completed + 1);
+    }
+
+    /// Call when the first `completed` units have been fully written
+    pub fn done_up_to(&mut self, completed: usize) {
         if !self.enabled {
             return;
         }
 
-        self.completed += 1;
+        self.completed = completed;
 
         if let Some(terminal) = &self.terminal {
             terminal.update(percent_complete(self.completed, self.total));
@@ -111,9 +124,10 @@ impl ProgressTracker {
             percent = %format!("{percent:.1}%"),
             time_left = %format_duration(eta),
             done_at = %done,
-            "{}/{} segments",
+            "{}/{} {}",
             self.completed,
             self.total,
+            self.unit,
         );
     }
 
@@ -130,7 +144,7 @@ impl ProgressTracker {
     fn estimate(&self) -> Estimate {
         let elapsed = self.start.elapsed();
         let pct = self.completed as f64 / self.total as f64 * 100.0;
-        let remaining = self.total - self.completed;
+        let remaining = self.total.saturating_sub(self.completed);
         let secs_per_segment = elapsed.as_secs_f64() / self.completed as f64;
         let eta = Duration::from_secs_f64(secs_per_segment * remaining as f64);
         let done = Timestamp::now().add(eta);

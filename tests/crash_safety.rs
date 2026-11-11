@@ -77,6 +77,14 @@ impl Pipeline {
     fn skips_failed_segments(self) -> bool {
         self != Self::Bam
     }
+
+    /// How many work units the run has: `bam` works in batches of records
+    fn units(self) -> usize {
+        match self {
+            Self::Bam => BAM_BATCHES,
+            _ => SEGMENTS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +94,7 @@ enum Kind {
     Signal(&'static str),
 }
 
-/// Both are reached once per segment
+/// Both are reached once per segment (per batch in `bam`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Point {
     Worker,
@@ -123,7 +131,7 @@ impl Scenario {
     }
 
     fn expected(&self) -> Expected {
-        if self.nth > SEGMENTS {
+        if self.nth > self.pipeline.units() {
             return Expected::Complete;
         }
         match (self.kind, self.point) {

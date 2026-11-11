@@ -232,7 +232,8 @@ fn bam_worker_panic_leaves_a_valid_prefix() -> Result<()> {
     let (full, crashed) = (dir.path().join("full.bam"), dir.path().join("crashed.bam"));
     ensure_success(&bam(&calls, &full, &["--threads=2"], &[])?)?;
 
-    let output = bam(&calls, &crashed, &["--threads=2"], &[(INJECT_PANIC, "worker@6")])?;
+    // The second of `BAM_BATCHES`
+    let output = bam(&calls, &crashed, &["--threads=2"], &[(INJECT_PANIC, "worker@2")])?;
     let stderr = output.stderr();
     ensure!(!output.status.success(), "should fail after a worker panic");
     ensure_crash_reported(&stderr, "src/bam.rs")?;

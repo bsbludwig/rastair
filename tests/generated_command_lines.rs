@@ -547,7 +547,6 @@ fn downstream_command_lines(tc: &TestCase) -> (Downstream, Vec<String>, &'static
         }
         Downstream::BamStandard | Downstream::BamLegacy => {
             flag(tc, format!("--region={}", tc.draw(regions())));
-            flag(tc, format!("--segment-max-length={}", segment_length(tc)));
             "out.bam"
         }
     };
@@ -614,12 +613,8 @@ fn a_zero_segment_length_is_no_runaway() -> Result<()> {
     let mut call = rastair();
     call.arg("call").arg("--fasta-file").arg(&prepared.fasta).arg(&prepared.bam);
     call.arg("--vcf").arg(out("zero.vcf"));
-    let commands = [
-        ("call", call),
-        ("per-read", Downstream::PerRead.command(&prepared, &out("zero.bed"))),
-        ("bam standard", Downstream::BamStandard.command(&prepared, &out("standard.bam"))),
-        ("bam legacy", Downstream::BamLegacy.command(&prepared, &out("legacy.bam"))),
-    ];
+    let commands =
+        [("call", call), ("per-read", Downstream::PerRead.command(&prepared, &out("zero.bed")))];
     for (name, mut cmd) in commands {
         cmd.arg("--segment-max-length=0");
         match run_bounded(&mut cmd, Duration::from_secs(15), 1 << 30)? {

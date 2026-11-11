@@ -77,24 +77,19 @@ impl RastairBedReader {
             }
             Err(e) => return Err(e).wrap_err("Failed to query tabix file"),
         };
-        let mut records = Vec::new();
-        for result in query {
-            let record =
-                result.wrap_err("Failed to read record from tabix file").and_then(|record| {
-                    SimpleRastairBedRecord::from_bed_line(record.as_ref())
-                        .wrap_err("Failed to parse rastair BED record")
-                });
-
-            match record {
-                Ok(record) => {
-                    records.push(record);
-                }
-                Err(error) => {
-                    warn!(%error, "Failed to read record");
-                }
-            }
-        }
-        Ok(records)
+        // A line that does not parse means a wrong or damaged calls file (e.g. a VCF);
+        // skipping it would silently drop the calls.
+        query
+            .map(|result| {
+                let record = result.wrap_err("Failed to read record from tabix file")?;
+                let line: &str = record.as_ref();
+                SimpleRastairBedRecord::from_bed_line(line)
+                    .wrap_err_with(|| format!("Failed to parse rastair BED record `{line}`"))
+                    .suggestion(
+                        "The calls file must be the BED written by `rastair call`, not a VCF",
+                    )
+            })
+            .collect()
     }
 }
 
@@ -270,6 +265,33 @@ mod tests {
         let records = reader.query(&region)?;
         assert!(records.is_empty());
 
+        Ok(())
+    }
+
+    #[test]
+    fn query_fails_on_a_line_that_is_not_rastair_bed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bed_path = dir.path().join("calls.vcf.gz");
+        let compression_level =
+            bgzf::CompressionLevel::try_from(6).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+        let mut writer =
+            bgzf::Writer::new(std::io::BufWriter::new(File::create(&bed_path)?), compression_level);
+        writeln!(
+            writer,
+            "chr19\t6107663\t6107664\t.\t0.05\t+\t19\t1\t20\t0\t41\tC/C\t99\t60\tNEW"
+        )?;
+        writeln!(writer, "chr19\t6107700\t6107701\tC\tT\t50\tPASS\t.")?;
+        writer.finish().map_err(|e| color_eyre::eyre::eyre!("Failed to finish bgzf: {e}"))?;
+        let output =
+            std::process::Command::new("tabix").args(["-p", "bed"]).arg(&bed_path).output()?;
+        color_eyre::eyre::ensure!(output.status.success(), "tabix failed");
+
+        let mut reader = RastairBedReader::new(&bed_path)?;
+        let region: Region = "chr19:6107600-6107800".parse()?;
+        let Err(error) = reader.query(&region) else {
+            bail!("a line that is not rastair BED must fail the query");
+        };
+        assert!(format!("{error:?}").contains("6107700"), "error names the line: {error:?}");
         Ok(())
     }
 

@@ -59,7 +59,7 @@ Only variants that pass all filters are written by default. Use `--all` to get a
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 
 ###### **Filter Options:**
 
@@ -276,7 +276,7 @@ This will produce a bed file that list the methylation status of all CpGs in eve
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 
 ###### **Filter Options:**
 
@@ -377,7 +377,7 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 * `<CALLS_FILE>` — Rastair's calls to determine methylation
 
 ###### **Input Options:**
@@ -392,15 +392,13 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 * `-o`, `--output <OUTPUT>` — Output file
 
   Default value: `-`
+* `--compression-level <COMPRESSION_LEVEL>` — BGZF compression level of the output, from 0 (uncompressed) to 12 (smallest, slowest). Higher levels cost the compression threads (`-@`) more time; samtools writes 6
+
+  Default value: `1`
 
 ###### **Processing Options:**
 
-* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
-
-   Used for splitting work between threads. Tweak this to adjust memory usage. Between 1,000 and 1,000,000.
-
-  Default value: `10000`
-* `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
+* `-@`, `--threads <THREADS>` — Number of threads: `N - 1` rewrite records and `N` more compress the output, as `samtools view -@ N` does; three more read and inflate the input
 
   Default value: `14`
 
@@ -414,7 +412,7 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 
 ###### **Arguments:**
 
-* `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
+* `<BAM_FILE>` — Path to a BAM or CRAM file: sorted and indexed for `call` and `per-read`; `bam` takes any order, and SAM, and only `--region` there needs the index
 * `<CALLS_FILE>` — Rastair's calls to determine methylation
 
 ###### **Input Options:**
@@ -429,15 +427,13 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 * `-o`, `--output <OUTPUT>` — Output file
 
   Default value: `-`
+* `--compression-level <COMPRESSION_LEVEL>` — BGZF compression level of the output, from 0 (uncompressed) to 12 (smallest, slowest). Higher levels cost the compression threads (`-@`) more time; samtools writes 6
+
+  Default value: `1`
 
 ###### **Processing Options:**
 
-* `--segment-max-length <SEGMENT_MAX_LENGTH>` — Maximum length of a segment in bases
-
-   Used for splitting work between threads. Tweak this to adjust memory usage. Between 1,000 and 1,000,000.
-
-  Default value: `10000`
-* `-@`, `--threads <THREADS>` — Number of threads to use for processing the BAM file
+* `-@`, `--threads <THREADS>` — Number of threads: `N - 1` rewrite records and `N` more compress the output, as `samtools view -@ N` does; three more read and inflate the input
 
   Default value: `14`
 

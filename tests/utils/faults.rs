@@ -20,6 +20,8 @@ pub const REGION: &str = "--region=chr19:6100001-6120000";
 pub const SMALL_SEGMENTS: &str = "--segment-max-length=1000";
 /// What [`REGION`] is split into with [`SMALL_SEGMENTS`], in every pipeline
 pub const SEGMENTS: usize = 20;
+/// The batches `bam` reads [`REGION`]'s 5,119 reads in
+pub const BAM_BATCHES: usize = 3;
 /// A crash must never turn into a hang; fail the test instead of blocking CI
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 /// Written as the last block of every properly closed BGZF file
@@ -66,7 +68,7 @@ pub fn per_read(out: &Path, extra: &[&str], faults: Faults<'_>) -> Result<Output
 pub fn bam(calls: &Path, out: &Path, extra: &[&str], faults: Faults<'_>) -> Result<Output> {
     let mut cmd = rastair();
     cmd.args(["bam", "legacy", "--fasta-file=tests/data/test.fasta.gz", "tests/data/test.bam"])
-        .args([REGION, SMALL_SEGMENTS])
+        .arg(REGION)
         .args(extra)
         .arg(calls);
     cmd.arg("-o").arg(out);

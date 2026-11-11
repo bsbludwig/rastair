@@ -70,6 +70,9 @@ Output:
 - `bam` annotates a CpG whose BED β is 0. It took every such row for an SNP, so a fully unmethylated CpG had no `XM` (`z`), and a CpG whose few methylated reads round β to `0.00` lost their MM/ML entries. A BED row is now an SNP only where its genotype holds no copy of the CpG's base.
 - `per-read`'s `mod_denovos` and `unmod_denovos` go by each read's base, like `mod_cpgs`, `unmod_cpgs` and `bam`'s tags: `T` or `C` on an OT read, `A` or `G` on an OB read. They listed every read covering a de-novo CpG by the site's β (methylated above 0.5), whatever its base or strand.
 - `per-read`'s `num_cpg` counts the de-novo CpGs a read shows as well, and `num_mod` the methylated ones, so a read whose only CpGs are de-novo is written without `--all-reads`. Both counted reference CpGs only.
+- `bam` reads its input front to back with [seqair](https://github.com/Softleif/seqair) and writes every record, in input order: the unplaced unmapped reads at the end of a sorted BAM (`*` in `samtools idxstats`) were dropped. It needs no index, and reads unsorted input too, but slowly (sort by coordinate first); `--region` reads a BAM, SAM or CRAM through its index and writes a read overlapping two regions once. `--segment-max-length` is gone from `bam`.
+- `bam` tagged a read reaching past the end of a 10 kb segment only up to that end, so `XM` and `MM`/`ML` missed its CpGs beyond it.
+- A record that is not valid BAM stops `bam` with an error naming it; such a read was skipped with a warning.
 
 Regions:
 
@@ -85,6 +88,9 @@ Running:
 - A crash (panic) in any thread, or an error writing the output, stops the run instead of processing the remaining segments; output files are still closed properly, also when the writer itself crashed.
 - `call` and `per-read` skipped a segment that failed to process and exited successfully, leaving a gap in the output. They still process all other segments, but exit with an error that says how many segments failed.
 - `call`, `per-read` and `bam` no longer accumulate finished segments without limit behind a slow one (deep coverage, a repeat); at most four segments per thread wait to be written.
+- `bam -@ N` compresses its output on `N` threads instead of 3, which had capped it: chr12 at 26x takes 5.7 s instead of 6.9 s at `-@ 8`.
+- `bam --compression-level` sets the output's BGZF level, 0–12; it stays 1 by default.
+- `bam` and `per-read` stop with an error naming the line when the calls file has a line that is not Rastair BED (a VCF, say), instead of warning per line and writing output without methylation tags.
 - Crashes and internal errors end with a link to open a pre-filled GitHub issue, with the error, Rastair's version and the region being processed. With `--verbose`, only crashes and internal errors show a backtrace.
 
 ## Version 2.2.0 (2026-08-24)
