@@ -613,10 +613,8 @@ fn a_zero_segment_length_is_no_runaway() -> Result<()> {
     let mut call = rastair();
     call.arg("call").arg("--fasta-file").arg(&prepared.fasta).arg(&prepared.bam);
     call.arg("--vcf").arg(out("zero.vcf"));
-    let commands = [
-        ("call", call),
-        ("per-read", Downstream::PerRead.command(&prepared, &out("zero.bed"))),
-    ];
+    let commands =
+        [("call", call), ("per-read", Downstream::PerRead.command(&prepared, &out("zero.bed")))];
     for (name, mut cmd) in commands {
         cmd.arg("--segment-max-length=0");
         match run_bounded(&mut cmd, Duration::from_secs(15), 1 << 30)? {
