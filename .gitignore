@@ -13,3 +13,4 @@
 .claude/settings.json
 *.pending-snap
 .hegel/
+*.pyc
