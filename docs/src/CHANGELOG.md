@@ -87,6 +87,11 @@ Running:
 - `call`, `per-read` and `bam` no longer accumulate finished segments without limit behind a slow one (deep coverage, a repeat); at most four segments per thread wait to be written.
 - Crashes and internal errors end with a link to open a pre-filled GitHub issue, with the error, Rastair's version and the region being processed. With `--verbose`, only crashes and internal errors show a backtrace.
 
+QC report (`mbias`):
+
+- A new section estimates off-target conversion: per trinucleotide context, the rate of `C>T`, `C>A` and `C>G` mismatches at non-CpG positions without a called variant, on the converted strand and on the complementary strand as a control. Mismatches come from `call --all`, coverage from the read pairs in the BAM, over `--region` or the whole input. It needs `--bam` and `--reference`; `--no-off-target` skips it.
+- The GC/CpG-bias heatmaps are replaced by a per-read plot: how much more or less often reads cover a given number of CpGs, or have a given GC content, than all read-long windows of the reference, as expected under random fragmentation; and the CpG effect that remains after accounting for GC content. A third panel does the same by the number of CpGs a read presumably holds methylated, from the CpGs' methylation levels. The plots of methylation against GC content and CpG density are gone, and the section no longer runs `call` or needs `bcftools`; `mbias` no longer takes `--vcf` or `--bcftools-path`.
+
 ## Version 2.2.0 (2026-08-24)
 
 Highlights:

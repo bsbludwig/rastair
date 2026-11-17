@@ -5,19 +5,23 @@ Rastair comes with a helper script, written in [R](https://cran.r-project.org), 
 > [!NOTE]
 > **If not using the docker image:**
 > The QC tool requires a working installation of R with [RMarkdown](https://cran.r-project.org/web/packages/rmarkdown/index.html), [data.table](https://r-datatable.com), [ggplot2](https://ggplot2.tidyverse.org) and [argparser](https://cran.r-project.org/web/packages/argparser/index.html) libraries. You can install all of them at once with
+> [!NOTE]
+> **If not using the docker image:**
+> The QC tool requires a working installation of R with [RMarkdown](https://cran.r-project.org/web/packages/rmarkdown/index.html), [data.table](https://r-datatable.com), [ggplot2](https://ggplot2.tidyverse.org) and [argparser](https://cran.r-project.org/web/packages/argparser/index.html) libraries. You can install all of them at once with
 > ```r
 > install.packages(c("argparser", "data.table", "ggplot2", "rmarkdown"))
 > ```
 >
-> For V-bias and GC-bias plots, it also requires [Rsamtools](https://bioconductor.org/packages//release/bioc/html/Rsamtools.html) from Bioconductor. This can be installed with
+> For V-bias, GC-bias and off-target plots, it also requires [Rsamtools](https://bioconductor.org/packages//release/bioc/html/Rsamtools.html) and [ggside](https://cran.r-project.org/web/packages/ggside/index.html). These can be installed with
 > ```r
 > if (!require("BiocManager", quietly = TRUE))
 >   install.packages("BiocManager")
 >
 > BiocManager::install("Rsamtools")
+> install.packages("ggside")
 > ```
 >
-> It also requires [pandoc](https://pandoc.org) for rendering and [bcftools](https://github.com/samtools/bcftools) for GC and CpG bias plots.
+> It also requires [pandoc](https://pandoc.org) for rendering.
 
 ## Generating QC reports
 The qc report can be generated directly from a bam file, or from pre-generated per-read and per-position bed files:
@@ -43,7 +47,7 @@ However, in reality, a number of experimental procedures can affect the evenness
 sonication or enzymatic digestion of genomic DNA can produce single-stranded ends. When these are repaired for
 A-tailing, the newly synthesized parts will be unmethylated.
 
-To identify any potential issues in your data, we provide several types of plots. The M-bias and V-bias plots investigate the evenness of methylation along reads, while the GC/CpG-bias plots examine the relationship between sequence context and methylation or coverage:
+To identify any potential issues in your data, we provide several types of plots. The M-bias and V-bias plots investigate the evenness of methylation along reads, the GC/CpG-bias plot shows how coverage depends on sequence context, and the off-target plot estimates conversion outside CpGs:
 
 ### M-bias
 
@@ -78,14 +82,45 @@ Here, colour denotes methylation, while the y-axis reflects the length of the or
 
 ### GC/CpG bias
 
-We also provide some plots to visualise the relationship between local GC content and CpG density per read vs methylation and coverage:
+Under random fragmentation, reads start uniformly along the genome, so the number of CpGs a read covers and its GC content should follow those of all read-long windows of the reference (those without `N`).
+This plot shows, per number of CpGs and per GC content, how much more (above 0%) or less often reads have it than expected:
 
-![Example GC-bias plot](img/gc_bias_example.png "Example GC-bias plot")
+![Example read-bias plot](img/read_bias_example.png "Example read-bias plot")
 
-Here, you can see whether highly/lowly methylated reads fall into high/low GC-content regions.
+Both are taken from the reference under the read, since conversion changes the Cs a read shows.
+Only reads with at least one CpG are in the per-read data, so reads and windows are compared among those.
+The grey bars show how many reads each bin holds; bins with fewer than 20 reads are left out.
+Windows in unmappable sequence are expected but never observed, so CpG counts and GC contents typical of repeats can look under-represented.
 
-Another occasional issue is coverage differences depending on CpG density of the read:
+GC content and CpG density go together, so a GC bias alone bends the CpG curve too.
+The orange line shows what is left of the CpG effect once each reference window is weighted by how over- or under-represented its GC content is among the reads.
 
-![Example CpG-bias plot](img/cpg_cov_bias_example.png "Example CpG-bias plot")
+In this example (chr21 of a TAPS library of NA12878), the most AT-rich reads are strongly under-represented and the most GC-rich ones over-represented.
+Reads with 9 to 13 CpGs are under-represented by up to 20%, and accounting for GC barely changes that, so this deficit is not a GC effect.
 
-Here, you can see that there's a slight negative correlation for 100bp regions with many CpGs to have lower coverage.
+The middle panel asks the same of methylation: how often reads cover a given number of presumably methylated CpGs.
+The reference has no methylation, so each CpG's methylation level is estimated from a random half of the reads, and a read, like each reference window, presumably holds the sum of its CpGs' levels; only the other half of the reads is counted there, and windows with a CpG that half never covers are left out.
+A falling line means regions with many methylated CpGs are under-represented.
+It does not tell apart a loss of methylated molecules within a region that is partly methylated, as a read's own methylation calls cannot be compared with the reference.
+
+### Off-target conversion
+
+Conversion should only act on methylated C, which in mammals sits almost exclusively at CpGs.
+Rastair calls genetic variants, including those that create a @denovo CpG, so mismatches that remain at non-CpG positions are a mix of sequencing and alignment errors and off-target conversion.
+To estimate the latter, the report counts, per sequence context, how often a covered C reads as T, A or G at positions that
+
+- are covered by at least 5 fragments,
+- are not part of a CpG,
+- are not called as a variant, and show no more alt reads than 2% noise explains (one-sided binomial test, p ≥ 0.01), so a single alt read always counts and a heterozygous variant Rastair did not call does not,
+- are at least 3 bp away from any CpG or called variant.
+
+![Example off-target plot](img/offtarget_example.png "Example off-target plot")
+
+Conversion only acts on the strand that carries the C: @OT reads at a reference C, @OB reads at a reference G.
+The other strand sees the same position through the paired G, so a `C>T` there is an ordinary error and serves as a control.
+Off-target conversion shows up as `C>T` on the converted strand above both that control and the `C>A`/`C>G` rates in the same context.
+In the example above (the same library), `C>T` on the converted strand is about 0.23% in every context, roughly ten times the control.
+
+The mismatch counts come from `rastair call --all`, and the coverage from the read pairs in the BAM, counting overlapping mates once as `call` does.
+Both cover `--region` if given, otherwise every mapped contig, like the other plots.
+The section needs `--bam` and `--reference`, and is skipped with `--wgbs` or `--no-off-target`.
