@@ -12,9 +12,42 @@
 //! - Cutoffs are per `(chr, read_pair, strand)` group, which needs at least
 //!   `MIN_MBIAS_OBS` (3) covered positions. A genome-wide run skips a sparse
 //!   contig with a `warning()`; an explicitly requested one is a `stop()`.
-//! - `plot_fp` is `isTRUE(args$plot_fp)`: argparser flags default to `FALSE`,
-//!   not `NA`. A `--bed`-only render skips the V-bias/GC/FP chunks, and this
-//!   module adds `--no-vbias`/`--no-gc` when there is no `--reference`.
+//! - argparser flags default to `FALSE`, not `NA`, so test them with `isTRUE`.
+//!   A `--bed`-only render skips the V-bias/GC/off-target chunks, and this
+//!   module adds `--no-vbias`/`--no-gc`/`--no-off-target` when there is no
+//!   `--reference`, and `--no-off-target` when there is no `--bam`.
+//! - The GC/CpG-bias chunks compare reads with all read-long `N`-free windows
+//!   of the reference, by CpG count and GC share taken from the reference
+//!   (conversion changes the read's Cs), among those with at least one CpG,
+//!   as the per-read data has no others. The GC-adjusted CpG line weights
+//!   each window by its GC bin's observed/expected ratio. Reads and windows
+//!   are also binned by their presumed number of methylated CpGs, the sum of
+//!   their CpGs' levels; levels come from a random half of the reads and only
+//!   the other half is counted, so a read never sets its own bin. A read's
+//!   own calls are not used for this: a reference window has none, and a
+//!   per-molecule count against level sums would be skewed by methylation
+//!   being concordant along a molecule. Per-read offsets land on the CpG's C
+//!   (OT) or G (OB).
+//! - Off-target conversion: one `call --all` over `--region` (padded by the
+//!   mask's flank) or the whole input, streamed through a `pipe()` and
+//!   tallied a contig at a time, since a genome-wide `--all` VCF holds every
+//!   reference CpG; reads are fetched in 2 Mb tiles. No `bcftools`, no
+//!   temp files. Mismatch counts per strand come from `AS_SB_OT`/`AS_SB_OB`,
+//!   split per alt allele in R. Positions near a `CPG` or `CPGnovo` record
+//!   are masked: `--all` writes every reference CpG, and `CPGnovo` marks both
+//!   bases of a CpG that a called variant creates. Coverage comes from reads
+//!   via `scanBam`: mates are sorted by name and an overlapping pair merged
+//!   into one fragment, since `call` counts fragments. The converted strand
+//!   is OT at a reference C and OB at a G. Skipped with `--wgbs`, where
+//!   `call`'s TAPS model does not apply.
+//! - M-bias positions are parsed in 250,000-row chunks (`position_counts()`):
+//!   pasting a whole `(chr, read_pair, strand)` group's position strings into
+//!   one `scan()` scales with the largest chromosome and ran out of memory on
+//!   deep data. V-bias reuses the parsed table, with the deduplicated per-read
+//!   row index as `alignment_id`; a full-table `.GRP` over read names cost
+//!   seconds and a chromosome-sized workspace.
+//! - A chromosome-only report needs `--region`: a whole-genome BED is otherwise
+//!   read whole (`bgzip -cd`), not through `tabix`.
 //!
 //! `tests/mbias_report.rs` renders a synthetic per-read BED (behind
 //! `external-tool-tests`, skipped without R and its packages, `tabix` or
@@ -72,15 +105,10 @@ pub struct MBiasParams {
     #[arg(help_heading = cli::sections::FILTER)]
     pub read_length: Option<i32>,
 
-    /// Reference FASTA file (required for V-bias and GC/CpG bias plots)
+    /// Reference FASTA file (required for V-bias, GC/CpG bias and off-target plots)
     #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub reference: Option<ClioPath>,
-
-    /// VCF file with methylation calls (required for GC/CpG bias plots)
-    #[arg(long, value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
-    #[arg(help_heading = cli::sections::INPUT)]
-    pub vcf: Option<ClioPath>,
 
     /// Do not generate V-bias plots (faster)
     #[arg(long = "no-vbias")]
@@ -92,15 +120,17 @@ pub struct MBiasParams {
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub no_gc: bool,
 
+    /// Do not estimate off-target conversion
+    ///
+    /// The estimate needs `--bam` and `--reference`, and is skipped without them.
+    #[arg(long = "no-off-target")]
+    #[arg(help_heading = cli::sections::PROCESSING)]
+    pub no_off_target: bool,
+
     /// Path to tabix executable
     #[arg(long = "tabix-path", default_value = "tabix")]
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub tabix_path: String,
-
-    /// Path to bcftools executable
-    #[arg(long = "bcftools-path", default_value = "bcftools")]
-    #[arg(help_heading = cli::sections::PROCESSING)]
-    pub bcftools_path: String,
 
     /// Path to rastair executable
     #[arg(long = "rastair-path", default_value = "rastair")]
@@ -139,8 +169,6 @@ impl MBiasParams {
             self.exclude_flag.to_string(),
             "--tabix-path".into(),
             self.tabix_path.clone(),
-            "--bcftools-path".into(),
-            self.bcftools_path.clone(),
             "--rastair-path".into(),
             rastair_path,
             "--output-prefix".into(),
@@ -160,10 +188,6 @@ impl MBiasParams {
             params.push("--reference".into());
             params.push(reference.path().to_string_lossy().into_owned());
         }
-        if let Some(vcf) = &self.vcf {
-            params.push("--vcf".into());
-            params.push(vcf.path().to_string_lossy().into_owned());
-        }
         if self.wgbs {
             params.push("--wgbs".into());
         }
@@ -173,6 +197,9 @@ impl MBiasParams {
         }
         if self.no_gc || self.reference.is_none() {
             params.push("--no-gc".into());
+        }
+        if self.no_off_target || self.reference.is_none() || self.bam_file.is_none() {
+            params.push("--no-off-target".into());
         }
         params
     }
@@ -311,10 +338,11 @@ fn ensure_tabix_index_exists(params: &MBiasParams) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::MBiasParams;
+    use clio::ClioPath;
+    use std::path::Path;
 
-    #[test]
-    fn as_flags_includes_extended_script_options() {
-        let params = MBiasParams {
+    fn params() -> MBiasParams {
+        MBiasParams {
             bed_file: None,
             bam_file: None,
             region: None,
@@ -322,49 +350,58 @@ mod tests {
             exclude_flag: 3852,
             read_length: None,
             reference: None,
-            vcf: None,
             no_vbias: false,
             no_gc: false,
+            no_off_target: false,
             tabix_path: "tabix".into(),
-            bcftools_path: "bcftools".into(),
             rastair_path: "rastair".into(),
-            threads: 4,
-            wgbs: true,
-            output_prefix: ".".into(),
-            r_script_dir: None,
-        };
-
-        let flags = params.as_flags();
-
-        assert!(flags.windows(2).any(|window| window == ["--bcftools-path", "bcftools"]));
-        assert!(flags.windows(2).any(|window| window == ["--threads", "4"]));
-        assert!(flags.iter().any(|flag| flag == "--wgbs"));
-        assert!(flags.iter().any(|flag| flag == "--no-vbias"));
-        assert!(flags.iter().any(|flag| flag == "--no-gc"));
-        assert!(flags.windows(2).any(|window| window[0] == "--rastair-path"));
-    }
-
-    #[test]
-    fn as_flags_preserves_explicit_rastair_path_override() {
-        let params = MBiasParams {
-            bed_file: None,
-            bam_file: None,
-            region: None,
-            include_flag: 3,
-            exclude_flag: 3852,
-            read_length: None,
-            reference: None,
-            vcf: None,
-            no_vbias: false,
-            no_gc: false,
-            tabix_path: "tabix".into(),
-            bcftools_path: "bcftools".into(),
-            rastair_path: "/tmp/custom-rastair".into(),
             threads: 1,
             wgbs: false,
             output_prefix: ".".into(),
             r_script_dir: None,
-        };
+        }
+    }
+
+    fn test_data(name: &str) -> ClioPath {
+        ClioPath::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name))
+            .expect("test data path should be valid")
+    }
+
+    #[test]
+    fn as_flags_includes_extended_script_options() {
+        let params = MBiasParams { threads: 4, wgbs: true, ..params() };
+
+        let flags = params.as_flags();
+
+        assert!(flags.windows(2).any(|window| window == ["--tabix-path", "tabix"]));
+        assert!(flags.windows(2).any(|window| window == ["--threads", "4"]));
+        assert!(flags.iter().any(|flag| flag == "--wgbs"));
+        assert!(flags.iter().any(|flag| flag == "--no-vbias"));
+        assert!(flags.iter().any(|flag| flag == "--no-gc"));
+        assert!(flags.iter().any(|flag| flag == "--no-off-target"));
+        assert!(flags.windows(2).any(|window| window[0] == "--rastair-path"));
+    }
+
+    #[test]
+    fn as_flags_disables_off_target_only_without_bam_or_reference() {
+        let reference = Some(test_data("test.fasta.gz"));
+        let bam_file = Some(test_data("test.bam"));
+        let has_flag =
+            |params: MBiasParams| params.as_flags().iter().any(|flag| flag == "--no-off-target");
+
+        assert!(!has_flag(MBiasParams {
+            reference: reference.clone(),
+            bam_file: bam_file.clone(),
+            ..params()
+        }));
+        assert!(has_flag(MBiasParams { reference: reference.clone(), ..params() }));
+        assert!(has_flag(MBiasParams { bam_file: bam_file.clone(), ..params() }));
+        assert!(has_flag(MBiasParams { reference, bam_file, no_off_target: true, ..params() }));
+    }
+
+    #[test]
+    fn as_flags_preserves_explicit_rastair_path_override() {
+        let params = MBiasParams { rastair_path: "/tmp/custom-rastair".into(), ..params() };
 
         let flags = params.as_flags();
 

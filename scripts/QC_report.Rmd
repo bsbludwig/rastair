@@ -8,13 +8,11 @@ output:
 params:
   threads: 1
   input_bgz: NULL
-  input_vcf: NULL
   input_bam: NULL
   reference: NULL
   output_dir: "."
   region: NULL # By default there's no region
   tabix: "tabix" # Assume tabix is available in PATH
-  bcftools: "bcftools" # Assume bcftools is available in PATH
   rastair: "rastair" # Assume rastair is available in PATH
   include_flags: 3
   exclude_flags: 3852
@@ -22,7 +20,7 @@ params:
   plot_vbias: TRUE
   plot_gc: TRUE
   is_WGBS: FALSE
-  plot_fp: FALSE
+  plot_offtarget: TRUE
 ---
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -33,19 +31,164 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
-parse_positions <- function(mod_pos, unmod_pos, snp_pos, moddn_pos, unmoddn_pos) {
-  m_pos <- as.integer(strsplit(as.character(mod_pos), ",", fixed=TRUE)[[1]])
-  u_pos <- as.integer(strsplit(as.character(unmod_pos), ",", fixed=TRUE)[[1]])
-  s_pos <- as.integer(strsplit(as.character(snp_pos), ",", fixed=TRUE)[[1]])
-  dm_pos <- as.integer(strsplit(as.character(moddn_pos), ",", fixed=TRUE)[[1]])
-  du_pos <- as.integer(strsplit(as.character(unmoddn_pos), ",", fixed=TRUE)[[1]])
+parse_position_counts <- function(data, columns) {
+  encoded <- unlist(
+    lapply(columns, function(column) data[[column]]),
+    use.names=FALSE
+  )
+  encoded <- encoded[!is.na(encoded) & nzchar(encoded)]
+  if (length(encoded) == 0L) {
+    return(integer())
+  }
 
-  nm <- ifelse(any(is.na(m_pos)), 0, length(m_pos))
-  nu <- ifelse(any(is.na(u_pos)), 0, length(u_pos))
-  ns <- ifelse(any(is.na(s_pos)), 0, length(s_pos))
-  ndm <- ifelse(any(is.na(dm_pos)), 0, length(dm_pos))
-  ndu <- ifelse(any(is.na(du_pos)), 0, length(du_pos))
-  return(data.table(pos_in_read=na.omit(c(m_pos, u_pos, s_pos, dm_pos, du_pos)), type=c(rep("M", nm), rep("U", nu), rep("S", ns), rep("m", ndm), rep("u", ndu))))
+  positions <- scan(
+    text=encoded,
+    what=integer(),
+    sep=",",
+    quiet=TRUE
+  )
+  tabulate(positions + 1L)
+}
+
+position_counts <- function(data, chunk_size=250000L) {
+  mod_columns <- c("mod_cpgs", "mod_denovos")
+  unmod_columns <- c("unmod_cpgs", "unmod_denovos")
+  position_columns <- c(mod_columns, unmod_columns)
+  chunk_starts <- seq.int(1L, nrow(data), by=chunk_size)
+
+  chunks <- lapply(chunk_starts, function(first) {
+    last <- min(first + chunk_size - 1L, nrow(data))
+    chunk <- data[first:last, c("chr", "flag", position_columns), with=FALSE]
+    chunk[, `:=`(
+      read_pair=factor(
+        fifelse(bitwAnd(flag, 64) > 0, "First", "Second"),
+        levels=c("First", "Second")
+      ),
+      strand=factor(
+        fifelse(
+          bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144,
+          "OT",
+          "OB"
+        ),
+        levels=c("OB", "OT")
+      )
+    )]
+
+    chunk[, {
+      mod <- parse_position_counts(.SD, mod_columns)
+      unmod <- parse_position_counts(.SD, unmod_columns)
+      num_positions <- max(length(mod), length(unmod))
+      mod <- c(mod, integer(num_positions - length(mod)))
+      unmod <- c(unmod, integer(num_positions - length(unmod)))
+      observed <- which(mod > 0L | unmod > 0L)
+      .(
+        pos=observed - 1L,
+        mod=as.double(mod[observed]),
+        unmod=as.double(unmod[observed])
+      )
+    }, by=.(chr, read_pair, strand), .SDcols=position_columns]
+  })
+
+  rbindlist(chunks)[
+    , .(mod=sum(mod), unmod=sum(unmod)),
+    by=.(chr, read_pair, strand, pos)
+  ]
+}
+
+expand_positions <- function(data) {
+  position_types <- c(
+    mod_cpgs="M",
+    unmod_cpgs="U",
+    snp_cpgs="S",
+    mod_denovos="m",
+    unmod_denovos="u"
+  )
+
+  expanded <- lapply(names(position_types), function(column) {
+    encoded <- data[[column]]
+    present <- !is.na(encoded) & nzchar(encoded)
+    if (!any(present)) {
+      result <- data[0L, .(
+        chr, start, end, read_id, orientation, insert_size, flag
+      )]
+      result[, `:=`(
+        alignment_id=integer(), pos_in_read=integer(), type=character()
+      )]
+      return(result)
+    }
+
+    positions <- strsplit(as.character(encoded[present]), ",", fixed=TRUE)
+    rows <- rep.int(which(present), lengths(positions))
+    result <- data[rows, .(
+      chr, start, end, read_id, orientation, insert_size, flag
+    )]
+    result[, `:=`(
+      alignment_id=rows,
+      pos_in_read=as.integer(unlist(positions, use.names=FALSE)),
+      type=unname(position_types[[column]])
+    )]
+    result
+  })
+
+  rbindlist(expanded, use.names=TRUE)
+}
+
+assign_position_ordinals <- function(data) {
+  setorder(data, alignment_id, pos_in_read)
+  data[, ordinal := rowid(alignment_id)]
+  data
+}
+
+collapse_fragment_cpgs <- function(data) {
+  data[, Orientation := fifelse(
+    bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144,
+    "OT",
+    "OB"
+  )]
+
+  group_columns <- c("chr", "read_id", "cpg_id", "insert_size", "Orientation")
+  setorderv(data, group_columns)
+  repeated <- duplicated(data, by=group_columns) |
+    duplicated(data, by=group_columns, fromLast=TRUE)
+
+  singletons <- data[!repeated, .(
+    chr,
+    read_id,
+    cpg_id,
+    insert_size,
+    Orientation,
+    start,
+    end,
+    pos_in_fragment=start + pos_in_read,
+    type=fcase(
+      type == "S", "S",
+      type %chin% c("U", "u"), "U",
+      default="M"
+    )
+  )]
+  multiples <- data[repeated, .(
+    start=min(start),
+    end=max(end),
+    pos_in_fragment=min(start + pos_in_read),
+    type=fifelse(
+      any(type == "S"),
+      "S",
+      fifelse(all(type %chin% c("U", "u")), "U", "M")
+    )
+  ), by=group_columns]
+
+  result <- rbindlist(list(singletons, multiples), use.names=TRUE)
+  result[
+    Orientation == "OT",
+    pos_in_fragment := pos_in_fragment - min(start),
+    by=.(chr, read_id)
+  ]
+  result[
+    Orientation == "OB",
+    pos_in_fragment := max(end) - pos_in_fragment,
+    by=.(chr, read_id)
+  ]
+  result
 }
 
 
@@ -121,7 +264,7 @@ if ((is.na(params$input_bgz) || is.null(params$input_bgz) || nchar(params$input_
   if (!is.na(params$region) && nchar(params$region) > 0) {
     command=paste(params$tabix, "-h", params$input_bgz, params$region)
   } else {
-    command=paste("zcat", params$input_bgz)
+    command=paste("bgzip -cd", params$input_bgz)
   }
 }  else {
   stop("Neither per-read bgz nor bam file given, cannot proceed")
@@ -133,16 +276,14 @@ data[, chr := as.factor(chr)]
 data[, orientation := as.factor(orientation)]
 
 if (!is.null(params$is_WGBS) && params$is_WGBS == TRUE) {
-  data[, num_mod := num_cpg - num_mod] # flip mod/unmod
   setnames(data, c("mod_cpgs", "unmod_cpgs", "mod_denovos", "unmod_denovos"), c("unmod_cpgs", "mod_cpgs", "unmod_denovos", "mod_denovos"))
 }
 
-# remove reads without CpGs
-data <- data[num_cpg > 0]
-
-# filter by flags
-data <- data[bitwAnd(flag, params$include_flags) == params$include_flags]
-data <- data[bitwAnd(flag, params$exclude_flags) == 0]
+data <- data[
+  num_cpg > 0 &
+    bitwAnd(flag, params$include_flags) == params$include_flags &
+    bitwAnd(flag, params$exclude_flags) == 0
+]
 
 if (is.null(params$read_len) || is.na(params$read_len) || !is.numeric(params$read_len)) {
   read_len <- max(data$read_length, na.rm=TRUE)
@@ -150,26 +291,30 @@ if (is.null(params$read_len) || is.na(params$read_len) || !is.numeric(params$rea
   read_len = params$read_len
 }
 
-data <- data[, .N, by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag, mod_cpgs, unmod_cpgs, snp_cpgs, mod_denovos, unmod_denovos)] # unify duplicate reads
+dedup_columns <- c(
+  "chr", "start", "end", "read_id", "mapq", "orientation", "insert_size",
+  "read_length", "flag", "mod_cpgs", "unmod_cpgs", "snp_cpgs",
+  "mod_denovos", "unmod_denovos"
+)
+data <- unique(data, by=dedup_columns)
+data[, c("mapq", "read_length", "num_cpg", "num_mod") := NULL]
+invisible(gc())
 
-# Break comma-separated pos_in_read into a list
-data <- data[, parse_positions(mod_cpgs, unmod_cpgs, snp_cpgs, mod_denovos, unmod_denovos), by=.(chr, start, end, read_id, mapq, orientation, insert_size, read_length, flag)]
-
-mbias_table <- data[, .(
-  mod = sum(type %in% c("M", "m")),
-  unmod = sum(type %in% c("U", "u"))
-), by = .(
-  chr,
-  pos = pos_in_read,
-  read_pair = as.factor(fifelse(bitwAnd(flag, 64) > 0, "First", "Second")),
-  strand = as.factor(fifelse(bitwAnd(flag, 96) == 96 | bitwAnd(flag, 144) == 144, "OT", "OB"))
-)]
+mbias_table <- position_counts(data)
 
 # Flip the OB reads so that mbias is always reported 5' -> 3'
 mbias_table[(strand=="OT" & read_pair == "Second") | (strand=="OB" & read_pair == "First"), pos := read_len-pos]
 mbias_table <- mbias_table[, .(beta=mod/(mod+unmod), lower_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[1], 0.0), upper_ci=ifelse(mod+unmod>0, binom.test(mod, mod+unmod, conf.level = 0.999)$conf.int[2], 0.0)), by=.(chr, pos, read_pair, strand)]
 mbias_table <- mbias_table[!is.na(beta)]
 setkey(mbias_table, chr, pos)
+
+if (isTRUE(params$plot_gc)) {
+  read_info <- data[, .(chr, start, mod_cpgs, unmod_cpgs)]
+}
+if (!isTRUE(params$plot_vbias)) {
+  rm(data)
+  invisible(gc())
+}
 ```
 
 
@@ -244,109 +389,48 @@ if (params$plot_vbias) {
     library(ggside)
   })
 
-  # List all CpGs in the reference sequence for a particular region
-  cpg_table_from_fasta <- function(region,
-                                   fasta,
-                                   build_index_if_missing = FALSE) {
-
-    elements <- unlist(strsplit(region, "[:\\-]"))
-    if (length(elements == 1)) {
-      chr = elements[1]
-      start_pos = 1
-      end_pos = NULL
-    } else if (length(elements) == 3) {
-      chr = elements[1]
-      start_pos = elements[2]
-      end_pos = elements[3]
-    } else {
-      stop("Could not parse region argument")
-    }
-    # region format: "chr1:2000-10000" (1-based, inclusive)
-    if (!is.null(end_pos) && start_pos > end_pos) stop("start must be <= end")
-    if (!file.exists(fasta)) stop("FASTA file not found: ", fasta)
-
-    fai <- paste0(fasta, ".fai")
-    is_bgzip <- grepl("\\.(fa|fasta)\\.(gz|bgz)$", fasta, ignore.case = TRUE)
-    gzi <- paste0(fasta, ".gzi")
-
-    if (!file.exists(fai) || (is_bgzip && !file.exists(gzi))) {
-      if (!build_index_if_missing) {
-        stop("Missing FASTA index. Need ", fai,
-             if (is_bgzip) paste0(" and ", gzi) else "",
-             ". Set build_index_if_missing=TRUE to run indexFa().")
-      }
-      indexFa(fasta)
-    }
-
-    # Handle chr naming differences (e.g., chr1 vs 1)
-    idx <- scanFaIndex(fasta)
-    seq_levels <- as.character(seqnames(idx))
-    if (!(chr %in% seq_levels)) {
-      alt <- if (startsWith(chr, "chr")) sub("^chr", "", chr) else paste0("chr", chr)
-      if (alt %in% seq_levels) {
-        chr <- alt
-      } else {
-        stop("Chromosome '", chr, "' not found in FASTA index.")
-      }
-    }
-
-    if (is.null(end_pos)) {
-      end_pos = seqlengths(idx)[chr]
-    }
-
-    param <- GRanges(chr, IRanges::IRanges(start_pos, end_pos))
-    dna <- scanFa(fasta, param = param)[[1]]
-
-    cg_rel <- start(matchPattern("CG", dna, fixed = TRUE))
-    if (length(cg_rel) == 0L) {
-      return(data.table(chr = character(), pos = integer(), base = character(), cpg_id = integer()))
-    }
-
-    c_pos <- start_pos + cg_rel - 1L
-    out <- data.table(
-      chr = chr,
-      pos = as.vector(rbind(c_pos, c_pos + 1L)),     # C then G
-      base = rep(c("C", "G"), times = length(c_pos)),
-      cpg_id = rep(seq_along(c_pos), each = 2L)
-    )
-
-    out[, chr := as.factor(chr)]
-    out[, base := as.factor(base)]
-    return(out)
-  }
-
   if (is.na(params$reference) || nchar(params$reference)==0 || !file.exists(params$reference)) {
     stop("V-Bias plot required a reference fasta file")
   }
 
-  cpgsInRegion <- lapply(unique(data$chr), function(chrom) {
-    res <- cpg_table_from_fasta(region = as.character(chrom), fasta = params$reference)
-  })
-  cpgsInRegion <- rbindlist(cpgsInRegion)
-  cpgsInRegion[, end:=pos]
-  setkey(cpgsInRegion, chr, pos, end)
+  # The C of every reference CpG, per contig; a contig the reference lacks
+  # has none
+  reference_lengths <- seqlengths(scanFaIndex(params$reference))
+  contigs <- as.character(unique(data$chr))
+  cpg_positions <- setNames(lapply(contigs, function(contig) {
+    if (!(contig %in% names(reference_lengths))) {
+      return(integer())
+    }
+    dna <- scanFa(params$reference, param = GRanges(contig, IRanges::IRanges(1L, reference_lengths[[contig]])))[[1]]
+    start(matchPattern("CG", dna, fixed = TRUE))
+  }), contigs)
 
-  readPositions <- data[, .N, by=.(chr, start, end, orientation)]
-  readPositions[, N:=NULL]
-  setkey(readPositions, chr, start, end)
-  cpgsPerRead <- foverlaps(cpgsInRegion, readPositions, nomatch=NULL)
-  cpgsPerRead <- cpgsPerRead[, .N, by=.(chr, start, end, orientation, cpg_id)][, .(ordinal = order(cpg_id), cpg_id), by=.(chr, start, end, orientation)]
+  readPositions <- unique(data[, .(chr, start, end, orientation)])
+  readPositions[, c("first_cpg_id", "last_cpg_id") := {
+    positions <- cpg_positions[[as.character(chr[[1L]])]]
+    if (is.null(positions) || length(positions) == 0L) {
+      list(rep.int(1L, .N), rep.int(0L, .N))
+    } else {
+      # A CpG overlaps [start, end] when its C lies in [start - 1, end].
+      list(
+        findInterval(start - 2L, positions) + 1L,
+        findInterval(end, positions)
+      )
+    }
+  }, by=chr]
 
-  rm(readPositions)
+  vdata <- expand_positions(data)
+  vdata <- assign_position_ordinals(vdata)
+  vdata[readPositions, on=.(chr, start, end, orientation), `:=`(
+    first_cpg_id=i.first_cpg_id,
+    last_cpg_id=i.last_cpg_id
+  )]
+  vdata[, cpg_id := first_cpg_id + ordinal - 1L]
+  vdata <- vdata[!is.na(first_cpg_id) & cpg_id <= last_cpg_id]
+  vdata[, c("first_cpg_id", "last_cpg_id") := NULL]
 
-  # annotate with ordinals for all reads per sample, too
-  vdata <- data
-  vdata[, ordinal := order(pos_in_read), by=.(read_id, chr, start, end, orientation)]
-
-  setkey(vdata, chr, start, end, orientation, ordinal)
-  setkey(cpgsPerRead, chr, start, end, orientation, ordinal)
-  vdata <- vdata[cpgsPerRead[, .(chr, start, end, orientation, ordinal, cpg_id)], nomatch=NULL]
-  rm(cpgsInRegion, cpgsPerRead)
-
-  # merge reads into fragments
-  vdata <- vdata[, .(start=min(start), end=max(end), pos_in_fragment=min(start+pos_in_read), type=fifelse(any(type=="S"), "S", fifelse(all(type %in% c("U","u")), "U", "M"))), by=.(chr, read_id, cpg_id, insert_size, Orientation=fifelse(bitwAnd(flag, 96)==96 | bitwAnd(flag, 144)==144, "OT", "OB"))]
-  vdata[Orientation=="OT", pos_in_fragment := pos_in_fragment - min(start), by=.(chr, read_id)]
-  vdata[Orientation=="OB", pos_in_fragment := max(end)-pos_in_fragment, by=.(chr, read_id)]
+  rm(data, cpg_positions, readPositions)
+  vdata <- collapse_fragment_cpgs(vdata)
 }
 ```
 ```{r plot_vbias, echo=FALSE, fig.height=4, fig.width=7, warning=FALSE}
@@ -369,9 +453,6 @@ if (params$plot_vbias) {
       by = .(`Insert size`, Orientation)
     ]
     side_counts[, obs_pdf:=obs/sum(obs), by=.(Orientation)]
-
-    y_max <- as.numeric(quantile(vdata_plot[["Insert size"]], 0.99,  na.rm = TRUE))
-    x_max <- as.numeric(quantile(vdata_plot[["Pos in fragment"]], 0.99, na.rm = TRUE))
 
     p <- ggplot(vdata_plot, aes(x = `Pos in fragment`, y = `Insert size`, fill = beta)) +
       geom_tile() +
@@ -398,7 +479,6 @@ if (params$plot_vbias) {
       theme_minimal() +
       theme(
         panel.grid = element_blank(),
-        #axis.title.y = element_blank(),
 
         # make the side panel look like an annotation
         ggside.panel.grid = element_blank(),
@@ -409,7 +489,7 @@ if (params$plot_vbias) {
 
     print(p)
   }
-  rm(vdata, data)
+  rm(vdata)
   invisible({gc()})
 }
 ```
@@ -417,200 +497,482 @@ if (params$plot_vbias) {
 
 ## CpG/GC bias
 
-```{r parse_per_pos, include=FALSE}
+```{r read_bias, include=FALSE}
 if (params$plot_gc) {
   suppressPackageStartupMessages({
     library(Rsamtools)
     library(Biostrings)
+    library(ggside)
+  })
+  if (is.na(params$reference) || nchar(params$reference) == 0 || !file.exists(params$reference)) {
+    stop("GC/CpG bias plots need a reference fasta file")
+  }
+
+  # Under random fragmentation reads start uniformly along the genome, so
+  # the CpG count and GC share of reads should follow those of all read-long
+  # windows of the reference that hold no N. Both are taken from the
+  # reference, since conversion changes the Cs a read shows. Only reads with
+  # a CpG are in the per-read data, so reads and windows are compared among
+  # those covering at least one.
+  WINDOW_BLOCK <- 10000000L
+  GC_BIN_PERCENT <- 2
+  MIN_READS_PER_BIN <- 20L
+  window_len <- as.integer(read_len)
+  in_window <- function(window_start, positions, width) {
+    findInterval(window_start + width - 1L, positions) - findInterval(window_start - 1L, positions)
+  }
+  # Per-read positions are offsets into the read: OT reads give a CpG's C,
+  # OB reads its G. A call off both (an indel or clip before it) is dropped.
+  methylation_calls <- function(read_start, encoded, methylated, cpg) {
+    present <- !is.na(encoded) & nzchar(encoded)
+    offsets <- strsplit(encoded[present], ",", fixed = TRUE)
+    read <- rep(which(present), lengths(offsets))
+    position <- read_start[read] + as.integer(unlist(offsets))
+    site <- findInterval(position, cpg)
+    on_cpg <- site > 0L & position - cpg[pmax(site, 1L)] <= 1L
+    data.table(read = read[on_cpg], site = site[on_cpg], methylated = methylated)
+  }
+  # A window's CpG count, GC bin and presumed number of methylated CpGs:
+  # the sum of the levels of its CpGs, NA if one of them has no level. A
+  # CpG counts when both its C and its G lie in the window.
+  describe_windows <- function(window_start, cpg, gc, cum_level, cum_unknown) {
+    before <- findInterval(window_start - 1L, cpg)
+    through <- findInterval(window_start + window_len - 2L, cpg)
+    data.table(
+      cpgs = through - before,
+      gc = GC_BIN_PERCENT * round(100 * in_window(window_start, gc, window_len) / window_len / GC_BIN_PERCENT),
+      methylated = fifelse(
+        cum_unknown[through + 1L] == cum_unknown[before + 1L],
+        round(cum_level[through + 1L] - cum_level[before + 1L]),
+        NA_real_
+      )
+    )
+  }
+
+  # A CpG's level comes from a random half of the reads; only the other half
+  # is counted by presumed methylation, so a read never sets the level it is
+  # binned by
+  set.seed(1)
+  reference_lengths <- seqlengths(scanFaIndex(params$reference))
+  observed <- list(cpgs = list(), methylated = list())
+  expected <- list(cpgs = list(), methylated = list())
+  for (contig in intersect(as.character(unique(read_info$chr)), names(reference_lengths))) {
+    dna <- scanFa(params$reference, param = GRanges(contig, IRanges::IRanges(1L, reference_lengths[[contig]])))[[1]]
+    cpg <- start(matchPattern("CG", dna, fixed = TRUE))
+    gc <- start(matchPattern("S", dna, fixed = c(pattern = FALSE, subject = TRUE)))
+    gaps <- start(matchPattern("N", dna, fixed = TRUE))
+    last_start <- reference_lengths[[contig]] - window_len + 1L
+    reads <- read_info[chr == contig]
+    reads[, start := start + 1L]
+    reads <- reads[start <= last_start]
+    reads <- reads[in_window(start, gaps, window_len) == 0L]
+    if (nrow(reads) == 0L) {
+      next
+    }
+
+    in_level_half <- sample(c(TRUE, FALSE), nrow(reads), replace = TRUE)
+    calls <- rbind(
+      methylation_calls(reads$start, reads$mod_cpgs, TRUE, cpg),
+      methylation_calls(reads$start, reads$unmod_cpgs, FALSE, cpg)
+    )[in_level_half[read]]
+    levels <- calls[, .(level = mean(methylated)), by = site]
+    site_level <- rep(NA_real_, length(cpg))
+    site_level[levels$site] <- levels$level
+    cum_level <- c(0, cumsum(fifelse(is.na(site_level), 0, site_level)))
+    cum_unknown <- c(0L, cumsum(is.na(site_level)))
+
+    described <- describe_windows(reads$start, cpg, gc, cum_level, cum_unknown)
+    described[, counted := !in_level_half]
+    described <- described[cpgs >= 1L]
+    observed$cpgs[[contig]] <- described[, .N, by = .(cpgs, gc)]
+    observed$methylated[[contig]] <- described[counted & !is.na(methylated), .N, by = .(methylated, gc)]
+    # Expected windows start where the reads do, i.e. over the region
+    for (block in seq(min(reads$start), max(reads$start), by = WINDOW_BLOCK)) {
+      window_start <- seq(block, min(block + WINDOW_BLOCK - 1L, max(reads$start)))
+      window_start <- window_start[in_window(window_start, gaps, window_len) == 0L]
+      windows <- describe_windows(window_start, cpg, gc, cum_level, cum_unknown)[cpgs >= 1L]
+      expected$cpgs[[length(expected$cpgs) + 1L]] <- windows[, .N, by = .(cpgs, gc)]
+      expected$methylated[[length(expected$methylated) + 1L]] <- windows[!is.na(methylated), .N, by = .(methylated, gc)]
+    }
+  }
+  rm(read_info, reads, calls, levels, site_level, cum_level, cum_unknown, described, windows, dna, cpg, gc, gaps)
+
+  share <- function(counts) counts / sum(counts)
+  # Reads vs. expected by `by`, raw and with each window weighted by how
+  # over- or under-represented its GC share is among the reads
+  deviation_by <- function(by) {
+    joint <- merge(
+      rbindlist(observed[[by]])[, .(observed = sum(N)), by = c(by, "gc")],
+      rbindlist(expected[[by]])[, .(expected = sum(N)), by = c(by, "gc")],
+      by = c(by, "gc"), all = TRUE
+    )
+    setnames(joint, by, "x")
+    joint[is.na(observed), observed := 0]
+    joint[is.na(expected), expected := 0]
+    # The top 1% of reads are pooled into the last bin
+    reads_by_x <- joint[, .(observed = sum(observed)), keyby = x]
+    cap <- reads_by_x[, x[which(cumsum(observed) >= 0.99 * sum(observed))[1]]]
+    joint <- joint[, .(observed = sum(observed), expected = sum(expected)), by = .(x = pmin(x, cap), gc)]
+    by_gc <- joint[, .(observed = sum(observed), expected = sum(expected)), keyby = gc][expected > 0]
+    by_gc[, gc_effect := share(observed) / share(expected)]
+    by_x <- joint[by_gc[, .(gc, gc_effect)], on = "gc", nomatch = NULL][
+      , .(observed = sum(observed), expected = sum(expected), gc_adjusted = sum(expected * gc_effect)), keyby = x]
+    by_x[, `:=`(
+      raw = 100 * (share(observed) / share(expected) - 1),
+      adjusted = 100 * (share(observed) / share(gc_adjusted) - 1)
+    )]
+    list(by_x = by_x[observed >= MIN_READS_PER_BIN], by_gc = by_gc[observed >= MIN_READS_PER_BIN], cap = cap)
+  }
+  cpg_bias <- deviation_by("cpgs")
+  methylation_bias <- deviation_by("methylated")
+
+  covariate_labels <- c(
+    cpg = sprintf("CpGs in a %d bp read (last bin: %d or more)", window_len, cpg_bias$cap),
+    methylated = sprintf("Presumably methylated CpGs (last bin: %d or more)", methylation_bias$cap),
+    gc = sprintf("GC in a %d bp read (%%)", window_len)
+  )
+  series_labels <- c(raw = "Reads vs. expected", adjusted = "After accounting for GC")
+  read_lines <- rbind(
+    cpg_bias$by_x[, .(covariate = "cpg", x, series = "raw", deviation = raw)],
+    cpg_bias$by_x[, .(covariate = "cpg", x, series = "adjusted", deviation = adjusted)],
+    methylation_bias$by_x[, .(covariate = "methylated", x, series = "raw", deviation = raw)],
+    methylation_bias$by_x[, .(covariate = "methylated", x, series = "adjusted", deviation = adjusted)],
+    cpg_bias$by_gc[, .(covariate = "gc", x = gc, series = "raw", deviation = 100 * (gc_effect - 1))]
+  )
+  read_bars <- rbind(
+    cpg_bias$by_x[, .(covariate = "cpg", x, reads = observed)],
+    methylation_bias$by_x[, .(covariate = "methylated", x, reads = observed)],
+    cpg_bias$by_gc[, .(covariate = "gc", x = gc, reads = observed)]
+  )
+  read_lines[, `:=`(
+    covariate = factor(covariate, levels = names(covariate_labels), labels = covariate_labels),
+    series = factor(series, levels = names(series_labels), labels = series_labels)
+  )]
+  read_bars[, covariate := factor(covariate, levels = names(covariate_labels), labels = covariate_labels)]
+}
+```
+
+`r if (params$plot_gc) { paste0("Under random fragmentation, reads start uniformly along the genome, so the number of CpGs a ", window_len, " bp read covers and its GC content should follow those of all ", window_len, " bp windows of the reference. The blue lines show how much more (above 0%) or less often reads have a given value than expected; all values are taken from the reference under the read, and only reads covering at least one CpG are compared. GC content and CpG density go together, so the orange lines show what is left once each window is weighted by how over- or under-represented its GC content is. The middle panel counts the CpGs under a read that are presumably methylated: each CpG's methylation level comes from a random half of the reads, a read or window presumably holds the sum of its CpGs' levels, and only the other half of the reads is counted there; windows with a CpG that half never covers are left out. Bins with fewer than ", MIN_READS_PER_BIN, " reads are left out; the grey bars show how many reads each bin holds. Windows in unmappable sequence are expected but cannot be observed, so values typical of repeats can look under-represented.") }`
+
+```{r read_bias_plot, echo=FALSE, warning=FALSE, fig.height=4.5, fig.width=12}
+if (params$plot_gc) {
+  ggplot(read_lines, aes(x = x, y = deviation, colour = series)) +
+    geom_hline(yintercept = 0, colour = "grey40", linewidth = 0.4) +
+    geom_line(linewidth = 0.7) +
+    geom_point(size = 1.2) +
+    geom_xsidecol(data = read_bars, aes(x = x, y = reads), inherit.aes = FALSE, fill = "grey65") +
+    facet_wrap(vars(covariate), scales = "free_x", strip.position = "bottom") +
+    scale_colour_manual(values = c("#2a78d6", "#eb6834"), name = NULL) +
+    labs(x = NULL, y = "Reads vs. expected (%)") +
+    theme_light() +
+    theme(
+      legend.position = "top",
+      strip.placement = "outside",
+      strip.background = element_blank(),
+      strip.text = element_text(colour = "grey20", size = rel(1)),
+      ggside.panel.scale = 0.2,
+      ggside.axis.text.y = element_blank(),
+      ggside.axis.ticks.y = element_blank()
+    )
+}
+```
+```{r offtarget_setup, include=FALSE}
+is_given_file <- function(path) !is.null(path) && !is.na(path) && nchar(path) > 0 && file.exists(path)
+# Coverage comes from read pairs in the BAM, so a BED-only run cannot show
+# it, and Rsamtools cannot read CRAM
+offtarget_enabled <- isTRUE(params$plot_offtarget) && is_given_file(params$input_bam) &&
+  !grepl("\\.cram$", params$input_bam, ignore.case = TRUE) && is_given_file(params$reference)
+```
+## Off-target conversion
+
+`r if (offtarget_enabled) { "The below plots show, per sequence context, how often a covered C reads as T, A or G, at loci where Rastair called no variant and no methylation. We report the strand that represent the original C (top) as well as the complementary G (bottom)." }`
+
+```{r offtarget_data, include=FALSE}
+if (offtarget_enabled) {
+  suppressPackageStartupMessages({
+    library(Rsamtools)
+    library(Biostrings)
+    library(GenomicRanges)
   })
 
-  if ((is.na(params$input_vcf) || is.null(params$input_vcf) || !file.exists(params$input_vcf)) && !is.na(params$input_bam) && !is.null(params$input_bam) && file.exists(params$input_bam)) {
-    if (!is.na(params$region) && nchar(params$region) > 0) {
-      command <- paste(params$rastair,
-    		"call -@", params$threads,
-    		"-l", params$region,
-    		"--vcf-info-fields SC5,CPG,CPGnovo --vcf-format-fields GT,DP,M5mC --vcf - -c",
-    		"-r", params$reference,
-    		params$input_bam,
-    		"|", params$bcftools, "norm -m-any",
-    		"|", params$bcftools, "query -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%CPGnovo[\\t%TGT\\t%DP\\t%M5mC]\\n\"")
-    } else {
-      command <- paste(params$rastair,
-    		"call -@", params$threads,
-    		"--vcf-info-fields SC5,CPG,CPGnovo --vcf-format-fields GT,DP,M5mC --vcf - -c",
-    		"-r", params$reference,
-    		params$input_bam,
-    		"|", params$bcftools, "norm -m-any",
-    		"|", params$bcftools, "query -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%CPGnovo[\\t%TGT\\t%DP\\t%M5mC]\\n\"")
+  # Positions this close to a CpG or a variant are left out: mismatches there
+  # are dominated by methylation and by misaligned variant reads
+  OFFTARGET_FLANK_BP <- 2L
+  # A site whose alt reads are too many for this rate of noise (one-sided
+  # binomial test) is a variant Rastair did not call, not a stray mismatch.
+  # A single alt read is never one, and noise rates around 1% lose almost no
+  # sites, so the rate is not biased down by the sites that happen to show
+  # it twice
+  OFFTARGET_NOISE_RATE <- 0.02
+  OFFTARGET_VARIANT_P <- 0.01
+  # Fragments covering a position, both strands together
+  OFFTARGET_MIN_DEPTH <- 5L
+  # These only bound how much is held in memory at once, not what is counted
+  VCF_CHUNK_LINES <- 500000L
+  TILE_BP <- 2000000L
+  SUBSTITUTIONS <- c("C>T", "C>A", "C>G")
+  STRANDS <- c(converted = "Converted strand", complementary = "Complementary strand (control)")
+  CONTEXTS <- paste0(rep(c("A", "C", "G", "T"), each = 3), "C", rep(c("A", "C", "T"), times = 4))
+  COMPLEMENT <- c(A = "T", C = "G", G = "C", T = "A")
+
+  scan_bam_flag <- function(include, exclude) {
+    bits <- c(isPaired = 1L, isProperPair = 2L, isUnmappedQuery = 4L, hasUnmappedMate = 8L,
+              isMinusStrand = 16L, isMateMinusStrand = 32L, isFirstMateRead = 64L,
+              isSecondMateRead = 128L, isSecondaryAlignment = 256L,
+              isNotPassingQualityControls = 512L, isDuplicate = 1024L,
+              isSupplementaryAlignment = 2048L)
+    args <- list()
+    for (name in names(bits)) {
+      if (bitwAnd(include, bits[[name]]) != 0) {
+        args[[name]] <- TRUE
+      } else if (bitwAnd(exclude, bits[[name]]) != 0) {
+        args[[name]] <- FALSE
+      }
     }
-  } else if (!is.na(params$input_vcf) && !is.null(params$input_vcf) && file.exists(params$input_vcf)) {
-    if (!is.na(params$region) && nchar(params$region) > 0) {
-      command <- paste(params$bcftools,
-        "view", params$input_vcf,
-        params$region,
-        "|", params$bcftools, "norm -m-any",
-  		  "|", params$bcftools, "query -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%CPGnovo[\\t%TGT\\t%DP\\t%M5mC]\\n\"")
-    } else {
-      command <- paste(params$bcftools,
-        "norm -m-any", params$input_vcf,
-  		  "|", params$bcftools, "query -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%CPGnovo[\\t%TGT\\t%DP\\t%M5mC]\\n\"")
+    do.call(scanBamFlag, args)
+  }
+
+  bam <- BamFile(params$input_bam)
+  bam_flag <- scan_bam_flag(params$include_flags, params$exclude_flags)
+  fa_index <- scanFaIndex(params$reference)
+  ref_lengths <- setNames(as.integer(width(fa_index)), as.character(seqnames(fa_index)))
+  mapped <- as.data.table(idxstatsBam(bam))[mapped > 0, as.character(seqnames)]
+
+  if (region_given) {
+    region <- gsub(",", "", params$region, fixed = TRUE)
+    parts <- regmatches(region, regexec("^([^:]+)(?::([0-9]+)(?:-([0-9]+))?)?$", region, perl = TRUE))[[1]]
+    if (length(parts) == 0 || !(parts[2] %in% names(ref_lengths))) {
+      stop("Cannot estimate off-target conversion in region ", params$region)
     }
+    region_chr <- parts[2]
+    region_start <- if (nchar(parts[3]) > 0) as.integer(parts[3]) else 1L
+    region_end <- min(if (nchar(parts[4]) > 0) as.integer(parts[4]) else ref_lengths[[region_chr]], ref_lengths[[region_chr]])
+    # Padded, so that CpGs and variants just outside the region still mask
+    # the positions next to them inside it
+    call_region <- c("-l", paste0(region_chr, ":", max(1L, region_start - OFFTARGET_FLANK_BP - 1L), "-",
+                                  min(ref_lengths[[region_chr]], region_end + OFFTARGET_FLANK_BP + 1L)))
   } else {
-    stop("Need either vcf or bam file to create gc bias plot")
+    call_region <- character(0)
   }
 
-	all_calls <- fread(cmd=command,
-		stringsAsFactors=FALSE,
-		header=FALSE, dec=".")
-	setnames(all_calls, c("chr", "pos", "ref", "alt", "isDN", "genotype", "depth", "beta"))
-	all_calls[grepl(",", beta, fixed=TRUE), beta := tstrsplit(beta, ",", fixed=TRUE)[[1]]]
-	all_calls[, beta := as.numeric(beta)]
-	all_calls[, `:=`(chr = as.factor(chr), ref=as.factor(ref), alt=as.factor(alt), genotype=as.factor(genotype))]
-
-	if (!is.null(params$is_WGBS) && params$is_WGBS == TRUE) {
-    all_calls[, beta := 1-beta]
-  }
-	site_windows <- all_calls[, .N, by=.(chr = as.character(chr), pos = as.integer(pos))]
-  site_windows <- site_windows[order(chr, pos)]
-
-  fa <- FaFile(params$reference)
-  open(fa)
-  on.exit(close(fa), add = TRUE)
-
-  chrom_lengths <- seqlengths(fa)
-  missing_chroms <- setdiff(unique(site_windows$chr), names(chrom_lengths))
-  if (length(missing_chroms) > 0) {
-    stop("Chromosome(s) missing from reference FASTA: ", paste(missing_chroms, collapse = ", "))
+  info_field <- function(info, key) {
+    fifelse(grepl(paste0("(^|;)", key, "="), info),
+            sub(paste0("^(.*;)?", key, "=([^;]*).*$"), "\\2", info), NA_character_)
   }
 
-  site_windows[, window_start := pmax(1L, pos - 50L)]
-  site_windows[, window_end := pmin(as.integer(chrom_lengths[chr]), pos + 50L)]
+  # One row per alt allele, keeping only what the tally needs: positions to
+  # mask, and mismatches at a reference C or G
+  parse_records <- function(lines) {
+    if (length(lines) == 0L) {
+      return(data.table())
+    }
+    records <- fread(text = lines, sep = "\t", header = FALSE, colClasses = "character",
+                     select = c(1, 2, 4, 5, 7, 8, 10),
+                     col.names = c("chr", "pos", "ref", "alt", "filter", "info", "sample"))
+    # AS_SB_OT/OB hold the reference count, then one count per alt in the
+    # order of ALT
+    alts <- strsplit(records$alt, ",", fixed = TRUE)
+    record <- rep(seq_len(nrow(records)), lengths(alts))
+    allele <- sequence(lengths(alts))
+    allele_counts <- function(field) {
+      counts <- strsplit(field, ",", fixed = TRUE)
+      flat <- suppressWarnings(as.integer(unlist(counts)))
+      offset <- c(0L, cumsum(lengths(counts)))[record]
+      has_allele <- lengths(counts)[record] > allele
+      list(ref = flat[offset + 1L], alt = fifelse(has_allele, flat[offset + 1L + allele], NA_integer_))
+    }
+    ot <- allele_counts(info_field(records$info, "AS_SB_OT"))
+    ob <- allele_counts(info_field(records$info, "AS_SB_OB"))
+    in_cpg <- grepl("(^|;)CPG(novo)?(;|$)", records$info)
+    records <- records[record, .(chr, pos = as.integer(pos), ref, filter, gt = sub(":.*", "", sample), in_cpg = in_cpg[record])]
+    records[, `:=`(alt = as.character(unlist(alts)), ot_ref = ot$ref, ot_alt = ot$alt, ob_ref = ob$ref, ob_alt = ob$alt)]
+    records[, called := filter == "PASS" & grepl("[1-9]", gt)]
+    records[, alt_reads := ot_alt + ob_alt]
+    records[, likely_variant := !is.na(alt_reads) & alt_reads > 1L &
+              pbinom(alt_reads - 1L, ot_ref + ob_ref + alt_reads, OFFTARGET_NOISE_RATE, lower.tail = FALSE) < OFFTARGET_VARIANT_P]
+    records[, masked := called | in_cpg | likely_variant]
+    records[masked | (ref %chin% c("C", "G") & alt %chin% names(COMPLEMENT)),
+            .(chr, pos, ref, alt, masked, ot_alt, ob_alt)]
+  }
 
-  gr <- GenomicRanges::GRanges(
-    seqnames = site_windows$chr,
-    ranges = IRanges::IRanges(start = site_windows$window_start, end = site_windows$window_end)
-  )
+  tally_tile <- function(contig, tile_start, tile_end, mask, mismatches) {
+    fetch_start <- max(1L, tile_start - 1L)
+    fetch_end <- min(ref_lengths[[contig]], tile_end + 1L)
+    sequence <- scanFa(params$reference, GRanges(contig, IRanges(fetch_start, fetch_end)))[[1]]
+    bases <- strsplit(as.character(sequence), "", fixed = TRUE)[[1]]
+    n <- length(bases)
+    excluded <- as.logical(coverage(restrict(shift(mask, 1L - fetch_start), 1L, n), width = n) > 0)
 
-  seqs <- scanFa(fa, param = gr)
-  base_counts <- alphabetFrequency(seqs, baseOnly = TRUE)[, c("A", "C", "G", "T"), drop = FALSE]
+    rel <- seq(tile_start - fetch_start + 1L, tile_end - fetch_start + 1L)
+    rel <- rel[rel > 1L & rel < n]
+    rel <- rel[!excluded[rel] & bases[rel] %in% c("C", "G")]
+    is_c <- bases[rel] == "C"
+    context <- fifelse(is_c,
+                       paste0(bases[rel - 1L], "C", bases[rel + 1L]),
+                       paste0(COMPLEMENT[bases[rel + 1L]], "C", COMPLEMENT[bases[rel - 1L]]))
 
-  site_windows[, gc_count := base_counts[, "G"] + base_counts[, "C"]]
-  site_windows[, at_count := base_counts[, "A"] + base_counts[, "T"]]
-  site_windows[, cpg_count := as.integer(vcountPattern("CG", seqs, fixed = TRUE))]
-  site_windows[, window_width := window_end - window_start + 1L]
-  rm(seqs)
-  site_windows[, chr := factor(chr, levels = levels(all_calls$chr))]
-  all_calls[site_windows, on = .(chr, pos), `:=`(
-    gc_count = i.gc_count,
-    at_count = i.at_count,
-    cpg_count = i.cpg_count,
-    window_start = i.window_start,
-    window_end = i.window_end,
-    window_width = i.window_width
+    reads <- as.data.table(scanBam(bam, param = ScanBamParam(
+      which = GRanges(contig, IRanges(fetch_start, fetch_end)), flag = bam_flag,
+      mapqFilter = 1L, what = c("qname", "flag", "pos", "cigar")
+    ))[[1]])
+    # A deletion inside a read counts as covered, which moves the totals by
+    # about one in 10,000. A tile has few distinct CIGARs, so each is parsed
+    # once.
+    cigars <- unique(reads$cigar)
+    on_reference <- regmatches(cigars, gregexpr("[0-9]+(?=[MDN=X])", cigars, perl = TRUE))
+    reference_width <- as.integer(rowsum(as.integer(unlist(on_reference)), rep(seq_along(cigars), lengths(on_reference)), reorder = FALSE))
+    reads[, end := pos - 1L + reference_width[match(cigar, cigars)]]
+    reads[, ot := bitwAnd(flag, 96L) == 96L | bitwAnd(flag, 144L) == 144L]
+    # Overlapping mates count once, as Rastair counts fragments, not reads:
+    # the first mate is stretched over the second, which is dropped. Both
+    # mates of an overlap inside the tile are always fetched.
+    setorder(reads, qname, pos)
+    mate_overlaps <- reads[, qname == data.table::shift(qname, fill = "") & pos <= data.table::shift(end, fill = 0L)]
+    second <- which(mate_overlaps)
+    reads[second - 1L, end := pmax(end, reads$end[second])]
+    reads <- reads[!mate_overlaps]
+    strand_coverage <- function(on_strand) {
+      from <- pmax(reads$pos[on_strand], fetch_start) - fetch_start + 1L
+      to <- pmin(reads$end[on_strand], fetch_end) - fetch_start + 1L
+      cumsum(tabulate(from, n + 1L) - tabulate(to + 1L, n + 1L))[rel]
+    }
+    ot <- strand_coverage(reads$ot)
+    ob <- strand_coverage(!reads$ot)
+
+    sites <- data.table(
+      pos = fetch_start - 1L + rel,
+      context = context,
+      converted = fifelse(is_c, ot, ob),
+      complementary = fifelse(is_c, ob, ot)
+    )[context %in% CONTEXTS & converted + complementary >= OFFTARGET_MIN_DEPTH]
+
+    tile_mismatches <- mismatches[sites[, .(pos, context)], on = "pos", nomatch = NULL]
+    tile_mismatches[, `:=`(
+      substitution = paste0("C>", fifelse(ref == "C", alt, unname(COMPLEMENT[alt]))),
+      converted = fifelse(ref == "C", ot_alt, ob_alt),
+      complementary = fifelse(ref == "C", ob_alt, ot_alt)
+    )]
+
+    list(
+      coverage = sites[, .(converted = sum(converted), complementary = sum(complementary)), by = context],
+      mismatches = tile_mismatches[, .(converted = sum(converted, na.rm = TRUE), complementary = sum(complementary, na.rm = TRUE)), by = .(context, substitution)]
+    )
+  }
+
+  tally_contig <- function(contig, records) {
+    if (!(contig %in% mapped)) {
+      return(list())
+    }
+    span <- if (region_given) c(region_start, region_end) else c(1L, ref_lengths[[contig]])
+    masked <- records[masked == TRUE]
+    mask <- reduce(IRanges(masked$pos - OFFTARGET_FLANK_BP, masked$pos + nchar(masked$ref) - 1L + OFFTARGET_FLANK_BP))
+    mismatches <- setkey(records[masked == FALSE], pos)
+    lapply(seq(span[1], span[2], by = TILE_BP), function(tile_start) {
+      suppressWarnings(tally_tile(contig, tile_start, min(tile_start + TILE_BP - 1L, span[2]), mask, mismatches))
+    })
+  }
+
+  # With `--all`, every position showing an alt read is written, called or
+  # not, with its allele counts per strand; so is every reference CpG
+  # (`CPG`), and both bases of a CpG that a called variant creates
+  # (`CPGnovo`). The VCF is sorted, so each contig is tallied as soon as the
+  # next one starts.
+  vcf <- pipe(paste(shQuote(c(
+    params$rastair, "call", "-@", params$threads, call_region, "--all",
+    "--vcf-info-fields", "AS_SB,CPG,CPGnovo", "--vcf-format-fields", "GT", "--vcf", "-",
+    "-r", params$reference, params$input_bam
+  )), collapse = " "), open = "r")
+  tallies <- list()
+  pending <- list()
+  repeat {
+    lines <- readLines(vcf, n = VCF_CHUNK_LINES)
+    if (length(lines) == 0L) {
+      break
+    }
+    chunk <- parse_records(lines[!startsWith(lines, "#")])
+    if (nrow(chunk) == 0L) {
+      next
+    }
+    pending[[length(pending) + 1L]] <- chunk
+    current <- chunk$chr[nrow(chunk)]
+    if (pending[[1]]$chr[1] != current) {
+      records <- rbindlist(pending)
+      for (contig in setdiff(unique(records$chr), current)) {
+        tallies <- c(tallies, tally_contig(contig, records[chr == contig]))
+      }
+      pending <- list(records[chr == current])
+    }
+  }
+  status <- close(vcf)
+  if (status != 0L) {
+    stop("rastair call failed with status ", status)
+  }
+  records <- rbindlist(pending)
+  for (contig in unique(records$chr)) {
+    tallies <- c(tallies, tally_contig(contig, records[chr == contig]))
+  }
+
+  coverage_by_context <- rbindlist(lapply(tallies, `[[`, "coverage"))[, lapply(.SD, sum), by = context]
+  mismatches_by_context <- rbindlist(lapply(tallies, `[[`, "mismatches"))
+  if (nrow(mismatches_by_context) > 0) {
+    mismatches_by_context <- mismatches_by_context[, lapply(.SD, sum), by = .(context, substitution)]
+  }
+  covered_bases <- melt(coverage_by_context, id.vars = "context",
+                        variable.name = "strand", value.name = "bases", variable.factor = FALSE)
+  rates <- CJ(context = CONTEXTS, substitution = SUBSTITUTIONS, strand = names(STRANDS))
+  rates <- merge(rates, covered_bases, by = c("context", "strand"), all.x = TRUE)
+  if (nrow(mismatches_by_context) > 0) {
+    mismatch_counts <- melt(mismatches_by_context, id.vars = c("context", "substitution"),
+                            variable.name = "strand", value.name = "mismatches", variable.factor = FALSE)
+    rates <- merge(rates, mismatch_counts, by = c("context", "substitution", "strand"), all.x = TRUE)
+  } else {
+    rates[, mismatches := 0L]
+  }
+  rates[is.na(bases), bases := 0]
+  rates[is.na(mismatches), mismatches := 0]
+
+  # Poisson rates with exact 95% intervals
+  poisson_rates <- function(table) {
+    table[, `:=`(
+      rate = fifelse(bases > 0, mismatches / bases, NA_real_),
+      rate_lo = fifelse(bases > 0, qchisq(0.025, 2 * mismatches) / 2 / bases, NA_real_),
+      rate_hi = fifelse(bases > 0, qchisq(0.975, 2 * mismatches + 2) / 2 / bases, NA_real_)
+    )]
+  }
+  poisson_rates(rates)
+  rates[, `:=`(
+    context = factor(context, levels = CONTEXTS),
+    substitution = factor(substitution, levels = SUBSTITUTIONS),
+    strand = factor(strand, levels = names(STRANDS), labels = STRANDS)
   )]
+  overall_rates <- poisson_rates(rates[, .(mismatches = sum(mismatches), bases = sum(bases)), by = .(substitution, strand)])
 }
 ```
-
-GC bias:
-
-```{r gc_bias, echo=FALSE, warning=FALSE}
-if (params$plot_gc) {
-  beta_per_pos <- all_calls[, .(beta=round(mean(beta),1), gc_frac=round(sum(gc_count)/sum(gc_count+at_count), 1), cpgs=round(mean(cpg_count), 1)), by=.(chr, pos)]
-  for_plot <- beta_per_pos[, .N, by=.(beta, gc_frac)]
-  ggplot(for_plot, aes(x=gc_frac, y=beta, fill=N)) +
-  	geom_tile() +
-  	scale_fill_gradient2(low = "black", mid = "orange", high = "purple", midpoint = max(for_plot$N)/2) +
-  	xlab("%GC in 100bp window") +
-    ylab("Methylation") +
-    theme_classic()
+```{r offtarget_plot, echo=FALSE, warning=FALSE, fig.height=6, fig.width=9}
+if (offtarget_enabled) {
+  dodge <- position_dodge(width = 0.85)
+  ggplot(rates, aes(x = context, y = rate, fill = substitution)) +
+    geom_col(position = dodge, width = 0.8) +
+    geom_errorbar(aes(ymin = rate_lo, ymax = rate_hi), position = dodge, width = 0.3, linewidth = 0.3, colour = "grey30") +
+    facet_wrap(vars(strand), ncol = 1) +
+    scale_fill_manual(values = c("C>T" = "#2a78d6", "C>A" = "#eb6834", "C>G" = "#1baf7a"), name = NULL) +
+    scale_y_continuous(labels = scales::label_percent(), expand = expansion(mult = c(0, 0.05))) +
+    labs(x = "Sequence context", y = "Mismatches per covered base") +
+    theme_light() +
+    theme(
+      panel.grid.major.x = element_blank(),
+      strip.background = element_blank(),
+      strip.text = element_text(colour = "grey20", hjust = 0, size = rel(1)),
+      legend.position = "top"
+    )
 }
 ```
-
-CpG bias:
-
-```{r cpg_bias, echo=FALSE, warning=FALSE}
-if (params$plot_gc) {
-  for_plot <- beta_per_pos[, .N, by=.(beta, cpgs)]
-  ggplot(for_plot, aes(x=cpgs, y=beta, fill=N)) +
-  	geom_tile() +
-  	scale_fill_gradient2(low = "black", mid = "orange", high = "purple", midpoint = max(for_plot$N)/2) +
-    xlab("CpGs in 100bp window") +
-    ylab("Methylation") +
-  	theme_classic()
-}
-```
-
-Depth bias:
-
-```{r depth_bias, echo=FALSE, warning=FALSE}
-if (params$plot_gc) {
-  depth_by_cpg <- all_calls[, .(depth=round(mean(depth)),  cpgs=round(mean(cpg_count))), by=.(chr, pos)]
-  for_plot <- depth_by_cpg[, .N, by=.(cpgs, depth)]
-  ggplot(for_plot, aes(x=cpgs, y=depth, fill=N)) +
-  	geom_tile() +
-  	scale_fill_gradient2(low = "black", mid = "orange", high="purple", midpoint = max(for_plot$N)/2) +
-    xlab("CpGs in 100bp window") +
-    ylab("Depth") +
-    ylim(0, quantile(depth_by_cpg$depth, 0.99)) +
-    theme_classic()
-}
-```
-
-`r if (!is.null(params$plot_fp) && params$plot_fp==TRUE) { "## Likely false positive rate\nRastair will call genetic variation, including variants that result in a \"de-novo\" CpG. These explain the vast majority of what is often referred to as CHG or CHH methylation in animal genomes.\n In contrast, C>T variants in genuine non-CpG contexts are likely a mixture of alignment and sequencing errors and off-target effects of the conversion method. To estimate the rate of this, we here plot the allele-frequency and strand bias of C>T (or G>A) variants in non-CpG positions that are _not_ called as variants:\n"}`
-
-
-```{r false_positives, echo=FALSE, warning=FALSE}
-if (!is.null(params$plot_fp) && params$plot_fp==TRUE) {
-  if ((is.na(params$input_vcf) || is.null(params$input_vcf) || !file.exists(params$input_vcf)) && !is.na(params$input_bam) && !is.null(params$input_bam) && file.exists(params$input_bam)) {
-    if (!is.na(params$region) && nchar(params$region) > 0) {
-      command <- paste(params$rastair,
-    		"call -@", params$threads,
-    		"-l", params$region,
-    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all",
-    		"-r", params$reference,
-    		params$input_bam)
-    } else {
-      command <- paste(params$rastair,
-    		"call -@", params$threads,
-    		"--vcf-info-fields SC5,CPG,CPGnovo,AS_SB,AF --vcf-format-fields GT,DP --vcf - --all",
-    		"-r", params$reference,
-    		params$input_bam)
-    }
-  } else if (!is.na(params$input_vcf) && !is.null(params$input_vcf) && file.exists(params$input_vcf)) {
-    if (!is.na(params$region) && nchar(params$region) > 0) {
-      command <- paste(params$bcftools,
-        "view", params$input_vcf,
-        params$region)
-    } else {
-      command <- paste(params$bcftools, "view", params$input_vcf)
-    }
-  } else {
-    stop("Need either vcf or bam file to create gc bias plot")
-  }
-  command <- paste(command, "|", params$bcftools, "norm -m-any",
-    		"|", params$bcftools, "query -i \"FILTER!='PASS' && CPG != 1 && CPGnovo != 1 && (REF=='C' || REF=='G')\" -f \"%CHROM\\t%POS\\t%REF\\t%ALT\\t%AS_SB_OT\\t%AS_SB_OB\\t%AF\\t%SC5[\\t%TGT\\t%DP]\\n\"")
-
-  all_calls <- fread(cmd=command,
-		stringsAsFactors=FALSE,
-		header=FALSE, dec=".")
-	setnames(all_calls, c("chr", "pos", "ref", "alt", "sb_ot", "sb_ob", "allele_freq", "context", "genotype", "depth"))
-	all_calls[, sb_ot_ref := tstrsplit(sb_ot, ",", fixed=TRUE)[[1]]]
-	all_calls[, sb_ot_alt := tstrsplit(sb_ot, ",", fixed=TRUE)[[2]]]
-	all_calls[, sb_ob_ref := tstrsplit(sb_ob, ",", fixed=TRUE)[[1]]]
-	all_calls[, sb_ob_alt := tstrsplit(sb_ob, ",", fixed=TRUE)[[2]]]
-	all_calls[, sb_ot := NULL]
-	all_calls[, sb_ob := NULL]
-	all_calls[, `:=`(chr = as.factor(chr), ref=as.factor(ref), alt=as.factor(alt), genotype=as.factor(genotype))]
-
-}
-```
-```{r echo=FALSE, fig.height=4, fig.width=8, warning=FALSE}
-if (!is.null(params$plot_fp) && params$plot_fp==TRUE) {
-  ggplot(all_calls[, .(ref, alt, variant=paste0(substr(context, 2,4), ">", alt))], aes(x=variant, fill=ifelse(ref == "C" & alt == "T", "C>T", ifelse(ref=="G" & alt=="A", "G>A", "Other")))) +
-    geom_bar() +
-    scale_fill_brewer(name="", palette = "Set1") +
-    xlab("") +
-    theme_classic() +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```{r offtarget_table, echo=FALSE}
+if (offtarget_enabled) {
+  overall_table <- dcast(overall_rates, substitution ~ strand, value.var = "rate")
+  knitr::kable(
+    overall_table[, lapply(.SD, function(rate) sprintf("%.3g%%", 100 * rate)), by = substitution],
+    caption = "Mismatch rate over all contexts"
+  )
 }
 ```

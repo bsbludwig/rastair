@@ -22,9 +22,6 @@ parser <- arg_parser("Render RMarkdown document with genomic analysis parameters
 parser <- add_argument(parser, "--bed",
                        help = "Input per-read bed.gz file (must be tabix indexed)")
 
-parser <- add_argument(parser, "--vcf",
-                       help = "Input vcf file (for cpg/gc bias plots)")
-
 parser <- add_argument(parser, "--bam",
                        help = "Input bam file (slower: will run rastair on the bam file to derive other data)")
 
@@ -63,10 +60,6 @@ parser <- add_argument(parser, "--tabix-path",
                        help = "Path to tabix executable (optional)",
                        default = "tabix")
 
-parser <- add_argument(parser, "--bcftools-path",
-                       help = "Path to bedtools executable (optional)",
-                       default = "bcftools")
-
 parser <- add_argument(parser, "--rastair-path",
                        help = "Path to rastair executable (optional)",
                        default = "rastair")
@@ -83,8 +76,8 @@ parser <- add_argument(parser, "--wgbs",
                        help = "Treat the input as inverted, ie mod=unmod and unmod=mod",
                        flag = TRUE)
 
-parser <- add_argument(parser, "--plot-fp",
-                       help = "Plot frequency of potential off-target effects",
+parser <- add_argument(parser, "--no-off-target",
+                       help = "Do not estimate off-target conversion (needs --bam and --reference)",
                        flag = TRUE)
 
 # Parse arguments
@@ -103,18 +96,16 @@ params_list <- list(
   output_dir = normalizePath(args$output_prefix),
   include_flags = args$include_flag,
   exclude_flags = args$exclude_flag,
-  read_len = is.na(args$read_length),
+  read_len = args$read_length,
   threads = args$threads,
   tabix = args$tabix_path,
   rastair = args$rastair_path,
-  bcftools = args$bcftools_path,
   reference = ifelse(is.na(args$reference)||is.null(args$reference), "", normalizePath(args$reference)),
   plot_vbias = is.null(args$no_vbias)||args$no_vbias==FALSE,
   plot_gc = is.null(args$no_gc)||args$no_gc==FALSE,
   input_bgz = ifelse(is.na(args$bed)||is.null(args$bed), "", normalizePath(args$bed)),
-  input_vcf = ifelse(is.na(args$vcf)||is.null(args$vcf), "", normalizePath(args$vcf)),
   input_bam = ifelse(is.na(args$bam)||is.null(args$bam), "", normalizePath(args$bam)),
-  plot_fp = isTRUE(args$plot_fp)
+  plot_offtarget = !isTRUE(args$no_off_target) && !isTRUE(args$wgbs)
 )
 
 script_dir = get_script_dir(commandArgs())

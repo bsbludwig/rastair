@@ -525,8 +525,7 @@ Please note that this is currently implemented as an R script. Unless you're usi
 
 * `--bed <BED_FILE>` — Input per-read BED file (must be tabix indexed or indexable)
 * `--bam <BAM_FILE>` — Input BAM file
-* `--reference <REFERENCE>` — Reference FASTA file (required for V-bias and GC/CpG bias plots)
-* `--vcf <VCF>` — VCF file with methylation calls (required for GC/CpG bias plots)
+* `--reference <REFERENCE>` — Reference FASTA file (required for V-bias, GC/CpG bias and off-target plots)
 
 ###### **Options:**
 
@@ -545,12 +544,12 @@ Please note that this is currently implemented as an R script. Unless you're usi
 
 * `--no-vbias` — Do not generate V-bias plots (faster)
 * `--no-gc` — Do not generate GC/CpG bias plots
+* `--no-off-target` — Do not estimate off-target conversion
+
+   The estimate needs `--bam` and `--reference`, and is skipped without them.
 * `--tabix-path <TABIX_PATH>` — Path to tabix executable
 
   Default value: `tabix`
-* `--bcftools-path <BCFTOOLS_PATH>` — Path to bcftools executable
-
-  Default value: `bcftools`
 * `--rastair-path <RASTAIR_PATH>` — Path to rastair executable
 
   Default value: `rastair`
