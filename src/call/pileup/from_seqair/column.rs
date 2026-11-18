@@ -225,12 +225,16 @@ impl ColumnDraft {
 
             if let Some(strand) = strand {
                 let seq = view.seq();
-                if let Some(&adj) = qpos.checked_sub(1).and_then(|i| seq.get(i.as_usize())) {
+                if let Some(adj) =
+                    qpos.checked_sub(1).and_then(|i| seq.get(i.as_usize())).map(|b| b.to_base())
+                {
                     draft.before_counts.increment(ReadKey { strand, current: base, adj });
                 }
                 // The read's neighbour, across an indel too: an inserted `G`
                 // after a `C` makes a CpG of it.
-                if let Some(&adj) = qpos.checked_add(1).and_then(|i| seq.get(i.as_usize())) {
+                if let Some(adj) =
+                    qpos.checked_add(1).and_then(|i| seq.get(i.as_usize())).map(|b| b.to_base())
+                {
                     draft.after_counts.increment(ReadKey { strand, current: base, adj });
                 }
             }
@@ -702,7 +706,8 @@ fn build_indel_observation(
     match view.alignment().indel_after() {
         Indel::None => None,
         Indel::Insertion(_) => {
-            let bases: SmallVec<Base, 4> = view.inserted_bases().iter().copied().collect();
+            let bases: SmallVec<Base, 4> =
+                view.inserted_bases().iter().map(|b| b.to_base()).collect();
             (!bases.is_empty()).then_some(IndelAllele::Insertion(bases))
         }
         Indel::Deletion(del_len) => {

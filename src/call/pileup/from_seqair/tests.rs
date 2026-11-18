@@ -4,6 +4,7 @@
 use super::{candidates::*, cluster::*, column::*};
 use crate::call::pileup::indels::IndelData;
 use crate::call::pileup::indels::{IndelAllele, IndelAlleleCounts, IndelCounts};
+use crate::call::tests::pileup::iupac;
 use crate::call::variant_calling::{ReadDirection, ReadMaskParams, ReadMaskSetting};
 use crate::sequence::RastairRecordFilter;
 use crate::sequence::{ChunkRegion, Region};
@@ -166,7 +167,7 @@ fn store_of(reads: &[TestRead], params: &PileupMappingParams) -> RecordStore<Ras
                 0,
                 &read.qname,
                 &read.cigar,
-                &read.bases,
+                &iupac(&read.bases),
                 &read.quals,
                 &[],
                 Some(tid0()),

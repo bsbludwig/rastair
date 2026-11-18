@@ -194,7 +194,7 @@ mod seqair_readers {
             let Some(ref_base) = reference.base_at(matched.rpos) else {
                 continue;
             };
-            let observed = matched.query;
+            let observed = matched.query.to_base();
 
             if ref_base == Base::Unknown || observed == Base::Unknown || ref_base == observed {
                 continue;
@@ -223,7 +223,7 @@ mod seqair_readers {
     ) {
         let Ok(seq) = rec.seq(store) else { return };
         let pair_at = |first: usize, second: usize| -> Option<[Base; 2]> {
-            Some([*seq.get(first)?, *seq.get(second)?])
+            Some([seq.get(first)?.to_base(), seq.get(second)?.to_base()])
         };
         let mut bump = |motif: [Base; 2]| match motif {
             [Base::T, Base::G] => *tg = tg.saturating_add(1),
@@ -458,7 +458,9 @@ mod seqair_readers {
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct ReaderParams {
-    /// Path to sorted and indexed BAM or CRAM file
+    /// Path to a BAM or CRAM file: sorted and indexed for `call` and
+    /// `per-read`; `bam` takes any order, and SAM, and only `--region` there
+    /// needs the index
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub bam_file: ClioPath,
@@ -654,6 +656,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::call::tests::pileup::iupac;
     use std::path::PathBuf;
 
     /// `--require-tags` is judged on the raw aux bytes, before the depth cap
@@ -678,7 +681,7 @@ mod tests {
         let mut store = RecordStore::<RastairReadExtras>::new();
         for (name, group) in [(&b"tagged"[..], "keep"), (b"other", "drop")] {
             let mut aux = AuxData::new();
-            aux.set_string(*b"RG", group.as_bytes());
+            aux.set_string(*b"RG", group.as_bytes()).unwrap();
             store
                 .push_fields(
                     Pos0::new(10).unwrap(),
@@ -689,7 +692,7 @@ mod tests {
                     0,
                     name,
                     &[CigarOp::new(CigarOpType::Match, 8)],
-                    &[Base::A; 8],
+                    &iupac(&[Base::A; 8]),
                     &[40u8; 8],
                     aux.as_bytes(),
                     Some(tid),
@@ -731,7 +734,7 @@ mod tests {
                     0,
                     name,
                     &[CigarOp::new(CigarOpType::Match, 8)],
-                    &[Base::A; 8],
+                    &iupac(&[Base::A; 8]),
                     &[40u8; 8],
                     &[],
                     Some(tid),
@@ -779,7 +782,7 @@ mod tests {
                 0,
                 b"early",
                 &[CigarOp::new(CigarOpType::Match, 8)],
-                &[A, A, T, G, A, A, A, A],
+                &iupac(&[A, A, T, G, A, A, A, A]),
                 &[40u8; 8],
                 &[],
                 Some(tid),

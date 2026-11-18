@@ -174,6 +174,7 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
         .wrap_err("Failed to create thread pool for rayon")?;
     let processed = segments::process_in_order(
         &pool,
+        None,
         &regions,
         || WorkerReaders::open(params),
         |WorkerReaders { bam, calls }, region| {
