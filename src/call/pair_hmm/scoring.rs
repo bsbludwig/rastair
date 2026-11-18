@@ -126,7 +126,9 @@ pub fn score(
     reads: Vec<HaplotypeRead>,
     scratch: &mut HaplotypeScratch,
 ) -> Option<HaplotypeScores> {
-    prepare(reference, window_start, events, reads)?.align(scratch)
+    let conversion =
+        crate::call::variant_calling::VariantCallingParams::default().conversion_model();
+    prepare(reference, window_start, events, reads, conversion)?.align(scratch)
 }
 
 /// Which of a haplotype's scores a kernel haplotype gives.
@@ -152,6 +154,7 @@ pub struct Prepared {
     slots: Vec<(HapIdx, Levels)>,
     reads: Vec<HaplotypeRead>,
     bands: Vec<Band>,
+    conversion: ConversionModel,
 }
 
 /// Score `reads` against the `reference` window, which starts at genomic
@@ -164,8 +167,9 @@ pub fn prepare(
     window_start: Pos0,
     events: impl IntoIterator<Item = Event>,
     reads: Vec<HaplotypeRead>,
+    conversion: ConversionModel,
 ) -> Option<Prepared> {
-    prepare_with(reference, window_start, events, reads, CpgLevels::Profiled)
+    prepare_with(reference, window_start, events, reads, conversion, CpgLevels::Profiled)
 }
 
 /// The methylation level a divergent `CpG` is scored at.
@@ -183,6 +187,7 @@ fn prepare_with(
     window_start: Pos0,
     events: impl IntoIterator<Item = Event>,
     reads: Vec<HaplotypeRead>,
+    conversion: ConversionModel,
     levels: CpgLevels,
 ) -> Option<Prepared> {
     let reference = Haplotype::new(reference);
@@ -256,7 +261,7 @@ fn prepare_with(
     if bands.is_empty() {
         return None;
     }
-    Some(Prepared { cluster, haplotypes, slots, reads, bands })
+    Some(Prepared { cluster, haplotypes, slots, reads, bands, conversion })
 }
 
 /// Keeps one haplotype per sequence: the one with the fewest events, the
@@ -464,14 +469,14 @@ impl Conversions {
     }
 }
 
-/// Uniform for haplotypes without levels, which is every haplotype but those
-/// [`with_profiled_cpgs`] built. The CPU kernel, the GPU plan and its CPU
-/// rescore all take this one.
-fn emission() -> TapsEmission<'static> {
-    TapsEmission::new(ConversionModel::taps_default(), Betas::OfHaplotype(UNKNOWN_BETA))
-}
-
 impl Prepared {
+    /// Uniform for haplotypes without levels, which is every haplotype but
+    /// those [`with_profiled_cpgs`] built. The CPU kernel, the GPU plan and
+    /// its CPU rescore all take this one.
+    fn emission(&self) -> TapsEmission<'static> {
+        TapsEmission::new(self.conversion, Betas::OfHaplotype(UNKNOWN_BETA))
+    }
+
     fn pairs(&self) -> Vec<(&Read, Band)> {
         self.reads.iter().map(|read| &read.read).zip(self.bands.iter().copied()).collect()
     }
@@ -481,7 +486,7 @@ impl Prepared {
         scratch.workspace.align_reads(
             &self.haplotypes,
             &self.pairs(),
-            &emission(),
+            &self.emission(),
             &mut scratch.scores,
         );
         self.finish(&scratch.scores)
@@ -498,13 +503,13 @@ impl Prepared {
         &self,
         pairs: &mut compair::gpu::GpuPairs,
     ) -> Result<std::ops::Range<usize>, compair::gpu::GpuError> {
-        pairs.push_reads(&self.haplotypes, &self.pairs(), &emission())
+        pairs.push_reads(&self.haplotypes, &self.pairs(), &self.emission())
     }
 
     /// [`Self::align`]'s result from this cluster's scores of a launch,
     /// rescoring on the CPU the pairs the GPU's `f32` cannot vouch for.
     pub fn finish_gpu(self, scores: &[compair::gpu::GpuScore]) -> Option<HaplotypeScores> {
-        let emission = &emission();
+        let emission = &self.emission();
         let rows = scores.chunks_exact(self.haplotypes.len().max(1));
         let likelihoods: Vec<Log10Likelihood> = rows
             .zip(self.reads.iter().zip(&self.bands))
@@ -588,7 +593,7 @@ fn rows(
 mod tests {
     use super::*;
     use crate::call::pair_hmm::{EventIdx, HapIdx, HapPair, fixtures::ALT};
-    use crate::call::test_helpers::pos0;
+    use crate::call::{test_helpers::pos0, variant_calling::VariantCallingParams};
 
     const WINDOW: &[u8] = b"ACGTTAGCATCGGATCCATGACTGATCGGCTAGCTTACGGATCCTAGGCTAAGCTTTTTTTTTTTTTGACTAGCATCGGATCGATCAGCTAGCTGATCGATGCTAGCTAGTC";
 
@@ -914,10 +919,17 @@ mod tests {
             anchor: pos0(u32::try_from(at).expect("fits")),
             allele: Allele::Base(Base::from(alt)),
         };
-        prepare_with(&window, Pos0::ZERO, [event], reads.to_vec(), levels)
-            .expect("prepared")
-            .align(&mut HaplotypeScratch::default())
-            .expect("scores")
+        prepare_with(
+            &window,
+            Pos0::ZERO,
+            [event],
+            reads.to_vec(),
+            VariantCallingParams::default().conversion_model(),
+            levels,
+        )
+        .expect("prepared")
+        .align(&mut HaplotypeScratch::default())
+        .expect("scores")
     }
 
     /// `log10` of how much likelier the reads are under the homozygote of the

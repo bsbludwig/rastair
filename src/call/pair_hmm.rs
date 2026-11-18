@@ -1002,6 +1002,31 @@ impl Verdict {
         log10.iter().any(|score| score.is_finite()).then_some(GenotypeLikelihoods(log10))
     }
 
+    /// Whether a haplotype that `is` sits on one of the pair's chromosomes,
+    /// the cluster's events carried exactly where `held` says: the pairs with
+    /// one against the pairs without, each summed over its pairs at their
+    /// best accounts (the flat-prior marginal over zygosity and phase). Ties
+    /// go to having one. `None` when no pair carries the events as held.
+    #[must_use]
+    pub fn has_haplotype(
+        &self,
+        held: impl Fn(EventIdx) -> bool,
+        is: impl Fn(HapIdx) -> bool,
+    ) -> Option<bool> {
+        let held: SmallVec<(EventIdx, bool), MAX_EVENTS> =
+            (0..self.margins.len()).filter_map(EventIdx::new).map(|e| (e, held(e))).collect();
+        let (mut with, mut without) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for &(pair, score) in &self.pair_scores {
+            if held.iter().any(|&(event, carried)| pair.carries(event) != carried) {
+                continue;
+            }
+            let (low, high) = pair.haplotypes();
+            let slot = if is(low) || is(high) { &mut with } else { &mut without };
+            *slot = log10_sum(*slot, score);
+        }
+        (with.is_finite() || without.is_finite()).then_some(with >= without)
+    }
+
     /// Whether `event` is called present: what [`Self::genotype_likelihoods`]
     /// holds an indel record's other events at.
     #[must_use]

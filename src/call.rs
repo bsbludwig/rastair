@@ -405,20 +405,22 @@ fn process_collected_pileups(
     params: &CallParams,
     depth_scale: phasing::DepthScale,
 ) -> Result<Vec<PileupMetrics>> {
+    // Before the overlap is trimmed: a site in it links reads reaching into
+    // the core.
+    let phase = |pileups: &mut [PileupMetrics]| {
+        phasing::phase_segment(
+            pileups,
+            |pos| segment.is_core(pos),
+            depth_scale,
+            params.phasing.phase_min_switch_quality,
+        );
+    };
     let mut pileups = call_columns(
         pileups,
         params.ml.ml,
         params.methylation.m_max_coverage,
         params.variant_calling.error_model,
-    );
-
-    // Before the overlap is trimmed: a site in it links reads reaching into
-    // the core.
-    phasing::phase_segment(
-        &mut pileups,
-        |pos| segment.is_core(pos),
-        depth_scale,
-        params.phasing.phase_min_switch_quality,
+        phase,
     );
     pileups.retain(|p| only_core_positions(&segment, p));
 
@@ -441,17 +443,20 @@ fn process_collected_pileups(
 }
 
 /// The calls on scored columns: each alt's with the engine's genotype, then
-/// the CpGs called alts make, then the `0/0` genotype of a column with no
+/// `phase`, then the CpGs called alts make (which a pair's phase decides
+/// where no cluster holds both), then the `0/0` genotype of a column with no
 /// called alt (a de-novo partner's reads weigh as a CpG's), and methylation.
 fn call_columns(
     mut pileups: Vec<PileupMetrics>,
     ml_threshold: seqair_types::Probability,
     m_max_coverage: std::num::NonZeroU32,
     error_model: variant_calling::ErrorModel,
+    phase: impl FnOnce(&mut [PileupMetrics]),
 ) -> Vec<PileupMetrics> {
     for pileup in &mut pileups {
         process::set_alt_calls(pileup, ml_threshold, m_max_coverage);
     }
+    phase(&mut pileups);
     map_surrounding(&mut pileups, process::mark_called_cpgs);
 
     pileups

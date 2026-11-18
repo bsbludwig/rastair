@@ -52,7 +52,7 @@ enum GenotypeScenario {
     HetConfounded,
     /// Het with a non-confounding base — should behave identically to None.
     HetNonConfounding,
-    /// `HomAlt` (Original only) — beta forced to 0.0.
+    /// `HomAlt`: at an Original CpG no chromosome keeps it, so no β.
     HomAlt,
 }
 
@@ -66,11 +66,12 @@ impl MethylationScenario {
     fn expected_beta(&self) -> Option<f64> {
         let m = f64::from(self.mod_reads);
         let u = f64::from(self.unmod_reads);
-        if m + u == 0.0 {
+        if m + u == 0.0
+            || (self.genotype == GenotypeScenario::HomAlt && self.origin == CpgOrigin::Original)
+        {
             return None;
         }
         Some(match self.effective_adjustment() {
-            GenotypeAdjustment::NoReference => 0.0,
             GenotypeAdjustment::HetConfounded => {
                 let total = m + u;
                 let excess = (m - total / 2.0).max(0.0);
@@ -82,9 +83,6 @@ impl MethylationScenario {
 
     fn effective_adjustment(&self) -> GenotypeAdjustment {
         match self.genotype {
-            GenotypeScenario::HomAlt if self.origin == CpgOrigin::Original => {
-                GenotypeAdjustment::NoReference
-            }
             GenotypeScenario::HetConfounded => GenotypeAdjustment::HetConfounded,
             _ => GenotypeAdjustment::None,
         }
@@ -428,6 +426,10 @@ fn beta_always_valid_probability(tc: TestCase) {
 #[hegel::test]
 fn written_counts_are_the_reads_of_beta(tc: TestCase) {
     let scenario = tc.draw(scenarios(true));
+    // A `1/1` leaves an Original CpG on no chromosome, so it has no counts.
+    tc.assume(
+        !(scenario.genotype == GenotypeScenario::HomAlt && scenario.origin == CpgOrigin::Original),
+    );
     let metrics = scenario.build();
     let cpg = *call(&metrics).unwrap().get(scenario.origin).expect("evidence");
     let written = crate::metrics::MethylationEvidenceStrandInfo::from_pileup(&metrics);
@@ -505,9 +507,10 @@ fn het_confounded_reduces_beta(tc: TestCase) {
     }
 }
 
-/// `HomAlt` on an original CpG always produces beta = 0.0.
+/// `HomAlt` on an original CpG leaves no chromosome with it: no β, whatever
+/// the reads show.
 #[hegel::test(test_cases = crate::pinned::cases(2048))]
-fn hom_alt_original_is_zero(tc: TestCase) {
+fn hom_alt_original_has_no_cpg(tc: TestCase) {
     let side = tc.draw(sides());
     let mod_reads = tc.draw(read_counts(1, 50));
     let unmod_reads = tc.draw(read_counts(0, 50));
@@ -521,9 +524,8 @@ fn hom_alt_original_is_zero(tc: TestCase) {
         genotype: GenotypeScenario::HomAlt,
     };
 
-    let beta = extract_beta(&call(&scenario.build()).unwrap(), CpgOrigin::Original);
-    let beta = beta.expect("HomAlt with reads should produce result");
-    assert!(beta < 1e-9, "HomAlt Original should be 0.0, got {} for {:?}", beta, scenario);
+    let result = call(&scenario.build()).unwrap();
+    assert!(result.is_empty(), "HomAlt Original has no CpG, got {result:?} for {scenario:?}");
 }
 
 /// `HomAlt` on a `DeNovo` CpG should give normal beta (both chromosomes
@@ -598,6 +600,10 @@ fn monotonic_in_mod_reads(tc: TestCase) {
 #[hegel::test(test_cases = crate::pinned::cases(2048))]
 fn counts_match_reads(tc: TestCase) {
     let scenario = tc.draw(scenarios(true));
+    // A `1/1` leaves an Original CpG on no chromosome, so it has no counts.
+    tc.assume(
+        !(scenario.genotype == GenotypeScenario::HomAlt && scenario.origin == CpgOrigin::Original),
+    );
     let metrics = scenario.build();
     let result = call(&metrics).unwrap();
 
@@ -976,7 +982,6 @@ fn both_sides_independent() {
 // These test adjusted_beta against values derived from first principles:
 // - In TAPS, methylated C reads as T, unmethylated C reads as C
 // - At a het C/T site, ~half of T reads come from the SNP chromosome
-// - HomAlt means the reference base is gone on both chromosomes
 
 #[test]
 fn formula_no_adjustment_basic_ratios() {
@@ -988,14 +993,6 @@ fn formula_no_adjustment_basic_ratios() {
     assert_eq!(adjusted_beta(5.0, 5.0, GenotypeAdjustment::None), 0.5);
     // 3:1 ratio
     assert!((adjusted_beta(3.0, 1.0, GenotypeAdjustment::None) - 0.75).abs() < 1e-9);
-}
-
-#[test]
-fn formula_hom_alt_always_zero() {
-    // Regardless of read counts, HomAlt = 0.0
-    assert_eq!(adjusted_beta(100.0, 0.0, GenotypeAdjustment::NoReference), 0.0);
-    assert_eq!(adjusted_beta(0.0, 100.0, GenotypeAdjustment::NoReference), 0.0);
-    assert_eq!(adjusted_beta(50.0, 50.0, GenotypeAdjustment::NoReference), 0.0);
 }
 
 #[test]

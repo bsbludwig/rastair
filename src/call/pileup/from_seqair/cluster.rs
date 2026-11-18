@@ -188,7 +188,7 @@ fn prepare_cluster(
     if events.is_empty() {
         return None;
     }
-    let ClusterContext { store, segment, mask, .. } = context;
+    let ClusterContext { store, segment, mask, params } = context;
     // A substitution scored as an event is no unexplained mismatch.
     let events_here: SmallVec<Pos0, MAX_EVENTS> = events
         .iter()
@@ -212,7 +212,13 @@ fn prepare_cluster(
         })
         .collect();
     let reads: Vec<_> = reads.iter().filter_map(|read| read.haplotype_read(window_start)).collect();
-    pair_hmm::prepare(&window, window_start, events, reads)
+    pair_hmm::prepare(
+        &window,
+        window_start,
+        events,
+        reads,
+        params.variant_calling.conversion_model(),
+    )
 }
 
 /// A read spanning the column, placed on the genome: where its first and last

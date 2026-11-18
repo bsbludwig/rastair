@@ -614,6 +614,8 @@ pub(crate) fn reprocess(records: Vec<PileupMetrics>) -> Result<Vec<PileupMetrics
         ML_THRESHOLD,
         crate::call::MethylationCallingParams::default().m_max_coverage,
         crate::call::variant_calling::ErrorModel::default(),
+        // The first run's phase stays.
+        |_| {},
     ))
 }
 

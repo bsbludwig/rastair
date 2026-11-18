@@ -131,5 +131,5 @@ fn two_alts_leave_no_reference_cpg() {
     let metrics = to_metrics(&ps[0], &seg, Some(gt));
     let result = call(&metrics).unwrap();
 
-    assert_original(result, 0.0);
+    assert!(result.is_empty(), "no chromosome keeps the CpG: {result:?}");
 }

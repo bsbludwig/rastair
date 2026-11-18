@@ -155,6 +155,12 @@ const CPGNOVO_DEF: InfoFieldDef<seqair::vcf::Flag> = InfoFieldDef::new(
     ValueType::Flag,
     "De-novo CPG candidate: Could the alt alleles create a new CpG site?",
 );
+const CPGLOST_DEF: InfoFieldDef<seqair::vcf::Flag> = InfoFieldDef::new(
+    "CPGlost",
+    Number::Count(0),
+    ValueType::Flag,
+    "Reference CpG not in this sample: the called variants leave no chromosome with both its C and G, so it has no M5mC.",
+);
 
 // ── FORMAT field definitions ────────────────────────────────────────────
 
@@ -244,6 +250,7 @@ const INFO_DEFS: &[&dyn FieldDescription] = &[
     &M5MC_STRANDS_DEF,
     &CPG_DEF,
     &CPGNOVO_DEF,
+    &CPGLOST_DEF,
 ];
 
 /// Every FORMAT field definition, in header order. Drives doc generation.
@@ -316,6 +323,7 @@ pub const ALL_INFO_IDS: &[&str] = &[
     "M5mC_Strands",
     "CPG",
     "CPGnovo",
+    "CPGlost",
 ];
 
 /// All FORMAT field IDs. Used to validate `--vcf-format-fields` CLI input.
@@ -348,6 +356,7 @@ pub(crate) struct InfoKeys {
     pub m5mc_strands: InfoInts,
     pub cpg: InfoFlag,
     pub cpgnovo: InfoFlag,
+    pub cpglost: InfoFlag,
 }
 
 /// All FORMAT keys, resolved against the header.
@@ -453,6 +462,7 @@ pub fn register(
         m5mc_strands: builder.register_info(&M5MC_STRANDS_DEF)?,
         cpg: builder.register_info(&CPG_DEF)?,
         cpgnovo: builder.register_info(&CPGNOVO_DEF)?,
+        cpglost: builder.register_info(&CPGLOST_DEF)?,
     };
 
     let mut builder = builder.formats();
@@ -511,6 +521,7 @@ pub struct InfoSelection {
     pub m5mc_strands: bool,
     pub cpg: bool,
     pub cpgnovo: bool,
+    pub cpglost: bool,
 }
 
 /// Per-field FORMAT selection flags.
@@ -550,6 +561,7 @@ impl Default for FieldConfig {
                 m5mc_strands: true,
                 cpg: true,
                 cpgnovo: true,
+                cpglost: true,
             },
             format: FormatSelection {
                 gt: true,
@@ -590,6 +602,7 @@ impl FieldConfig {
             &mut i.m5mc_strands,
             &mut i.cpg,
             &mut i.cpgnovo,
+            &mut i.cpglost,
         ] {
             *f = true;
         }
@@ -648,6 +661,7 @@ impl FieldConfig {
             "M5mC_Strands" => i.m5mc_strands = true,
             "CPG" => i.cpg = true,
             "CPGnovo" => i.cpgnovo = true,
+            "CPGlost" => i.cpglost = true,
             _ => {}
         }
     }
