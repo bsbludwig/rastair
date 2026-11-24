@@ -289,6 +289,15 @@ impl PileupMetrics {
         self.reference_cpg().is_some() || self.in_cpg()
     }
 
+    /// In a CpG whose β here takes half the reads as a het allele's
+    /// (`CPGconfounded`, `methylation::confounded`).
+    pub fn confounded_cpg(&self) -> bool {
+        [CpgSide::C, CpgSide::G].into_iter().any(|side| {
+            super::methylation::cpg_origin(self, side).is_some()
+                && super::methylation::confounded(self, side)
+        })
+    }
+
     /// In a CpG a called alt makes, here or next door.
     pub fn in_denovo_cpg(&self) -> bool {
         self.denovo_partner().is_some()

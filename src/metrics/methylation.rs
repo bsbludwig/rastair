@@ -10,7 +10,7 @@
 //! `M5mC_Strands` and the BED `unmod` and `mod` columns count the same reads.
 //! Only a chromosome reading the converted base beside the partner (`TG`
 //! beside a `CG`) puts its reads among them, and β then counts half as its
-//! ([`confounded`]). The VCF writes one slot per CpG, `Original` first, and a
+//! ([`confounded`], `CPGconfounded`); the CpG's other side counts none of them. The VCF writes one slot per CpG, `Original` first, and a
 //! CpG no read shows has no β ([`written`]).
 
 use crate::{
@@ -107,7 +107,7 @@ pub fn evidence(record: &PileupMetrics) -> Option<(CpgSide, CpgOrigin)> {
 
 /// Determine the CpG origin for this position on the given side, or None if
 /// no chromosome has a CpG's base here on that side.
-fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
+pub(crate) fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
     // The reference base takes this side, in a reference CpG or beside a
     // called alt that makes one, on a chromosome that keeps it; else a called
     // alt does.
@@ -144,7 +144,7 @@ pub(crate) fn read_counts(record: &PileupMetrics, side: CpgSide) -> CpgReads {
 /// than methylation: the chromosome without the CpG reads the converted base
 /// (`T` for the `C`, `A` for the `G`) with the partner beside it, so β's reads
 /// count it.
-fn confounded(record: &PileupMetrics, side: CpgSide) -> bool {
+pub(crate) fn confounded(record: &PileupMetrics, side: CpgSide) -> bool {
     record.chromosomes().is_some() && record.reads_beside_partner(side.mod_base(), side)
 }
 

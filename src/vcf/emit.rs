@@ -479,6 +479,9 @@ fn encode_info(
     if c.cpgnovo && pileup.in_denovo_cpg() {
         i.cpgnovo.encode(enc);
     }
+    if c.cpgconfounded && pileup.confounded_cpg() {
+        i.cpgconfounded.encode(enc);
+    }
     Ok(())
 }
 

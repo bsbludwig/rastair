@@ -433,6 +433,8 @@ fn a_het_c_to_t_confounds_the_c_and_leaves_the_g_alone() -> Result<()> {
     let mut records = test_call(segment, pileups, RecordFilters::all())?;
     set_pass(&mut records[0], T);
     let records = reprocess(records)?;
+    let confounded: Vec<bool> = records.iter().map(|r| r.confounded_cpg()).collect();
+    assert_eq!(confounded, [true, false], "`CPGconfounded` on the `C` only");
 
     let vcf_records = metrics_to_vcf(&records, RecordFilters::all())?;
     expected_vcf.matches(vcf_records)?;

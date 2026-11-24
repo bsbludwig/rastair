@@ -49,6 +49,7 @@ exit_code: 0
 ##INFO=<ID=M5mC_Strands,Number=4,Type=Integer,Description="Number of reads that are evidence for unmodified, modified (the reads M5mC counts), no SNP, SNP. Always reported; 0,0,0,0 where neither CPG nor CPGnovo is set.">
 ##INFO=<ID=CPG,Number=0,Type=Flag,Description="Is this a CpG site?">
 ##INFO=<ID=CPGnovo,Number=0,Type=Flag,Description="De-novo CPG candidate: Could the alt alleles create a new CpG site?">
+##INFO=<ID=CPGconfounded,Number=0,Type=Flag,Description="M5mC here is corrected for a heterozygous variant that reads like a methylated base (T at the C of a CpG, A at its G): Rastair takes half of the reads as the variant's. DPM5mC and ADM5mC count all reads. The other position of the CpG needs no correction.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set identifier: the position of the first variant in the phase block, or of its next variant where another block's PS is that position">
 ##FORMAT=<ID=PQ,Number=1,Type=Integer,Description="Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly">

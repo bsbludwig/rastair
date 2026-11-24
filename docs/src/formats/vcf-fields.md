@@ -38,6 +38,7 @@
 | M5mC_Strands | 4 | Integer | Number of reads that are evidence for unmodified, modified (the reads M5mC counts), no SNP, SNP. Always reported; 0,0,0,0 where neither CPG nor CPGnovo is set. |
 | CPG | 0 | Flag | Is this a CpG site? |
 | CPGnovo | 0 | Flag | De-novo CPG candidate: Could the alt alleles create a new CpG site? |
+| CPGconfounded | 0 | Flag | M5mC here is corrected for a heterozygous variant that reads like a methylated base (T at the C of a CpG, A at its G): Rastair takes half of the reads as the variant's. DPM5mC and ADM5mC count all reads. The other position of the CpG needs no correction. |
 
 ## FORMAT
 
