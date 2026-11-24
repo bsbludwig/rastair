@@ -17,12 +17,12 @@
 //!   `no_snp`/`snp`): no event was scored there. No `PL`.
 //! - **Two variants can form a CpG together** (`TA>CG`). The forests see
 //!   only the reference context, where neither alt forms one; once both are
-//!   called, `process::mark_called_cpgs` records each beside the other
-//!   (`PileupMetrics::cpg_side_of`), for methylation calling. It assumes the
-//!   two sit on one chromosome.
+//!   called, `process::mark_called_cpgs` records what each column's two
+//!   chromosomes read beside it (`PileupMetrics::cpg_side_of`), for
+//!   methylation calling: the two make a CpG where one chromosome has both.
 //!
-//! Methylation calling reads the genotype (`GenotypeAdjustment`), so a
-//! genotype flip moves that site's beta too. The `pileups!` fixtures in
+//! Methylation calling reads the genotype (`PileupMetrics::chromosomes`), so
+//! a genotype flip moves that site's beta too. The `pileups!` fixtures in
 //! `vcf_tests/genotyping.rs` are scored by the pair-HMM on their read lines
 //! (`tests::utils::score_snv_lines`).
 //!

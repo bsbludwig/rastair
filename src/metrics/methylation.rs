@@ -1,16 +1,19 @@
 //! Methylation β per CpG a position takes part in.
 //!
-//! A position's CpG on a side is the reference's (`Original`) when the
-//! reference base takes that side, else a called alt's (`DeNovo`). β counts
-//! the reads on the strand that converts the side whose neighbour in the read
-//! is the CpG partner (`read_counts`); `M5mC_Strands` and the BED `unmod`
-//! and `mod` columns count the same reads. A het genotype one of whose alleles
-//! is the methylated read's base, or a genotype with no reference copy at an
-//! `Original` CpG, adjusts β. The VCF writes one slot per CpG, `Original`
-//! first, and a CpG no read shows has no β ([`written`]).
+//! A CpG is a `C` and a `G` next to each other on one chromosome
+//! (`PileupMetrics::cpg_side_of`, from the genotypes here and next door). A
+//! position's CpG on a side is the reference's (`Original`) when the
+//! reference base takes that side, else a called alt's (`DeNovo`); where no
+//! chromosome has both bases there is none. β counts the reads on the strand
+//! that converts the side whose neighbour in the read is the CpG partner
+//! (`read_counts`), which leaves out a chromosome without the partner;
+//! `M5mC_Strands` and the BED `unmod` and `mod` columns count the same reads.
+//! Only a chromosome reading the converted base beside the partner (`TG`
+//! beside a `CG`) puts its reads among them, and β then counts half as its
+//! ([`confounded`]). The VCF writes one slot per CpG, `Original` first, and a
+//! CpG no read shows has no β ([`written`]).
 
 use crate::{
-    call::variant_calling::GenotypeTag,
     metrics::{PileupMetrics, ReadKey},
     utils::{IntoF64, logging::ThisIsABug},
     vcf::{CpgBeta, CpgOrigin, CpgSide, Methylated},
@@ -48,24 +51,34 @@ pub fn call(current: &PileupMetrics) -> Result<Methylated> {
 fn compute_beta(record: &PileupMetrics, side: CpgSide) -> Result<Option<(CpgOrigin, CpgBeta)>> {
     let Some(origin) = cpg_origin(record, side) else { return Ok(None) };
 
-    let CpgReads { modified: raw_mod, unmodified: raw_unmod } = read_counts(record, side);
-    let Some(total_count) = NonZeroU32::new(raw_mod + raw_unmod) else { return Ok(None) };
-
-    let adjustment = genotype_adjustment(record, side, origin);
-    let beta = adjusted_beta(raw_mod.f(), raw_unmod.f(), adjustment);
+    let reads = read_counts(record, side);
+    let Some(total_count) = NonZeroU32::new(reads.modified + reads.unmodified) else {
+        return Ok(None);
+    };
+    let beta = beta(&reads, confounded(record, side));
 
     Ok(Some((
         origin,
-        CpgBeta { beta: Probability::new(beta).this_is_a_bug()?, mod_count: raw_mod, total_count },
+        CpgBeta {
+            beta: Probability::new(beta).this_is_a_bug()?,
+            mod_count: reads.modified,
+            total_count,
+        },
     )))
 }
 
 /// The CpGs the VCF (`M5mC`, `DPM5mC`, `ADM5mC`) writes for this position:
 /// one per CpG [`origins`], Original first, so a value's slot says which CpG
-/// it measures; `None` for a CpG no read shows, which has no β.
+/// it measures; `None` for a CpG no read shows, which has no β. A reference
+/// CpG's position keeps its Original slot, empty, where no chromosome keeps
+/// the CpG.
 pub fn written(record: &PileupMetrics) -> SmallVec<(CpgOrigin, Option<CpgBeta>), 2> {
     let methylated = &record.pos_metrics.methylated;
-    origins(record).into_iter().map(|origin| (origin, methylated.get(origin).copied())).collect()
+    let mut origins = origins(record);
+    if record.reference_cpg().is_some() && !origins.contains(&CpgOrigin::Original) {
+        origins.insert(0, CpgOrigin::Original);
+    }
+    origins.into_iter().map(|origin| (origin, methylated.get(origin).copied())).collect()
 }
 
 /// The CpGs this position takes part in, Original first.
@@ -93,10 +106,11 @@ pub fn evidence(record: &PileupMetrics) -> Option<(CpgSide, CpgOrigin)> {
 }
 
 /// Determine the CpG origin for this position on the given side, or None if
-/// this position doesn't have a CpG allele on that side.
+/// no chromosome has a CpG's base here on that side.
 fn cpg_origin(record: &PileupMetrics, side: CpgSide) -> Option<CpgOrigin> {
     // The reference base takes this side, in a reference CpG or beside a
-    // called alt that makes one; else a called alt does.
+    // called alt that makes one, on a chromosome that keeps it; else a called
+    // alt does.
     if record.cpg_side_of(record.ref_base()) == Some(side) {
         Some(CpgOrigin::Original)
     } else {
@@ -126,56 +140,20 @@ pub(crate) fn read_counts(record: &PileupMetrics, side: CpgSide) -> CpgReads {
     }
 }
 
-/// How the genotype at this position affects the beta calculation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GenotypeAdjustment {
-    /// Normal beta: mod / (mod + unmod).
-    None,
-    /// The confounding base (T for C-side, A for G-side) is present as a het
-    /// allele, so some mod-base reads come from the SNP, not methylation.
-    HetConfounded,
-    /// No chromosome carries the original reference base (`1/1`, or `1/2`
-    /// of two alts): the original CpG exists on neither.
-    NoReference,
+/// Whether a converted read on `side` may be a chromosome's own base rather
+/// than methylation: the chromosome without the CpG reads the converted base
+/// (`T` for the `C`, `A` for the `G`) with the partner beside it, so β's reads
+/// count it.
+fn confounded(record: &PileupMetrics, side: CpgSide) -> bool {
+    record.chromosomes().is_some() && record.reads_beside_partner(side.mod_base(), side)
 }
 
-fn genotype_adjustment(
-    record: &PileupMetrics,
-    side: CpgSide,
-    origin: CpgOrigin,
-) -> GenotypeAdjustment {
-    let Some(gt) = &record.pos_metrics.genotype else {
-        return GenotypeAdjustment::None;
-    };
-
-    let carries_reference = matches!(gt.genotype, GenotypeTag::HomRef | GenotypeTag::RefHet(_));
-    if origin == CpgOrigin::Original && !carries_reference {
-        return GenotypeAdjustment::NoReference;
-    }
-
-    // A het one of whose alleles is the base a methylated read shows: the
-    // reference (`T` under a de-novo `C`) only where a chromosome carries it.
-    if gt.genotype.is_heterozygous()
-        && gt
-            .genotype
-            .alleles()
-            .into_iter()
-            .any(|allele| record.allele_base(allele) == Some(side.mod_base()))
-    {
-        return GenotypeAdjustment::HetConfounded;
-    }
-
-    GenotypeAdjustment::None
-}
-
-fn adjusted_beta(mod_count: f64, unmod_count: f64, adjustment: GenotypeAdjustment) -> f64 {
-    match adjustment {
-        GenotypeAdjustment::NoReference => 0.0,
-        GenotypeAdjustment::HetConfounded => {
-            let total = mod_count + unmod_count;
-            let excess_mod = (mod_count - total / 2.).max(0.0);
-            excess_mod / (unmod_count + excess_mod)
-        }
-        GenotypeAdjustment::None => mod_count / (mod_count + unmod_count),
-    }
+/// β of a side's reads. At a [`confounded`] side half the reads are taken to
+/// be the other chromosome's, all converted, and only the converted reads
+/// beyond that half the CpG's.
+fn beta(reads: &CpgReads, confounded: bool) -> f64 {
+    let (modified, unmodified) = (reads.modified.f(), reads.unmodified.f());
+    let modified =
+        if confounded { (modified - (modified + unmodified) / 2.).max(0.0) } else { modified };
+    modified / (modified + unmodified)
 }

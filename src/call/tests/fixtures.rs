@@ -47,7 +47,8 @@ pub(crate) fn column(
         reference_base: reference,
         context: default(),
         pos_metrics: PositionMetrics::default(),
-        beside_called_alts: default(),
+        called_before: None,
+        called_after: None,
         ref_metrics: default(),
         alts: alts
             .iter()

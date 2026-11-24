@@ -108,7 +108,7 @@ mod tests {
             0,
             "a G candidate after it whose alt is not called makes no CpG"
         );
-        metrics.beside_called_alts = enumset::EnumSet::only(CpgSide::C);
+        metrics.called_after = Some([seqair_types::Base::G; 2]);
 
         let info = MethylationEvidenceStrandInfo::from_pileup(&metrics);
         assert_eq!(info.unmod, 2);

@@ -116,7 +116,7 @@ impl RecordFilters {
 
     /// Check if a pileup matches the filter criteria
     pub fn matches(&self, record: &PileupMetrics) -> bool {
-        let cpg = record.in_cpg();
+        let cpg = record.cpg_record();
 
         match (self.vcf_all, self.cpgs_only) {
             (false, false) => record.covered() && (cpg || record.is_variant()),

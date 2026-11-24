@@ -14,7 +14,6 @@ use color_eyre::{
     Result,
     eyre::{Context, bail},
 };
-use enumset::EnumSet;
 use seqair_types::SmallVec;
 use seqair_types::SmolStr;
 use seqair_types::{Base, Pos0, Probability, RootMeanSquare, Strand, SumOfSquares};
@@ -37,10 +36,14 @@ pub struct PileupMetrics {
     pub reference_base: Base,
     pub context: SequenceContext,
     pub pos_metrics: PositionMetrics,
-    /// The CpG sides a base here takes beside a called variant next door: an
-    /// alt, or the base a called insertion puts beside it
-    /// ([`CpgSide::beside`], set by `process::mark_called_cpgs`).
-    pub beside_called_alts: EnumSet<CpgSide>,
+    /// The bases before this column on its two chromosomes, in the order of
+    /// [`Self::chromosomes`], where a called variant there decides them: an
+    /// alt, or the base a called insertion puts beside this column (set by
+    /// `process::mark_called_cpgs`). The reference's otherwise
+    /// ([`Self::beside`]).
+    pub called_before: Option<[Base; 2]>,
+    /// The bases after this column, as [`Self::called_before`].
+    pub called_after: Option<[Base; 2]>,
     pub ref_metrics: AlleleMetrics,
     /// Alternate alleles at this position.
     ///
@@ -212,18 +215,52 @@ impl PileupMetrics {
         self.pos_metrics.depth > 0
     }
 
-    /// The CpG side `base` takes here: beside its reference neighbours, or
-    /// beside a called variant next door.
+    /// The bases this column's two chromosomes read: its genotype's alleles,
+    /// the reference on both before one is called for a column without a
+    /// called alt. `None` for called alts without a genotype, which nothing
+    /// puts on a chromosome.
+    pub fn chromosomes(&self) -> Option<[Base; 2]> {
+        let Some(genotype) = &self.pos_metrics.genotype else {
+            return (!self.alts.iter().any(Alt::called)).then_some([self.reference_base; 2]);
+        };
+        let [first, second] = genotype.genotype.alleles();
+        Some([self.allele_base(first)?, self.allele_base(second)?])
+    }
+
+    /// The bases beside this column where `side`'s partner would be (after a
+    /// `C`, before a `G`), on its two chromosomes in the order of
+    /// [`Self::chromosomes`]: the reference's unless a called variant next
+    /// door decides them. `None` at the end of the contig.
+    pub fn beside(&self, side: CpgSide) -> Option<[Base; 2]> {
+        let (called, reference) = match side {
+            CpgSide::C => (self.called_after, self.context.after_1),
+            CpgSide::G => (self.called_before, self.context.before_1),
+        };
+        called.or(reference.map(|base| [base; 2]))
+    }
+
+    /// Whether a chromosome reads `base` here with `side`'s partner beside it.
+    /// Without [`Self::chromosomes`] any base may sit beside either neighbour.
+    pub fn reads_beside_partner(&self, base: Base, side: CpgSide) -> bool {
+        let Some([first, second]) = self.beside(side) else { return false };
+        let partner = side.adjacent_base();
+        match self.chromosomes() {
+            Some([a, b]) => (a == base && first == partner) || (b == base && second == partner),
+            None => first == partner || second == partner,
+        }
+    }
+
+    /// The CpG side `base` takes here: on a chromosome that reads it with the
+    /// partner beside it.
     pub fn cpg_side_of(&self, base: Base) -> Option<CpgSide> {
-        CpgSide::taken_by(base, TapsContext::of(self).sides() | self.beside_called_alts)
+        CpgSide::of_base(base).filter(|&side| self.reads_beside_partner(base, side))
     }
 
     /// The side this reference base takes in a CpG a called variant next
     /// door makes, and the reference does not: a reference CpG's `C` stays
     /// one beside an inserted `G`.
     pub fn denovo_partner(&self) -> Option<CpgSide> {
-        let side = CpgSide::taken_by(self.reference_base, self.beside_called_alts);
-        side.filter(|_| self.reference_cpg().is_none())
+        self.cpg_side_of(self.reference_base).filter(|_| self.reference_cpg().is_none())
     }
 
     /// A called alt that makes no CpG, or a called indel allele.
@@ -239,10 +276,17 @@ impl PileupMetrics {
         calls.filter(|(call, _)| call.genotype.carries_an_alt()).map(|(call, _)| &call.allele)
     }
 
-    /// In a CpG, the reference's or one a called alt makes, here or next
-    /// door: the columns `M5mC` is written for.
+    /// In a CpG a chromosome has, the reference's or one a called alt makes,
+    /// here or next door.
     pub fn in_cpg(&self) -> bool {
         !super::methylation::origins(self).is_empty()
+    }
+
+    /// Written as a CpG: in one, or at a reference CpG's position, which
+    /// keeps its record (without a β) where the called variants leave the CpG
+    /// on no chromosome.
+    pub fn cpg_record(&self) -> bool {
+        self.reference_cpg().is_some() || self.in_cpg()
     }
 
     /// In a CpG a called alt makes, here or next door.
@@ -478,7 +522,9 @@ impl MetricsForAlt<'_> {
     pub fn is_conversion(&self) -> bool {
         let metrics = self.metrics;
         let conversion = CpgSide::converting(metrics.reference_base, self.alt.base);
-        conversion.is_some_and(|side| metrics.cpg_side_of(metrics.reference_base) == Some(side))
+        conversion.is_some_and(|side| {
+            metrics.beside(side).is_some_and(|beside| beside.contains(&side.adjacent_base()))
+        })
     }
 }
 

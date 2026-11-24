@@ -10,7 +10,7 @@ use tracing::{debug, instrument, trace, warn};
 impl Rastair1BedFormat {
     #[instrument(level = "trace", skip_all, fields(pos=%pileup.contig_pos()))]
     pub fn from_metrics(pileup: &PileupMetrics) -> Result<Option<Self>> {
-        if !pileup.in_cpg() {
+        if !pileup.cpg_record() {
             trace!("in neither ref CpG nor de-novo CpG, skipping");
             return Ok(None);
         }

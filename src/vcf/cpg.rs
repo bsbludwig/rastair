@@ -35,9 +35,9 @@ impl CpgSide {
     ///
     /// The one CpG rule. The neighbours' bases are the reference's for a
     /// reference CpG or an alt making one with the reference
-    /// ([`TapsContext`]); a neighbour's candidate alts while the column loop
-    /// decides which columns to keep; its called alts once the calls are in
-    /// (`process::mark_called_cpgs`).
+    /// ([`TapsContext`]), or a neighbour's candidate alts while the column
+    /// loop decides which columns to keep. Once the calls are in, the two
+    /// chromosomes' bases decide (`PileupMetrics::cpg_side_of`).
     pub(crate) fn beside(before: EnumSet<CpgSide>, after: EnumSet<CpgSide>) -> EnumSet<CpgSide> {
         let mut sides = EnumSet::empty();
         if before.contains(CpgSide::C) {

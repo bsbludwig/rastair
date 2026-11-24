@@ -46,13 +46,14 @@ struct NoiseReads {
 enum GenotypeScenario {
     /// No genotype set.
     None,
-    /// Explicit `HomRef` — should behave identically to None.
-    HomRef,
+    /// The CpG's base on both chromosomes (`0/0` for Original, the de-novo
+    /// alt's `1/1` for `DeNovo`) — should behave identically to None.
+    BothCarry,
     /// Het with the confounding base.
     HetConfounded,
     /// Het with a non-confounding base — should behave identically to None.
     HetNonConfounding,
-    /// `HomAlt` (Original only) — beta forced to 0.0.
+    /// `HomAlt`: an Original CpG is on no chromosome, a `DeNovo` one on both.
     HomAlt,
 }
 
@@ -69,24 +70,14 @@ impl MethylationScenario {
         if m + u == 0.0 {
             return None;
         }
-        Some(match self.effective_adjustment() {
-            GenotypeAdjustment::NoReference => 0.0,
-            GenotypeAdjustment::HetConfounded => {
-                let total = m + u;
-                let excess = (m - total / 2.0).max(0.0);
-                excess / (u + excess)
-            }
-            GenotypeAdjustment::None => m / (m + u),
-        })
-    }
-
-    fn effective_adjustment(&self) -> GenotypeAdjustment {
         match self.genotype {
-            GenotypeScenario::HomAlt if self.origin == CpgOrigin::Original => {
-                GenotypeAdjustment::NoReference
+            // No chromosome keeps the reference base, so none has the CpG.
+            GenotypeScenario::HomAlt if self.origin == CpgOrigin::Original => None,
+            GenotypeScenario::HetConfounded => {
+                let excess = (m - (m + u) / 2.0).max(0.0);
+                Some(excess / (u + excess))
             }
-            GenotypeScenario::HetConfounded => GenotypeAdjustment::HetConfounded,
-            _ => GenotypeAdjustment::None,
+            _ => Some(m / (m + u)),
         }
     }
 
@@ -169,21 +160,31 @@ impl MethylationScenario {
     }
 
     fn build_genotype(&self, metrics: &mut PileupMetrics) -> Option<EstimatedGenotype> {
+        // Alts are ordered by depth, not by the order the reads were pushed,
+        // so an alt's genotype index has to be looked up.
+        let alt = |metrics: &PileupMetrics, base: Base| {
+            let idx = metrics.alts.iter().position(|a| a.base == base).unwrap_or(0);
+            NonZeroU8::new(idx as u8 + 1).unwrap()
+        };
+        let (confounding, cpg_base) = (self.side.mod_base(), self.side.unmod_base());
+        let denovo = self.origin == CpgOrigin::DeNovo;
         let gt = match self.genotype {
             GenotypeScenario::None => return None,
-            GenotypeScenario::HomRef => GenotypeTag::HomRef,
-            GenotypeScenario::HetConfounded => {
-                // Point the het at the confounding base where it is an alt.
-                // For denovo where ref == confounding base it is not, and any
-                // het triggers confounding via the ref_base() check, so the
-                // first alt will do. Alts are ordered by depth, not by the
-                // order the reads were pushed, so the index has to be looked up.
-                let confounding = self.side.mod_base();
-                let idx = metrics.alts.iter().position(|a| a.base == confounding).unwrap_or(0);
-                GenotypeTag::RefHet(NonZeroU8::new(idx as u8 + 1).unwrap())
+            GenotypeScenario::BothCarry if denovo => GenotypeTag::HomAlt(alt(metrics, cpg_base)),
+            GenotypeScenario::BothCarry => GenotypeTag::HomRef,
+            // The other chromosome reads the confounding base: the reference
+            // under a de-novo alt, an alt beside the reference CpG's base or
+            // beside a de-novo alt over another reference.
+            GenotypeScenario::HetConfounded if denovo && self.denovo_ref == confounding => {
+                GenotypeTag::RefHet(alt(metrics, cpg_base))
             }
+            GenotypeScenario::HetConfounded if denovo => {
+                GenotypeTag::alt_het(alt(metrics, cpg_base), alt(metrics, confounding))
+            }
+            GenotypeScenario::HetConfounded => GenotypeTag::RefHet(alt(metrics, confounding)),
             GenotypeScenario::HetNonConfounding => self.build_het_non_confounding(metrics),
-            GenotypeScenario::HomAlt => GenotypeTag::HomAlt(NonZeroU8::new(1).unwrap()),
+            GenotypeScenario::HomAlt if denovo => GenotypeTag::HomAlt(alt(metrics, cpg_base)),
+            GenotypeScenario::HomAlt => GenotypeTag::HomAlt(alt(metrics, confounding)),
         };
         Some(EstimatedGenotype {
             genotype: gt,
@@ -306,8 +307,8 @@ fn read_counts(lo: u8, below: u8) -> impl gs::PrintableGenerator<u8> {
     gs::integers::<u8>().min_value(lo).max_value(below - 1)
 }
 
-/// A scenario; with `evidence`, one with at least one informative read,
-/// drawn that way rather than filtered.
+/// A scenario; with `evidence`, one whose CpG a chromosome has, with at least
+/// one informative read, drawn that way rather than filtered.
 #[hegel::composite]
 fn scenarios(tc: &TestCase, evidence: bool) -> MethylationScenario {
     let side = tc.draw(sides());
@@ -336,7 +337,7 @@ fn scenarios(tc: &TestCase, evidence: bool) -> MethylationScenario {
         CpgOrigin::DeNovo => denovo_ref,
     };
 
-    let mut genotypes = vec![GenotypeScenario::None, GenotypeScenario::HomRef];
+    let mut genotypes = vec![GenotypeScenario::None, GenotypeScenario::BothCarry];
 
     // HetConfounded: for Original, need confounding base as alt (mod_reads >= 1).
     // For DeNovo where ref == confounding, any het is confounded (mod_reads can be 0
@@ -359,8 +360,9 @@ fn scenarios(tc: &TestCase, evidence: bool) -> MethylationScenario {
         genotypes.push(GenotypeScenario::HetNonConfounding);
     }
 
-    // HomAlt: only for Original, need any alt.
-    if origin == CpgOrigin::Original && (mod_reads >= 1 || unmod_reads >= 1) {
+    // HomAlt of an Original's alt, which the converted reads make: no
+    // chromosome keeps the CpG, so its reads are no evidence.
+    if origin == CpgOrigin::Original && mod_reads >= 1 && !evidence {
         genotypes.push(GenotypeScenario::HomAlt);
     }
     // DeNovo + HomAlt: both chromosomes carry the variant → normal beta.
@@ -505,9 +507,9 @@ fn het_confounded_reduces_beta(tc: TestCase) {
     }
 }
 
-/// `HomAlt` on an original CpG always produces beta = 0.0.
+/// `HomAlt` on an original CpG leaves it on no chromosome: no β.
 #[hegel::test(test_cases = crate::pinned::cases(2048))]
-fn hom_alt_original_is_zero(tc: TestCase) {
+fn hom_alt_original_has_no_beta(tc: TestCase) {
     let side = tc.draw(sides());
     let mod_reads = tc.draw(read_counts(1, 50));
     let unmod_reads = tc.draw(read_counts(0, 50));
@@ -521,9 +523,8 @@ fn hom_alt_original_is_zero(tc: TestCase) {
         genotype: GenotypeScenario::HomAlt,
     };
 
-    let beta = extract_beta(&call(&scenario.build()).unwrap(), CpgOrigin::Original);
-    let beta = beta.expect("HomAlt with reads should produce result");
-    assert!(beta < 1e-9, "HomAlt Original should be 0.0, got {} for {:?}", beta, scenario);
+    let result = call(&scenario.build()).unwrap();
+    assert!(result.is_empty(), "HomAlt Original has no CpG, got {result:?} for {scenario:?}");
 }
 
 /// `HomAlt` on a `DeNovo` CpG should give normal beta (both chromosomes
@@ -678,7 +679,7 @@ fn non_confounding_genotypes_are_transparent(tc: TestCase) {
     let mod_reads = tc.draw(read_counts(1, 30));
     let unmod_reads = tc.draw(read_counts(1, 30));
     let genotype = tc.draw(gs::sampled_from(
-        [GenotypeScenario::HomRef, GenotypeScenario::HetNonConfounding].as_slice(),
+        [GenotypeScenario::BothCarry, GenotypeScenario::HetNonConfounding].as_slice(),
     ));
     // For DeNovo + HetNonConfounding, ref must NOT be the confounding base.
     // Use a non-confounding ref (the CpG-forming base's adjacent counterpart).
@@ -893,7 +894,11 @@ fn denovo_adjacent_produces_original_cpg() {
 
         let mut metrics = column(context, reads);
 
-        metrics.beside_called_alts = enumset::EnumSet::only(side);
+        let partner = Some([side.adjacent_base(); 2]);
+        match side {
+            CpgSide::C => metrics.called_after = partner,
+            CpgSide::G => metrics.called_before = partner,
+        }
 
         let result = call(&metrics).unwrap();
         let beta = extract_beta(&result, CpgOrigin::Original);
@@ -973,54 +978,49 @@ fn both_sides_independent() {
 // Formula verification: domain-derived analytical values, NOT copied from code
 // ---------------------------------------------------------------------------
 //
-// These test adjusted_beta against values derived from first principles:
+// These test `beta` against values derived from first principles:
 // - In TAPS, methylated C reads as T, unmethylated C reads as C
 // - At a het C/T site, ~half of T reads come from the SNP chromosome
-// - HomAlt means the reference base is gone on both chromosomes
+
+fn adjusted_beta(modified: u32, unmodified: u32, confounded: bool) -> f64 {
+    beta(&CpgReads { modified, unmodified }, confounded)
+}
 
 #[test]
 fn formula_no_adjustment_basic_ratios() {
     // All methylated → beta = 1.0
-    assert_eq!(adjusted_beta(10.0, 0.0, GenotypeAdjustment::None), 1.0);
+    assert_eq!(adjusted_beta(10, 0, false), 1.0);
     // All unmethylated → beta = 0.0
-    assert_eq!(adjusted_beta(0.0, 10.0, GenotypeAdjustment::None), 0.0);
+    assert_eq!(adjusted_beta(0, 10, false), 0.0);
     // Equal → beta = 0.5
-    assert_eq!(adjusted_beta(5.0, 5.0, GenotypeAdjustment::None), 0.5);
+    assert_eq!(adjusted_beta(5, 5, false), 0.5);
     // 3:1 ratio
-    assert!((adjusted_beta(3.0, 1.0, GenotypeAdjustment::None) - 0.75).abs() < 1e-9);
-}
-
-#[test]
-fn formula_hom_alt_always_zero() {
-    // Regardless of read counts, HomAlt = 0.0
-    assert_eq!(adjusted_beta(100.0, 0.0, GenotypeAdjustment::NoReference), 0.0);
-    assert_eq!(adjusted_beta(0.0, 100.0, GenotypeAdjustment::NoReference), 0.0);
-    assert_eq!(adjusted_beta(50.0, 50.0, GenotypeAdjustment::NoReference), 0.0);
+    assert!((adjusted_beta(3, 1, false) - 0.75).abs() < 1e-9);
 }
 
 #[test]
 fn formula_het_confounded_known_values() {
     // 50/50 split: all "mod" reads could come from the SNP → beta = 0
-    assert_eq!(adjusted_beta(5.0, 5.0, GenotypeAdjustment::HetConfounded), 0.0);
+    assert_eq!(adjusted_beta(5, 5, true), 0.0);
 
     // 6 mod, 4 unmod (total=10): SNP contributes ~5, excess = 1
     // beta = 1 / (4 + 1) = 0.2
-    let b = adjusted_beta(6.0, 4.0, GenotypeAdjustment::HetConfounded);
+    let b = adjusted_beta(6, 4, true);
     assert!((b - 0.2).abs() < 1e-9, "got {b}");
 
     // All mod reads (10 mod, 0 unmod): SNP contributes ~5, excess = 5
     // beta = 5 / (0 + 5) = 1.0
-    let b = adjusted_beta(10.0, 0.0, GenotypeAdjustment::HetConfounded);
+    let b = adjusted_beta(10, 0, true);
     assert!((b - 1.0).abs() < 1e-9, "got {b}");
 
     // 7 mod, 3 unmod (total=10): SNP contributes ~5, excess = 2
     // beta = 2 / (3 + 2) = 0.4
-    let b = adjusted_beta(7.0, 3.0, GenotypeAdjustment::HetConfounded);
+    let b = adjusted_beta(7, 3, true);
     assert!((b - 0.4).abs() < 1e-9, "got {b}");
 
     // Fewer mod than half (3 mod, 7 unmod): excess = max(3-5, 0) = 0
     // beta = 0 / (7 + 0) = 0
-    let b = adjusted_beta(3.0, 7.0, GenotypeAdjustment::HetConfounded);
+    let b = adjusted_beta(3, 7, true);
     assert!(b < 1e-9, "got {b}");
 }
 
@@ -1028,8 +1028,8 @@ fn formula_het_confounded_known_values() {
 fn formula_het_confounded_never_exceeds_unadjusted() {
     for m in 0..=20 {
         for u in 1..=20 {
-            let plain = adjusted_beta(f64::from(m), f64::from(u), GenotypeAdjustment::None);
-            let het = adjusted_beta(f64::from(m), f64::from(u), GenotypeAdjustment::HetConfounded);
+            let plain = adjusted_beta(m, u, false);
+            let het = adjusted_beta(m, u, true);
             assert!(het <= plain + 1e-9, "het ({het}) > plain ({plain}) for m={m}, u={u}");
         }
     }

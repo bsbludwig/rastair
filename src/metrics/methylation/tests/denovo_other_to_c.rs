@@ -15,8 +15,10 @@ fn standard_a_to_c() {
         [C G] OT,
         [C G] OT,
     );
+    // The `C` alt, second after the `T` its methylated reads show, on both
+    // chromosomes.
     let gt = EstimatedGenotype {
-        genotype: GenotypeTag::HomRef,
+        genotype: GenotypeTag::HomAlt(std::num::NonZeroU8::new(2).expect("two")),
         quality: Phred::from_phred(20),
         source: GenotypeSource::Binomial,
     };
