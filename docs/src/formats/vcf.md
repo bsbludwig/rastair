@@ -42,6 +42,8 @@ See [VCF Fields](vcf-fields.md) for a detailed description of the fields in the 
 The estimated $ \beta $ value is encoded in the VCF file through the `M5mC` FORMAT field
 which is provided at all positions where `CPG` or `CPGnovo` are set, and only there.
 Rastair writes every covered CpG position of the reference (every one under `--all`), whether it overlaps a variant or not.
+Rastair sets the `CPGconfounded` INFO flag where it corrects `M5mC` for a heterozygous variant that reads like a methylated base.
+See [Beta value correction](../calling/methylation.md#beta-value-correction) for how to read such a value.
 Where it does not overlap a called variant, the `ALT` is set to `.`, _a.k.a._ the missing value.
 
 While rare, it is possible to have more than one methylation call at one position. This can occur in `CCG` positions where the middle C is also a C>G SNP. This leads to two alleles, one where the middle position is a G and the other where it is a C. Each could be methylated at different levels. In these cases, the `M5mC` value will be a comma-separated list.
