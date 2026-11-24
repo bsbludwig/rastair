@@ -65,6 +65,20 @@ You can find a description of all custom VCF fields used by rastair [here](forma
 > The format will be guessed from the file ending.
 > If no output name is given, rastair writes VCF to @STDOUT.
 
+### Methylation at CpGs with a heterozygous variant
+
+Where a heterozygous variant reads like a methylated base, Rastair corrects the beta value and sets the `CPGconfounded` flag.
+Such a value is [noisier than the others](calling/methylation.md#beta-value-correction).
+You can list these positions, or leave them out, with `bcftools`:
+
+```bash
+# Only the positions with a corrected beta value
+bcftools view -i 'INFO/CPGconfounded=1' test.vcf.gz
+
+# Everything else
+bcftools view -e 'INFO/CPGconfounded=1' test.vcf.gz
+```
+
 ## 2. Only call methylation, do not report genetic variants (very fast)
 
 @BED output will only report CpG -- and de-novo CpG -- positions, which is a lot faster than processing all potential variants:

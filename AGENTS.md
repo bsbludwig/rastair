@@ -29,6 +29,7 @@ Area-specific knowledge lives in module doc comments; read the one for the code 
 | indel records                                  | `src/call/variant_calling/indel_calling.rs`                     |
 | SNV engine cascade                             | `src/call/process/pileups.rs`                                   |
 | genotype rules, GQ                             | `src/call/variant_calling/genotype.rs`                          |
+| CpGs beside variants, β                        | `src/call/process/denovo.rs`, `src/metrics/methylation.rs`      |
 | phasing                                        | `src/call/phasing.rs`, its `problem` and `solver` modules       |
 | measuring accuracy, comparing binaries         | `docs/measuring-accuracy.md`                                    |
 | readers, strand assignment                     | `src/sequence/readers.rs`, `docs/src/calling/strand-guesser.md` |

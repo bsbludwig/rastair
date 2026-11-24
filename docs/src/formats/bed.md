@@ -23,10 +23,10 @@ The BED file for CpG sites contains the following columns:
 | `start`         | Start position of the CpG site (0-based)                                    |
 | `end`           | End position of the CpG site (1-based)                                      |
 | `name`          | Always `.`                                                                  |
-| `beta_est`      | Estimated beta value for methylation (empty if no read shows the CpG)       |
+| `beta_est`      | Estimated beta value for methylation (empty if no read shows the CpG, or if the sample has no CpG here) |
 | `strand`        | The strand `beta_est` is read on: `+` (OT) or `-` (OB), `.` if none        |
-| `unmod`         | Number of unmethylated reads, the ones `beta_est` counts                    |
-| `mod`           | Number of methylated reads, the ones `beta_est` counts                      |
+| `unmod`         | Number of unmethylated reads, the ones `beta_est` counts ([except at a corrected position](#positions-with-a-variant)) |
+| `mod`           | Number of methylated reads, the ones `beta_est` counts (same exception)     |
 | `no_snp`        | Number of reads not counting as @SNP:pl                                     |
 | `snp`           | Number of reads counting as @SNP:pl                                         |
 | `coverage`      | Total coverage at the CpG site                                              |
@@ -34,6 +34,24 @@ The BED file for CpG sites contains the following columns:
 | `gt_p_score`    | The same value as `gt_conf_score`                                           |
 | `gt_conf_score` | The genotype's `GQ`: Phred-scaled chance that it is wrong; 0 where the VCF has no `GQ` |
 | `cpg`           | `REF` if CpG site occurs in @referenceGenome, `NEW` if it is a @denovo site |
+
+### Positions with a variant
+
+Two kinds of rows need care when a variant overlaps a CpG.
+[CpGs and variants](../calling/methylation.md#cpgs-and-variants) explains both.
+
+- **Corrected positions.**
+  Where a heterozygous variant reads like a methylated base, `beta_est` is a [corrected estimate](../calling/methylation.md#beta-value-correction).
+  `unmod` and `mod` still count all reads, including those of the variant, so `mod / (unmod + mod)` overstates the methylation.
+  Do not recompute a beta value from the counts of such a row.
+  The row of the CpG's other position is unaffected; use it when you need an accurate value for that CpG.
+- **Lost CpGs.**
+  Where the sample's variants leave a reference CpG on neither chromosome, Rastair still writes both rows.
+  `beta_est` is empty, `strand` is `.` and the read counts are 0.
+
+The BED file has no column that marks a corrected position.
+Its genotype gives a good hint: a heterozygous genotype that contains `T` on a `+` row, or `A` on a `-` row.
+For an exact answer, use the `CPGconfounded` flag of the [VCF output](vcf.md).
 
 ## Per-Read Methylation
 

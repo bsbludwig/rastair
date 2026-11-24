@@ -32,7 +32,7 @@ Within each worker, a segment's columns pass through these steps in order:
 2. **Add @ML metrics** (context-aware): Random Forest scoring using current and adjacent positions
 3. **SNV engine**: The pair-HMM scores the alts the forests kept, and a second set of forests scores them again
 4. **Set variant calls**: Call the alts the forests pass and the pair-HMM's genotype holds, and genotype them
-5. **Mark called CpGs** (context-aware): The @denovo CpGs called variants make with their neighbours
+5. **Mark called CpGs** (context-aware): What the two chromosomes read at neighbouring positions, which decides where called variants make a @denovo CpG and where they remove a reference one
 6. **Calls**: The genotype of positions without a variant, and @methylation calls
 7. **Phasing**: Link heterozygous sites into phase blocks, anchored on the positions the segment emits
 8. **Core filter**: Remove overlap positions

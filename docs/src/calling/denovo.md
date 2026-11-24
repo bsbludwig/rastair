@@ -27,6 +27,16 @@ This creates a new CpG dinucleotide (CG) that is not present in the reference ge
 This newly generated CpG is methylated, which means that both the C and the G position
 will show T/A at @OT/@OB reads, respectively!
 
+## Variants and chromosomes
+
+A de-novo CpG needs its `C` and its `G` on the same chromosome.
+
+- Two neighbouring variants can form a CpG together, for example `TA>CG`.
+  Rastair calls it a de-novo CpG when both variants sit on the same chromosome.
+- A variant next to a reference `C` or `G` forms no CpG when another variant replaces that base on the same chromosome.
+
+[CpGs and variants](methylation.md#cpgs-and-variants) describes how Rastair decides this and what it reports.
+
 ## Methylation of de-novo CpGs
 
 After Rastair has identified de-novo CpG sites,
